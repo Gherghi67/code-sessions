@@ -348,6 +348,29 @@ test('/cs-update with nothing pending says so as its output and opens nothing', 
   expect(opens()).toHaveLength(0)
 })
 
+for (const pending of [undefined, '2026.99.3']) {
+  test(`/cs-update in the fork gives the manual workflow with ${pending ? 'an inherited pending version' : 'no pending version'}`, async () => {
+    envVars.CODE_SESSIONS_HOME = '/profile/code-sessions'
+    envVars.CS_UPDATE_AVAILABLE = pending
+    const result = await runCommand()
+    expect(result.text).toContain('scripts/sync-upstream.py catch-up')
+    expect(result.text).toContain('then `sh setup.sh`')
+    expect(result.text).toContain('https://github.com/hex/claude-sessions/releases')
+    expect(result.text).not.toContain('found no newer cs')
+    expect(result.text).not.toContain('side pane')
+    expect(opens()).toHaveLength(0)
+    expect(runs).toHaveLength(0)
+  })
+}
+
+test('/cs-update in a fork teammate still belongs to the lead conversation', async () => {
+  envVars.CODE_SESSIONS_HOME = '/profile/code-sessions'
+  sessionId = 'uuid-teammate'
+  expect(await runCommand()).toEqual({ text: 'The release-notes pane belongs to the conversation cs launched.' })
+  expect(opens()).toHaveLength(0)
+  expect(runs).toHaveLength(0)
+})
+
 test('/cs-update in a teammate opens nothing', async () => {
   sessionId = 'uuid-teammate'
   await start()

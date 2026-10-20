@@ -380,7 +380,7 @@ check_update_notify() {
 
     local cache_dir
     cache_dir="$(dirname "$UPDATE_CACHE")"
-    mkdir -p "$cache_dir"
+    mkdir -p "$cache_dir" 2>/dev/null || return 0
 
     local now
     now=$(date +%s)
@@ -408,11 +408,24 @@ check_update_notify() {
         remote_version=$(get_remote_version 2>/dev/null) || remote_version=""
 
         if [ -n "$remote_version" ]; then
-            echo "$now $remote_version" > "$UPDATE_CACHE"
+            # A release notice is optional; a cache failure must not block launch.
+            { echo "$now $remote_version" > "$UPDATE_CACHE"; } 2>/dev/null || true
             if version_greater "$remote_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$remote_version"
             fi
         fi
+    fi
+
+    # The fork checks upstream for both adapters, but never offers the original
+    # cs installer's replacement of the running binary. Keep this notice brief;
+    # release summaries can be whole pages and the fork merges them by hand.
+    if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+        if [ -n "$UPDATE_AVAILABLE" ]; then
+            printf '\n%bUpstream cs %s available%b (fork includes cs %s)\n' "$GREEN" "$UPDATE_AVAILABLE" "$NC" "$VERSION"
+            printf '  Release notes: %s/tag/v%s\n' "$RELEASES_BASE" "$UPDATE_AVAILABLE"
+            printf '  In the code-sessions checkout: scripts/sync-upstream.py catch-up, then sh setup.sh\n'
+        fi
+        return 0
     fi
 
     # Build the launch card's notes cache once per pending remote version,
@@ -443,6 +456,7 @@ check_update_notify() {
             done
         fi
     fi
+
 }
 
 # Check dependencies

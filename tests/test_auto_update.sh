@@ -332,6 +332,7 @@ ORIGINAL_HOME="$HOME"
 _make_curl_stub() {  # stub-dir, fixture-path-or-empty
     cat > "$1/curl" << STUB
 #!/usr/bin/env bash
+if [ -n "\${CS_TEST_CURL_LOG:-}" ]; then printf '%s\n' "\$*" >> "\$CS_TEST_CURL_LOG"; fi
 case "\$*" in
     *" -w "*|*"-w"*)
         printf '%s' "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3"
@@ -627,6 +628,125 @@ test_without_code_sessions_home_update_is_not_refused() {
     assert_output_contains "$out" "Unknown option: --bogus" "the update verb runs as upstream's" || return 1
 }
 
+_stage_upstream_check() {
+    local profile="$HOME/.local/share/code-sessions/home"
+    mkdir -p "$HOME/.local/bin" "$profile/.local/bin" "$profile/.codex" "$TEST_TMPDIR/upstream-tools"
+    cp "$SCRIPT_DIR/../scripts/code-sessions-profile.sh" "$HOME/.local/bin/ccs"
+    cp "$CS_BIN" "$profile/.local/bin/cs"
+    chmod +x "$HOME/.local/bin/ccs"
+    cat > "$TEST_TMPDIR/upstream-tools/claude" <<'SCRIPT'
+#!/bin/sh
+printf 'MOD_UPDATE=%s\n' "${CS_UPDATE_AVAILABLE-unset}"
+SCRIPT
+    chmod +x "$TEST_TMPDIR/upstream-tools/claude"
+    _make_curl_stub "$TEST_TMPDIR/upstream-tools" ""
+    : > "$TEST_TMPDIR/upstream-curl.log"
+}
+
+_launch_upstream_check() {
+    env -u CS_NO_UPDATE_CHECK -u CS_NO_FUNCTION_HOOKS -u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS \
+        PATH="$TEST_TMPDIR/upstream-tools:$PATH" \
+        CLAUDE_CODE_BIN="$TEST_TMPDIR/upstream-tools/claude" \
+        CS_TEST_CURL_LOG="$TEST_TMPDIR/upstream-curl.log" \
+        CS_UPDATE_AVAILABLE=2026.1.1 "$HOME/.local/bin/ccs" "$@" --engine "${CS_TEST_UPSTREAM_ENGINE:-claude}" < /dev/null 2>&1
+}
+
+test_code_sessions_launcher_checks_upstream_and_caches_the_result() {
+    _stage_upstream_check
+    local out cache="$HOME/.local/share/code-sessions/home/.cache/cs" calls
+    out=$(_launch_upstream_check upstream-first) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" || return 1
+    assert_output_contains "$out" "fork includes cs" || return 1
+    assert_output_contains "$out" "scripts/sync-upstream.py catch-up" || return 1
+    assert_output_not_contains "$out" "cs -update" "the fork names its sync command" || return 1
+    assert_output_contains "$out" "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3" "release notes stay accessible" || return 1
+    assert_output_contains "$out" "MOD_UPDATE=unset" "the install mod gets no upstream verdict, including an inherited one" || return 1
+    assert_file_exists "$cache/update-check" || return 1
+    assert_not_exists "$HOME/.cache/cs/update-check" "the original cs's cache stays independent" || return 1
+    calls=$(wc -l < "$TEST_TMPDIR/upstream-curl.log" | tr -d ' ')
+    assert_eq 1 "$calls" "only the version probe runs" || return 1
+    out=$(_launch_upstream_check upstream-second) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" || return 1
+    assert_eq "$calls" "$(wc -l < "$TEST_TMPDIR/upstream-curl.log" | tr -d ' ')" "a second launch reuses the cached result" || return 1
+    printf '1000 2026.99.3\n' > "$cache/update-check"
+    out=$(_launch_upstream_check upstream-stale) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" || return 1
+    assert_eq 2 "$(wc -l < "$TEST_TMPDIR/upstream-curl.log" | tr -d ' ')" "an expired cache checks the version again" || return 1
+    printf '%s 2000.1.1\n' "$(date +%s)" > "$cache/update-check"
+    out=$(_launch_upstream_check upstream-current) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Upstream cs" "no notice when the fork is current" || return 1
+    assert_eq 2 "$(wc -l < "$TEST_TMPDIR/upstream-curl.log" | tr -d ' ')" "a current result is cached too"
+}
+
+test_code_sessions_launcher_honours_update_check_opt_out() {
+    _stage_upstream_check
+    local out
+    out=$(CS_NO_UPDATE_CHECK=1 CS_TEST_CURL_LOG="$TEST_TMPDIR/upstream-curl.log" \
+        PATH="$TEST_TMPDIR/upstream-tools:$PATH" CLAUDE_CODE_BIN="$TEST_TMPDIR/upstream-tools/claude" \
+        "$HOME/.local/bin/ccs" upstream-opt-out --engine claude < /dev/null 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Upstream cs" || return 1
+    assert_eq '' "$(cat "$TEST_TMPDIR/upstream-curl.log")" "opting out makes no requests" || return 1
+    assert_not_exists "$HOME/.local/share/code-sessions/home/.cache/cs/update-check"
+}
+
+test_code_sessions_codex_launch_shows_the_upstream_notice() {
+    _stage_upstream_check
+    cat > "$TEST_TMPDIR/upstream-tools/codex" <<'SCRIPT'
+#!/bin/sh
+if [ "${1:-}" = --help ]; then printf '%s\n' --approve-for-me; exit 0; fi
+printf 'CODEX_LAUNCHED=yes\n'
+SCRIPT
+    printf '#!/bin/sh\nprintf "12345678-1234-1234-1234-123456789abc\\n"\n' > "$TEST_TMPDIR/upstream-tools/cs-codex-thread"
+    chmod +x "$TEST_TMPDIR/upstream-tools/codex" "$TEST_TMPDIR/upstream-tools/cs-codex-thread"
+    local out
+    out=$(CS_TEST_UPSTREAM_ENGINE=codex CODEX_BIN="$TEST_TMPDIR/upstream-tools/codex" \
+        CS_CODEX_THREAD_BIN="$TEST_TMPDIR/upstream-tools/cs-codex-thread" \
+        _launch_upstream_check upstream-codex) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "CODEX_LAUNCHED=yes" || return 1
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" || return 1
+    assert_output_contains "$out" "scripts/sync-upstream.py catch-up" || return 1
+    assert_output_contains "$out" "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3" || return 1
+    assert_output_not_contains "$out" "cs -update"
+}
+
+test_code_sessions_launcher_opens_when_upstream_is_unreachable() {
+    _stage_upstream_check
+    printf '#!/bin/sh\nprintf "attempt\\n" >> "$CS_TEST_CURL_LOG"\nexit 22\n' > "$TEST_TMPDIR/upstream-tools/curl"
+    local out
+    out=$(_launch_upstream_check upstream-offline) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "MOD_UPDATE=unset" "the native session still runs" || return 1
+    assert_output_not_contains "$out" "Upstream cs" || return 1
+    assert_eq attempt "$(cat "$TEST_TMPDIR/upstream-curl.log")" "the failed request was attempted"
+}
+
+test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache() {
+    _stage_upstream_check
+    local cache="$HOME/.local/share/code-sessions/home/.cache/cs/update-check" out status=0
+    mkdir -p "$(dirname "$cache")"
+    _deny_file_write "$cache" || return 77
+    chmod 600 "$cache"
+    printf '1000 2026.99.3\n' > "$cache"
+    chmod 400 "$cache"
+    out=$(_launch_upstream_check upstream-read-only-cache) || status=$?
+    chmod 600 "$cache"
+    assert_eq 0 "$status" "a cache refresh failure must not stop launch" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "MOD_UPDATE=unset" "the native session still runs" || return 1
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" "the successful probe still supplies the notice" || return 1
+    assert_output_not_contains "$out" "Permission denied" "optional cache failures stay quiet"
+}
+
+test_code_sessions_launcher_opens_when_update_cache_directory_cannot_be_created() {
+    _stage_upstream_check
+    local parent="$HOME/.local/share/code-sessions/home/.cache" out status=0
+    mkdir -p "$parent"
+    _deny_writes "$parent" || return 77
+    out=$(_launch_upstream_check upstream-no-cache-directory) || status=$?
+    _allow_writes "$parent"
+    assert_eq 0 "$status" "a cache directory failure must not stop launch" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "MOD_UPDATE=unset" "the native session still runs" || return 1
+    assert_output_not_contains "$out" "Permission denied" "optional cache failures stay quiet"
+}
+
 run_test test_help_shows_update_command
 run_test test_help_shows_check_and_force
 run_test test_help_does_not_show_auto_update
@@ -654,6 +774,12 @@ run_test test_launch_banner_card_yields_to_the_mod
 run_test test_launch_exports_update_verdict_to_the_mod
 run_test test_code_sessions_refuses_update_and_uninstall
 run_test test_without_code_sessions_home_update_is_not_refused
+run_test test_code_sessions_launcher_checks_upstream_and_caches_the_result
+run_test test_code_sessions_launcher_honours_update_check_opt_out
+run_test test_code_sessions_codex_launch_shows_the_upstream_notice
+run_test test_code_sessions_launcher_opens_when_upstream_is_unreachable
+run_test test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache
+run_test test_code_sessions_launcher_opens_when_update_cache_directory_cannot_be_created
 run_test test_notify_writes_notes_cache
 run_test test_notify_writes_notes_cache_past_stale_tmp_files
 run_test test_notify_writes_empty_full_cache_when_fetch_fails

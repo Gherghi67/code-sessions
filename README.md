@@ -150,6 +150,14 @@ workspaces; see the getting-started guide.
 This fork is unpublished. The upstream repository is `hex/claude-sessions`; its
 remote installer installs the original cs.
 
+Claude and Codex session launches automatically check Hex's cs releases, caching
+successful checks for an hour in the profile's own cache. When a release is newer
+than the cs version included in this fork, a notice shows its version and a link
+to its release notes. Failed checks leave the session free to open.
+To bring those changes into the fork, run `scripts/sync-upstream.py catch-up`
+from this checkout, then rerun `sh setup.sh`. Checks only notify; merging and
+installing stay manual. Set `CS_NO_UPDATE_CHECK=1` to skip the check.
+
 Setup defaults to both adapters on a fresh install. For a fresh Codex-only installation:
 
 ```bash
