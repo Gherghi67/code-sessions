@@ -839,7 +839,7 @@ test_remove_base_session_with_empty_secrets_dir_uses_default() {
     mkdir -p "$age_dir"
     printf 'age1pin\n' > "$age_dir/age-trusted"
     local out
-    out=$(CS_SECRETS_DIR= "$CS_BIN" -rm ageempty --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    out=$(CS_SECRETS_DIR='' "$CS_BIN" -rm ageempty --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
     assert_not_exists "$age_dir" "an empty override falls back to the default store" || return 1
 }
 
