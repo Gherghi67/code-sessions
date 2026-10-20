@@ -4,10 +4,13 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
-## Unreleased
+## 2026.10.10
 
-### Added
-- The `cs-mermaid` mod ships a `show-me` skill (`/cs-mermaid:show-me`): asked to "show me", "draw it" or "how does X work" about a flow or a layout, the model answers with a picture beside a few lines of prose, a `graph TD` flowchart first since the mod draws those, else a pseudocode, call-tree, file-tree or diff sketch. Its description makes the model pick it unasked when an answer fits.
+### Features
+- The `cs-mermaid` mod ships a `show-me` skill (`/cs-mermaid:show-me`). Ask "show me", "draw it" or "how does X work" about a flow or a layout and the model answers with a picture beside a few lines of prose: a `graph TD` flowchart first, since the mod draws those, else a pseudocode, call-tree, file-tree or diff sketch. The description makes the model pick it unasked when an answer fits.
+
+### Docs
+- The README opens with `cs <name>` as the one command. The picker is a line after the first run, not a step of it.
 
 ## 2026.10.9
 
