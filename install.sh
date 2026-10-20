@@ -2044,6 +2044,8 @@ _place bin/cs-statusline "$INSTALL_DIR/cs-statusline"
 installed "cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
 _place bin/cs-subagent-statusline "$INSTALL_DIR/cs-subagent-statusline"
 
+fi
+
 # Records where the cs-tui just put in $INSTALL_DIR came from, in
 # HOOKS_DIR/.tui-origin beside the .version stamp: "checkout <path>" for a
 # copy from this checkout, "release" for the verified release asset. cs -doctor
@@ -2054,13 +2056,12 @@ _place bin/cs-subagent-statusline "$INSTALL_DIR/cs-subagent-statusline"
 # user's own picker, not one this install placed, so it leaves the record too:
 # a link it replaced is a file once placed, so -L is true only of a kept one.
 _record_tui_origin() {  # origin
+    _install_has_engine claude || return 0
     [ ! -L "$INSTALL_DIR/cs-tui" ] || return 0
     local tmp="$STAGE_DIR/tui-origin"
     printf '%s\n' "$1" > "$tmp" || error "Could not write $tmp"
     _place_file "$tmp" "$HOOKS_DIR/.tui-origin" 644
 }
-
-fi
 
 # Install cs-tui (interactive session manager).
 #

@@ -576,6 +576,21 @@ make_picker_checkout() {  # repo
        "$real/bin/cs-subagent-statusline" "$real/bin/cs-codex-thread" "$repo/bin/" 2>/dev/null || true
 }
 
+test_codex_only_install_with_a_local_picker_leaves_claude_absent() {
+    local fake_home="$TEST_TMPDIR/codex-picker-home" repo="$TEST_TMPDIR/picker-checkout"
+    make_picker_checkout "$repo"
+    mkdir -p "$fake_home"
+    printf 'CODEX PICKER' > "$repo/bin/cs-tui"
+    chmod +x "$repo/bin/cs-tui"
+    local output status=0
+    output=$(HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" CS_INSTALL_ENGINES=codex \
+        bash "$repo/install.sh" </dev/null 2>&1) || status=$?
+    assert_eq "0" "$status" "a Codex-only install with a local picker completes: $output" || return 1
+    assert_eq "CODEX PICKER" "$(cat "$fake_home/.local/bin/cs-tui")" "the local picker is installed" || return 1
+    assert_not_exists "$fake_home/.claude" "recording picker provenance must not create Claude state" || return 1
+    assert_file_exists "$fake_home/.codex/hooks.json" "Codex hooks are registered after the picker is installed" || return 1
+}
+
 test_local_install_prefers_a_freshly_built_picker() {
     local fake_home="$TEST_TMPDIR/home" repo="$TEST_TMPDIR/repo"
     make_picker_checkout "$repo"
@@ -4354,6 +4369,7 @@ run_test test_install_keeps_the_five_newest_settings_backups
 run_test test_install_keeps_a_concurrent_settings_change
 run_test test_uninstall_leaves_invalid_settings_json_untouched
 run_test test_uninstall_leaves_settings_and_keybindings_that_are_not_regular_files_unread
+run_test test_codex_only_install_with_a_local_picker_leaves_claude_absent
 run_test test_local_install_prefers_a_freshly_built_picker
 run_test test_local_install_uses_bin_picker_when_nothing_was_built
 run_test test_local_install_keeps_the_origin_record_of_a_linked_picker
