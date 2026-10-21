@@ -848,6 +848,17 @@ test_refs_recognizes_dot_led_paths() {
         "a missing dot-led path is dead" || return 1
 }
 
+test_refs_scans_unclosed_frontmatter_as_body() {
+    _guard_session
+    printf '%s\n' '---' 'description: `hooks/unclosed.sh`' 'Body with `hooks/unclosed.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/unclosed.sh' "$out" \
+        "unclosed frontmatter is scanned as body text" || return 1
+}
+
+run_test test_refs_scans_unclosed_frontmatter_as_body
 run_test test_refs_recognizes_dot_led_paths
 run_test test_refs_matches_only_complete_dispatcher_arms
 run_test test_refs_uses_the_installed_dispatcher_or_skips_verbs

@@ -101,13 +101,8 @@ _need_snapshot() {
 # interpreting its contents as shell text.
 _reference_tokens() {  # entry
     env LC_ALL=C awk -v branch_prefixes="$BRANCH_PREFIXES" '
-        FNR == 1 && /^---[[:space:]]*$/ { frontmatter = 1; next }
-        frontmatter {
-            if (/^(---|\.\.\.)[[:space:]]*$/) frontmatter = 0
-            next
-        }
-        {
-            rest = $0
+        function scan(line, rest, token, path, segment) {
+            rest = line
             while (match(rest, /`[^`]+`/)) {
                 token = substr(rest, RSTART + 1, RLENGTH - 2)
                 rest = substr(rest, RSTART + RLENGTH)
@@ -125,6 +120,18 @@ _reference_tokens() {  # entry
                 if (segment ~ /\.(com|org|net|io|dev|ai)$/) continue
                 if (path ~ /\// && index(" " branch_prefixes " ", " " segment " ")) continue
                 if (path ~ /\// || path ~ /\.(sh|md|rs|mjs|json)$/) print token
+            }
+        }
+        FNR == 1 && /^---[[:space:]]*$/ { frontmatter = 1; next }
+        frontmatter {
+            if (/^(---|\.\.\.)[[:space:]]*$/) frontmatter = 0
+            else buffer[++buffered] = $0
+            next
+        }
+        { scan($0) }
+        END {
+            if (frontmatter) {
+                for (i = 1; i <= buffered; i++) scan(buffer[i])
             }
         }
     ' "$1"
