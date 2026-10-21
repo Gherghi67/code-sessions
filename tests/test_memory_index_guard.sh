@@ -639,6 +639,22 @@ EOF
     assert_eq 0 "$rc" "ignored references do not fail the scan" || return 1
 }
 
+test_refs_ignores_placeholders_and_tokens_with_other_shapes() {
+    _guard_session
+    cat > "$SESSION/.cs/memory/feedback_alpha.md" << 'EOF'
+Try `hooks/<name>.sh`, `hooks/.../entry.md`, `hooks/*.sh` and `hooks/$NAME.sh`.
+Also `hooks/name>.sh`, `_cs_<name>` and `cs -<verb>`.
+Ignore `hooks/two words.sh`, `ordinary`, `notes.txt`, `cs -present args`,
+`https://example.com/hooks/example.sh`, `/outside/file.md` and `~/notes.md`.
+EOF
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "placeholders and other token shapes are not references" || return 1
+    assert_eq 0 "$rc" "ignored tokens do not fail the scan" || return 1
+}
+
+run_test test_refs_ignores_placeholders_and_tokens_with_other_shapes
 run_test test_refs_ignores_frontmatter_the_index_and_narratives
 run_test test_refs_counts_live_paths_identifiers_and_verbs_once
 run_test test_refs_reports_a_verb_absent_from_the_dispatcher
