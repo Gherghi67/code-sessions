@@ -95,10 +95,15 @@ _need_snapshot() {
     [ -r "$SNAPSHOT" ] || _die "cannot read $SNAPSHOT"
 }
 
-# Each backticked repository reference in one memory entry, without interpreting
-# its contents as shell text.
+# Each backticked repository reference in one memory entry body, without
+# interpreting its contents as shell text.
 _reference_tokens() {  # entry
     env LC_ALL=C awk '
+        FNR == 1 && /^---[[:space:]]*$/ { frontmatter = 1; next }
+        frontmatter {
+            if (/^(---|\.\.\.)[[:space:]]*$/) frontmatter = 0
+            next
+        }
         {
             rest = $0
             while (match(rest, /`[^`]+`/)) {
@@ -148,6 +153,7 @@ _reference_live() {  # token
 _refs() {
     local entry tokens token seen=$'\n' dead="" entries=0 references=0
     for entry in .cs/memory/*.md; do
+        case "$entry" in .cs/memory/MEMORY.md|.cs/memory/narrative.*.md) continue ;; esac
         [ -f "$entry" ] || continue
         entries=$((entries + 1))
         tokens=$(_reference_tokens "$entry") || _die "cannot read $entry"

@@ -620,6 +620,26 @@ dead: .cs/memory/feedback_alpha.md: hooks/outside.md' "$out" \
         "existing files outside the checkout are dead, including symlink targets" || return 1
 }
 
+test_refs_ignores_frontmatter_the_index_and_narratives() {
+    _guard_session
+    mkdir -p "$SESSION/hooks"
+    : > "$SESSION/hooks/present.sh"
+    cat > "$SESSION/.cs/memory/feedback_alpha.md" << 'EOF'
+---
+description: '`hooks/header-only.sh` and `cs -header-only`'
+---
+Use `hooks/present.sh`.
+EOF
+    printf '%s\n' 'See `hooks/index-only.sh`.' > "$INDEX"
+    printf '%s\n' 'Used `hooks/narrative-only.sh`.' > "$SESSION/.cs/memory/narrative.example.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "refs reads entry bodies only, excluding the index and narratives" || return 1
+    assert_eq 0 "$rc" "ignored references do not fail the scan" || return 1
+}
+
+run_test test_refs_ignores_frontmatter_the_index_and_narratives
 run_test test_refs_counts_live_paths_identifiers_and_verbs_once
 run_test test_refs_reports_a_verb_absent_from_the_dispatcher
 run_test test_refs_reports_dead_paths_once_in_sorted_order
