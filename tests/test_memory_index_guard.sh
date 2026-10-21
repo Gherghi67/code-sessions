@@ -830,6 +830,25 @@ dead: .cs/memory/feedback_alpha.md: cs -rm' "$out" \
         "deleted verbs cannot match longer arms or comments" || return 1
 }
 
+test_refs_recognizes_dot_led_paths() {
+    _guard_session
+    mkdir -p "$SESSION/.github/workflows"
+    : > "$SESSION/.github/workflows/ci.yml"
+    : > "$SESSION/.cs/memory/x.md"
+    printf '%s\n' 'Read `.github/workflows/ci.yml` and `.cs/memory/x.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 3 entries, none dead' "$out" \
+        "dot-led paths with a name before the last dot are counted" || return 1
+    printf '%s\n' 'Read `.github/workflows/gone.yml`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: .github/workflows/gone.yml' "$out" \
+        "a missing dot-led path is dead" || return 1
+}
+
+run_test test_refs_recognizes_dot_led_paths
 run_test test_refs_matches_only_complete_dispatcher_arms
 run_test test_refs_uses_the_installed_dispatcher_or_skips_verbs
 run_test test_refs_skips_branch_prefixes

@@ -118,9 +118,7 @@ _reference_tokens() {  # entry
                 sub(/:[0-9]+$/, "", path)
                 if (path !~ /[a-z]/) continue
                 if (path !~ /^[A-Za-z0-9._\/:-]+$/ || path ~ /^[-\/]/) continue
-                name = path
-                sub(/^(\.\.?\/)+/, "", name)
-                if (name ~ /\./ && name !~ /^[^.]*[A-Za-z0-9][^.]*\./) continue
+                if (path ~ /\./ && path !~ /[A-Za-z0-9].*\./) continue
                 if (path ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) continue
                 segment = path
                 sub(/\/.*/, "", segment)
