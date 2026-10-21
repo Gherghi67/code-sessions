@@ -239,6 +239,32 @@ test_sweep_supersedes_stale_entries() {
         "the sweep pass must give a supersede/update-in-place path, not only skip-or-duplicate" || return 1
 }
 
+test_sweep_stamps_measured_claims_with_their_provenance() {
+    # A fact that holds because something was run (a Claude Code build, a cs
+    # version) reads as timeless once written; nothing in the entry says when it
+    # stops being trustworthy. The sweep must make the body name what the claim
+    # was measured on, so a later session re-measures instead of trusting it.
+    assert_file_contains "$SWEEP_PASS" "A measured claim names what it was measured on" \
+        "the sweep pass must require provenance on measured claims" || return 1
+    assert_file_contains "$SWEEP_PASS" "measured on Claude Code <version>" \
+        "the sweep pass must show the provenance line's shape as a placeholder, not a copyable value" || return 1
+}
+
+test_sweep_names_the_entry_each_new_one_supersedes() {
+    # The supersede path exists (test above) but nothing makes the model look
+    # for the entry a new fact replaces; the dedup read catches paraphrases of
+    # the same fact, not an older fact the new one overturns. Each written entry
+    # must name what it supersedes, or state none, in the sweep's report.
+    assert_file_contains "$SWEEP_PASS" "the entry it supersedes" \
+        "the sweep pass must make each new entry name the one it supersedes" || return 1
+    assert_file_contains "$SWEEP_PASS" "supersedes: none" \
+        "the sweep pass must give the no-supersede form so the check is never skipped silently" || return 1
+    # /wrap tells the model to skip the sweep's own report and emit its combined
+    # one instead, so the answer is dead output unless that report carries it too.
+    assert_file_contains "$COMMANDS_DIR/wrap.md" "supersedes: none" \
+        "wrap.md's combined report must carry the supersedes answer the sweep decided" || return 1
+}
+
 test_sweep_states_filename_convention() {
     # The <bucket>_<short_slug>.md convention was only implied by the glob; a first
     # entry in an empty bucket needs it stated explicitly.
@@ -500,6 +526,8 @@ run_test test_wrap_report_is_not_two_line
 run_test test_checkpoint_routes_reserved_subcommands
 run_test test_checkpoint_quotes_label_and_stops_on_failure
 run_test test_sweep_supersedes_stale_entries
+run_test test_sweep_stamps_measured_claims_with_their_provenance
+run_test test_sweep_names_the_entry_each_new_one_supersedes
 run_test test_sweep_states_filename_convention
 run_test test_sweep_scopes_when_not_to_write
 run_test test_sweep_states_memory_pointer_format
