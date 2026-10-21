@@ -148,7 +148,7 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    `MEMORY.md` line `check` then names `duplicate:`. Never finish a sweep with `check` failing.
 
    Run `bash ~/.claude/hooks/cs/memory-index-guard.sh refs` once per sweep. Take at most five
-   `dead:` lines, oldest entry first, and report the rest as a count. For each, open the named entry
+   `dead:` lines in the order printed and report the rest as a count. For each, open the named entry
    and update the reference to the thing's current name. A file that lives outside this checkout
    (another repository, `~/.claude`) is not dead: rewrite the reference as an absolute or `~/` path,
    which the check does not resolve. Only when the thing no longer exists anywhere, append one
