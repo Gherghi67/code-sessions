@@ -756,6 +756,26 @@ test_refs_resolves_line_suffixes_and_preserves_dead_tokens() {
         "only the final numeric suffix is stripped and internal colons stay" || return 1
 }
 
+test_refs_skips_branch_prefixes() {
+    _guard_session
+    local prefix out
+    for prefix in feat fix perf chore docs ci test refactor release; do
+        printf 'Read `%s/anything`.\n' "$prefix" > "$SESSION/.cs/memory/feedback_alpha.md"
+        out=$(_guard refs 2>&1) || return 1
+        assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+            "$prefix branches are neither reported nor counted" || return 1
+    done
+    mkdir -p "$SESSION/features"
+    : > "$SESSION/features/anything"
+    : > "$SESSION/feat.md"
+    printf '%s\n' 'Read `features/anything` and `feat.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "branch prefixes match the complete first segment before a slash" || return 1
+}
+
+run_test test_refs_skips_branch_prefixes
 run_test test_refs_resolves_line_suffixes_and_preserves_dead_tokens
 run_test test_refs_requires_path_characters
 run_test test_refs_skips_host_paths

@@ -5,6 +5,8 @@
 set -euo pipefail
 
 INDEX=".cs/memory/MEMORY.md"
+# These branch prefixes use slashes without naming repository paths.
+BRANCH_PREFIXES="feat fix perf chore docs ci test refactor release"
 # The archive index: a reference entry listing, in MEMORY.md's own pointer
 # shape, the pointers /wrap's memory pass moved out of MEMORY.md. Claude Code
 # reads it only through its pointer in MEMORY.md.
@@ -98,7 +100,7 @@ _need_snapshot() {
 # Each backticked repository reference in one memory entry body, without
 # interpreting its contents as shell text.
 _reference_tokens() {  # entry
-    env LC_ALL=C awk '
+    env LC_ALL=C awk -v branch_prefixes="$BRANCH_PREFIXES" '
         FNR == 1 && /^---[[:space:]]*$/ { frontmatter = 1; next }
         frontmatter {
             if (/^(---|\.\.\.)[[:space:]]*$/) frontmatter = 0
@@ -123,6 +125,7 @@ _reference_tokens() {  # entry
                 segment = path
                 sub(/\/.*/, "", segment)
                 if (segment ~ /\.(com|org|net|io|dev|ai)$/) continue
+                if (path ~ /\// && index(" " branch_prefixes " ", " " segment " ")) continue
                 if (path ~ /\// || path ~ /\.(sh|md|rs|mjs|json)$/) print token
             }
         }
