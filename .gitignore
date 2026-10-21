@@ -33,3 +33,6 @@ tests/.run_all.lock/
 .cs/vault-mnt/
 .cs-tmp.*
 mods/*/tsconfig.json
+.cs/private/
+.cs/session.lock
+.cs/session.mutex.lock
