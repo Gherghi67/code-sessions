@@ -102,6 +102,8 @@ _need_snapshot() {
 _reference_tokens() {  # entry
     env LC_ALL=C awk -v branch_prefixes="$BRANCH_PREFIXES" '
         function scan(line, rest, token, path, segment) {
+            if (line ~ /^```/) { fenced = !fenced; return }
+            if (fenced) return
             rest = line
             while (match(rest, /`[^`]+`/)) {
                 token = substr(rest, RSTART + 1, RLENGTH - 2)

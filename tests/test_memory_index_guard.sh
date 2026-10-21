@@ -858,6 +858,21 @@ test_refs_scans_unclosed_frontmatter_as_body() {
         "unclosed frontmatter is scanned as body text" || return 1
 }
 
+test_refs_ignores_backticks_inside_code_fences() {
+    _guard_session
+    printf '%s\n' '```sh' 'echo `hooks/fenced-tick.sh`' '```' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "backticks inside a code fence are neither reported nor counted" || return 1
+    printf '%s\n' 'Read `hooks/outside-fence.sh`.' >> "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside-fence.sh' "$out" \
+        "reference scanning resumes after the closing fence" || return 1
+}
+
+run_test test_refs_ignores_backticks_inside_code_fences
 run_test test_refs_scans_unclosed_frontmatter_as_body
 run_test test_refs_recognizes_dot_led_paths
 run_test test_refs_matches_only_complete_dispatcher_arms
