@@ -556,8 +556,9 @@ test_refs_reports_dead_paths_once_in_sorted_order() {
     local out rc=0
     out=$(_guard refs 2>&1) || rc=$?
     assert_eq 'dead: .cs/memory/feedback_alpha.md: README.md
-dead: .cs/memory/feedback_alpha.md: hooks/gone.sh' "$out" \
-        "refs names each dead path once, in sorted order" || return 1
+dead: .cs/memory/feedback_alpha.md: hooks/gone.sh
+dead: .cs/memory/project_beta.md: hooks/gone.sh' "$out" \
+        "refs names each dead path once per entry, in sorted order" || return 1
     assert_eq 0 "$rc" "dead references are advisory" || return 1
 }
 
@@ -601,7 +602,8 @@ test_refs_counts_live_paths_identifiers_and_verbs_once() {
     printf '%s\n' '_cs_present' > "$SESSION/.git/identifier"
     printf '%s\n' '_cs_present' > "$SESSION/.cs/local/identifier"
     out=$(_guard refs 2>&1) || return 1
-    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_present' "$out" \
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_present
+dead: .cs/memory/project_beta.md: _cs_present' "$out" \
         "a deleted definition cannot match memory, local state or git metadata" || return 1
     mkdir -p "$SESSION/lib"
     printf '%s\n' 'cs_present() { :; }' > "$SESSION/hooks/helper.sh"

@@ -180,7 +180,7 @@ _reference_live() {  # token dispatcher
 
 _refs() {
     local entry tokens token seen=$'\n' dead="" entries=0 references=0
-    local dispatcher
+    local dispatcher entry_seen missing=$'\n'
     if ! dispatcher=$(command -v cs); then
         [ ! -f bin/cs ] || dispatcher=bin/cs
     fi
@@ -188,16 +188,28 @@ _refs() {
         case "$entry" in .cs/memory/MEMORY.md|.cs/memory/narrative.*.md) continue ;; esac
         [ -f "$entry" ] || continue
         entries=$((entries + 1))
+        entry_seen=$'\n'
         tokens=$(_reference_tokens "$entry") || _die "cannot read $entry"
         while IFS= read -r token; do
             [ -n "$token" ] || continue
             case "$token" in 'cs -'*) [ -n "$dispatcher" ] || continue ;; esac
-            case "$seen" in *$'\n'"$token"$'\n'*) continue ;; esac
-            seen="$seen$token"$'\n'
-            references=$((references + 1))
-            if ! _reference_live "$token" "$dispatcher"; then
-                dead="${dead}dead: $(_cs_plain_name "$entry" 240): $token"$'\n'
-            fi
+            case "$entry_seen" in *$'\n'"$token"$'\n'*) continue ;; esac
+            entry_seen="$entry_seen$token"$'\n'
+            case "$seen" in
+                *$'\n'"$token"$'\n'*) ;;
+                *)
+                    seen="$seen$token"$'\n'
+                    references=$((references + 1))
+                    if ! _reference_live "$token" "$dispatcher"; then
+                        missing="$missing$token"$'\n'
+                    fi
+                    ;;
+            esac
+            case "$missing" in
+                *$'\n'"$token"$'\n'*)
+                    dead="${dead}dead: $(_cs_plain_name "$entry" 240): $token"$'\n'
+                    ;;
+            esac
         done <<< "$tokens"
     done
     if [ -n "$dead" ]; then
