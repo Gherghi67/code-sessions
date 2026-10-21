@@ -729,6 +729,34 @@ test_refs_requires_path_characters() {
     done
 }
 
+test_refs_resolves_line_suffixes_and_preserves_dead_tokens() {
+    _guard_session
+    mkdir -p "$SESSION/hooks"
+    : > "$SESSION/hooks/x.sh"
+    printf '%s\n' 'Read `hooks/x.sh:12`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a line suffix resolves to the live file" || return 1
+    rm "$SESSION/hooks/x.sh"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/x.sh:12' "$out" \
+        "a missing file retains its line suffix in the dead report" || return 1
+    : > "$SESSION/hooks/x.sh"
+    printf '%s\n' 'Read `x.sh:12`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a line suffix is stripped before matching a basename extension" || return 1
+    : > "$SESSION/hooks/topic:one.md"
+    : > "$SESSION/hooks/x.sh:12"
+    printf '%s\n' 'Read `hooks/topic:one.md:9` and `hooks/x.sh:12:34`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "only the final numeric suffix is stripped and internal colons stay" || return 1
+}
+
+run_test test_refs_resolves_line_suffixes_and_preserves_dead_tokens
 run_test test_refs_requires_path_characters
 run_test test_refs_skips_host_paths
 run_test test_refs_skips_names_without_lowercase_letters

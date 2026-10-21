@@ -112,16 +112,18 @@ _reference_tokens() {  # entry
                 if (token ~ /[<>*$]/ || index(token, "...")) continue
                 if (token ~ /^cs -[A-Za-z-]+$/) { print token; continue }
                 if (token ~ /^(_cs_|cs_)[A-Za-z0-9_]+$/) { print token; continue }
-                if (token !~ /[a-z]/) continue
-                if (token !~ /^[A-Za-z0-9._\/:-]+$/ || token ~ /^[-\/]/) continue
-                name = token
+                path = token
+                sub(/:[0-9]+$/, "", path)
+                if (path !~ /[a-z]/) continue
+                if (path !~ /^[A-Za-z0-9._\/:-]+$/ || path ~ /^[-\/]/) continue
+                name = path
                 sub(/^(\.\.?\/)+/, "", name)
                 if (name ~ /\./ && name !~ /^[^.]*[A-Za-z0-9][^.]*\./) continue
-                if (token ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) continue
-                segment = token
+                if (path ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) continue
+                segment = path
                 sub(/\/.*/, "", segment)
                 if (segment ~ /\.(com|org|net|io|dev|ai)$/) continue
-                if (token ~ /\// || token ~ /\.(sh|md|rs|mjs|json)$/) print token
+                if (path ~ /\// || path ~ /\.(sh|md|rs|mjs|json)$/) print token
             }
         }
     ' "$1"
@@ -152,6 +154,9 @@ _reference_live() {  # token
             return "$rc"
             ;;
     esac
+    if [[ "$token" =~ :[0-9]+$ ]]; then
+        token="${token%:*}"
+    fi
     case "$token" in
         */*) ;;
         *) token=$(find . -path ./.git -prune -o -name "$token" -print -quit) \
