@@ -970,12 +970,13 @@ test_refs_ignores_gitignored_copies() {
         > "$SESSION/.cs/memory/feedback_alpha.md"
     local out expected
     expected='dead: .cs/memory/feedback_alpha.md: _cs_copy
-dead: .cs/memory/feedback_alpha.md: copied.sh
-dead: .cs/memory/feedback_alpha.md: scratch/copied.sh'
+dead: .cs/memory/feedback_alpha.md: copied.sh'
     out=$(_guard refs 2>&1) || return 1
     assert_eq "$expected" "$out" "ignored copies cannot keep references live" || return 1
     mkdir -p "$SESSION/scratch/x/.cs/memory"
     mv "$SESSION/scratch/copied.sh" "$SESSION/scratch/x/.cs/memory/copied.sh"
+    expected="$expected
+dead: .cs/memory/feedback_alpha.md: scratch/copied.sh"
     out=$(_guard refs 2>&1) || return 1
     assert_eq "$expected" "$out" "nested ignored memory cannot keep references live" || return 1
 }
@@ -1040,6 +1041,29 @@ dead: .cs/memory/feedback_alpha.md: internal.sh' "$out" \
         "non-git searches prune nested state and build directories" || return 1
 }
 
+test_refs_resolves_exact_paths_on_disk_in_git_sessions() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' 'scratch/' '.claude/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/tests" "$SESSION/lib" "$SESSION/scratch" \
+        "$SESSION/hooks" "$SESSION/.claude/worktrees/w/hooks"
+    : > "$SESSION/build.sh"
+    : > "$SESSION/scratch/keep.sh"
+    : > "$SESSION/.claude/worktrees/w/hooks/gone.sh"
+    : > "$TEST_TMPDIR/outside.sh"
+    ln -s "$TEST_TMPDIR/outside.sh" "$SESSION/hooks/outside.sh"
+    printf '%s\n' 'Read `tests/`, `lib/`, `./build.sh` and `scratch/keep.sh`.' \
+        'Read `hooks/gone.sh`, `gone.sh` and `hooks/outside.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: gone.sh
+dead: .cs/memory/feedback_alpha.md: hooks/gone.sh
+dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "exact paths resolve on disk inside the root without borrowing worktree copies" || return 1
+}
+
+run_test test_refs_resolves_exact_paths_on_disk_in_git_sessions
 run_test test_refs_excludes_deleted_tracked_files
 run_test test_refs_includes_untracked_files_outside_lib
 run_test test_refs_resolves_memory_basenames_without_git

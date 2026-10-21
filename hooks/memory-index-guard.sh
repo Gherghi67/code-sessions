@@ -216,17 +216,15 @@ _reference_live() {  # token dispatcher
     if [[ "$token" =~ :[0-9]+(-[0-9]+)?$ ]]; then
         token="${token%:*}"
     fi
-    if [ -n "$_refs_universe" ]; then
+    token="${token#./}"
+    if [[ -n "$_refs_universe" && "$1" != */* ]]; then
         while IFS= read -r -d '' resolved; do
-            case "$token" in
-                */*) [ "$resolved" != "$token" ] || return 0 ;;
-                *) [ "${resolved##*/}" != "$token" ] || return 0 ;;
-            esac
+            [ "${resolved##*/}" != "$token" ] || return 0
         done < "$_refs_universe"
         return 1
     fi
     root=$(pwd -P) || _die "cannot resolve the session root"
-    case "$token" in
+    case "$1" in
         */*) ;;
         *)
             matches=$(find . -name .git -prune \
@@ -244,7 +242,7 @@ _reference_live() {  # token dispatcher
             return 1
             ;;
     esac
-    [ -f "$token" ] || [ -d "$token" ] || return 1
+    [ -e "$token" ] || return 1
     resolved=$(_cs_write_target "./$token") || return 1
     case "$resolved" in "$root"|"$root"/*) return 0 ;; esac
     return 1
