@@ -15,7 +15,6 @@ Thumbs.db
 .beads/
 .claude/
 .claude-crawl/
-.cs/
 .omc/
 openspec/
 
@@ -35,3 +34,11 @@ tests/.run_all.lock/
 __pycache__/
 .cs-tmp.*
 mods/*/tsconfig.json
+
+# Machine-local session data; durable .cs notes are tracked
+.cs/private/
+.cs/session.lock
+.cs/session.mutex.lock
+.cs/codex-home/
+.cs/agent-harness-home/
+.cs/claude-config/

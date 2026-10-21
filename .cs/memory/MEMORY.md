@@ -1,0 +1,38 @@
+- [Session narrative — gherghinabogdan7-gmail-com (lab notebook)](narrative.gherghinabogdan7-gmail-com.md): looser-bar work-in-progress; its owner reads it in full on resume, anyone else only the lines the resume digest names; older sections under .cs/narrative-archive/
+- [macOS: never relocate HOME to isolate a Claude profile](project_macos_home_relocation_keychain.md): keychain resolves via HOME, so OAuth save fails; isolate via CLAUDE_CONFIG_DIR/CODEX_HOME/CS_* and absolute hook paths
+- [Workflow agents never kill; detect live Claude by lease/argv](feedback_workflow_agents_never_kill.md) — a Haiku audit agent kill -9ed the user's live ags session; Claude comm is its version string
+- [Fork features belong to the session manager](feedback_ags_features_belong_to_session_manager.md): in code-sessions Claude and Codex are adapters that register shared skills/hooks natively, and the manager owns UI defaults like Codex's status line; never per-engine copies; a Codex refusal is a stopgap, not done
+- [MEMORY.md merge=ours drops pointers](project_memory_index_merge_ours_drops_pointers.md): cs's merge attribute deletes index lines on round-trip merges; unindexed entries are damage, not a backlog to baseline
+- [Rotate countdown after manual /rotate is intended](project_rotate_countdown_after_manual_rotate_is_intended.md): upstream decision, never "fix" the code; the skill's stale sentence is fixed in the fork, not in stable cs
+- [/branch-out lives outside git](reference_branch_out_skill_location.md): ~/.claude/commands and ~/.codex/skills/branch-out; back up as .pre-<change> before editing; cs/<slug> unless a GIT_WORKFLOW.md (wap-<slug>); /finish lands only cs/ ones
+- [GitHub accounts](user_github_accounts.md) — Gherghi67 is personal, bogdan-gherghina is work; hex PRs go out as Gherghi67 via a fork; code-sessions PRs stay in Gherghi67/code-sessions (-R)
+- [/fix-review on claude-sessions](project_fix_review_on_claude_sessions.md) — gh pr view misses fork PRs (use -R Gherghi67/code-sessions); gates map to build.sh sync, lint_shell.sh, run_all.sh, Linux container; trim suites for mutation
+- [/roast and /roast-local name a missing skill](project_roast_skill_name.md) — their reviewer prompts say grumpy-reviewer; the installed skill is grumpy-review; in a session folder, review from a detached worktree (CLAUDE.local.md loads otherwise) and have the user accept its trust prompt
+- [Secrets suites fail locally](project_secrets_suites_fail_locally.md) — test_cs_secrets (79/84) and its concurrency suite (4/6) failed on 2026.10.1 here, pass on the fork by 2026-10-09; compare counts first
+- [Codex hooks skip until trusted](project_codex_hooks_skip_until_trusted.md): Codex 0.160 silently skips every new hook; the fork must write hooks.state trusted_hash (sha256 of the hook's sorted JSON) with it
+- [Codex ignores disable-model-invocation](project_codex_ignores_disable_model_invocation.md): user-only skills like finish need agents/openai.yaml allow_implicit_invocation: false before Codex gets them
+- [Codex never substitutes $ARGUMENTS](project_codex_skill_arguments_not_substituted.md): $name injects the whole SKILL.md literal; skills must say to read args from the message
+- [bash 3.2 here-strings fail in Codex's sandbox](project_bash32_heredoc_fails_in_codex_sandbox.md): temp-file writes are refused and the loop reads nothing; read-only probe verbs must not use <<< or heredocs
+- [Codex CLI gotchas](project_codex_cli_test_gotchas.md): exec stdin and offline turns; persisted turn evidence; PostToolUse errors can hide completed writes; removed hooks may need a restart; TUI keys need typing speed; a mock Responses server gives real turns
+- [Fork divergence via the sync script](feedback_fork_divergence_via_sync_script.md): absorb hex releases with scripts/sync-upstream.py; user declined refactor PRs to hex to shrink the divergence
+- [Upstream sync test adaptations](project_upstream_sync_test_adaptations.md): staged ids change stub assertions; adapt tests, not lib; watchdog-only cutoffs need focused checks.
+- [Bash tool runs zsh](project_bash_tool_runs_zsh.md): never name a variable path; write ${var}:x before colons; $list does not word-split; grep is ugrep, use -F
+- [cs sessions copied into code-sessions](project_wap_copied_into_code_sessions.md): wap 10-09, all with --all 10-13 (ask-ags rename, engine pin); cs untouched; rerun to re-sync; never link the two
+- [Migration tools carry everything](feedback_migration_tools_carry_everything.md): cs<->code-sessions copies include feature worktrees; skip only what cannot be done safely, and say why
+- [switch = rotate + engine change](project_switch_is_rotate_plus_engine.md) — user decided 2026-10-07: rotate unchanged, switch adds the relaunch under the other engine; no transcript transplant
+- [Moving a cs session folder](project_moving_a_cs_session_folder.md): only after its conversation exits and orphaned Monitor pipelines are gone; no cs/ccs rename verb; never rewrite ~/.claude.json while Claudes run
+- [Codex sandbox keeps .git read-only](project_codex_sandbox_git_readonly.md): skills writing git or outside the folder need escalated permissions; trials under /tmp hide it
+- [Tests reach the real keychain](project_tests_reach_real_keychain.md): tests running real cs-secrets on macOS must use use_fake_keychain; CS_* env does not protect
+- [Fork reads cs answer files](project_fork_reads_cs_answer_files.md): option-keys and statusline-caps resolve under ~/.config/cs, not CS_CONFIG_DIR; cs's "no" silences the fork's key question
+- [Fork CI: reproduce Linux and lint locally](project_fork_ci_linux_and_lint_repro.md): macOS green does not prove ubuntu CI or shellcheck; Docker ubuntu:24.04 + lsof/procps, pinned shellcheck in scratchpad
+- [Codex refused on encrypted sessions](project_codex_refused_on_encrypted_sessions.md): 2026-10-12 stopgap for review B2; the follow-up is a vault-backed CODEX_HOME
+- [/roast-local diffs a stale local main](project_roast_local_base_is_local_ref.md): its base is origin/HEAD's name read as a local branch; here local main is v2026.9.23, so pass origin/main
+
+- [Codex task narrative](narrative.bogdan-gherghina-erepubliklabs-com.md): Codex integration fixes, validation, publication and review handoff from this Codex task.
+- [Shared index: commit by pathspec](project_shared_index_commit_by_pathspec.md) — a Codex thread in this folder had its staged work swept into a review-fix commit (f1b9d248), then pushed it; agents commit with git commit -- <files>
+- [Whole-repo roast PR](project_whole_repo_roast_pr.md): empty root base + main's tree on top (unrelated histories cannot PR); gh pr diff had no line cap
+- [code-sessions work lives in the profile copy](project_code_sessions_checkout_moved.md): build, setup.sh and commit from <profile>/sessions/code-sessions; never install from stale ~/Documents/cs/code-sessions (it would deny Codex approvals)
+- [Auto-mode refusals here](project_auto_mode_refusals_here.md): terminal-typing code and gh pr merge need the user's explicit go-ahead; scratch reinstall by cp bin/cs, not bash -c install.sh; never retry a refusal in another form
+- [No typo guard for session names](feedback_no_session_name_typo_guard.md): user declined a did-you-mean prompt; a forgotten setting may be a near-miss name like code-session
+- [Automatic approval review](feedback_automatic_approval_review.md): this actor chose "approve for me"; continue authorized routine fixes without repeat permission questions, never bypass a denial
+- [Codex sandbox trust boundary](project_codex_sandbox_trust_boundary.md): the whole session dir, /tmp and $TMPDIR are agent-writable; state cs acts on must live in CS_CACHE_DIR, never .cs/local; hooks must exit 0
