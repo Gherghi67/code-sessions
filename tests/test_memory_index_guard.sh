@@ -810,6 +810,25 @@ test_refs_uses_the_installed_dispatcher_or_skips_verbs() {
         "verbs are skipped when neither dispatcher exists" || return 1
 }
 
+test_refs_matches_only_complete_dispatcher_arms() {
+    _guard_session
+    local PATH=/bin:/usr/bin out
+    mkdir -p "$SESSION/bin"
+    printf '%s\n' 'case "$1" in' '    -remove|-rm) ;;' 'esac' > "$SESSION/bin/cs"
+    printf '%s\n' 'Run `cs -rm`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a verb in a compound case arm is live" || return 1
+    printf '%s\n' 'case "$1" in' '    -rmdir) ;;' 'esac' '# find . -name foo' \
+        > "$SESSION/bin/cs"
+    printf '%s\n' 'Run `cs -rm` and `cs -name`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: cs -name
+dead: .cs/memory/feedback_alpha.md: cs -rm' "$out" \
+        "deleted verbs cannot match longer arms or comments" || return 1
+}
+
+run_test test_refs_matches_only_complete_dispatcher_arms
 run_test test_refs_uses_the_installed_dispatcher_or_skips_verbs
 run_test test_refs_skips_branch_prefixes
 run_test test_refs_resolves_line_suffixes_and_preserves_dead_tokens

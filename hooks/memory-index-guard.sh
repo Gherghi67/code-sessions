@@ -137,7 +137,8 @@ _reference_live() {  # token dispatcher
     case "$1" in
         'cs -'*)
             verb="${1#cs -}"
-            grep -qF -e "-$verb)" -e " -$verb" -- "$dispatcher" || rc=$?
+            grep -qE '^[[:space:]]*(-[A-Za-z-]+\|)*-'"$verb"'(\|-[A-Za-z-]+)*\)' \
+                -- "$dispatcher" || rc=$?
             [ "$rc" -le 1 ] || _die "cannot read $dispatcher"
             return "$rc"
             ;;
