@@ -715,6 +715,21 @@ test_refs_skips_host_paths() {
         "a directory with a domain inside its name is still a path" || return 1
 }
 
+test_refs_requires_path_characters() {
+    _guard_session
+    local token out
+    for token in 's/^#\+//' '[y/N]' '--force/-f' '-doctor/-diag' \
+        'CLAUDE_SESSION_NAME/DIR' 'DATABASE_URL=postgres://user:pass@host' \
+        'docs/superpowers/{plans,specs}' 'example.com/api/v2/incidents/unresolved.json' \
+        '.sh'; do
+        printf 'Read `%s`.\n' "$token" > "$SESSION/.cs/memory/feedback_alpha.md"
+        out=$(_guard refs 2>&1) || return 1
+        assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+            "$token is neither reported nor counted as a path" || return 1
+    done
+}
+
+run_test test_refs_requires_path_characters
 run_test test_refs_skips_host_paths
 run_test test_refs_skips_names_without_lowercase_letters
 run_test test_refs_finds_basenames_in_subdirectories
