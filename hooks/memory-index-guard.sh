@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ABOUTME: Guards /wrap's memory-pass rewrites of .cs/memory/MEMORY.md: snapshot, check, restore.
+# ABOUTME: Guards /wrap's memory index and reports dead references in its entries.
 # ABOUTME: Run by that pass (wrap-sweep.md) from the session root; not a hook itself.
 
 set -euo pipefail
@@ -95,7 +95,58 @@ _need_snapshot() {
     [ -r "$SNAPSHOT" ] || _die "cannot read $SNAPSHOT"
 }
 
+# Each backticked repository path in one memory entry, without interpreting
+# its contents as shell text.
+_reference_tokens() {  # entry
+    env LC_ALL=C awk '
+        {
+            rest = $0
+            while (match(rest, /`[^`]+`/)) {
+                token = substr(rest, RSTART + 1, RLENGTH - 2)
+                rest = substr(rest, RSTART + RLENGTH)
+                if (token ~ /[[:space:][:cntrl:]]/ || token ~ /^[\/~]/ || token ~ /:/) continue
+                if (token ~ /\// || token ~ /\.(sh|md|rs|mjs|json)$/) print token
+            }
+        }
+    ' "$1"
+}
+
+_reference_live() {  # token
+    local resolved root
+    [ -f "$1" ] || [ -d "$1" ] || return 1
+    resolved=$(_cs_write_target "./$1") || return 1
+    root=$(pwd -P) || _die "cannot resolve the session root"
+    case "$resolved" in "$root"|"$root"/*) return 0 ;; esac
+    return 1
+}
+
+_refs() {
+    local entry tokens token seen=$'\n' dead="" entries=0 references=0
+    for entry in .cs/memory/*.md; do
+        [ -f "$entry" ] || continue
+        entries=$((entries + 1))
+        tokens=$(_reference_tokens "$entry") || _die "cannot read $entry"
+        while IFS= read -r token; do
+            [ -n "$token" ] || continue
+            case "$seen" in *$'\n'"$token"$'\n'*) continue ;; esac
+            seen="$seen$token"$'\n'
+            references=$((references + 1))
+            if ! _reference_live "$token"; then
+                dead="${dead}dead: $(_cs_plain_name "$entry" 240): $token"$'\n'
+            fi
+        done <<< "$tokens"
+    done
+    if [ -n "$dead" ]; then
+        printf '%s' "$dead" | env LC_ALL=C sort
+    else
+        printf 'ok: %s references in %s entries, none dead\n' "$references" "$entries"
+    fi
+}
+
 case "${1:-}" in
+    refs)
+        _refs
+        ;;
     snapshot)
         [ -d .cs/memory ] || _die "no .cs/memory here; run from the session root"
         cs_mkdir_inside "$_snapshot_dir" || _die "cannot create $_snapshot_dir"
@@ -200,6 +251,6 @@ case "${1:-}" in
         printf 'restored: %s from %s\n' "$INDEX" "$SNAPSHOT"
         ;;
     *)
-        _die "usage: memory-index-guard.sh snapshot|check|restore"
+        _die "usage: memory-index-guard.sh snapshot|check|restore|refs"
         ;;
 esac
