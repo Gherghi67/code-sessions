@@ -688,6 +688,17 @@ dead: .cs/memory/feedback_alpha.md: hooks/helper.sh' "$out" \
         "basename lookup excludes git and paths still resolve from the root" || return 1
 }
 
+test_refs_skips_names_without_lowercase_letters() {
+    _guard_session
+    printf '%s\n' 'Names: `CLAUDE_SESSION_NAME/DIR`, `DATABASE_URL`, `123/456`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "names without lowercase letters are neither reported nor counted" || return 1
+}
+
+run_test test_refs_skips_names_without_lowercase_letters
 run_test test_refs_finds_basenames_in_subdirectories
 run_test test_refs_without_memory_is_an_error
 run_test test_refs_ignores_placeholders_and_tokens_with_other_shapes
