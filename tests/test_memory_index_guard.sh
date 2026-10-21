@@ -698,6 +698,24 @@ test_refs_skips_names_without_lowercase_letters() {
         "names without lowercase letters are neither reported nor counted" || return 1
 }
 
+test_refs_skips_host_paths() {
+    _guard_session
+    printf '%s\n' 'Read `example.com/api/v2/incidents/unresolved.json`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "host paths are neither reported nor counted" || return 1
+    mkdir -p "$SESSION/example.com-tools"
+    : > "$SESSION/example.com-tools/file.sh"
+    printf '%s\n' 'Read `example.com-tools/file.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a directory with a domain inside its name is still a path" || return 1
+}
+
+run_test test_refs_skips_host_paths
 run_test test_refs_skips_names_without_lowercase_letters
 run_test test_refs_finds_basenames_in_subdirectories
 run_test test_refs_without_memory_is_an_error

@@ -115,6 +115,9 @@ _reference_tokens() {  # entry
                 if (token !~ /[a-z]/) continue
                 if (token ~ /[[:space:][:cntrl:]]/ || token ~ /^[\/~]/) continue
                 if (token ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) continue
+                segment = token
+                sub(/\/.*/, "", segment)
+                if (segment ~ /\.(com|org|net|io|dev|ai)$/) continue
                 if (token ~ /\// || token ~ /\.(sh|md|rs|mjs|json)$/) print token
             }
         }
