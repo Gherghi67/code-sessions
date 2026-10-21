@@ -886,6 +886,23 @@ test_refs_ignores_backticks_inside_code_fences() {
     out=$(_guard refs 2>&1) || return 1
     assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside-fence.sh' "$out" \
         "reference scanning resumes after the closing fence" || return 1
+    printf '%s\n' '   ```sh' 'Read `hooks/indented.sh`.' ' ```' \
+        'Read `hooks/outside.sh`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "indented fences hide their tokens and resume scanning after closing" || return 1
+    printf '%s\n' '~~~sh' 'Read `hooks/tilde.sh`.' '~~~' \
+        'Read `hooks/outside.sh`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "tilde fences hide their tokens and resume scanning after closing" || return 1
+    printf '%s\n' '````sh' '```' 'Read `hooks/short-fence.sh`.' \
+        '~~~~' 'Read `hooks/wrong-marker.sh`.' '```` not a closer' \
+        'Read `hooks/non-closing.sh`.' '`````   ' 'Read `hooks/outside.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "fences close only with the same marker at least as long and no text" || return 1
 }
 
 test_refs_distinguishes_search_hits_from_traversal_errors() {

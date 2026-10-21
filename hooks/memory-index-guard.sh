@@ -101,8 +101,21 @@ _need_snapshot() {
 # interpreting its contents as shell text.
 _reference_tokens() {  # entry
     env LC_ALL=C awk -v branch_prefixes="$BRANCH_PREFIXES" '
-        function scan(line, rest, token, path, segment) {
-            if (line ~ /^```/) { fenced = !fenced; return }
+        function scan(line, rest, token, path, segment, marker) {
+            if (match(line, /^ {0,3}(```+|~~~+)/)) {
+                marker = substr(line, 1, RLENGTH)
+                sub(/^ */, "", marker)
+                if (!fenced) {
+                    fenced = 1
+                    fence_character = substr(marker, 1, 1)
+                    fence_length = length(marker)
+                } else if (substr(marker, 1, 1) == fence_character &&
+                           length(marker) >= fence_length &&
+                           substr(line, RLENGTH + 1) ~ /^[ \t]*$/) {
+                    fenced = 0
+                }
+                return
+            }
             if (fenced) return
             rest = line
             while (match(rest, /`[^`]+`/)) {
