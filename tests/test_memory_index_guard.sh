@@ -820,6 +820,12 @@ test_refs_uses_the_installed_dispatcher_or_skips_verbs() {
     out=$(_guard refs 2>&1) || return 1
     assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
         "verbs are skipped when neither dispatcher exists" || return 1
+    printf '%s\n' 'case "$1" in' '    -secrets) ;;' 'esac' > "$SESSION/bin/cs"
+    local rc=0
+    out=$(cs() { :; }; export -f cs; _guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "an exported cs function falls back to bin/cs without stderr" || return 1
+    assert_eq 0 "$rc" "the fallback scan succeeds with an exported function" || return 1
 }
 
 test_refs_matches_only_complete_dispatcher_arms() {

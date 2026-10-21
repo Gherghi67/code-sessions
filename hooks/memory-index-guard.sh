@@ -244,7 +244,7 @@ _refs() {
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         _reference_files
     fi
-    if ! dispatcher=$(command -v cs); then
+    if ! dispatcher=$(type -P cs); then
         [ ! -f bin/cs ] || dispatcher=bin/cs
     fi
     for entry in .cs/memory/*.md; do
