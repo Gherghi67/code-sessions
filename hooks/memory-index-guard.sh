@@ -139,8 +139,47 @@ _reference_tokens() {  # entry
     ' "$1"
 }
 
+_reference_files() {
+    local path deleted_path removed deleted=() deleted_count=0
+    _refs_universe=$(mktemp "${TMPDIR:-/tmp}/cs-refs.XXXXXX") || _die "cannot create reference file list"
+    _refs_candidates=""
+    trap 'rm -f -- "$_refs_universe" "$_refs_candidates"' EXIT
+    _refs_candidates=$(mktemp "${TMPDIR:-/tmp}/cs-refs.XXXXXX") || _die "cannot create candidate file list"
+    git ls-files -z --deleted > "$_refs_candidates" || _die "cannot list deleted files"
+    while IFS= read -r -d '' path; do
+        deleted[$deleted_count]="$path"
+        deleted_count=$((deleted_count + 1))
+    done < "$_refs_candidates"
+    git ls-files -z --cached --others --exclude-standard > "$_refs_candidates" || _die "cannot list repository files"
+    while IFS= read -r -d '' path; do
+        removed=0
+        if [ "$deleted_count" -gt 0 ]; then
+            for deleted_path in "${deleted[@]}"; do
+                if [ "$path" = "$deleted_path" ]; then removed=1; break; fi
+            done
+        fi
+        [ "$removed" -eq 0 ] || continue
+        printf '%s\0' "$path"
+    done < "$_refs_candidates" > "$_refs_universe"
+    find .cs -path .cs/vault-mnt -prune -o -type f -print0 >> "$_refs_universe" \
+        || _die "cannot list session files"
+}
+
+_reference_sources() {
+    local path
+    if [ -n "$_refs_universe" ]; then
+        while IFS= read -r -d '' path; do
+            case "$path" in .cs/*|*/.cs/*) continue ;; esac
+            printf './%s\0' "$path"
+        done < "$_refs_universe"
+    else
+        find . -name .cs -prune -o -name .git -prune \
+            -o -name node_modules -prune -o -name target -prune -o -type f -print0
+    fi
+}
+
 _reference_live() {  # token dispatcher
-    local token="$1" dispatcher="$2" resolved root verb dir matches rc=0
+    local token="$1" dispatcher="$2" resolved root verb matches rc=0
     case "$1" in
         'cs -'*)
             verb="${1#cs -}"
@@ -151,38 +190,34 @@ _reference_live() {  # token dispatcher
             ;;
         *[!a-zA-Z0-9_]*) ;;
         _cs_*|cs_*)
-            if [ -d lib ]; then
-                set --
-                for dir in bin lib hooks; do
-                    [ ! -d "$dir" ] || set -- "$@" "$dir"
-                done
-            else
-                matches=$(find . -path ./.cs -prune -o -path ./.git -prune \
-                    -o -path ./node_modules -prune -o -path ./target -prune \
-                    -o -path ./.cs/vault-mnt -prune -o -type f -print0 2>/dev/null \
-                    | xargs -0 sh -c '
-                        [ "$#" -gt 1 ] || exit 0
-                        grep -lF -- "$@" || [ "$?" -eq 1 ]
-                    ' sh "$token" 2>/dev/null) || rc=$?
-                [ -z "$matches" ] || return 0
-                [ "$rc" -eq 0 ] || _die "cannot search for $token"
-                return 1
-            fi
-            grep -rqF -- "$token" "$@" || rc=$?
-            [ "$rc" -le 1 ] || _die "cannot search for $token"
-            return "$rc"
+            matches=$(_reference_sources 2>/dev/null | xargs -0 sh -c '
+                [ "$#" -gt 1 ] || exit 0
+                grep -lF -- "$@" || [ "$?" -eq 1 ]
+            ' sh "$token" 2>/dev/null) || rc=$?
+            [ -z "$matches" ] || return 0
+            [ "$rc" -eq 0 ] || _die "cannot search for $token"
+            return 1
             ;;
     esac
     token="${token%/}"
     if [[ "$token" =~ :[0-9]+(-[0-9]+)?$ ]]; then
         token="${token%:*}"
     fi
+    if [ -n "$_refs_universe" ]; then
+        while IFS= read -r -d '' resolved; do
+            case "$token" in
+                */*) [ "$resolved" != "$token" ] || return 0 ;;
+                *) [ "${resolved##*/}" != "$token" ] || return 0 ;;
+            esac
+        done < "$_refs_universe"
+        return 1
+    fi
     root=$(pwd -P) || _die "cannot resolve the session root"
     case "$token" in
         */*) ;;
         *)
-            matches=$(find . -path ./.cs -prune -o -path ./.git -prune \
-                -o -path ./node_modules -prune -o -path ./target -prune \
+            matches=$(find . -name .git -prune \
+                -o -name node_modules -prune -o -name target -prune \
                 -o -path ./.cs/vault-mnt -prune -o -name "$token" -print0 2>/dev/null \
                 | while IFS= read -r -d '' resolved; do
                     [ -f "$resolved" ] || [ -d "$resolved" ] || continue
@@ -205,6 +240,10 @@ _reference_live() {  # token dispatcher
 _refs() {
     local entry tokens token seen=$'\n' dead="" entries=0 references=0
     local dispatcher entry_seen missing=$'\n'
+    _refs_universe=""
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        _reference_files
+    fi
     if ! dispatcher=$(command -v cs); then
         [ ! -f bin/cs ] || dispatcher=bin/cs
     fi

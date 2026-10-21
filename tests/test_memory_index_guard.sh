@@ -923,6 +923,106 @@ dead: .cs/memory/feedback_alpha.md: ignored.sh' "$out" \
         "pruned dependencies, build output and vault files are not lookup hits" || return 1
 }
 
+test_refs_finds_memory_basenames_in_git_sessions() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    : > "$SESSION/.cs/memory/narrative.example.md"
+    printf '%s\n' 'Read `MEMORY.md` and `narrative.example.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "memory basenames stay live when git ignores the session state" || return 1
+}
+
+test_refs_ignores_gitignored_copies() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' 'scratch/' '.claude/worktrees/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/scratch" "$SESSION/.claude/worktrees/example"
+    printf '%s\n' '_cs_copy' > "$SESSION/scratch/copied.sh"
+    printf '%s\n' '_cs_copy' > "$SESSION/.claude/worktrees/example/copied.sh"
+    printf '%s\n' 'Read `copied.sh`, `scratch/copied.sh` and `_cs_copy`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out expected
+    expected='dead: .cs/memory/feedback_alpha.md: _cs_copy
+dead: .cs/memory/feedback_alpha.md: copied.sh
+dead: .cs/memory/feedback_alpha.md: scratch/copied.sh'
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq "$expected" "$out" "ignored copies cannot keep references live" || return 1
+    mkdir -p "$SESSION/scratch/x/.cs/memory"
+    mv "$SESSION/scratch/copied.sh" "$SESSION/scratch/x/.cs/memory/copied.sh"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq "$expected" "$out" "nested ignored memory cannot keep references live" || return 1
+}
+
+test_refs_excludes_deleted_tracked_files() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' 'scratch/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/src" "$SESSION/scratch"
+    : > "$SESSION/src/deleted.sh"
+    git -C "$SESSION" add src/deleted.sh
+    rm "$SESSION/src/deleted.sh"
+    : > "$SESSION/scratch/deleted.sh"
+    printf '%s\n' 'Read `deleted.sh` and `src/deleted.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: deleted.sh
+dead: .cs/memory/feedback_alpha.md: src/deleted.sh' "$out" \
+        "tracked files removed from disk cannot keep references live" || return 1
+}
+
+test_refs_includes_untracked_files_outside_lib() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/lib" "$SESSION/source files"
+    printf '%s\n' '_cs_untracked' > "$SESSION/source files/untracked.sh"
+    printf '%s\n' 'Read `untracked.sh` and `_cs_untracked`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "untracked files outside lib resolve names and identifiers" || return 1
+}
+
+test_refs_resolves_memory_basenames_without_git() {
+    _guard_session
+    printf '%s\n' 'Read `MEMORY.md`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "non-git sessions resolve memory basenames" || return 1
+}
+
+test_refs_prunes_nested_state_without_git() {
+    _guard_session
+    mkdir -p "$SESSION/nested/.cs/memory" "$SESSION/nested/node_modules" \
+        "$SESSION/nested/.git" "$SESSION/nested/target"
+    printf '%s\n' '_cs_nested' > "$SESSION/nested/.cs/memory/entry.md"
+    : > "$SESSION/nested/node_modules/dependency.sh"
+    : > "$SESSION/nested/.git/internal.sh"
+    : > "$SESSION/nested/target/built.sh"
+    printf '%s\n' 'Read `_cs_nested`, `dependency.sh`, `internal.sh` and `built.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_nested
+dead: .cs/memory/feedback_alpha.md: built.sh
+dead: .cs/memory/feedback_alpha.md: dependency.sh
+dead: .cs/memory/feedback_alpha.md: internal.sh' "$out" \
+        "non-git searches prune nested state and build directories" || return 1
+}
+
+run_test test_refs_excludes_deleted_tracked_files
+run_test test_refs_includes_untracked_files_outside_lib
+run_test test_refs_resolves_memory_basenames_without_git
+run_test test_refs_prunes_nested_state_without_git
+run_test test_refs_ignores_gitignored_copies
+run_test test_refs_finds_memory_basenames_in_git_sessions
 run_test test_refs_distinguishes_search_hits_from_traversal_errors
 run_test test_refs_ignores_backticks_inside_code_fences
 run_test test_refs_scans_unclosed_frontmatter_as_body
