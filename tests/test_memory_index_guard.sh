@@ -503,7 +503,7 @@ test_every_subcommand_refuses_while_git_tracks_a_control_file() {
     git -C "$SESSION" init -q
     git -C "$SESSION" add .cs/local/memory-index.snapshot
     before=$(cat "$INDEX")
-    for sub in snapshot check restore; do
+    for sub in snapshot check restore refs; do
         rc=0
         out=$(_guard "$sub" 2>&1) || rc=$?
         assert_eq 2 "$rc" "$sub refuses" || return 1
