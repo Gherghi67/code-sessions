@@ -95,7 +95,7 @@ _need_snapshot() {
     [ -r "$SNAPSHOT" ] || _die "cannot read $SNAPSHOT"
 }
 
-# Each backticked repository path in one memory entry, without interpreting
+# Each backticked repository reference in one memory entry, without interpreting
 # its contents as shell text.
 _reference_tokens() {  # entry
     env LC_ALL=C awk '
@@ -104,6 +104,7 @@ _reference_tokens() {  # entry
             while (match(rest, /`[^`]+`/)) {
                 token = substr(rest, RSTART + 1, RLENGTH - 2)
                 rest = substr(rest, RSTART + RLENGTH)
+                if (token ~ /^cs -[A-Za-z-]+$/) { print token; continue }
                 if (token ~ /[[:space:][:cntrl:]]/ || token ~ /^[\/~]/ || token ~ /:/) continue
                 if (token ~ /\// || token ~ /\.(sh|md|rs|mjs|json)$/) print token
             }
@@ -112,7 +113,16 @@ _reference_tokens() {  # entry
 }
 
 _reference_live() {  # token
-    local resolved root
+    local resolved root verb rc=0
+    case "$1" in
+        'cs -'*)
+            [ -f bin/cs ] || return 1
+            verb="${1#cs -}"
+            grep -qF -e "-$verb)" -e " -$verb" -- bin/cs || rc=$?
+            [ "$rc" -le 1 ] || _die "cannot read bin/cs"
+            return "$rc"
+            ;;
+    esac
     [ -f "$1" ] || [ -d "$1" ] || return 1
     resolved=$(_cs_write_target "./$1") || return 1
     root=$(pwd -P) || _die "cannot resolve the session root"

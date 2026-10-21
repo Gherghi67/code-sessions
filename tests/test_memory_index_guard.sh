@@ -561,6 +561,19 @@ dead: .cs/memory/feedback_alpha.md: hooks/gone.sh' "$out" \
     assert_eq 0 "$rc" "dead references are advisory" || return 1
 }
 
+test_refs_reports_a_verb_absent_from_the_dispatcher() {
+    _guard_session
+    mkdir -p "$SESSION/bin"
+    printf '%s\n' 'case "$1" in' '    -present) ;;' 'esac' > "$SESSION/bin/cs"
+    printf '%s\n' 'Run `cs -absent`.' > "$SESSION/.cs/memory/project_beta.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/project_beta.md: cs -absent' "$out" \
+        "refs names a verb the dispatcher does not contain" || return 1
+    assert_eq 0 "$rc" "a dead verb is advisory" || return 1
+}
+
+run_test test_refs_reports_a_verb_absent_from_the_dispatcher
 run_test test_refs_reports_dead_paths_once_in_sorted_order
 run_test test_check_fails_when_a_link_is_removed
 run_test test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget
