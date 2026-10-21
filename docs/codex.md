@@ -183,6 +183,16 @@ ran under Codex. A skill that
 needs an adapter feature Codex lacks says so and stops: `feature` refuses under
 Codex for now.
 
+Rotation keeps the model and reasoning effort used for its final turn,
+including a selection made with `/model`. On builds with file-backed named
+profiles (`--profile <CONFIG_PROFILE_V2>`), cs launches with a profile scoped to
+this checkout and snapshots those two settings when a turn arms a handoff.
+Both manual and automatic `/clear` then reload that choice. The profile lives
+in `$CODEX_HOME/cs-rotation-<checkout-hash>.config.toml`; each launch resets it to
+that launch's choices. Other sessions keep their own defaults. Restart an
+already running cs/Codex once after installing this support. Older Codex builds
+print a notice that model carryover needs file-backed profile support.
+
 `$rotate` works. It writes and arms a handoff, then tells you to run `/clear`
 and send any message: Codex starts no turn by itself, and the handoff loads with
 that first message through the SessionStart hook cs registers for Codex

@@ -188,6 +188,27 @@ test_native_approval_launches_without_automatic_approval_support() {
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "native launch releases its lock" || return 1
 }
 
+test_rotation_profile_seeds_launch_choices_without_pinning_them() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    export CS_LAUNCH_MODEL='gpt-6-astra' CS_LAUNCH_EFFORT=xhigh
+    local output status=0 profile
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "$output" || return 1
+    grep -Fx -- '--profile' "$CS_CODEX_LOG" >/dev/null \
+        || { echo '  FAIL: no scoped profile to reload after /clear'; return 1; }
+    profile=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_file_contains "$HOME/.codex/$profile.config.toml" '^model = "gpt-6-astra"$' || return 1
+    assert_file_contains "$HOME/.codex/$profile.config.toml" '^model_reasoning_effort = "xhigh"$' || return 1
+    if grep -Eq -- '^--model$|^model_reasoning_effort=' "$CS_CODEX_LOG"; then
+        echo '  FAIL: fixed CLI overrides would shadow later /model choices on /clear'
+        return 1
+    fi
+    # A later launch starts from its own choices, rather than a stale rotation.
+    unset CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || return 1
+    assert_eq "" "$(cat "$HOME/.codex/$profile.config.toml")" 'new launch clears the old rotation defaults' || return 1
+}
+
 test_new_thread_binding_and_context() {
     local output status=0 binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
@@ -889,6 +910,7 @@ run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
 run_test test_failed_codex_help_cannot_advertise_compatibility
 run_test test_codex_help_prose_is_not_an_approval_option
+run_test test_rotation_profile_seeds_launch_choices_without_pinning_them
 run_test test_native_approval_launches_without_automatic_approval_support
 run_test test_fresh_acknowledgment_keeps_rotated_and_started_after_a_torn_tail
 run_test test_first_acknowledgment_keeps_started_after_a_torn_tail

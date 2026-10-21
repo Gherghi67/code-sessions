@@ -374,6 +374,57 @@ _codex_autoclear_grace() {
     printf '%s\n' "$grace"
 }
 
+# Stop runs outside the workspace sandbox, before either a manual or automatic
+# /clear. Read only the bound thread's native transcript; never infer a model
+# from handoff prose. Atomic replacement leaves the previous profile on errors.
+_codex_rotation_model_save() {  # session_dir, session_id, Stop input
+    [ -n "${CS_CODEX_ROTATION_PROFILE:-}" ] || return 0
+    local expected transcript tmp
+    expected=$(_codex_rotation_profile_path "$1") || return 1
+    [ "$CS_CODEX_ROTATION_PROFILE" = "$expected" ] || return 1
+    [ -f "$expected" ] && [ ! -L "$expected" ] || return 1
+    transcript=$(printf '%s' "$3" | jq -er '.transcript_path | select(type == "string" and length > 0)' 2>/dev/null) || return 1
+    tmp=$(mktemp "$expected.XXXXXX" 2>/dev/null) || return 1
+    if ! python3 -I -c '
+import json, os, sys
+session, thread, transcript = sys.argv[1:]
+metadata = None
+context = None
+try:
+    with open(transcript, encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "session_meta":
+                metadata = item.get("payload")
+            elif item.get("type") == "turn_context":
+                context = item.get("payload")
+    if not isinstance(metadata, dict) or metadata.get("id") != thread:
+        sys.exit(1)
+    if os.path.realpath(metadata.get("cwd", "")) != os.path.realpath(session):
+        sys.exit(1)
+    if not isinstance(context, dict):
+        sys.exit(1)
+    model, effort = context.get("model"), context.get("effort")
+    if not isinstance(model, str) or not model or len(model) > 256 or any(ord(c) < 32 for c in model):
+        sys.exit(1)
+    if effort is not None and effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+        sys.exit(1)
+    print("model = " + json.dumps(model, ensure_ascii=False))
+    if effort is not None:
+        print("model_reasoning_effort = " + json.dumps(effort))
+except (OSError, ValueError, TypeError):
+    sys.exit(1)
+' "$1" "$2" "$transcript" > "$tmp" 2>/dev/null || ! mv "$tmp" "$expected"; then
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+}
+
 # Only the conversation this run launched and the session is bound to counts
 # down; a turn in any other thread, or a teammate's, never clears it. The hook
 # must never fail a turn, so every path returns 0.
@@ -386,15 +437,21 @@ _codex_hook_stop() {
     [ -d "$meta/local" ] || return 0
     session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || session_id=""
     _codex_thread_id_valid "$session_id" || return 0
+    # Save before the countdown checks: force-off and a terminal without a
+    # watcher still allow the user to take this rotation with /clear by hand.
+    cs_run_lease_owned "$meta" || return 0
+    bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
+    [ "$bound" = "$session_id" ] || return 0
+    handoff=$(_rotation_armed_handoff "$session_dir")
+    if [ -n "$handoff" ] && ! _codex_rotation_model_save "$session_dir" "$session_id" "$input"; then
+        jq -n '{systemMessage: "cs: could not preserve the selected model for rotation; select it again with /model after /clear."}' 2>/dev/null || true
+        return 0
+    fi
     # No private directory, no watcher: nothing would type the keys, so the
     # turn ends without a count or a line promising one.
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$session_dir" || return 0
     stamp=$(_codex_autoclear_file "$run_dir")
     grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 0; }
-    cs_run_lease_owned "$meta" || return 0
-    bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
-    [ "$bound" = "$session_id" ] || return 0
-    handoff=$(_rotation_armed_handoff "$session_dir")
     [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
     # No live watcher of this run's, nothing to type the keys: a terminal that
     # refuses simulated input gets none, and the launch said why.

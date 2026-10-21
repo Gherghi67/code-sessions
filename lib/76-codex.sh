@@ -1,6 +1,30 @@
 # ABOUTME: Launch a cs session in Codex using a persistent, session-local thread binding.
 # ABOUTME: Refreshes CS context without a model turn and releases the shared lock on exit.
 
+# A separate named profile lets /clear reload the last rotation's /model choice
+# without changing defaults for other sessions. Reused per checkout, reset at each
+# launch; it contains only model settings, never authentication or permissions.
+_codex_rotation_profile_path() {  # session_dir
+    local key
+    key=$(python3 -I -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:20])' "$1") || return 1
+    printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
+}
+
+_codex_rotation_profile_prepare() {  # session_dir; sets CS_CODEX_ROTATION_PROFILE
+    local profile tmp
+    profile=$(_codex_rotation_profile_path "$1") || return 1
+    mkdir -p "$(dirname "$profile")" || return 1
+    tmp=$(mktemp "$profile.XXXXXX") || return 1
+    if ! jq -nr --arg model "${CS_LAUNCH_MODEL:-}" --arg effort "${CS_LAUNCH_EFFORT:-}" '
+        (if $model == "" then empty else "model = " + ($model | tojson) end),
+        (if $effort == "" then empty else "model_reasoning_effort = " + ($effort | tojson) end)
+    ' > "$tmp" || ! mv "$tmp" "$profile"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    CS_CODEX_ROTATION_PROFILE=$profile
+}
+
 _codex_launch_error() {  # message
     printf 'Error: %s\n' "$1" >&2
     return 1
@@ -447,7 +471,30 @@ _launch_codex_bound() {
     # Signals and lock cleanup belong to the shared controller.
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
+    local CS_CODEX_ROTATION_PROFILE=""
+    export CS_CODEX_ROTATION_PROFILE
+    # File-backed named profiles are advertised as CONFIG_PROFILE_V2. Older
+    # builds keep their original launch behavior rather than getting a flag
+    # with different semantics. Native approval also needs this help probe.
+    if [ -z "${codex_help:-}" ]; then
+        codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) || codex_help=""
+    fi
+    if printf '%s\n' "$codex_help" | grep -F 'CONFIG_PROFILE_V2' >/dev/null; then
+        _codex_rotation_profile_prepare "$session_dir" || {
+            _codex_launch_error "Could not prepare the scoped Codex model profile."
+            return 1
+        }
+        # CLI overrides outrank profiles, including after a later /model choice.
+        # Seed those choices in the profile instead so Stop can replace them.
+        local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT=""
+    else
+        printf '%s\n' 'cs: this Codex build cannot preserve /model choices across rotation; file-backed --profile support is required.'
+    fi
     _cs_native_launch_options codex || return 1
+    if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
+        local profile_name=${CS_CODEX_ROTATION_PROFILE##*/}
+        CS_NATIVE_LAUNCH_ARGS+=(--profile "${profile_name%.config.toml}")
+    fi
     # The run's approval, for its hooks and the automatic /clear's watcher: a
     # run with native approval never quits for a switch unattended.
     local CS_RUN_APPROVAL=auto
