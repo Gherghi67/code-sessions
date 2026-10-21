@@ -44,7 +44,7 @@ It names the conversation this wrap finished in (its own id, so a teammate's wra
 
 Output a brief report with the four labeled items below. No long prose; the summary IS the prose.
 
-1. **Memory:** list the file paths you wrote in Pass 1, one per line. Or write `nothing to add` if the session didn't warrant memory entries.
+1. **Memory:** list the file paths you wrote in Pass 1, one per line, each ending as the sweep's step 6 says: `supersedes: <file>`, `supersedes: none`, or `updated in place`. Or write `nothing to add` if the session didn't warrant memory entries.
 2. **Summary:** confirm `.cs/summary.md` was created.
 3. **Narrative:** the line `cs -narrative rotate` printed.
 4. **Tasks:** the line `cs -archive-tasks run` printed, or why the archive was skipped (the session answered no, nothing to archive, or the `Error:` line).
