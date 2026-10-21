@@ -573,6 +573,54 @@ test_refs_reports_a_verb_absent_from_the_dispatcher() {
     assert_eq 0 "$rc" "a dead verb is advisory" || return 1
 }
 
+test_refs_counts_live_paths_identifiers_and_verbs_once() {
+    _guard_session
+    rm "$INDEX"
+    mkdir -p "$SESSION/bin" "$SESSION/lib" "$SESSION/hooks"
+    printf '%s\n' 'case "$1" in' '    -present) ;;' 'esac' > "$SESSION/bin/cs"
+    printf '%s\n' '_cs_present() { :; }' > "$SESSION/lib/helpers.sh"
+    : > "$SESSION/hooks/present.sh"
+    printf '%s\n' 'Use `hooks/present.sh`, `_cs_present` and `cs -present`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    printf '%s\n' 'Also `_cs_present` and `hooks/present.sh`.' \
+        > "$SESSION/.cs/memory/project_beta.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 3 references in 2 entries, none dead' "$out" \
+        "refs counts distinct live references across entries" || return 1
+    assert_eq 0 "$rc" "live references pass" || return 1
+    mv "$SESSION/lib/helpers.sh" "$SESSION/helpers.sh"
+    rmdir "$SESSION/lib"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 3 references in 2 entries, none dead' "$out" \
+        "identifier lookup uses the root when lib is absent" || return 1
+    mkdir -p "$SESSION/lib"
+    printf '%s\n' 'cs_present() { :; }' > "$SESSION/hooks/helper.sh"
+    printf '%s\n' 'Use `cs_present` and `hooks/`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    : > "$SESSION/.cs/memory/project_beta.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "cs identifiers and directories are live references" || return 1
+    : > "$SESSION/cs_notes.md"
+    printf '%s\n' 'Read `cs_notes.md`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a path starting with cs_ still resolves as a path" || return 1
+    printf '%s\n' 'Use `_cs_missing`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_missing' "$out" \
+        "an identifier absent from bin, lib and hooks is dead" || return 1
+    : > "$TEST_TMPDIR/outside.md"
+    ln -s "$TEST_TMPDIR/outside.md" "$SESSION/hooks/outside.md"
+    printf '%s\n' 'Read `../outside.md` and `hooks/outside.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: ../outside.md
+dead: .cs/memory/feedback_alpha.md: hooks/outside.md' "$out" \
+        "existing files outside the checkout are dead, including symlink targets" || return 1
+}
+
+run_test test_refs_counts_live_paths_identifiers_and_verbs_once
 run_test test_refs_reports_a_verb_absent_from_the_dispatcher
 run_test test_refs_reports_dead_paths_once_in_sorted_order
 run_test test_check_fails_when_a_link_is_removed

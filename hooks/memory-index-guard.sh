@@ -105,6 +105,7 @@ _reference_tokens() {  # entry
                 token = substr(rest, RSTART + 1, RLENGTH - 2)
                 rest = substr(rest, RSTART + RLENGTH)
                 if (token ~ /^cs -[A-Za-z-]+$/) { print token; continue }
+                if (token ~ /^(_cs_|cs_)[A-Za-z0-9_]+$/) { print token; continue }
                 if (token ~ /[[:space:][:cntrl:]]/ || token ~ /^[\/~]/ || token ~ /:/) continue
                 if (token ~ /\// || token ~ /\.(sh|md|rs|mjs|json)$/) print token
             }
@@ -113,13 +114,27 @@ _reference_tokens() {  # entry
 }
 
 _reference_live() {  # token
-    local resolved root verb rc=0
+    local token="$1" resolved root verb dir rc=0
     case "$1" in
         'cs -'*)
             [ -f bin/cs ] || return 1
             verb="${1#cs -}"
             grep -qF -e "-$verb)" -e " -$verb" -- bin/cs || rc=$?
             [ "$rc" -le 1 ] || _die "cannot read bin/cs"
+            return "$rc"
+            ;;
+        *[!a-zA-Z0-9_]*) ;;
+        _cs_*|cs_*)
+            if [ -d lib ]; then
+                set --
+                for dir in bin lib hooks; do
+                    [ ! -d "$dir" ] || set -- "$@" "$dir"
+                done
+            else
+                set -- .
+            fi
+            grep -rqF -- "$token" "$@" || rc=$?
+            [ "$rc" -le 1 ] || _die "cannot search for $token"
             return "$rc"
             ;;
     esac
