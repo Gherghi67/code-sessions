@@ -132,14 +132,13 @@ _reference_tokens() {  # entry
     ' "$1"
 }
 
-_reference_live() {  # token
-    local token="$1" resolved root verb dir rc=0
+_reference_live() {  # token dispatcher
+    local token="$1" dispatcher="$2" resolved root verb dir rc=0
     case "$1" in
         'cs -'*)
-            [ -f bin/cs ] || return 1
             verb="${1#cs -}"
-            grep -qF -e "-$verb)" -e " -$verb" -- bin/cs || rc=$?
-            [ "$rc" -le 1 ] || _die "cannot read bin/cs"
+            grep -qF -e "-$verb)" -e " -$verb" -- "$dispatcher" || rc=$?
+            [ "$rc" -le 1 ] || _die "cannot read $dispatcher"
             return "$rc"
             ;;
         *[!a-zA-Z0-9_]*) ;;
@@ -174,6 +173,10 @@ _reference_live() {  # token
 
 _refs() {
     local entry tokens token seen=$'\n' dead="" entries=0 references=0
+    local dispatcher
+    if ! dispatcher=$(command -v cs); then
+        [ ! -f bin/cs ] || dispatcher=bin/cs
+    fi
     for entry in .cs/memory/*.md; do
         case "$entry" in .cs/memory/MEMORY.md|.cs/memory/narrative.*.md) continue ;; esac
         [ -f "$entry" ] || continue
@@ -181,10 +184,11 @@ _refs() {
         tokens=$(_reference_tokens "$entry") || _die "cannot read $entry"
         while IFS= read -r token; do
             [ -n "$token" ] || continue
+            case "$token" in 'cs -'*) [ -n "$dispatcher" ] || continue ;; esac
             case "$seen" in *$'\n'"$token"$'\n'*) continue ;; esac
             seen="$seen$token"$'\n'
             references=$((references + 1))
-            if ! _reference_live "$token"; then
+            if ! _reference_live "$token" "$dispatcher"; then
                 dead="${dead}dead: $(_cs_plain_name "$entry" 240): $token"$'\n'
             fi
         done <<< "$tokens"

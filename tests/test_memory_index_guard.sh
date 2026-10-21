@@ -562,6 +562,7 @@ dead: .cs/memory/feedback_alpha.md: hooks/gone.sh' "$out" \
 }
 
 test_refs_reports_a_verb_absent_from_the_dispatcher() {
+    local PATH=/bin:/usr/bin
     _guard_session
     mkdir -p "$SESSION/bin"
     printf '%s\n' 'case "$1" in' '    -present) ;;' 'esac' > "$SESSION/bin/cs"
@@ -574,6 +575,7 @@ test_refs_reports_a_verb_absent_from_the_dispatcher() {
 }
 
 test_refs_counts_live_paths_identifiers_and_verbs_once() {
+    local PATH=/bin:/usr/bin
     _guard_session
     rm "$INDEX"
     mkdir -p "$SESSION/bin" "$SESSION/lib" "$SESSION/hooks"
@@ -775,6 +777,33 @@ test_refs_skips_branch_prefixes() {
         "branch prefixes match the complete first segment before a slash" || return 1
 }
 
+test_refs_uses_the_installed_dispatcher_or_skips_verbs() {
+    _guard_session
+    mkdir -p "$TEST_TMPDIR/commands"
+    local PATH="$TEST_TMPDIR/commands:/bin:/usr/bin" out
+    printf '%s\n' '#!/bin/bash' 'case "$1" in' '    -secrets) ;;' 'esac' \
+        > "$TEST_TMPDIR/commands/cs"
+    chmod +x "$TEST_TMPDIR/commands/cs"
+    printf '%s\n' 'Run `cs -secrets`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "verbs resolve through PATH without a repository dispatcher" || return 1
+    mkdir -p "$SESSION/bin"
+    printf '%s\n' 'case "$1" in' '    -other) ;;' 'esac' > "$SESSION/bin/cs"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "the installed dispatcher takes precedence over bin/cs" || return 1
+    rm "$TEST_TMPDIR/commands/cs"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: cs -secrets' "$out" \
+        "a verb absent from the fallback dispatcher is dead" || return 1
+    rm "$SESSION/bin/cs"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "verbs are skipped when neither dispatcher exists" || return 1
+}
+
+run_test test_refs_uses_the_installed_dispatcher_or_skips_verbs
 run_test test_refs_skips_branch_prefixes
 run_test test_refs_resolves_line_suffixes_and_preserves_dead_tokens
 run_test test_refs_requires_path_characters
