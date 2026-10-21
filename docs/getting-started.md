@@ -122,6 +122,13 @@ ccs research-notes --engine claude
 ccs research-notes --engine codex
 ```
 
+In the session picker (`ccs -tui`), select a session and press `e` to open
+**Engine / model / effort**. On the Engine row, press Left, Right, or Space to
+choose Claude or Codex, then Enter to save. The session menu shows the selected
+engine; press Enter again to open it. The engine becomes the session's saved
+preference when it launches. Esc cancels unsaved changes. Changing engines
+clears the model and effort fields so the other engine uses its native defaults.
+
 The workspace files and `.cs/` notes are shared. Claude and Codex keep separate
 native conversation histories, so `--engine` alone opens the other engine's
 own conversation, which has not seen the work done since it last ran. Keep

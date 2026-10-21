@@ -1798,6 +1798,7 @@ impl App {
                         },
                     );
                 }
+                self.menu_selected = 0;
                 self.mode = Mode::SessionMenu;
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.launch_row == 0 => {
@@ -8128,7 +8129,14 @@ mod tests {
     #[test]
     fn launch_options_keep_literal_model_and_normal_open_uses_saved_choices() {
         let mut app = App::new(sample_sessions());
-        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        let options_row = MENU_ITEMS.iter()
+            .position(|(action, _, _)| *action == MenuAction::LaunchOptions)
+            .unwrap();
+        for _ in 0..options_row {
+            app.handle_key(KeyEvent::from(KeyCode::Down));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::LaunchOptions);
         app.launch_engine = "codex".into();
         app.launch_model.set("model with spaces $(literal)");
@@ -8136,7 +8144,7 @@ mod tests {
         app.launch_automatic = true;
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::SessionMenu);
-        match app.execute_menu_action(MenuAction::Open) {
+        match app.handle_key(KeyEvent::from(KeyCode::Enter)) {
             Action::OpenWith { session, args } => {
                 assert_eq!(session, "alpha");
                 assert_eq!(

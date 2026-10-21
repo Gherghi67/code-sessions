@@ -956,7 +956,7 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
                 // order: the two archive keys sit with the session actions
                 // they belong to rather than at the end where they would be
                 // the first thing lost.
-                "q:quit  Enter:open  n:new  d:delete  r:rename  a:archive  A:archived  Tab:to-do  Space:mark  /:search  1-6:sort  ?:legend"
+                "q:quit  Enter:open  e:engine  n:new  d:delete  r:rename  a:archive  A:archived  Tab:to-do  Space:mark  /:search  1-6:sort  ?:legend"
             }
             Mode::SessionMenu => "j/k:navigate  Enter:select  key:run directly  q/Esc:close",
             Mode::LaunchOptions => "Tab:next  left/right:change  Enter:save  Esc:cancel",
@@ -1060,7 +1060,10 @@ fn render_session_menu(app: &App, frame: &mut Frame) {
     let p = app.theme;
     let title = app
         .selected_session()
-        .map(|s| s.name.clone())
+        .map(|s| match app.launch_choices.get(&s.name) {
+            Some(choice) => format!("{} · launch: {}", s.name, choice.engine),
+            None => s.name.clone(),
+        })
         .unwrap_or_else(|| "session".to_string());
     let rows = app.menu_rows();
     // Keys are right-padded to the widest one ("Enter") so the labels line up
@@ -1128,7 +1131,14 @@ fn render_launch_options(app: &App, frame: &mut Frame) {
         app.launch_effort.text()
     };
     let values = [
-        format!("Engine:    {}", app.launch_engine),
+        format!(
+            "Engine:    {}",
+            match app.launch_engine.as_str() {
+                "claude" => "[Claude]   Codex",
+                "codex" => "Claude   [Codex]",
+                _ => "Claude   Codex",
+            }
+        ),
         format!("Model:     {model}"),
         format!("Effort:    {effort}"),
         format!(
@@ -1151,6 +1161,7 @@ fn render_launch_options(app: &App, frame: &mut Frame) {
         })
         .collect();
     lines.push(Line::from(""));
+    lines.push(Line::from("Left/Right or Space: choose Claude / Codex."));
     lines.push(Line::from(
         "Type a model or effort; clear to use native defaults.",
     ));
@@ -3883,11 +3894,12 @@ mod tests {
         std::env::set_var("CS_VERSION", "9.9.9");
         let mut app = App::new(one_session());
         app.theme = Palette::dark();
-        let text = render_wide(&mut app);
+        let text = render_at(&mut app, 160, 32);
         std::env::remove_var("CS_VERSION");
         assert!(text.contains("q quit"), "key hints missing:\n{text}");
+        assert!(text.contains("e engine"), "engine selector hint missing:\n{text}");
         assert!(text.contains("9.9.9"), "version missing from footer:\n{text}");
-        // 140 cols is wide enough for the full hint line plus the version
+        // 160 cols is wide enough for the full hint line plus the version
         // with room to spare, so the version should sit flush against the
         // row's right edge, not just somewhere in the row.
         let footer_row = text.lines().last().unwrap();
@@ -3897,7 +3909,7 @@ mod tests {
         );
         assert!(
             footer_row.contains("1-6 sort"),
-            "full hint line should render intact at 140 cols: {footer_row:?}"
+            "full hint line should render intact at 160 cols: {footer_row:?}"
         );
     }
 
