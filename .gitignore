@@ -41,3 +41,4 @@ mods/*/tsconfig.json
 .cs/session.mutex.lock
 .cs/codex-home/
 .cs/agent-harness-home/
+.cs/claude-config/
