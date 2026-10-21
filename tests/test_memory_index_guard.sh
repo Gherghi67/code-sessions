@@ -765,6 +765,16 @@ test_refs_resolves_line_suffixes_and_preserves_dead_tokens() {
     out=$(_guard refs 2>&1) || return 1
     assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
         "only the final numeric suffix is stripped and internal colons stay" || return 1
+    printf '%s\n' 'Read `hooks/x.sh/` and `hooks/x.sh:10-20`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "trailing slashes and line ranges resolve to the live file" || return 1
+    rm "$SESSION/hooks/x.sh"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/x.sh/
+dead: .cs/memory/feedback_alpha.md: hooks/x.sh:10-20' "$out" \
+        "missing files retain trailing slashes and ranges in the dead report" || return 1
 }
 
 test_refs_skips_branch_prefixes() {

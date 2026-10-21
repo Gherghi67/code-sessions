@@ -112,7 +112,7 @@ _reference_tokens() {  # entry
                 if (token ~ /^cs -[A-Za-z-]+$/) { print token; continue }
                 if (token ~ /^(_cs_|cs_)[A-Za-z0-9_]+$/) { print token; continue }
                 path = token
-                sub(/:[0-9]+$/, "", path)
+                sub(/:[0-9]+(-[0-9]+)?$/, "", path)
                 if (path !~ /[a-z]/) continue
                 if (path !~ /^[A-Za-z0-9._\/:-]+$/ || path ~ /^[-\/]/) continue
                 if (path ~ /\./ && path !~ /[A-Za-z0-9].*\./) continue
@@ -173,7 +173,8 @@ _reference_live() {  # token dispatcher
             return "$rc"
             ;;
     esac
-    if [[ "$token" =~ :[0-9]+$ ]]; then
+    token="${token%/}"
+    if [[ "$token" =~ :[0-9]+(-[0-9]+)?$ ]]; then
         token="${token%:*}"
     fi
     root=$(pwd -P) || _die "cannot resolve the session root"
