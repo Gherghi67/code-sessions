@@ -133,7 +133,7 @@ _reference_tokens() {  # entry
 }
 
 _reference_live() {  # token dispatcher
-    local token="$1" dispatcher="$2" resolved root verb dir rc=0
+    local token="$1" dispatcher="$2" resolved root verb dir matches rc=0
     case "$1" in
         'cs -'*)
             verb="${1#cs -}"
@@ -149,7 +149,13 @@ _reference_live() {  # token dispatcher
                     [ ! -d "$dir" ] || set -- "$@" "$dir"
                 done
             else
-                set -- .
+                matches=$(find . -path ./.cs -prune -o -path ./.git -prune -o -type f -print0 \
+                    | xargs -0 sh -c '
+                        [ "$#" -gt 1 ] || exit 0
+                        grep -lF -- "$@" || [ "$?" -eq 1 ]
+                    ' sh "$token") || _die "cannot search for $token"
+                [ -n "$matches" ]
+                return
             fi
             grep -rqF -- "$token" "$@" || rc=$?
             [ "$rc" -le 1 ] || _die "cannot search for $token"
