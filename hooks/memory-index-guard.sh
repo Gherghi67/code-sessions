@@ -145,8 +145,13 @@ _reference_live() {  # token
             return "$rc"
             ;;
     esac
-    [ -f "$1" ] || [ -d "$1" ] || return 1
-    resolved=$(_cs_write_target "./$1") || return 1
+    case "$token" in
+        */*) ;;
+        *) token=$(find . -path ./.git -prune -o -name "$token" -print -quit) \
+            || _die "cannot search for $1" ;;
+    esac
+    [ -f "$token" ] || [ -d "$token" ] || return 1
+    resolved=$(_cs_write_target "./$token") || return 1
     root=$(pwd -P) || _die "cannot resolve the session root"
     case "$resolved" in "$root"|"$root"/*) return 0 ;; esac
     return 1

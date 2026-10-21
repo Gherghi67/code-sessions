@@ -670,6 +670,25 @@ test_refs_without_memory_is_an_error() {
     assert_not_exists "$SESSION/.cs" "refs creates no session state" || return 1
 }
 
+test_refs_finds_basenames_in_subdirectories() {
+    _guard_session
+    mkdir -p "$SESSION/tests" "$SESSION/.git"
+    : > "$SESSION/tests/helper.sh"
+    : > "$SESSION/.git/hidden.sh"
+    printf '%s\n' 'Read `helper.sh`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a basename found under tests is live and counted" || return 1
+    printf '%s\n' 'Read `hidden.sh` and `hooks/helper.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hidden.sh
+dead: .cs/memory/feedback_alpha.md: hooks/helper.sh' "$out" \
+        "basename lookup excludes git and paths still resolve from the root" || return 1
+}
+
+run_test test_refs_finds_basenames_in_subdirectories
 run_test test_refs_without_memory_is_an_error
 run_test test_refs_ignores_placeholders_and_tokens_with_other_shapes
 run_test test_refs_ignores_frontmatter_the_index_and_narratives
