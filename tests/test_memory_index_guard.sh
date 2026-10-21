@@ -872,6 +872,48 @@ test_refs_ignores_backticks_inside_code_fences() {
         "reference scanning resumes after the closing fence" || return 1
 }
 
+test_refs_distinguishes_search_hits_from_traversal_errors() {
+    [ "$(id -u)" -ne 0 ] || return 77
+    _guard_session
+    mkdir -p "$SESSION/blocked" "$SESSION/helpers" "$SESSION/node_modules" \
+        "$SESSION/target" "$SESSION/.cs/vault-mnt"
+    printf '%s\n' '_cs_found() { :; }' > "$SESSION/helpers/present.sh"
+    local token out rc
+    for token in missing.sh _cs_missing; do
+        printf 'Read `%s`.\n' "$token" > "$SESSION/.cs/memory/feedback_alpha.md"
+        chmod 000 "$SESSION/blocked"
+        rc=0
+        out=$(_guard refs 2>&1) || rc=$?
+        chmod 700 "$SESSION/blocked"
+        assert_eq 2 "$rc" "a search error without a hit fails the scan" || return 1
+        assert_eq "memory-index-guard: cannot search for $token" "$out" \
+            "a search error identifies the unresolved token" || return 1
+    done
+    for token in present.sh _cs_found; do
+        printf 'Read `%s`.\n' "$token" > "$SESSION/.cs/memory/feedback_alpha.md"
+        chmod 000 "$SESSION/blocked"
+        rc=0
+        out=$(_guard refs 2>&1) || rc=$?
+        chmod 700 "$SESSION/blocked"
+        assert_eq 0 "$rc" "a hit is live despite an unreadable directory" || return 1
+        assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+            "a hit produces a clean live report regardless of traversal errors" || return 1
+    done
+    printf '%s\n' '_cs_ignored' > "$SESSION/node_modules/ignored.sh"
+    : > "$SESSION/target/ignored.sh"
+    : > "$SESSION/.cs/vault-mnt/ignored.sh"
+    printf '%s\n' 'Read `ignored.sh` and `_cs_ignored`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    chmod 000 "$SESSION/node_modules" "$SESSION/target" "$SESSION/.cs/vault-mnt"
+    rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    chmod 700 "$SESSION/node_modules" "$SESSION/target" "$SESSION/.cs/vault-mnt"
+    assert_eq 0 "$rc" "pruned directories cannot cause search errors" || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_ignored
+dead: .cs/memory/feedback_alpha.md: ignored.sh' "$out" \
+        "pruned dependencies, build output and vault files are not lookup hits" || return 1
+}
+
+run_test test_refs_distinguishes_search_hits_from_traversal_errors
 run_test test_refs_ignores_backticks_inside_code_fences
 run_test test_refs_scans_unclosed_frontmatter_as_body
 run_test test_refs_recognizes_dot_led_paths

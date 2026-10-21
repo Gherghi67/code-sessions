@@ -157,13 +157,16 @@ _reference_live() {  # token dispatcher
                     [ ! -d "$dir" ] || set -- "$@" "$dir"
                 done
             else
-                matches=$(find . -path ./.cs -prune -o -path ./.git -prune -o -type f -print0 \
+                matches=$(find . -path ./.cs -prune -o -path ./.git -prune \
+                    -o -path ./node_modules -prune -o -path ./target -prune \
+                    -o -path ./.cs/vault-mnt -prune -o -type f -print0 2>/dev/null \
                     | xargs -0 sh -c '
                         [ "$#" -gt 1 ] || exit 0
                         grep -lF -- "$@" || [ "$?" -eq 1 ]
-                    ' sh "$token") || _die "cannot search for $token"
-                [ -n "$matches" ]
-                return
+                    ' sh "$token" 2>/dev/null) || rc=$?
+                [ -z "$matches" ] || return 0
+                [ "$rc" -eq 0 ] || _die "cannot search for $token"
+                return 1
             fi
             grep -rqF -- "$token" "$@" || rc=$?
             [ "$rc" -le 1 ] || _die "cannot search for $token"
@@ -173,14 +176,27 @@ _reference_live() {  # token dispatcher
     if [[ "$token" =~ :[0-9]+$ ]]; then
         token="${token%:*}"
     fi
+    root=$(pwd -P) || _die "cannot resolve the session root"
     case "$token" in
         */*) ;;
-        *) token=$(find . -path ./.git -prune -o -name "$token" -print -quit) \
-            || _die "cannot search for $1" ;;
+        *)
+            matches=$(find . -path ./.cs -prune -o -path ./.git -prune \
+                -o -path ./node_modules -prune -o -path ./target -prune \
+                -o -path ./.cs/vault-mnt -prune -o -name "$token" -print0 2>/dev/null \
+                | while IFS= read -r -d '' resolved; do
+                    [ -f "$resolved" ] || [ -d "$resolved" ] || continue
+                    resolved=$(_cs_write_target "$resolved") || continue
+                    if [[ "$resolved" = "$root" || "$resolved" = "$root"/* ]]; then
+                        printf 'live\n'
+                    fi
+                done) || rc=$?
+            [ -z "$matches" ] || return 0
+            [ "$rc" -eq 0 ] || _die "cannot search for $token"
+            return 1
+            ;;
     esac
     [ -f "$token" ] || [ -d "$token" ] || return 1
     resolved=$(_cs_write_target "./$token") || return 1
-    root=$(pwd -P) || _die "cannot resolve the session root"
     case "$resolved" in "$root"|"$root"/*) return 0 ;; esac
     return 1
 }
