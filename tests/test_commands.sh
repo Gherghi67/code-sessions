@@ -107,6 +107,8 @@ test_sweep_runs_the_memory_index_guard() {
         assert_file_contains "$SWEEP_PASS" "bash ~/.claude/hooks/cs/memory-index-guard.sh $sub" \
             "the sweep pass must run the deployed guard's $sub" || return 1
     done
+    assert_file_contains "$SWEEP_PASS" 'bash ~/.claude/hooks/cs/memory-index-guard.sh refs' \
+        "the sweep pass must run the deployed guard's refs" || return 1
     assert_file_contains "$SCRIPT_DIR/../lib/01-manifests.sh" "^    memory-index-guard.sh$" \
         "the guard must ship with the hooks for that path to exist" || return 1
 }

@@ -147,6 +147,11 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    sweep's pointer edits. `restore` puts back `MEMORY.md` alone, so redo a demotion by deleting the
    `MEMORY.md` line `check` then names `duplicate:`. Never finish a sweep with `check` failing.
 
+   Run `bash ~/.claude/hooks/cs/memory-index-guard.sh refs` once per sweep. For each `dead:` line,
+   open the named entry and update the reference to the thing's current name. If the thing no longer
+   exists, append one sentence saying so with today's date. Never delete the entry or its pointer
+   because a reference is dead.
+
    **After rewriting, verify twice.** Re-run `check` to confirm the file still fits and every link survived, and re-read each
    rewritten pointer against its topic file. Syntactic health is not semantic health: a shortened line
    can be perfectly formed and still have dropped an authorization boundary ("nothing is ever pushed"),

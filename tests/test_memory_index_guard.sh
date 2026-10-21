@@ -606,6 +606,11 @@ test_refs_counts_live_paths_identifiers_and_verbs_once() {
     out=$(_guard refs 2>&1) || return 1
     assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
         "a path starting with cs_ still resolves as a path" || return 1
+    : > "$SESSION/hooks/topic:one.md"
+    printf '%s\n' 'Read `hooks/topic:one.md`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a colon inside a relative path does not make it a URL" || return 1
     printf '%s\n' 'Use `_cs_missing`.' > "$SESSION/.cs/memory/feedback_alpha.md"
     out=$(_guard refs 2>&1) || return 1
     assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_missing' "$out" \
@@ -654,6 +659,18 @@ EOF
     assert_eq 0 "$rc" "ignored tokens do not fail the scan" || return 1
 }
 
+test_refs_without_memory_is_an_error() {
+    SESSION="$TEST_TMPDIR/elsewhere"
+    mkdir -p "$SESSION"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'memory-index-guard: no .cs/memory here; run from the session root' "$out" \
+        "refs names the missing memory directory" || return 1
+    assert_eq 2 "$rc" "refs outside a session root must fail" || return 1
+    assert_not_exists "$SESSION/.cs" "refs creates no session state" || return 1
+}
+
+run_test test_refs_without_memory_is_an_error
 run_test test_refs_ignores_placeholders_and_tokens_with_other_shapes
 run_test test_refs_ignores_frontmatter_the_index_and_narratives
 run_test test_refs_counts_live_paths_identifiers_and_verbs_once
