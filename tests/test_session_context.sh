@@ -86,9 +86,9 @@ test_claude_protocol_is_unchanged() {
     printf '%s\n' 'User agents' > "$session/AGENTS.md"
     write_session_claude_md "$session" || return 1
     output="$session/CLAUDE.local.md"
-    # POSIX cksum of the complete pre-extraction template (including newlines).
+    # POSIX cksum of the v2026.10.8 protocol template (including newlines).
     # code-sessions keeps upstream's protocol text byte for byte.
-    assert_eq '2777902387 5910' "$(cksum < "$output")" || return 1
+    assert_eq '841096263 6355' "$(cksum < "$output")" || return 1
     assert_file_contains "$output" '<!-- cs:session-protocol -->' || return 1
     assert_file_contains "$output" '<!-- cs:memory-note -->' || return 1
     assert_file_contains "$output" '<!-- cs:wrap-cues -->' || return 1

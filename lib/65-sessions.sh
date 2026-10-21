@@ -36,7 +36,9 @@ search_sessions() {
     local search_files=".cs/README.md"
     local -a search_globs=(".cs/memory/*.md" ".cs/narrative-archive/*/*.md" ".cs/private/narrative-archive/*/*.md")
 
-    for session_dir in "$SESSIONS_ROOT"/*/; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) is still a session to search.
+    for session_dir in "$SESSIONS_ROOT"/*/ "$SESSIONS_ROOT"/.[!.]*/ "$SESSIONS_ROOT"/..?*/; do
         [ -d "$session_dir" ] || continue
         if [ -z "$include_archived" ] && _session_is_archived "$session_dir"; then
             continue
@@ -46,7 +48,7 @@ search_sessions() {
 
         # Resolve symlinks for adopted sessions
         local real_dir
-        real_dir=$(cd "$session_dir" 2>/dev/null && pwd -P) || continue
+        real_dir=$(cd -- "$session_dir" 2>/dev/null && pwd -P) || continue
 
         # Search fixed files
         for relpath in $search_files; do
@@ -57,8 +59,9 @@ search_sessions() {
             while IFS= read -r line; do
                 # %s for the matched line: `echo -e` ate escapes in file content,
                 # so a line containing \c truncated the result there and dropped
-                # everything after it.
-                printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$line"
+                # everything after it. The line is what the session's repo
+                # says, so its control bytes are deleted.
+                printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$(printf '%s' "$line" | _scrub_controls)"
                 found=$((found + 1))
             done <<< "$matches"
         done
@@ -73,14 +76,18 @@ search_sessions() {
         for glob in "${search_globs[@]}"; do
             for filepath in "$real_dir"/$glob; do
                 [ -f "$filepath" ] || continue
-                local relpath="${filepath#"$real_dir"/}"
+                # .cs/memory and the narrative archive are tracked, so a clone
+                # chooses the file name: it is printed as a plain name.
+                local relpath
+                relpath=$(_cs_plain_name "${filepath#"$real_dir"/}" 160)
                 local matches
                 matches=$(grep -in -- "$query" "$filepath" 2>/dev/null) || continue
                 while IFS= read -r line; do
                     # %s for the matched line: `echo -e` ate escapes in file content,
                     # so a line containing \c truncated the result there and dropped
-                    # everything after it.
-                    printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$line"
+                    # everything after it. The line is what the session's repo
+                    # says, so its control bytes are deleted.
+                    printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$(printf '%s' "$line" | _scrub_controls)"
                     found=$((found + 1))
                 done <<< "$matches"
             done
@@ -108,8 +115,8 @@ is_session_dir() {
 _session_name_for_dir() {  # dir
     local dir root rest
     [ -d "$1/.cs" ] || return 1
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-    root=$(cd "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    root=$(cd -- "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
 
     # Both sides resolved before comparing: a sessions root reached through a
     # symlinked parent (macOS /var -> /private/var) never prefix-matches a
@@ -130,7 +137,7 @@ _session_name_for_dir() {  # dir
     local link
     for link in "${SESSIONS_ROOT:-}"/*; do
         [ -L "$link" ] || continue
-        [ "$(cd "$link" 2>/dev/null && pwd -P)" = "$dir" ] || continue
+        [ "$(cd -- "$link" 2>/dev/null && pwd -P)" = "$dir" ] || continue
         printf '%s\n' "${link##*/}"
         return 0
     done
@@ -370,25 +377,64 @@ remove_session() {
         esac
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -remove <session-name>... [--force]"
+    # Set by _remove_one_session when a session went but its age state did
+    # not: the other names still go, and the run ends non-zero.
+    local age_state_left=""
+    # Before any name goes: a live session of another conversation's user,
+    # or a base with a live feature when the caller is not that base, stops
+    # the whole run, so none of the names before it is removed either. So
+    # does a session a `cs <name> --remote` server serves, --force or not, as
+    # it refuses an open: the server and the sessions it starts run in it.
+    for _name in "${names[@]}"; do
+        _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
+        _refuse_base_with_live_feature "$_name" remove
+        _remote_refuse_live "$_name" "$SESSIONS_ROOT/$_name/.cs" ""
+    done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
     done
+    [ -z "$age_state_left" ] || return 1
 }
 
-# Top-level entries of a session root that cs did not put there, as one
-# comma-separated line (empty when there are none). cs owns .cs/, .claude/,
-# the session git files and the two CLAUDE files; .DS_Store is Finder's.
+# Top-level entries of a session root that cs did not put there, one name
+# per line as _names_as_lines writes them (nothing when there are none). cs
+# owns .cs/, .claude/, the session git files and the two CLAUDE files;
+# .DS_Store is Finder's. notes.md, changes.md, discoveries.md, logs/ and
+# artifacts/ are where legacy cs layouts kept session files at the root. A
+# third-party cache (.omc, .claude-crawl) is not cs's to delete silently, so
+# it still counts. Fails without perl, as _names_as_lines does.
 _session_foreign_entries() {  # session_dir
-    local dir="$1" entry name out=""
+    local dir="$1" entry name
     for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         name="${entry##*/}"
         case "$name" in
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
+            notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
         esac
+        printf '%s\0' "$name"
+    done | _names_as_lines
+}
+
+# The names _session_foreign_entries prints, as one comma-separated line,
+# each as a message prints it (_printable_name).
+_session_foreign_line() {  # foreign_entries
+    local line name out=""
+    while IFS= read -r line; do
+        printf -v name '%b' "$line"
         out="${out:+$out, }$name"
-    done
-    printf '%s' "$out"
+    done <<< "$1"
+    _printable_name "$out"
+}
+
+# The confirm's listing of the names _session_foreign_entries prints, one
+# per line indented four spaces as _untracked_listing_format prints a file,
+# at most 20, then how many are not shown.
+_session_foreign_listing() {  # foreign_entries
+    local line listing nl=$'\n'
+    listing=$(while IFS= read -r line; do printf '1\t%s\n' "$line"; done <<< "$1" \
+        | _untracked_listing_format 20) || return 1
+    printf '%s' "${listing#*"$nl"}"
 }
 
 # The first mount point at or under a directory, from the mount table text on
@@ -437,25 +483,21 @@ _volume_mounted_under() {  # dir
 }
 
 # Paths in a worktree session that git does not track (untracked or
-# ignored), as one comma-separated line; git worktree remove --force
-# deletes them with no copy on the branch. cs's own .cs/, .claude/ and
-# CLAUDE.local.md, and Finder's .DS_Store, are left out.
-_worktree_untracked_entries() {  # worktree_dir
-    local dir="$1" status line path top paths="" out=""
-    status=$(git -C "$dir" status --porcelain --ignored --untracked-files=normal) \
-        || error "git status failed in $dir; refusing to remove what it cannot list"
-    while IFS= read -r line; do
-        case "$line" in '?? '*|'!! '*) ;; *) continue ;; esac
-        path="${line:3}"
-        top="${path%%/*}"
-        case "$top" in .cs|.claude|CLAUDE.local.md|.DS_Store) continue ;; esac
-        paths="$paths$path"$'\n'
-    done <<< "$status"
-    [ -n "$paths" ] || return 0
-    while IFS= read -r path; do
-        out="${out:+$out, }$path"
-    done <<< "$(printf '%s' "$paths" | LC_ALL=C sort)"
-    printf '%s' "$out"
+# ignored), one per line (_names_as_lines); git worktree remove --force
+# deletes them with no copy on the branch. The set retire reads: the
+# worktree's own untracked and ignored files and every file inside a
+# submodule, without cs's own bookkeeping (_without_cs_bookkeeping), so a
+# CLAUDE.local.md of the user's own and, in tracked mode, an untracked file
+# under .cs are listed. Fails when git cannot list them.
+_worktree_untracked_paths() {  # worktree_dir
+    local listing more
+    listing=$(_worktree_others "$1") || return 1
+    more=$(_worktree_others "$1" --ignored) || return 1
+    [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
+    more=$(_submodule_others "$1" "") || return 1
+    [ -z "$more" ] || more=$(printf '%s\n' "$more" | _without_cs_bookkeeping "$1") || return 1
+    [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
+    [ -z "$listing" ] || printf '%s\n' "$listing"
 }
 
 _remove_one_session() {
@@ -477,8 +519,10 @@ _remove_one_session() {
         error "Session not found: $session_name"
     fi
 
-    if [ -z "$force" ] && session_is_live "$session_dir/.cs"; then
-        error "Session '$session_name' is live (pid $(read_lock_pid "$session_dir/.cs")); use --force to remove anyway"
+    if [ -z "$force" ]; then
+        local live_pid
+        live_pid=$(live_lock_pid "$session_dir/.cs")
+        [ -z "$live_pid" ] || error "Session '$session_name' is live (pid $live_pid); use --force to remove anyway"
     fi
 
     # An encrypted session mounts its vault inside the session directory by
@@ -488,14 +532,14 @@ _remove_one_session() {
     # session loses only its link below, so it is exempt.
     if [ ! -L "$session_dir" ]; then
         local sub link real_dir real_target
-        real_dir=$(cd "$session_dir" && pwd -P)
+        real_dir=$(cd -- "$session_dir" && pwd -P)
         for sub in $CS_VAULT_LINKS; do
             link="$session_dir/.cs/$sub"
             [ -L "$link" ] || continue
-            real_target=$(cd "$link" 2>/dev/null && pwd -P) || continue
+            real_target=$(cd -- "$link" 2>/dev/null && pwd -P) || continue
             case "$real_target" in
                 "$real_dir"/*)
-                    error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(readlink "$link"). Removing the session would delete what the vault holds; unmount it, then retry." ;;
+                    error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(_cs_plain_name "$(readlink "$link")" 160). Removing the session would delete what the vault holds; unmount it, then retry." ;;
             esac
         done
         # A cs -encrypt that stopped partway leaves its volume mounted with no
@@ -524,16 +568,26 @@ _remove_one_session() {
             if [ -d "$wt_base_dir" ] && [ -f "$session_dir/.git" ]; then
                 local wt_branch
                 wt_branch=$(_read_local_state "$session_dir/.cs/local/state" task_branch)
-                local untracked
-                untracked=$(_worktree_untracked_entries "$session_dir")
+                local untracked untracked_listing="" nl=$'\n'
+                untracked=$(_worktree_untracked_paths "$session_dir") \
+                    || error "git could not list the files in $session_dir; refusing to remove what it cannot list"
+                if [ -n "$untracked" ]; then
+                    untracked_listing=$(_untracked_listing "$session_dir" "$untracked") \
+                        || error "cs could not count the files git does not track in $session_dir; refusing to remove what it cannot list"
+                fi
                 if [ -n "$untracked" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-                    error "Worktree session '$session_name' holds files git does not track: $untracked. Add --delete-files to remove them with --force"
+                    local untracked_count="${untracked_listing%%"$nl"*}" them=them
+                    [ "$untracked_count" != "1 file" ] || them=it
+                    error "Worktree session '$session_name' holds $untracked_count git does not track:
+${untracked_listing#*"$nl"}
+Add --delete-files to remove $them with --force"
                 fi
                 local confirm
                 if [ -n "$force" ]; then
                     confirm="y"
                 else
-                    [ -z "$untracked" ] || printf '%bAlso deletes files git does not track: %s%b\n' "$RED" "$untracked" "$NC" >&2
+                    [ -z "$untracked" ] || printf '%bAlso deletes %s git does not track:\n%s%b\n' "$RED" \
+                        "${untracked_listing%%"$nl"*}" "${untracked_listing#*"$nl"}" "$NC" >&2
                     read -r -p $'\033[0;31mRemove worktree session '"'$session_name'"$'? Uncommitted work in it is discarded. [y/N] \033[0m' confirm
                 fi
                 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -565,10 +619,14 @@ _remove_one_session() {
     # those in the confirm, and make --force ask for them by name.
     local foreign=""
     if [ ! -L "$session_dir" ]; then
-        foreign=$(_session_foreign_entries "$session_dir")
+        foreign=$(_session_foreign_entries "$session_dir") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
     fi
     if [ -n "$foreign" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-        error "Session '$session_name' holds files cs did not create: $foreign. Add --delete-files to remove them with --force"
+        local foreign_line
+        foreign_line=$(_session_foreign_line "$foreign") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+        error "Session '$session_name' holds files cs did not create: $foreign_line. Add --delete-files to remove them with --force"
     fi
 
     # Confirm deletion
@@ -582,7 +640,12 @@ _remove_one_session() {
     else
         # read -p only shows its prompt on a terminal; the list must reach
         # the user even when the answer is piped in.
-        [ -z "$foreign" ] || printf '%bAlso deletes files cs did not create: %s%b\n' "$RED" "$foreign" "$NC" >&2
+        if [ -n "$foreign" ]; then
+            local foreign_listing
+            foreign_listing=$(_session_foreign_listing "$foreign") \
+                || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+            printf '%bAlso deletes files cs did not create:\n%s%b\n' "$RED" "$foreign_listing" "$NC" >&2
+        fi
         read -r -p $'\033[0;31mRemove session '"'$session_name'"$'? [y/N] \033[0m' confirm
     fi
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -590,22 +653,78 @@ _remove_one_session() {
         return 0
     fi
 
+    local drop_age_state=""
     if [ -L "$session_dir" ]; then
         rm "$session_dir"
         info "Removed session link: $session_name (project directory preserved)"
     else
         rm -rf "$session_dir"
         info "Removed session: $session_name"
+        # Gated on the name, not the branch taken: a base@task whose base is
+        # gone falls through to the rm -rf above, and a feature session uses
+        # its base's secrets (CS_SECRETS_SESSION), so the state is the base's.
+        # A dotted name (a hand-made session older than the dot refusal) is
+        # skipped as the picker's age_state_dir skips it.
+        case "$session_name" in
+            *@*|.*) ;;
+            *) drop_age_state="true" ;;
+        esac
     fi
     _spawn_discard_seeds "$session_name"
+    if [ -n "$drop_age_state" ]; then
+        _drop_session_age_state "$session_name" || age_state_left="true"
+    fi
 }
 
-# Launch Claude Code
-# Register or remove the cs-statusline entry in Claude Code's settings.json.
-# Enable overwrites whatever is registered (the command is explicit consent);
-# Strip the statusLine registration when (and only when) it points at
-# cs-statusline; a status line the user configured themselves is left alone.
-# Returns 0 when stripped, 1 when absent or foreign, 2 when the write failed.
+# Remove the age state cs-secrets keeps for a base session outside the
+# session directory: $CS_SECRETS_DIR/sessions/<name>/, falling back to
+# ~/.cs-secrets (recipient pins and digests). Twin of age_state_dir in
+# bin/cs-secrets and age_state_dir in tui/src/app.rs; the three change together. Prints one line naming the path
+# when there was something to remove, nothing otherwise. A name that is not a
+# single plain path component is refused before it becomes a path, so "" can
+# never resolve to the sessions directory itself. Keychain and encrypted
+# stored secrets are not touched. cs-secrets refuses an age command for a
+# session the sessions root does not have, so only an `age add` or an export
+# that passed that check before the removal can recreate this directory after
+# it: their lock (.age.lock) lives inside it. That window is accepted (Alex
+# 2026-10-11); a lock shared with the removal was weighed and declined, do not
+# add one.
+_drop_session_age_state() {  # name
+    local name="$1" dir secrets_dir="${CS_SECRETS_DIR:-$HOME/.cs-secrets}"
+    case "$name" in
+        ''|.*|*/*|*@*)
+            warn "Refusing to remove age state for an invalid base session name: '$name'"
+            return 1 ;;
+    esac
+    # A trailing slash hides a directory symlink from -L; normalize it before
+    # checking the selected store, keeping / itself intact.
+    while [ "${secrets_dir%/}" != "$secrets_dir" ] && [ "$secrets_dir" != / ]; do
+        secrets_dir="${secrets_dir%/}"
+    done
+    dir="$secrets_dir/sessions/$name"
+    # Each parent must be a real directory cs can search: through a link the
+    # rm -rf would land on a same-name directory elsewhere, and an unsearchable
+    # parent makes a present state read as absent.
+    local parent linked=false
+    for parent in "$secrets_dir" "$secrets_dir/sessions"; do
+        [ -L "$parent" ] && linked=true
+        [ -e "$parent" ] || return 0
+        if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
+            warn "Could not check age state: $dir"
+            return 1
+        fi
+    done
+    if [ "$linked" = true ]; then
+        # Reading through the link is harmless once every parent is known to
+        # be searchable; only a state that is there is named as left behind.
+        [ -e "$dir" ] || [ -L "$dir" ] || return 0
+        warn "Left age state behind a linked ~/.cs-secrets: $dir"
+        return 1
+    fi
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    rm -rf "$dir" || { warn "Could not remove age state: $dir"; return 1; }
+    info "Removed age state: $dir"
+}
 
 # Compact duration string from seconds: 45s, 12m, 3h, 2d. Arg: secs.
 _humanize_secs() {  # secs
@@ -628,7 +747,7 @@ cmd_live() {
     now="$(date +%s)"
     current="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
 
-    local dir name meta actor up agent status states
+    local dir name meta actor up agent status states spid
     states="$(agent_states)"
     while IFS= read -r -d '' dir; do
         is_session_dir "$dir" || continue
@@ -643,6 +762,13 @@ cmd_live() {
         else
             others=$(( others + 1 ))
             status="$(session_status "$dir")"
+        fi
+        # A session cs <name> --remote serves: the server is no conversation
+        # Claude Code advertises, so the agent column says remote and the
+        # status leads with the server's pid.
+        if spid="$(_remote_server_pid "$meta" "$name")"; then
+            agent="remote"
+            status="remote-control PID $spid${status:+ · $status}"
         fi
         # The agent column stays padded when Claude Code advertises nothing, so
         # the objective still lines up on a host that keeps no session records.

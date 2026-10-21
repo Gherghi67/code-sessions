@@ -9,10 +9,64 @@ and helper binaries. It deliberately excludes test seams and internal state —
 values cs computes and passes to its own helpers, which change without notice and are
 documented in the code that reads them.
 
+## Installation, updates, and settings
+
+### Installed components
+
+The installer deploys these components:
+
+| Component | Names and location |
+|---|---|
+| Binaries | `cs`, `cs-secrets`, `cs-statusline`, `cs-subagent-statusline`, and `cs-tui` in `~/.local/bin/`. |
+| Hooks and wrap passes | `~/.claude/hooks/cs/`, including the memory and summary passes that `/wrap` reads. |
+| Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
+| Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
+| Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
+
+See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
+
+### Settings backups
+
+- Settings changes create sibling backups named `settings.json.cs-bak.<UTC stamp>` and preserve the original file mode.
+- Backups with the same timestamp get numbered suffixes.
+- Unchanged writes create no backup.
+- cs retains the five newest backups.
+
+### Installed content and user files
+
+- The `.installed` record in `~/.claude/hooks/cs/` stores SHA-256 checksums.
+- Install, update, and uninstall replace or remove only content cs wrote, including content shipped by a past release without a record.
+- User files stay in place and appear in `Kept <path>` warnings.
+
+Preserved files have these rules:
+
+- Retired user files warn once per content. Paths with newlines cannot enter the record and warn each time.
+- FIFOs, devices, and links to them stay unread.
+- Symlinked skill directories stay untouched.
+- Retired commands disappear only when cs wrote them.
+- Content checking and replacement are separate operations. A concurrent rewrite can occur between them.
+
+### Picker origin
+
+| Record | Behavior |
+|---|---|
+| `.tui-origin` | Sits beside `.version`, outside `.installed`, and records `checkout <path>` or `release` for doctor's picker check. |
+| No picker installed | The origin stays unchanged. |
+| User's picker link preserved | The origin stays unchanged. |
+| Uninstall | Removes `.tui-origin`. |
+
+### Release verification and notes
+
+- Updates come from GitHub Releases with SHA-256 verification.
+- [minisign](https://jedisct1.github.io/minisign/) verification runs when both minisign and a release signature are available.
+- `cs -update --check` prints the full pending release notes.
+- The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).
+
 ## Environment variables you set
 
 ```bash
-# Sessions directory (default: ~/.claude-sessions)
+# Sessions directory (default: ~/.claude-sessions). A relative CS_SESSIONS_ROOT
+# is taken from the directory cs (or cs-secrets) is started in.
 export CS_SESSIONS_ROOT="/path/to/sessions"
 
 # Where cs's own configuration and caches live (defaults: $XDG_CONFIG_HOME/cs or
@@ -60,7 +114,8 @@ export CS_SECRETS_BACKEND="keychain"
 # The code-sessions launcher sets code-sessions, apart from the original cs.
 export CS_SECRETS_KEYCHAIN_PREFIX="cs"
 
-# Override Claude Code binary (default: claude)
+# Override Claude Code binary (default: claude). A wrapper must exec Claude
+# or start exactly one Claude; see hooks.md for lead claims.
 export CLAUDE_CODE_BIN="claude"
 
 # Default runtime for sessions without a saved engine preference.
@@ -184,7 +239,7 @@ export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok
 # reasoning and return a rewrite truncated mid-sentence, which cs declines — so
 # ctrl+g intermittently does nothing at all.
 export CS_REWRITE_MODEL="gemini-3.6-flash-low"        # agy's id, for the gemini CLI arm
-export CS_REWRITE_TIMEOUT="25"                        # seconds; needs timeout(1)
+export CS_REWRITE_TIMEOUT="25"                        # whole seconds; 0 or a non-number means 25
 
 # What fills the blank screen while the rewrite runs. `screen` holds your prompt
 # in a margin rule that breathes while the rewrite runs, with the engine, the
@@ -224,14 +279,14 @@ export CS_ROTATE_BUTTON_CTX="40"
 # conversation, then counts the band down for 20 seconds and runs the /clear
 # that continues from the handoff. Pressing 1 clears at once; sending a
 # prompt stops the countdown. On at 80 unless set; `off` or `0` disables it,
-# and a value that is not a number falls back to 80 rather than off. A
+# and a value that is not a number from 1 to 100 falls back to 80 rather than off. A
 # conversation born of a /clear that already starts past it is never forced
 # (a toast says so once); one met at launch or through /resume is.
 export CS_ROTATE_FORCE_CTX="80"
 
 # Narrative rotation: rotate when the live file passes MAX, keep about KEEP bytes
-export CS_NARRATIVE_MAX_BYTES="229376"
-export CS_NARRATIVE_KEEP_BYTES="114688"
+export CS_NARRATIVE_MAX_BYTES="131072"
+export CS_NARRATIVE_KEEP_BYTES="65536"
 
 # Queue circuit breakers: per-task tool failures, context %, 5h rate-limit %
 export CS_QUEUE_MAX_FAILURES="5"
@@ -253,12 +308,14 @@ export CS_NO_MAIL_WAKE="1"
 export CS_ROTATION_KICK_DELAY="2"   # this is the default
 export CS_NO_ROTATION_WAKE="1"
 
-# Disable the iTerm2 attention bounce (the dock bounce a finished turn starts,
-# and the attention marker the status line reads). The tab tint is NOT gated by
-# this: set_tab_title emits the iTerm2 escapes unconditionally at launch, and
-# the colour resets when the session exits. Under tmux it also starts claude
-# as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no progress
-# line and no Claude icon.
+# Disable the iTerm2 attention bounce (the dock bounce a finished turn starts
+# with shell integration, until the next prompt, and the attention marker
+# the status line reads). The tab tint uses the session color and is NOT gated
+# by this: set_tab_title emits the iTerm2 escapes unconditionally at launch,
+# and the colour resets when the session exits. Under tmux it also starts
+# claude as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no
+# progress line and no Claude icon. Unset, cs enables both under tmux.
+# cs -doctor reports the integration state.
 export CS_NO_ITERM2="1"
 
 # Leave the Task tools to Claude Code's model default. A cs launch exports
@@ -276,7 +333,7 @@ export CS_NO_TASK_TOOLS="1"
 # cs keeps a value already in the shell (0 keeps function hooks off).
 export CS_NO_FUNCTION_HOOKS="1"
 
-# Override the tmux binary cs -spawn uses (default: tmux on PATH)
+# Override the tmux binary cs -spawn and cs <name> --remote use (default: tmux on PATH)
 export CS_TMUX_BIN="/opt/homebrew/bin/tmux"
 
 # The tmux session cs -spawn opens its windows in (default: cs). The
@@ -291,6 +348,20 @@ export CS_TMUX_SESSION="cs"
 # variables to every later window. The attach hint names it
 # (tmux -L code-sessions attach -t code-sessions).
 export CS_TMUX_SOCKET="code-sessions"
+# Not a setting. cs -spawn puts the staged seed's token here in the tmux
+# window it opens, so that window takes the seed without asking; every
+# other open of the name is asked. The launch drops it before claude
+# starts. Setting it by hand does nothing unless it matches the seed.
+# export CS_SPAWN_TOKEN
+
+# Not a setting. cs <name> --remote run inside tmux opens a window
+# remote:<name> in the cs tmux session that runs cs <name> --remote again
+# with this set, so that run serves in its window instead of opening
+# another. cs drops it before the server starts. The window's command also
+# sets CS_SESSIONS_ROOT and CLAUDE_CODE_BIN to the caller's sessions root and
+# the absolute claude the caller checked, since tmux starts a window with the
+# tmux server's environment.
+# export CS_REMOTE_WINDOW
 
 # Force the detected platform instead of probing for it; any other
 # value is rejected. Read by cs -secrets only, to choose between the
@@ -316,13 +387,17 @@ prompt: 1 its rotate key, or its `/clear` once a handoff is armed, and 2 its
 wrap key. The band has no key of its own, so a digit you type to answer a
 question never presses it; without these two chords it answers only a click or
 Ctrl+X Tab. Text you are typing stays in the prompt. Claude Code drops a Ctrl+X that gets no second
-key within 3 seconds. The chords need no terminal setting.
+key within 3 seconds. The chords need no terminal setting. Ctrl+X 1 and
+Ctrl+X 2 reach the band only because Claude Code mounts no handler of its own
+for `strip:jump1` and `strip:jump2` (measured on 2.1.291 and 2.1.292); a
+release that mounts one takes the chord from the band without a warning.
 
 - A yes merges the four keys into the file's first `Global` block (or adds one,
   creating the file when there is none). cs never replaces a key you already
   bind to something else, in any context: it keeps your action and names the
   key in a warning. A bare `ctrl+x` you bind counts too: Claude Code would
-  wait for a second key and never run yours, so cs binds none of the chords. cs
+  wait for a second key and never run yours, so cs binds none of the chords
+  and names them, with your key, in one warning. cs
   refuses a file that is not JSON with a `bindings` array and leaves it
   untouched.
 - cs 2026.10.6 bound Option+1 and Option+2 (`alt+1`, `alt+2`), which iTerm2
@@ -366,6 +441,11 @@ The launch banner's compact notes card draws only when `CS_NO_FUNCTION_HOOKS=1`
 or `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=0` withholds the mod, since otherwise
 the mod shows the full notes in the session.
 
+Mermaid drawing is a Claude Code `/config` row, `cs-mermaid.drawDiagrams` (on by
+default). Off, ` ```mermaid ` fences in replies show as source and the system
+prompt no longer says they draw. `.cs/local/disabled` turns off only the prompt
+section, as it does every other cs injection into the model's context.
+
 ## Environment variables cs sets for you
 
 These are exported automatically when you start a session, so the Claude Code
@@ -373,12 +453,14 @@ process and its hooks can find the session:
 
 - `CS_SESSION_NAME` - The session name (e.g., `myproject`); legacy `CLAUDE_SESSION_NAME` is accepted
 - `CS_CLAUDE_SESSION_ID` - The conversation UUID cs launched or resumed, exported so hooks can tell the launched conversation from any other claude that resolves the same session
+- `CS_LEAD_PID` - Exported by every cs launch, never set by hand: the pid cs hands to claude. A hook takes a claude as the one cs launched when its `CLAUDE_PID` equals this or when the claim that claude's SessionStart wrote to `.cs/local/lead-pid` names it (see [hooks.md](hooks.md#how-a-hook-finds-its-session-cs-resolvesh))
+- `CS_LEAD_CLAIM` - Exported as `1` by every cs launch, never set by hand: says the launch clears `.cs/local/lead-pid` and takes the lead's claim there. Under a launch without it, which a cs from before the claim made, the hooks take only the claude whose `CLAUDE_PID` equals `CS_LEAD_PID` for the lead
 - `CS_REAL_EDITOR` - Your own `$EDITOR`, captured before cs repoints `EDITOR`/`VISUAL` at the prompt-rewriter shim. The shim hands every file that is not a composer buffer back to it, so `/memory` and commit messages still open your editor. Set it yourself to pin which editor that is
 - `CS_SECRETS_SESSION` - For a worktree session, the base session its secrets key to, so a feature worktree reads the same store as its parent (see [secrets.md](secrets.md))
 - `CS_SESSION_DIR` - Full path to the session directory (workspace root)
 - `CS_SESSION_META_DIR` - Path to the `.cs/` metadata directory
 - `CLAUDE_CODE_TASK_LIST_ID` - Set to the session name for task list persistence; a feature worktree gets its own list under its `base@task` name, not the base's
-- `CLAUDE_CODE_AUTO_MEMORY_PATH` / `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` - Redirect Claude Code's auto-memory writer into `<session>/.cs/memory/`
+- `CLAUDE_CODE_AUTO_MEMORY_PATH` / `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` - Redirect [Claude Code auto memory](https://code.claude.com/docs/en/memory) into `<session>/.cs/memory/`. Claude Code owns the memory-file format and cs owns the storage path. See [memory records](session-layout.md#shared-files).
 - `CS_BIN` - Exported by every cs launch, never set by hand: the absolute path of the running cs, replacing any value inherited from a parent launch. The mods run cs through it (`cs -update`, `/queue`), since the claude process's `PATH` is not the launching shell's
 - `CODE_SESSIONS_HOME` - Exported by the code-sessions launcher, never set by hand: the profile's path. It tells a cs run, and tools such as branch-out, that the fork is the one running. With it set, `cs -update` and `cs -uninstall` refuse: the fork updates from its checkout with `sh setup.sh`, and its release URLs are the original cs's
 - `CS_UPDATE_AVAILABLE` - Exported by a cs launch, never set by hand: the version a newer cs was found at. The cs-update mod reads it to draw the release-notes pane. Absent when nothing is pending
@@ -507,3 +589,4 @@ Before it installs, setup.sh also runs `scripts/carry-over.sh --prune`,
 with or without the opt-out. It removes the carried links that dangle, or that
 a name the install now puts there shadows, so the install never copies cs's files
 through a link into your own directories.
+- `CS_LIVE_LOCK_PID` - Set only for `.cs/local/pre-open`, never by hand: the pid in `.cs/session.lock` when that pid is a running process, empty otherwise. A pre-open reads it to tell whether the session is running instead of reading the lock (see [session-layout.md](session-layout.md))

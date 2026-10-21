@@ -71,7 +71,7 @@ INSTALL_DIR="${HOME}/.local/bin"
 # A cs already here that is not a code-sessions build is the original cs, and
 # its install is not this installer's to replace. setup.sh deploys code-sessions
 # into its own profile HOME, where the only cs is code-sessions' own.
-if [ -e "$INSTALL_DIR/cs" ] && ! grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null; then
+if [ -f "$INSTALL_DIR/cs" ] && ! grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null; then
     error "The original cs is installed in $INSTALL_DIR. code-sessions installs into its own profile: run sh setup.sh from its checkout."
 fi
 HOOKS_PARENT_DIR="${HOME}/.claude/hooks"
@@ -102,17 +102,22 @@ esac
 _install_has_engine() { [[ ",$INSTALL_ENGINES," == *,$1,* ]]; }
 
 # Payload ref: `cs -update` pins this to the release tag (v<version>) so the
-# downloaded scripts/hooks match the verified installer; a fresh curl|bash
-# install defaults to main.
-REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-main}"
+# downloaded scripts/hooks match the verified installer. Without it the
+# installer reads CS_DEFAULT_REF: main in the checkout, which the release
+# workflow rewrites to the tag in the install.sh it publishes, so either
+# fetches the files whose sha256s it carries (CS_PAYLOAD_SHA256 below).
+CS_DEFAULT_REF=main
+REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-$CS_DEFAULT_REF}"
 RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
-CS_URL="${REPO_URL}/bin/cs"
-CS_SECRETS_URL="${REPO_URL}/bin/cs-secrets"
-CS_CODEX_THREAD_URL="${REPO_URL}/bin/cs-codex-thread"
-CS_STATUSLINE_URL="${REPO_URL}/bin/cs-statusline"
-CS_SUBAGENT_STATUSLINE_URL="${REPO_URL}/bin/cs-subagent-statusline"
 
 # @@CS_MANIFESTS@@
+
+# The sha256 of every file a web install downloads, as "<sha256>  <repo
+# path>", written by build.sh from the files it was built with. This
+# installer is checksum-verified (and signature-verified when minisign is
+# installed) before `cs -update` runs it, so a payload file that does not
+# match is not the file that was released.
+# @@CS_PAYLOAD_SHA256@@
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
 # libraries go first: a web install that stops partway then leaves new
@@ -120,24 +125,159 @@ CS_SUBAGENT_STATUSLINE_URL="${REPO_URL}/bin/cs-subagent-statusline"
 # the library they source.
 CS_HOOK_FILES=("${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}")
 
-# Completion URLs for web install
-COMPLETION_BASH_URL="${REPO_URL}/completions/cs.bash"
-COMPLETION_ZSH_URL="${REPO_URL}/completions/_cs"
+_check_retired_names
+
+# Stop, before anything is deployed, on a settings.json that holds one of the
+# events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
+# list: that value is the user's and stays as it is, so cs's hook cannot be
+# added to it. A missing or null event is one cs creates. Without jq no hook
+# is registered at all, and a file jq cannot parse, or one that is not a
+# regular file (never opened here), is refused further down, once the
+# payload's cs_settings_check is at hand, still before anything is placed.
+_refuse_a_hook_event_that_is_not_a_list() {
+    local event
+    command -v jq >/dev/null 2>&1 || return 0
+    [ -f "$CLAUDE_SETTINGS" ] && [ -s "$CLAUDE_SETTINGS" ] || return 0
+    event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
+        (if type == "object" then .hooks else null end) as $hooks
+        | if ($hooks | type) == "object" then
+            first(($events | split(" "))[] | select($hooks[.] != null and ($hooks[.] | type) != "array"))
+        else empty end
+    ' "$CLAUDE_SETTINGS" 2>/dev/null) || return 0
+    [ -z "$event" ] || error "$CLAUDE_SETTINGS holds a hooks.$event that is not a list, so cs's hook cannot be added to it; nothing was installed"
+}
+_refuse_a_hook_event_that_is_not_a_list
 
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 
-# Detect if running from cloned repo or web install
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+# Detect if running from cloned repo or web install. An installer read from a
+# pipe (curl ... | bash) has no BASH_SOURCE: it is the web install, whatever
+# directory it was started in, and never takes that directory as a checkout.
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+fi
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/cs" ]; then
     # Running from cloned repo
-    CS_SOURCE="$SCRIPT_DIR/bin/cs"
-    HOOKS_SOURCE="$SCRIPT_DIR/hooks"
     INSTALL_METHOD="local"
 else
     # Running from web (curl | bash)
     INSTALL_METHOD="web"
 fi
+
+# One temp dir for everything the web install downloads, removed however the
+# install ends.
+STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-install.XXXXXX") || error "Could not create a temp dir to download into"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+
+# Where the payload is read from: the checkout on a local install, the
+# downloads in STAGE_DIR on a web install.
+if [ "$INSTALL_METHOD" = "local" ]; then
+    PAYLOAD_DIR="$SCRIPT_DIR"
+else
+    PAYLOAD_DIR="$STAGE_DIR"
+fi
+
+# Download URL $1 to file $2 with curl, or wget when there is no curl.
+_download() {  # url, out
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1" -o "$2"
+    else
+        wget -q "$1" -O "$2"
+    fi
+}
+
+# The mode a payload file is deployed with, as the repo tracks it: the
+# binaries, the hook files and the skill support scripts are executable; the
+# Markdown passes /wrap reads from the hooks directory are not.
+_payload_mode() {  # repo-path
+    case "$1" in
+        hooks/*.md) echo 644 ;;
+        bin/*|hooks/*|skills/*/scripts/*) echo 755 ;;
+        *) echo 644 ;;
+    esac
+}
+
+# Put file $1 at $2 with mode $3 through a temp file in $2's own directory and
+# a rename, so $2 is always either the file it was or the whole new one, never
+# a partial copy: a dropped transfer or a full disk leaves the old file whole.
+# A symlink at $2 (a dotfiles manager's, or one pointing at a checkout) is
+# the user's and is kept, named in a warning and listed at the end, unless
+# what it points at is content cs wrote (_cs_owns_file): only then is the
+# link replaced by the file, in a line naming the link and where it pointed.
+# The rename replaces the link itself, never writing through it, so its
+# target is left as it was either way. A directory at $2 is kept and named
+# the same way: a rename onto it would drop the file inside it.
+_place_file() {  # src, dest, mode
+    local dest="$2" dir tmp digest link_target=""
+    if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+        warn "Kept $dest: a directory, so it was not replaced"
+        CS_KEPT_PATHS+=("$dest")
+        return 0
+    fi
+    if [ -L "$dest" ]; then
+        digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
+        if ! _cs_owns_file "$dest" "$digest"; then
+            warn "Kept $dest: a symlink to content cs did not write, so it was not replaced"
+            CS_KEPT_PATHS+=("$dest")
+            return 0
+        fi
+        link_target=$(readlink "$dest") || error "Could not read the symlink $dest"
+    fi
+    dir=$(dirname "$dest")
+    mkdir -p "$dir" || error "Could not create $dir"
+    tmp=$(mktemp "$dir/.cs-install.XXXXXX") || error "Could not create a temp file in $dir"
+    if ! { cp "$1" "$tmp" && chmod "$3" "$tmp" && mv -f "$tmp" "$dest"; }; then
+        rm -f "$tmp"
+        error "Failed to install $dest"
+    fi
+    if [ -n "$link_target" ]; then
+        info "Replaced symlink $dest (to $link_target) with a deployed copy"
+    fi
+}
+
+# Deploy payload file $1 (its repo path) at $2.
+_place() {  # repo-path, dest
+    _place_file "$PAYLOAD_DIR/$1" "$2" "$(_payload_mode "$1")"
+}
+
+# The install record's lines for the files this install writes under
+# ~/.claude, written out once every file is in place.
+CS_RECORD_LINES=()
+
+# Record sha256 $1 for path $2 (under $HOME) in the install record as soon as
+# the file is in place, keeping every other line as it was: a run that stops
+# partway then leaves a record true of each file, the placed ones under their
+# new sha256 and the rest under the line the last install wrote.
+_record_placed() {  # sha256, path-under-home
+    local record tmp="$STAGE_DIR/installed.partial"
+    record=$(_cs_install_record)
+    if [ -f "$record" ]; then
+        awk -v p="$2" 'substr($0, 67) != p' "$record" > "$tmp" || error "Could not read $record"
+    else
+        : > "$tmp"
+    fi
+    printf '%s  %s\n' "$1" "$2" >> "$tmp"
+    _place_file "$tmp" "$record" 644
+}
+
+# Deploy payload file $1 at $2 under ~/.claude, unless a file cs did not
+# write is already there: that one is kept, named in a warning and listed
+# again at the end. A file is cs's as _cs_owns_file decides; a symlink that
+# points nowhere holds nothing cs wrote, so it is kept too.
+_deploy() {  # repo-path, dest
+    local digest
+    digest=$(_cs_sha256_file "$PAYLOAD_DIR/$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
+    if { [ -e "$2" ] || [ -L "$2" ]; } && ! _cs_owns_file "$2" "$digest"; then
+        warn "Kept $2: cs did not write it, so it was not replaced"
+        CS_KEPT_PATHS+=("$2")
+        return 0
+    fi
+    _place "$1" "$2"
+    _record_placed "$digest" "${2#"$HOME"/}"
+    CS_RECORD_LINES+=("$digest  ${2#"$HOME"/}")
+}
 
 # Check for Claude Code
 if _install_has_engine claude && ! command -v claude >/dev/null 2>&1; then
@@ -147,94 +287,117 @@ if _install_has_engine claude && ! command -v claude >/dev/null 2>&1; then
     echo ""
 fi
 
+# cs takes every file lock through perl (flock(2) on a descriptor bash
+# opened), so without it no session can be opened. Checked before anything
+# is written.
+if ! perl -MFcntl=:flock -e 1 >/dev/null 2>&1; then
+    error "perl not found: cs locks its files through perl. Install perl and run the installer again."
+fi
+
 # Show banner
 show_banner
+
+# Whether downloaded file $STAGE_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
+# carries for repo path $1. A path with no entry, or a digest that cannot be
+# computed, does not match.
+_payload_matches() {  # repo-path
+    local entry actual
+    actual=$(_cs_sha256_file "$STAGE_DIR/$1") || return 1
+    for entry in "${CS_PAYLOAD_SHA256[@]}"; do
+        if [ "${entry#*  }" = "$1" ]; then
+            [ "${entry%%  *}" = "$actual" ]
+            return
+        fi
+    done
+    return 1
+}
+
+# A web install downloads every payload file and checks it against the sha256
+# this installer carries before it puts any in place, so a transfer that fails
+# partway, or a file that is not the released one, leaves the installed files
+# as they were. A local install copies from its own checkout, which is what
+# it was built from, and checks nothing.
+if [ "$INSTALL_METHOD" = "web" ]; then
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        error "Neither curl nor wget found. Please install one of them."
+    fi
+    while IFS= read -r _rel; do
+        mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
+        _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel" || error "Failed to download $_rel"
+        _payload_matches "$_rel" \
+            || error "$_rel does not match the sha256 this installer carries for it; nothing was installed"
+    done < <(_cs_payload_files)
+    for _rel in "${CS_COMPLETION_FILES[@]}"; do
+        mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
+        if ! _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel"; then
+            rm -f "$STAGE_DIR/$_rel"
+            warn "Failed to download $_rel"
+        elif ! _payload_matches "$_rel"; then
+            rm -f "$STAGE_DIR/$_rel"
+            warn "$_rel does not match the sha256 this installer carries for it; not installed"
+        fi
+    done
+fi
+
+# Stop, before anything is placed, on a settings.json jq cannot parse or that
+# is not a regular file, which the settings step below would refuse only
+# after every file was deployed.
+# The check is cs_settings_check from the payload's shared library (the
+# checkout, or the verified downloads), as the settings step runs it; without
+# jq no hook is registered at all, so the file is not read.
+# shellcheck source=hooks/cs-shared.sh
+. "$PAYLOAD_DIR/hooks/cs-shared.sh" || error "could not load $PAYLOAD_DIR/hooks/cs-shared.sh; nothing was installed"
+if _install_has_engine claude && command -v jq >/dev/null 2>&1; then
+    cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR; nothing was installed"
+fi
 
 # Create install directory if needed
 mkdir -p "$INSTALL_DIR"
 
 # Install cs script
 installed "cs" "$INSTALL_DIR/cs"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    # Install from local clone
-    cp "$CS_SOURCE" "$INSTALL_DIR/cs"
-else
-    # Download from GitHub
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_URL" -o "$INSTALL_DIR/cs" || error "Failed to download cs script"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_URL" -O "$INSTALL_DIR/cs" || error "Failed to download cs script"
-    else
-        error "Neither curl nor wget found. Please install one of them."
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs"
+_place bin/cs "$INSTALL_DIR/cs"
 
 # Install cs-secrets utility
 installed "cs-secrets" "$INSTALL_DIR/cs-secrets"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-secrets" "$INSTALL_DIR/cs-secrets"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_SECRETS_URL" -o "$INSTALL_DIR/cs-secrets" || error "Failed to download cs-secrets"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_SECRETS_URL" -O "$INSTALL_DIR/cs-secrets" || error "Failed to download cs-secrets"
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs-secrets"
+_place bin/cs-secrets "$INSTALL_DIR/cs-secrets"
 
 if _install_has_engine codex; then
 # Install the optional Codex runtime's no-model thread bootstrap helper.
 # Python is required only when a user selects the Codex engine.
 installed "cs-codex-thread" "$INSTALL_DIR/cs-codex-thread"
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-codex-thread" "$INSTALL_DIR/cs-codex-thread"
-elif command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$CS_CODEX_THREAD_URL" -o "$INSTALL_DIR/cs-codex-thread" || error "Failed to download cs-codex-thread"
-else
-    wget -q "$CS_CODEX_THREAD_URL" -O "$INSTALL_DIR/cs-codex-thread" || error "Failed to download cs-codex-thread"
-fi
-chmod +x "$INSTALL_DIR/cs-codex-thread"
+_place bin/cs-codex-thread "$INSTALL_DIR/cs-codex-thread"
 
 fi
 
 if _install_has_engine claude; then
 # Install cs-statusline (Claude Code status line)
 installed "cs-statusline" "$INSTALL_DIR/cs-statusline"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-statusline" "$INSTALL_DIR/cs-statusline"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_STATUSLINE_URL" -o "$INSTALL_DIR/cs-statusline" || error "Failed to download cs-statusline"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_STATUSLINE_URL" -O "$INSTALL_DIR/cs-statusline" || error "Failed to download cs-statusline"
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs-statusline"
+_place bin/cs-statusline "$INSTALL_DIR/cs-statusline"
 
 # Install cs-subagent-statusline (Claude Code agent-panel rows). It sources
 # cs-statusline for the shared palette, so the two must land in the same dir.
 installed "cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_SUBAGENT_STATUSLINE_URL" -o "$INSTALL_DIR/cs-subagent-statusline" || error "Failed to download cs-subagent-statusline"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_SUBAGENT_STATUSLINE_URL" -O "$INSTALL_DIR/cs-subagent-statusline" || error "Failed to download cs-subagent-statusline"
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs-subagent-statusline"
+_place bin/cs-subagent-statusline "$INSTALL_DIR/cs-subagent-statusline"
 
 fi
+
+# Records where the cs-tui just put in $INSTALL_DIR came from, in
+# HOOKS_DIR/.tui-origin beside the .version stamp: "checkout <path>" for a
+# copy from this checkout, "release" for the verified release asset. cs -doctor
+# reads it from any folder to hold the picker to that checkout's build. It is
+# written as soon as the picker is in place, and an install that places no
+# picker leaves it as it was, since the picker it describes is still the one
+# installed. A link _place_file kept (one to content cs did not write) is the
+# user's own picker, not one this install placed, so it leaves the record too:
+# a link it replaced is a file once placed, so -L is true only of a kept one.
+_record_tui_origin() {  # origin
+    _install_has_engine claude || return 0
+    [ ! -L "$INSTALL_DIR/cs-tui" ] || return 0
+    local tmp="$STAGE_DIR/tui-origin"
+    printf '%s\n' "$1" > "$tmp" || error "Could not write $tmp"
+    _place_file "$tmp" "$HOOKS_DIR/.tui-origin" 644
+}
 
 # Install cs-tui (interactive session manager).
 #
@@ -252,20 +415,24 @@ if [ -f "$_cs_tui_built" ] && { [ ! -f "$_cs_tui_src" ] || [ "$_cs_tui_built" -n
 fi
 if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
     installed "cs-tui" "$INSTALL_DIR/cs-tui"
-    cp "$_cs_tui_src" "$INSTALL_DIR/cs-tui"
-    chmod +x "$INSTALL_DIR/cs-tui"
+    _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
+    _record_tui_origin "checkout $SCRIPT_DIR"
 elif [ "$INSTALL_METHOD" = "web" ]; then
-    _cs_version=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
+    # The release this install downloaded, read from its verified bin/cs:
+    # $INSTALL_DIR/cs may be a link _place_file kept, which is not this
+    # release and may point at anything, a FIFO included.
+    _cs_version=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
     _os=$(uname -s | tr '[:upper:]' '[:lower:]')
     _arch=$(uname -m)
     [ "$_arch" = "x86_64" ] && _arch="amd64"
     _tui_base="cs-tui-${_os}-${_arch}"
-    _tui_dst="$INSTALL_DIR/cs-tui"
+    # Downloaded and verified in the staging dir; only a binary that passes
+    # both gates below is put in place.
+    _tui_dst="$STAGE_DIR/cs-tui"
     _tui_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}"
     if [ -n "$_cs_version" ] && curl -fsSL --head "$_tui_url" >/dev/null 2>&1 \
         && curl -fsSL "$_tui_url" -o "$_tui_dst"; then
-        installed "cs-tui" "$_tui_dst"
-        chmod +x "$_tui_dst"
+        installed "cs-tui" "$INSTALL_DIR/cs-tui"
 
         # Verify cs-tui checksum (hard gate). The rule is the one stated in
         # lib/20-update.sh's verify_checksum: a gate that cannot verify must not
@@ -325,6 +492,10 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
             fi
             rm -f "$_tui_dst.minisig"
         fi
+        if [ -f "$_tui_dst" ]; then
+            _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
+            _record_tui_origin release
+        fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
     fi
@@ -340,134 +511,221 @@ rm -f "$INSTALL_DIR/cs-tui.exe"
 # SKILL.md, then the support files listed in CS_SKILL_FILES. Claude and Codex
 # get identical copies.
 _deploy_skills() {
-    local dest="$1" skill skill_file
+    local SKILLS_DIR="$1" skill skill_file
     for skill in "${CS_SKILLS[@]}"; do
-        mkdir -p "$dest/$skill"
-        if [ "$INSTALL_METHOD" = "local" ]; then
-            cp "$SCRIPT_DIR/skills/$skill/SKILL.md" "$dest/$skill/"
-        elif command -v curl >/dev/null 2>&1; then
-            curl -fsSL "$REPO_URL/skills/$skill/SKILL.md" -o "$dest/$skill/SKILL.md" || error "Failed to download $skill skill"
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q "$REPO_URL/skills/$skill/SKILL.md" -O "$dest/$skill/SKILL.md" || error "Failed to download $skill skill"
+        if _skill_path_real "$skill/SKILL.md"; then
+            _deploy "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
         fi
     done
     for skill_file in "${CS_SKILL_FILES[@]}"; do
-        mkdir -p "$dest/$(dirname "$skill_file")"
-        if [ "$INSTALL_METHOD" = "local" ]; then
-            cp -p "$SCRIPT_DIR/skills/$skill_file" "$dest/$skill_file"
-            continue
-        elif command -v curl >/dev/null 2>&1; then
-            curl -fsSL "$REPO_URL/skills/$skill_file" -o "$dest/$skill_file" || error "Failed to download $skill_file"
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q "$REPO_URL/skills/$skill_file" -O "$dest/$skill_file" || error "Failed to download $skill_file"
+        if _skill_path_real "$skill_file"; then
+            _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
         fi
-        # A download carries no mode; only the helper scripts run.
-        case "$skill_file" in
-            */scripts/*) chmod +x "$dest/$skill_file" ;;
-        esac
     done
 }
+
+# Whether the symlinked directory $SKILLS_DIR/$1 points at cs's own mod
+# files: every file the manifest deploys under it, read through the link, is
+# content cs wrote (_cs_owns_file). A file missing there is not.
+_mod_link_holds_cs_files() {  # path under SKILLS_DIR
+    local f digest
+    for f in "${CS_MOD_FILES[@]}"; do
+        case "$f" in "$1"/*) ;; *) continue ;; esac
+        digest=$(_cs_sha256_file "$PAYLOAD_DIR/mods/$f") || error "Could not compute the sha256 of mods/$f (needs sha256sum or shasum)"
+        _cs_owns_file "$SKILLS_DIR/$f" "$digest" || return 1
+    done
+}
+
+# The symlinked directories under SKILLS_DIR this install kept, one per line,
+# so each is named once however many files sit under it.
+_dir_links_kept=$'\n'
+
+# Keeps the symlinked directory $SKILLS_DIR/$1: names it in warning $2 the
+# first time, and lists it with the kept files.
+_keep_dir_link() {  # path under SKILLS_DIR, warning
+    case "$_dir_links_kept" in
+        *$'\n'"$SKILLS_DIR/$1"$'\n'*) ;;
+        *)
+            warn "$2"
+            CS_KEPT_PATHS+=("$SKILLS_DIR/$1")
+            _dir_links_kept="$_dir_links_kept$SKILLS_DIR/$1"$'\n'
+            ;;
+    esac
+}
+
+# Whether mod file $1 can be deployed without writing through a symlinked
+# directory: copying through the link would write into its target instead of
+# deploying. A link on the path (the mod directory or the file's directory)
+# that points at cs's own mod files (an earlier opt-in had the person link
+# the whole directory at the checkout) is replaced by a real directory. One
+# that points anywhere else is the user's: it is kept, named once and listed
+# with the kept files, and returns 1 so nothing is placed under it. A link at
+# the file itself is _deploy's to judge.
+_mod_path_real() {
+    local rel="$1" p
+    for p in "${rel%%/*}" "$(dirname "$rel")"; do
+        [ -L "$SKILLS_DIR/$p" ] || continue
+        if _mod_link_holds_cs_files "$p"; then
+            rm "$SKILLS_DIR/$p"
+            info "Replaced symlink $SKILLS_DIR/$p with a deployed copy"
+            continue
+        fi
+        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
+        return 1
+    done
+}
+
+# Whether skill file $1 (its path under SKILLS_DIR) can be deployed without
+# writing through a symlinked directory. A link on the path (the skill
+# directory or the file's directory) is the user's wherever it points, as cs
+# never makes one: it is kept, named once and listed with the kept files, and
+# returns 1 so nothing is placed under it. A link at the file itself is
+# _deploy's to judge.
+_skill_path_real() {
+    local rel="$1" p
+    for p in "${rel%%/*}" "$(dirname "$rel")"; do
+        [ -L "$SKILLS_DIR/$p" ] || continue
+        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink, so cs wrote nothing through it and the skill files under it were not deployed"
+        return 1
+    done
+}
+
 
 if _install_has_engine claude; then
 # Install hooks
 installed "${#CS_HOOKS[@]} hooks" "$HOOKS_DIR/"
 mkdir -p "$HOOKS_DIR"
 
-# Remove any retired hook files that earlier cs versions installed but no longer ship.
-# Settings.json entries are stripped further below. Retired hooks may sit in
-# HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
+# Removes file $1, under a name cs retired, when cs wrote it, and returns 0.
+# A file cs did not write is kept and returns 1. It is in the way of nothing
+# cs deploys, so it is named (and listed at the end) only the first time an
+# install sees that content: the install record remembers it as a
+# "kept <sha256>  <path under $HOME>" line, which never matches the
+# "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
+# be computed, and a path holding a newline (the record holds one path per
+# line), are named every time.
+_remove_retired() {  # file
+    _retired_is_ours "$1" || return 1
+    rm -f "$1"
+}
+
+# Returns 0 when cs wrote file $1, under a name cs retired; otherwise keeps it
+# as _remove_retired describes and returns 1.
+_retired_is_ours() {  # file
+    local digest line record
+    if _cs_owns_file "$1"; then
+        return 0
+    fi
+    record=$(_cs_install_record)
+    if [[ "$1" != *$'\n'* ]] && digest=$(_cs_sha256_file "$1"); then
+        line="kept $digest  ${1#"$HOME"/}"
+        CS_RECORD_LINES+=("$line")
+        if [ -f "$record" ] && grep -qxF "$line" "$record"; then
+            return 1
+        fi
+    fi
+    warn "Kept $1: cs did not write it"
+    CS_KEPT_PATHS+=("$1")
+    return 1
+}
+
+# Retired hook files that earlier cs versions installed but no longer ship,
+# in HOOKS_DIR or, for installs that deployed hooks flat, its parent
+# directory. Only a file cs wrote is listed; a user's own file of the same
+# name is kept. The listed files go once settings.json no longer registers
+# them, below: an install that stops before then, or has no jq to rewrite
+# the settings, leaves each one beside its registration, and the install
+# record keeps its line, so the next run still knows it as cs's.
+# CS_RETIRED_HOOK_DIGESTS holds each listed file's sha256, by index.
+CS_RETIRED_HOOK_FILES=()
+CS_RETIRED_HOOK_DIGESTS=()
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ]; then
-            rm "$dir/$retired"
-            info "Removed retired hook: $dir/$retired"
+        if [ -f "$dir/$retired" ] && _retired_is_ours "$dir/$retired" \
+            && _retired_digest=$(_cs_sha256_file "$dir/$retired"); then
+            CS_RETIRED_HOOK_FILES+=("$dir/$retired")
+            CS_RETIRED_HOOK_DIGESTS+=("$_retired_digest")
+            CS_RECORD_LINES+=("$_retired_digest  ${dir#"$HOME"/}/$retired")
         fi
     done
 done
 
+# Returns 0 when $1 is a listed retired file that still holds the content cs
+# wrote. The questions below can take any time, so the content is checked
+# again here: a file replaced since it was listed is the user's, and so is
+# anything that is no longer a regular file, which is never read (a link to
+# a device or a FIFO would keep the hash, and the settings lock, waiting).
+_retired_still_ours() {  # path
+    local i digest
+    for i in ${CS_RETIRED_HOOK_FILES[@]+"${!CS_RETIRED_HOOK_FILES[@]}"}; do
+        [ "${CS_RETIRED_HOOK_FILES[$i]}" = "$1" ] || continue
+        [ -f "$1" ] && [ ! -L "$1" ] || return 1
+        digest=$(_cs_sha256_file "$1") || return 1
+        [ "$digest" = "${CS_RETIRED_HOOK_DIGESTS[$i]}" ]
+        return
+    done
+    return 1
+}
+
+# Returns 0 when hook file $1 stays after this install: it is there and is
+# not a retired file that still holds what cs wrote.
+_hook_file_stays() {  # path
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    ! _retired_still_ours "$1"
+}
+
 # The subdirectory copy is canonical; remove parent-level copies left by
-# installs that deployed hooks flat into ~/.claude/hooks/.
+# installs that deployed hooks flat into ~/.claude/hooks/, when cs wrote them.
 for hook in "${CS_HOOK_FILES[@]}"; do
-    if [ -f "$HOOKS_PARENT_DIR/$hook" ]; then
-        rm "$HOOKS_PARENT_DIR/$hook"
+    if [ -f "$HOOKS_PARENT_DIR/$hook" ] && _cs_remove_if_owned "$HOOKS_PARENT_DIR/$hook"; then
         info "Removed $HOOKS_PARENT_DIR/$hook"
     fi
 done
 
-if [ "$INSTALL_METHOD" = "local" ]; then
-    # Install from local clone
-    for hook in "${CS_HOOK_FILES[@]}"; do
-        cp "$HOOKS_SOURCE/$hook" "$HOOKS_DIR/"
-    done
-else
-    # Download from GitHub
-    if command -v curl >/dev/null 2>&1; then
-        for hook in "${CS_HOOK_FILES[@]}"; do
-            curl -fsSL "$REPO_URL/hooks/$hook" -o "$HOOKS_DIR/$hook" || error "Failed to download $hook"
-        done
-    elif command -v wget >/dev/null 2>&1; then
-        for hook in "${CS_HOOK_FILES[@]}"; do
-            wget -q "$REPO_URL/hooks/$hook" -O "$HOOKS_DIR/$hook" || error "Failed to download $hook"
-        done
-    fi
-fi
-
-chmod +x "$HOOKS_DIR"/*.sh
+for hook in "${CS_HOOK_FILES[@]}"; do
+    _deploy "hooks/$hook" "$HOOKS_DIR/$hook"
+done
 
 
-# cs ships no slash commands now: each became a skill of the same name. A
-# command file left from an earlier install would answer the same /name as
-# its skill, so drop the ones cs itself deployed and nothing else.
+# Install commands
+installed "commands" "$COMMANDS_DIR/"
+mkdir -p "$COMMANDS_DIR"
+
+for cmd in "${CS_COMMANDS[@]+"${CS_COMMANDS[@]}"}"; do
+    _deploy "commands/$cmd" "$COMMANDS_DIR/$cmd"
+done
+
+# Drop commands earlier cs versions installed but no longer ship; only a file
+# cs wrote goes, and a user's own file of that name is kept. A linked
+# ~/.claude/commands is worked through by design, as the loop above deploys
+# into it: only content cs wrote is removed, so the link is no boundary here.
 for retired in "${RETIRED_COMMANDS[@]}"; do
-    if [ -f "$COMMANDS_DIR/$retired" ]; then
-        rm "$COMMANDS_DIR/$retired"
-        info "  Removed retired command: $COMMANDS_DIR/$retired (now a skill)"
+    if [ -f "$COMMANDS_DIR/$retired" ] && _remove_retired "$COMMANDS_DIR/$retired"; then
+        info "Removed retired command: $COMMANDS_DIR/$retired"
     fi
 done
 
 # Install skills
 SKILLS_DIR="$HOME/.claude/skills"
-MODS_SOURCE="$SCRIPT_DIR/mods"
 installed "skills" "$SKILLS_DIR/"
 
 # Drop skill directories earlier cs versions installed but no longer ship. A
 # skill left on disk keeps answering its slash command, so a rename is not
-# complete until the old directory is gone.
+# complete until the old directory is gone. Only the files cs wrote go; a
+# user's own files in it (or a user's skill of that name) are kept.
 for retired in "${RETIRED_SKILLS[@]}"; do
-    if [ -d "$SKILLS_DIR/$retired" ]; then
-        rm -rf "$SKILLS_DIR/$retired"
+    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired" _remove_retired; then
         info "Removed retired skill: $SKILLS_DIR/$retired/"
     fi
 done
 
 _deploy_skills "$SKILLS_DIR"
-
-# A symlink anywhere on a mod file's deploy path (an earlier opt-in had the
-# person link the whole directory at the checkout) is replaced by a real
-# directory or file: copying through the link would write into its target
-# instead of deploying. Checks the mod directory, the file's directory and
-# the file itself.
-_mod_path_real() {
-    local rel="$1" p
-    for p in "${rel%%/*}" "$(dirname "$rel")" "$rel"; do
-        if [ -L "$SKILLS_DIR/$p" ]; then
-            rm "$SKILLS_DIR/$p"
-            info "Replaced symlink $SKILLS_DIR/$p with a deployed copy"
-        fi
-    done
-}
-
 for mod_file in "${CS_MOD_FILES[@]}"; do
-    _mod_path_real "$mod_file"
-    mkdir -p "$SKILLS_DIR/$(dirname "$mod_file")"
-    if [ "$INSTALL_METHOD" = "local" ]; then
-        cp -p "$MODS_SOURCE/$mod_file" "$SKILLS_DIR/$mod_file"
-    elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$REPO_URL/mods/$mod_file" -o "$SKILLS_DIR/$mod_file" || error "Failed to download $mod_file"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$REPO_URL/mods/$mod_file" -O "$SKILLS_DIR/$mod_file" || error "Failed to download $mod_file"
+    if _mod_path_real "$mod_file"; then
+        _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
     fi
 done
+
 
 fi
 
@@ -487,14 +745,7 @@ _deploy_skills "$CODEX_SKILLS_DIR"
 CODEX_RECOVERY_DIR="$CODEX_DIR/hooks/cs"
 mkdir -p "$CODEX_RECOVERY_DIR"
 for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
-    if [ "$INSTALL_METHOD" = local ]; then
-        cp "$HOOKS_SOURCE/$hook" "$CODEX_RECOVERY_DIR/"
-    elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$REPO_URL/hooks/$hook" -o "$CODEX_RECOVERY_DIR/$hook" || error "Failed to download $hook"
-    else
-        wget -q "$REPO_URL/hooks/$hook" -O "$CODEX_RECOVERY_DIR/$hook" || error "Failed to download $hook"
-    fi
-    chmod 755 "$CODEX_RECOVERY_DIR/$hook"
+    _deploy "hooks/$hook" "$CODEX_RECOVERY_DIR/$hook"
 done
 
 # The SessionStart hook: after /clear it rebinds the session to the new
@@ -525,35 +776,24 @@ fi
 
 fi
 
-# Install shell completions
-COMPLETIONS_SOURCE="$SCRIPT_DIR/completions"
-COMPLETION_SETUP_NEEDED=""
-
-# Bash completion
-installed "completions" "bash, zsh"
-mkdir -p "$BASH_COMPLETION_DIR"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$COMPLETIONS_SOURCE/cs.bash" "$BASH_COMPLETION_DIR/"
+# Record what this install wrote under ~/.claude, so the next install, update
+# or uninstall knows those files as cs's by their content.
+_record_tmp="$STAGE_DIR/installed"
+if [ "${#CS_RECORD_LINES[@]}" -gt 0 ]; then
+    printf '%s\n' "${CS_RECORD_LINES[@]}" > "$_record_tmp"
 else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$COMPLETION_BASH_URL" -o "$BASH_COMPLETION_DIR/cs.bash" || warn "Failed to download bash completion"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$COMPLETION_BASH_URL" -O "$BASH_COMPLETION_DIR/cs.bash" || warn "Failed to download bash completion"
-    fi
+    : > "$_record_tmp"
 fi
+_place_file "$_record_tmp" "$(_cs_install_record)" 644
 
-# Zsh completion
-mkdir -p "$ZSH_COMPLETION_DIR"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$COMPLETIONS_SOURCE/_cs" "$ZSH_COMPLETION_DIR/"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$COMPLETION_ZSH_URL" -o "$ZSH_COMPLETION_DIR/_cs" || warn "Failed to download zsh completion"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$COMPLETION_ZSH_URL" -O "$ZSH_COMPLETION_DIR/_cs" || warn "Failed to download zsh completion"
-    fi
+# Install shell completions. One a web install could not download was
+# reported then, and is skipped here.
+installed "completions" "bash, zsh"
+if [ -f "$PAYLOAD_DIR/completions/cs.bash" ]; then
+    _place completions/cs.bash "$BASH_COMPLETION_DIR/cs.bash"
+fi
+if [ -f "$PAYLOAD_DIR/completions/_cs" ]; then
+    _place completions/_cs "$ZSH_COMPLETION_DIR/_cs"
 fi
 
 if _install_has_engine claude; then
@@ -567,19 +807,15 @@ if ! command -v jq >/dev/null 2>&1; then
     warn "jq not found - cannot configure hooks automatically."
     warn "See README for manual hook configuration."
 else
-    # Start with existing settings or empty object
-    if [ -f "$CLAUDE_SETTINGS" ]; then
-        SETTINGS=$(cat "$CLAUDE_SETTINGS")
-        # An empty or invalid-JSON settings.json would make every jq stage below
-        # silently produce nothing; back it up and start fresh instead.
-        if [ -z "${SETTINGS//[[:space:]]/}" ] || ! printf '%s' "$SETTINGS" | jq -e . >/dev/null 2>&1; then
-            cp "$CLAUDE_SETTINGS" "$CLAUDE_SETTINGS.cs-bak" 2>/dev/null || true
-            warn "settings.json was empty or invalid JSON — backed up to settings.json.cs-bak and starting fresh"
-            SETTINGS='{}'
-        fi
-    else
-        SETTINGS='{}'
-    fi
+    # settings.json is read and rewritten once, by cs_settings_update from
+    # the hooks' shared library in the payload (the checkout, or the verified
+    # downloads), sourced before anything was placed, never the deployed
+    # copy: a deployed cs-shared.sh that cs did not write is kept, and must
+    # not run here. Under its lock and after every question below. A file jq
+    # cannot parse was refused before anything was placed; one that has
+    # become so since stops the install here, before any question, and is
+    # left as it is.
+    cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR"
 
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
     HOOKS_TILDE_DIR="~/.claude/hooks/cs"
@@ -593,27 +829,49 @@ else
         *) error "CS_HOOK_PATHS must be tilde or absolute" ;;
     esac
 
-    # Strip retired hooks from any event in settings.json (event-agnostic since
-    # we don't know which event the old version registered them under). Covers
-    # both deployment layouts.
-    for retired in "${RETIRED_HOOKS[@]}"; do
-        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$retired" "~/.claude/hooks/$retired")
-        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
-    done
+    # Strip the registration of flat-layout hook $1 (~/.claude/hooks/$1) from
+    # SETTINGS, unless the file there stays: the clean-up above removed or
+    # listed every flat file cs wrote, so one that stays is the user's own
+    # hook, and its registration is theirs too.
+    _strip_flat_hook() {  # name
+        if _hook_file_stays "$HOOKS_PARENT_DIR/$1"; then
+            return 0
+        fi
+        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$1" "~/.claude/hooks/$1")
+    }
 
-    # Strip parent-level registrations of current hooks (flat-layout installs);
-    # _merge_cs_hook re-registers each one under HOOKS_DIR below.
-    for hook in "${CS_HOOKS[@]}"; do
-        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$hook" "~/.claude/hooks/$hook")
-    done
+    # The settings JSON in SETTINGS without any cs hook registration that the
+    # merge below does not put back.
+    _strip_cs_hooks() {
+        # Strip retired hooks from any event in settings.json (event-agnostic since
+        # we don't know which event the old version registered them under). Covers
+        # both deployment layouts.
+        # A retired file under HOOKS_DIR that stays was kept as the user's,
+        # as for a flat one, so its registration stays too.
+        for retired in "${RETIRED_HOOKS[@]}"; do
+            _strip_flat_hook "$retired"
+            if ! _hook_file_stays "$HOOKS_DIR/$retired"; then
+                SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            fi
+        done
 
-    # Drop events that emptied out entirely after the strips
-    SETTINGS=$(echo "$SETTINGS" | jq '
-        if .hooks then
-            .hooks |= with_entries(select(.value | length > 0))
-            | if .hooks == {} then del(.hooks) else . end
-        else . end
-    ')
+        # Strip parent-level registrations of current hooks (flat-layout installs);
+        # _merge_cs_hook re-registers each one under HOOKS_DIR below.
+        for hook in "${CS_HOOKS[@]}"; do
+            _strip_flat_hook "$hook"
+        done
+
+        # Drop events that emptied out entirely after the strips. An event
+        # whose list is empty goes whether the strips emptied it or the user
+        # wrote it that way (deliberate, see _strip_hook_registration); an
+        # event that is not a list stays.
+        SETTINGS=$(echo "$SETTINGS" | jq '
+            if .hooks then
+                .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
+                | if .hooks == {} then del(.hooks) else . end
+            else . end
+        ')
+    }
 
     # Merge hooks: strip cs's command from any wrapper's nested .hooks array,
     # drop wrappers that emptied out, then append a fresh standalone wrapper
@@ -622,10 +880,19 @@ else
     # session-end.sh) — the prior shape dropped the entire wrapper whenever
     # it contained cs's command, taking sibling user hooks with it.
     #
-    # Flat-shape entries (no `.hooks` field, command at top level) pass
-    # through untouched because the `if .hooks then ... else . end` branch
-    # skips them. The spec tests in tests/test_hooks.sh embed this same
-    # filter shape via _install_merge_filter — keep them aligned.
+    # An entry whose `.hooks` is not an array (flat shape with the command at
+    # the top level, a `.hooks` of any other type, or an entry that is not an
+    # object) passes through untouched, and so does an element of a `.hooks`
+    # array that is not an object: only an object in an array `.hooks` can be
+    # cs's registration, as in _strip_hook_registration. A wrapper whose
+    # `.hooks` array is empty is dropped whether the strip emptied it or the
+    # user wrote it that way (deliberate, see _strip_hook_registration). An
+    # event that is not a list (and not null) is the user's and is never
+    # rewritten: _refuse_a_hook_event_that_is_not_a_list stops the install on
+    # one before anything is deployed, and the filter fails on one that
+    # appears afterwards, which leaves settings.json as it was. The
+    # spec tests in tests/test_hooks.sh run a copy of this filter,
+    # _install_merge_filter, and one of them compares the two texts.
     _merge_cs_hook() {
         local event="$1" file="$2" timeout="$3" matcher="${4:-}" async="${5:-}" rewake="${6:-}"
         local path="$HOOKS_DIR/$file" tilde="$HOOKS_TILDE_DIR/$file" registered="$HOOK_COMMAND_DIR/$file"
@@ -660,14 +927,18 @@ else
             --arg path "$path" \
             --arg tilde "$tilde" \
             --argjson append "$append" '
-            .hooks[$event] = (
-                ((.hooks[$event] // []) | map(
-                    if .hooks then
-                        .hooks |= map(select(.command != $path and .command != $tilde))
-                    else . end
-                ) | map(select(.hooks == null or (.hooks | length > 0))))
-                + [$append]
-            )
+            if .hooks[$event] != null and (.hooks[$event] | type) != "array" then
+                error("hooks.\($event) is not a list")
+            else
+                .hooks[$event] = (
+                    ((.hooks[$event] // []) | map(
+                        if type == "object" and (.hooks | type) == "array" then
+                            .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
+                        else . end
+                    ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
+                    + [$append]
+                )
+            end
         ')
     }
 
@@ -685,23 +956,28 @@ else
     # answering nothing loses the maildir watch for the rest of the session.
     # Registering FileChanged is itself what opens that path, so the mailbox has
     # to answer the event its own registration enables.
-    _merge_cs_hook SessionStart       session-start.sh       30
-    _merge_cs_hook PostToolUse        autosave-commits.sh    10 "Write|Edit" true
-    _merge_cs_hook Stop               narrative-reminder.sh  10
-    _merge_cs_hook SessionEnd         session-end.sh         30
-    _merge_cs_hook SubagentStart      subagent-context.sh    10
-    _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
-    _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
-    _merge_cs_hook PreToolUse         bash-logger.sh          5 "Bash"
-    _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
-    _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
-    _merge_cs_hook CwdChanged         narrative-reminder.sh   5
+    _register_cs_hooks() {
+        _merge_cs_hook SessionStart       session-start.sh       30
+        _merge_cs_hook PostToolUse        autosave-commits.sh    10 "Write|Edit" true
+        _merge_cs_hook Stop               narrative-reminder.sh  10
+        _merge_cs_hook SessionEnd         session-end.sh         30
+        _merge_cs_hook SubagentStart      subagent-context.sh    10
+        _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
+        _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
+        _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
+        _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
+        _merge_cs_hook CwdChanged         narrative-reminder.sh   5
+    }
 
     # Register cs-statusline as the Claude Code status line. A status line the
     # user already configured is never replaced silently: prompt when a
-    # terminal is attached, otherwise keep it and print how to switch.
+    # terminal is attached, otherwise keep it and print how to switch. The
+    # file is only looked at here; the registration is written with the rest.
     _statusline_cmd="$INSTALL_DIR/cs-statusline"
-    _current_statusline=$(echo "$SETTINGS" | jq -r '.statusLine.command // ""')
+    _current_statusline=""
+    if [ -s "$CLAUDE_SETTINGS" ]; then
+        _current_statusline=$(jq -r '.statusLine.command // ""' "$CLAUDE_SETTINGS")
+    fi
     # A "no" is remembered here so `cs -update` (which re-runs this installer)
     # stops asking on every release. `cs -statusline enable` clears it,
     # `cs -statusline disable` sets it (KEEP IN SYNC with lib/70-statusline.sh).
@@ -884,20 +1160,40 @@ else
             info "Capsule caps: square ends until you answer once with: cs -statusline caps ask"
         fi
     fi
-    if [ -n "$_register_statusline" ]; then
-        # Registers BOTH settings keys and a 60 s refreshInterval, same as
-        # `cs -statusline enable`; the two recipes must stay equivalent
-        # (KEEP IN SYNC with lib/70-statusline.sh).
-        SETTINGS=$(echo "$SETTINGS" | jq --arg cmd "$_statusline_cmd" \
-            --arg subcmd "$INSTALL_DIR/cs-subagent-statusline" \
-            '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
-             | .subagentStatusLine = {type: "command", command: $subcmd}')
-        if [ "$_register_statusline" = "1" ]; then
-            installed "status line" "cs-statusline + cs-subagent-statusline"
+    # settings.json on stdin, with cs's hooks and the status line the answers
+    # above chose, on stdout. cs_settings_update runs it under the lock, so it
+    # prints nothing else and asks nothing.
+    _cs_settings_filter() {
+        SETTINGS=$(cat)
+        _strip_cs_hooks
+        _register_cs_hooks
+        if [ -n "$_register_statusline" ]; then
+            # Registers BOTH settings keys and a 60 s refreshInterval, same as
+            # `cs -statusline enable`; the two recipes must stay equivalent
+            # (KEEP IN SYNC with lib/70-statusline.sh).
+            SETTINGS=$(echo "$SETTINGS" | jq --arg cmd "$_statusline_cmd" \
+                --arg subcmd "$INSTALL_DIR/cs-subagent-statusline" \
+                '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
+                 | .subagentStatusLine = {type: "command", command: $subcmd}')
         fi
+        printf '%s\n' "$SETTINGS"
+    }
+    cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    # settings.json no longer registers them, so the retired files can go,
+    # each one that still holds what cs wrote; the filter kept the
+    # registration of any other
+    for retired in ${CS_RETIRED_HOOK_FILES[@]+"${CS_RETIRED_HOOK_FILES[@]}"}; do
+        if _retired_still_ours "$retired"; then
+            rm -f "$retired"
+            info "Removed retired hook: $retired"
+        else
+            warn "Kept $retired: it changed during the install"
+            CS_KEPT_PATHS+=("$retired")
+        fi
+    done
+    if [ "$_register_statusline" = "1" ]; then
+        installed "status line" "cs-statusline + cs-subagent-statusline"
     fi
-
-    echo "$SETTINGS" > "$CLAUDE_SETTINGS"
 
     # Add cs's keys that nothing binds yet to keybindings.json: into its first
     # Global block, or a Global block of their own, creating the file when
@@ -906,12 +1202,15 @@ else
     # shadow. cs's own Option+1 / Option+2 bindings stood for /rotate and
     # /wrap, so they make way unless Ctrl+X R or Ctrl+X W conflicts: then
     # both stay, so the command whose chord is taken keeps a key. A conflict
-    # on a band chord leaves both commands their chords and keeps nothing. A file of a shape cs cannot read is refused before anything
-    # is written. The write is cs_write_atomic's, from the hooks' shared
-    # library deployed above: mode kept, and a symlinked file (a dotfiles
-    # manager's) rewritten through its link.
+    # on a band chord leaves both commands their chords and keeps nothing.
+    # The chords share one prefix, so the bare key they would shadow is named
+    # in one warning for the file. A file of a shape cs cannot read is refused
+    # before anything is written. The write is cs_write_atomic's, from the
+    # hooks' shared library deployed above: mode kept, and a symlinked file (a
+    # dotfiles manager's) rewritten through its link.
     _bind_rotate_wrap_keys() {
         local file doc status state key action prefix added="" command_conflicts=0 retired="" add
+        local shadowed="" shadowed_prefix="" shadowed_action=""
         file="$(_cs_keybindings_file)"
         if [ -e "$file" ]; then
             if ! _cs_keybindings_shape_ok "$file"; then
@@ -931,7 +1230,9 @@ else
                         "ctrl+x r"|"ctrl+x w") command_conflicts=$((command_conflicts + 1)) ;;
                     esac
                     if [ -n "$prefix" ]; then
-                        warn "Rotate/wrap keys: $key would shadow $prefix, which is bound to $action in $file; left unbound."
+                        shadowed="${shadowed:+$shadowed, }$key"
+                        shadowed_prefix="$prefix"
+                        shadowed_action="$action"
                     else
                         warn "Rotate/wrap keys: $key is already bound to $action in $file; left as it is."
                     fi
@@ -941,6 +1242,9 @@ else
                     ;;
             esac
         done <<< "$status"
+        if [ -n "$shadowed" ]; then
+            warn "Rotate/wrap keys: $shadowed would shadow $shadowed_prefix, which is bound to $shadowed_action in $file; left as they are."
+        fi
         if [ "$command_conflicts" = 0 ]; then
             retired=$(printf '%s\n' "$doc" | _cs_keybindings_held "$CS_RETIRED_OPTION_KEYS") \
                 || { warn "Rotate/wrap keys: could not read the bindings in $file"; return 1; }
@@ -953,9 +1257,10 @@ else
         add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg added "$added" \
             '$cs | with_entries(select(.key as $k | $added | split(", ") | any(.[]; . == $k)))') \
             || { warn "Rotate/wrap keys: could not build the bindings for $file"; return 1; }
+        # The payload's copy, as above: never the deployed one.
         # shellcheck source=hooks/cs-shared.sh
-        if ! . "$HOOKS_DIR/cs-shared.sh"; then
-            warn "Rotate/wrap keys: could not load $HOOKS_DIR/cs-shared.sh; $file left as it is."
+        if ! . "$PAYLOAD_DIR/hooks/cs-shared.sh"; then
+            warn "Rotate/wrap keys: could not load $PAYLOAD_DIR/hooks/cs-shared.sh; $file left as it is."
             return 1
         fi
         mkdir -p "$(dirname "$file")" 2>/dev/null || true
@@ -978,8 +1283,9 @@ else
     }
 
     # Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, and Ctrl+X 1 / Ctrl+X 2 press
-    # the cs band's keys, through Claude Code's own keybindings.json. Keys are the user's keyboard, so they are offered once
-    # per machine and the answer is recorded: a yes is honoured on every
+    # the cs band's keys, through Claude Code's own keybindings.json. Keys are
+    # the user's keyboard, so they are offered once per machine and the answer
+    # is recorded: a yes is honoured on every
     # install (keys already bound are left as they are), a no is never asked
     # again, and with no terminal nothing is written or recorded. Every step
     # reports and carries on; a keybinding must never take the install down.
@@ -1062,13 +1368,19 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
 fi
 
-# Get version for completion message
-CS_VERSION=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+# The version this install placed, for the completion message and the hooks'
+# stamp, read from the payload's bin/cs: $INSTALL_DIR/cs may be a link
+# _place_file kept, which holds content cs did not write and may point at
+# anything, a FIFO included.
+CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 
 # Stamp the deployed-hooks version so cs -doctor can flag installs whose
-# deployed artifacts lag behind the running cs binary.
+# deployed artifacts lag behind the running cs binary. Written as .tui-origin
+# is, through _place_file: the rename replaces a FIFO at the stamp's path
+# rather than opening it, and a link there is kept and named.
 if _install_has_engine claude && [ "$CS_VERSION" != "unknown" ]; then
-    echo "$CS_VERSION" > "$HOOKS_DIR/.version"
+    printf '%s\n' "$CS_VERSION" > "$STAGE_DIR/version" || error "Could not write $STAGE_DIR/version"
+    _place_file "$STAGE_DIR/version" "$HOOKS_DIR/.version" 644
 fi
 
 # Union with prior installed adapters: deselection does not uninstall them.
@@ -1086,6 +1398,14 @@ printf '%s\n' "$INSTALL_ENGINES" > "$INSTALL_CONFIG"
 echo ""
 echo -e "   ${GREEN}✓${NC} ${ORANGE}Installation complete${NC} ${COMMENT}(${CS_VERSION})${NC}"
 echo ""
+
+if [ "${#CS_KEPT_PATHS[@]}" -gt 0 ]; then
+    warn "Left in place, because cs did not write them:"
+    for _kept in "${CS_KEPT_PATHS[@]}"; do
+        warn_more "$_kept"
+    done
+    echo ""
+fi
 
 # Check if completion setup is needed
 SHELL_NAME=$(basename "$SHELL")

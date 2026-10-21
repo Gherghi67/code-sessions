@@ -73,7 +73,9 @@ _read_local_state() {
 # the next open resuming nothing.
 _cs_set_local_state_unlocked() {
     local state="$1" key="$2" value="$3"
-    mkdir -p "$(dirname "$state")" 2>/dev/null || { _cs_state_write_failed "$(dirname "$state")" create; return 1; }
+    local dir
+    dir=$(dirname "$state")
+    [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || [ -d "$dir" ] || { _cs_state_write_failed "$dir" create; return 1; }
     cs_local_state_set "$state" "$key" "$value" 2>/dev/null || { _cs_state_write_failed "$state"; return 1; }
 }
 
@@ -126,6 +128,40 @@ _unset_local_state() {
     esac || exit 1
 }
 
+# A worktree's real path as it appears inside a transcript's JSON strings: the
+# record escapes a `\` or `"` in the path, so a match escapes the same way, or
+# such a repo never matches. Physical, by measurement: launched from /tmp (a
+# link to /private/tmp), `claude --worktree` 2.1.296 recorded worktreePath and
+# cwd under /private/tmp, so pwd -P is the matching side (#814).
+_worktree_json_path() {  # wt_dir
+    local wt_real
+    wt_real=$( (cd -- "$1" 2>/dev/null && pwd -P) || printf '%s' "$1" )
+    printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Whether a transcript in the parent's project dir is a conversation that
+# began in the worktree: it carries the worktree's record, and its first
+# prompt is stamped with the worktree as cwd. This is the identity a bound
+# conversation is kept by (_relocated_worktree_transcript).
+_is_worktree_started_transcript() {  # transcript_file, wt_json_path
+    local first
+    # The closing quote pins the whole path: a worktree named `wt` must not
+    # claim `wt2`'s conversation.
+    grep -m1 -F "\"worktreePath\":\"$2\"" "$1" >/dev/null 2>&1 || return 1
+    first=$(grep -m1 '"type":"user"' "$1" 2>/dev/null) || return 1
+    case "$first" in
+        *"\"cwd\":\"$2\""*) ;;
+        *) return 1 ;;
+    esac
+}
+
+# Whether a transcript in the parent's project dir is the worktree's own
+# conversation, by the checks _discover_worktree_uuid_in describes: it began
+# in the worktree, and it is no bystander.
+_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+    _is_worktree_started_transcript "$1" "$2" && ! _is_bystander_transcript "$1"
+}
+
 # The first prompt somebody typed into a conversation, as an Objective line:
 # whitespace collapsed, clipped to 100 characters with an ellipsis. Prints
 # nothing when the transcript holds no such prompt, or without jq. User records
@@ -139,15 +175,23 @@ _transcript_first_prompt() {  # transcript_file
     local file="$1"
     [ -f "$file" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
+    # Read whole with --rawfile, not line by line with -R: jq 1.7.1's -R
+    # splits a multibyte character 4095 bytes into a line, and a prompt sent
+    # with an image starts past the image's base64 in its line. The read stops
+    # at 16 MiB, which holds two images at the API's 5 MB limit (about 6.7 MB
+    # each as base64) and the records before them, and keeps jq near 66 MiB
+    # (measured: about four times the bytes read). A line the cap cuts no
+    # longer parses and is skipped like any torn line.
     local candidates
-    candidates=$(jq -r -R '
-        fromjson? | select(.type == "user" and ((.isMeta // false) | not))
+    candidates=$(head -c 16777216 "$file" | jq -rn --rawfile t /dev/stdin '
+        $t | split("\n")[]
+        | fromjson? | select(.type == "user" and ((.isMeta // false) | not))
         | .message.content
         | if type == "string" then .
           elif type == "array" then ([.[] | select(.type == "text") | .text] | join(" "))
           else empty end
         | gsub("[\\n\\r\\t]+"; " ") | gsub(" +"; " ")
-        | select(length > 0)' "$file" 2>/dev/null) || return 0
+        | select(length > 0)' 2>/dev/null) || return 0
     local line
     while IFS= read -r line; do
         line="${line# }"; line="${line% }"
@@ -184,11 +228,22 @@ _seed_readme_objective() {  # readme, text
 # it was never complete — but the next one no longer dies with it. A no-op on a
 # file that is empty or already terminated, and best-effort on write like every
 # other timeline append: a launch must not die because a journal could not be
-# repaired.
+# repaired. Silent even about a link out of the session: the append that
+# follows names it.
 _terminate_jsonl() {  # file
     [ -s "$1" ] || return 0
     [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-    { printf '\n' >> "$1"; } 2>/dev/null || true
+    { CS_WRITE_QUIET=1 cs_append_inside "$1" printf '\n'; } 2>/dev/null || true
+}
+
+# Append one record, built by jq -nc from the arguments, to a session's JSONL
+# journal (the timeline, the queue's notifications). Best-effort like every
+# journal write, so a failure never stops the verb; a link that takes the
+# journal out of the session is still named on stderr, and nothing is written.
+_append_record() {  # file, jq args...
+    local file="$1"; shift
+    _terminate_jsonl "$file"
+    CS_WRITE_QUIET=1 cs_append_inside "$file" jq -nc "$@" || true
 }
 
 # Append a rotated event to the tracked timeline: the durable link between
@@ -198,26 +253,25 @@ _terminate_jsonl() {  # file
 _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
     local session_dir="$1" from="$2" to="$3" reason="$4" handoff="${5:-}" engine="${6:-claude}"
     _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    cs_append_inside "$session_dir/.cs/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg from "$from" \
            --arg to "$to" \
            --arg reason "$reason" \
            --arg handoff "$handoff" \
            --arg engine "$engine" --arg run_id "${CS_RUN_ID:-}" \
            '{ts: $ts, event: "rotated", engine: $engine, run_id: $run_id, from: $from, to: $to, reason: $reason}
-            + (if $handoff == "" then {} else {handoff: $handoff} end)' \
-        >> "$session_dir/.cs/timeline.jsonl"; } 2>/dev/null
+            + (if $handoff == "" then {} else {handoff: $handoff} end)'
 }
 
 # A native adapter calls this only after its conversation readiness acknowledgement.
 _timeline_started() {  # session_dir, engine, native_id, source
     local session_dir="$1" engine="$2" native_id="$3" source="$4"
     _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    cs_append_inside "$session_dir/.cs/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg engine "$engine" --arg session_id "$native_id" --arg source "$source" \
         --arg run_id "${CS_RUN_ID:-}" \
         '{ts:$ts,event:"started",engine:$engine,session_id:$session_id,
-          source:$source,run_id:$run_id}' >> "$session_dir/.cs/timeline.jsonl"; } 2>/dev/null
+          source:$source,run_id:$run_id}'
 }
 
 # Resolve a SPECIFIC session's actor slug from its own dir, bypassing $CS_ACTOR
@@ -267,5 +321,6 @@ cmd_who() {
 # machines write independently. The Claude-Code-maintained memory index gets
 # merge=ours (it is hand-maintained; two branches editing it would conflict,
 # and the local copy re-accumulates entries through normal use). The
-# append-only log, timeline, and per-actor narratives get merge=union (git's
-# built-in driver, no per-clone config) so divergent appends keep both sides.
+# append-only log, timeline, per-actor narratives and the memory archive (the
+# pointers /wrap moves out of the index) get merge=union (git's built-in
+# driver, no per-clone config) so divergent appends keep both sides.

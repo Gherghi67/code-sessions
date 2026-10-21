@@ -100,8 +100,15 @@ _lock_collision_menu() {
 # also has a token-qualified lease; publish and release both under one guard.
 _cs_acquire_session_lock_guarded() {  # meta_dir, force
     local meta="$1" force="$2" lock_pid="" lease_tmp="" lock_tmp=""
+    _refuse_session_lock_not_a_file "$meta/session.lock"
     lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
+    if declare -F _remote_refuse_live >/dev/null; then
+        _remote_refuse_live "$session_name" "$meta" "$lock_pid" "$remote"
+    fi
     if [ -n "$lock_pid" ] && [ "$force" != true ]; then return 73; fi
+    if [ -e "$meta/session.lock" ] && [ -z "$lock_pid" ]; then
+        warn "Removing stale session lock (PID $(_cs_plain_name "$(read_lock_pid "$meta")" 40))"
+    fi
     umask 077
     lock_tmp=$(mktemp "$meta/local/.session-lock.XXXXXX") || return 1
     printf '%s\n' "$$" > "$lock_tmp" || { rm -f "$lock_tmp"; return 1; }
@@ -120,11 +127,48 @@ _cs_acquire_session_lock_guarded() {  # meta_dir, force
     mv "$lock_tmp" "$meta/session.lock" || { rm -f "$lock_tmp"; return 1; }
 }
 
+_require_session_lock_perl() {  # meta_dir
+    perl -MFcntl=:flock -e 1 >/dev/null 2>&1 || {
+        printf 'Error: cs needs perl to lock this session (%s); install perl and retry\n' "$1" >&2
+        return 1
+    }
+}
+
+# Take a lock without an interactive collision menu, for encryption. Use the
+# same mutex and lease guard as an open so a concurrent launcher cannot be
+# replaced between the liveness check and publication. Returns 1 for a live
+# holder, 2 for a held mutex, and 3 for another acquisition failure.
+_take_session_lock() {  # meta_dir
+    local meta="$1" status=0 remote="" session_name=""
+    _CS_LOCK_LIVE_PID=""
+    _require_session_lock_perl "$meta" || return 3
+    _refuse_session_lock_not_a_file "$meta/session.lock"
+    _cs_lock "$meta/session.mutex.lock" || return 2
+    cs_run_guarded "$meta" _cs_acquire_session_lock_guarded "$meta" false || status=$?
+    _cs_unlock "$meta/session.mutex.lock"
+    case "$status" in
+        73) _CS_LOCK_LIVE_PID=$(_cs_session_live_pid "$meta") || true; return 1 ;;
+        0) return 0 ;;
+        *) return 3 ;;
+    esac
+}
+
 acquire_session_lock() {  # meta_dir, force, session_name
-    local meta="$1" force="${2:-}" session_name="$3" status=0 lock_pid=""
+    local meta="$1" force="${2:-}" session_name="$3" remote="${4:-}" status=0 lock_pid=""
+    _require_session_lock_perl "$meta" || return 1
+    _refuse_session_lock_not_a_file "$meta/session.lock"
+    lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
+    if [ -n "$lock_pid" ] && [ "$force" = true ] && [ "${CS_COLLISION_FORCE:-}" != 1 ]; then
+        warn "Overriding active session lock (PID $lock_pid)"
+    fi
     while :; do
         status=0
+        if ! _cs_lock "$meta/session.mutex.lock"; then
+            printf 'Error: Another cs is opening this session (%s is held)\n' "$meta/session.mutex.lock" >&2
+            return 1
+        fi
         cs_run_guarded "$meta" _cs_acquire_session_lock_guarded "$meta" "$force" || status=$?
+        _cs_unlock "$meta/session.mutex.lock"
         [ "$status" -ne 0 ] || return 0
         [ "$status" -eq 73 ] || return "$status"
         lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
@@ -144,6 +188,7 @@ acquire_session_lock() {  # meta_dir, force, session_name
 
 _cs_release_session_lock_guarded() {  # meta_dir
     local meta="$1" lock_pid=""
+    [ ! -L "$meta/session.lock" ] && [ -f "$meta/session.lock" ] || return 0
     if [ -f "$meta/local/run-lease.json" ]; then
         cs_run_lease_owned "$meta" || return 0
         rm -f "$meta/session.lock" "$meta/local/run-lease.json"
@@ -154,14 +199,10 @@ _cs_release_session_lock_guarded() {  # meta_dir
 }
 
 release_session_lock() {  # meta_dir
-    cs_run_guarded "$1" _cs_release_session_lock_guarded "$1"
-}
-
-# Print the PID recorded in a session's lock file (empty if none). Arg: meta_dir.
-read_lock_pid() {  # meta_dir
-    local f="$1/session.lock"
-    [ -f "$f" ] || return 0
-    cat "$f" 2>/dev/null || true
+    [ -d "$1" ] || return 0
+    _cs_lock "$1/session.mutex.lock" 2>/dev/null || return 0
+    cs_run_guarded "$1" _cs_release_session_lock_guarded "$1" || true
+    _cs_unlock "$1/session.mutex.lock"
 }
 
 # True (exit 0) when a session's process is currently alive on this machine.
@@ -172,7 +213,11 @@ read_lock_pid() {  # meta_dir
 _cs_session_live_pid() {  # meta_dir
     local meta="$1" owner="" native="" signature="" actual=""
     owner=$(read_lock_pid "$meta")
+    owner="${owner#"${owner%%[![:space:]]*}"}"
+    owner="${owner%"${owner##*[![:space:]]}"}"
     case "$owner" in ''|*[!0-9]*) return 1 ;; esac
+    owner="${owner#"${owner%%[!0]*}"}"
+    _cs_pid_in_range "$owner" || return 1
     if kill -0 "$owner" 2>/dev/null; then printf '%s\n' "$owner"; return 0; fi
     native=$(jq -er --arg owner "$owner" \
         'select((.owner_pid | tostring) == $owner) | .native_pid | select(type == "number" and . > 1)' \
@@ -231,13 +276,62 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
         && _pid_is_self_or_ancestor "$2"
 }
 
-# Epoch mtime of a file (BSD/GNU stat), 0 on error. Arg: path.
+# True when cs runs inside a session (CLAUDE_SESSION_NAME) other than <name>.
+# A terminal outside every session is the user, never another session.
+_called_from_other_session() {  # name
+    [ -n "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" ] && [ "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" != "$1" ]
+}
+
+# Refuses <verb> (remove, archive, rotate the narrative of) on session <name>
+# while its claude is running when cs runs inside a session that does not own
+# it, --force or not: the flag skips the live check only from a terminal
+# outside every session and for the caller's own sessions. A session owns itself and, from its base,
+# its own features (<base>@<task>); a feature owns neither its base nor a
+# sibling. An idle target is left to the verb's own checks. Called directly,
+# never in $(...), so the error ends cs.
+_refuse_live_other_session() {  # name meta_dir verb
+    _called_from_other_session "$1" || return 0
+    case "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" in
+        *@*) ;;
+        *) case "$1" in "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"@*) return 0 ;; esac ;;
+    esac
+    local pid
+    pid="$(live_lock_pid "$2")"
+    [ -n "$pid" ] || return 0
+    error "session ${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}} cannot $3 session $1 while it is live (pid $pid); --force does not override that from another session. Close $1 first."
+}
+
+# Refuses <verb> (remove, archive) on base session <name> while one of its
+# features (<name>@<task>) is live, when cs runs inside any session but <name>
+# itself, --force or not: a feature's worktree points into its base's
+# repository. Only a terminal outside every session and the base itself are
+# not refused; a sibling feature is, and so is the live feature itself, whose
+# own worktree the base holds. Called directly, never in $(...), so the error
+# ends cs. A feature is <name>'s when <name>@<its task> is the same directory
+# as the feature's (-ef), not when the names match as strings: a volume that
+# ignores letter case or Unicode normalization finds one directory under
+# several spellings, and a glob compares bytes.
+_refuse_base_with_live_feature() {  # name verb
+    [ -n "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" ] || return 0
+    [ "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" != "$1" ] || return 0
+    case "$1" in *@*) return 0 ;; esac
+    local feature entry pid
+    for feature in "$SESSIONS_ROOT"/*@*; do
+        entry="${feature##*/}"
+        [ "$SESSIONS_ROOT/$1@${entry#*@}" -ef "$feature" ] || continue
+        [ -d "$feature/.cs" ] || continue
+        pid="$(live_lock_pid "$feature/.cs")"
+        [ -n "$pid" ] || continue
+        error "session ${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}} cannot $2 session $1 while its feature ${feature##*/} is live (pid $pid); --force does not override that from another session. Close ${feature##*/} first."
+    done
+}
+
+# Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
+# _cs_file_mode does: BSD stat rejects -c with no output, while GNU stat reads
+# -f as --file-system and prints that, and OSTYPE is no guide to which stat
+# PATH finds (Homebrew's gnubin puts GNU stat on a Mac).
 _epoch_mtime() {  # path
-    if [[ "${OSTYPE:-}" == darwin* ]]; then
-        stat -f %m "$1" 2>/dev/null || echo 0
-    else
-        stat -c %Y "$1" 2>/dev/null || echo 0
-    fi
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
 
 # How long after the last statusline write a lockless conversation still counts
@@ -263,7 +357,9 @@ session_heartbeat_alive() {  # meta_dir, now_epoch
 # statusline heartbeat. Display surfaces (cs -live, cs -usage) use this so they
 # match the TUI. The destructive guards (rm/archive/spawn) use strict
 # session_is_live, so a session whose process is gone can still be removed
-# without --force even if its statusline was touched recently.
+# without --force even if its statusline was touched recently. Uninstall's
+# delete of the whole sessions root uses this broader test: it has no --force,
+# and a conversation opened outside cs holds no lock.
 session_display_live() {  # meta_dir, now_epoch
     session_is_live "$1" || session_heartbeat_alive "$1" "$2"
 }
@@ -277,4 +373,16 @@ session_uptime_secs() {  # meta_dir, now_epoch
     case "$started" in ''|*[!0-9]*) echo 0; return 0;; esac
     [ "$started" -gt 0 ] || { echo 0; return 0; }
     echo $(( now - started ))
+}
+
+# Stops cs, naming <lock file>, when it is anything but a regular file or
+# absent. cs creates and removes the session lock as a regular file: a write
+# or a read would go through a link to whatever it names, a directory would
+# pass for a stale lock that rm cannot remove, and a write to a fifo blocks
+# with no reader while the openers' mutex is held. Called before anything is
+# written.
+_refuse_session_lock_not_a_file() {  # lock_file
+    [ ! -L "$1" ] || error "$1 is a link, where cs keeps the session lock; remove it and open the session again"
+    [ ! -d "$1" ] || error "$1 is a directory, where cs keeps the session lock; remove it and open the session again"
+    [ ! -e "$1" ] || [ -f "$1" ] || error "$1 is not a regular file, where cs keeps the session lock; remove it and open the session again"
 }

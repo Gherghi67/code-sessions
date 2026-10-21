@@ -400,7 +400,7 @@ _switch_relaunch() {  # session_name
         unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_APPROVAL CS_RUN_OWNER_PID CS_LEAD_PID CS_FRESH_REBIND \
             CS_CLAUDE_SESSION_ID 2>/dev/null || true
         umask "$_cs_sw_umask" 2>/dev/null || true
-        cd "$_cs_sw_pwd" 2>/dev/null || cd / 2>/dev/null || true
+        cd -- "$_cs_sw_pwd" 2>/dev/null || cd / 2>/dev/null || true
         shopt -s execfail
         exec "${_cs_sw_argv[@]}" || _cs_sw_rc=$?
     fi

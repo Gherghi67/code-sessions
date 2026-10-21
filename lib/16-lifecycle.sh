@@ -40,6 +40,7 @@ _cs_run_stop_helper() {
 _cs_run_cleanup() {
     [ "${_cs_run_active:-0}" = 1 ] || return 0
     _cs_run_stop_helper
+    if declare -F _spawn_put_back_claim >/dev/null; then _spawn_put_back_claim || true; fi
     # A signal can arrive while a child runs. Reap it before releasing the lease.
     if [ -n "${_cs_run_child_pid:-}" ]; then
         kill -TERM "$_cs_run_child_pid" 2>/dev/null || true
@@ -135,7 +136,7 @@ cs_run_child() {  # executable, arguments...
 _cs_run_unarchive() {  # meta_dir, name
     if [ -f "$1/archived" ]; then
         rm -f "$1/archived" || return 1
-        printf 'Unarchived: %s\n' "$2"
+        printf '%s\n' removed
     fi
 }
 
@@ -144,7 +145,10 @@ cs_run_native() { cs_run_child "$@"; }
 
 cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
-    local merge="${6:-}" intent="${7:-auto}" status=0
+    local merge="${6:-}" intent="${7:-auto}" remote_mode="${8:-}" status=0
+    local _spawn_token="${CS_SPAWN_TOKEN:-}"
+    unset CS_SPAWN_TOKEN
+    [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local _cs_run_helper_dir=""
     local saved_exit saved_int saved_term
@@ -155,7 +159,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     [ -d "$directory" ] || { printf 'Error: Session directory does not exist: %s\n' "$directory" >&2; return 1; }
     # handoff: --from-handoff, the resume prompt's r answer taken unasked.
     case "$intent" in auto|resume|fresh|handoff) ;; *) printf 'Error: Unknown launch intent: %s\n' "$intent" >&2; return 2 ;; esac
-    acquire_session_lock "$_cs_run_meta" "$force" "$name" || return $?
+    acquire_session_lock "$_cs_run_meta" "$force" "$name" "${remote_mode:+remote}" || return $?
     _cs_run_active=1
     saved_exit=$(trap -p EXIT); saved_int=$(trap -p INT); saved_term=$(trap -p TERM)
     trap '_cs_run_cleanup' EXIT
@@ -164,7 +168,15 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     cs_export_session_context "$name" "$directory" || status=$?
     unset CS_FRESH_REBIND CS_CLAUDE_SESSION_ID
     if [ "$status" -eq 0 ]; then
-        cs_run_with_lease "$_cs_run_meta" _cs_run_unarchive "$_cs_run_meta" "$name" || status=$?
+        local unarchived=""
+        unarchived=$(cs_run_with_lease "$_cs_run_meta" _cs_run_unarchive "$_cs_run_meta" "$name") || status=$?
+        if [ "$status" -eq 0 ] && [ "$unarchived" = removed ]; then
+            if declare -F notice >/dev/null; then
+                notice .cs/archived "removed, so the session is active again"
+            else
+                printf 'Unarchived: %s\n' "$name"
+            fi
+        fi
     fi
     # cs -switch (lib/78-switch.sh): a pending switch found as a run starts is
     # an earlier run's leftover; the one this run arms is settled at its end,
@@ -173,7 +185,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
         _switch_run_start "$directory" || true
     fi
     if [ "$status" -eq 0 ]; then
-        cs_engine_call "$engine" launch "$name" "$directory" "$is_new" "$force" "$merge" "$intent" || status=$?
+        cs_engine_call "$engine" launch "$name" "$directory" "$is_new" "$force" "$merge" "$intent" "$remote_mode" || status=$?
     fi
     if [ "$status" -eq 0 ]; then
         cs_run_with_lease "$_cs_run_meta" _cs_set_local_state_unlocked "$_cs_run_meta/local/state" engine "$engine" || status=$?

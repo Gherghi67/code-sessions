@@ -45,7 +45,7 @@ _codex_cs_binary() {
         *) cs_binary=$(command -v "$cs_binary" 2>/dev/null) || return 1 ;;
     esac
     local bin_dir
-    bin_dir=$(cd "$(dirname "$cs_binary")" && pwd -P) || return 1
+    bin_dir=$(cd -- "$(dirname "$cs_binary")" && pwd -P) || return 1
     printf '%s/%s\n' "$bin_dir" "$(basename "$cs_binary")"
 }
 
@@ -217,7 +217,7 @@ _launch_codex_bound() {
     fi
     case "$codex_bin" in
         /*) ;;
-        *) codex_bin="$(cd "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
+        *) codex_bin="$(cd -- "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
     esac
     # Automatic approval must refuse before preparation binds or spends context.
     # Native approval leaves policy to Codex and needs no automatic-review flag.

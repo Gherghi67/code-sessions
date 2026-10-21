@@ -173,11 +173,20 @@ $lower
         || error "Cannot edit $readme: its YAML frontmatter offers nowhere to write the tags line (no 'status:' line and no closing '---' fence); the file is unchanged"
 }
 
+# Each tag on stdin, one per line, as a plain name: .cs/README.md is tracked,
+# so a clone chooses its tags, and a tag is checked only when cs writes it.
+_tags_shown() {
+    local tag
+    while IFS= read -r tag; do
+        printf '%s\n' "$(_cs_plain_name "$tag" 160)"
+    done
+}
+
 _tag_list_session() {
     local name="$1"
     local dir="$SESSIONS_ROOT/$name"
     [ -d "$dir" ] || [ -L "$dir" ] || error "No such session: $name"
-    _tags_read "$dir/.cs/README.md"
+    _tags_read "$dir/.cs/README.md" | _tags_shown
 }
 
 run_tag() {
@@ -204,5 +213,5 @@ _tag_list_all() {
         is_session_dir "$dir" || continue
         _tags_read "$dir/.cs/README.md"
     done < <(find "$SESSIONS_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null) \
-        | sort | uniq -c | sort -rn | awk '{printf "%s (%s)\n", $2, $1}'
+        | _tags_shown | sort | uniq -c | sort -rn | awk '{printf "%s (%s)\n", $2, $1}'
 }

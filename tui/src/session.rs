@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::untracked;
+
 /// Whether a session is running, and whether cs owns the lock. Collapsing the
 /// old `lock_pid`/`is_locked`/`is_live` trio into one value keeps the illegal
 /// "locked but not live" combination unrepresentable.
@@ -12,6 +14,11 @@ use std::path::{Path, PathBuf};
 pub enum Liveness {
     /// cs holds the process lock; the PID is the running conversation.
     Locked(u32),
+    /// `cs <name> --remote` serves the session through a `claude
+    /// remote-control` server: `lock` is the pid in the session lock, `server`
+    /// the pid in `.cs/local/remote.pid`. cs execs the server, so both name
+    /// the same process; each is read from its own file.
+    Served { lock: u32, server: u32 },
     /// No lock, but the statusline touched `.cs/local/context-pct` within the
     /// heartbeat window — a conversation opened outside cs.
     Heartbeat,
@@ -26,13 +33,13 @@ impl Liveness {
     }
     /// True only when cs holds the process lock (not merely heartbeat-live).
     pub fn is_locked(self) -> bool {
-        matches!(self, Liveness::Locked(_))
+        matches!(self, Liveness::Locked(_) | Liveness::Served { .. })
     }
     /// The locking process's PID, if cs holds the lock.
     pub fn lock_pid(self) -> Option<u32> {
         match self {
-            Liveness::Locked(pid) => Some(pid),
-            _ => None,
+            Liveness::Locked(pid) | Liveness::Served { lock: pid, .. } => Some(pid),
+            Liveness::Heartbeat | Liveness::Dormant => None,
         }
     }
 }
@@ -376,13 +383,30 @@ pub fn parse_agent_record(text: &str) -> Option<AgentRecord> {
     })
 }
 
-/// Where Claude Code publishes its session records.
+/// Where Claude Code publishes its session records. Under test it is
+/// [`UNSCOPED_CLAUDE_SESSIONS`], a path that cannot exist, as the sessions
+/// root is: no test reads the real `~/.claude` of whoever runs the suite,
+/// where a record or a FIFO could change or stall the run.
 fn claude_sessions_dir() -> PathBuf {
+    #[cfg(test)]
+    return PathBuf::from(UNSCOPED_CLAUDE_SESSIONS);
+    #[cfg(not(test))]
+    live_claude_sessions_dir()
+}
+
+/// The directory Claude Code publishes its session records in on this
+/// machine: `$CS_CLAUDE_DIR/sessions`, else `~/.claude/sessions`.
+fn live_claude_sessions_dir() -> PathBuf {
     let base = std::env::var_os("CS_CLAUDE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(home_dir().expect("HOME not set")).join(".claude"));
     base.join("sessions")
 }
+
+/// The records directory a test build reads; under `/nonexistent`, which
+/// only root can create.
+#[cfg(test)]
+const UNSCOPED_CLAUDE_SESSIONS: &str = "/nonexistent/cs-tui-test-claude-dir/sessions";
 
 /// Map each session name to the state Claude Code advertises for it.
 ///
@@ -473,11 +497,14 @@ pub fn launch_engine(name: &str) -> String {
         })
 }
 
+/// The sessions root: `$CS_SESSIONS_ROOT`, else `~/.claude-sessions`. Under
+/// test it is only ever the [`test_root`] override; with none scoped it is
+/// [`test_root::UNSCOPED`], a path that cannot exist, so no test run can
+/// delete, rename or scan the real sessions of whoever runs the suite.
 pub fn sessions_root() -> PathBuf {
     #[cfg(test)]
-    if let Some(root) = test_root::current() {
-        return root;
-    }
+    return test_root::current().unwrap_or_else(|| PathBuf::from(test_root::UNSCOPED));
+    #[cfg(not(test))]
     std::env::var("CS_SESSIONS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -486,9 +513,9 @@ pub fn sessions_root() -> PathBuf {
         })
 }
 
-/// Test-only sessions-root override. `set_var("CS_SESSIONS_ROOT")` is a
-/// process-global mutation that races the many parallel tests reading env
-/// through `sessions_root()` (a logical data race on shared state). Cargo runs
+/// Test-only sessions-root override. A test build never reads
+/// `CS_SESSIONS_ROOT`, and setting it would be a process-global mutation
+/// racing the many parallel tests (a logical data race on shared state). Cargo runs
 /// each test on its own thread, so a thread-local root is naturally isolated per
 /// test: `scoped(root)` sets it for the life of the returned guard and clears it
 /// on drop (panic-safe, so a reused test thread never leaks it).
@@ -496,6 +523,10 @@ pub fn sessions_root() -> PathBuf {
 pub mod test_root {
     use std::cell::RefCell;
     use std::path::PathBuf;
+
+    /// The root a test sees when it scoped none. Under `/nonexistent`, which
+    /// only root can create, so a write fails and a delete finds nothing.
+    pub const UNSCOPED: &str = "/nonexistent/cs-tui-test-sessions-root";
 
     thread_local! {
         static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
@@ -515,6 +546,36 @@ pub mod test_root {
     impl Drop for Guard {
         fn drop(&mut self) {
             ROOT.with(|c| *c.borrow_mut() = None);
+        }
+    }
+}
+
+/// Test-only stand-in for `CLAUDE_SESSION_NAME`, the session the picker runs
+/// inside. A test build never reads the variable (the suite may itself run
+/// inside a session), and setting it would race the parallel tests, so each
+/// test thread scopes its own: none scoped is a picker outside every session.
+#[cfg(test)]
+pub mod test_caller {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CALLER: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<String> {
+        CALLER.with(|c| c.borrow().clone())
+    }
+
+    #[must_use]
+    pub fn scoped(name: &str) -> Guard {
+        CALLER.with(|c| *c.borrow_mut() = Some(name.to_string()));
+        Guard
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CALLER.with(|c| *c.borrow_mut() = None);
         }
     }
 }
@@ -708,7 +769,10 @@ fn read_session(path: &Path, secret_counts: &HashMap<String, u32>) -> Session {
         .map(|f| parse_modified(f))
         .unwrap_or((None, None));
     let liveness = match read_lock_pid(&meta_dir) {
-        Some(pid) => Liveness::Locked(pid),
+        Some(lock) => match read_remote_pid(&meta_dir, &name) {
+            Some(server) => Liveness::Served { lock, server },
+            None => Liveness::Locked(lock),
+        },
         None if heartbeat_alive(&meta_dir, std::time::SystemTime::now()) => Liveness::Heartbeat,
         None => Liveness::Dormant,
     };
@@ -996,28 +1060,81 @@ pub fn worktree_parts(name: &str) -> Option<(&str, &str)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnownedEntries {
     NotCreatedByCs(Vec<String>),
-    NotTrackedByGit(Vec<String>),
+    NotTrackedByGit(Vec<untracked::Entry>),
 }
 
-impl UnownedEntries {
-    /// The confirm line, matching `cs -rm`'s wording; None when nothing is at risk.
-    pub fn warning(&self) -> Option<String> {
-        let (what, paths) = match self {
-            UnownedEntries::NotCreatedByCs(p) => ("cs did not create", p),
-            UnownedEntries::NotTrackedByGit(p) => ("git does not track", p),
-        };
-        (!paths.is_empty()).then(|| format!("Also deletes files {what}: {}", paths.join(", ")))
+/// The delete confirm's account of one thing a removal would take: a line of
+/// text, and under it the entries it lists one per row, the files git does
+/// not track or the names cs did not create (empty for any other warning).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteWarning {
+    pub text: String,
+    pub entries: Vec<untracked::Entry>,
+}
+
+impl DeleteWarning {
+    pub fn line(text: String) -> Self {
+        DeleteWarning { text, entries: Vec::new() }
     }
 }
 
-/// Names cs, Claude Code and Finder put in a session root; everything else
-/// there belongs to the user. Kept in step with `_session_foreign_entries`.
+impl UnownedEntries {
+    /// The confirm's warning, in `cs -rm`'s words, its names or paths listed
+    /// one per row under it; None when nothing is at risk.
+    pub fn warning(&self) -> Option<DeleteWarning> {
+        match self {
+            // Each name is one entry without a trailing '/', so the listing
+            // draws it alone, with no file count.
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => Some(DeleteWarning {
+                text: "Also deletes files cs did not create:".to_string(),
+                entries: p.iter().map(|name| untracked::Entry { path: name.clone(), files: 1 }).collect(),
+            }),
+            UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => Some(DeleteWarning {
+                text: format!("Also deletes {} git does not track:", untracked::count_phrase(e)),
+                entries: e.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Why a removal not granted these files refuses session `name`, as
+    /// `cs -rm --force` refuses without --delete-files, on one line for the
+    /// status bar, each name as the listing prints it (`untracked::printed`);
+    /// None when there are none.
+    pub fn refusal(&self, name: &str) -> Option<String> {
+        match self {
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
+                let listed: Vec<String> = p.iter().map(|entry| untracked::printed(entry)).collect();
+                Some(format!("{name} holds files cs did not create: {}", listed.join(", ")))
+            }
+            UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => {
+                let lines = untracked::entry_lines(e, untracked::SHOWN_ENTRIES);
+                let listed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+                Some(format!("{name} holds {} git does not track: {}", untracked::count_phrase(e), listed.join(", ")))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Names cs, Claude Code and Finder put in a session root, plus the root
+/// files legacy cs layouts kept there; everything else belongs to the user.
+/// Kept in step with `_session_foreign_entries`.
 const SESSION_ROOT_OWNED: &[&str] = &[
     ".cs", ".claude", ".git", ".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store",
+    "notes.md", "changes.md", "discoveries.md", "logs", "artifacts",
 ];
 
-/// Top-level names in a worktree that are cs's, not the user's.
-const WORKTREE_OWNED: &[&str] = &[".cs", ".claude", "CLAUDE.local.md", ".DS_Store"];
+/// The one path under a worktree's `.claude/` that is cs's: the settings
+/// file it writes. Anything else there is the user's.
+const WORKTREE_OWNED_SETTINGS: &str = ".claude/settings.local.json";
+
+/// The paths under a tracked-mode worktree's `.cs/` that are cs's own
+/// machine-local files; git carries the rest of `.cs/` there.
+const TRACKED_MODE_CS_OWNED: [&str; 3] = [".cs/session.lock", ".cs/session.mutex.lock", ".cs/.narrative-reminder-cooldown"];
+
+/// The line cs writes into the root CLAUDE.local.md it owns.
+const SESSION_PROTOCOL_SENTINEL: &[u8] = b"<!-- cs:session-protocol -->";
 
 /// What removing the session at `path` would delete that cs did not put
 /// there. An adopted session (a symlink) loses only its link, so nothing.
@@ -1027,7 +1144,7 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
         return Ok(UnownedEntries::NotCreatedByCs(Vec::new()));
     }
-    if worktree_parts(name).is_some() && path.join(".git").is_file() {
+    if is_worktree_beside_its_base(name, path) {
         return worktree_untracked(path).map(UnownedEntries::NotTrackedByGit);
     }
     let entries = match fs::read_dir(path) {
@@ -1050,31 +1167,172 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     Ok(UnownedEntries::NotCreatedByCs(names))
 }
 
-fn worktree_untracked(path: &Path) -> Result<Vec<String>, String> {
+/// Whether session `name` at `path` is a worktree git can list: a
+/// `<base>@<task>` checkout with its `.git` file, beside a base directory (a
+/// link to one followed). `cs -rm` asks the same before it lists with git
+/// (lib/65-sessions.sh `_remove_one_session`); a worktree whose base is gone
+/// has no repository to ask, so both list it as a plain directory.
+fn is_worktree_beside_its_base(name: &str, path: &Path) -> bool {
+    let Some((base, _)) = worktree_parts(name) else { return false };
+    path.join(".git").is_file() && path.parent().is_some_and(|root| root.join(base).is_dir())
+}
+
+/// The NUL-separated paths `git ls-files <args>` prints in `path`.
+fn git_ls_files(path: &Path, args: &[&str]) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(path)
-        .args(["status", "--porcelain", "--ignored", "--untracked-files=normal"])
+        .args(["ls-files", "-z"])
+        .args(args)
         .output()
-        .map_err(|e| format!("cannot run git status in {}: {e}", path.display()))?;
+        .map_err(|e| format!("cannot run git ls-files in {}: {e}", path.display()))?;
     if !out.status.success() {
         return Err(format!(
-            "git status failed in {}: {}",
+            "git ls-files failed in {}: {}",
             path.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let mut paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with("?? ") || l.starts_with("!! "))
-        .map(|l| l[3..].to_string())
-        .filter(|p| {
-            let top = p.split('/').next().unwrap_or(p);
-            !WORKTREE_OWNED.contains(&top)
-        })
-        .collect();
-    paths.sort();
+    Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+}
+
+/// Files and links under `dir`, not following links: what removing it deletes.
+fn files_under(dir: &Path) -> Result<u64, String> {
+    let mut files = 0;
+    for entry in fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        let kind = entry.file_type().map_err(|e| format!("cannot read {}: {e}", entry.path().display()))?;
+        files += if kind.is_dir() { files_under(&entry.path())? } else { 1 };
+    }
+    Ok(files)
+}
+
+/// The `cs_mode` a worktree's `.cs/local/state` names, read as
+/// `_read_local_state` reads it: line by line as bytes, so a byte that is
+/// not UTF-8 elsewhere in the file leaves the line readable; `None` when the
+/// file or the key is absent.
+fn worktree_cs_mode(path: &Path) -> Option<String> {
+    let state = fs::read(path.join(".cs/local/state")).ok()?;
+    state
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"cs_mode:"))
+        .map(|value| String::from_utf8_lossy(value).trim_start().replace('"', ""))
+}
+
+/// The test of whether a path in the worktree at `path` is cs's own
+/// bookkeeping, as lib/30-worktree.sh `_without_cs_bookkeeping` draws the
+/// line, the mode and the protocol file read once: all of `.cs/`
+/// in ignored mode, only its machine-local files otherwise (git carries the
+/// rest); the root CLAUDE.local.md only while it carries cs's sentinel; the
+/// settings file; and Finder's .DS_Store at any depth.
+fn cs_bookkeeping_in(path: &Path) -> impl Fn(&str) -> bool {
+    let ignored_mode = worktree_cs_mode(path).as_deref() == Some("ignored");
+    let protocol_file_is_cs = fs::read(path.join("CLAUDE.local.md"))
+        .map(|text| text.windows(SESSION_PROTOCOL_SENTINEL.len()).any(|w| w == SESSION_PROTOCOL_SENTINEL))
+        .unwrap_or(false);
+    move |p: &str| {
+        let cs_own = if ignored_mode {
+            p.starts_with(".cs/")
+        } else {
+            p.starts_with(".cs/local/") || TRACKED_MODE_CS_OWNED.contains(&p)
+        };
+        cs_own
+            || (protocol_file_is_cs && p == "CLAUDE.local.md")
+            || p == WORKTREE_OWNED_SETTINGS
+            || p.rsplit('/').next() == Some(".DS_Store")
+    }
+}
+
+/// The gitlink paths in the index of the checkout at `dir`.
+fn gitlinks(dir: &Path) -> Result<Vec<String>, String> {
+    // Each entry reads "<mode> <oid> <stage>\t<path>".
+    Ok(git_ls_files(dir, &["-s"])?
+        .into_iter()
+        .filter(|entry| entry.starts_with("160000 "))
+        .filter_map(|entry| entry.split_once('\t').map(|(_, path)| path.to_string()))
+        .collect())
+}
+
+/// The files and links under `dir`, not following links, each as its path
+/// from `dir`.
+fn paths_under(dir: &Path) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        let kind = entry.file_type().map_err(|e| format!("cannot read {}: {e}", entry.path().display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if kind.is_dir() {
+            paths.extend(paths_under(&entry.path())?.into_iter().map(|p| format!("{name}/{p}")));
+        } else {
+            paths.push(name);
+        }
+    }
     Ok(paths)
+}
+
+/// The untracked and ignored files inside every initialised submodule of the
+/// checkout at `dir`, at any depth, each path prefixed with `prefix` and its
+/// submodule's path (lib/30-worktree.sh `_submodule_others`): git ls-files
+/// never lists inside a submodule, and removing the worktree removes them. A
+/// submodule the checkout never populated is an empty directory to git,
+/// which lists nothing inside it either, so every file there is listed.
+fn submodule_others(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    let mut others = Vec::new();
+    for sub in gitlinks(dir)? {
+        let checkout = dir.join(&sub);
+        let inner = format!("{prefix}{sub}/");
+        if !checkout.join(".git").exists() {
+            if checkout.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                others.extend(paths_under(&checkout)?.into_iter().map(|p| format!("{inner}{p}")));
+            }
+            continue;
+        }
+        let mut listed = git_ls_files(&checkout, &["--others", "--exclude-standard"])?;
+        listed.extend(git_ls_files(&checkout, &["--others", "--ignored", "--exclude-standard"])?);
+        others.extend(listed.into_iter().map(|p| format!("{inner}{p}")));
+        others.extend(submodule_others(&checkout, &inner)?);
+    }
+    Ok(others)
+}
+
+/// The path of every submodule of the checkout at `dir`, at any depth,
+/// populated or not, with '/' after it and `prefix` before it
+/// (lib/30-worktree.sh `_submodule_dirs`): `git ls-files
+/// --recurse-submodules` leaves out one that holds no file, and a listing
+/// must never collapse it or a directory above it.
+fn submodule_dirs(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    let mut dirs = Vec::new();
+    for sub in gitlinks(dir)? {
+        let inner = format!("{prefix}{sub}/");
+        dirs.push(inner.clone());
+        let checkout = dir.join(&sub);
+        if checkout.join(".git").exists() {
+            dirs.extend(submodule_dirs(&checkout, &inner)?);
+        }
+    }
+    Ok(dirs)
+}
+
+/// The entries of what git does not track in the worktree at `path`, as
+/// `cs -rm` lists them (lib/65-sessions.sh `_worktree_untracked_paths`): the
+/// worktree's own untracked and ignored files and every file inside a
+/// submodule, without cs's own bookkeeping.
+fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
+    let mut at_risk = git_ls_files(path, &["--others", "--exclude-standard"])?;
+    at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
+    at_risk.extend(submodule_others(path, "")?);
+    let is_cs_own = cs_bookkeeping_in(path);
+    at_risk.retain(|p| !is_cs_own(p));
+    if at_risk.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tracked = git_ls_files(path, &["--recurse-submodules"])?;
+    tracked.extend(submodule_dirs(path, "")?);
+    let mut inside = HashMap::new();
+    for repo in at_risk.iter().filter(|p| p.ends_with('/')) {
+        inside.insert(repo.clone(), files_under(&path.join(repo))?);
+    }
+    untracked::entries(&tracked, &inside, &at_risk)
 }
 
 /// The links an encrypted session keeps into its vault, under `.cs/`.
@@ -1148,10 +1406,135 @@ fn read_mount_table() -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// What a delete may take beyond a dormant session that holds only cs's own
+/// files: `cs -rm`'s two escalations. Each is refused unless granted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoveGrants {
+    /// Remove a session whose lock a live process holds (`cs -rm --force`).
+    pub past_live_lock: bool,
+    /// Delete the files cs did not create in a session root, or that git
+    /// does not track in a worktree session (`cs -rm --delete-files`).
+    pub unowned_files: bool,
+}
+
+/// The session the picker runs inside, as cs reads it: `CLAUDE_SESSION_NAME`,
+/// where unset or empty is a terminal outside every session. Under test it is
+/// only ever the [`test_caller`] override.
+fn caller_session_name() -> Option<String> {
+    #[cfg(test)]
+    return test_caller::current();
+    #[cfg(not(test))]
+    std::env::var_os("CLAUDE_SESSION_NAME")
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Why `cs -rm`, run inside session `caller`, refuses to remove session
+/// `name` at `path` whatever it is granted, when it does; read now. First
+/// `_refuse_live_other_session`: a live session that is not the caller's
+/// own. A session owns itself, matched byte for byte as cs compares names,
+/// and a base (a caller with no '@') owns each `<caller>@<task>`. Then
+/// `_refuse_base_with_live_feature`: from any session but the base itself, a
+/// base (a name with no '@') while one of its features is live. Twin of
+/// those two guards in lib/15-lock.sh; the messages are theirs. Errors when
+/// the sessions root cannot be listed, so a feature it holds is never missed.
+fn cross_session_refusal(root: &Path, name: &str, path: &Path, caller: &str) -> std::io::Result<Option<String>> {
+    if caller == name {
+        return Ok(None);
+    }
+    let owned_feature = !caller.contains('@') && name.strip_prefix(caller).is_some_and(|rest| rest.starts_with('@'));
+    if !owned_feature {
+        if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+            return Ok(Some(format!(
+                "session {caller} cannot remove session {name} while it is live (pid {pid}); --force does not override that from another session. Close {name} first."
+            )));
+        }
+    }
+    if name.contains('@') {
+        return Ok(None);
+    }
+    Ok(live_feature_of(root, name)?.map(|(feature, pid)| {
+        format!(
+            "session {caller} cannot remove session {name} while its feature {feature} is live (pid {pid}); --force does not override that from another session. Close {feature} first."
+        )
+    }))
+}
+
+/// Why `cs -rm`, run inside the session the picker runs in, refuses to
+/// remove session `name` at `path` whatever it is granted
+/// ([`cross_session_refusal`]); `None` outside every session. The delete
+/// confirm asks this before it opens, and the removal asks it again.
+pub fn caller_refusal(root: &Path, name: &str, path: &Path) -> std::io::Result<Option<String>> {
+    match caller_session_name() {
+        Some(caller) => cross_session_refusal(root, name, path, &caller),
+        None => Ok(None),
+    }
+}
+
+/// The first live feature of base `name` in `root`, by entry name, with its
+/// lock's pid. As cs's `"$SESSIONS_ROOT"/*@*` glob reads them, an entry is a
+/// candidate when its name holds an '@' and does not start with '.'; it is
+/// `name`'s when `<root>/<name>@<its task>` is the same file (device and
+/// inode, through links, as `-ef` compares), not when the names match as
+/// strings, since a volume that ignores letter case finds one directory
+/// under several spellings. Its `.cs` must be a directory and its lock live.
+fn live_feature_of(root: &Path, name: &str) -> std::io::Result<Option<(String, u32)>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut entries: Vec<std::ffi::OsString> = fs::read_dir(root)
+        .and_then(|listing| listing.map(|entry| entry.map(|e| e.file_name())).collect())
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "could not list {} ({e}), so cannot tell whether a feature of {name} is live; refusing to remove it",
+                root.display()
+            ))
+        })?;
+    entries.sort();
+    let same_file = |a: &Path, b: &Path| match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    };
+    for entry in entries {
+        let bytes = entry.as_bytes();
+        if bytes.starts_with(b".") {
+            continue;
+        }
+        let Some(at) = bytes.iter().position(|&b| b == b'@') else { continue };
+        let mut own = std::ffi::OsString::from(format!("{name}@"));
+        own.push(std::ffi::OsStr::from_bytes(&bytes[at + 1..]));
+        let feature = root.join(&entry);
+        if !same_file(&root.join(own), &feature) || !feature.join(".cs").is_dir() {
+            continue;
+        }
+        if let Some(pid) = read_lock_pid(&feature.join(".cs")) {
+            return Ok(Some((entry.to_string_lossy().into_owned(), pid)));
+        }
+    }
+    Ok(None)
+}
+
 /// Remove a session at `path` by whatever means its kind requires: symlinks
 /// are unlinked, worktree sessions are unregistered through git, and plain
-/// directories are removed outright.
-pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
+/// directories are removed outright. Inside a session, what `cs -rm` refuses
+/// from there is refused whatever `grants` allows ([`caller_refusal`]), and
+/// so, anywhere, is a session a `cs <name> --remote` server serves
+/// ([`served_refusal`]). A live session and one holding files beyond cs's
+/// own are refused unless `grants` allows them; a mounted vault or volume is
+/// refused always.
+pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveGrants) -> std::io::Result<()> {
+    if let Some(refusal) = caller_refusal(root, name, path)? {
+        return Err(std::io::Error::other(refusal));
+    }
+    if let Some(refusal) = served_refusal(name, path) {
+        return Err(std::io::Error::other(refusal));
+    }
+    // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
+    // was scanned earlier and the session may have opened since.
+    if !grants.past_live_lock {
+        if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+            return Err(std::io::Error::other(live_refusal(name, pid)));
+        }
+    }
     let is_link = path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
     // remove_dir_all recurses into a mount, so a vault mounted inside the
     // session would lose its contents. An adopted session loses only its link.
@@ -1176,6 +1559,13 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Res
             )));
         }
     }
+    // Listed now, not when the confirm opened: a file added since is one the
+    // user was never shown.
+    if !grants.unowned_files {
+        if let Some(refusal) = unowned_entries(name, path).map_err(std::io::Error::other)?.refusal(name) {
+            return Err(std::io::Error::other(refusal));
+        }
+    }
     if is_link {
         fs::remove_file(path)?;
     } else if worktree_parts(name).is_some() && path.join(".git").is_file() {
@@ -1187,36 +1577,119 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Res
     Ok(())
 }
 
-/// Delete any staged or stale spawn seed for `name`. A deleted session must
-/// not leave a seed behind: it would block re-spawning the name and arm a
-/// future same-name session with dead tasks. Best-effort by design.
+/// What `cs -spawn` stages under `$SESSIONS_ROOT/.spawn/` for a session name,
+/// and what the launch sets aside when the seed ages out. Twin of
+/// `_spawn_staging_suffixes` in lib/52-spawn.sh; the two lists change together.
+const SPAWN_STAGING_SUFFIXES: [&str; 4] = [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"];
+
+/// Delete any staged or stale spawn seed and brief for `name`, the
+/// `.<name>.seed.XXXXXX` staging file a `cs -spawn` killed before it published
+/// leaves, and the `.<name>.seed.claim.<pid>` seed an open killed outright
+/// leaves. A deleted session must not leave either behind: a seed would block
+/// re-spawning the name and arm a future same-name session with dead tasks,
+/// and a brief would reach it as a first prompt nobody wrote for it. Exactly
+/// six characters follow the staging prefix, so the staging file of a session
+/// named `<name>.seed` is never matched; a digit starts the claim's pid, so
+/// the claim of a session named `<name>.seed.claim` is never matched. Twin of
+/// the staging match in `_spawn_discard_seeds` (lib/52-spawn.sh).
+/// Best-effort by design.
 fn discard_spawn_seeds(root: &Path, name: &str) {
     let spawn = root.join(".spawn");
-    let _ = fs::remove_file(spawn.join(format!("{name}.seed")));
-    let _ = fs::remove_file(spawn.join(format!("{name}.seed.stale")));
+    for suffix in SPAWN_STAGING_SUFFIXES {
+        let _ = fs::remove_file(spawn.join(format!("{name}{suffix}")));
+    }
+    let prefix = format!(".{name}.seed.");
+    let Ok(entries) = fs::read_dir(&spawn) else { return };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(file) = file.to_str() else { continue };
+        let Some(rest) = file.strip_prefix(&prefix) else { continue };
+        let claimed = rest
+            .strip_prefix("claim.")
+            .is_some_and(|pid| pid.starts_with(|c: char| c.is_ascii_digit()));
+        if rest.chars().count() == 6 || claimed {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The staged spawn files `cs -spawn` keeps for `name` that exist: one path
+/// per [`SPAWN_STAGING_SUFFIXES`] entry.
+pub fn staged_spawn_files(root: &Path, name: &str) -> Vec<PathBuf> {
+    SPAWN_STAGING_SUFFIXES
+        .iter()
+        .map(|suffix| root.join(".spawn").join(format!("{name}{suffix}")))
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect()
+}
+
+/// Move the staged spawn files of session `old` to session `new`, so a seed
+/// and brief go with a renamed session instead of arming the next session
+/// given the old name. Each move links the file under the new name and then
+/// unlinks the old one, so a file already staged under the new name is never
+/// replaced. On a failure the moves made so far are undone and the error,
+/// naming the file, is returned. The `(from, to)` pairs moved, for
+/// [`undo_spawn_moves`].
+pub fn move_spawn_files(root: &Path, old: &str, new: &str) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut moved = Vec::new();
+    for from in staged_spawn_files(root, old) {
+        let file = from.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let to = root.join(".spawn").join(format!("{new}{}", &file[old.len()..]));
+        let result = fs::hard_link(&from, &to).and_then(|_| {
+            fs::remove_file(&from).inspect_err(|_| {
+                let _ = fs::remove_file(&to);
+            })
+        });
+        if let Err(e) = result {
+            let failed = format!("could not move spawn file {}: {e}", from.display());
+            return Err(match undo_spawn_moves(&moved) {
+                Ok(()) => failed,
+                Err(left) => format!("{failed}; {left}"),
+            });
+        }
+        moved.push((from, to));
+    }
+    Ok(moved)
+}
+
+/// Put back spawn files [`move_spawn_files`] moved, newest first. Every move
+/// is tried; the error names each file left under the new name.
+pub fn undo_spawn_moves(moved: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut left = Vec::new();
+    for (from, to) in moved.iter().rev() {
+        let back = fs::hard_link(to, from).and_then(|_| fs::remove_file(to));
+        if let Err(e) = back {
+            left.push(format!("could not move spawn file {} back to {}: {e}", to.display(), from.display()));
+        }
+    }
+    if left.is_empty() { Ok(()) } else { Err(left.join("; ")) }
 }
 
 /// Remove a worktree session (`base@task`) through git so the base repo's
 /// worktree registration goes with it; the task branch is left alone,
 /// matching `cs -rm` when its branch prompt is declined. Falls back to
-/// plain directory removal when the base session is gone.
+/// plain directory removal when the base session is gone. When git refuses,
+/// its error is returned and nothing is deleted, as `cs -rm` stops there.
 fn remove_worktree_session(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
     let base = worktree_parts(name).map(|(b, _)| b).unwrap_or(name);
     let base_dir = root.join(base);
-    if base_dir.is_dir() {
-        let ok = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&base_dir)
-            .args(["worktree", "remove", "--force"])
-            .arg(path)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if ok {
-            return Ok(());
-        }
+    if !base_dir.is_dir() {
+        return fs::remove_dir_all(path);
     }
-    fs::remove_dir_all(path)
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&base_dir)
+        .args(["worktree", "remove", "--force", "--"])
+        .arg(path)
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(format!(
+            "git worktree remove failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Unread cross-session mail: the documents in `mail/new/` (`cs -msg` moves
@@ -1236,17 +1709,67 @@ fn unread_mail_count(meta_dir: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
+/// The pid a session's lock names when that process is running, by the rule
+/// cs and cs-secrets read a lock with (live_lock_pid): the text, surrounding
+/// whitespace removed, is decimal digits only (no sign), and is_pid_alive
+/// holds for it, which rules out 0 and anything past 2147483647. Read at the
+/// moment of asking.
+pub fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     let lock_file = meta_dir.join("session.lock");
     let content = fs::read_to_string(&lock_file).ok()?;
-    let pid = content.trim().parse::<u32>().ok()?;
+    let text = content.trim();
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let pid = text.parse::<u32>().ok()?;
     if is_pid_alive(pid) { Some(pid) } else { None }
+}
+
+/// The pid in `.cs/local/remote.pid`, which `cs <name> --remote` writes for
+/// the `claude remote-control` server it runs, while that pid runs
+/// `remote-control --name <name>`. A file a server's release never removed
+/// can name a pid another program has taken since, so a live pid alone is not
+/// enough. The twin of `_remote_server_pid` in lib/02-shared.sh.
+fn read_remote_pid(meta_dir: &Path, name: &str) -> Option<u32> {
+    let content = fs::read_to_string(meta_dir.join("local/remote.pid")).ok()?;
+    let pid = content.trim().parse::<u32>().ok()?;
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    let o = std::process::Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    // Padded on both sides, so demo does not match demo-2.
+    let args = format!(" {} ", String::from_utf8_lossy(&o.stdout).trim_end());
+    args.contains(&format!(" remote-control --name {name} ")).then_some(pid)
+}
+
+/// Why `cs -rm` refuses to remove session `name` at `path`, with or without
+/// --force and from any caller, while a `cs <name> --remote` server serves it
+/// ([`read_remote_pid`], read now); `None` when none does. Twin of
+/// `_remote_refuse_live` in lib/76-remote.sh; the message is its.
+pub fn served_refusal(name: &str, path: &Path) -> Option<String> {
+    read_remote_pid(&path.join(".cs"), name).map(|pid| {
+        format!(
+            "Session {name} is served by cs {name} --remote (remote-control PID {pid}); stop it first with Ctrl-C in its window, or close the window."
+        )
+    })
+}
+
+/// Why a picker action refuses session `name`, whose claude runs as `pid`.
+pub fn live_refusal(name: &str, pid: u32) -> String {
+    format!("{name} is live (pid {pid}) — close it first")
 }
 
 /// True when a process with `pid` is alive on this machine, via `kill -0`.
 /// A missing tool or a spawn error is treated as "not alive" (the caller then
 /// falls back to the statusline heartbeat), never a crash.
-fn is_pid_alive(pid: u32) -> bool {
+pub fn is_pid_alive(pid: u32) -> bool {
     // A pid_t is a SIGNED 32-bit int, so anything past i32::MAX is not a process
     // id at all and each platform mishandles it differently: macOS `kill` refuses
     // it ("illegal process id"), while on Linux it wraps — 4294967295 lands on
@@ -1338,27 +1861,47 @@ fn extract_user_repo(url: &str) -> Option<String> {
 /// Only macOS ships the `security` tool and a keychain; on Linux the TUI's
 /// keychain panel is empty by design (secrets there live in the encrypted-file
 /// backend, which this view does not enumerate). Gated to macOS so non-macOS
-/// builds don't spawn a missing binary on every refresh. Skipped too when
-/// CS_SECRETS_BACKEND names another store; see `keychain_is_secrets_store`.
+/// builds don't spawn a missing binary on every refresh. A test build counts
+/// none and runs no `security`: no test reads the Keychain of whoever runs
+/// the suite.
 #[cfg(target_os = "macos")]
 fn count_secrets_from_keychain() -> HashMap<String, u32> {
-    let mut counts = HashMap::new();
+    #[cfg(test)]
+    return HashMap::new();
+    #[cfg(not(test))]
+    count_secrets_in_live_keychain()
+}
 
-    let backend = std::env::var("CS_SECRETS_BACKEND").ok();
-    if !keychain_is_secrets_store(backend.as_deref()) {
-        return counts;
+/// Secret counts per session from the login Keychain's `security dump-keychain`.
+#[cfg(all(target_os = "macos", not(test)))]
+fn count_secrets_in_live_keychain() -> HashMap<String, u32> {
+    if !keychain_is_secrets_store(std::env::var("CS_SECRETS_BACKEND").ok().as_deref()) {
+        return HashMap::new();
     }
-
     let output = std::process::Command::new("security")
         .args(["dump-keychain"])
         .stderr(std::process::Stdio::null())
         .output();
 
-    if let Ok(output) = output {
-        let prefix = keychain_prefix(std::env::var("CS_SECRETS_KEYCHAIN_PREFIX").ok());
-        counts = count_keychain_items(&String::from_utf8_lossy(&output.stdout), &prefix);
+    match output {
+        Ok(output) => count_keychain_items(&String::from_utf8_lossy(&output.stdout), &keychain_prefix(std::env::var("CS_SECRETS_KEYCHAIN_PREFIX").ok())),
+        Err(_) => HashMap::new(),
     }
+}
 
+/// Secret counts per session in the text of a `security dump-keychain`: one
+/// per item whose service attribute is `cs:<session>:<name>`.
+#[cfg(test)]
+fn secret_counts_in_keychain_dump(dump: &str) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    for line in dump.lines() {
+        // Match: "svce"<blob>="cs:session_name:secret_name"
+        if let Some(rest) = line.strip_prefix("    \"svce\"<blob>=\"cs:") {
+            if let Some(session) = rest.split(':').next() {
+                *counts.entry(session.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
     counts
 }
 
@@ -1483,10 +2026,12 @@ mod tests {
     fn unowned_entries_lists_top_level_files_cs_did_not_create() {
         let root = std::env::temp_dir().join(format!("cs-unowned-plain-{}", std::process::id()));
         let dir = root.join("rel");
-        for d in [".cs/local", ".claude", ".git", "journal.sparsebundle"] {
+        for d in [".cs/local", ".claude", ".git", "logs", "artifacts", "journal.sparsebundle"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
-        for f in [".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store", "start"] {
+        let owned = [".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store"];
+        let legacy = ["notes.md", "changes.md", "discoveries.md"];
+        for f in owned.iter().chain(legacy.iter()).chain(["start"].iter()) {
             fs::write(dir.join(f), "x").unwrap();
         }
 
@@ -1510,6 +2055,34 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // git lists a repository nested in the worktree as one path ending in
+    // '/'; its entry counts every file under it, its .git included, as
+    // `cs -rm` does.
+    #[test]
+    fn unowned_entries_counts_the_files_in_a_nested_repository() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-nested-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        let other = root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        git_in(&other, &["init", "-q"]);
+        fs::create_dir_all(wt.join("dep")).unwrap();
+        fs::write(wt.join("dep/.git"), format!("gitdir: {}\n", other.join(".git").display())).unwrap();
+        fs::write(wt.join("dep/a"), "").unwrap();
+        fs::write(wt.join("dep/b"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "dep/".into(), files: 3 }]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn unowned_entries_lists_untracked_and_ignored_files_in_a_worktree() {
         let root = std::env::temp_dir().join(format!("cs-unowned-wt-{}", std::process::id()));
@@ -1528,7 +2101,275 @@ mod tests {
 
         let got = unowned_entries("proj@task", &wt).unwrap();
 
-        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec!["journal.img".into(), "notes.txt".into()]));
+        let file = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![file("journal.img"), file("notes.txt")]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A worktree's .claude/ holds the settings file cs writes beside what the
+    // user keeps there. Only the settings file is cs's: the rest is listed
+    // like any other file git does not track, as `cs -rm` lists it.
+    #[test]
+    fn unowned_entries_lists_the_users_files_under_dot_claude_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-claude-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(base.join(".claude/commands")).unwrap();
+        fs::write(base.join(".claude/commands/ship.md"), "ship").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", ".claude/commands/ship.md"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join(".claude/agents")).unwrap();
+        fs::write(wt.join(".claude/settings.local.json"), "{}").unwrap();
+        fs::write(wt.join(".claude/agents/reviewer.md"), "review").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".claude/agents/".into(), files: 1 }])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Finder's .DS_Store is no one's work at any depth, as retire and
+    // `cs -rm` treat it: a directory holding one beside the user's file
+    // counts the user's file only.
+    #[test]
+    fn unowned_entries_leaves_out_ds_store_at_any_depth_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-ds-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join("docs/deep")).unwrap();
+        fs::write(wt.join("docs/deep/notes.md"), "draft").unwrap();
+        fs::write(wt.join("docs/deep/.DS_Store"), "").unwrap();
+        fs::write(wt.join("docs/.DS_Store"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "docs/".into(), files: 1 }]));
+        fs::remove_file(wt.join("docs/deep/notes.md")).unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A worktree session `proj@task` under `root`, beside its base, whose
+    /// repo tracks `tracked.txt` and ignores `.cs/local/` and what cs's
+    /// exclude names, with an empty `.cs/local/`.
+    fn worktree_beside_base(root: &Path) -> PathBuf {
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        fs::write(base.join(".gitignore"), ".cs/local/\n").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt", ".gitignore"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        fs::write(base.join(".git/info/exclude"), "CLAUDE.local.md\n.claude/settings.local.json\n").unwrap();
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        wt
+    }
+
+    // cs writes the root CLAUDE.local.md with its protocol sentinel; one
+    // without it is the user's own, which retire refuses over and `cs -rm`
+    // lists.
+    #[test]
+    fn unowned_entries_lists_a_user_authored_claude_local_md_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-local-md-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join("CLAUDE.local.md"), "my own notes for this checkout\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "CLAUDE.local.md".into(), files: 1 }]));
+        fs::write(wt.join("CLAUDE.local.md"), "<!-- cs:session-protocol -->\n# Session protocol\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // An initialised submodule is a checkout of its own: git ls-files in the
+    // worktree does not list the files inside it, and removal destroys them.
+    // Each is an entry of its own, as `cs -rm` lists it.
+    #[test]
+    fn unowned_entries_lists_files_inside_an_initialised_submodule() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-submodule-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        let lib = root.join("sublib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("lib.txt"), "lib").unwrap();
+        fs::write(lib.join(".gitignore"), "*.env\n").unwrap();
+        git_in(&lib, &["init", "-q"]);
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-qm", "lib"]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "sub"]);
+        git_in(&wt, &["commit", "-qm", "add submodule"]);
+        fs::write(wt.join("sub/secret.env"), "secret").unwrap();
+        fs::write(wt.join("sub/notes.txt"), "notes").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        let file = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![file("sub/notes.txt"), file("sub/secret.env")]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // git lists nothing inside a directory its index holds as a submodule,
+    // so files written into one the worktree never populated are listed
+    // under the submodule's path, and an ignored file beside it is an entry
+    // of its own: the directory holding the submodule is not collapsed.
+    #[test]
+    fn unowned_entries_lists_files_in_a_submodule_directory_never_populated() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-unpopulated-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        let lib = root.join("sublib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("lib.txt"), "lib").unwrap();
+        git_in(&lib, &["init", "-q"]);
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-qm", "lib"]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "vendor/sub"]);
+        git_in(&wt, &["commit", "-qm", "add submodule"]);
+        git_in(&wt, &["submodule", "deinit", "-q", "-f", "vendor/sub"]);
+        assert_eq!(fs::read_dir(wt.join("vendor/sub")).unwrap().count(), 0, "fixture: the submodule directory is empty");
+        fs::write(wt.join("vendor/trace.log"), "trace").unwrap();
+        fs::write(root.join("proj/.git/info/exclude"), "CLAUDE.local.md\n.claude/settings.local.json\n*.log\n").unwrap();
+        fs::create_dir_all(wt.join("vendor/sub/build")).unwrap();
+        fs::write(wt.join("vendor/sub/build/notes.txt"), "notes").unwrap();
+        fs::write(wt.join("vendor/sub/local.env"), "KEY=value").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        let entry = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![
+                entry("vendor/sub/build/"),
+                entry("vendor/sub/local.env"),
+                entry("vendor/trace.log"),
+            ])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A repo that tracks .cs carries it through git (tracked mode), so an
+    // untracked file under .cs is the user's work like one anywhere else;
+    // only cs's machine-local files are left out. In ignored mode the whole
+    // .cs is cs's.
+    #[test]
+    fn unowned_entries_lists_untracked_session_records_in_a_tracked_mode_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-tracked-cs-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join(".cs/README.md"), "# records").unwrap();
+        git_in(&wt, &["add", ".cs/README.md"]);
+        git_in(&wt, &["commit", "-qm", "session records"]);
+        fs::write(wt.join(".cs/local/state"), "cs_mode: tracked\n").unwrap();
+        fs::create_dir_all(wt.join(".cs/memory")).unwrap();
+        fs::write(wt.join(".cs/memory/new-topic.md"), "topic").unwrap();
+        fs::write(wt.join(".cs/session.lock"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".cs/memory/".into(), files: 1 }]));
+        fs::write(wt.join(".cs/local/state"), "cs_mode: ignored\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The mode is read from the state file's bytes, as `_read_local_state`
+    // reads them: a byte that is not UTF-8 on another line leaves the
+    // `cs_mode` line readable, so an ignored-mode worktree's .cs stays cs's.
+    #[test]
+    fn unowned_entries_reads_the_mode_from_a_state_file_holding_a_non_utf8_byte() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-state-bytes-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::create_dir_all(wt.join(".cs/memory")).unwrap();
+        fs::write(wt.join(".cs/memory/topic.md"), "topic").unwrap();
+        fs::write(wt.join(".cs/local/state"), b"task_branch: cs/t\xff\ncs_mode: ignored\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The mode is the value `_read_local_state` reads (lib/40-state.sh): the
+    // first line that starts `cs_mode:` wins, whitespace after the colon and
+    // every double quote go, a CR before the newline stays (so a CRLF file
+    // names no mode cs knows), and a last line without a newline counts.
+    #[test]
+    fn worktree_cs_mode_reads_the_value_cs_reads() {
+        let dir = std::env::temp_dir().join(format!("cs-mode-read-{}", std::process::id()));
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        for (state, mode) in [
+            (&b"cs_mode: ignored\r\n"[..], Some("ignored\r")),
+            (b"cs_mode: tracked\ncs_mode: ignored\n", Some("tracked")),
+            (b"cs_mode: \"ignored\"\n", Some("ignored")),
+            (b"cs_mode:\t  ignored", Some("ignored")),
+            (b" cs_mode: ignored\n", None),
+            (b"task_branch: cs/t\n", None),
+        ] {
+            fs::write(dir.join(".cs/local/state"), state).unwrap();
+
+            assert_eq!(worktree_cs_mode(&dir).as_deref(), mode, "{:?}", String::from_utf8_lossy(state));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A `<base>@<task>` directory whose .git is a directory, not a worktree's
+    // .git file, is no worktree of the base, so it is listed and removed as a
+    // plain directory, as `cs -rm` does (it asks `[ -f .git ]`).
+    #[test]
+    fn a_worktree_name_whose_git_is_a_directory_is_listed_and_removed_as_a_plain_directory() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-git-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
+        let wt = root.join("proj@task");
+        fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        git_in(&wt, &["init", "-q"]);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+        assert!(wt.join(".git").is_dir(), "fixture: .git is a directory");
+
+        let got = unowned_entries("proj@task", &wt);
+
+        assert_eq!(got, Ok(UnownedEntries::NotCreatedByCs(vec!["notes.txt".into()])));
+        let refused = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).map_err(|e| e.to_string());
+        assert_eq!(refused, Err("proj@task holds files cs did not create: notes.txt".to_string()));
+        let granted = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        assert_eq!(remove_session_path(&root, "proj@task", &wt, granted).map_err(|e| e.to_string()), Ok(()));
+        assert!(!wt.exists(), "the directory is removed");
+        assert!(root.join("proj").is_dir(), "the base is left alone");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A worktree session whose base is gone has no repository for git to ask,
+    // so it is listed and removed as a plain directory, as `cs -rm` does:
+    // every top-level entry cs did not create, tracked or not, then the
+    // directory itself once those are granted.
+    #[test]
+    fn a_worktree_whose_base_is_gone_is_listed_and_removed_as_a_plain_directory() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-orphan-wt-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+        fs::remove_dir_all(root.join("proj")).unwrap();
+        assert!(wt.join(".git").is_file(), "fixture: the worktree still has its .git file");
+
+        let got = unowned_entries("proj@task", &wt);
+
+        assert_eq!(got, Ok(UnownedEntries::NotCreatedByCs(vec!["notes.txt".into(), "tracked.txt".into()])));
+        let refused = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).map_err(|e| e.to_string());
+        assert_eq!(refused, Err("proj@task holds files cs did not create: notes.txt, tracked.txt".to_string()));
+        assert!(wt.join("notes.txt").exists(), "a refused removal keeps the files");
+        let granted = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        assert_eq!(remove_session_path(&root, "proj@task", &wt, granted).map_err(|e| e.to_string()), Ok(()));
+        assert!(!wt.exists(), "the worktree directory is removed");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1720,7 +2561,7 @@ mod tests {
     #[test]
     #[ignore]
     fn agent_statuses_read_the_live_registry() {
-        let dir = claude_sessions_dir();
+        let dir = live_claude_sessions_dir();
         let published = fs::read_dir(&dir).map(|e| e.count()).unwrap_or(0);
         let statuses = agent_statuses_in(&dir);
         eprintln!("{} document(s) in {:?} -> {:?}", published, dir, statuses);
@@ -1832,6 +2673,76 @@ mod tests {
         assert!(!Liveness::Dormant.is_live());
         assert!(!Liveness::Dormant.is_locked());
         assert_eq!(Liveness::Dormant.lock_pid(), None);
+
+        let served = Liveness::Served { lock: 42, server: 77 };
+        assert!(served.is_live());
+        assert!(served.is_locked());
+        assert_eq!(served.lock_pid(), Some(42), "lock_pid reads the lock, not remote.pid");
+    }
+
+    /// A session `cs <name> --remote` serves: a live session lock, and
+    /// .cs/local/remote.pid naming the server.
+    fn served_session(tag: &str, remote_pid: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cs-served-{tag}-{}", std::process::id()));
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        fs::write(dir.join(".cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        fs::write(dir.join(".cs/local/remote.pid"), remote_pid).unwrap();
+        dir
+    }
+
+    /// A process whose argv carries `remote-control --name <name>`, as the
+    /// server of session <name> does.
+    fn fake_server_process(name: &str) -> std::process::Child {
+        std::process::Command::new("perl")
+            .args(["-e", "sleep 30", "remote-control", "--name", name, "--permission-mode", "default"])
+            .spawn()
+            .unwrap()
+    }
+
+    fn dir_name(dir: &Path) -> String {
+        dir.file_name().unwrap().to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn a_session_with_a_running_server_reads_as_served_with_both_pids() {
+        let dir = served_session("live", "");
+        let mut server = fake_server_process(&dir_name(&dir));
+        fs::write(dir.join(".cs/local/remote.pid"), format!("{}\n", server.id())).unwrap();
+
+        let session = read_session(&dir, &HashMap::new());
+
+        let _ = server.kill();
+        let _ = server.wait();
+        assert_eq!(
+            session.liveness,
+            Liveness::Served { lock: std::process::id(), server: server.id() }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A server whose release never ran leaves remote.pid naming its pid; once
+    /// another program has that pid, the session is not served.
+    #[test]
+    fn a_session_whose_server_pid_runs_another_program_reads_as_locked() {
+        let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let dir = served_session("reused", &format!("{}\n", other.id()));
+
+        let session = read_session(&dir, &HashMap::new());
+
+        let _ = other.kill();
+        let _ = other.wait();
+        assert_eq!(session.liveness, Liveness::Locked(std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_whose_server_pid_is_not_running_reads_as_locked() {
+        let dir = served_session("stale", "99999999\n");
+
+        let session = read_session(&dir, &HashMap::new());
+
+        assert_eq!(session.liveness, Liveness::Locked(std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1973,6 +2884,391 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // git reads the worktree path after --, so a path starting with a dash is
+    // a path and not an option. A relative one is taken from the base repo,
+    // the directory git runs in (-C).
+    #[test]
+    fn remove_worktree_session_removes_a_worktree_whose_path_starts_with_a_dash() {
+        let root = std::env::temp_dir().join(format!("cs-wt-dash-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        git_in(&base, &["init", "-q"]);
+        fs::write(base.join("f"), "x").unwrap();
+        git_in(&base, &["add", "f"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = base.join("-rtask");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        assert!(wt.join(".git").is_file(), "worktree marker file expected");
+
+        remove_worktree_session(&root, "proj@task", Path::new("-rtask")).unwrap();
+
+        assert!(!wt.exists(), "worktree directory should be gone");
+        let list = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&base)
+            .args(["worktree", "list"])
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&list.stdout).contains("-rtask"),
+            "base repo must not keep a stale worktree registration"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm` stops when git refuses to remove a worktree; deleting the
+    // directory anyway would leave the base repo registering a worktree that
+    // is gone. A locked worktree is one git refuses under a single --force.
+    #[test]
+    fn remove_session_path_returns_the_git_error_and_keeps_a_worktree_git_refuses() {
+        let root = std::env::temp_dir().join(format!("cs-wt-refused-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        git_in(&base, &["init", "-q"]);
+        fs::write(base.join("f"), "x").unwrap();
+        git_in(&base, &["add", "f"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        git_in(&base, &["worktree", "lock", wt.to_str().unwrap()]);
+        fs::create_dir_all(root.join(".spawn")).unwrap();
+        fs::write(root.join(".spawn/proj@task.seed"), "spawner\n").unwrap();
+
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+
+        let text = err.to_string();
+        assert!(
+            text.starts_with(&format!("git worktree remove failed for {}: ", wt.display())),
+            "error should name the failed git step, got: {text}"
+        );
+        assert!(text.contains("locked"), "error should carry git's reason, got: {text}");
+        assert!(wt.join("f").exists(), "the refused worktree keeps its files");
+        let list = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&base)
+            .args(["worktree", "list"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&list.stdout).contains("proj@task"),
+            "the registration stays consistent with the directory"
+        );
+        assert!(root.join(".spawn/proj@task.seed").exists(), "a refused delete discards nothing");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm` re-reads the lock when it runs (session_is_live); the picker's
+    // row can be minutes old, so the removal itself must refuse a session that
+    // took the lock since the last scan.
+    #[test]
+    fn remove_session_path_refuses_a_session_whose_lock_is_live_now() {
+        let root = std::env::temp_dir().join(format!("cs-rm-live-{}", std::process::id()));
+        let dir = root.join("busy");
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        let pid = std::process::id();
+        fs::write(dir.join(".cs/session.lock"), format!("{pid}\n")).unwrap();
+
+        let err = remove_session_path(&root, "busy", &dir, RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
+        assert!(dir.join(".cs/session.lock").exists(), "a live session is left whole");
+
+        // Past the live lock, as `cs -rm --force` goes.
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "busy", &dir, grants).unwrap();
+        assert!(!dir.exists(), "granted the live lock, the removal goes ahead");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A fresh sessions root under the temp dir holding `live` as sessions
+    /// whose lock this test process holds and `dormant` as sessions with no
+    /// lock, each with only cs's own files.
+    fn caller_fixture(tag: &str, live: &[&str], dormant: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cs-rm-caller-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for name in live.iter().chain(dormant) {
+            fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        for name in live {
+            fs::write(root.join(name).join(".cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        }
+        root
+    }
+
+    // From inside another session, `cs -rm` refuses a live session before its
+    // own lock check (_refuse_live_other_session, lib/15-lock.sh), in its own
+    // words, so the picker's removal does too.
+    #[test]
+    fn remove_session_path_refuses_another_sessions_live_session() {
+        let root = caller_fixture("other", &["busy"], &["caller"]);
+        let _caller = test_caller::scoped("caller");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "a refused session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm --force` does not override that refusal from another session,
+    // and neither does the picker's [F] grant.
+    #[test]
+    fn remove_session_path_refuses_another_sessions_live_session_past_the_live_grant() {
+        let root = caller_fixture("other-forced", &["busy"], &["caller"]);
+        let _caller = test_caller::scoped("caller");
+        let pid = std::process::id();
+        let grants = RemoveGrants { past_live_lock: true, unowned_files: true };
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "a refused session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A session deleting itself is not another session: the plain live check
+    // refuses it and the [F] grant takes it past, as `cs -rm --force` does.
+    // The name is matched byte for byte, as cs compares it: `Busy` is
+    // another session.
+    #[test]
+    fn remove_session_path_leaves_the_callers_own_session_to_the_live_check() {
+        let root = caller_fixture("own", &["busy"], &[]);
+        let pid = std::process::id();
+        {
+            let _caller = test_caller::scoped("Busy");
+            let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("session Busy cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+            );
+        }
+        let _caller = test_caller::scoped("busy");
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap();
+        assert!(!root.join("busy").exists(), "the caller's own session goes past the live grant");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base owns its features (<base>@<task>): from the base, a live feature
+    // is left to the plain live check, as `cs -rm` exempts it. A feature owns
+    // no sibling: from proj@other, proj@task is another session.
+    #[test]
+    fn remove_session_path_leaves_a_bases_own_feature_to_the_live_check() {
+        let root = caller_fixture("own-feature", &["proj@task"], &["proj", "proj@other"]);
+        let pid = std::process::id();
+        let wt = root.join("proj@task");
+        {
+            let _caller = test_caller::scoped("proj@other");
+            let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("session proj@other cannot remove session proj@task while it is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+            );
+        }
+        let _caller = test_caller::scoped("proj");
+
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("proj@task is live (pid {pid}) — close it first"));
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "proj@task", &wt, grants).unwrap();
+        assert!(!wt.exists(), "the base removes its own feature past the live grant");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A feature's worktree points into its base's repository, so from any
+    // session but the base, `cs -rm` refuses a base while one of its features
+    // is live (_refuse_base_with_live_feature, lib/15-lock.sh), --force or
+    // not, the live feature itself included. A feature of another base whose
+    // name starts with this one's is not this base's.
+    #[test]
+    fn remove_session_path_refuses_a_base_with_a_live_feature_from_another_session() {
+        let root = caller_fixture("base", &["proj@task", "projx@task"], &["proj", "other"]);
+        let pid = std::process::id();
+        let all = RemoveGrants { past_live_lock: true, unowned_files: true };
+        for caller in ["other", "proj@task"] {
+            let _caller = test_caller::scoped(caller);
+            for grants in [RemoveGrants::default(), all] {
+                let err = remove_session_path(&root, "proj", &root.join("proj"), grants).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("session {caller} cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first."),
+                    "caller {caller}, grants {grants:?}"
+                );
+            }
+        }
+        assert!(root.join("proj/.cs").is_dir(), "a refused base is left whole");
+
+        fs::write(root.join("proj@task/.cs/session.lock"), "99999999\n").unwrap();
+        let _caller = test_caller::scoped("other");
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+        assert!(!root.join("proj").exists(), "with only another base's feature live, the base goes");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A feature is the base's when `<base>@<its task>` is the same directory
+    // (`-ef` in _refuse_base_with_live_feature), not when the names match:
+    // an entry that links to proj@task is proj's feature too, and as the
+    // first in sorted order it is the one the refusal names, as cs's glob
+    // names it.
+    #[test]
+    fn remove_session_path_names_a_bases_live_feature_reached_through_a_link() {
+        let root = caller_fixture("base-link", &["proj@task"], &["proj", "other"]);
+        std::os::unix::fs::symlink(root.join("proj@task"), root.join("alias@task")).unwrap();
+        let _caller = test_caller::scoped("other");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session other cannot remove session proj while its feature alias@task is live (pid {pid}); --force does not override that from another session. Close alias@task first.")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "a refused base is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // cs's `"$SESSIONS_ROOT"/*@*` glob never reads a dot entry, so a
+    // `.proj@task` that is the same directory as proj@task is not the
+    // feature the refusal names.
+    #[test]
+    fn remove_session_path_never_names_a_dot_entry_as_a_bases_live_feature() {
+        let root = caller_fixture("base-dot", &["proj@task"], &["proj", "other"]);
+        std::os::unix::fs::symlink(root.join("proj@task"), root.join(".proj@task")).unwrap();
+        let _caller = test_caller::scoped("other");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session other cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base owns only `<base>@<task>`: from proj, projx is another session
+    // whose name merely starts with proj's, and so is projx@task, so a live
+    // one is refused in _refuse_live_other_session's words, past the [F]
+    // grant too.
+    #[test]
+    fn remove_session_path_refuses_a_live_session_whose_name_only_starts_with_the_callers() {
+        let root = caller_fixture("prefix", &["projx", "projx@task"], &["proj"]);
+        let _caller = test_caller::scoped("proj");
+        let pid = std::process::id();
+        let all = RemoveGrants { past_live_lock: true, unowned_files: true };
+        for name in ["projx", "projx@task"] {
+            for grants in [RemoveGrants::default(), all] {
+                let err = remove_session_path(&root, name, &root.join(name), grants).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("session proj cannot remove session {name} while it is live (pid {pid}); --force does not override that from another session. Close {name} first."),
+                    "grants {grants:?}"
+                );
+            }
+            assert!(root.join(name).join(".cs/session.lock").exists(), "a refused {name} is left whole");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The base itself may remove itself while its feature runs, as `cs -rm`
+    // lets it.
+    #[test]
+    fn remove_session_path_lets_a_base_remove_itself_with_a_live_feature() {
+        let root = caller_fixture("base-self", &["proj@task"], &["proj"]);
+        let _caller = test_caller::scoped("proj");
+
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+
+        assert!(!root.join("proj").exists(), "the base removes itself");
+        assert!(root.join("proj@task/.cs/session.lock").exists(), "its feature is left alone");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Outside every session nothing is another session's: a live session goes
+    // past the [F] grant, and a base goes while its feature runs, as `cs -rm`
+    // from a plain terminal does.
+    #[test]
+    fn remove_session_path_outside_every_session_refuses_neither() {
+        let root = caller_fixture("no-caller", &["busy", "proj@task"], &["proj"]);
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+
+        remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap();
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+
+        assert!(!root.join("busy").exists(), "a live session goes past the live grant");
+        assert!(!root.join("proj").exists(), "a base goes while its feature runs");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A session root is also the user's workspace. As `cs -rm --force` does
+    // without --delete-files, the removal refuses one that holds files cs did
+    // not create, naming them, and deletes nothing. It names them as the
+    // listing prints them: each control character, and each character that
+    // flips the direction of the text after it or takes no room, as one '?',
+    // an accent and a space as written.
+    #[test]
+    fn remove_session_path_refuses_a_root_holding_files_cs_did_not_create() {
+        let root = std::env::temp_dir().join(format!("cs-rm-foreign-{}", std::process::id()));
+        let dir = root.join("rel");
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        fs::create_dir_all(dir.join("journal.sparsebundle")).unwrap();
+        fs::write(dir.join("start"), "x").unwrap();
+        fs::write(dir.join("caf\u{e9} \u{202e}txt.exe\u{200b}.md"), "x").unwrap();
+        fs::write(dir.join("esc\u{1b}[1m.txt"), "x").unwrap();
+
+        let err = remove_session_path(&root, "rel", &dir, RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "rel holds files cs did not create: caf\u{e9} ?txt.exe?.md, esc?[1m.txt, journal.sparsebundle, start"
+        );
+        assert!(dir.join("start").exists(), "the user's files survive");
+
+        let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "rel", &dir, grants).unwrap();
+        assert!(!dir.exists(), "granted the files, the removal takes them");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A worktree session's untracked and ignored files have no copy on the
+    // branch; as `cs -rm --force` does without --delete-files, the removal
+    // refuses, naming them, and leaves the worktree registered.
+    #[test]
+    fn remove_session_path_refuses_a_worktree_holding_files_git_does_not_track() {
+        let root = std::env::temp_dir().join(format!("cs-rm-untracked-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), "proj@task holds 1 file git does not track: notes.txt");
+        assert!(wt.join("notes.txt").exists(), "the untracked file survives");
+
+        let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "proj@task", &wt, grants).unwrap();
+        assert!(!wt.exists(), "granted the files, the removal takes the worktree");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // An encrypted session mounts its vault inside the session directory by
     // convention, and remove_dir_all recurses into a mount: deleting the
     // session would delete what the vault holds. Unmounted, the link dangles
@@ -1986,7 +3282,7 @@ mod tests {
         fs::write(vault.join("narrative.md"), "sealed\n").unwrap();
         std::os::unix::fs::symlink(&vault, dir.join(".cs/memory")).unwrap();
 
-        let err = remove_session_path(&root, "vt", &dir).unwrap_err();
+        let err = remove_session_path(&root, "vt", &dir, RemoveGrants::default()).unwrap_err();
 
         assert_eq!(
             err.to_string(),
@@ -1998,7 +3294,7 @@ mod tests {
         assert!(vault.join("narrative.md").exists(), "the vault's contents survive");
 
         fs::remove_dir_all(&vault).unwrap();
-        remove_session_path(&root, "vt", &dir).unwrap();
+        remove_session_path(&root, "vt", &dir, RemoveGrants::default()).unwrap();
         assert!(!dir.exists(), "an unmounted encrypted session is removed");
         let _ = fs::remove_dir_all(&root);
     }
@@ -2082,22 +3378,42 @@ mod tests {
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 
+    // A brief left behind would reach a later same-name spawn as a first
+    // prompt nobody wrote for it, so it goes with the seed.
     #[test]
-    fn remove_session_path_discards_spawn_seeds() {
+    fn remove_session_path_discards_every_spawn_staging_file() {
         let root = std::env::temp_dir().join(format!("cs-seed-rm-{}", std::process::id()));
         let dir = root.join("seeded");
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
         fs::create_dir_all(root.join(".spawn")).unwrap();
         fs::write(root.join(".spawn/seeded.seed"), "spawner\ntask\n").unwrap();
         fs::write(root.join(".spawn/seeded.seed.stale"), "old\n").unwrap();
+        fs::write(root.join(".spawn/seeded.brief.md"), "do this\n").unwrap();
+        fs::write(root.join(".spawn/seeded.brief.md.stale"), "old brief\n").unwrap();
         fs::write(root.join(".spawn/other.seed"), "other\n").unwrap();
+        fs::write(root.join(".spawn/other.brief.md"), "theirs\n").unwrap();
+        // An interrupted `cs -spawn` leaves its staging file; the one for a
+        // session named `seeded.seed` must not be mistaken for it.
+        fs::write(root.join(".spawn/.seeded.seed.Ab12Cd"), "killed\n").unwrap();
+        fs::write(root.join(".spawn/.seeded.seed.seed.Ef34Gh"), "theirs\n").unwrap();
+        // An open killed outright leaves the seed it claimed; session
+        // `seeded.seed.claim`'s claim starts the same way.
+        fs::write(root.join(".spawn/.seeded.seed.claim.4242"), "claimed\n").unwrap();
+        fs::write(root.join(".spawn/.seeded.seed.claim.seed.claim.77"), "theirs\n").unwrap();
 
-        remove_session_path(&root, "seeded", &dir).unwrap();
+        remove_session_path(&root, "seeded", &dir, RemoveGrants::default()).unwrap();
 
         assert!(!dir.exists(), "session directory should be gone");
         assert!(!root.join(".spawn/seeded.seed").exists(), "seed must go with the session");
         assert!(!root.join(".spawn/seeded.seed.stale").exists(), "stale seed must go too");
+        assert!(!root.join(".spawn/seeded.brief.md").exists(), "brief must go with the session");
+        assert!(!root.join(".spawn/seeded.brief.md.stale").exists(), "stale brief must go too");
         assert!(root.join(".spawn/other.seed").exists(), "other sessions' seeds stay");
+        assert!(root.join(".spawn/other.brief.md").exists(), "other sessions' briefs stay");
+        assert!(!root.join(".spawn/.seeded.seed.Ab12Cd").exists(), "an interrupted spawn's staging file must go too");
+        assert!(root.join(".spawn/.seeded.seed.seed.Ef34Gh").exists(), "another session's staging file stays");
+        assert!(!root.join(".spawn/.seeded.seed.claim.4242").exists(), "a killed open's claimed seed must go too");
+        assert!(root.join(".spawn/.seeded.seed.claim.seed.claim.77").exists(), "another session's claim stays");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2163,6 +3479,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(read_lock_pid(&dir), Some(own_pid));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // The lock rule cs and cs-secrets read by: the text, surrounding whitespace
+    // removed, is decimal digits naming a running process; a sign is not part
+    // of a pid, so "+<pid>" names none even when <pid> is running.
+    #[test]
+    fn read_lock_pid_reads_the_lock_by_the_one_lock_rule() {
+        let dir = std::env::temp_dir().join(format!("cs-test-lockrule-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let own_pid = std::process::id();
+
+        fs::write(dir.join("session.lock"), format!("+{own_pid}")).unwrap();
+        assert_eq!(read_lock_pid(&dir), None, "a signed pid is not a pid");
+
+        fs::write(dir.join("session.lock"), format!(" \t00{own_pid}\n\n")).unwrap();
+        assert_eq!(read_lock_pid(&dir), Some(own_pid), "whitespace and leading zeros are read past");
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -2602,15 +3936,110 @@ mod tests {
         assert!(!is_pid_alive(0));
     }
 
-    // On non-macOS there is no keychain to scan, so the count is always empty.
-    // On macOS the scan must at least run without panicking and return a map.
+    // A test build never reads the real ~/.claude: Claude Code's session
+    // records are read from a path that cannot exist, as the sessions root is
+    // when a test scoped none, so a record, a FIFO or a lock there cannot
+    // reach or stall the suite.
     #[test]
-    fn keychain_secret_count_is_empty_off_macos() {
-        let counts = count_secrets_from_keychain();
-        #[cfg(not(target_os = "macos"))]
-        assert!(counts.is_empty());
-        #[cfg(target_os = "macos")]
-        let _ = counts; // content depends on the login keychain; only assert no panic
+    fn a_test_build_reads_no_claude_sessions_dir_that_exists() {
+        let dir = claude_sessions_dir();
+        assert!(dir.starts_with("/nonexistent"), "a test build reads {}", dir.display());
+        assert!(!dir.exists(), "a test build reads {}, which exists", dir.display());
+    }
+
+    // A test build counts no Keychain secrets on any platform: off macOS
+    // there is no Keychain, and on macOS a test build runs no `security`.
+    #[test]
+    fn a_test_build_counts_no_keychain_secrets() {
+        assert!(count_secrets_from_keychain().is_empty());
+    }
+
+    // A test build runs no `security` on any machine, whatever its Keychain
+    // holds: the counting test above runs again in a child whose PATH starts
+    // with a stand-in `security` that records that it ran and lists one cs
+    // entry. A build that reached for the Keychain would count that entry and
+    // leave the record, and would read the stand-in, never the real Keychain.
+    #[cfg(unix)]
+    #[test]
+    fn a_test_build_runs_no_security() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("cs-test-no-security-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ran = tmp.join("security-ran");
+        std::fs::write(
+            tmp.join("security"),
+            format!("#!/bin/sh\n: > '{}'\nprintf '    \"svce\"<blob>=\"cs:demo:K1\"\\n'\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("security"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", tmp.display(), std::env::var("PATH").unwrap_or_default());
+
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["session::tests::a_test_build_counts_no_keychain_secrets", "--exact", "--test-threads=1"])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("test result: ok. 1 passed;"), "the counting test ran once and passed:\n{stdout}");
+        assert!(!ran.exists(), "a test build ran security");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // The Keychain panel counts one secret per generic password whose
+    // service is cs:<session>:<name>, by session. A label or an account that
+    // reads cs:..., and a service that is not cs's, count for nothing.
+    #[test]
+    fn a_keychain_dump_counts_cs_secrets_per_session() {
+        let dump = r#"keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="cs:alpha:API_KEY"
+    "acct"<blob>="example"
+    "labl"<blob>="cs:alpha:API_KEY"
+    "svce"<blob>="cs:alpha:API_KEY"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "svce"<blob>="cs:alpha:TOKEN"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "svce"<blob>="cs:a.b:K1"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="cs:gamma:K1"
+    "svce"<blob>="cs:beta:DB_URL"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "labl"<blob>="cs:delta:K1"
+    "svce"<blob>="com.example.app"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "inet"
+attributes:
+    "acct"<blob>="example"
+    "srvr"<blob>="example.com"
+    "svce"<blob>="cs-other:alpha:K1"
+"#;
+        let mut counts: Vec<(String, u32)> = secret_counts_in_keychain_dump(dump).into_iter().collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            vec![("a.b".to_string(), 1), ("alpha".to_string(), 2), ("beta".to_string(), 1)]
+        );
+        assert!(secret_counts_in_keychain_dump("").is_empty(), "an empty dump counts nothing");
     }
 
     // The code-sessions profile keeps its caps answer and update cache under its own
@@ -2676,5 +4105,16 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A test that builds an App without scoping a root deletes, renames and
+    // scans through sessions_root(), so an unscoped test build must resolve
+    // to a path that cannot exist, never CS_SESSIONS_ROOT or ~/.claude-sessions
+    // of whoever runs the suite.
+    #[test]
+    fn an_unscoped_test_build_never_resolves_the_real_sessions_root() {
+        let root = sessions_root();
+        assert_eq!(root, PathBuf::from("/nonexistent/cs-tui-test-sessions-root"));
+        assert!(root.symlink_metadata().is_err(), "the unscoped test root must not exist");
     }
 }

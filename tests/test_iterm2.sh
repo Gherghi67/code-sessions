@@ -318,7 +318,7 @@ test_native_claude_with_flags_runs_the_link_with_its_flags() {
 # A stub whose argv, parent and launch prompt the tests read.
 _resume_session() {  # name -> prints the recorded conversation id
     local inst="$TEST_TMPDIR/inst"
-    printf '#!/usr/bin/env bash\necho "argv0=$0"\necho "args=$*"\necho "parent=$(ps -o args= -p $PPID)"\n' \
+    printf '#!/usr/bin/env bash\necho "argv0=$0"\necho "args=$*"\necho "parent=$(ps -o args= -p $PPID)"\necho "claim=$(cat "$CLAUDE_SESSION_META_DIR/local/lead-pid" 2>/dev/null || echo none)"\necho "marker=${CS_LEAD_CLAIM:-unset}"\n' \
         > "$inst/versions/9.9.9"
     "$CS_BIN" "$1" <<< "" > /dev/null 2>&1 || true
     awk '/^claude_session_id:/ { print $2; exit }' "$CS_SESSIONS_ROOT/$1/.cs/local/state"
@@ -335,10 +335,63 @@ _user_record() {
     printf '{"type":"user","message":{"role":"user","content":"hi"}}\n'
 }
 
-# Upstream cs execs claude on a resume that is sure to land, so the tab takes
-# claude's icon. cs keeps claude as its child on every launch: the run lease,
-# an encrypted session's vault and a pending `cs -switch` all need cs back
-# when claude exits.
+# A hook knows the lead by the claim its SessionStart writes, keyed by the
+# launch pid. A claim a previous launch left would speak for a later launch
+# that drew the same pid, so every launch clears it before claude starts: the
+# one where cs stays as claude's parent and the one where claude takes cs's
+# place alike. Both say in CS_LEAD_CLAIM that they take the claim, which a
+# launch by a cs from before the claim does not say.
+test_a_launch_clears_the_lead_claim_a_previous_launch_left() {
+    _tab_launch_env 1
+    local uuid out claim="$CS_SESSIONS_ROOT/marked/.cs/local/lead-pid"
+    uuid=$(_resume_session marked)
+    [ -n "$uuid" ] || { echo "  FAIL: the first launch recorded no conversation"; return 1; }
+    printf '1 1 stale\n' > "$claim"
+    out=$("$CS_BIN" marked <<< "" 2>&1) || true
+    assert_output_contains "$(_launched "$out" parent)" "marked" "no transcript: cs stays the parent" || return 1
+    assert_eq "none" "$(_launched "$out" claim)" "a launch that stays claude's parent clears the claim" || return 1
+    assert_eq "1" "$(_launched "$out" marker)" "a launch that stays claude's parent takes the claim" || return 1
+    _user_record > "$(_transcript marked "$uuid")"
+    printf '1 1 stale\n' > "$claim"
+    out=$("$CS_BIN" marked <<< "" 2>&1) || true
+    assert_output_contains "$(_launched "$out" parent)" "marked" "cs supervises a real conversation too" || return 1
+    assert_eq "none" "$(_launched "$out" claim)" "a launch claude replaces clears the claim" || return 1
+    assert_eq "1" "$(_launched "$out" marker)" "a launch claude replaces takes the claim" || return 1
+}
+
+# Something other than a file where the claim goes. A link (one that stays in
+# the session: the open refuses one that leads out), to a file or to a
+# directory, is removed, never followed, so what it names is left as it was
+# and claude starts. A directory may hold what someone put there, so cs
+# removes nothing: it refuses the open, names the directory, starts no claude
+# and lets the session lock go.
+test_a_launch_removes_a_link_and_refuses_a_directory_in_place_of_the_claim() {
+    _tab_launch_env 1
+    local uuid out rc=0 claim="$CS_SESSIONS_ROOT/odd/.cs/local/lead-pid" target="$CS_SESSIONS_ROOT/odd/notes.txt"
+    uuid=$(_resume_session odd)
+    [ -n "$uuid" ] || { echo "  FAIL: the first launch recorded no conversation"; return 1; }
+    printf 'kept\n' > "$target"
+    ln -s "$target" "$claim"
+    out=$("$CS_BIN" odd <<< "" 2>&1) || true
+    assert_eq "none" "$(_launched "$out" claim)" "a launch removes a link in place of the claim" || return 1
+    assert_eq "kept" "$(cat "$target")" "the file the link names is left as it was" || return 1
+    mkdir "$CS_SESSIONS_ROOT/odd/kept"
+    printf 'kept\n' > "$CS_SESSIONS_ROOT/odd/kept/notes.txt"
+    ln -s "$CS_SESSIONS_ROOT/odd/kept" "$claim"
+    out=$("$CS_BIN" odd <<< "" 2>&1) || true
+    assert_eq "none" "$(_launched "$out" claim)" "a launch removes a link to a directory in place of the claim" || return 1
+    assert_eq "kept" "$(cat "$CS_SESSIONS_ROOT/odd/kept/notes.txt")" \
+        "the directory the link names is left as it was" || return 1
+    mkdir "$claim"
+    out=$("$CS_BIN" odd <<< "" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a launch with a directory in place of the claim fails" || return 1
+    assert_eq "Error: $claim is a directory, where cs keeps the lead's claim on its launch; remove it and open the session again" \
+        "$(printf '%s\n' "$out" | grep '^Error: ')" "the refusal names the directory" || return 1
+    assert_eq "" "$(_launched "$out" argv0)" "no claude starts" || return 1
+    assert_dir "$claim" "the directory is left in place" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/odd/.cs/session.lock" "the refused open lets the session lock go" || return 1
+}
+
 test_resume_of_a_real_conversation_keeps_cs_as_the_parent() {
     _tab_launch_env 1
     local uuid out argv0
@@ -350,10 +403,11 @@ test_resume_of_a_real_conversation_keeps_cs_as_the_parent() {
     assert_output_contains "$(_launched "$out" parent)" "resumer" \
         "claude runs as cs's child, not in its place" || return 1
     assert_output_contains "$(_launched "$out" args)" "/color" "the launch prompt reaches the resumed claude" || return 1
+    # The seed as cs -spawn writes it (line 1 the token, line 2 the spawner),
+    # opened as the spawn's own window via CS_SPAWN_TOKEN.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    : > "$CS_SESSIONS_ROOT/.spawn/resumer.seed"
-    echo "brief" > "$CS_SESSIONS_ROOT/.spawn/resumer.brief.md"
-    out=$("$CS_BIN" resumer <<< "" 2>&1) || true
+    printf 'feedfacefeedfacefeedfacefeedface\n\n--- cs-spawn-brief ---\nbrief\n' > "$CS_SESSIONS_ROOT/.spawn/resumer.seed"
+    out=$(CS_SPAWN_TOKEN=feedfacefeedfacefeedfacefeedface "$CS_BIN" resumer <<< "" 2>&1) || true
     assert_output_contains "$(_launched "$out" parent)" "resumer" "a spawned resume keeps cs as the parent too" || return 1
     assert_output_contains "$(_launched "$out" args)" "Your brief is .cs/brief.md" \
         "a spawn kick, not the colour, reaches the resumed claude" || return 1
@@ -426,6 +480,8 @@ test_npm_shaped_claude_is_not_linked() {
 run_test test_launch_under_iterm_cc_shows_loader_and_icon
 run_test test_npm_shaped_claude_is_not_linked
 run_test test_claude_bin_without_a_command_is_refused_by_name
+run_test test_a_launch_clears_the_lead_claim_a_previous_launch_left
+run_test test_a_launch_removes_a_link_and_refuses_a_directory_in_place_of_the_claim
 run_test test_resume_of_a_real_conversation_keeps_cs_as_the_parent
 run_test test_resume_that_might_not_land_keeps_cs_as_the_parent
 run_test test_native_claude_with_flags_runs_the_link_with_its_flags

@@ -36,17 +36,91 @@ SETTINGS
 
     # Migrate existing auto memory from the default location
     local real_path
-    real_path="$(cd "$session_dir" 2>/dev/null && pwd -P)"
+    real_path="$(cd -- "$session_dir" 2>/dev/null && pwd -P)"
     local encoded_path
     encoded_path=$(_claude_encode_path "$real_path")
-    # Claude's projects directory as this launch sees it (CS_TRANSCRIPTS_DIR when
-    # the profile launcher or a test relocates it), never the user's stable one:
-    # the migration deletes the source once copied.
     local old_memory_dir="${CS_TRANSCRIPTS_DIR:-$HOME/.claude/projects}/${encoded_path}/memory"
-    if [ -d "$old_memory_dir" ] && [ "$(ls -A "$old_memory_dir" 2>/dev/null)" ]; then
-        cp -n "$old_memory_dir"/* "$session_dir/.cs/memory/" 2>/dev/null || true
-        rm -rf "$old_memory_dir"
+    if [ -d "$old_memory_dir" ]; then
+        _move_memory_files "$old_memory_dir" "$session_dir/.cs/memory"
     fi
+}
+
+# Move every file under src (subdirectories included) to the same relative path
+# under dest, deleting a source file only once dest holds a byte-identical copy.
+# A name dest already holds with different content is copied beside it as
+# <name>.claude-projects (not .md, so Claude Code does not load it as a topic).
+# A copy that fails, or a .claude-projects name already holding something else,
+# stops the move before anything is deleted, so src stays whole. Warnings go to
+# stderr: create_worktree_session's caller captures stdout as a path.
+_move_memory_files() {  # src, dest
+    local src="$1" dest="$2" f rel target complete=1
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        target="$dest/$rel"
+        # A destination reached through a symlink is no copy at all: a link
+        # back into src would pass cmp and the source would be deleted from
+        # under it. Such a file stays where it is.
+        if ! _memory_dest_is_plain "$dest" "$rel"; then
+            warn "Not moving $f: $target is reached through a symlink" >&2
+            complete=0
+            continue
+        fi
+        # The destination root may itself be a link (a vaulted session keeps
+        # .cs/memory elsewhere); only one pointing back at src makes the
+        # target the source file, which no byte comparison can tell apart.
+        if [ "$f" -ef "$target" ]; then
+            warn "Not moving $f: $target is the same file" >&2
+            complete=0
+            continue
+        fi
+        if { [ -e "$target" ] || [ -L "$target" ]; } && ! cmp -s "$f" "$target"; then
+            target="$target.claude-projects"
+        fi
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            if ! cmp -s "$f" "$target"; then
+                warn "Not moving $f: $dest/$rel and $target both hold other content" >&2
+                complete=0
+            fi
+            continue
+        fi
+        if mkdir -p "$(dirname "$target")" && cp -p "$f" "$target" && cmp -s "$f" "$target"; then
+            if [ "$target" != "$dest/$rel" ]; then
+                warn "Kept both copies of memory file $rel: the one from $src is $target" >&2
+            fi
+        else
+            warn "Could not copy $f to $target" >&2
+            complete=0
+        fi
+    done < <(find "$src" -type f -print0)
+
+    if [ "$complete" -eq 0 ]; then
+        warn "Left $src in place: not every file in it has a copy in $dest" >&2
+        return 0
+    fi
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        _memory_dest_is_plain "$dest" "$rel" || continue
+        if cmp -s "$f" "$dest/$rel" || cmp -s "$f" "$dest/$rel.claude-projects"; then
+            rm -f "$f"
+        fi
+    done < <(find "$src" -type f -print0)
+    # Only directories left empty go; one still holding anything (a symlink,
+    # a file that appeared since) stays, and its rmdir failure is expected.
+    find "$src" -depth -type d -empty -delete 2>/dev/null || true
+}
+
+# True when no component of dest/rel, from dest's first child down to the
+# file itself (or its .claude-projects twin), is a symlink.
+_memory_dest_is_plain() {  # dest, rel
+    local path="$1" part rest="$2"
+    while [ -n "$rest" ]; do
+        part="${rest%%/*}"
+        path="$path/$part"
+        [ -L "$path" ] && return 1
+        [ "$rest" = "$part" ] && break
+        rest="${rest#*/}"
+    done
+    [ ! -L "$path.claude-projects" ]
 }
 
 # Emit the cs memory disclosure note (cs:memory-note section).
@@ -65,6 +139,51 @@ Claude's built-in memory writes durable facts to `.cs/memory/` (cs redirects via
 EOF
 }
 
+# Emit the session wrap-up cues (cs:wrap-cues section): when to offer /wrap.
+# Single source for the template, Phase 10 (which appends it to a session
+# that lacks it) and Phase 16 (which puts it in place of a four-option block
+# cs wrote).
+_emit_wrap_cues_block() {
+    cat << 'EOF'
+<!-- cs:wrap-cues -->
+## Session wrap-up cues
+
+When the conversation reaches a natural stopping point — work shipped, a PR merged, a deploy completed, a bug fixed, or the user signaling they're winding down — proactively offer to distill the session via AskUserQuestion BEFORE the conversation drifts.
+
+**Strong signals (sufficient on their own — but only when the phrase describes work that actually completed; never fire when it reports a problem, is negated, or is part of a plan for later):**
+- "shipped", "PR merged", "PR up", "deployed", "released"
+- "let's call it", "wraps up", "done for the day", "good place to stop"
+- "all good now", "that did it", "ready to ship"
+
+**Soft signals (require a corroborating signal — a recent commit, an explicit "done", or two or more soft signals in succession):**
+- "that works", "looks good", "we're good", "all set"
+
+**When fired**, use AskUserQuestion with header "Wrap up?" and these options:
+- "Run /wrap" — distill memory entries AND write a session summary in sequence
+- "Not yet — keep working"
+
+Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
+
+To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
+# The rule for committing session files (cs:session-commits section). Single
+# source used by _emit_session_claude_md (new sessions) and migrate_session
+# Phase 15 (existing sessions). Models committed each narrative append and
+# each handoff pass on their own, under subjects they made up; the rule says
+# nothing commits session files unless the user asks.
+_emit_session_commits_block() {
+    cat << 'EOF'
+<!-- cs:session-commits -->
+## Committing session files
+
+Apart from the one commit that creates a new session and the merge commit `/finish` makes to integrate a feature, which also carries the pointers cs adds to `.cs/memory/MEMORY.md`, cs, its skills and its commands never commit files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries, the task archive), and neither do you on your own: commit them only when the user asks. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.
+
+To opt out, delete the prose above but keep the `cs:session-commits` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
 # The protocol for an encrypted session: migrate_session appends it once
 # .cs/private exists. It overrides the README instructions of the base
 # protocol, which every session gets from _emit_session_claude_md.
@@ -76,7 +195,7 @@ _emit_encrypted_protocol_block() {
 This session keeps its private files in an encrypted vault: `.cs/memory`, `.cs/plans` and `.cs/private` link into it. Every other path in the session directory is plaintext on disk and in backups. These rules override the Session Files and Documentation Discipline sections above:
 
 - Keep the objective, environment and outcome at the top of your narrative (`.cs/memory/narrative.<actor>.md`), and read them from there on resume. `.cs/README.md` stays frontmatter only; cs does not copy your first prompt into it.
-- The bash-logger records every Bash command in `.cs/private/session.log`, inside the vault. The secrets rule above still applies.
+- cs logs session start and end, tool failures and autosaves to `.cs/private/session.log`, inside the vault.
 - Rotation handoffs live in `.cs/private/handoffs/` and are never committed; the `rotate` skill says how.
 - `cs -narrative rotate` archives your narrative's older sections into `.cs/private/narrative-archive/<actor>/` (or through a `.cs/narrative-archive` link into the vault); grep there on demand.
 - `/checkpoint` saves under `.cs/private/checkpoints/`, and the timeline records no label.
@@ -122,9 +241,13 @@ Update the markdown documentation files throughout the session:
 
 Treat these files as a lab notebook - document as you go, not just at the end.
 
+EOF
+    _emit_session_commits_block
+    cat << EOF
+
 ## Wrap-up Command
 
-When the session is complete, use the \`/wrap\` command to distill durable memory entries and generate an intelligent summary of the entire session ($CS_CONTEXT_SUMMARY). Use \`/summary\` for the narrative alone, or \`/sweep\` for the memory pass alone. Mid-session, use \`/checkpoint <label>\` to snapshot git state and the narrative — e.g. before a risky refactor or destructive operation, and after reaching a green milestone (tests passing, a feature working) — saved under $CS_CONTEXT_CHECKPOINTS/.
+When the session is complete, use the \`/wrap\` command to distill durable memory entries and generate an intelligent summary of the entire session ($CS_CONTEXT_SUMMARY). Mid-session, use \`/checkpoint <label>\` to snapshot git state and the narrative — e.g. before a risky refactor or destructive operation, and after reaching a green milestone (tests passing, a feature working) — saved under $CS_CONTEXT_CHECKPOINTS/.
 
 When a conversation's context grows heavy or a work phase completes, invoke the \`rotate\` skill: it writes a handoff to $CS_CONTEXT_HANDOFFS/ and arms it, so the user can run \`/clear\` to continue in a fresh conversation without leaving Claude Code (exiting and answering \`r\` at the next launch does the same). \`cs -conversations\` shows the session's conversation chain.
 
@@ -134,8 +257,8 @@ EOF
 
 Secrets live in the cs session store, never in a project file. `cs -secrets set`
 and the `store-secret` skill read the value on **stdin** via a file redirect —
-never `echo`/`printf` a secret into a pipe or a Bash heredoc: the bash-logger
-records the whole Bash command, plaintext and all, in `.cs/local/session.log`.
+never `echo`/`printf` a secret into a pipe or a Bash heredoc, either of which
+puts the plaintext in the Bash command itself.
 
 Consume a secret inline — `some-command --token "$(cs -secrets get API_KEY)"` —
 so it stays out of the tool result and the transcript. A retrieved value is read
@@ -153,31 +276,8 @@ immediately.
 
 EOF
     _emit_memory_note_block
-    cat << 'EOF'
-
-<!-- cs:wrap-cues -->
-## Session wrap-up cues
-
-When the conversation reaches a natural stopping point — work shipped, a PR merged, a deploy completed, a bug fixed, or the user signaling they're winding down — proactively offer to distill the session via AskUserQuestion BEFORE the conversation drifts.
-
-**Strong signals (sufficient on their own — but only when the phrase describes work that actually completed; never fire when it reports a problem, is negated, or is part of a plan for later):**
-- "shipped", "PR merged", "PR up", "deployed", "released"
-- "let's call it", "wraps up", "done for the day", "good place to stop"
-- "all good now", "that did it", "ready to ship"
-
-**Soft signals (require a corroborating signal — a recent commit, an explicit "done", or two or more soft signals in succession):**
-- "that works", "looks good", "we're good", "all set"
-
-**When fired**, use AskUserQuestion with header "Wrap up?" and these options:
-- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)
-- "Run /sweep only" — just the memory pass; skip the narrative summary
-- "Run /summary only" — just the narrative; skip the memory pass
-- "Not yet — keep working"
-
-Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
-
-To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
-EOF
+    echo
+    _emit_wrap_cues_block
 }
 
 # Write the session protocol template to the given directory (create path).
@@ -186,6 +286,22 @@ EOF
 write_session_claude_md() {
     local session_dir="$1"
     _emit_session_claude_md > "$session_dir/CLAUDE.local.md"
+}
+
+# Put the session protocol into CLAUDE.local.md without losing a line of it:
+# written when absent, appended below a user's own file, and a file that
+# already carries any cs sentinel is left alone. A user's CLAUDE.local.md is
+# gitignored by convention, so git holds no copy to recover it from.
+ensure_session_claude_md() {
+    local session_dir="$1"
+    local claude_local="$session_dir/CLAUDE.local.md"
+    if [ ! -f "$claude_local" ]; then
+        write_session_claude_md "$session_dir"
+    elif ! grep -q '<!-- cs:' "$claude_local"; then
+        printf '\n' >> "$claude_local"
+        _emit_session_claude_md >> "$claude_local"
+        notice CLAUDE.local.md "added the cs session protocol below your own lines"
+    fi
 }
 
 # Move cs-managed content from a session's CLAUDE.md into CLAUDE.local.md.
@@ -257,7 +373,7 @@ migrate_claude_md_to_local() {
         else
             mv "$claude_md" "$local_md"
         fi
-        warn "Moved the cs session protocol from CLAUDE.md to CLAUDE.local.md"
+        notice CLAUDE.local.md "holds the cs session protocol, moved from CLAUDE.md"
     else
         if [ -f "$local_md" ]; then
             printf '\n' >> "$local_md"
@@ -266,7 +382,7 @@ migrate_claude_md_to_local() {
             sed -n "${split_line},\$p" "$claude_md" > "$local_md"
         fi
         cs_write_atomic "$claude_md" printf '%s\n' "$head_text" || error "could not rewrite $claude_md"
-        warn "Moved cs-managed sections from CLAUDE.md to CLAUDE.local.md; your own content stays in CLAUDE.md"
+        notice CLAUDE.local.md "holds cs's sections, moved from CLAUDE.md, where your own lines stay"
     fi
     return 0
 }

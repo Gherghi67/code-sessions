@@ -76,6 +76,12 @@ _encrypt_move_content() {  # session_name, meta_dir
 # The hook cs runs before every open: attaches the vault, asking for its
 # password each time. A mount whose session is not running is a leftover (a
 # crash, or a detach that failed), so it is detached and asked for again.
+# Whether the session is running comes from cs in CS_LIVE_LOCK_PID
+# (_run_pre_open); the hook never reads the lock, and without the variable,
+# or with one that names no running process, it counts the mount as held by
+# no running session. Its pid check takes only a number without leading
+# zeros, as cs writes them: kill -0 reads 0 as the caller's process group,
+# which is always there, and the leftover loop would signal that group.
 _encrypt_write_pre_open() {  # meta_dir, container
     local hook="$1/local/pre-open"
     {
@@ -87,8 +93,8 @@ _encrypt_write_pre_open() {  # meta_dir, container
 mkdir -p .cs/vault-mnt
 mnt=$(cd .cs/vault-mnt && pwd -P)
 mounted() { mount | grep -F " on $mnt (" >/dev/null; }
-alive() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
-lock_alive() { alive "$(tr -d '[:space:]' < .cs/session.lock 2>/dev/null || true)"; }
+alive() { case "$1" in ''|0*|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
+lock_alive() { alive "${CS_LIVE_LOCK_PID:-}"; }
 holder_alive() {
     local pid
     [ -f .cs/local/vault-holders ] || return 1
@@ -144,7 +150,7 @@ _vault_live_holder_besides() {  # meta_dir, pid -> true if another listed holder
 
 _vault_mountpoint_if_mounted() {  # meta_dir -> prints the mountpoint, or fails
     local mnt
-    mnt=$(cd "$1/vault-mnt" 2>/dev/null && pwd -P) || return 1
+    mnt=$(cd -- "$1/vault-mnt" 2>/dev/null && pwd -P) || return 1
     mount | grep -F " on $mnt (" >/dev/null || return 1
     printf '%s\n' "$mnt"
 }
@@ -173,8 +179,8 @@ _detach_opened_vault() {
     local meta="$CS_OPENED_VAULT_META" mnt lock
     [ -n "$meta" ] || return 0
     _vault_live_holder_besides "$meta" "$$" && return 0
-    lock=$(read_lock_pid "$meta")
-    [ -n "$lock" ] && [ "$lock" != "$$" ] && kill -0 "$lock" 2>/dev/null && return 0
+    lock=$(live_lock_pid "$meta")
+    [ -n "$lock" ] && [ "$lock" != "$$" ] && return 0
     mnt=$(_vault_mountpoint_if_mounted "$meta") || return 0
     hdiutil detach "$mnt" >/dev/null 2>&1 && return 0
     _vault_mountpoint_if_mounted "$meta" >/dev/null || return 0
@@ -183,13 +189,24 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub
+    local name="$1" meta container mnt sub taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
     # another terminal meets the collision check instead of racing the moves.
-    echo "$$" > "$meta/session.lock"
+    # It is taken as an open takes it, under the openers' mutex: when an open
+    # took it after the live check above, cs -encrypt refuses and leaves it.
+    _take_session_lock "$meta" || taken=$?
+    case "$taken" in
+        0) ;;
+        1) error "$name: the session is running; close it, then encrypt." ;;
+        2) error "$name: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." ;;
+        *) error "_take_session_lock returned $taken for $meta" ;;
+    esac
     # shellcheck disable=SC2064  # the path is fixed now, on purpose
+    # printf %q quotes the path for the trap's own parse, so a space, a quote,
+    # $( or a newline in it stays data (checked under bash 3.2, #895). The
+    # launch keeps its path in a global instead; both are safe. Do not re-fix.
     trap "release_session_lock $(printf '%q' "$meta")" EXIT
     # .cs/local is gitignored and born on the first open, so a session cloned
     # here and never opened has none; the pre-open hook and the vault record

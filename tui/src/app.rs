@@ -2,6 +2,7 @@
 // ABOUTME: Tracks table selection, sort order, search filter, and modal dialog state
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::widgets::TableState;
@@ -216,16 +217,27 @@ pub fn fuzzy_match(pattern: &str, text: &str) -> Option<(i32, Vec<usize>)> {
     Some((score, indices))
 }
 
-/// Whether a name is one the `cs` CLI would accept, mirroring bash
-/// validate_session_name: non-empty, not "."/"..", and only ASCII
-/// alphanumerics plus `-` `_` `.`. Keeps TUI-created/renamed sessions openable
-/// by `cs` (Unicode letters or spaces would produce a dir cs rejects).
-pub fn is_valid_session_name(name: &str) -> bool {
-    if name.is_empty() || name == "." || name == ".." {
-        return false;
+/// Why the `cs` CLI would refuse a name, mirroring bash
+/// validate_session_name: empty, "."/"..", a leading dot (cs's own staging
+/// dirs, .spawn and .usage, sit at the sessions root under dot names), a
+/// leading hyphen (`cs -uninstall` runs a verb), or anything but ASCII
+/// alphanumerics plus `-` `_` `.`, each in cs's own words. None for a name cs
+/// accepts. Keeps TUI-created/renamed sessions openable by `cs` (Unicode
+/// letters or spaces would produce a dir cs rejects).
+pub fn session_name_refusal(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("Session name cannot be empty")
+    } else if name == "." || name == ".." {
+        Some("Session name cannot be '.' or '..'")
+    } else if name.starts_with('.') {
+        Some("Session name cannot start with a dot")
+    } else if name.starts_with('-') {
+        Some("Session name cannot start with a hyphen")
+    } else if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        Some("Session name must contain only alphanumeric characters, hyphens, underscores, and dots")
+    } else {
+        None
     }
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,9 +503,16 @@ pub struct App {
     pub row_hit_spans: Vec<(u16, u16, usize)>,
     pub visible_sort_columns: Vec<SortColumn>,
     pub delete_countdown_start: Option<std::time::Instant>,
-    /// Lines the delete confirm shows for files beyond cs's own that the
-    /// removal would take, read when the confirm opens (never in render).
-    pub delete_warnings: Vec<String>,
+    /// What the delete confirm warns of: live sessions and files beyond
+    /// cs's own that the removal would take, read when the confirm opens
+    /// (never in render).
+    pub delete_warnings: Vec<session::DeleteWarning>,
+    /// The escalations the open delete confirm offers: the ones the sessions
+    /// it would delete need, read when it opens.
+    pub delete_offers: session::RemoveGrants,
+    /// The escalations granted in the open delete confirm; none until its
+    /// key is pressed, and none again once it closes.
+    pub delete_grants: session::RemoveGrants,
     /// Drawn beside a session tagged encrypted; resolved once at start from
     /// the machine's font consent.
     pub lock_marker: &'static str,
@@ -666,6 +685,8 @@ impl App {
             visible_sort_columns: Vec::new(),
             delete_countdown_start: None,
             delete_warnings: Vec::new(),
+            delete_offers: session::RemoveGrants::default(),
+            delete_grants: session::RemoveGrants::default(),
             lock_marker: session::lock_marker(),
             fuzzy_indices: HashMap::new(),
             attached_worktrees: HashSet::new(),
@@ -1212,14 +1233,7 @@ impl App {
                 } else {
                     let mut names: Vec<String> = self.marked_sessions.iter().cloned().collect();
                     names.sort();
-                    match self.unowned_warnings(&names) {
-                        Ok(warnings) => {
-                            self.delete_warnings = warnings;
-                            self.delete_countdown_start = Some(std::time::Instant::now());
-                            self.mode = Mode::ConfirmBatchDelete;
-                        }
-                        Err(e) => self.set_status(e, StatusLevel::Error),
-                    }
+                    self.open_delete_confirm(&names, Mode::ConfirmBatchDelete);
                 }
                 Action::None
             }
@@ -1619,20 +1633,13 @@ impl App {
                 }
             }
             MenuAction::Delete => {
-                // Delete. Same liveness guard as the `d` key: the removal
-                // refuses a lock-held session anyway, so opening the countdown
-                // here only promises a deletion that will not happen.
-                if let Some(refusal) = self.locked_selection_refusal() {
-                    self.set_status(refusal, StatusLevel::Error);
-                } else if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
-                    match self.unowned_warnings(std::slice::from_ref(&name)) {
-                        Ok(warnings) => {
-                            self.delete_warnings = warnings;
-                            self.mode = Mode::ConfirmDelete;
-                            self.delete_countdown_start = Some(std::time::Instant::now());
-                        }
-                        Err(e) => self.set_status(e, StatusLevel::Error),
-                    }
+                // A live session opens the confirm too: it says so, and
+                // offers removing it anyway as `cs -rm --force` does, unless
+                // the picker runs inside another session or a
+                // `cs <name> --remote` server serves it, where cs -rm
+                // refuses it outright and so does the confirm.
+                if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
+                    self.open_delete_confirm(std::slice::from_ref(&name), Mode::ConfirmDelete);
                 }
                 Action::None
             }
@@ -1728,10 +1735,7 @@ impl App {
                     self.set_status("Wait...", StatusLevel::Info);
                 }
             }
-            _ => {
-                self.mode = Mode::Normal;
-                self.delete_countdown_start = None;
-            }
+            code => self.toggle_delete_grant_or_cancel(code),
         }
         Action::None
     }
@@ -1745,10 +1749,7 @@ impl App {
                     self.set_status("Wait...", StatusLevel::Info);
                 }
             }
-            _ => {
-                self.mode = Mode::Normal;
-                self.delete_countdown_start = None;
-            }
+            code => self.toggle_delete_grant_or_cancel(code),
         }
         Action::None
     }
@@ -1833,6 +1834,47 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    /// In a delete confirm, D and F switch the escalation it offers on or
+    /// off (`cs -rm --delete-files` and `--force`); any other key cancels.
+    fn toggle_delete_grant_or_cancel(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('D') if self.delete_offers.unowned_files => {
+                self.delete_grants.unowned_files = !self.delete_grants.unowned_files;
+            }
+            KeyCode::Char('F') if self.delete_offers.past_live_lock => {
+                self.delete_grants.past_live_lock = !self.delete_grants.past_live_lock;
+            }
+            _ => self.close_delete_confirm(),
+        }
+    }
+
+    /// Open the delete confirm `mode` for `names`, with every escalation
+    /// off: its lines name each live session and each one holding files
+    /// beyond cs's own, and it offers the escalation each needs. Stays
+    /// closed, with the reason in the status line, when `cs -rm` run inside
+    /// the picker's session would refuse any of `names` from there, when a
+    /// `cs <name> --remote` server serves any of them, and when a file
+    /// listing fails.
+    fn open_delete_confirm(&mut self, names: &[String], mode: Mode) {
+        match self.delete_confirm_lines(names) {
+            Ok((warnings, offers)) => {
+                self.delete_warnings = warnings;
+                self.delete_offers = offers;
+                self.delete_grants = session::RemoveGrants::default();
+                self.delete_countdown_start = Some(std::time::Instant::now());
+                self.mode = mode;
+            }
+            Err(e) => self.set_status(e, StatusLevel::Error),
+        }
+    }
+
+    fn close_delete_confirm(&mut self) {
+        self.mode = Mode::Normal;
+        self.delete_countdown_start = None;
+        self.delete_offers = session::RemoveGrants::default();
+        self.delete_grants = session::RemoveGrants::default();
     }
 
     fn handle_confirm_force_open(&mut self, key: KeyEvent) -> Action {
@@ -1934,21 +1976,14 @@ impl App {
 
     fn execute_create(&mut self) -> Action {
         let name = self.create_input.text().trim().to_string();
-        if name.is_empty() {
-            self.set_status("Name cannot be empty", StatusLevel::Error);
-            self.mode = Mode::Normal;
-            return Action::None;
-        }
-        if !is_valid_session_name(&name) {
-            self.set_status(
-                "Invalid name: use letters, digits, - _ . only",
-                StatusLevel::Error,
-            );
+        if let Some(refusal) = session_name_refusal(&name) {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return Action::None;
         }
         let root = self.sessions_root.clone();
-        if root.join(&name).exists() {
+        // Any entry holds the name, a link that leads nowhere included.
+        if std::fs::symlink_metadata(root.join(&name)).is_ok() {
             self.set_status("Session already exists", StatusLevel::Error);
             self.mode = Mode::Normal;
             return Action::None;
@@ -2024,10 +2059,6 @@ impl App {
             .and_then(|_| std::fs::rename(&staged, qdir.join(&fname)))
         {
             Ok(()) => {
-                // Queue changed: let the Stop-hook gate re-ask even if it was
-                // recently declined. Mirrors the CLI's `rm -f queue.declined`
-                // in bin/cs `_queue_add`.
-                let _ = std::fs::remove_file(dir.join("queue.declined"));
                 self.queue_input.clear();
                 self.refresh_queue_depth(name);
                 self.set_status(format!("Queued task for {}", name), StatusLevel::Success);
@@ -2043,7 +2074,6 @@ impl App {
     fn replace_notes_task(&mut self, name: &str, idx: usize, text: &str) {
         match rewrite_queue_task(name, idx, Some(text)) {
             Ok(()) => {
-                let _ = std::fs::remove_file(session::queue_dir(name).join("queue.declined"));
                 self.queue_input.clear();
                 self.notes_focus = NotesFocus::List;
                 let len = session::read_queue(name).len();
@@ -2071,7 +2101,6 @@ impl App {
         };
         match rewrite_queue_task(&name, idx, None) {
             Ok(()) => {
-                let _ = std::fs::remove_file(session::queue_dir(&name).join("queue.declined"));
                 let len = session::read_queue(&name).len();
                 if len == 0 {
                     self.notes_focus = NotesFocus::Input;
@@ -2148,45 +2177,93 @@ impl App {
     ///
     /// `cs -rm` refuses a lock-held session without `--force`, and the TUI
     /// reaches the same removal. Lock, not heartbeat: the shell's
-    /// `session_is_live` reads the lock pid and `kill(0)`s it.
+    /// `session_is_live` reads the lock pid and `kill(0)`s it, and so does
+    /// this, now: the row's pid was read at the last scan and its process
+    /// may have exited since.
     fn locked_selection_refusal(&self) -> Option<String> {
         let session = self.selected_session()?;
-        let pid = session.liveness.lock_pid()?;
-        Some(format!(
-            "{} is live (pid {}) — close it first",
-            session.name, pid
-        ))
+        let pid = session.liveness.lock_pid().filter(|&pid| session::is_pid_alive(pid))?;
+        Some(session::live_refusal(&session.name, pid))
     }
 
-    /// The confirm lines for `names`: one per session holding files beyond
-    /// cs's own, prefixed with the session name when more than one is
-    /// being deleted. Errors when a listing fails, so the confirm never
-    /// opens on a list it could not read.
-    fn unowned_warnings(&self, names: &[String]) -> Result<Vec<String>, String> {
+    /// `locked_selection_refusal`, then the selected session's lock read
+    /// again from disk, as delete's removal reads it: rescans wait while a
+    /// modal is open, so the session may have opened since its row was
+    /// scanned. Rename and rotate ask this when they act.
+    fn live_selection_refusal_now(&self) -> Option<String> {
+        self.locked_selection_refusal().or_else(|| {
+            let session = self.selected_session()?;
+            let pid = session::read_lock_pid(&self.sessions_root.join(&session.name).join(".cs"))?;
+            Some(session::live_refusal(&session.name, pid))
+        })
+    }
+
+    /// The confirm lines for `names` and the escalations they need: a line
+    /// per live session (offering the live-lock grant) and a line per session
+    /// holding files beyond cs's own (offering the files grant), the latter
+    /// prefixed with the session name when more than one is being deleted.
+    /// Errors with `cs -rm`'s sentence when, inside a session, it would
+    /// refuse any of `names` from there whatever it is granted, and when a
+    /// `cs <name> --remote` server serves any of them, so the confirm never
+    /// offers a removal it will refuse; errors too when a listing fails, so
+    /// the confirm never opens on a list it could not read.
+    fn delete_confirm_lines(&self, names: &[String]) -> Result<(Vec<session::DeleteWarning>, session::RemoveGrants), String> {
         let mut lines = Vec::new();
+        let mut offers = session::RemoveGrants::default();
         for name in names {
             let path = self.sessions_root.join(name);
+            if let Some(refusal) = session::caller_refusal(&self.sessions_root, name, &path).map_err(|e| e.to_string())? {
+                return Err(refusal);
+            }
+            if let Some(refusal) = session::served_refusal(name, &path) {
+                return Err(refusal);
+            }
+            let live_pid = self
+                .sessions
+                .iter()
+                .find(|s| &s.name == name)
+                .and_then(|s| s.liveness.lock_pid())
+                .filter(|&pid| session::is_pid_alive(pid));
+            if let Some(pid) = live_pid {
+                lines.push(session::DeleteWarning::line(format!("{name} is live (pid {pid})")));
+                offers.past_live_lock = true;
+            }
             let entries = session::unowned_entries(name, &path)?;
-            if let Some(warning) = entries.warning() {
-                lines.push(if names.len() > 1 { format!("{name}: {warning}") } else { warning });
+            if let Some(mut warning) = entries.warning() {
+                if names.len() > 1 {
+                    warning.text = format!("{name}: {}", warning.text);
+                }
+                lines.push(warning);
+                offers.unowned_files = true;
             }
         }
-        Ok(lines)
+        Ok((lines, offers))
     }
 
     fn execute_delete(&mut self) {
-        if let Some(refusal) = self.locked_selection_refusal() {
-            self.set_status(refusal, StatusLevel::Error);
-            self.mode = Mode::Normal;
-            self.delete_countdown_start = None;
-            return;
+        let grants = self.delete_grants;
+        if !grants.past_live_lock {
+            if let Some(refusal) = self.locked_selection_refusal() {
+                self.set_status(refusal, StatusLevel::Error);
+                self.close_delete_confirm();
+                return;
+            }
         }
         if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
             let root = self.sessions_root.clone();
             let path = root.join(&name);
-            match session::remove_session_path(&root, &name, &path) {
+            // An adopted link loses only the link; the age state is the project's.
+            let was_link = is_symlink(&path);
+            match session::remove_session_path(&root, &name, &path, grants) {
                 Ok(()) => {
-                    self.set_status(format!("Deleted: {}", name), StatusLevel::Success);
+                    match if was_link { Ok(None) } else { drop_age_state(&name) } {
+                        Ok(None) => self.set_status(format!("Deleted: {}", name), StatusLevel::Success),
+                        Ok(Some(dir)) => self.set_status(
+                            format!("Deleted: {} · removed age state {}", name, dir.display()),
+                            StatusLevel::Success,
+                        ),
+                        Err(e) => self.set_status(format!("Deleted: {}, but {}", name, e), StatusLevel::Error),
+                    }
                     self.rescan_now();
                 }
                 Err(e) => {
@@ -2194,16 +2271,18 @@ impl App {
                 }
             }
         }
-        self.mode = Mode::Normal;
-        self.delete_countdown_start = None;
+        self.close_delete_confirm();
     }
 
     fn execute_batch_delete(&mut self) {
+        let grants = self.delete_grants;
         let root = self.sessions_root.clone();
         let mut deleted = 0;
         let mut errors = 0;
         let mut live: Vec<String> = Vec::new();
         let mut reasons: Vec<String> = Vec::new();
+        let mut aged: Vec<String> = Vec::new();
+        let mut age_failures: Vec<String> = Vec::new();
         let names: Vec<String> = self.marked_sessions.iter().cloned().collect();
         for name in &names {
             // Resolved per name rather than from the selection: a batch mixes
@@ -2212,7 +2291,8 @@ impl App {
                 .sessions
                 .iter()
                 .find(|s| &s.name == name)
-                .and_then(|s| s.liveness.lock_pid());
+                .and_then(|s| s.liveness.lock_pid())
+                .filter(|&pid| !grants.past_live_lock && session::is_pid_alive(pid));
             if let Some(pid) = lock_pid {
                 live.push(format!("{} (pid {})", name, pid));
                 errors += 1;
@@ -2220,11 +2300,17 @@ impl App {
                 continue;
             }
             let path = root.join(name);
-            let result = session::remove_session_path(&root, name, &path);
+            let was_link = is_symlink(&path);
+            let result = session::remove_session_path(&root, name, &path, grants);
             match result {
                 Ok(()) => {
                     deleted += 1;
                     self.flash_row(name.clone(), FlashKind::Success);
+                    match if was_link { Ok(None) } else { drop_age_state(name) } {
+                        Ok(None) => {}
+                        Ok(Some(dir)) => aged.push(dir.display().to_string()),
+                        Err(e) => age_failures.push(format!("{} deleted, but {}", name, e)),
+                    }
                 }
                 Err(e) => {
                     errors += 1;
@@ -2235,8 +2321,8 @@ impl App {
         }
         self.marked_sessions.clear();
         self.rescan_now();
-        if errors == 0 {
-            self.set_status(format!("Deleted {} sessions", deleted), StatusLevel::Success);
+        let mut text = if errors == 0 {
+            format!("Deleted {} sessions", deleted)
         } else {
             let mut text = format!("Deleted {}, {} failed", deleted, errors);
             if !live.is_empty() {
@@ -2245,24 +2331,32 @@ impl App {
             if !reasons.is_empty() {
                 text.push_str(&format!(" — {}", reasons.join("; ")));
             }
-            self.set_status(text, StatusLevel::Error);
+            text
+        };
+        if !aged.is_empty() {
+            aged.sort();
+            text.push_str(&format!(" · removed age state {}", aged.join(", ")));
         }
-        self.mode = Mode::Normal;
-        self.delete_countdown_start = None;
+        if !age_failures.is_empty() {
+            text.push_str(&format!(" — {}", age_failures.join("; ")));
+        }
+        let level = if errors == 0 && age_failures.is_empty() { StatusLevel::Success } else { StatusLevel::Error };
+        self.set_status(text, level);
+        self.close_delete_confirm();
     }
 
     fn execute_rename(&mut self) {
         let new_name = self.rename_input.text().trim().to_string();
-        if new_name.is_empty() {
-            self.set_status("Name cannot be empty", StatusLevel::Error);
+        if let Some(refusal) = session_name_refusal(&new_name) {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;
         }
-        if !is_valid_session_name(&new_name) {
-            self.set_status(
-                "Invalid name: use letters, digits, - _ . only",
-                StatusLevel::Error,
-            );
+        // Same liveness guard as Delete and Rotate: a live claude keeps
+        // writing under the old path, and the move takes its lock and
+        // transcripts from under it.
+        if let Some(refusal) = self.live_selection_refusal_now() {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;
         }
@@ -2295,17 +2389,33 @@ impl App {
         }
 
         if let Some(session) = self.selected_session() {
+            let old_name = session.name.clone();
             let root = self.sessions_root.clone();
-            let old = root.join(&session.name);
+            let old = root.join(&old_name);
             let new = root.join(&new_name);
-            if new.exists() {
+            // Any entry holds the name: rename(2) would replace a link that
+            // leads nowhere (an adopted session on a disk not mounted).
+            if std::fs::symlink_metadata(&new).is_ok() {
                 self.set_status("Name already taken", StatusLevel::Error);
+            } else if let Some(taken) = session::staged_spawn_files(&root, &new_name).first() {
+                self.set_status(
+                    format!("Can't rename: a spawn is staged for {}: {}", new_name, taken.display()),
+                    StatusLevel::Error,
+                );
             } else {
-                match std::fs::rename(&old, &new) {
-                    Ok(()) => {
+                match self.rename_session(&root, &old_name, &new_name) {
+                    Ok(RenameOutcome::Done) => {
                         rename_claude_projects_dir(&old, &new);
                         self.set_status(format!("Renamed to: {}", new_name), StatusLevel::Success);
                         self.flash_row(&new_name, FlashKind::Success);
+                        self.rescan_now();
+                    }
+                    Ok(RenameOutcome::SecretsUnfinished) => {
+                        rename_claude_projects_dir(&old, &new);
+                        self.set_status(
+                            format!("Rename incomplete: run `cs -secrets --session {} rename {}`", old_name, new_name),
+                            StatusLevel::Error,
+                        );
                         self.rescan_now();
                     }
                     Err(e) => {
@@ -2315,6 +2425,39 @@ impl App {
             }
         }
         self.mode = Mode::Normal;
+    }
+
+    /// Move session `old` to `new`: its directory, its staged spawn files,
+    /// then its secrets through `cs -secrets --session <old> rename <new>`,
+    /// which moves every store keyed by the name (the Keychain entries, the
+    /// encrypted store and the age state) and needs the directory already
+    /// moved. A failure at any step undoes the steps before it, so the session
+    /// keeps its old name whole; the error says what failed. cs-secrets puts
+    /// back what a failed move moved before it exits. The one exception is a
+    /// move it could not put back, or that was killed: its marker is left,
+    /// values are under `new` already, so the session keeps `new` and the
+    /// outcome says the move is unfinished.
+    fn rename_session(&self, root: &Path, old: &str, new: &str) -> Result<RenameOutcome, String> {
+        let (old_dir, new_dir) = (root.join(old), root.join(new));
+        std::fs::rename(&old_dir, &new_dir).map_err(|e| e.to_string())?;
+        let undo_dir = |reason: String| -> String {
+            match std::fs::rename(&new_dir, &old_dir) {
+                Ok(()) => reason,
+                Err(e) => format!("{reason}; and the session could not be moved back to {}: {e}", old_dir.display()),
+            }
+        };
+        let moved = session::move_spawn_files(root, old, new).map_err(undo_dir)?;
+        if let Err(reason) = move_secrets(old, new) {
+            if secrets_move_unfinished(old, new) {
+                return Ok(RenameOutcome::SecretsUnfinished);
+            }
+            let reason = match session::undo_spawn_moves(&moved) {
+                Ok(()) => reason,
+                Err(left) => format!("{reason}; {left}"),
+            };
+            return Err(undo_dir(reason));
+        }
+        Ok(RenameOutcome::Done)
     }
 
     /// Archive the selected session, or unarchive one that already is. The
@@ -2442,6 +2585,12 @@ impl App {
                 return;
             }
         };
+        // The menu's liveness guard, asked again now the answer is in.
+        if let Some(refusal) = self.live_selection_refusal_now() {
+            self.set_status(refusal, StatusLevel::Error);
+            self.mode = Mode::Normal;
+            return;
+        }
         match std::process::Command::new(cs_bin())
             .args([name.as_str(), "-narrative", "rotate"])
             .output()
@@ -2642,24 +2791,158 @@ fn rewrite_queue_task(
 /// Rename the Claude Code conversation history directory to match the session rename.
 /// The Claude home dir (`$HOME`), honoring a test-only thread-local override so
 /// tests exercise the projects-dir logic without mutating the process-global
-/// `HOME` (which races parallel tests' env reads). See [`test_home`].
+/// `HOME` (which races parallel tests' env reads). See [`test_home`]. Under
+/// test it is only ever that override: with none scoped it is None, so no
+/// test rename can move transcripts under the real `~/.claude`.
 fn claude_home() -> Option<String> {
     #[cfg(test)]
-    if let Some(h) = test_home::current() {
-        return Some(h.to_string_lossy().into_owned());
-    }
+    return test_home::current().map(|h| h.to_string_lossy().into_owned());
+    #[cfg(not(test))]
     session::home_dir()
 }
 
-/// Test-only override for [`claude_home`]. Same rationale as
+/// The home dir that holds `~/.cs-secrets`. Under test it is only ever the
+/// [`test_home`] override: with none scoped it is None, so no test run can
+/// reach the real `~/.cs-secrets` of whoever runs the suite.
+fn secrets_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    return test_home::current();
+    #[cfg(not(test))]
+    session::home_dir().map(PathBuf::from)
+}
+
+/// The configured cs-secrets store, falling back to `~/.cs-secrets` for an
+/// unset or empty override. Tests scope both selectors to this thread so
+/// they cannot reach a real profile or race on process-global environment.
+fn secrets_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    let configured = {
+        test_home::current()?;
+        test_home::secrets_dir()
+    };
+    #[cfg(not(test))]
+    let configured = std::env::var_os("CS_SECRETS_DIR");
+    configured.filter(|dir| !dir.is_empty()).map(PathBuf::from)
+        .or_else(|| secrets_home().map(|home| home.join(".cs-secrets")))
+}
+
+/// Where cs-secrets keeps a base session's age state (recipient pins and
+/// digests): `<secrets-dir>/sessions/<name>/`. Twin of `age_state_dir` in
+/// bin/cs-secrets and `_drop_session_age_state` in lib/65-sessions.sh; the
+/// three change together. None for a feature (`base@task`) name, whose
+/// secrets are its base's, and for any name that is not one plain path
+/// component, so an empty name never resolves to the sessions dir itself.
+fn age_state_dir(name: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(name).components();
+    let one_plain_component = matches!((parts.next(), parts.next()), (Some(Component::Normal(_)), None));
+    // components() drops a trailing '/', so the slash is refused by hand.
+    if !one_plain_component || name.starts_with('.') || name.contains('/') || name.contains('@') {
+        return None;
+    }
+    Some(secrets_dir()?.join("sessions").join(name))
+}
+
+/// True when cs-secrets began moving session `old`'s secrets to `new` and
+/// did not finish: its marker `<secrets-dir>/.rename.<old>` holds the line
+/// `<new>`. It writes the marker before its first change and removes it
+/// last, or once it has put a failed move back, so a refusal or a failure
+/// leaves none, or one naming another unfinished move; a move it could not
+/// put back, or that was killed, leaves it.
+/// Twin of `marker` in rename_session_secrets in bin/cs-secrets; the two
+/// change together.
+fn secrets_move_unfinished(old: &str, new: &str) -> bool {
+    let Some(dir) = secrets_dir() else {
+        return false;
+    };
+    match std::fs::read(dir.join(format!(".rename.{old}"))) {
+        Ok(bytes) => bytes == format!("{new}\n").as_bytes(),
+        Err(_) => false,
+    }
+}
+
+/// Remove the age state of a base session that was just deleted. The path
+/// when something was removed, None when there was nothing to remove.
+fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = age_state_dir(name) else {
+        return Ok(None);
+    };
+    // The secrets directory and its `sessions` child must be real directories:
+    // through a link the removal would land on a same-name directory
+    // elsewhere. Reading through the link is harmless, so only a state that is
+    // there is named as left behind. An unsearchable parent fails the read
+    // below with a permission error, never NotFound. cs-secrets refuses an age
+    // command for a session the sessions root does not have, so only one that
+    // passed that check before the delete can recreate the state after it (its
+    // lock lives inside the dir removed here); that window is accepted.
+    for parent in dir.ancestors().skip(1).take(2) {
+        match parent.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return match dir.symlink_metadata() {
+                    Ok(_) => Err(format!("left age state behind a linked ~/.cs-secrets: {}", dir.display())),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(format!("could not read age state {}: {e}", dir.display())),
+                };
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => {}
+        }
+    }
+    let meta = match dir.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read age state {}: {e}", dir.display())),
+    };
+    let removed = if meta.file_type().is_dir() {
+        std::fs::remove_dir_all(&dir)
+    } else {
+        std::fs::remove_file(&dir)
+    };
+    match removed {
+        Ok(()) => Ok(Some(dir)),
+        Err(e) => Err(format!("could not remove age state {}: {e}", dir.display())),
+    }
+}
+
+/// How a picker rename that kept the new name ended: everything moved, or the
+/// directory moved and the secrets move began but did not finish.
+enum RenameOutcome {
+    Done,
+    SecretsUnfinished,
+}
+
+/// Move session `old`'s secrets to `new` with `cs -secrets --session <old>
+/// rename <new>`. The error is the last line cs printed on stderr, or how it
+/// ended when it printed none.
+fn move_secrets(old: &str, new: &str) -> Result<(), String> {
+    let out = std::process::Command::new(cs_bin())
+        .args(["-secrets", "--session", old, "rename", new])
+        .output()
+        .map_err(|e| format!("could not run cs -secrets rename: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    match err.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+        Some(line) => Err(line.to_string()),
+        None => Err(format!("cs -secrets rename {}", out.status)),
+    }
+}
+
+fn is_symlink(path: &Path) -> bool {
+    path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
+/// Test-only overrides for [`claude_home`] and the cs-secrets store. Same rationale as
 /// `session::test_root`: scope the value to the current test thread instead of
 /// mutating process-global `HOME`. The returned guard clears it on drop.
 #[cfg(test)]
 pub mod test_home {
     use std::cell::RefCell;
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     thread_local! {
+        static SECRETS_DIR: RefCell<Option<OsString>> = const { RefCell::new(None) };
         static HOME: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     }
 
@@ -2673,9 +2956,20 @@ pub mod test_home {
         Guard
     }
 
+    pub(super) fn secrets_dir() -> Option<OsString> {
+        SECRETS_DIR.with(|c| c.borrow().clone())
+    }
+
+    #[must_use]
+    pub fn scoped_with_secrets_dir(home: PathBuf, dir: OsString) -> Guard {
+        SECRETS_DIR.with(|c| *c.borrow_mut() = Some(dir));
+        scoped(home)
+    }
+
     pub struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
+            SECRETS_DIR.with(|c| *c.borrow_mut() = None);
             HOME.with(|c| *c.borrow_mut() = None);
         }
     }
@@ -3432,7 +3726,10 @@ mod tests {
         app.rename_input.set("bad/name");
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Invalid"));
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session name must contain only alphanumeric characters, hyphens, underscores, and dots", StatusLevel::Error))
+        );
     }
 
     #[test]
@@ -3640,30 +3937,25 @@ mod tests {
         assert_eq!(app.mode, Mode::ConfirmForceOpen);
     }
 
-    /// The menu's Delete must refuse a lock-held session where the `d` key does.
-    /// The removal refuses it either way, so opening the countdown here only
-    /// promises a deletion that is already going to fail.
+    /// The menu's Delete on a lock-held session opens the confirm the way
+    /// the `d` key does: it says the session is live and offers removing it
+    /// anyway (F, `cs -rm --force`), off until pressed.
     #[test]
-    fn menu_delete_on_locked_session_refuses_instead_of_counting_down() {
+    fn menu_delete_on_locked_session_opens_the_confirm_offering_force() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         // gamma (index 2) is locked.
         app.table_state.select(Some(2));
         app.mode = Mode::SessionMenu;
         app.menu_selected = 1;
         app.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert_ne!(
-            app.mode,
-            Mode::ConfirmDelete,
-            "a locked row must not open the delete countdown"
+        assert_eq!(app.mode, Mode::ConfirmDelete);
+        assert_eq!(app.delete_warnings, vec![session::DeleteWarning::line(format!("gamma is live (pid {pid})"))]);
+        assert_eq!(
+            app.delete_offers,
+            session::RemoveGrants { past_live_lock: true, unowned_files: false }
         );
-        assert!(
-            app.delete_countdown_start.is_none(),
-            "and must not start its timer"
-        );
-        assert!(
-            app.status_message.is_some(),
-            "the refusal has to be visible, not silent"
-        );
+        assert_eq!(app.delete_grants, session::RemoveGrants::default(), "nothing is granted until F");
     }
 
     #[test]
@@ -3908,8 +4200,35 @@ mod tests {
         assert!(matches!(app.mode, Mode::ConfirmDelete));
         assert_eq!(
             app.delete_warnings,
-            vec!["Also deletes files cs did not create: journal.sparsebundle".to_string()]
+            vec![session::DeleteWarning {
+                text: "Also deletes files cs did not create:".to_string(),
+                entries: vec![crate::untracked::Entry { path: "journal.sparsebundle".to_string(), files: 1 }],
+            }]
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A plain confirm deletes nothing the user put beside cs's files: y on a
+    /// session holding one refuses, naming it, and the session survives.
+    #[test]
+    fn delete_confirm_y_refuses_a_session_holding_files_cs_did_not_create() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-refuse-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("rel/journal.sparsebundle")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "rel");
+        app.execute_menu_action(MenuAction::Delete);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(
+            status.contains("rel holds files cs did not create: journal.sparsebundle"),
+            "the refusal names the files, got: {status}"
+        );
+        assert!(root.join("rel/journal.sparsebundle").exists(), "the user's files survive");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -3917,6 +4236,9 @@ mod tests {
     fn delete_confirm_stays_closed_when_the_file_list_cannot_be_read() {
         use crate::session::test_root;
         let root = std::env::temp_dir().join(format!("cs-test-del-broken-{}", std::process::id()));
+        // The base is there, so the worktree is listed through git, which
+        // cannot read the gitdir its .git file names.
+        std::fs::create_dir_all(root.join("proj")).unwrap();
         std::fs::create_dir_all(root.join("proj@t/.cs/local")).unwrap();
         std::fs::write(root.join("proj@t/.git"), "gitdir: /nonexistent/worktree\n").unwrap();
         let _guard = test_root::scoped(root.clone());
@@ -3986,6 +4308,769 @@ mod tests {
             assert!(!root.join("vt2").exists());
             std::fs::remove_dir_all(&root).ok();
         }
+    }
+
+    /// A sessions root holding session `proj`, a home beside it, and a cs
+    /// stand-in that logs its argv and hands `-secrets ...` to this checkout's
+    /// bin/cs-secrets with HOME and the sessions root pointed at them, so the
+    /// picker's rename runs the real secrets move against scratch state. A
+    /// tool a test puts in `<tmp>/shim` shadows the real one for cs-secrets.
+    /// The shim starts with a `security` that reports an empty Keychain:
+    /// rename reads the Keychain on a Mac whatever the backend, and a test
+    /// must never read the real one.
+    /// With `fail` set the stand-in prints a refusal and exits 1 instead.
+    #[cfg(unix)]
+    fn rename_fixture(tag: &str, fail: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        rename_fixture_in_profile(tag, fail, false)
+    }
+
+    #[cfg(unix)]
+    fn rename_fixture_in_profile(tag: &str, fail: bool, profile: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("cs-test-rename-{}-{}", tag, std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        let root = tmp.join("root");
+        let home = tmp.join("home");
+        let secrets_dir = if profile { tmp.join("profile-secrets") } else { home.join(".cs-secrets") };
+        std::fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(tmp.join("shim")).unwrap();
+        std::fs::write(tmp.join("shim/security"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(tmp.join("shim/security"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let secrets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/cs-secrets");
+        let body = if fail {
+            "echo 'Error: refused by the stand-in' >&2\nexit 1\n".to_string()
+        } else {
+            format!(
+                "[ \"$1\" = -secrets ] || exit 9\nshift\n\
+                 HOME='{home}' CS_SECRETS_DIR='{secrets_dir}' CS_SECRETS_CALLER= CS_SESSION_NAME= CLAUDE_SESSION_NAME= CS_SECRETS_SESSION= CS_SESSIONS_ROOT='{root}' CS_SECRETS_BACKEND=encrypted PATH='{shim}':\"$PATH\" exec '{secrets}' \"$@\"\n",
+                home = home.display(),
+                secrets_dir = secrets_dir.display(),
+                root = root.display(),
+                shim = tmp.join("shim").display(),
+                secrets = secrets.display()
+            )
+        };
+        let stub = tmp.join("cs-stub");
+        std::fs::write(
+            &stub,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n{}", tmp.join("argv").display(), body),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (tmp, root, home)
+    }
+
+    // The age pins under ~/.cs-secrets/sessions/<name>/ are keyed by the
+    // session's name. After a picker rename no pin list may be left under a
+    // name the sessions root no longer has: a later session given that name
+    // would export to every key pinned there without an `age add`. The pins
+    // follow the session to its new name.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_leaves_no_age_state_under_a_name_without_a_session() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("age", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("Renamed to: proj-old")
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("argv")).unwrap_or_default(),
+            "-secrets\n--session\nproj\nrename\nproj-old\n",
+            "the picker asks cs-secrets to move proj's secrets to proj-old"
+        );
+        let mut stranded: Vec<String> = std::fs::read_dir(home.join(".cs-secrets/sessions"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| !root.join(name).exists())
+            .collect();
+        stranded.sort();
+        assert_eq!(stranded, Vec::<String>::new(), "age state left under a name with no session");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's now"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A live session is not renamed, as it is not deleted or rotated: its
+    // claude keeps writing under the old path, and the lock and transcripts
+    // would move from under it. The refusal is the one delete and rotate give.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_live_session() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("live", false);
+        let pid = std::process::id();
+        std::fs::write(root.join("proj/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        app.rename_input.set("calm");
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("proj is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(root.join("proj/.cs/session.lock")).unwrap_or_default(),
+            format!("{pid}\n"),
+            "the session and its lock stay where its claude has them"
+        );
+        assert!(!root.join("calm").exists(), "nothing is moved to the new name");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A session that opens while the rename modal is up is refused too, as
+    // delete refuses it: the picker holds its rescans while a modal is open,
+    // so the row still reads dormant and only the lock file says otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_session_that_went_live_after_the_scan() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("live-later", false);
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        let pid = std::process::id();
+        std::fs::write(root.join("proj/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.rename_input.set("calm");
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("proj is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(root.join("proj/.cs/session.lock")).unwrap_or_default(),
+            format!("{pid}\n"),
+            "the session and its lock stay where its claude has them"
+        );
+        assert!(!root.join("calm").exists(), "nothing is moved to the new name");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A rename to a name cs refuses, one with a leading dot or hyphen, is
+    // refused by the rule's name in cs's words: a session renamed to `.work`
+    // drops out of every listing, and one named `-rm` reads as a cs verb.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_name_cs_refuses_in_cs_words() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("lead", true);
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        for (name, refusal) in [
+            (".work", "Session name cannot start with a dot"),
+            ("-rm", "Session name cannot start with a hyphen"),
+            ("..", "Session name cannot be '.' or '..'"),
+            ("  ", "Session name cannot be empty"),
+        ] {
+            let mut app = app_on(&root, "proj");
+            app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+            app.rename_input.set(name);
+
+            app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+            assert_eq!(
+                app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+                Some((refusal, StatusLevel::Error)),
+                "{name}"
+            );
+            assert!(root.join("proj/.cs").is_dir(), "{name}: the session keeps its name");
+            let listed: Vec<String> =
+                std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            assert_eq!(listed, ["proj"], "{name}: nothing is moved to the refused name");
+        }
+        std::env::remove_var("CS_BIN");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A spawn file the undo cannot move back is named in the status: the
+    // refused rename otherwise reads as undone whole while the seed sits
+    // under the new name. Here a seed staged under the old name while the
+    // secrets move ran blocks the move back.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_undo_names_a_spawn_file_it_cannot_move_back() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("spawn-undo", true);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        std::fs::write(
+            tmp.join("cs-stub"),
+            format!(
+                "#!/bin/sh\nprintf 'other\\n' > '{}'\necho 'Error: refused by the stand-in' >&2\nexit 1\n",
+                root.join(".spawn/proj.seed").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("cs-stub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.clone()),
+            Some(format!(
+                "Rename failed: Error: refused by the stand-in; could not move spawn file {} back to {}: File exists (os error 17)",
+                root.join(".spawn/proj-old.seed").display(),
+                root.join(".spawn/proj.seed").display()
+            ))
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert_eq!(std::fs::read_to_string(root.join(".spawn/proj-old.seed")).unwrap_or_default(), "task\n", "the moved seed is still there");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A move cs-secrets refuses or fails undoes the rename: the session keeps
+    // its name, and its transcripts and spawn seed stay where they were.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_whose_secrets_move_fails_keeps_the_old_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("fail", true);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        let encode = |p: &std::path::Path| -> String {
+            p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        };
+        let transcripts = home.join(".claude/projects").join(encode(&root.join("proj")));
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("Rename failed: Error: refused by the stand-in")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists(), "no session under the new name");
+        assert!(root.join(".spawn/proj.seed").is_file(), "the seed stays proj's");
+        assert!(!root.join(".spawn/proj-old.seed").exists());
+        assert!(transcripts.is_dir(), "the transcripts stay under the old path's name");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Store `value` as secret `name` of session `session` through the cs
+    /// stand-in `rename_fixture` writes, on the encrypted backend.
+    #[cfg(unix)]
+    fn fixture_secret_set(tmp: &std::path::Path, session: &str, name: &str, value: &str) {
+        let file = tmp.join("value");
+        std::fs::write(&file, value).unwrap();
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", session, "set", name])
+            .env("CS_SECRETS_PASSWORD", "fixture-password")
+            .stdin(std::fs::File::open(&file).unwrap())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixture set: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Secret `name` of session `session` read through the cs stand-in, or
+    /// what cs-secrets printed on stderr when it could not read it.
+    #[cfg(unix)]
+    fn fixture_secret_get(tmp: &std::path::Path, session: &str, name: &str) -> Result<String, String> {
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", session, "get", name])
+            .env("CS_SECRETS_PASSWORD", "fixture-password")
+            .output()
+            .unwrap();
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
+    }
+
+    /// An `ln` in the fixture's shim that refuses every link whose target
+    /// matches `pattern`, a sh case pattern, and hands the rest to /bin/ln.
+    #[cfg(unix)]
+    fn fixture_failing_ln(tmp: &std::path::Path, pattern: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(
+            tmp.join("shim/ln"),
+            format!("#!/bin/sh\ncase \"$2\" in\n    {pattern}) exit 1 ;;\nesac\nexec /bin/ln \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("shim/ln"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // A move that fails after cs-secrets moved some of the secrets is put
+    // back whole: cs-secrets returns every value to the old name, and the
+    // picker moves the directory and the staged spawn seed back. The
+    // encrypted store moves and linking the pin list then fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_whose_secrets_move_fails_partway_keeps_the_old_name_whole() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("partial", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        fixture_failing_ln(&tmp, "*/sessions/proj-old/*");
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        let encode = |p: &std::path::Path| -> String {
+            p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        };
+        let transcripts = home.join(".claude/projects");
+        std::fs::create_dir_all(transcripts.join(encode(&root.join("proj")))).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        let secrets = home.join(".cs-secrets");
+        let status = app.status_message.as_ref().map(|m| (m.text.clone(), m.level));
+        assert_eq!(
+            status,
+            Some((
+                format!(
+                    "Rename failed: Error: Refusing to move the secrets of session 'proj' to 'proj-old': could not move {} to {}",
+                    secrets.join("sessions/proj/age-trusted").display(),
+                    secrets.join("sessions/proj-old/age-trusted").display()
+                ),
+                StatusLevel::Error
+            ))
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists(), "no session under the new name");
+        assert!(root.join(".spawn/proj.seed").is_file(), "the seed is proj's");
+        assert!(!root.join(".spawn/proj-old.seed").exists());
+        assert!(transcripts.join(encode(&root.join("proj"))).is_dir(), "the transcripts stay under the old path's name");
+        assert!(!transcripts.join(encode(&root.join("proj-old"))).exists());
+        assert_eq!(fixture_secret_get(&tmp, "proj", "E1"), Ok("value-enc".to_string()), "E1 reads under proj");
+        assert!(!secrets.join("proj-old.enc").exists(), "no encrypted store under proj-old");
+        assert_eq!(
+            std::fs::read_to_string(pins.join("age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj's"
+        );
+        assert!(!secrets.join("sessions/proj-old").exists(), "no age state under proj-old");
+        assert!(!secrets.join(".rename.proj").exists(), "no marker is left");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A TERM that reaches cs-secrets after it moved every value, while it
+    // removes the old name's empty age directory, does not undo the rename:
+    // the session and its secrets stay together under the new name.
+    #[cfg(unix)]
+    #[test]
+    fn a_term_after_the_secrets_moved_keeps_the_rename() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("term-tail", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        // The rmdir of proj's age directory runs once every value is under
+        // proj-old; it sends TERM to cs-secrets, its parent, first.
+        std::fs::write(
+            tmp.join("shim/rmdir"),
+            "#!/bin/sh\ncase \"$1\" in */sessions/proj) kill -TERM $PPID ;; esac\nexec /bin/rmdir \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("shim/rmdir"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Renamed to: proj-old", StatusLevel::Success))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session has the new name");
+        assert!(!root.join("proj").exists(), "no session under the old name");
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()), "E1 reads under proj-old");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's"
+        );
+        assert!(!home.join(".cs-secrets/.rename.proj").exists(), "no marker is left");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A lock cs-secrets cannot release once it has moved every value does
+    // not undo the rename: the session and its secrets stay together under
+    // the new name.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_left_after_the_secrets_moved_keeps_the_rename() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("lock-tail", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        // Written after the fixture's set, which releases the same lock: the
+        // rename's release of proj's write lock fails.
+        std::fs::write(
+            tmp.join("shim/rm"),
+            "#!/bin/sh\ncase \"$2\" in */.secrets-lock.proj) echo 'rm: simulated failure' >&2; exit 1 ;; esac\nexec /bin/rm \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("shim/rm"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Renamed to: proj-old", StatusLevel::Success))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session has the new name");
+        assert!(!root.join("proj").exists(), "no session under the old name");
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()), "E1 reads under proj-old");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's"
+        );
+        assert!(!home.join(".cs-secrets/.rename.proj").exists(), "no marker is left");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A move cs-secrets could not put back keeps its marker, which names the
+    // new name, with values under both names. Moving the directory back
+    // would leave those under a name the sessions root does not have, so the
+    // session keeps the new name and the status gives the command that
+    // finishes the move.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_whose_secrets_move_cannot_be_put_back_keeps_the_new_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("unrestorable", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        fixture_failing_ln(&tmp, "*/sessions/proj-old/*|*/proj.enc");
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        let encode = |p: &std::path::Path| -> String {
+            p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        };
+        let transcripts = home.join(".claude/projects");
+        std::fs::create_dir_all(transcripts.join(encode(&root.join("proj")))).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        let status = app.status_message.as_ref().map(|m| (m.text.as_str(), m.level));
+        assert_eq!(
+            status,
+            Some(("Rename incomplete: run `cs -secrets --session proj rename proj-old`", StatusLevel::Error))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session keeps the new name");
+        assert!(!root.join("proj").exists(), "no session under the old name");
+        assert!(root.join(".spawn/proj-old.seed").is_file(), "the seed is proj-old's");
+        assert!(!root.join(".spawn/proj.seed").exists());
+        assert!(transcripts.join(encode(&root.join("proj-old"))).is_dir(), "the transcripts follow the session");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/.rename.proj")).unwrap_or_default(),
+            "proj-old\n",
+            "the marker names the move to finish"
+        );
+        assert!(pins.join("age-trusted").is_file(), "the move stopped before the pins moved");
+
+        // The command the status gives finishes the move.
+        std::fs::remove_file(tmp.join("shim/ln")).unwrap();
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", "proj", "rename", "proj-old"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "rerun: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()), "E1 reads under proj-old");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's now"
+        );
+        assert!(!home.join(".cs-secrets/.rename.proj").exists(), "the finished move removes its marker");
+        assert!(!pins.exists(), "nothing is left under proj");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_profile_rename_with_unfinished_secrets_keeps_the_new_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture_in_profile("profile-unrestorable", false, true);
+        let profile = tmp.join("profile-secrets");
+        let pins = profile.join("sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n").unwrap();
+        let original = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::write(original.join("age-trusted"), "original-pin\n").unwrap();
+        std::fs::write(home.join(".cs-secrets/.rename.proj"), "elsewhere\n").unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        fixture_failing_ln(&tmp, "*/sessions/proj-old/*|*/proj.enc");
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped_with_secrets_dir(home.clone(), profile.clone().into_os_string());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Rename incomplete: run `cs -secrets --session proj rename proj-old`", StatusLevel::Error))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session keeps its new name for recovery");
+        assert!(!root.join("proj").exists());
+        assert_eq!(std::fs::read_to_string(profile.join(".rename.proj")).unwrap(), "proj-old\n");
+        std::fs::remove_file(tmp.join("shim/ln")).unwrap();
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", "proj", "rename", "proj-old"])
+            .output().unwrap();
+        assert!(out.status.success(), "rerun: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()));
+        assert!(profile.join("sessions/proj-old/age-trusted").is_file());
+        assert!(!profile.join(".rename.proj").exists());
+        assert_eq!(std::fs::read_to_string(original.join("age-trusted")).unwrap(), "original-pin\n");
+        assert_eq!(std::fs::read_to_string(home.join(".cs-secrets/.rename.proj")).unwrap(), "elsewhere\n");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A refusal made before cs-secrets changed anything leaves a marker only
+    // when an earlier move of the session to another name did not finish: the
+    // marker names that other name, the refusal changed nothing, and the
+    // session keeps its old name.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_refused_over_an_earlier_unfinished_move_keeps_the_old_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("stale-marker", false);
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::fs::write(home.join(".cs-secrets/.rename.proj"), "elsewhere\n").unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some(
+                "Rename failed: Error: Refusing to move the secrets of session 'proj' to 'proj-old': an earlier \
+                 move of 'proj' to 'elsewhere' did not finish; rerun: cs -secrets --session proj rename elsewhere"
+            )
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists(), "no session under the new name");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A staged spawn seed and brief are keyed by the session's name: they go
+    // with the session, or the next open of the old name would launch the
+    // renamed session's tasks.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_carries_the_staged_spawn_seed_and_brief() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("seed", false);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        for suffix in [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"] {
+            std::fs::write(root.join(format!(".spawn/proj{suffix}")), format!("staged{suffix}\n")).unwrap();
+        }
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("Renamed to: proj-old")
+        );
+        let mut staged: Vec<String> = std::fs::read_dir(root.join(".spawn"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        staged.sort();
+        assert_eq!(
+            staged,
+            vec!["proj-old.brief.md", "proj-old.brief.md.stale", "proj-old.seed", "proj-old.seed.stale"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(".spawn/proj-old.seed")).unwrap(),
+            "staged.seed\n",
+            "the seed moved whole"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A seed already staged for the new name belongs to a spawn of that name;
+    // the rename refuses rather than overwrite it, and changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_refuses_a_new_name_with_a_staged_spawn_seed() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("seed-taken", false);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "mine\n").unwrap();
+        std::fs::write(root.join(".spawn/proj-old.brief.md"), "theirs\n").unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        let taken = root.join(".spawn/proj-old.brief.md");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.clone()),
+            Some(format!("Can't rename: a spawn is staged for proj-old: {}", taken.display()))
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists());
+        assert_eq!(std::fs::read_to_string(root.join(".spawn/proj.seed")).unwrap(), "mine\n");
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "theirs\n");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // An adopted session whose disk is not mounted is a link at the sessions
+    // root that leads nowhere. Its name is taken all the same: renaming
+    // another adopted session (a link too, which rename(2) would move over
+    // it) refuses rather than replace the link, and changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_refuses_a_new_name_held_by_a_dangling_link() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("dangling", false);
+        let adopted = tmp.join("code/proj");
+        std::fs::create_dir_all(tmp.join("code")).unwrap();
+        std::fs::rename(root.join("proj"), &adopted).unwrap();
+        std::os::unix::fs::symlink(&adopted, root.join("proj")).unwrap();
+        let unmounted = tmp.join("unmounted/proj-old");
+        std::os::unix::fs::symlink(&unmounted, root.join("proj-old")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Name already taken", StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(std::fs::read_link(root.join("proj")).unwrap(), adopted, "the session keeps its name");
+        assert_eq!(std::fs::read_link(root.join("proj-old")).unwrap(), unmounted, "the link stays as it was");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
@@ -4123,6 +5208,13 @@ mod tests {
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    // A rename moves the transcripts under the Claude home, so a test that
+    // renames without scoping a home must reach no ~/.claude at all.
+    #[test]
+    fn an_unscoped_test_build_has_no_claude_home() {
+        assert_eq!(claude_home(), None);
+    }
+
     #[test]
     fn set_status_creates_message() {
         let mut app = App::new(sample_sessions());
@@ -4185,7 +5277,10 @@ mod tests {
         app.create_input.set("bad/name");
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Invalid"));
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session name must contain only alphanumeric characters, hyphens, underscores, and dots", StatusLevel::Error))
+        );
     }
 
     #[test]
@@ -4201,6 +5296,64 @@ mod tests {
         app.create_input.set("brand-new-session");
         let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(action, Action::Open(name) if name == "brand-new-session"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A link at the sessions root that leads nowhere (an adopted session on
+    // a disk that is not mounted) holds its name: the picker opens nothing
+    // under it and leaves the link as it was.
+    #[cfg(unix)]
+    #[test]
+    fn create_session_refuses_a_name_held_by_a_dangling_link() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-create-dangling-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let unmounted = tmp.join("unmounted/held");
+        std::os::unix::fs::symlink(&unmounted, tmp.join("held")).unwrap();
+        let _root = session::test_root::scoped(tmp.clone());
+        let mut app = App::new(sample_sessions());
+        app.mode = Mode::CreateSession;
+        app.create_input.set("held");
+
+        let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        assert!(matches!(action, Action::None), "nothing is opened, got {action:?}");
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session already exists", StatusLevel::Error))
+        );
+        assert_eq!(std::fs::read_link(tmp.join("held")).unwrap(), unmounted, "the link stays as it was");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // cs refuses a name with a leading dot (its own staging dirs, .spawn and
+    // .usage, sit at the sessions root under dot names) or a leading hyphen
+    // (`cs -uninstall` runs a verb), so the picker creates neither, and says
+    // which rule the name breaks in cs's words, as it does for an empty name.
+    #[test]
+    fn create_session_refuses_a_name_cs_refuses_in_cs_words() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-create-lead-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).ok();
+        let _root = session::test_root::scoped(tmp.clone());
+        for (name, refusal) in [
+            ("-uninstall", "Session name cannot start with a hyphen"),
+            (".spawn", "Session name cannot start with a dot"),
+            ("..", "Session name cannot be '.' or '..'"),
+            ("  ", "Session name cannot be empty"),
+        ] {
+            let mut app = App::new(sample_sessions());
+            app.mode = Mode::CreateSession;
+            app.create_input.set(name);
+            let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
+            assert!(matches!(action, Action::None), "{name}: nothing is opened, got {action:?}");
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(
+                app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+                Some((refusal, StatusLevel::Error)),
+                "{name}"
+            );
+        }
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -4291,6 +5444,14 @@ mod tests {
         app.table_state.select(Some(idx));
     }
 
+    /// Gives gamma's lock to this test process, which is alive for as long as
+    /// the test runs, and returns the pid as the status prints it.
+    fn hold_gamma_lock(app: &mut App) -> String {
+        let pid = std::process::id();
+        app.sessions.iter_mut().find(|s| s.name == "gamma").unwrap().liveness = Liveness::Locked(pid);
+        pid.to_string()
+    }
+
     /// `cs -rm` refuses a lock-held session without --force (lib/15-lock.sh's
     /// session_is_live is lock-based, so Locked and not merely Heartbeat is the
     /// matching predicate). The TUI reaches the same filesystem removal and must
@@ -4299,6 +5460,7 @@ mod tests {
     #[test]
     fn delete_refuses_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         select_named(&mut app, "gamma");
 
         // Called directly rather than through `d`+`y`: this is the guard that
@@ -4312,7 +5474,7 @@ mod tests {
             .as_ref()
             .expect("refusing should explain itself");
         assert!(
-            status.text.contains("12345"),
+            status.text.contains(&pid),
             "status should name the locking pid, got: {}",
             status.text
         );
@@ -4323,21 +5485,484 @@ mod tests {
         );
     }
 
-    /// The confirmation itself does not open on a locked row, so the user is
-    /// never shown a countdown that will refuse.
+    /// A plain confirm on a locked row refuses, as `cs -rm` does without
+    /// --force: y names the locking pid and deletes nothing.
     #[test]
-    fn confirm_delete_does_not_open_on_a_locked_session() {
+    fn confirm_delete_y_refuses_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         select_named(&mut app, "gamma");
 
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(app.mode, Mode::ConfirmDelete);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
 
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.delete_countdown_start.is_none());
         assert!(app
             .status_message
             .as_ref()
-            .is_some_and(|s| s.text.contains("12345")));
+            .is_some_and(|s| s.text.contains(&format!("gamma is live (pid {pid})"))));
+    }
+
+    /// F grants the live lock (`cs -rm --force`): the confirm then removes
+    /// a session whose lock a live process holds.
+    #[test]
+    fn confirm_delete_f_then_y_removes_a_live_session() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-force-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert!(app.delete_offers.past_live_lock, "a live session is offered F");
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+        assert!(app.delete_grants.past_live_lock);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        assert!(!root.join("busy").exists(), "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        assert_eq!(app.delete_grants, session::RemoveGrants::default(), "a closed confirm keeps no grant");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, a session that opens after its delete
+    /// confirm did is refused at y, in cs's words: the removal reads the
+    /// lock again whatever the confirm saw.
+    #[test]
+    fn confirm_delete_y_refuses_a_session_that_went_live_from_another_session() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-force-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let pid = std::process::id();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(app.mode, Mode::ConfirmDelete, "a dormant session opens the confirm");
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Delete failed: session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, d on a live session refuses at once in
+    /// `cs -rm`'s words: no confirm opens, so no [F] is offered that the
+    /// removal would refuse.
+    #[test]
+    fn delete_from_another_session_refuses_a_live_session_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-open-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        assert_eq!(app.delete_offers, session::RemoveGrants::default(), "nothing is offered");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, d on a base while one of its features
+    /// is live refuses at once, naming the feature in `cs -rm`'s words.
+    #[test]
+    fn delete_from_another_session_refuses_a_base_with_a_live_feature_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-open-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["proj", "proj@task"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let pid = std::process::id();
+        std::fs::write(root.join("proj@task/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("other");
+        let mut app = app_on(&root, "proj");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("session other cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the base is left whole");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, D refuses the whole batch at once when
+    /// any marked session is one `cs -rm` would refuse from there, whichever
+    /// place it holds in the batch; the marks stay for the user to change.
+    #[test]
+    fn batch_delete_from_another_session_refuses_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-batch-open-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["a-idle", "busy"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+        for name in ["a-idle", "busy"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert_eq!(app.marked_sessions.len(), 2, "the marks stay");
+        assert!(root.join("a-idle/.cs").is_dir(), "nothing in the batch is removed");
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Where `cs -rm` would not refuse, d opens the confirm as before and
+    /// offers [F] on a live row: the caller's own session, a base with a
+    /// live feature from inside that base, and any session from a picker
+    /// outside every session.
+    #[test]
+    fn delete_confirm_opens_where_cs_rm_would_not_refuse_from_the_caller() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-open-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["busy", "proj", "proj@task"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let pid = std::process::id();
+        for name in ["busy", "proj@task"] {
+            std::fs::write(root.join(name).join(".cs/session.lock"), format!("{pid}\n")).unwrap();
+        }
+        let _guard = test_root::scoped(root.clone());
+        for (caller, target, offers_f) in [(Some("busy"), "busy", true), (Some("proj"), "proj", false), (None, "busy", true), (None, "proj", false)] {
+            let _caller = caller.map(test_caller::scoped);
+            let mut app = app_on(&root, target);
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+            assert_eq!(app.mode, Mode::ConfirmDelete, "caller {caller:?}, target {target}");
+            assert_eq!(app.delete_offers.past_live_lock, offers_f, "caller {caller:?}, target {target}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A batch granted F from inside another session refuses the live
+    /// session in cs's words and still deletes the dormant one beside it.
+    #[test]
+    fn batch_delete_past_the_live_grant_refuses_a_live_session_from_another_session() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-batch-force-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("idle/.cs/local")).unwrap();
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+        for name in ["busy", "idle"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+        app.delete_grants.past_live_lock = true;
+
+        app.execute_batch_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Deleted 1, 1 failed — session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        assert!(!root.join("idle").exists(), "the dormant session goes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A process whose argv carries `remote-control --name <name>`, as the
+    /// `claude remote-control` server `cs <name> --remote` runs does.
+    fn fake_remote_server(name: &str) -> std::process::Child {
+        std::process::Command::new("perl")
+            .args(["-e", "sleep 30", "remote-control", "--name", name, "--permission-mode", "default"])
+            .spawn()
+            .unwrap()
+    }
+
+    /// Serve session `name` under `root` as `cs <name> --remote` does: the
+    /// session lock and `.cs/local/remote.pid` name `server`.
+    fn serve(root: &std::path::Path, name: &str, server: &std::process::Child) {
+        let meta = root.join(name).join(".cs");
+        std::fs::write(meta.join("session.lock"), format!("{}\n", server.id())).unwrap();
+        std::fs::write(meta.join("local/remote.pid"), format!("{}\n", server.id())).unwrap();
+    }
+
+    fn stop(mut child: std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// d on a session a `cs <name> --remote` server serves refuses at once
+    /// in `cs -rm`'s words, inside its own session or outside every
+    /// session: no confirm opens, so no [F] is offered past it.
+    #[test]
+    fn delete_refuses_a_served_session_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-served-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let server = fake_remote_server("busy");
+        let spid = server.id();
+        serve(&root, "busy", &server);
+        let _guard = test_root::scoped(root.clone());
+        let mut seen = Vec::new();
+        for caller in [None, Some("busy")] {
+            let _caller = caller.map(test_caller::scoped);
+            let mut app = app_on(&root, "busy");
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+            let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+            seen.push((caller, app.mode == Mode::Normal, app.delete_offers, status));
+        }
+        stop(server);
+        for (caller, closed, offers, status) in seen {
+            assert!(closed, "caller {caller:?}: the confirm stays closed");
+            assert_eq!(offers, session::RemoveGrants::default(), "caller {caller:?}: nothing is offered");
+            assert_eq!(
+                status,
+                format!("Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window."),
+                "caller {caller:?}"
+            );
+        }
+        assert!(root.join("busy/.cs/local/remote.pid").exists(), "the served session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A server that starts after the delete confirm opened is refused at y
+    /// in `cs -rm`'s words, with [F] granted or not: the removal reads
+    /// remote.pid again whatever the confirm saw. Without [F] the row was
+    /// dormant when the confirm opened; with it the row was live, so [F]
+    /// was offered.
+    #[test]
+    fn confirm_delete_y_refuses_a_session_served_after_the_confirm_opened() {
+        use crate::session::test_root;
+        for force in [false, true] {
+            let root = std::env::temp_dir().join(format!("cs-test-del-served-late-{force}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+            if force {
+                std::fs::write(root.join("busy/.cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+            }
+            let _guard = test_root::scoped(root.clone());
+            let mut app = app_on(&root, "busy");
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+            assert_eq!(app.mode, Mode::ConfirmDelete, "force {force}: an unserved session opens the confirm");
+            if force {
+                app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+                assert!(app.delete_grants.past_live_lock, "a live session is granted F");
+            }
+            let server = fake_remote_server("busy");
+            let spid = server.id();
+            serve(&root, "busy", &server);
+            app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+            stop(server);
+
+            let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+            assert_eq!(
+                status,
+                format!("Delete failed: Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window."),
+                "force {force}"
+            );
+            assert!(root.join("busy/.cs/local/remote.pid").exists(), "force {force}: the served session survives");
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// D refuses the whole batch at once when any marked session is served,
+    /// whichever place it holds in the batch; the marks stay.
+    #[test]
+    fn batch_delete_refuses_before_the_confirm_when_a_marked_session_is_served() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-batch-served-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["a-idle", "busy"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let server = fake_remote_server("busy");
+        let spid = server.id();
+        serve(&root, "busy", &server);
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+        for name in ["a-idle", "busy"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        stop(server);
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window.")
+        );
+        assert_eq!(app.marked_sessions.len(), 2, "the marks stay");
+        assert!(root.join("a-idle/.cs").is_dir(), "nothing in the batch is removed");
+        assert!(root.join("busy/.cs/local/remote.pid").exists(), "the served session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A batch granted F whose session became served after the confirm
+    /// opened refuses that session in cs's words and still deletes the
+    /// dormant one beside it.
+    #[test]
+    fn batch_delete_past_the_live_grant_refuses_a_session_served_after_the_confirm_opened() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-batch-served-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["busy", "idle"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+        for name in ["busy", "idle"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+        app.delete_grants.past_live_lock = true;
+        let server = fake_remote_server("busy");
+        let spid = server.id();
+        serve(&root, "busy", &server);
+
+        app.execute_batch_delete();
+        stop(server);
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Deleted 1, 1 failed — Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window.")
+        );
+        assert!(root.join("busy/.cs/local/remote.pid").exists(), "the served session survives");
+        assert!(!root.join("idle").exists(), "the dormant session goes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A remote.pid that serves nothing leaves a live session to the plain
+    /// live check, as `cs -rm` leaves it: its pid not running, running
+    /// another program, or running the server of another session. d opens
+    /// the confirm with [F] offered, and F then y removes the session.
+    #[test]
+    fn delete_confirm_offers_f_on_a_live_session_whose_remote_pid_serves_nothing() {
+        use crate::session::test_root;
+        for (tag, holder) in [("dead", None), ("program", Some(false)), ("other", Some(true))] {
+            let root = std::env::temp_dir().join(format!("cs-test-del-unserved-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+            std::fs::write(root.join("busy/.cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+            let process = holder.map(|server| {
+                if server {
+                    fake_remote_server("other")
+                } else {
+                    std::process::Command::new("sleep").arg("30").spawn().unwrap()
+                }
+            });
+            let remote_pid = process.as_ref().map_or("99999999".to_string(), |p| p.id().to_string());
+            std::fs::write(root.join("busy/.cs/local/remote.pid"), format!("{remote_pid}\n")).unwrap();
+            let _guard = test_root::scoped(root.clone());
+            let mut app = app_on(&root, "busy");
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+            let opened = app.mode == Mode::ConfirmDelete;
+            let offers = app.delete_offers;
+            app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+            app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+            if let Some(p) = process {
+                stop(p);
+            }
+
+            let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+            assert!(opened, "{tag}: the confirm opens; status: {status}");
+            assert_eq!(
+                offers,
+                session::RemoveGrants { past_live_lock: true, unowned_files: false },
+                "{tag}: F is offered"
+            );
+            assert_eq!(status, "Deleted: busy", "{tag}");
+            assert!(!root.join("busy").exists(), "{tag}: the session goes");
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// D grants the files cs did not create (`cs -rm --delete-files`): the
+    /// confirm then removes the session with them. Pressed twice it is off
+    /// again, and y refuses.
+    #[test]
+    fn confirm_delete_d_then_y_removes_a_session_with_files_cs_did_not_create() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-files-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("rel/journal.sparsebundle")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "rel");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(
+            app.delete_offers,
+            session::RemoveGrants { past_live_lock: false, unowned_files: true }
+        );
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        assert!(!app.delete_grants.unowned_files, "a second D takes the grant back");
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        assert!(!root.join("rel").exists(), "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An escalation the confirm does not offer is not a grant: its key
+    /// cancels like any other.
+    #[test]
+    fn confirm_delete_f_cancels_when_the_session_is_not_live() {
+        let mut app = App::new(sample_sessions());
+        select_named(&mut app, "alpha");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.delete_grants, session::RemoveGrants::default());
     }
 
     /// A batch mixes states: the dormant rows go, the locked one stays and is
@@ -4345,6 +5970,7 @@ mod tests {
     #[test]
     fn batch_delete_skips_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         app.marked_sessions.insert("gamma".to_string());
 
         app.execute_batch_delete();
@@ -4354,10 +5980,363 @@ mod tests {
             .as_ref()
             .expect("a batch that skipped something should say so");
         assert!(
-            status.text.contains("12345"),
+            status.text.contains(&pid),
             "status should name the locking pid, got: {}",
             status.text
         );
+    }
+
+    /// The row was scanned dormant, then the session opened before Enter on
+    /// Delete: the lock on disk, not the cached row, decides, as `cs -rm`'s
+    /// session_is_live re-reads it.
+    #[test]
+    fn delete_refuses_a_session_that_took_the_lock_after_the_scan() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-late-lock-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(
+            status.contains(&format!("busy is live (pid {pid})")),
+            "status should name the locking pid, got: {status}"
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The row was scanned locked, then its process exited before `d`: the
+    /// pid is checked when the delete is asked for, as `cs -rm`'s
+    /// session_is_live checks it, so the dead lock does not refuse until the
+    /// next scan.
+    #[test]
+    fn delete_opens_on_a_row_whose_locking_process_has_exited() {
+        let mut app = App::new(sample_sessions());
+        select_named(&mut app, "gamma");
+        let gamma = app.sessions.iter_mut().find(|s| s.name == "gamma").unwrap();
+        // Below i32::MAX, so a real pid value, and no process holds it.
+        gamma.liveness = Liveness::Locked(99_999_999);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::ConfirmDelete, "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        assert!(app.delete_countdown_start.is_some());
+    }
+
+    /// A sessions root and a home dir under the temp dir, both scoped to this
+    /// thread, with `names` as dormant sessions and `aged` holding age state
+    /// at `<home>/.cs-secrets/sessions/<name>/age-trusted`.
+    fn age_fixture(tag: &str, names: &[&str], aged: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("cs-test-age-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("sessions");
+        let home = base.join("home");
+        for name in names {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        for name in aged {
+            let dir = home.join(".cs-secrets/sessions").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("age-trusted"), "age1pin\n").unwrap();
+        }
+        (root, home)
+    }
+
+    /// Deleting a base session drops the age state cs-secrets keeps for it
+    /// outside the session dir, and the status names the path.
+    #[test]
+    fn delete_of_a_base_session_drops_its_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("single", &["agebase"], &["agebase"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        let age_dir = home.join(".cs-secrets/sessions/agebase");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(!age_dir.exists(), "age state survived; status: {status}");
+        assert_eq!(status, format!("Deleted: agebase · removed age state {}", age_dir.display()));
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn delete_of_a_base_session_drops_only_profile_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("profile", &["agebase"], &["agebase"]);
+        let profile = root.parent().unwrap().join("profile-secrets");
+        let age_dir = profile.join("sessions/agebase");
+        std::fs::create_dir_all(&age_dir).unwrap();
+        std::fs::write(age_dir.join("age-trusted"), "profile-pin\n").unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped_with_secrets_dir(home.clone(), profile.into_os_string());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.as_str()).unwrap_or_default();
+        assert!(!age_dir.exists(), "profile age state survived; status: {status}");
+        assert_eq!(status, format!("Deleted: agebase · removed age state {}", age_dir.display()));
+        assert_eq!(std::fs::read_to_string(home.join(".cs-secrets/sessions/agebase/age-trusted")).unwrap(), "age1pin\n");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn delete_with_an_empty_secrets_dir_drops_default_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("empty-profile", &["agebase"], &["agebase"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped_with_secrets_dir(home.clone(), "".into());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        assert!(!home.join(".cs-secrets/sessions/agebase").exists());
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch drops the age state of every base session it deletes, and its
+    /// one status line names each path removed, sorted.
+    #[test]
+    fn batch_delete_drops_each_base_sessions_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("batch", &["agea", "ageb", "agec"], &["agea", "ageb"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agea");
+        for name in ["agea", "ageb", "agec"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(!sessions.join("agea").exists(), "agea's age state survived; status: {status}");
+        assert!(!sessions.join("ageb").exists(), "ageb's age state survived; status: {status}");
+        assert_eq!(
+            status,
+            format!(
+                "Deleted 3 sessions · removed age state {}, {}",
+                sessions.join("agea").display(),
+                sessions.join("ageb").display()
+            )
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch of a worktree row and an adopted link keeps every age state.
+    #[test]
+    fn batch_delete_of_worktree_and_adopted_rows_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("batch-keep", &["agebk", "agebk@t"], &["agebk", "agebk@t", "agebl"]);
+        let project = root.parent().unwrap().join("project");
+        std::fs::create_dir_all(project.join(".cs/local")).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("agebl")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agebk@t");
+        for name in ["agebk@t", "agebl"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted 2 sessions");
+        for name in ["agebk", "agebk@t", "agebl"] {
+            assert!(sessions.join(name).join("age-trusted").is_file(), "{name}'s age state survives");
+        }
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A base@task row uses its base's secrets: deleting it leaves the base's
+    /// age state, and a feature name never reaches an age state path.
+    #[test]
+    fn delete_of_a_worktree_row_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("worktree", &["agewt", "agewt@t"], &["agewt", "agewt@t"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agewt@t");
+
+        app.execute_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: agewt@t");
+        assert!(!root.join("agewt@t").exists(), "the worktree row is deleted");
+        assert!(sessions.join("agewt/age-trusted").is_file(), "the base's age state survives");
+        assert!(sessions.join("agewt@t/age-trusted").is_file(), "a feature name reaches no age state");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// An adopted session loses only its link; the age state stays.
+    #[test]
+    fn delete_of_an_adopted_link_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("adopted", &[], &["ageln"]);
+        let project = root.parent().unwrap().join("project");
+        std::fs::create_dir_all(project.join(".cs/local")).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("ageln")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "ageln");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: ageln");
+        assert!(root.join("ageln").symlink_metadata().is_err(), "the link is removed");
+        assert!(project.join(".cs").is_dir(), "the project survives");
+        assert!(home.join(".cs-secrets/sessions/ageln/age-trusted").is_file(), "the age state survives");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// Only one plain path component names an age state dir, and the path is
+    /// exact: no name reaches `~/.cs-secrets/sessions/` itself or above it.
+    #[test]
+    fn age_state_dir_takes_only_a_plain_base_name() {
+        let home = std::env::temp_dir().join(format!("cs-test-age-names-{}", std::process::id()));
+        let _home = test_home::scoped(home.clone());
+        for name in ["", ".", "..", ".hidden", "a/", "a/b", "../x", "/abs", "a@t"] {
+            assert_eq!(age_state_dir(name), None, "name {name:?} must not resolve");
+        }
+        assert_eq!(age_state_dir("*"), Some(home.join(".cs-secrets/sessions/*")));
+        assert_eq!(age_state_dir("base"), Some(home.join(".cs-secrets/sessions/base")));
+    }
+
+    /// A linked `~/.cs-secrets` deletes nothing through the link: the session
+    /// goes, the age state behind the link stays, and the status names it as
+    /// left behind, as an error.
+    #[test]
+    fn delete_leaves_age_state_behind_a_linked_secrets_dir() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("linked-top", &["agelk"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        let real_state = elsewhere.join("sessions/agelk");
+        std::fs::create_dir_all(&real_state).unwrap();
+        std::fs::write(real_state.join("age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelk");
+
+        app.execute_delete();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelk").exists(), "the session is removed; status: {}", msg.text);
+        assert!(real_state.join("age-trusted").is_file(), "the state behind the link survives");
+        assert_eq!(
+            msg.text,
+            format!(
+                "Deleted: agelk, but left age state behind a linked ~/.cs-secrets: {}",
+                home.join(".cs-secrets/sessions/agelk").display()
+            )
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch under a linked `~/.cs-secrets/sessions` keeps going: every
+    /// session is removed, nothing behind the link is, and only a name with
+    /// state there is named as left behind.
+    #[test]
+    fn batch_delete_leaves_age_state_behind_a_linked_sessions_dir() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("linked-sessions", &["agelk", "agelknext"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("agelk")).unwrap();
+        std::fs::write(elsewhere.join("agelk/age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets/sessions")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelk");
+        for name in ["agelk", "agelknext"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelk").exists(), "agelk is removed; status: {}", msg.text);
+        assert!(!root.join("agelknext").exists(), "agelknext is removed; status: {}", msg.text);
+        assert!(elsewhere.join("agelk/age-trusted").is_file(), "the state behind the link survives");
+        assert_eq!(
+            msg.text,
+            format!(
+                "Deleted 2 sessions — agelk deleted, but left age state behind a linked ~/.cs-secrets: {}",
+                home.join(".cs-secrets/sessions/agelk").display()
+            )
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A linked `~/.cs-secrets/sessions` whose target cannot be searched is a
+    /// failure, never "no state": the delete goes ahead and the status is an
+    /// error naming the path.
+    #[test]
+    fn delete_reports_an_unsearchable_linked_sessions_dir() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let (root, home) = age_fixture("linked-hidden", &["agelkhid"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("agelkhid")).unwrap();
+        std::fs::write(elsewhere.join("agelkhid/age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets/sessions")).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelkhid");
+
+        app.execute_delete();
+
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelkhid").exists(), "the session is removed; status: {}", msg.text);
+        assert!(elsewhere.join("agelkhid/age-trusted").is_file(), "the state behind the link survives");
+        let age_dir = home.join(".cs-secrets/sessions/agelkhid");
+        assert!(
+            msg.text.starts_with(&format!("Deleted: agelkhid, but could not read age state {}: ", age_dir.display())),
+            "status: {}",
+            msg.text
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// With no test home scoped, a test resolves no age state at all, so the
+    /// delete tests that predate the age state (and any written later without
+    /// a scope) cannot reach the real `~/.cs-secrets` of whoever runs them.
+    /// A sentinel under a scoped home survives an unscoped delete of the same
+    /// name, proving the unscoped delete went nowhere.
+    #[test]
+    fn delete_without_a_test_home_touches_no_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("unscoped", &["agesent"], &["agesent"]);
+        let _root = test_root::scoped(root.clone());
+        assert_eq!(secrets_home(), None);
+        assert_eq!(age_state_dir("agesent"), None);
+        let mut app = app_on(&root, "agesent");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: agesent");
+        assert!(home.join(".cs-secrets/sessions/agesent/age-trusted").is_file(), "the sentinel survives");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
     // A batch keeps the reason a delete failed: a mounted vault says to
@@ -4473,19 +6452,24 @@ mod tests {
     }
 
     #[test]
-    fn is_valid_session_name_matches_cs_rules() {
+    fn session_name_refusal_matches_cs_rules() {
         // Accepted by bash cs validate_session_name.
-        assert!(is_valid_session_name("debug-api"));
-        assert!(is_valid_session_name("v2026.7.4"));
-        assert!(is_valid_session_name("my_session"));
+        assert_eq!(session_name_refusal("debug-api"), None);
+        assert_eq!(session_name_refusal("v2026.7.4"), None);
+        assert_eq!(session_name_refusal("my_session"), None);
         // Rejected — these would produce a dir the cs CLI can't open, or traverse.
-        assert!(!is_valid_session_name(""));
-        assert!(!is_valid_session_name("."));
-        assert!(!is_valid_session_name(".."));
-        assert!(!is_valid_session_name("has space"));
-        assert!(!is_valid_session_name("café")); // non-ASCII letter
-        assert!(!is_valid_session_name("base@task")); // worktree separator
-        assert!(!is_valid_session_name("a/b"));
+        // Each refusal is cs's own text, word for word.
+        let dots = Some("Session name cannot be '.' or '..'");
+        let chars = Some("Session name must contain only alphanumeric characters, hyphens, underscores, and dots");
+        assert_eq!(session_name_refusal(""), Some("Session name cannot be empty"));
+        assert_eq!(session_name_refusal("."), dots);
+        assert_eq!(session_name_refusal(".."), dots);
+        assert_eq!(session_name_refusal(".spawn"), Some("Session name cannot start with a dot"));
+        assert_eq!(session_name_refusal("-rm"), Some("Session name cannot start with a hyphen"));
+        assert_eq!(session_name_refusal("has space"), chars);
+        assert_eq!(session_name_refusal("café"), chars); // non-ASCII letter
+        assert_eq!(session_name_refusal("base@task"), chars); // worktree separator
+        assert_eq!(session_name_refusal("a/b"), chars);
     }
 
     #[test]
@@ -4985,13 +6969,14 @@ mod tests {
     }
 
     #[test]
-    fn notes_enter_clears_declined() {
-        let tmp = std::env::temp_dir().join(format!("cs-tui-notes-declined-{}", std::process::id()));
+    fn notes_enter_writes_only_the_queued_task() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-notes-only-task-{}", std::process::id()));
         let _root = session::test_root::scoped(tmp.clone());
         let name = "alpha"; // matches sample_sessions()[0].name
         let local = tmp.join(name).join(".cs/local");
         std::fs::create_dir_all(&local).unwrap();
-        // A prior gate decline left this cooldown marker behind.
+        // Another file of the session's, beside the queue: adding a task
+        // leaves it as it is.
         std::fs::write(local.join("queue.declined"), "1234567890\n").unwrap();
         let mut app = App::new(sample_sessions());
         app.table_state.select(Some(0));
@@ -5000,9 +6985,11 @@ mod tests {
             app.handle_key(KeyEvent::from(KeyCode::Char(c)));
         }
         app.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert!(
-            !local.join("queue.declined").exists(),
-            "adding a task must clear queue.declined so the gate can re-ask"
+        assert!(session::read_queue(name).iter().any(|t| t.contains("do Y")), "the task is queued");
+        assert_eq!(
+            std::fs::read_to_string(local.join("queue.declined")).ok().as_deref(),
+            Some("1234567890\n"),
+            "adding a task writes nothing beside the queue"
         );
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -5541,7 +7528,7 @@ mod tests {
 
         let mut app = App::new(session::scan_sessions());
         for s in app.sessions.iter_mut() {
-            s.liveness = session::Liveness::Locked(4242);
+            s.liveness = session::Liveness::Locked(std::process::id());
         }
         app.apply_filter_and_sort();
         app.handle_key(KeyEvent::from(KeyCode::Char('R')));
@@ -5577,6 +7564,36 @@ mod tests {
             !rotate_was_invoked(&tmp),
             "cs must not have rotated before the answer"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A session that opens while the rotate confirm is up is refused too, as
+    // rename and delete refuse it: the picker holds its rescans while a modal
+    // is open, so the row still reads dormant and only the lock file says
+    // otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_refuses_a_session_that_went_live_after_the_scan() {
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = archive_root("rotate-live-later");
+        let stub = rotate_stub(&tmp, "echo rotated");
+        let _root = session::test_root::scoped(tmp.clone());
+        std::env::set_var("CS_BIN", &stub);
+
+        let mut app = App::new(session::scan_sessions());
+        app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+        assert_eq!(app.mode, Mode::ConfirmRotate, "a dormant row is offered the confirm");
+        let pid = std::process::id();
+        std::fs::write(tmp.join("alpha/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("alpha is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!rotate_was_invoked(&tmp), "cs must not have rotated");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

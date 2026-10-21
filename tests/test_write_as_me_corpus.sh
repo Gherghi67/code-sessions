@@ -476,6 +476,43 @@ add_source() {
     printf '%s\n' "$@" > "$CS_SESSIONS_ROOT/.voice/sources/$name"
 }
 
+# jq 1.7.1's -R splits a multibyte character 4095 bytes into a line and puts a
+# replacement character in its place. A typed message is placed across that
+# point of its transcript line (a padding field ahead of it), at two offsets,
+# and must reach the corpus byte for byte.
+test_multibyte_message_past_4k_of_its_line_lands_whole() {
+    local lead text
+    for lead in "" "a"; do
+        text=$(python3 - "$(proj_file "projU$lead")" "$lead" <<'PY2'
+import json, os, sys
+path, lead = sys.argv[1], sys.argv[2]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+text = lead + "\u00e9" * 1500 + " fin"
+head = '{"pad":"' + "p" * 3000 + '","type":"user","timestamp":"2026-07-01T10:00:00Z","message":{"content":'
+with open(path, "w", encoding="utf-8") as f:
+    f.write(head + json.dumps(text, ensure_ascii=False) + "}}\n")
+print(text)
+PY2
+)
+        run_build > /dev/null || { echo "  FAIL: build exited non-zero"; return 1; }
+        assert_eq "1" "$(grep -cxF -- "$text" "$(corpus_path)")" "the message is in the corpus as typed (lead '$lead')" || return 1
+    done
+}
+
+# A supplementary source line longer than 4 KB of multibyte text is copied
+# into the corpus byte for byte, at both offsets of jq's split point.
+test_supplementary_source_multibyte_line_past_4k_lands_whole() {
+    add_msg "$(proj_file projA)" "here is a genuinely typed message about the build system"
+    local short long
+    short=$(python3 -c "print('\u00e9' * 2500)")
+    long="a$short"
+    add_source utf8.md "# Exported chat" "$short" "$long" ""
+    run_build > /dev/null || { echo "  FAIL: build exited non-zero"; return 1; }
+    assert_eq "1" "$(grep -cxF -- "$short" "$(corpus_path)")" "the even-offset line is copied whole" || return 1
+    assert_eq "1" "$(grep -cxF -- "$long" "$(corpus_path)")" "the odd-offset line is copied whole" || return 1
+    assert_eq "" "$(tail -n 1 "$(corpus_path)")" "the source's trailing blank line is kept, and nothing is added" || return 1
+}
+
 test_supplementary_source_appended_under_its_heading() {
     add_msg "$(proj_file projA)" "here is a genuinely typed message about the build system"
     add_source chat-export.md "# Exported chat" "" "[dm, 2026-08-02]" "salut, ai un minut pentru deploy" "---"
@@ -571,5 +608,7 @@ run_test test_supplementary_source_appended_under_its_heading
 run_test test_supplementary_sources_in_name_order_and_counted
 run_test test_no_sources_leaves_the_corpus_as_it_was
 run_test test_supplementary_source_credential_lines_redacted
+run_test test_multibyte_message_past_4k_of_its_line_lands_whole
+run_test test_supplementary_source_multibyte_line_past_4k_lands_whole
 
 report_results

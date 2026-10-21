@@ -14,12 +14,17 @@ setup() {
     # exported ones would decide the result instead of the fixture.
     unset CS_ACTOR CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR
     unset CLAUDE_PROJECT_DIR CLAUDE_CODE_ENTRYPOINT CLAUDE_PID
+    # A walked-to directory counts as a session only when cs made it: an entry
+    # under the sessions root. The fixtures below sit directly under
+    # TEST_TMPDIR, so that is the root; a test for a directory cs never made
+    # puts it one level deeper.
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR"
 }
 
 teardown() {
     [ -n "$TEST_TMPDIR" ] && [ -d "$TEST_TMPDIR" ] && rm -rf "$TEST_TMPDIR"
     unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CLAUDE_PROJECT_DIR
-    unset CLAUDE_CODE_ENTRYPOINT CLAUDE_PID
+    unset CLAUDE_CODE_ENTRYPOINT CLAUDE_PID CS_SESSIONS_ROOT
 }
 
 # Run the resolver in a subshell and print the resolved triple, or FAIL.
@@ -105,15 +110,18 @@ test_walks_up_from_a_subdirectory() {
         "walks up to the nearest .cs" || return 1
 }
 
-# The nearest .cs wins: a session cloned inside a session belongs to itself.
-test_nearest_session_wins() {
+# The nearest .cs decides, and a nearest one cs never made declines: a repo
+# with a committed .cs/ cloned inside a session is not that session's work,
+# and binding it to the enclosing session would hand the clone's text to the
+# session's hooks.
+test_a_nested_directory_cs_never_made_declines() {
     _make_session "$TEST_TMPDIR/outer" "outer"
     _make_session "$TEST_TMPDIR/outer/inner" "inner"
     export CLAUDE_PROJECT_DIR="$TEST_TMPDIR/outer/inner"
     local got
     got=$(_resolve '{}')
-    assert_eq "inner|$(_phys "$TEST_TMPDIR/outer/inner")|$(_phys "$TEST_TMPDIR/outer/inner")/.cs" "$got" \
-        "the nearest .cs wins over an enclosing one" || return 1
+    assert_eq "FAIL" "$got" \
+        "a nested .cs cs never made neither resolves nor binds to the enclosing session" || return 1
 }
 
 test_no_session_anywhere_fails() {
@@ -149,6 +157,7 @@ test_adopt_records_the_name_the_resolver_reads() {
             && CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions" "$CS_BIN" -adopt chosen-name
     ) >/dev/null 2>&1 || { echo "  FAIL: cs -adopt did not complete"; return 1; }
 
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions"
     export CLAUDE_PROJECT_DIR="$proj"
     local got
     got=$(_resolve '{}')
@@ -173,6 +182,7 @@ test_opening_an_adopted_session_backfills_the_name() {
         CS_TERM_THEME=dark "$CS_BIN" legacy-adopted >/dev/null 2>&1 <<< "" \
         || { echo "  FAIL: opening the adopted session did not complete"; return 1; }
 
+    export CS_SESSIONS_ROOT="$root"
     export CLAUDE_PROJECT_DIR="$proj"
     local got
     got=$(_resolve '{}')
@@ -192,6 +202,7 @@ test_a_renamed_ordinary_session_resolves_to_its_new_name() {
         || { echo "  FAIL: creating the session did not complete"; return 1; }
     mv "$root/oldname" "$root/newname"
 
+    export CS_SESSIONS_ROOT="$root"
     export CLAUDE_PROJECT_DIR="$root/newname"
     local got
     got=$(_resolve '{}')
@@ -331,7 +342,7 @@ run_test test_env_contract_with_missing_dir_fails
 run_test test_derives_from_project_dir
 run_test test_derives_from_input_cwd_when_project_dir_absent
 run_test test_walks_up_from_a_subdirectory
-run_test test_nearest_session_wins
+run_test test_a_nested_directory_cs_never_made_declines
 # The walk is documented as stopping AT $HOME. It tested the boundary after
 # checking for .cs, so a stray ~/.cs would have adopted every project directly
 # under home into a phantom session named after the home directory.
@@ -426,10 +437,58 @@ test_other_front_ends_still_derive_from_the_directory() {
     [ "$failures" -eq 0 ] || return 1
 }
 
+# ============================================================================
+# Only a directory cs made is a session. A front end that walks in from the
+# directory has nothing but the directory, and a cloned repository can carry
+# any file under .cs/ (a hook never runs the open-time git checks). What a
+# clone cannot carry is an entry under this machine's sessions root: cs puts
+# every session it makes there, as the directory itself or as a link to it.
+# ============================================================================
+
+test_a_front_end_declines_a_directory_cs_never_made() {
+    _make_session "$TEST_TMPDIR/code/cloned-repo" "cloned-repo"
+    export CLAUDE_PROJECT_DIR="$TEST_TMPDIR/code/cloned-repo"
+    export CLAUDE_CODE_ENTRYPOINT="claude-desktop"
+    local got
+    got=$(_resolve '{}')
+    assert_eq "FAIL" "$got" \
+        "a .cs/ outside the sessions root is a clone's content, not a session" || return 1
+}
+
+# The name file under .cs/local is checkout content too: a clone claiming a
+# real session's name must not resolve as that session, nor as itself.
+test_a_claimed_name_does_not_make_a_directory_a_session() {
+    _make_session "$TEST_TMPDIR/real" "real"
+    _make_session "$TEST_TMPDIR/code/impostor" "real"
+    export CLAUDE_PROJECT_DIR="$TEST_TMPDIR/code/impostor"
+    export CLAUDE_CODE_ENTRYPOINT="claude-desktop"
+    local got
+    got=$(_resolve '{}')
+    assert_eq "FAIL" "$got" \
+        "a clone naming a registered session in its state file stays unresolved" || return 1
+}
+
+# An adopted session lives at its project path and is known to cs by a link
+# under the root, so the link is what registers it. Identity, not spelling:
+# the link's target and the walked-to directory are the same inode.
+test_a_front_end_resolves_an_adopted_session_through_its_link() {
+    _make_session "$TEST_TMPDIR/code/project" "adopted"
+    ln -s "$TEST_TMPDIR/code/project" "$TEST_TMPDIR/adopted"
+    export CLAUDE_PROJECT_DIR="$TEST_TMPDIR/code/project"
+    export CLAUDE_CODE_ENTRYPOINT="claude-desktop"
+    local got
+    got=$(_resolve '{}')
+    assert_eq "adopted|$(_phys "$TEST_TMPDIR/code/project")|$(_phys "$TEST_TMPDIR/code/project")/.cs" "$got" \
+        "a session reached through its link under the root resolves" || return 1
+}
+
 run_test test_terminal_cli_does_not_derive_from_the_directory
 run_test test_terminal_cli_does_not_derive_from_the_input_cwd
 run_test test_the_cli_gate_leaves_the_env_contract_alone
 run_test test_other_front_ends_still_derive_from_the_directory
+run_test test_a_front_end_declines_a_directory_cs_never_made
+run_test test_a_claimed_name_does_not_make_a_directory_a_session
+run_test test_a_front_end_resolves_an_adopted_session_through_its_link
 
 # ============================================================================
 # Headless and teammates: both are terminal claudes, and only one is in the
@@ -441,18 +500,16 @@ run_test test_other_front_ends_still_derive_from_the_directory
 # Start a process whose argv carries the flags under test, and print its pid
 # once ps can see it. A script file, not `bash -c`: bash exec's the last command
 # of a -c string over itself, so the process ps reports would be `sleep`, with
-# the arguments under test gone from its argv.
+# the arguments under test gone from its argv. Its caller reads the pid from
+# this function's output, so a ps that never shows it prints nothing more, and
+# the caller's assertions fail.
 _fake_claude() {  # [extra_args...]
-    local script="$TEST_TMPDIR/fake-claude.sh" pid i=0
+    local script="$TEST_TMPDIR/fake-claude.sh" pid
     printf '#!/usr/bin/env bash\nsleep 30\n' > "$script"
     chmod +x "$script"
     "$script" "$@" >/dev/null 2>&1 &
     pid=$!
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$pid" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1))
-        sleep 0.1
-    done
+    wait_until pid_args_match "$pid" fake-claude
     printf '%s\n' "$pid"
 }
 

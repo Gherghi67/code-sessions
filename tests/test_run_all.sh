@@ -16,11 +16,12 @@ RUN_ALL="$SCRIPT_DIR/run_all.sh"
 unset CS_TEST_SHARD CS_TEST_JOBS 2>/dev/null || true
 
 # Build a directory of fake suites for run_all.sh to drive. Each records the
-# fact that it ran by creating a file named after itself, so coverage is counted
-# from the filesystem rather than from parsing the runner's own output. Suites
-# write distinct files, never a shared one, so concurrent shards cannot lose a
-# record to an interleaved append. Arg: how many suites; a name passed after it
-# is made to fail.
+# fact that it ran by appending a line to a file named after itself, so coverage
+# is counted from the filesystem rather than from parsing the runner's own
+# output, and a suite that ran twice shows two lines. Suites write distinct
+# files, never a shared one, so concurrent shards cannot lose a record to an
+# interleaved append. Arg: how many suites; a name passed after it is made to
+# fail.
 make_suite_dir() {  # count, [failing_name]
     local count="$1" failing="${2:-}" i name
     SUITE_DIR="$TEST_TMPDIR/suites"
@@ -32,7 +33,7 @@ make_suite_dir() {  # count, [failing_name]
         {
             printf '#!/usr/bin/env bash\n'
             printf 'printf "marker-from-%s\\n"\n' "$name"
-            printf ': > "%s/%s"\n' "$RAN_DIR" "$name"
+            printf 'echo ran >> "%s/%s"\n' "$RAN_DIR" "$name"
             if [ "$name" = "$failing" ]; then
                 printf 'exit 1\n'
             fi
@@ -144,6 +145,152 @@ test_run_all_shards_partition_the_suite_list() {
             echo "shard $n/3 failed"; printf '%s\n' "$out"; return 1; }
     done
     [ "$(ran_count)" -eq 7 ] || { echo "3 shards covered $(ran_count)/7 suites"; return 1; }
+    local f
+    for f in "$RAN_DIR"/*; do
+        [ "$(grep -c . "$f")" = 1 ] || { echo "${f##*/} ran $(grep -c . "$f") times over the 3 shards"; return 1; }
+    done
+}
+
+# The split itself, on suites of 10, 6, 5 and 1 lines: longest first, each to
+# the shard with fewer lines so far, the lower shard on a tie. 10 goes to shard
+# 1, 6 to shard 2, 5 to shard 2 (6 < 10), 1 to shard 1 (10 < 11). Balancing by
+# count, or breaking the first tie toward shard 2, picks other sets.
+test_run_all_shards_balance_by_line_count() {
+    make_suite_dir 4
+    local n i lines
+    for n in 1 2 3 4; do
+        case "$n" in 1) lines=10 ;; 2) lines=6 ;; 3) lines=5 ;; 4) lines=1 ;; esac
+        {
+            printf 'echo ran >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+            i=1
+            while [ "$i" -lt "$lines" ]; do printf '# pad\n'; i=$((i + 1)); done
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out got
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 1/2 failed"; printf '%s\n' "$out"; return 1; }
+    got=$(ls -1 "$RAN_DIR" | tr '\n' ' ')
+    [ "$got" = "test_fake1.sh test_fake4.sh " ] || { echo "shard 1/2 ran: $got"; return 1; }
+}
+
+# A suite that runs long for its length says so with a `# run_all-weight: N`
+# line, and counts as N times its lines. Suites of 10, 6, 4 and 1 lines, the
+# 4-line one weighted 3 (12): 12 goes to shard 1, 10 to shard 2, 6 to shard 2
+# (10 < 12), 1 to shard 1 (12 < 16). Unweighted, shard 1 runs 10 and 1.
+test_run_all_shards_count_a_declared_weight() {
+    make_suite_dir 4
+    local n i lines
+    for n in 1 2 3 4; do
+        case "$n" in 1) lines=10 ;; 2) lines=6 ;; 3) lines=4 ;; 4) lines=1 ;; esac
+        {
+            printf 'echo ran >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+            i=1
+            if [ "$n" = 3 ]; then printf '# run_all-weight: 3\n'; i=2; fi
+            while [ "$i" -lt "$lines" ]; do printf '# pad\n'; i=$((i + 1)); done
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out got
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 1/2 failed"; printf '%s\n' "$out"; return 1; }
+    got=$(ls -1 "$RAN_DIR" | tr '\n' ' ')
+    [ "$got" = "test_fake3.sh test_fake4.sh " ] || { echo "shard 1/2 ran: $got"; return 1; }
+}
+
+# A suite file the gate cannot read is an error, not a suite to leave out: it
+# has no line count to place it by, and quietly dropping it from every shard
+# would report a green gate that never ran it.
+test_run_all_refuses_an_unreadable_suite() {
+    make_suite_dir 3
+    chmod 000 "$SUITE_DIR/test_fake2.sh"
+    local out rc=0
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || rc=$?
+    chmod 644 "$SUITE_DIR/test_fake2.sh"
+    [ "$rc" -eq 2 ] || { echo "expected exit 2, got $rc"; printf '%s\n' "$out"; return 1; }
+    [ "$out" = "cannot read $SUITE_DIR/test_fake2.sh" ] || { echo "unexpected output:"; printf '%s\n' "$out"; return 1; }
+}
+
+# A lane that finishes takes the next waiting suite, so no lane sits idle while
+# another works through a fixed share. Pinned with a suite that cannot finish
+# until every other suite has run: with two lanes it holds one lane, and only a
+# shared queue lets the other lane reach the remaining four. A fixed split puts
+# two of them behind it on its own lane, and it gives up after 120 s of wall
+# time, which a loaded machine starting the other four late stays well inside.
+test_run_all_a_free_lane_takes_the_next_suite() {
+    make_suite_dir 5
+    cat > "$SUITE_DIR/test_fake1.sh" <<EOF
+#!/usr/bin/env bash
+deadline=\$((SECONDS + 120))
+while [ "\$(ls -1 "$RAN_DIR" | grep -c .)" -lt 4 ]; do
+    [ "\$SECONDS" -lt "\$deadline" ] || { echo "the other four suites never ran"; exit 1; }
+    sleep 0.1
+done
+: >> "$RAN_DIR/test_fake1.sh"
+EOF
+    local out rc=0
+    out=$(CS_TEST_JOBS=2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || { echo "expected exit 0, got $rc"; printf '%s\n' "$out"; return 1; }
+    [ "$(ran_count)" -eq 5 ] || { echo "expected 5 suites to run, got $(ran_count)"; return 1; }
+}
+
+# The queue hands out the longest suites first, judged by line count, so the
+# slowest suite never starts last behind a lane's worth of short ones. With two
+# lanes the two longest suites must both start before any short one has run;
+# they meet before either finishes, so neither lane comes free early. Both are
+# last in name order, where list order or a fixed split would start them late.
+# Each waits for the other for 120 s of wall time at most.
+test_run_all_starts_the_longest_suites_first() {
+    make_suite_dir 4
+    local n other
+    for n in 3 4; do
+        other=$((7 - n))
+        {
+            printf '#!/usr/bin/env bash\n'
+            printf '[ -e "%s/test_fake1.sh" ] && { echo "a short suite ran first"; exit 1; }\n' "$RAN_DIR"
+            printf '[ -e "%s/test_fake2.sh" ] && { echo "a short suite ran first"; exit 1; }\n' "$RAN_DIR"
+            printf ': > "%s/started%s"\n' "$TEST_TMPDIR" "$n"
+            printf 'deadline=$((SECONDS + 120))\n'
+            printf 'until [ -e "%s/started%s" ]; do\n' "$TEST_TMPDIR" "$other"
+            printf '    [ "$SECONDS" -lt "$deadline" ] || { echo "the other long suite never started"; exit 1; }\n'
+            printf '    sleep 0.1\n'
+            printf 'done\n'
+            printf ': >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out rc=0
+    out=$(CS_TEST_JOBS=2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || { echo "expected exit 0, got $rc"; printf '%s\n' "$out"; return 1; }
+    [ "$(ran_count)" -eq 4 ] || { echo "expected 4 suites to run, got $(ran_count)"; return 1; }
+}
+
+# Shards are balanced by line count, longest suite first, so two long suites
+# land on different shards and a CI job's wall time is not two slow suites
+# back to back. The long ones are first and third in name order, which a
+# round-robin over that order puts on the same shard. Each suite appends a
+# line every time it runs, so a suite two shards both claimed shows as two.
+test_run_all_shards_split_the_long_suites() {
+    make_suite_dir 4
+    local n i
+    for n in 1 2 3 4; do
+        {
+            printf '#!/usr/bin/env bash\n'
+            printf 'echo ran >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+            if [ "$n" = 1 ] || [ "$n" = 3 ]; then
+                for i in 1 2 3 4 5 6 7 8 9 10; do printf '# long\n'; done
+            fi
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 1/2 failed"; printf '%s\n' "$out"; return 1; }
+    if [ -e "$RAN_DIR/test_fake1.sh" ] && [ -e "$RAN_DIR/test_fake3.sh" ]; then
+        echo "both long suites ran in shard 1/2"; return 1
+    fi
+    out=$(CS_TEST_SHARD=2/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 2/2 failed"; printf '%s\n' "$out"; return 1; }
+    for n in 1 2 3 4; do
+        [ "$(grep -c . "$RAN_DIR/test_fake$n.sh" 2>/dev/null)" = 1 ] \
+            || { echo "test_fake$n.sh ran $(grep -c . "$RAN_DIR/test_fake$n.sh" 2>/dev/null || echo 0) times over the two shards"; return 1; }
+    done
 }
 
 # A gate that cannot create its scratch dir must fail, not pass. Every suite is
@@ -504,15 +651,17 @@ test_run_all_leaves_no_watchdog_behind() {
         return 1
     fi
     wait "$gate" || { echo "the gate failed"; cat "$TEST_TMPDIR/gate.out"; return 1; }
-    # A watchdog leaves within a tick of its suite; poll for up to 10 s.
-    local left waited=0
+    # A watchdog leaves within a tick of its suite, later on a loaded machine;
+    # one never stopped sleeps out its 7771 s cap, far past this wait.
+    local left
+    wait_until _nothing_runs "$runner"
     left=$(pgrep -f "$runner" || true)
-    while [ -n "$left" ] && [ "$waited" -lt 10 ]; do
-        sleep 1
-        waited=$((waited + 1))
-        left=$(pgrep -f "$runner" || true)
-    done
-    [ -z "$left" ] || { echo "watchdogs outlived the gate by 10s: $left"; pkill -f "$runner"; return 1; }
+    [ -z "$left" ] || { echo "watchdogs outlived the gate: $left"; pkill -f "$runner"; return 1; }
+}
+
+# Exits 0 when no process has <pattern> in its command line.
+_nothing_runs() {  # pattern
+    ! pgrep -f "$1" >/dev/null
 }
 
 # TERM is a request; a suite that ignores it is still stopped once the grace
@@ -549,6 +698,12 @@ run_test test_run_all_serial_mode_runs_every_suite
 run_test test_run_all_reports_the_failing_suite_by_name
 run_test test_run_all_keeps_each_suites_own_output
 run_test test_run_all_shards_partition_the_suite_list
+run_test test_run_all_a_free_lane_takes_the_next_suite
+run_test test_run_all_starts_the_longest_suites_first
+run_test test_run_all_shards_split_the_long_suites
+run_test test_run_all_shards_balance_by_line_count
+run_test test_run_all_shards_count_a_declared_weight
+run_test test_run_all_refuses_an_unreadable_suite
 run_test test_run_all_fails_loudly_when_the_log_dir_cannot_be_made
 run_test test_run_all_rejects_a_malformed_shard
 run_test test_run_all_rejects_a_malformed_job_count

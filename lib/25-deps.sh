@@ -50,6 +50,9 @@ validate_session_name() {
 
     case "$name" in
         .|..) error "Session name cannot be '.' or '..'" ;;
+        # cs keeps its own staging dirs at the sessions root under dot names
+        # (.spawn/, .usage/); `cs .spawn` would migrate one into a session.
+        .*) error "Session name cannot start with a dot" ;;
         # `cs <name>` reads a leading hyphen as a verb: a session named
         # -uninstall would run that verb rather than open, and -rm would reach
         # remove_session.

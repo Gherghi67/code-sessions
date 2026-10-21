@@ -26,11 +26,17 @@ let existing: Set<string>
 let files: Record<string, string>
 let sessionId: string
 let envVars: Record<string, string | undefined>
+// The conversation's working directory, and where each path lands as `$.fs.stat` resolves it
+// (a path absent here does not exist).
+let cwdPath: string
+let realPaths: Record<string, string>
 let timers: { ms: number; fn: () => void; kind: 'after' | 'every'; cancelled: boolean }[]
 let invalidated: string[]
 let toasts: string[]
 let asks: { question: string; options: any }[]
 let panes: { op: 'open' | 'close'; args: any }[]
+// The engine's own record of this plugin's open panes, as `$.ui.panes()` answers.
+let enginePanes: { id: string; title: string }[]
 // What the person does with the next dialog: a label, or a rejection (dismissed, or a `-p` run).
 let answer: string | Error
 // What the person answers to the queue's "how should the tasks run" question.
@@ -58,7 +64,7 @@ const $ = {
   env: { get: async (name: string) => envVars[name] },
   session: {
     usage: async () => ({ context: { percent } }),
-    cwd: async () => '/work',
+    cwd: async () => cwdPath,
     id: async () => sessionId,
     compact: async () => {
       compactedAt.push(runs.length)
@@ -88,7 +94,8 @@ const $ = {
     invalidate: (event: string) => { invalidated.push(event) },
     toast: (text: string) => { toasts.push(text) },
     open: async (args: any) => { panes.push({ op: 'open', args }) },
-    close: async (args: any) => { panes.push({ op: 'close', args }) },
+    close: async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) },
+    panes: async () => enginePanes,
     ask: async (question: string, options: any) => {
       asks.push({ question, options })
       const reply = question === QUEUE_MODE_QUESTION ? modeAnswer : answer
@@ -101,6 +108,17 @@ const $ = {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
     read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+    // A directory is listed from the files under it; one with none is absent.
+    list: async (path: string) => {
+      const prefix = `${path.replace(/\/+$/, '')}/`
+      const names = Object.keys(files).filter(k => k.startsWith(prefix) && !k.slice(prefix.length).includes('/'))
+      if (names.length === 0) throw new Error(`ENOENT ${path}`)
+      return names.map(k => ({ name: k.slice(prefix.length), kind: 'file', size: files[k].length, isLink: false }))
+    },
+    stat: async (path: string, options?: { resolve?: boolean }) => {
+      if (!(path in realPaths)) throw new Error(`ENOENT ${path}`)
+      return { kind: 'directory', size: 0, mtimeMs: 0, isLink: false, ...(options?.resolve ? { realPath: realPaths[path] } : {}) }
+    },
   },
 }
 
@@ -118,13 +136,17 @@ const findButton = (tree: any) => buttons(tree)[0]
 beforeEach(() => {
   for (const k of Object.keys(hooks)) delete hooks[k]
   percent = undefined; filled = []; ran = []; written = {}; existing = new Set(['/work/.cs/local'])
-  timers = []; invalidated = []; toasts = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
+  timers = []; invalidated = []; toasts = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []; enginePanes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
   sessionId = 'uuid-lead'
-  envVars = {}
+  // /work sits under the default sessions root by its own name, and the launch
+  // said where cs is, as every cs launch does.
+  envVars = { HOME: '/home', CS_BIN: '/opt/cs/bin/cs' }
+  cwdPath = '/work'
+  realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
   files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
   register(on as any)
 })
@@ -425,6 +447,16 @@ test('a press runs the rotate skill and fills nothing', async () => {
   expect(filled).toEqual([])
 })
 
+// The skill ends by arming a marker in .cs/local, so the press asks cs first,
+// as the clear button and the forced /rotate do.
+test('while git tracks a control file, a press runs no rotation', async () => {
+  percent = 80
+  runResult = tracked
+  await findButton(await band()).props.onPress()
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(ran).toEqual([])
+})
+
 test('outside a cs session the band draws nothing at crit', async () => {
   percent = 90
   existing = new Set(); files = {}
@@ -509,6 +541,34 @@ test('a marker naming a handoff that is gone, consumed, or outside the store doe
   expect(findButton(await band()).props.label).toBe('rotate this conversation')
 })
 
+// cs loads only a handoff whose file name is plain (letters, digits and ._@-,
+// at most 160 characters), so a marker naming any other, even an unconsumed
+// handoff that exists, arms nothing: the /clear would load nothing.
+test('a marker naming a handoff whose name is not plain does not arm', async () => {
+  percent = 39
+  for (const name of ['2026-09-15-e\x1b[1mb\x07.md', '2026-09-15 next.md', 'a'.repeat(158) + '.md']) {
+    files = { ...files, [`/work/.cs/handoffs/${name}`]: UNCONSUMED, [MARKER]: `${name}\n` }
+    expect(await band()).toBe(DRAWN)
+  }
+  const longest = 'a'.repeat(157) + '.md'
+  files = { ...files, [`/work/.cs/handoffs/${longest}`]: UNCONSUMED, [MARKER]: `${longest}\n` }
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
+// The marker is read as the SessionStart hook reads it (tr -d '[:space:]' in
+// the C locale): ASCII whitespace is dropped and nothing else, so a marker
+// whose name starts with U+FEFF, U+00A0 or U+2028 names a file the hook will
+// not load, and arms nothing.
+test('a marker is read as the hook reads it: only ASCII whitespace is dropped', async () => {
+  percent = 39
+  for (const lead of ['﻿', ' ', ' ']) {
+    arm(); files[MARKER] = `${lead}2026-09-15-next-step.md\n`
+    expect(await band()).toBe(DRAWN)
+  }
+  arm(); files[MARKER] = '\t 2026-09-15-next-step.md\r\n'
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
 // An encrypted session keeps the marker and its handoffs behind .cs/private.
 const PRIVATE_MARKER = '/work/.cs/private/pending-handoff'
 const PRIVATE_HANDOFF = '/work/.cs/private/handoffs/2026-09-15-next-step.md'
@@ -523,6 +583,132 @@ test('a private marker never arms from the plaintext handoff store', async () =>
   files[HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
   percent = 39
   expect(await band()).toBe(DRAWN)
+})
+
+// cs judges whether it trusts the session's control files: a marker git tracks
+// (a pull brought it in) names a rotation the SessionStart hook refuses, so it
+// arms nothing, and the band says why, once per answer.
+const VETTED = { exitCode: 0, stdout: '', stderr: '' }
+const TRACKED = "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C /work --literal-pathspecs rm -r --cached -- .cs/local && git -C /work commit -m 'stop tracking .cs/local'"
+const tracked = { exitCode: 1, stdout: '', stderr: `${TRACKED}\n` }
+
+test('the band asks cs nothing as it draws, however often it redraws', async () => {
+  arm(); percent = 3
+  for (let i = 0; i < 5; i++) expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(runs).toEqual([])
+})
+
+test('pressing the clear button asks cs about the session, and a tracked control file clears nothing', async () => {
+  arm(); percent = 3
+  runResult = tracked
+  await findButton(await band()).props.onPress()
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(ran).toEqual([])
+  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+  // the band then draws the session as unarmed (below the threshold: nothing),
+  // and the same refusal at the next turn's end is not said again
+  expect(await band()).toBe(DRAWN)
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  await turnComplete()
+  expect(runs).toHaveLength(2)
+  expect(toasts).toHaveLength(1)
+})
+
+test('once cs trusts the session again, the next press clears', async () => {
+  arm(); percent = 3
+  runResult = tracked
+  await findButton(await band()).props.onPress()
+  runResult = VETTED
+  envVars.CS_ROTATE_FORCE_CTX = '70'; percent = 80
+  await turnComplete()
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('a turn ending with a tracked control file starts no countdown and forces no /rotate', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  runResult = tracked
+  await turnComplete()
+  await fireAfter()
+  expect(timers.filter(t => t.kind === 'every')).toEqual([])
+  expect(ran).toEqual([])
+  expect(Object.keys(written)).toEqual([])
+  // with no handoff armed, the same turn's end past the threshold forces nothing either
+  delete files[MARKER]
+  await turnComplete()
+  await fireAfter()
+  expect(ran).toEqual([])
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('a control file git starts tracking during the count clears nothing at zero', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  runResult = tracked
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([])
+})
+
+test('a press while cs is still answering, then the count reaching zero, clears once', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  const zero = ticker()!
+  const run = $.process.run
+  let answer: (r: any) => void = () => {}
+  let asked: () => void = () => {}
+  const reached = new Promise<void>(r => { asked = r })
+  $.process.run = async (argv: string[], init: any) => {
+    $.process.run = run
+    runs.push({ argv, init })
+    asked()
+    return new Promise(r => { answer = r })
+  }
+  try {
+    const press = findButton(await band()).props.onPress()
+    await reached
+    await zero.fn()
+    answer(VETTED)
+    await press
+  } finally {
+    $.process.run = run
+  }
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('with the forcing off, a prompt after a refusal asks cs afresh at the next press', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = 'off'
+  arm(); percent = 3
+  runResult = tracked
+  await findButton(await band()).props.onPress()
+  expect(await band()).toBe(DRAWN)
+  runResult = VETTED
+  await promptSubmit()
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('when cs cannot answer, a press clears nothing and the band says why', async () => {
+  arm(); percent = 3
+  delete envVars.CS_BIN
+  await findButton(await band()).props.onPress()
+  expect(runs).toHaveLength(0)
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = new Error('spawn ENOENT')
+  envVars.CS_ROTATE_FORCE_CTX = '70'; percent = 80
+  await turnComplete()
+  expect(ran).toEqual([])
+  expect(toasts).toEqual([
+    'cs: no rotation in this session: the launch did not say where cs is (CS_BIN)',
+    'cs: no rotation in this session: cs -vet-session did not run: spawn ENOENT',
+  ])
 })
 
 test('an empty marker names no handoff, so the band behaves as unarmed', async () => {
@@ -540,9 +726,68 @@ test('session.start writes a heartbeat under the session meta dir', async () => 
   expect(text).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z\n$/)
 })
 
+// While git tracks the session's control files the mod adds nothing there: cs
+// is asked before the heartbeat lands, and its refusal is said once.
+test('a session whose control files git tracks gets no heartbeat', async () => {
+  runResult = tracked
+  await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(written).toEqual({})
+  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+})
+
 test('outside a cs session no heartbeat is written', async () => {
   await hooks['session.start']($, { cwd: '/plain', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
   expect(Object.keys(written)).toEqual([])
+})
+
+// The sessions root names a session; nothing inside a directory can, since a
+// cloned repository may carry any file under .cs/. The cwd is a cs session
+// when <root>/<its name> is the cwd itself.
+test('a directory with .cs/local that the sessions root does not name gets no heartbeat', async () => {
+  cwdPath = '/clone'
+  existing = new Set(['/clone/.cs/local'])
+  realPaths = { '/clone': '/clone' }
+  await hooks['session.start']($, { cwd: '/clone', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('a root entry of the same name that is another directory does not make the cwd a session', async () => {
+  cwdPath = '/clone/work'
+  existing = new Set(['/clone/work/.cs/local'])
+  realPaths = { '/clone/work': '/clone/work', '/home/.claude-sessions/work': '/work' }
+  await hooks['session.start']($, { cwd: '/clone/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('CS_SESSIONS_ROOT names the sessions root', async () => {
+  envVars.CS_SESSIONS_ROOT = '/roots'
+  realPaths = { '/work': '/work', '/roots/work': '/work' }
+  await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual(['/work/.cs/local/cs.heartbeat'])
+  realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
+  written = {}
+  await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('an adopted session is named by the session_name its state records, and the root entry must be the cwd', async () => {
+  cwdPath = '/code/project'
+  existing = new Set(['/code/project/.cs/local'])
+  files = { '/code/project/.cs/local/state': 'session_name: alias\nclaude_session_id: uuid-lead\n' }
+  realPaths = { '/code/project': '/code/project', '/home/.claude-sessions/alias': '/code/project' }
+  await hooks['session.start']($, { cwd: '/code/project', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual(['/code/project/.cs/local/cs.heartbeat'])
+  realPaths['/home/.claude-sessions/alias'] = '/elsewhere'
+  written = {}
+  await hooks['session.start']($, { cwd: '/code/project', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('the lead of a directory the sessions root does not name gets no button', async () => {
+  percent = 90
+  realPaths = { '/work': '/work' }
+  expect(await band()).toBe(DRAWN)
 })
 
 // A turn's end, the way the engine reports it: answered on the main loop unless said otherwise.
@@ -598,6 +843,20 @@ test('below the force threshold, or with an unusable value, a turn ending forces
   expect(timers.map(t => t.kind)).toEqual(['after'])
 })
 
+test('a whole number outside 1..100 is the default 80, not a threshold no turn can reach', async () => {
+  for (const value of ['101', '150', '999']) {
+    envVars.CS_ROTATE_FORCE_CTX = value
+    percent = 79
+    await turnComplete()
+    expect(timers).toEqual([])
+  }
+  percent = 80
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  await fireAfter()
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+})
+
 test('a forced rotation runs once per conversation, and a failed /rotate is not retried', async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
   percent = 80
@@ -631,6 +890,84 @@ test('a subagent\'s turn, an aborted, errored or refused one, a teammate, or an 
   await turnComplete()
   expect(timers).toEqual([])
   expect(Object.keys(written)).toEqual([])
+})
+
+// The rotate button runs /rotate for the person in one key, so that rotation
+// must not stop to ask either: before it runs, the press writes the
+// conversation's id to .cs/local/cs.pressed, which cs -archive-tasks plan
+// reads as a forced rotation. The end of the next main-loop turn empties it,
+// whatever ended that turn, so a /rotate typed later in the conversation asks
+// as a manual one does; a run the engine refuses empties it at once.
+const PRESSED = '/work/.cs/local/cs.pressed'
+
+test('a press names the conversation in cs.pressed before /rotate runs, and the end of the main loop\'s turn empties it', async () => {
+  percent = 80
+  let atRun: string | undefined
+  const run = $.command.run
+  $.command.run = async (args: any) => { atRun = files[PRESSED]; ran.push(args); return { text: '' } }
+  try {
+    await findButton(await band()).props.onPress()
+  } finally {
+    $.command.run = run
+  }
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+  expect(atRun).toBe('uuid-lead\n')
+  await turnComplete({ agentId: 'agent-1' })
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  await turnComplete({ reason: 'aborted' })
+  expect(files[PRESSED]).toBe('')
+})
+
+test('a press whose /rotate the engine refuses empties cs.pressed at once', async () => {
+  percent = 80
+  const run = $.command.run
+  $.command.run = async () => { throw new Error('unknown command') }
+  let refused: unknown
+  try {
+    await findButton(await band()).props.onPress()
+  } catch (err) {
+    refused = err
+  } finally {
+    $.command.run = run
+  }
+  expect(String(refused)).toBe('Error: unknown command')
+  expect(files[PRESSED]).toBe('')
+})
+
+test('the end of a turn leaves a press marker naming another conversation, and one git tracks, as they are', async () => {
+  files[PRESSED] = 'uuid-earlier\n'
+  await turnComplete()
+  expect(runs).toEqual([])
+  expect(files[PRESSED]).toBe('uuid-earlier\n')
+  files[PRESSED] = 'uuid-lead\n'
+  runResult = tracked
+  await turnComplete()
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  expect(written).toEqual({})
+})
+
+// A marker that cannot be emptied would make a later typed /rotate read as
+// pressed, so the failure is said; the turn's end goes on to what follows it.
+test('a press marker the turn end cannot empty is said, and the turn end goes on', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 80
+  files[PRESSED] = 'uuid-lead\n'
+  const write = $.fs.write
+  $.fs.write = async (path: string, text: string) => {
+    if (path === PRESSED) throw new Error('EACCES')
+    return write(path, text)
+  }
+  let result: any
+  try {
+    result = await turnComplete()
+  } finally {
+    $.fs.write = write
+  }
+  expect(toasts).toEqual(['cs: could not empty .cs/local/cs.pressed: Error: EACCES'])
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  expect(result).toEqual({ text: 'ok' })
+  expect(timers.map(t => t.kind)).toEqual(['after'])
 })
 
 test('a turn ending past the force threshold with a handoff already armed runs no second /rotate', async () => {
@@ -1275,6 +1612,16 @@ test('queued work, or a second wrap that fails, brings the key back', async () =
   expect(wrapButton(await band())).toBeDefined()
 })
 
+test('while git tracks the control files, a prompt leaves the wrap marker as git has it', async () => {
+  percent = 40
+  files[WRAPPED] = 'uuid-lead\n'
+  runResult = tracked
+  await turnStart('next thing')
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(written).toEqual({})
+  expect(files[WRAPPED]).toBe('uuid-lead\n')
+})
+
 test('a summary with no wrap marker, or a marker naming another conversation, keeps the wrap key', async () => {
   percent = 40
   files['/work/.cs/summary.md'] = '# Session Summary\n'
@@ -1359,6 +1706,175 @@ test('any end of the count closes the pane: a prompt, a press, zero', async () =
   await tick(GRACE_SECONDS)
   expect(ran).toEqual([{ command: 'clear', args: '' }])
   expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+})
+
+// A pane outlives the module that opened it: a reload (every install rewrites
+// the mod) leaves the engine holding the pane while the module holds no count.
+// /clear does not close a plugin's pane by itself, so every /clear path asks
+// the engine what is open and closes the handoff pane, and waits for that close
+// before the /clear runs.
+test('a /clear closes a handoff pane the engine still holds, before the /clear runs', async () => {
+  const order: string[] = []
+  $.ui.close = async (args: any) => { order.push(`close:${args.id}`); panes.push({ op: 'close', args }) }
+  $.command.run = async (args: any) => { order.push(`run:${args.command}`); ran.push(args); return { text: '' } }
+  try {
+    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
+    await findButton(await band()).props.onPress()
+    expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
+
+    order.length = 0
+    await hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => { order.push('run:clear'); return { text: '' } })
+    expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  }
+})
+
+test('the /clear waits for the pane close to land', async () => {
+  let land!: () => void
+  const order: string[] = []
+  $.ui.close = (args: any) => new Promise<void>(resolve => { land = () => { order.push(`close:${args.id}`); resolve() } })
+  $.command.run = async (args: any) => { order.push(`run:${args.command}`); ran.push(args); return { text: '' } }
+  try {
+    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
+    const press = findButton(await band()).props.onPress()
+    await new Promise(r => setTimeout(r, 0))
+    expect(order).toEqual([])
+    land()
+    await press
+    expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  }
+})
+
+// The zero tick holds the count at zero while it closes the pane: a prompt
+// landing during that close stops the count, and no /clear follows it.
+test('a prompt landing while the zero tick closes the pane stops the /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  let land!: () => void
+  $.ui.close = (args: any) => new Promise<void>(resolve => { land = () => { panes.push({ op: 'close', args }); resolve() } })
+  try {
+    await band(); await turnComplete(); await fireAfter()
+    await tick(GRACE_SECONDS - 1)
+    const zero = ticker()!.fn()
+    await new Promise(r => setTimeout(r, 0))
+    await promptSubmit()
+    land()
+    await zero
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+  }
+  expect(ran).toEqual([])
+  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+})
+
+// A press closes the pane before its /clear as the zero tick does: a prompt
+// landing during that close is a new turn, and no /clear follows it.
+test('a prompt landing while a press closes the pane stops the /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  let land!: () => void
+  let closing!: () => void
+  const closeAsked = new Promise<void>(r => { closing = r })
+  $.ui.close = (args: any) => new Promise<void>(resolve => { closing(); land = () => { panes.push({ op: 'close', args }); resolve() } })
+  try {
+    await band(); await turnComplete(); await fireAfter()
+    await tick(2)
+    const press = findButton(await band()).props.onPress()
+    await closeAsked
+    await promptSubmit()
+    land()
+    await press
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+  }
+  expect(ran).toEqual([])
+})
+
+// A /clear in flight is the mod's last word on this conversation: the marker
+// stays armed until the successor's SessionStart consumes it, so the band still
+// offers the button, and a second /clear would wipe the successor the handoff
+// just started.
+test('a press while the zero tick\'s /clear is in flight runs no second /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band(); await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  let started!: () => void
+  const clearStarted = new Promise<void>(r => { started = r })
+  let finish!: () => void
+  const held = new Promise<void>(r => { finish = r })
+  const run = $.command.run
+  $.command.run = async (args: any) => { ran.push(args); started(); await held; return { text: '' } }
+  try {
+    const zero = ticker()!.fn()
+    await clearStarted
+    const press = findButton(await band())?.props.onPress()
+    finish()
+    await zero; await press
+  } finally { $.command.run = run }
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('a second press while the first press\'s /clear is in flight runs no second /clear', async () => {
+  arm(); percent = 3
+  let started!: () => void
+  const clearStarted = new Promise<void>(r => { started = r })
+  let finish!: () => void
+  const held = new Promise<void>(r => { finish = r })
+  const run = $.command.run
+  $.command.run = async (args: any) => { ran.push(args); started(); await held; return { text: '' } }
+  try {
+    const first = findButton(await band()).props.onPress()
+    await clearStarted
+    const second = findButton(await band())?.props.onPress()
+    finish()
+    await first; await second
+  } finally { $.command.run = run }
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+// Once the zero tick has closed the pane and stopped the count, nothing of the
+// mod's waits before the /clear runs, its own /clear hook included: a prompt
+// landing in such a wait would find no count to stop.
+test('after the zero tick closes the pane, the /clear runs before a later prompt', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  const order: string[] = []
+  let queries = 0
+  $.ui.panes = () => (++queries === 1 ? Promise.resolve(enginePanes) : new Promise<any>(() => {}))
+  $.command.run = async (args: any) =>
+    hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'plugin' }, presentation: { layout: 'main', columns: 80 } }, async () => { order.push('clear'); ran.push(args); return { text: '' } })
+  try {
+    await band(); await turnComplete(); await fireAfter()
+    await tick(GRACE_SECONDS - 1)
+    const zero = ticker()!.fn()
+    await new Promise(r => setTimeout(r, 0))
+    order.push('prompt'); await promptSubmit()
+    await Promise.race([zero, new Promise(r => setTimeout(r, 10))])
+  } finally {
+    $.ui.panes = async () => enginePanes
+    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  }
+  expect(order).toEqual(['clear', 'prompt'])
+})
+
+// A ui.close hook that answers without next keeps the pane open, and the close
+// still resolves: the engine's list says whether the pane went.
+test('a close that leaves the pane listed says so, and the /clear still runs', async () => {
+  $.ui.close = async (args: any) => { panes.push({ op: 'close', args }) }
+  try {
+    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
+    await findButton(await band()).props.onPress()
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+  }
+  expect(toasts).toEqual(['cs: the handoff pane did not close: a hook kept it open'])
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
 })
 
 // The open is a round trip: a prompt landing while it is in flight stops the
@@ -1663,15 +2179,14 @@ test('Start while a turn is running arms the queue and sends no prompt', async (
   expect(submitted).toEqual([])
 })
 
-// Not yet is the Stop hook's own "Not yet": it holds that offer back for a
-// while instead of asking again at the next turn end.
-test('Not yet defers the queue and sends no prompt', async () => {
+// Not yet leaves the queue as it is: the band keeps offering its start key.
+test('Not yet runs nothing and sends no prompt', async () => {
   envVars.CS_BIN = '/opt/cs/bin/cs'
   runResult = LISTED
   answer = 'Not yet'
   await queue('')
   await settle()
-  expect(runs.map(x => x.argv[2])).toEqual(['list', 'defer'])
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
   expect(submitted).toEqual([])
 })
 
@@ -1798,9 +2313,116 @@ test('a run that cannot start says why', async () => {
 })
 
 test('without CS_BIN /queue says the launch did not say where cs is, and runs nothing', async () => {
+  delete envVars.CS_BIN
   const r = await queue('something')
   expect(runs).toHaveLength(0)
   expect(r).toEqual({ text: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.' })
+})
+
+// The band's start key: tasks queued and nothing running them. cs writes one
+// file per task in the queue directory, behind .cs/private in an encrypted
+// session and in .cs/local otherwise.
+const QDIR = '/work/.cs/local/queue'
+const queueTasks = (n: number, dir = QDIR) => { for (let i = 1; i <= n; i++) files[`${dir}/000000000${i}-seed`] = `task ${i}\n` }
+const queueKey = (tree: any) => buttons(tree).find((b: any) => b.props.key === 'cs-queue')
+// The band body's elements in order, with the conditional gaps left out.
+const bandBody = (tree: any): any[] => {
+  if (!tree || typeof tree !== 'object') return []
+  if (tree.props?.key === 'cs-rotate-band-body') return (tree.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
+  return (tree.children ?? []).flatMap(bandBody)
+}
+
+test('a queue with tasks and nothing running them draws a start key, below the threshold too', async () => {
+  queueTasks(2)
+  const tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['\u25a4 queue 2 \u00b7 start'])
+  expect(queueKey(tree).props).toMatchObject({ key: 'cs-queue', plain: true })
+  expect(queueKey(tree).props.action).toBeUndefined()
+  expect(buttonsUnderText(tree)).toBe(0)
+})
+
+test('the start key is gone while the queue is armed or draining, and while it is empty', async () => {
+  expect(await band()).toBe(DRAWN)
+  queueTasks(1)
+  for (const state of ['armed\n', 'draining\n']) {
+    files['/work/.cs/local/queue.state'] = state
+    expect(await band()).toBe(DRAWN)
+  }
+  files['/work/.cs/local/queue.state'] = 'idle\n'
+  expect(queueKey(await band()).props.label).toBe('\u25a4 queue 1 \u00b7 start')
+})
+
+test('past the threshold the start key comes after the rotate and wrap keys, a separator before it', async () => {
+  percent = 40
+  queueTasks(3)
+  const tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap', 'cs-queue'])
+  const body = bandBody(tree)
+  const at = body.indexOf(queueKey(tree))
+  expect(body[at - 1]).toMatchObject({ type: 'Text', children: ['  \u00b7  '] })
+  expect(buttonsUnderText(tree)).toBe(0)
+})
+
+test('an armed handoff draws the clear key alone, whatever is queued', async () => {
+  arm()
+  queueTasks(2)
+  expect(buttons(await band()).map((b: any) => b.props.key)).toEqual(['cs-rotate'])
+})
+
+test('a teammate conversation, or one cs did not launch, gets no start key', async () => {
+  queueTasks(2)
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
+  sessionId = 'uuid-lead'
+  cwdPath = '/elsewhere'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('an encrypted session counts its tasks, and reads its state, behind .cs/private', async () => {
+  existing.add('/work/.cs/private')
+  queueTasks(5)
+  queueTasks(2, '/work/.cs/private/queue')
+  expect(queueKey(await band()).props.label).toBe('\u25a4 queue 2 \u00b7 start')
+  files['/work/.cs/private/queue.state'] = 'draining\n'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('pressing the start key asks to start and how, then starts the queue and its first turn', async () => {
+  queueTasks(2)
+  answer = QUEUE_START
+  modeAnswer = QUEUE_SUBAGENTS
+  queueKey(await band()).props.onPress()
+  await settle()
+  expect(asks).toEqual([
+    { question: 'Start the 2 queued tasks now?', options: { header: 'Queue', options: [QUEUE_START, 'Not yet', QUEUE_COMPACT] } },
+    { question: QUEUE_MODE_QUESTION, options: { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] } },
+  ])
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-queue', 'start', 'subagents']])
+  expect(submitted).toEqual([{ text: QUEUE_KICK }])
+})
+
+test('a press after the queue was started, or emptied, asks nothing', async () => {
+  queueTasks(1)
+  const key = queueKey(await band())
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  key.props.onPress()
+  await settle()
+  delete files['/work/.cs/local/queue.state']
+  delete files[`${QDIR}/0000000001-seed`]
+  key.props.onPress()
+  await settle()
+  expect(asks).toEqual([])
+  expect(runs).toEqual([])
+})
+
+test('without CS_BIN a press says where to start the queue, and runs nothing', async () => {
+  queueTasks(1)
+  delete envVars.CS_BIN
+  queueKey(await band()).props.onPress()
+  await settle()
+  expect(asks).toEqual([])
+  expect(runs).toEqual([])
+  expect(toasts).toEqual(['cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session'])
 })
 
 // /finish progress: cs writes one record per step while it integrates and
@@ -1939,4 +2561,30 @@ test('the watch ends once the turn is over and nothing runs, and not while a ste
   // the next /finish watches afresh
   await startFinish()
   expect(watches().filter(t => !t.cancelled)).toHaveLength(1)
+})
+
+test('a prompt arriving while the zero tick reads a pending switch cancels the exit', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); recordSwitch(); percent = 80
+  await band(); await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  const read = $.fs.read
+  let reading!: () => void
+  let release!: () => void
+  const asked = new Promise<void>(resolve => { reading = resolve })
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  $.fs.read = async (path: string) => {
+    if (path === SWITCH) { reading(); await blocked }
+    return read(path)
+  }
+  try {
+    const zero = ticker()!.fn()
+    await asked
+    await promptSubmit('one more thing')
+    release()
+    await zero
+  } finally {
+    $.fs.read = read
+  }
+  expect(ran).toEqual([])
 })

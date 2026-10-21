@@ -162,7 +162,7 @@ _codex_run_dir() {
 # A directory it cannot resolve counts as inside.
 _codex_dir_under() {  # dir, root...
     local dir root
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 0
     shift
     while :; do
         for root in "$@"; do
@@ -193,7 +193,7 @@ _codex_config_writable_roots() {  # session_dir
     local dir
     local -a files
     files=(/etc/codex/config.toml /etc/codex/managed_config.toml "${CODEX_HOME:-$HOME/.codex}/config.toml")
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
     while :; do
         files+=("$dir/.codex/config.toml")
         [ -n "$dir" ] && [ "$dir" != / ] || break

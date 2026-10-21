@@ -250,18 +250,20 @@ test_setup_moves_the_profiles_secrets_into_the_keychain() {
     use_fake_keychain
     local secrets="$REPO/bin/cs-secrets" store="$PROFILE/.cs-secrets" dead session
     enc_set() {  # session name value
-        printf '%s' "$3" | CS_SECRETS_BACKEND=encrypted CS_SECRETS_DIR="$store" \
+        printf '%s' "$3" | CS_SESSIONS_ROOT="$PROFILE/sessions" CS_SECRETS_BACKEND=encrypted CS_SECRETS_DIR="$store" \
             "$secrets" --session "$1" set "$2" >/dev/null
     }
     kc_set() {  # prefix session name value
-        printf '%s' "$4" | CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX="$1" \
+        printf '%s' "$4" | CS_SESSIONS_ROOT="$PROFILE/sessions" CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX="$1" \
             "$secrets" --session "$2" set "$3" >/dev/null
     }
     kc_get() {  # prefix session name
-        CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX="$1" "$secrets" --session "$2" get "$3"
+        CS_SESSIONS_ROOT="$PROFILE/sessions" CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX="$1" "$secrets" --session "$2" get "$3"
     }
+    mkdir -p "$PROFILE/sessions/ask/.cs" "$PROFILE/sessions/gone/.cs" "$PROFILE/sessions/busy/.cs" "$PROFILE/sessions/clash/.cs"
     enc_set ask API_KEY 'ask key' && enc_set ask TOKEN 'ask token' || return 1
     enc_set gone OLD 'no session folder' || return 1
+    rm -rf "$PROFILE/sessions/gone"
     enc_set busy API_KEY 'busy key' || return 1
     enc_set clash API_KEY 'from the file' || return 1
     kc_set code-sessions clash API_KEY 'already in the keychain' || return 1
@@ -281,15 +283,15 @@ test_setup_moves_the_profiles_secrets_into_the_keychain() {
         assert_file_not_contains "$TEST_TMPDIR/setup.log" 'Moved the secrets' || return 1
         return 0
     fi
-    assert_eq "code-sessions:ask:API_KEY"$'\n'"code-sessions:ask:TOKEN"$'\n'"code-sessions:clash:API_KEY"$'\n'"code-sessions:gone:OLD"$'\n'"cs:ask:API_KEY" \
+    assert_eq "code-sessions:ask:API_KEY"$'\n'"code-sessions:ask:TOKEN"$'\n'"code-sessions:clash:API_KEY"$'\n'"cs:ask:API_KEY" \
         "$(fake_keychain_items)" || return 1
     assert_eq 'ask key' "$(kc_get code-sessions ask API_KEY)" || return 1
     assert_eq 'ask token' "$(kc_get code-sessions ask TOKEN)" || return 1
-    assert_eq 'no session folder' "$(kc_get code-sessions gone OLD)" || return 1
+    assert_file_exists "$store/gone.enc" "an orphan store remains available for recovery" || return 1
     assert_eq 'already in the keychain' "$(kc_get code-sessions clash API_KEY)" "setup wrote over a keychain item" || return 1
     assert_eq 'the original cs' "$(kc_get cs ask API_KEY)" "setup touched the original's item" || return 1
     assert_not_exists "$store/ask.enc" || return 1
-    assert_not_exists "$store/gone.enc" || return 1
+    assert_file_contains "$TEST_TMPDIR/setup.log" 'Left the secrets of gone .* no registered session uses that name' || return 1
     assert_file_exists "$store/busy.enc" || return 1
     assert_file_exists "$store/clash.enc" || return 1
     assert_file_contains "$TEST_TMPDIR/setup.log" 'Moved the secrets of ask into the keychain' || return 1

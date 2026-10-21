@@ -1,6 +1,39 @@
 # ABOUTME: main(): the top-level command dispatch and the entry-point call.
 # ABOUTME: Assembled last so 'main "$@"' runs after every definition.
 
+# A named verb (cs <name> -queue, -narrative, -secrets) writes into
+# the session without opening it, so the open's refusals never ran on this
+# path (Codex r2 #3). Run them here before the verb touches anything.
+_vet_named_session() {  # session_dir
+    is_session_dir "$1" || return 0
+    cs_assert_local_untracked "$1"
+}
+
+# cs -queue and cs -msg run inside a session read the queue and the mailbox of
+# the session the environment names, the same files the hooks stand down
+# from while git tracks one of them, so they refuse on the same question. Only
+# that question: the open's other refusals walk every link under .cs, which
+# would cost these verbs a fork per link on every call.
+_vet_current_session() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" notice
+    [ -n "$dir" ] || dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    dir=${dir%/.cs}
+    [ -n "$dir" ] && is_session_dir "$dir" || return 0
+    ! notice=$(cs_files_tracked_notice "$dir/.cs" "$dir") || error "$notice"
+}
+
+# cs -vet-session <dir>: the same question about the session at <dir>,
+# whatever the environment names. The cs mod asks it before it arms a
+# rotation (a pending-handoff marker git tracks names one the SessionStart
+# hook refuses to load) or writes into .cs/local, and /wrap before its marker.
+# Prints nothing and exits 0 when cs trusts the files.
+cmd_vet_session() {  # session directory
+    local notice
+    [ $# -eq 1 ] || error "Usage: cs -vet-session <session directory>"
+    [ -d "$1/.cs" ] || error "$1 is not a cs session"
+    ! notice=$(cs_files_tracked_notice "$1/.cs" "$1") || error "$notice"
+}
+
 main() {
     cs_import_session_context
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
@@ -77,6 +110,10 @@ main() {
             return 0
             ;;
         -adopt)
+            # Adopt writes the session's files and names them in notice rows,
+            # so the palette follows the terminal as an open's does.
+            _export_term_theme
+            setup_palette
             if [ "${2:-}" = "--worktrees" ]; then
                 shift 2
                 adopt_worktrees "$@"
@@ -94,6 +131,11 @@ main() {
             shift
             cmd_codex_hook "$@"
             return $?
+            ;;
+        -vet-session) # asked by the cs mod, /rotate and /wrap before they write into a session
+            shift
+            cmd_vet_session "$@"
+            return 0
             ;;
         -whoami)
             cmd_whoami
@@ -115,6 +157,9 @@ main() {
             ;;
         -secrets)
             shift
+            # The session this cs runs in, empty outside every session:
+            # cs-secrets refuses its writes to another live session's secrets.
+            export CS_SECRETS_CALLER="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
             run_secrets "$@"
             return 0
             ;;
@@ -157,13 +202,21 @@ main() {
             run_narrative "$@"
             return 0
             ;;
+        -archive-tasks) # hidden: driven by the rotate skill and /wrap, not typed by a user
+            shift
+            _vet_current_session
+            run_archive_tasks "$@"
+            return 0
+            ;;
         -queue)
             shift
+            _vet_current_session
             run_queue "$@"
             return 0
             ;;
         -msg)
             shift
+            _vet_current_session
             run_mail "$@"
             return 0
             ;;
@@ -249,6 +302,7 @@ main() {
     # _switch_settle when the run that ends here armed a switch.
     local _cs_switched_from="" _cs_switch_resume=""
     local _cs_switch_next="" _cs_switch_next_mode="" _cs_switch_prev="" _cs_switch_handoff=""
+    local remote_flag="" remote_mode=""
 
     # Validate inputs
     local wt_base="" wt_task=""
@@ -308,6 +362,14 @@ main() {
                 ;;
             -secrets)
                 shift
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
+                # A worktree's secrets route to its base, so the base is the
+                # session cs-secrets writes into (Codex r3 #3).
+                [ -z "$wt_base" ] || _vet_named_session "$SESSIONS_ROOT/$wt_base"
+                # The caller's own session, kept before CLAUDE_SESSION_NAME
+                # becomes the target: cs-secrets refuses writes to another
+                # live session's secrets.
+                export CS_SECRETS_CALLER="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
                 export CS_SESSION_NAME="$session_name"
                 # Worktree secrets live under the base session's namespace
                 # (no launched session ever uses cs:<base>@<task>:*); a plain
@@ -320,6 +382,30 @@ main() {
                 ;;
             -queue)
                 shift
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
+                # Another session's word never puts work in front of this
+                # session's drain: its add travels as task mail for this
+                # session's user to accept, and arming or accepting stays with
+                # that user. A terminal outside any session is the user.
+                local caller="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
+                if _called_from_other_session "$session_name"; then
+                    case "${1:-}" in
+                        add)
+                            shift
+                            _mail_send "$session_name" --kind task "$*"
+                            return 0
+                            ;;
+                        start)
+                            error "session $caller cannot start $session_name's queue; $session_name's user starts it (cs -queue start inside $session_name)"
+                            ;;
+                        accept)
+                            error "session $caller cannot accept mail into $session_name's queue; $session_name's user accepts it (cs -queue accept ${2:-<id>} inside $session_name)"
+                            ;;
+                        rm|clear)
+                            error "session $caller cannot change $session_name's queue; $session_name's user does that inside $session_name (cs -queue $1)"
+                            ;;
+                    esac
+                fi
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
@@ -374,6 +460,10 @@ main() {
                 # and misnames this one's fault.
                 is_session_dir "$SESSIONS_ROOT/$session_name" \
                     || error "No such session: $session_name"
+                # The cut rewrites the narrative a running conversation
+                # appends to; from inside another session that waits.
+                _refuse_live_other_session "$session_name" "$SESSIONS_ROOT/$session_name/.cs" "rotate the narrative of"
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
@@ -454,8 +544,19 @@ main() {
                 force_flag="true"
                 shift
                 ;;
+            --remote)
+                remote_flag="true"
+                shift
+                ;;
+            --permission-mode)
+                case "${2:-}" in
+                    ''|-*) error "--permission-mode needs a mode: cs $session_name --remote --permission-mode <mode>" ;;
+                esac
+                remote_mode="$2"
+                shift 2
+                ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, --remote, --permission-mode, or --force."
                 ;;
         esac
     done
@@ -473,6 +574,24 @@ main() {
             *) error "--switched-from needs --from-handoff or --resume" ;;
         esac
         _switch_guard_relaunch "$session_name" "$explicit_engine"
+    fi
+    # --remote serves the session through claude remote-control. The mode is
+    # passed through as given; remote-control refuses one it does not know.
+    # With none given, _remote_claude_bin takes the one CLAUDE_CODE_BIN sets,
+    # else default.
+    if [ -n "$remote_mode" ] && [ -z "$remote_flag" ]; then
+        error "--permission-mode is an option of --remote: cs $session_name --remote --permission-mode $remote_mode"
+    fi
+    local remote_in_window=""
+    if [ -n "$remote_flag" ]; then
+        [ -z "$force_flag" ] \
+            || error "--force cannot be used with --remote: a served session never shares its directory with another claude."
+        [ -z "$merge_feature" ] \
+            || error "-finish cannot be used with --remote: remote-control takes no prompt to run /finish with."
+        # Set only on the command _remote_open_window gives the server's tmux
+        # window, and kept from everything this run starts.
+        remote_in_window="${CS_REMOTE_WINDOW:-}"
+        unset CS_REMOTE_WINDOW
     fi
 
     local session_dir="$SESSIONS_ROOT/$session_name"
@@ -512,6 +631,24 @@ main() {
     # Check for updates (non-blocking)
     check_update_notify
 
+    if [ -n "$remote_flag" ]; then
+        _remote_claude_bin "$remote_mode"
+        remote_mode="$_CS_REMOTE_MODE"
+        if [ -n "${TMUX:-}" ] && [ -z "$remote_in_window" ]; then
+            _remote_open_window "$session_name" "$remote_mode"
+            return 0
+        fi
+    fi
+
+    # Terminal theme (and its real background RGB when known) for the statusline
+    # and hooks, detected while cs still owns the tty and reused by the session
+    # launched next.
+    _export_term_theme
+    # Refresh the palette now that the theme is known so everything below —
+    # migration's notices, the collision menu and the launch banner — reads on
+    # a light canvas (colors were first set at startup, defaulting to dark).
+    setup_palette
+
     # Define paths (resolve symlinks for adopted sessions so Claude Code
     # sees the original project path, preserving conversation continuity)
     if [ -L "$session_dir" ]; then
@@ -541,8 +678,11 @@ main() {
             # .cs/private made by hand.
             _refuse_unmounted_meta "$wt_base" "$base_dir"
             confirm_clean_worktree_base "$base_dir" "$wt_base"
-            session_dir=$(create_worktree_session "$base_dir" "$wt_base" "$wt_task" "$engine")
+            session_dir=$(create_worktree_session "$base_dir" "$wt_base" "$wt_task" "$engine") || exit 1
         else
+            # No migrate_session on this path, so its refusal of committed or
+            # linked per-actor state runs here, before any .cs/local read.
+            cs_assert_local_untracked "$session_dir"
             # A worktree whose own checkout carries vault links refuses by
             # name while they dangle; a base's links never get this far.
             _refuse_unmounted_meta "$session_name" "$session_dir"
@@ -577,7 +717,7 @@ main() {
 
         # Initialize local git repo by default
         (
-            cd "$session_dir" || exit 0
+            cd -- "$session_dir" || exit 0
             create_session_gitignore "$session_dir"
             git init -q 2>/dev/null || true
             # cs writes its bookkeeping files with LF. A global core.autocrlf
@@ -591,6 +731,10 @@ main() {
             git commit -q -m "Initial session structure" 2>/dev/null || true
         )
     else
+        # The sessions root also holds directories that are not sessions;
+        # migrate_session would write cs's files into one.
+        is_session_dir "$session_dir" \
+            || error "$session_dir is not a cs session (no .cs/ directory); cs will not write session files into it. Move it out of $SESSIONS_ROOT or open another name."
         _run_pre_open "$session_name" "$session_dir"
         _refuse_unmounted_meta "$session_name" "$session_dir"
         migrate_session "$session_dir" "$engine"
@@ -609,7 +753,7 @@ $merge_feature
         esac
     fi
 
-    cs_launch_session "$engine" "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$launch_intent"
+    cs_launch_session "$engine" "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$launch_intent" "$remote_mode"
     # Reached when the run succeeded (errexit ends cs on a failed one; the
     # switch's own notices for that case were printed as the run settled).
     # With a switch settled, this execs cs for the target and never returns.

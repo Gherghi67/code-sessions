@@ -1,8 +1,8 @@
 /* @jsxRuntime classic */
 /* @jsx h */
 /* @jsxFrag Fragment */
-// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, or /clear once a handoff is armed (/exit while `cs -switch` has a move to the other engine pending).
-// ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear or the switch's /exit (session colour, amber, crit); session.start writes a heartbeat for doctor.
+// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
+// ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, draws a band with the elapsed time.
 import type { On, EngineInterface } from 'claude-code'
 
@@ -61,8 +61,9 @@ export const BAR_EMPTY = '\u2591'
 // The band's chip and caps, in the bar's inks. KEEP IN SYNC with _sgr in
 // bin/cs-statusline (tests/test_mod_rotate.sh pins them): brand is the Claude
 // coral the bar's mark wears, and white the chip's ink on a filled chip, softer
-// on a dark terminal as the bar's is.
-export const BRAND = '217,119,87'
+// on a dark terminal as the bar's is. The coral is the session palette's
+// orange, so an orange session's chip keeps its colour once a handoff is armed.
+export const BRAND = SESSION_PALETTE.orange
 export const WHITE_LIGHT = '255,255,255'
 export const WHITE_DARK = '230,230,230'
 // The bar's rounded capsule ends, Powerline glyphs drawn in the fill they close.
@@ -133,6 +134,12 @@ export const PRIVATE_SWITCH = '.cs/private/pending-switch'
 // (measured; a timer started before one kept firing after it) and is lost
 // on a reload of the mod.
 export const FORCED = '.cs/local/cs.forced'
+// The conversation whose rotate button was pressed, by id, from just before
+// the press runs /rotate until the end of the next main-loop turn: cs
+// -archive-tasks plan reads it, as it reads FORCED, so the one-key rotation
+// does not stop to ask. Emptied at that turn's end, so a /rotate typed later
+// in the conversation asks as a manual one does.
+export const PRESSED = '.cs/local/cs.pressed'
 
 // Once the forced rotation has armed its handoff, how long the band counts
 // down before the mod runs the /clear (or a pending switch's /exit) itself.
@@ -143,6 +150,9 @@ export const GRACE_SECONDS = 20
 // Claude Code's own auto-compact lands, so a handoff is written while the
 // conversation is still whole.
 export const FORCE_DEFAULT = 80
+// How long cs may take to say whether it trusts the session's control files
+// (`cs -vet-session`, about 0.2 s measured) before the answer counts as a no.
+const VET_TIMEOUT_MS = 10000
 
 // The pane the first grace of a session opens beside the band: what the
 // handoff will do next, read while the count runs. It carries no keys, so
@@ -215,6 +225,20 @@ let turnRunning = false
 // The preview's lines while its pane is open, and whether this load has shown it.
 let preview: Step | undefined
 let previewShown = false
+// Set while the mod's own /clear runs with the pane already closed, so the
+// /clear hook goes straight through (clearAndContinue).
+let paneChecked = false
+// Set while the mod's own /clear runs. The marker stays armed until the
+// successor's SessionStart consumes it, so the band still offers the button
+// meanwhile; a second /clear would end the conversation the handoff started,
+// so a press then does nothing.
+let clearing = false
+// cs's last refusal of this session's control files, toasted once: the band
+// asks on every render while a handoff is armed.
+let lastRefusal: string | undefined
+// Counts presses of the clear button: a press acts only if no later press or
+// prompt came while cs was answering it.
+let pressCount = 0
 
 // Which conversation the turns belong to, and whether it is being judged. A
 // conversation that begins past the force threshold did not get there by
@@ -244,16 +268,17 @@ let finishProblemShown = false
 
 export function register(on: On) {
   // A (re)load has no countdown: the engine cancelled the old one's timers.
-  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; birth = undefined; startPercent = undefined; registered = false
+  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
+  lastRefusal = undefined
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
     }
-    // Only a registered session has .cs/local; anywhere else the mod stays silent.
-    const local = `${e.cwd}/.cs/local`
-    if (await $.fs.exists(local)) {
+    // Only in a cs session; anywhere else the mod stays silent. Nor while git
+    // tracks the session's control files: the heartbeat would change them.
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     return next(e)
@@ -295,9 +320,14 @@ export function register(on: On) {
 
   // The end of a turn is the one moment a rotation can be started for the
   // person: the answer is in, nothing runs. An aborted or errored turn is no
-  // place to start one, and a subagent's turn ends in the same event.
+  // place to start one, and a subagent's turn ends in the same event. A
+  // press's /rotate runs in the main loop's next turn, so that turn's end,
+  // whatever ended it, is where the press is over.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) finishTurnOver = true
+    if (e.agentId === undefined) {
+      finishTurnOver = true
+      await clearPressed($)
+    }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
   })
@@ -316,6 +346,11 @@ export function register(on: On) {
   // not done with: the countdown stops and the prompt goes through untouched.
   on('prompt.submit', async ($, e, next) => {
     if (ticker) stopCountdown($)
+    // A new turn asks afresh, as the Stop hook says it afresh each turn: the
+    // band draws the handoff again, and its press asks cs before it clears.
+    // A press still waiting on cs is dropped.
+    lastRefusal = undefined
+    pressCount += 1
     return next(e)
   })
 
@@ -324,7 +359,9 @@ export function register(on: On) {
   // next conversation a birth; a run the engine refuses makes nothing.
   on('command.run', { command: 'clear' }, async ($, e, next) => {
     clearSeen = true
-    if (ticker) stopCountdown($)
+    if (ticker) stopCountdown($, false)
+    if (paneChecked) paneChecked = false
+    else await closeHandoffPane($)
     try {
       return await next(e)
     } catch (err) {
@@ -350,13 +387,18 @@ export function register(on: On) {
     turnRunning = e.props.isWorking
     bandIdle = !e.props.hasSurvey && !e.props.isWorking
     if (!bandIdle) return drawn
-    const armed = await handoffArmed($)
+    // The band draws on every redraw and asks cs nothing: it shows the last
+    // answer cs gave (sessionVetted), which every step that acts asks afresh.
+    const armed = lastRefusal === undefined && (await handoffArmed($))
     const { context } = await $.session.usage()
     const percent = context.percent
-    if (!armed && (percent === undefined || percent < (await threshold($)))) return drawn
+    const rotating = armed || (percent !== undefined && percent >= (await threshold($)))
+    // Tasks queued and nothing running them, at any context. An armed
+    // handoff draws its clear key alone, so the count is not asked for then.
+    const waiting = armed ? 0 : await idleQueueLength($)
+    if (!rotating && waiting === 0) return drawn
     if (!(await ownsRotation($))) return drawn
-    const wrapped = !armed && (await wrapFinished($))
-    // An armed handoff with a switch pending leaves by /exit, never /clear.
+    const wrapped = rotating && !armed && (await wrapFinished($))
     const target = armed ? await pendingSwitch($) : undefined
     const fill = surfaceColor(await $.env.get("CS_TERM_BG_RGB"))
     const chords = await boundChords($)
@@ -395,18 +437,20 @@ export function register(on: On) {
             {caps && <Text color={chipFill}>{CAP_LEFT}</Text>}
             <Box paddingX={1} backgroundColor={chipFill}><Text bold color={chipInk}>cs</Text></Box>
             <Box key="cs-rotate-band-body" paddingX={1} backgroundColor={fill}>
-            {key(ROTATE_ACTION)}
-            {armed
-              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain
-                        label={target === undefined ? '/clear and continue from the handoff' : `/exit and continue in ${target}`}
-                        onPress={() => (target === undefined ? clearAndContinue($) : exitAndContinue($))} />
+            {rotating && key(ROTATE_ACTION)}
+            {rotating && (armed
+              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label={target === undefined ? "/clear and continue from the handoff" : `/exit and continue in ${target}`}
+                        onPress={() => pressClear($)} />
               : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
-                        onPress={() => rotate($)} />}
+                        onPress={() => pressRotate($)} />)}
             {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured), so the separator stands beside it */}
-            {!armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
-            {!armed && !wrapped && key(WRAP_ACTION)}
-            {!armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
-            {/* the forced rotation's grace: the seconds left before the mod runs the /clear (or the switch's /exit) itself */}
+            {rotating && !armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
+            {rotating && !armed && !wrapped && key(WRAP_ACTION)}
+            {rotating && !armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
+            {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
+            {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
+            {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
+            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {armed && left !== undefined && <Text dimColor>{'  \u00b7  '}</Text>}
             {armed && left !== undefined && <Text bold color={await rampColor($, left)}>{`${countVerb(target)} in ${left}s`}</Text>}
             </Box>
@@ -456,16 +500,18 @@ function numberOr(raw: string | undefined, fallback: number): number {
 }
 
 // On at FORCE_DEFAULT unless CS_ROTATE_FORCE_CTX says otherwise: `off` (any
-// case) and `0` turn the forcing off, a percentage moves it, and anything else
-// — a typo — is the default rather than silence, because a value nobody can
-// read must not quietly disable a rotation the person is relying on.
+// case) and `0` turn the forcing off, a percentage from 1 to 100 moves it, and
+// anything else — a typo, or a number past 100 no turn can reach — is the
+// default rather than silence, because a value nobody can read must not
+// quietly disable a rotation the person is relying on.
 // `claude plugin validate` lists what a module reads, and a name it does not
 // spell is refused.
 async function forceThreshold($: EngineInterface): Promise<number | undefined> {
   const raw = (await $.env.get("CS_ROTATE_FORCE_CTX"))?.trim()
   if (raw === undefined || raw === '') return FORCE_DEFAULT
   if (raw.toLowerCase() === 'off' || /^0+$/.test(raw)) return undefined
-  return /^\d+$/.test(raw) ? Number(raw) : FORCE_DEFAULT
+  const n = /^\d+$/.test(raw) ? Number(raw) : NaN
+  return n >= 1 && n <= 100 ? n : FORCE_DEFAULT
 }
 
 // A conversation id the mod has not met yet is the current one from here on,
@@ -502,12 +548,14 @@ async function forceRotation($: EngineInterface) {
     }
   }
   if (await handoffArmed($)) {
-    if (!ticker) startCountdown($)
+    if (!ticker && (await sessionVetted($, await $.session.cwd()))) startCountdown($)
     return
   }
   if (startPercent !== undefined && startPercent >= force) return
   if (context.percent === undefined || context.percent < force) return
-  const forced = `${await $.session.cwd()}/${FORCED}`
+  const cwd = await $.session.cwd()
+  if (!(await sessionVetted($, cwd))) return
+  const forced = `${cwd}/${FORCED}`
   if ((await $.fs.exists(forced)) && (await $.fs.read(forced)).trim() === id) return
   await $.fs.write(forced, `${id}\n`)
   $.clock.after(0, () => {
@@ -539,25 +587,61 @@ function startCountdown($: EngineInterface) {
     // The count holds at zero through the reads below: a prompt or a press
     // landing meanwhile stops it (left becomes undefined), and this tick
     // then does nothing, so nothing clears twice or behind a new turn.
-    const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($))
+    const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($)) && (await sessionVetted($, await $.session.cwd()))
     const target = idle ? await pendingSwitch($) : undefined
     if (left !== 0) return
-    stopCountdown($)
-    if (!idle) return
-    if (target === undefined) await clearAndContinue($).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
-    else await exitAndContinue($).catch(err => $.ui.toast(`cs: /exit did not run: ${String(err)}`))
+    // The pane closes while the count still holds at zero, for the same
+    // reason: a prompt landing during the close stops the /clear.
+    if (idle) await closeHandoffPane($)
+    if (left !== 0) return
+    stopCountdown($, !idle)
+    if (idle) {
+      if (target === undefined) await clearAndContinue($, true).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
+      else await exitAndContinue($).catch(err => $.ui.toast(`cs: /exit did not run: ${String(err)}`))
+    }
   })
 }
 
-function stopCountdown($: EngineInterface) {
+// closePane false leaves the pane to a /clear path, which closes it with
+// closeHandoffPane and waits for that close.
+function stopCountdown($: EngineInterface, closePane = true) {
   ticker?.cancel()
   ticker = undefined
   left = undefined
-  if (preview !== undefined) {
+  if (closePane && preview !== undefined) {
     preview = undefined
     $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
   }
   $.ui.invalidate('ui.render')
+}
+
+// Before a /clear: closes the handoff pane and waits for the close. /clear does
+// not close a plugin's pane, and the pane can outlive the module that opened
+// it (a reload, as every install rewrites the mod, leaves the engine holding
+// the pane while the module holds no count), so the engine's own list decides
+// as well as this module's state (#909).
+// A close resolves when a ui.close hook answers for the pane and keeps it, so
+// the engine's list says whether the pane went.
+async function closeHandoffPane($: EngineInterface) {
+  const open = preview !== undefined || (await handoffPaneListed($))
+  preview = undefined
+  if (!open) return
+  try {
+    await $.ui.close({ id: PREVIEW_PANE })
+  } catch (err) {
+    $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`)
+    return
+  }
+  if (await handoffPaneListed($)) $.ui.toast('cs: the handoff pane did not close: a hook kept it open')
+}
+
+async function handoffPaneListed($: EngineInterface) {
+  try {
+    return (await $.ui.panes()).some(p => p.id === PREVIEW_PANE)
+  } catch (err) {
+    $.ui.toast(`cs: could not list the open panes: ${String(err)}`)
+    return false
+  }
 }
 
 // Opens the preview for the count that scheduled it, if that count still runs.
@@ -613,9 +697,15 @@ async function threshold($: EngineInterface): Promise<number> {
   )
 }
 
+// A handoff name the SessionStart hook loads: letters, digits and ._@-, at
+// most 160 characters, so never one with a separator.
+const PLAIN_NAME = /^[A-Za-z0-9._@-]{1,160}$/
+
 // Armed means the marker names a handoff the SessionStart hook will accept
-// after the /clear: a bare basename (the hook rejects a separator), a file in
-// the store, and frontmatter that still says unconsumed. A marker an aborted
+// after the /clear: a plain basename (PLAIN_NAME), a file in the store, and
+// frontmatter that still says unconsumed. Whether cs trusts the
+// session's control files is asked apart (sessionVetted), by each step that
+// acts on the handoff, never by the band's drawing. A marker an aborted
 // rotation left behind, or one naming a handoff since consumed, would offer a
 // /clear that lands in a conversation with nothing to continue from, so it
 // does not arm. One exists per render; the reads only while the marker is there.
@@ -634,11 +724,14 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
   for (const [marker, store] of [[PRIVATE_MARKER, PRIVATE_HANDOFFS], [MARKER, HANDOFFS]]) {
     let name: string
     try {
-      name = (await $.fs.read(`${cwd}/${marker}`)).trim()
+      // The hook reads the marker with tr -d '[:space:]', which in the C
+      // locale drops ASCII whitespace anywhere in it and keeps every other
+      // character. This drops that same set.
+      name = (await $.fs.read(`${cwd}/${marker}`)).replace(/[\t\n\v\f\r ]/g, '')
     } catch {
       continue
     }
-    if (name === '' || /[/\\]/.test(name)) return undefined
+    if (!PLAIN_NAME.test(name)) return undefined
     try {
       const text = await $.fs.read(`${cwd}/${store}/${name}`)
       return isUnconsumed(text) ? text : undefined
@@ -702,6 +795,37 @@ export function countVerb(target: string | undefined): string {
   return target === undefined ? '/clear' : '/exit'
 }
 
+// Whether cs trusts the session's control files, by cs's own rule (the one
+// SessionStart, the Stop hook and the queue verbs ask): while git tracks a
+// file in .cs/local or .cs/private, a pull can put a marker there, and the
+// SessionStart hook refuses the rotation it names. An answer cs cannot give
+// is a no. Each new refusal is toasted once. Each answer starts a cs process
+// (0.15-0.44 s measured), so only the steps that act ask: the session start's
+// heartbeat, a countdown's start and zero, a forced /rotate, a press of the
+// clear or the rotate button, and the emptying of the wrap marker
+// (clearWrapped, as a prompt starts a turn) and of the press marker
+// (clearPressed, at a main-loop turn's end or when the engine refuses the
+// press's run).
+async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
+  const bin = await $.env.get("CS_BIN")
+  let refusal: string | undefined
+  if (!bin) {
+    refusal = 'the launch did not say where cs is (CS_BIN)'
+  } else {
+    try {
+      const result = await $.process.run([bin, '-vet-session', cwd], { timeoutMs: VET_TIMEOUT_MS })
+      if (result.exitCode !== 0) {
+        refusal = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? `cs -vet-session exited ${result.exitCode}`
+      }
+    } catch (err) {
+      refusal = `cs -vet-session did not run: ${String(err instanceof Error ? err.message : err)}`
+    }
+  }
+  if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(`cs: no rotation in this session: ${refusal}`)
+  lastRefusal = refusal
+  return refusal === undefined
+}
+
 // The hook's own rule (_handoff_is_unconsumed in hooks/session-start.sh): a
 // frontmatter block opened by `---` on the first line and CLOSED by the next
 // `---`, carrying `status: unconsumed` between them. A file the closing line
@@ -748,8 +872,10 @@ async function capsWanted($: EngineInterface): Promise<boolean> {
 
 // The engine actions the band's Buttons answer to. They carry no default
 // chord and no engine handler is mounted for them (measured on 2.1.291 and
-// 2.1.292), so the chord a person binds to one presses the Button. KEEP IN
-// SYNC with CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
+// 2.1.292), so the chord a person binds to one presses the Button. The band
+// depends on that: a Claude Code that mounts a handler for either action
+// takes Ctrl+X 1 or Ctrl+X 2 from the band without a word. KEEP IN SYNC with
+// CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
 export const ROTATE_ACTION = 'strip:jump1'
 export const WRAP_ACTION = 'strip:jump2'
 
@@ -784,17 +910,63 @@ async function readState($: EngineInterface): Promise<string | undefined> {
   }
 }
 
-// Only the lead conversation of a registered session may be offered a rotation. The
-// rotate skill refuses outside a session, .cs/local/disabled opts a
-// directory out entirely, and the handoff it writes carries the UUID in
+// KEEP IN SYNC with isCsSession and resolvedPath in mods/cs-update (the two
+// mods deploy as separate plugins and share no module).
+// Whether directory `cwd` is a cs session. Nothing inside a directory can
+// prove it: a cloned repository may carry any file under .cs/, .cs/local
+// included. The sessions root ($CS_SESSIONS_ROOT, else ~/.claude-sessions) is
+// what a clone cannot carry: the directory is a session when the root's entry
+// under its own name, or under the session_name an adopted session's state
+// records, lands on the directory itself. The recorded name is only a
+// candidate, so it may not reach outside the root. Identity is by resolved
+// path, as the hooks compare by inode: a link at the root and a home reached
+// through a symlink each spell the same directory another way.
+async function isCsSession($: EngineInterface, cwd: string): Promise<boolean> {
+  const home = await $.env.get('HOME')
+  const root = (await $.env.get('CS_SESSIONS_ROOT')) || (home ? `${home}/.claude-sessions` : undefined)
+  if (root === undefined) return false
+  const here = await resolvedPath($, cwd)
+  if (here === undefined) return false
+  const dir = cwd.replace(/\/+$/, '')
+  const names = [dir.slice(dir.lastIndexOf('/') + 1)]
+  let state = ''
+  try {
+    state = await $.fs.read(`${cwd}/.cs/local/state`)
+  } catch {
+    // no state: only the directory's own name is a candidate
+  }
+  const recorded = state.match(/^session_name: *"?([^"\s/]+)"?[ \t]*$/m)?.[1]
+  if (recorded !== undefined && recorded !== '.' && recorded !== '..') names.push(recorded)
+  for (const name of names) {
+    if ((await resolvedPath($, `${root}/${name}`)) === here) return true
+  }
+  return false
+}
+
+// Where `path` lands once every link is followed; undefined when it leads
+// nowhere or cannot be read, which proves nothing about a session.
+async function resolvedPath($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return (await $.fs.stat(path, { resolve: true })).realPath
+  } catch {
+    return undefined
+  }
+}
+
+// Only the lead conversation of a cs session may be offered a rotation, or the
+// queue's start key: the Stop hook drains on the lead's turns alone. The
+// rotate skill refuses outside a cs session, .cs/local/disabled opts a
+// directory out of cs entirely, and the handoff it writes carries the UUID in
 // .cs/local/state, which belongs to the one conversation cs launched: a
 // teammate claude in the same directory would arm the lead's marker under the
 // lead's identity. The checks run only once the band has a button to draw.
 // The value may be quoted and may carry trailing spaces, as cs's own state
 // readers allow.
 async function ownsRotation($: EngineInterface): Promise<boolean> {
-  const local = `${await $.session.cwd()}/.cs/local`
+  const cwd = await $.session.cwd()
+  const local = `${cwd}/.cs/local`
   if (!(await $.fs.exists(local)) || (await $.fs.exists(`${local}/disabled`))) return false
+  if (!(await isCsSession($, cwd))) return false
   const state = await readState($)
   if (state === undefined) return false
   const lead = state.match(/^claude_session_id: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
@@ -805,6 +977,40 @@ async function ownsRotation($: EngineInterface): Promise<boolean> {
 // the purpose from the conversation itself.
 async function rotate($: EngineInterface) {
   await $.command.run({ command: 'rotate', args: '' })
+}
+
+// The rotate button's press. The skill ends by arming a marker in .cs/local,
+// so the press asks cs first, as the forced /rotate does before it runs. It
+// then names the conversation in PRESSED for the rotation to read; a run the
+// engine refuses runs no turn, so the press empties it again itself.
+async function pressRotate($: EngineInterface) {
+  const cwd = await $.session.cwd()
+  if (!(await sessionVetted($, cwd))) return
+  await $.fs.write(`${cwd}/${PRESSED}`, `${await $.session.id()}\n`)
+  try {
+    await rotate($)
+  } catch (err) {
+    await clearPressed($)
+    throw err
+  }
+}
+
+// Empties PRESSED while it names this conversation. A marker git tracks stays
+// as git has it, like every control file then. One that cannot be emptied
+// would make a later typed /rotate read as pressed, so that is said, and the
+// caller goes on.
+async function clearPressed($: EngineInterface) {
+  const cwd = await $.session.cwd()
+  let marker: string
+  try {
+    marker = (await $.fs.read(`${cwd}/${PRESSED}`)).trim()
+  } catch {
+    return // no press has been made here
+  }
+  if (marker === '' || marker !== (await $.session.id())) return
+  if (!(await sessionVetted($, cwd))) return
+  await $.fs.write(`${cwd}/${PRESSED}`, '')
+    .catch(err => $.ui.toast(`cs: could not empty ${PRESSED}: ${String(err)}`))
 }
 
 // /wrap's last pass writes WRAPPED naming the conversation it ran in
@@ -820,6 +1026,8 @@ async function wrapFinished($: EngineInterface): Promise<boolean> {
 async function clearWrapped($: EngineInterface) {
   const marker = await readWrapped($)
   if (marker === '' || marker !== (await $.session.id())) return
+  // A marker git tracks stays as git has it, like every control file then.
+  if (!(await sessionVetted($, await $.session.cwd()))) return
   await $.fs.write(`${await $.session.cwd()}/${WRAPPED}`, '').catch(() => {})
 }
 
@@ -868,9 +1076,39 @@ async function queueRunning($: EngineInterface): Promise<boolean> {
   return false
 }
 
+// How many tasks are queued while nothing runs them; 0 when the queue is
+// armed or draining, empty, or cannot be read. The queue is one file per task,
+// behind .cs/private in an encrypted session (where a locked vault lists
+// nothing) and in .cs/local otherwise.
+async function idleQueueLength($: EngineInterface): Promise<number> {
+  const cwd = await $.session.cwd()
+  const dir = (await $.fs.exists(`${cwd}/.cs/private`)) ? 'private' : 'local'
+  let entries: { kind: string }[]
+  try {
+    entries = await $.fs.list(`${cwd}/.cs/${dir}/queue`)
+  } catch {
+    return 0 // no queue directory: nothing queued
+  }
+  const count = entries.filter(entry => entry.kind === 'file').length
+  if (count === 0 || (await queueRunning($))) return 0
+  return count
+}
+
+// The start key's press: the offer bare /queue makes, for the tasks queued
+// now. A queue started or emptied since the band drew is left alone.
+async function pressQueueStart($: EngineInterface) {
+  const bin = await $.env.get("CS_BIN")
+  if (!bin) {
+    $.ui.toast('cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session')
+    return
+  }
+  const count = await idleQueueLength($)
+  if (count > 0) await offerToStart($, bin, count)
+}
+
 // Asked after bare /queue has printed the list, so the tasks are on screen
-// when the question is. Start arms the queue; Not yet defers it the way the
-// Stop hook's own offer does, so that offer does not ask again straight away.
+// when the question is, and by the band's start key. Start arms the queue; Not
+// yet leaves it as it is, and the band keeps offering its start key.
 // Compact compacts the conversation first, then starts as Start does; a
 // compaction that does not happen leaves the queue unarmed. Start and Compact
 // then ask how the tasks run, before any compaction, so a dismissed second
@@ -882,22 +1120,18 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
   } catch {
     return // dismissed, or a `-p` run with nobody to ask
   }
-  const starting = answer === QUEUE_START || answer === QUEUE_COMPACT
-  let mode: string[] = []
-  if (starting) {
-    let how: string
-    try {
-      how = await $.ui.ask(QUEUE_MODE_QUESTION, { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] })
-    } catch {
-      return
-    }
-    const words = QUEUE_MODE_WORDS[how]
-    if (words === undefined) {
-      // Free text typed under "Other" names no mode cs knows.
-      $.ui.toast(`cs: '${how}' is not a way to run the queue; it is not started`)
-      return
-    }
-    mode = words
+  if (answer !== QUEUE_START && answer !== QUEUE_COMPACT) return
+  let how: string
+  try {
+    how = await $.ui.ask(QUEUE_MODE_QUESTION, { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] })
+  } catch {
+    return
+  }
+  const mode = QUEUE_MODE_WORDS[how]
+  if (mode === undefined) {
+    // Free text typed under "Other" names no mode cs knows.
+    $.ui.toast(`cs: '${how}' is not a way to run the queue; it is not started`)
+    return
   }
   if (answer === QUEUE_COMPACT) {
     let reason: string | undefined
@@ -912,20 +1146,19 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
       return
     }
   }
-  const verb = starting ? 'start' : 'defer'
   let result: { exitCode: number; stdout: string; stderr: string }
   try {
-    result = await $.process.run([bin, '-queue', verb, ...mode])
+    result = await $.process.run([bin, '-queue', 'start', ...mode])
   } catch (err) {
-    $.ui.toast(`cs -queue ${verb} did not run: ${String(err instanceof Error ? err.message : err)}`)
+    $.ui.toast(`cs -queue start did not run: ${String(err instanceof Error ? err.message : err)}`)
     return
   }
   if (result.exitCode !== 0) {
     const tail = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? ''
-    $.ui.toast(`cs -queue ${verb} exited ${result.exitCode}${tail === '' ? '' : `: ${tail}`}`)
+    $.ui.toast(`cs -queue start exited ${result.exitCode}${tail === '' ? '' : `: ${tail}`}`)
     return
   }
-  if (verb !== 'start' || turnRunning) return
+  if (turnRunning) return
   try {
     await $.prompt.submit({ text: QUEUE_KICK })
   } catch (err) {
@@ -933,18 +1166,48 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
   }
 }
 
-// /clear ends this conversation, and the session-start hook then starts the
+// The clear button's press: the /clear runs only once cs says it trusts the
+// session's control files, as at a countdown's zero. The press stops the count
+// before it asks, so the zero tick cannot clear while cs answers, and only the
+// latest press acts. It closes the pane before asking again whether a prompt
+// came, as the zero tick does: a prompt landing during the close is a new turn.
+async function pressClear($: EngineInterface) {
+  if (clearing) return
+  if (ticker) stopCountdown($, false)
+  const press = ++pressCount
+  const vetted = await sessionVetted($, await $.session.cwd())
+  if (press !== pressCount) return
+  if (!vetted) return stopCountdown($)
+  await closeHandoffPane($)
+  if (press !== pressCount) return
+  const target = await pendingSwitch($)
+  if (press !== pressCount) return
+  if (target === undefined) await clearAndContinue($, true)
+  else await exitAndContinue($)
+}
+
+// /clear ends this conversation, and cs's SessionStart hook then starts the
 // armed handoff's next step in the new one.
 // Measured: the run resolves once the screen has cleared and a new transcript
 // is open; the marker is the hook's to consume.
-async function clearAndContinue($: EngineInterface) {
+// paneClosed: the caller has closed the pane already. From the count stopping
+// to the run nothing here waits, and paneChecked tells the /clear hook the
+// pane is done with, so it does not wait either: a prompt landing in such a
+// wait would find no count to stop, and the /clear would follow it.
+async function clearAndContinue($: EngineInterface, paneClosed = false) {
   clearSeen = true
-  if (ticker) stopCountdown($)
+  if (ticker) stopCountdown($, false)
+  if (!paneClosed) await closeHandoffPane($)
+  paneChecked = true
+  clearing = true
   try {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
     clearSeen = false
     throw err
+  } finally {
+    paneChecked = false
+    clearing = false
   }
 }
 

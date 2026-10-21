@@ -212,7 +212,7 @@ make_nested() {
 }
 
 ccs_secret() {  # session name
-    CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$PROFILE/.cs-secrets" \
+    CS_SESSIONS_ROOT="$PROFILE/sessions" CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$PROFILE/.cs-secrets" \
         "$PROFILE/.local/bin/cs-secrets" --session "$1" get "$2"
 }
 

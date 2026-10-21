@@ -29,6 +29,7 @@ export const STATE = '.cs/local/state'
 export const NOTES = (cacheDir: string, version: string) => `${cacheDir}/update-notes-full-${version}`
 // How long `cs -update` may take: the download, the checksum, the signature.
 export const UPDATE_TIMEOUT_MS = 600000
+const VET_TIMEOUT_MS = 10000
 
 export type Section = { version: string; lines: string[] }
 
@@ -86,7 +87,7 @@ export function register(on: On, options: PluginOptions) {
       registered = true
       await $.command.register({ name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' })
     }
-    if (await $.fs.exists(`${e.cwd}/.cs/local`)) {
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await mayWriteControlFiles($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     if (!shown && await isLead($, e.cwd)) {
@@ -103,8 +104,13 @@ export function register(on: On, options: PluginOptions) {
     // The engine re-renders the open pane the instant it reloads this
     // module, before session.start (which does not fire on a reload) gets a
     // chance to restore it, so a pane asked to draw with no module state
-    // tries the marker itself before giving up to the ordinary gate.
-    if (version === undefined && !(await restoreDone($, await $.session.cwd()))) return next(e)
+    // tries the marker itself before giving up to the ordinary gate. It asks
+    // the lead gate first, as session.start does, so a directory the
+    // sessions root does not name gets no pane back.
+    if (version === undefined) {
+      const cwd = await $.session.cwd()
+      if (!(await isLead($, cwd)) || !(await restoreDone($, cwd))) return next(e)
+    }
     const { Box, Text, Button } = await $.ui.resolve(e)
     // A lone pane draws no title of its own (the tab shows only with two or
     // more), so the body opens with it. The pane does not scroll (measured
@@ -175,10 +181,12 @@ export function register(on: On, options: PluginOptions) {
 
 // The conversation cs launched is the one whose id cs recorded before the
 // launch; a teammate in the same directory reads the same file and does not
-// match. A directory without the file is not a cs session: no pane. The id
-// may be quoted (KEEP IN SYNC with ownsRotation in mods/cs).
+// match. A directory the sessions root does not name, or one without the
+// file, is not a cs session: no pane. The id may be quoted (KEEP IN SYNC with
+// ownsRotation in mods/cs).
 async function isLead($: EngineInterface, cwd: string): Promise<boolean> {
   if (await $.fs.exists(`${cwd}/.cs/local/disabled`)) return false
+  if (!(await isCsSession($, cwd))) return false
   let state: string
   try { state = await $.fs.read(`${cwd}/${STATE}`) } catch { return false }
   const lead = state.match(/^claude_session_id: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
@@ -223,12 +231,77 @@ async function restoreDone($: EngineInterface, cwd: string): Promise<boolean> {
   if (!doneVersion || line === undefined) return false
   const pending = await $.env.get('CS_UPDATE_AVAILABLE')
   if (pending !== doneVersion) {
-    await $.fs.write(`${cwd}/${DONE}`, '')
+    if (await mayWriteControlFiles($, cwd)) await $.fs.write(`${cwd}/${DONE}`, '')
     return false
   }
   shown = true; phase = 'done'; outcome = line
   await openPane($, cwd, doneVersion)
   return true
+}
+
+// Every write this mod makes into .cs/local asks this first: the sessions root
+// names the directory, and cs trusts its control files.
+async function mayWriteControlFiles($: EngineInterface, cwd: string): Promise<boolean> {
+  return (await isCsSession($, cwd)) && (await sessionVetted($, cwd))
+}
+
+// KEEP IN SYNC with isCsSession and resolvedPath in mods/cs (the two mods
+// deploy as separate plugins and share no module).
+// Whether directory `cwd` is a cs session. Nothing inside a directory can
+// prove it: a cloned repository may carry any file under .cs/, .cs/local
+// included. The sessions root ($CS_SESSIONS_ROOT, else ~/.claude-sessions) is
+// what a clone cannot carry: the directory is a session when the root's entry
+// under its own name, or under the session_name an adopted session's state
+// records, lands on the directory itself. The recorded name is only a
+// candidate, so it may not reach outside the root. Identity is by resolved
+// path, as the hooks compare by inode: a link at the root and a home reached
+// through a symlink each spell the same directory another way.
+async function isCsSession($: EngineInterface, cwd: string): Promise<boolean> {
+  const home = await $.env.get('HOME')
+  const root = (await $.env.get('CS_SESSIONS_ROOT')) || (home ? `${home}/.claude-sessions` : undefined)
+  if (root === undefined) return false
+  const here = await resolvedPath($, cwd)
+  if (here === undefined) return false
+  const dir = cwd.replace(/\/+$/, '')
+  const names = [dir.slice(dir.lastIndexOf('/') + 1)]
+  let state = ''
+  try {
+    state = await $.fs.read(`${cwd}/.cs/local/state`)
+  } catch {
+    // no state: only the directory's own name is a candidate
+  }
+  const recorded = state.match(/^session_name: *"?([^"\s/]+)"?[ \t]*$/m)?.[1]
+  if (recorded !== undefined && recorded !== '.' && recorded !== '..') names.push(recorded)
+  for (const name of names) {
+    if ((await resolvedPath($, `${root}/${name}`)) === here) return true
+  }
+  return false
+}
+
+// Where `path` lands once every link is followed; undefined when it leads
+// nowhere or cannot be read, which proves nothing about a session.
+async function resolvedPath($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return (await $.fs.stat(path, { resolve: true })).realPath
+  } catch {
+    return undefined
+  }
+}
+
+// Whether cs trusts this session's control files, by the rule the cs mod and
+// the hooks ask (cs -vet-session): while git tracks a file in .cs/local or
+// .cs/private, this mod writes nothing there. An answer cs cannot give is a
+// no. Nothing is said here: the cs mod toasts the same refusal once.
+async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
+  const bin = await $.env.get('CS_BIN')
+  if (!bin) return false
+  try {
+    const { exitCode } = await $.process.run([bin, '-vet-session', cwd], { timeoutMs: VET_TIMEOUT_MS })
+    return exitCode === 0
+  } catch {
+    // A spawn that fails is a refusal: the write it guards is skipped.
+    return false
+  }
 }
 
 // Runs the update cs would run from the shell, by the path launch exported
@@ -257,7 +330,7 @@ async function runUpdate($: EngineInterface) {
       phase = 'done'; outcome = 'Update finished. Takes effect on your next launch.'
       try {
         const cwd = await $.session.cwd()
-        await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
+        if (await mayWriteControlFiles($, cwd)) await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
       } catch (err) {
         $.ui.toast(`cs-update: could not record the finished update: ${String(err instanceof Error ? err.message : err)}`)
       }

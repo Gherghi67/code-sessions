@@ -224,11 +224,19 @@ test_line_and_static_modes_do_not_echo_the_prompt() {
 # The native mode follows that. Under five seconds it must show the label with
 # no clock at all — a counter ticking 1s, 2s on a rewrite that always takes
 # about ten is noise Claude Code deliberately leaves out.
+#
+# Only readings under five are forbidden, not every clock. The shim's own clock
+# decides, and on a loaded machine the 1s stub can outlive five of its seconds,
+# when `(5s)` is exactly what the contract asks for (see the test below). A
+# clock painted too early still shows: native repaints on every change, so it
+# would leave a `(0s)` or `(1s)` behind.
 test_animated_modes_withhold_the_elapsed_under_five_seconds() {
     local mode out
     for mode in native screen; do
         out=$(render_in_mode "$mode" '' 1)
-        assert_file_not_contains "$out" '([0-9]*s)' \
+        # Guard the guard: if nothing painted, absence of a clock proves nothing.
+        assert_file_contains "$out" 'ewriting' "mode '$mode' painted" || return 1
+        assert_file_not_contains "$out" '([0-4]s)' \
             "mode '$mode' shows no elapsed before five seconds" || return 1
     done
 }
@@ -312,12 +320,8 @@ test_cancel_keeps_the_original_and_exits_clean() {
     CLAUDE_SESSION_META_DIR="$trace_dir" CS_REWRITE_CMD="$slow" "$SHIM" "$f" >/dev/null 2>&1 &
     local shim=$!
     local trace="$trace_dir/local/rewrite.trace"
-    local waited=0
-    while [ "$waited" -lt 100 ] && ! grep -q 'rewriter-forked' "$trace" 2>/dev/null; do
-        sleep 0.1
-        waited=$((waited + 1))
-    done
-    [ "$waited" -lt 100 ] || { echo "shim never signalled rewriter-forked"; kill "$shim" 2>/dev/null; return 1; }
+    wait_until grep -qs 'rewriter-forked' "$trace" \
+        || { echo "shim never signalled rewriter-forked"; kill "$shim" 2>/dev/null; return 1; }
     kill -TERM "$shim" 2>/dev/null
     local st=0; wait "$shim" || st=$?
     assert_eq "0" "$st" "exits 0, so Claude Code reports no editor error" || return 1
@@ -357,11 +361,7 @@ SLOWEOF
     local f; f=$(composer_file "make the login thing better")
     CS_REWRITE_CMD="$slow" "$SHIM" "$f" >/dev/null 2>&1 &
     local shim=$!
-    local waited=0
-    while [ "$waited" -lt 50 ] && [ ! -s "$pidfile" ]; do
-        sleep 0.1
-        waited=$((waited + 1))
-    done
+    wait_until test -s "$pidfile"
     [ -s "$pidfile" ] || { echo "rewriter never recorded its child"; kill "$shim" 2>/dev/null; return 1; }
     local grandchild; grandchild=$(cat "$pidfile")
     kill -TERM "$shim" 2>/dev/null
@@ -379,6 +379,30 @@ SLOWEOF
     fi
 }
 
+# The agy arm passes a prompt line longer than 4 KB to the CLI byte for byte,
+# and writes back a rewrite that long the same way: jq 1.7.1's -R splits a
+# multibyte character 4095 bytes into a line. Both texts put U+00E9 across that
+# point at the two possible offsets. The fake agy records what it was handed
+# and answers with a rewrite read from a file.
+test_the_agy_rewriter_carries_long_multibyte_lines_whole() {
+    unset CS_REWRITE_CMD
+    local bin="$TEST_TMPDIR/bin" lead prompt answer f
+    mkdir -p "$bin"
+    printf '#!/bin/bash\ncat > "%s/agy.stdin"\ncat "%s/agy.answer"\n' "$TEST_TMPDIR" "$TEST_TMPDIR" > "$bin/agy"
+    chmod +x "$bin/agy"
+    for lead in "" "a"; do
+        prompt="$lead$(python3 -c "print('\u00e9' * 3000, end='')")"
+        answer="${lead}b$(python3 -c "print('\u00e9' * 3000, end='')")"
+        jq -nc --arg r "$answer" '{event:"result", result:{status:"SUCCESS", response:$r}}' > "$TEST_TMPDIR/agy.answer"
+        f=$(composer_file "$prompt")
+        PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" CS_REWRITE_PROVIDER=gemini \
+            "$SHIM" "$f" >/dev/null 2>&1
+        assert_eq "$prompt" "$(jq -r '.message.content | split("\n\n") | last' "$TEST_TMPDIR/agy.stdin")" \
+            "the prompt reaches agy as typed (lead '$lead')" || return 1
+        assert_eq "$answer" "$(cat "$f")" "the rewrite lands as agy wrote it (lead '$lead')" || return 1
+    done
+}
+
 # The provider knob picks which shipped rewriter runs. A fake agy on PATH stands
 # in for the vendor CLI so the assertion is about the shim's routing and never
 # makes a live call.
@@ -386,7 +410,10 @@ test_the_provider_knob_selects_the_vendor_rewriter() {
     unset CS_REWRITE_CMD
     local bin="$TEST_TMPDIR/bin"
     mkdir -p "$bin"
-    printf '#!/bin/bash\nprintf "VENDOR PATH TAKEN"\n' > "$bin/agy"
+    # agy answers stream-json: the rewrite is the result event's response.
+    printf '#!/bin/bash\ncat >/dev/null\nprintf "%%s\\n" %s\n' \
+        "'{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"VENDOR PATH TAKEN\"}}'" \
+        > "$bin/agy"
     chmod +x "$bin/agy"
     local f
     f=$(composer_file "make the login thing better")
@@ -541,6 +568,63 @@ test_the_countdown_is_only_shown_when_something_enforces_it() {
     fi
 }
 
+# The budget reaches shell arithmetic, which runs a command substitution held in
+# an operand, and the bar divides by it. Anything but a positive plain number
+# takes the default, 25 seconds, and the countdown and the rewriter's own bound
+# both get that one number: a zero would otherwise be no bound at all to
+# timeout(1) and to perl's alarm. The file named by PWNED_FILE is what a
+# substitution in the value would create. The stand-in timeout and perl record
+# the bound each rewriter was handed and then run the command as the real ones
+# would; the stand-in agy answers in the stream-json shape the vendor rewriter
+# reads, so the rewrite lands on both arms.
+test_the_budget_is_read_as_data_and_bounds_the_rewriter() {
+    unset CS_REWRITE_CMD
+    local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" bound="$TEST_TMPDIR/bound"
+    local real_perl real_timeout provider pair value want f out
+    real_perl=$(command -v perl) || { echo "  SKIP: no perl"; return 77; }
+    mkdir -p "$bin"
+    cat > "$bin/agy" <<'EOF'
+#!/bin/bash
+sleep 0.9
+printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"REWRITTEN"}}'
+EOF
+    printf '#!/bin/bash\nsleep 0.9\nprintf "REWRITTEN"\n' > "$bin/claude"
+    cat > "$bin/perl" <<EOF
+#!/bin/bash
+[ "\$2" = 'alarm shift; exec @ARGV' ] && printf '%s\n' "\$3" >> "$bound"
+exec "$real_perl" "\$@"
+EOF
+    # Anything but the rewriter's call goes to the real timeout where one
+    # exists, so the pty harness keeps its own bound on Linux.
+    real_timeout=$(command -v timeout 2>/dev/null || true)
+    cat > "$bin/timeout" <<EOF
+#!/bin/bash
+if [ "\$2" = claude ]; then
+    printf '%s\n' "\$1" >> "$bound"
+elif [ -n "$real_timeout" ]; then
+    exec "$real_timeout" "\$@"
+fi
+shift
+exec "\$@"
+EOF
+    chmod +x "$bin/agy" "$bin/claude" "$bin/perl" "$bin/timeout"
+    for provider in gemini ''; do
+        for pair in 'PATH[$(:>"$PWNED_FILE")]=25' 'soon=25' '0=25' '7=7'; do
+            value="${pair%=*}" want="${pair##*=}"
+            rm -f "$pwned" "$bound"
+            f=$(composer_file "make the login thing better")
+            out="$TEST_TMPDIR/pty-budget"
+            PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" PWNED_FILE="$pwned" \
+                CS_REWRITE_PROVIDER="$provider" CS_REWRITE_TIMEOUT="$value" \
+                _pty_run "$SHIM" "$f" > "$out" 2>&1
+            assert_file_not_exists "$pwned" "the budget's content never runs (${provider:-model} $value)" || return 1
+            assert_file_contains "$out" "${want}s left" "the countdown starts from ${want}s (${provider:-model} $value)" || return 1
+            assert_eq "$want" "$(cat "$bound" 2>/dev/null)" "the rewriter is bounded at ${want}s (${provider:-model} $value)" || return 1
+            assert_eq "REWRITTEN" "$(cat "$f")" "the rewrite still lands (${provider:-model} $value)" || return 1
+        done
+    done
+}
+
 # The margin rule carries the liveness, so the spinner beside it is redundant —
 # two things animating for one fact.
 test_screen_mode_has_no_spinner() {
@@ -554,7 +638,7 @@ test_screen_mode_has_no_spinner() {
 # "not a composer file", "disabled", "slash command" and "rewriter declined" all
 # leave the buffer identical. The trace is the only way to tell them apart.
 test_the_trace_records_which_path_was_taken() {
-    local dir="$TEST_TMPDIR/meta"
+    local dir="$TEST_TMPDIR/session/.cs"
     mkdir -p "$dir"
     local f
     f=$(composer_file "/release")
@@ -578,10 +662,13 @@ run_test test_a_fast_rewrite_still_paints
 run_test test_the_trace_records_which_path_was_taken
 
 # The trace is a cs file: an encrypted session keeps it behind .cs/private, and
-# a locked vault gets no trace rather than a plaintext one.
+# a locked vault gets no trace rather than a plaintext one. The session is
+# staged as cs makes it, with the .cs/local/pre-open that marks a vault set up
+# by hand, so .cs/local is there for a plaintext trace to land in.
 test_the_trace_goes_behind_private() {
-    local dir="$TEST_TMPDIR/meta" f
+    local session="$TEST_TMPDIR/session" dir="$TEST_TMPDIR/session/.cs" f
     mkdir -p "$dir" "$TEST_TMPDIR/vault/private"
+    _mark_hand_made_vault "$session"
     ln -s "$TEST_TMPDIR/vault/private" "$dir/private"
     f=$(composer_file "/release")
     CLAUDE_SESSION_META_DIR="$dir" "$SHIM" "$f"
@@ -594,9 +681,29 @@ test_the_trace_goes_behind_private() {
     assert_not_exists "$dir/local/rewrite.trace" "a locked vault gets no trace" || return 1
 }
 run_test test_the_trace_goes_behind_private
+
+# A trace is a write into .cs/local, and while git tracks a file there a
+# repository wrote it: the shim still does its job and adds nothing beside it.
+test_the_trace_stands_down_while_git_tracks_a_control_file() {
+    local s="$TEST_TMPDIR/session" f
+    mkdir -p "$s/.cs/local"
+    printf 'armed\n' > "$s/.cs/local/queue.state"
+    git -C "$s" init -q
+    git -C "$s" add .cs/local/queue.state
+    f=$(composer_file "/release")
+    CLAUDE_SESSION_META_DIR="$s/.cs" "$SHIM" "$f"
+    assert_eq "/release" "$(cat "$f")" "the slash command passes through" || return 1
+    assert_not_exists "$s/.cs/local/rewrite.trace" "no trace beside a tracked file" || return 1
+    git -C "$s" rm -q --cached .cs/local/queue.state
+    CLAUDE_SESSION_META_DIR="$s/.cs" "$SHIM" "$f"
+    assert_file_contains "$s/.cs/local/rewrite.trace" 'exit passthrough-prefix' \
+        "once untracked, the trace is written" || return 1
+}
+run_test test_the_trace_stands_down_while_git_tracks_a_control_file
 run_test test_screen_mode_frames_the_prompt_in_a_margin
 run_test test_screen_mode_counts_down_not_up
 run_test test_the_countdown_is_only_shown_when_something_enforces_it
+run_test test_the_budget_is_read_as_data_and_bounds_the_rewriter
 run_test test_screen_mode_has_no_spinner
 run_test test_the_header_names_the_resolved_engine_and_model
 run_test test_progress_hides_the_cursor_and_restores_it
@@ -620,6 +727,7 @@ run_test test_clarify_disable_does_not_suppress_the_rewriter
 run_test test_prompt_text_is_data_not_code
 run_test test_shim_never_leaves_a_temp_file_behind
 run_test test_the_provider_knob_selects_the_vendor_rewriter
+run_test test_the_agy_rewriter_carries_long_multibyte_lines_whole
 run_test test_an_explicit_rewrite_cmd_outranks_the_provider_knob
 run_test test_an_unknown_provider_falls_back_to_the_default_rewriter
 run_test test_claude_api_routes_to_the_vendor_rewriter

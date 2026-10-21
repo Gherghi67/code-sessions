@@ -7,7 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 
 SKILLS_DIR="$SCRIPT_DIR/../skills"
-HOOKS_DIR="$SCRIPT_DIR/../hooks"
+# The memory and summary passes /wrap reads; they deploy with the hook libraries.
+SWEEP_PASS="$SKILLS_DIR/sweep/SKILL.md"
+SUMMARY_PASS="$SKILLS_DIR/summary/SKILL.md"
 RELEASE_MD="$SCRIPT_DIR/../.claude/commands/release.md"
 
 # ============================================================================
@@ -38,55 +40,52 @@ test_store_secret_backend_neutral() {
 }
 
 # ============================================================================
-# Single-source doctrine: sweep owns the memory bar, summary owns the
-# skeleton and prose gate, the prose-hygiene skill owns the scoring rubric
+# Single-source doctrine: the sweep pass owns the memory bar, the summary
+# pass owns the skeleton, the prose-hygiene skill owns the scoring rubric
 # ============================================================================
 
 test_no_dangling_bucket_guidance_reference() {
     # The CLAUDE.md bucket-guidance table was retired in v2026.5.5 (bin/cs
-    # Phase 9 strips it); no skill may still point at it.
+    # Phase 9 strips it); no command or wrap pass may still point at it.
     local hits
-    hits=$(grep -l "bucket-guidance" "$SKILLS_DIR"/*/SKILL.md 2>/dev/null || true)
+    hits=$(grep -l "bucket-guidance" "$COMMANDS_DIR"/*.md "$SWEEP_PASS" "$SUMMARY_PASS" 2>/dev/null || true)
     assert_eq "" "$hits" \
-        "no skill may reference the retired CLAUDE.md bucket-guidance table" || return 1
+        "no command or wrap pass may reference the retired CLAUDE.md bucket-guidance table" || return 1
 }
 
 test_sweep_owns_bucket_routing_table() {
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" 'user_\*.md' \
-        "sweep.md must carry the bucket routing table (user row)" || return 1
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" 'reference_\*.md' \
-        "sweep.md must carry the bucket routing table (reference row)" || return 1
+    assert_file_contains "$SWEEP_PASS" 'user_\*.md' \
+        "the sweep pass must carry the bucket routing table (user row)" || return 1
+    assert_file_contains "$SWEEP_PASS" 'reference_\*.md' \
+        "the sweep pass must carry the bucket routing table (reference row)" || return 1
 }
 
 test_sweep_routes_discovered_constraints() {
     # The project_* bucket is dominated by constraints found through work, not user
     # utterances. sweep must route them and must NOT blanket-drop them as "just a discovery".
-    assert_file_not_contains "$SKILLS_DIR/sweep/SKILL.md" "that's a discovery, not a memory" \
+    assert_file_not_contains "$SWEEP_PASS" "that's a discovery, not a memory" \
         "the blanket 'discovery is not a memory' exclusion drops the project_* class" || return 1
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "discover while working" \
+    assert_file_contains "$SWEEP_PASS" "discover while working" \
         "sweep must carry a routing path for constraints discovered through work" || return 1
 }
 
 test_sweep_updates_memory_index() {
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "MEMORY.md" \
-        "sweep.md must instruct updating the MEMORY.md index after writing an entry" || return 1
+    assert_file_contains "$SWEEP_PASS" "MEMORY.md" \
+        "the sweep pass must instruct updating the MEMORY.md index after writing an entry" || return 1
 }
 
 test_wrap_family_pinned_to_opus() {
     # Distilling a whole session's documentation into what is worth keeping is
     # judgment work, and the summary is the artifact the session is remembered
-    # by, so these three passes run on the strongest model.
+    # by, so /wrap, which runs both passes, runs on the strongest model.
     # The family alias, not a point release: `claude-opus-5` would keep an
     # older Opus once a newer one ships.
-    local cmd
-    for cmd in wrap sweep summary; do
-        assert_file_contains "$SKILLS_DIR/$cmd/SKILL.md" "^model: opus$" \
-            "$cmd must pin the opus family, not a point release, in frontmatter" || return 1
-        if [ "$(head -1 "$SKILLS_DIR/$cmd/SKILL.md")" != "---" ]; then
-            echo "  FAIL: $cmd must open with a YAML frontmatter block"
-            return 1
-        fi
-    done
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" "^model: opus$" \
+        "wrap.md must pin the opus family, not a point release, in frontmatter" || return 1
+    if [ "$(head -1 "$SKILLS_DIR/wrap/SKILL.md")" != "---" ]; then
+        echo "  FAIL: wrap.md must open with a YAML frontmatter block"
+        return 1
+    fi
 }
 
 # wrap reads its passes from the sibling skills wherever this engine deployed
@@ -317,15 +316,15 @@ test_explicit_only_skills_ship_a_codex_policy() {
 }
 
 test_wrap_does_not_duplicate_memory_bars() {
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "three months" \
-        "sweep.md owns the three-bar discipline" || return 1
+    assert_file_contains "$SWEEP_PASS" "three months" \
+        "the sweep pass owns the three-bar discipline" || return 1
     assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" "three months" \
         "wrap.md must reference the bars, not restate them" || return 1
 }
 
 test_wrap_does_not_duplicate_summary_skeleton() {
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "# Session Summary:" \
-        "summary.md owns the summary skeleton" || return 1
+    assert_file_contains "$SUMMARY_PASS" "# Session Summary:" \
+        "the summary pass owns the summary skeleton" || return 1
     assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" "# Session Summary:" \
         "wrap.md must reference the skeleton, not embed a second copy" || return 1
 }
@@ -334,9 +333,9 @@ test_scoring_threshold_owned_by_skill() {
     assert_file_contains "$SKILLS_DIR/prose-hygiene/SKILL.md" "35/50" \
         "the prose-hygiene skill owns the revise threshold" || return 1
     local hits
-    hits=$(grep -l "35/50" "$SKILLS_DIR"/*/SKILL.md 2>/dev/null | grep -v '/prose-hygiene/' || true)
+    hits=$(grep -l "35/50" "$COMMANDS_DIR"/*.md "$SWEEP_PASS" "$SUMMARY_PASS" 2>/dev/null || true)
     assert_eq "" "$hits" \
-        "no other skill may restate the prose-hygiene 35/50 threshold" || return 1
+        "no command or wrap pass may restate the skill's 35/50 threshold" || return 1
 }
 
 # ============================================================================
@@ -344,30 +343,26 @@ test_scoring_threshold_owned_by_skill() {
 # ============================================================================
 
 test_summary_reads_narrative() {
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" 'memory/narrative\.<actor>\.md' \
+    assert_file_contains "$SUMMARY_PASS" 'memory/narrative\.<actor>\.md' \
         "summary must read the per-actor session narratives" || return 1
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "your own in full; a teammate's only from the line the resume digest named" \
+    assert_file_contains "$SUMMARY_PASS" "your own in full; a teammate's only from the line the resume digest named" \
         "summary reads its own narrative whole and a teammate's by the digest delta, never the whole file" || return 1
 }
 
-test_prose_critic_pinned_and_contracted() {
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "model: opus" \
-        "the prose critic is a quality-judge task and must pin a capable tier" || return 1
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "final message" \
-        "the critic's deliverable must be demanded in its final message" || return 1
-    # The critic scores; the caller decides. A judge asked for its own verdict
-    # grades to the bar it was told, so the pass criterion stays out of its
-    # output contract and the comparison happens in summary.md.
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "the critic scores, it does not decide" \
-        "the critic must return scores and rewrites only, no verdict line" || return 1
-    if grep -q 'PASS\|REVISE' "$SKILLS_DIR/summary/SKILL.md"; then
-        echo "  FAIL: summary.md still asks the critic for a PASS/REVISE verdict"; return 1
-    fi
+# /wrap writes the summary once: the summary pass spawns no critic and runs
+# no revise loop, and wrap.md stops after no step of it.
+test_summary_pass_runs_no_critic() {
+    assert_file_not_contains "$SUMMARY_PASS" "spawn a subagent" \
+        "the summary pass must not spawn a critic subagent" || return 1
+    assert_file_not_contains "$SUMMARY_PASS" "critic" \
+        "the summary pass must not run a critic loop" || return 1
+    assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" "critic" \
+        "wrap.md must not describe a critic it skips" || return 1
 }
 
 test_prose_hygiene_has_modes_and_technical_carveout() {
     # A cold Skill invocation must be able to tell drafting from reviewing, and the
-    # absolutist rules must not flag correct technical sentences (summary.md applies EVERY rule).
+    # absolutist rules must not flag correct technical sentences.
     assert_file_contains "$SKILLS_DIR/prose-hygiene/SKILL.md" "## How to apply" \
         "the skill must surface drafting-vs-reviewing modes, not bury them in prose" || return 1
     assert_file_contains "$SKILLS_DIR/prose-hygiene/SKILL.md" "not false agency" \
@@ -405,24 +400,17 @@ test_prose_hygiene_records_upstream_sync() {
 # ============================================================================
 
 test_summary_replaces_existing_file() {
-    # /summary run standalone must not stall deciding whether to overwrite a
-    # pre-existing summary; the replace rule lives in summary.md, not only wrap.md.
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "already exists, replace it" \
-        "summary.md step 3 must say to replace a pre-existing .cs/summary.md" || return 1
+    # The summary pass must not stall deciding whether to overwrite a
+    # pre-existing summary; the replace rule lives in the pass, not only wrap.md.
+    assert_file_contains "$SUMMARY_PASS" "already exists, replace it" \
+        "the summary pass step 3 must say to replace a pre-existing .cs/summary.md" || return 1
 }
 
 test_summary_bounds_git_log_to_session() {
     # 'derive from git history' is unbounded; the file list must be scoped to this
     # session via the timeline's earliest started timestamp, not the whole repo.
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "git log --since" \
-        "summary.md must bound the git log to the session, not the whole repo history" || return 1
-}
-
-test_summary_prose_loop_is_bounded() {
-    # The apply/re-run critic loop must terminate: one re-run cap, stop regardless of
-    # the second verdict — otherwise the model loops or stalls below threshold.
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "stop regardless" \
-        "summary.md must cap the critic loop so it terminates" || return 1
+    assert_file_contains "$SUMMARY_PASS" "git log --since" \
+        "the summary pass must bound the git log to the session, not the whole repo history" || return 1
 }
 
 test_wrap_report_is_not_two_line() {
@@ -451,38 +439,80 @@ test_checkpoint_quotes_label_and_stops_on_failure() {
 test_sweep_supersedes_stale_entries() {
     # 'skip; do not append' with no supersede path leaves reversed/refined facts stale
     # forever; a contradicting or extending fact must update the entry in place.
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "contradicts or materially extends" \
-        "sweep.md must give a supersede/update-in-place path, not only skip-or-duplicate" || return 1
+    assert_file_contains "$SWEEP_PASS" "contradicts or materially extends" \
+        "the sweep pass must give a supersede/update-in-place path, not only skip-or-duplicate" || return 1
 }
 
 test_sweep_states_filename_convention() {
     # The <bucket>_<short_slug>.md convention was only implied by the glob; a first
     # entry in an empty bucket needs it stated explicitly.
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "<bucket>_<short_slug>.md" \
-        "sweep.md must state the memory-entry filename convention" || return 1
+    assert_file_contains "$SWEEP_PASS" "<bucket>_<short_slug>.md" \
+        "the sweep pass must state the memory-entry filename convention" || return 1
 }
 
 test_sweep_scopes_when_not_to_write() {
     # The exclusion section must be scoped to the strict buckets so it does not
     # suppress the looser-bar narrative appends step 4 invites.
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "strict-bucket entry" \
-        "sweep.md 'When NOT to write' must scope to the strict buckets, not the narrative" || return 1
+    assert_file_contains "$SWEEP_PASS" "strict-bucket entry" \
+        "the sweep pass 'When NOT to write' must scope to the strict buckets, not the narrative" || return 1
 }
 
 test_sweep_states_memory_pointer_format() {
     # 'Add a one-line pointer' with no format leaves the model to invent the MEMORY.md
     # line shape; it must match the existing [title](file.md) format.
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" '\[title\](file.md)' \
-        "sweep.md must state the MEMORY.md pointer format" || return 1
+    assert_file_contains "$SWEEP_PASS" '\[title\](file.md)' \
+        "the sweep pass must state the MEMORY.md pointer format" || return 1
+}
+
+test_sweep_demotes_pointers_to_the_archive_before_rewording() {
+    # Step 5's first remedy for an index over budget is moving a pointer line,
+    # unchanged, into the archive the guard reads as a second pointer source;
+    # rewording comes after, and a rule that must fire before a proposal stays.
+    assert_file_contains "$SWEEP_PASS" '\.cs/memory/reference_memory_archive\.md' \
+        "the sweep pass must name the archive file" || return 1
+    assert_file_contains "$SWEEP_PASS" 'demote first' \
+        "demotion must come before rewording" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a subject that no longer exists' \
+        "the sweep pass must state the finished-subject criterion" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a test, hook or CI lane now enforces' \
+        "the sweep pass must state the enforced-rule criterion" || return 1
+    assert_file_contains "$SWEEP_PASS" 'has to fire before a proposal stays in `MEMORY\.md`' \
+        "a rule that fires before a proposal must stay in the index" || return 1
+    assert_file_contains "$SWEEP_PASS" 'byte for byte' \
+        "a demoted pointer moves verbatim" || return 1
+    assert_file_contains "$SWEEP_PASS" 'A `narrative\.\*\.md` pointer is never demoted' \
+        "a narrative pointer stays in the index" || return 1
+    # Two clones that each make a first demotion write the same header, so a
+    # merge keeps one; nothing edits it after.
+    assert_eq '---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+metadata:
+  type: reference
+---' "$(awk '/^ *```markdown$/{on=1; next} on && /^ *```$/{exit} on' "$SWEEP_PASS" | sed 's/^   //')" \
+        "the sweep pass gives the archive's exact frontmatter" || return 1
+    assert_file_contains "$SWEEP_PASS" "Never edit the archive's frontmatter" \
+        "the archive's frontmatter is written once" || return 1
+    assert_file_contains "$SWEEP_PASS" "delete the archive's copy" \
+        "a wrongly demoted rule goes back to the index on duplicate:" || return 1
+    assert_file_contains "$SWEEP_PASS" 'keep the other copy as it stands' \
+        "duplicate: deletes one copy and rewords neither" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a bare file name ending in `\.md`, with no `/` and no `:`' \
+        "the sweep pass states which pointers dangling: checks" || return 1
+    local label
+    for label in 'demoted:' 'duplicate:' 'dangling:'; do
+        assert_file_contains "$SWEEP_PASS" "\`$label\`" \
+            "the sweep pass must say what check's $label means" || return 1
+    done
 }
 
 test_sweep_resolves_actor_before_narrative_append() {
     # cs -whoami resolution must be repeated at the narrative step, not left only in the
     # framing parenthetical, so a multi-actor session appends to the right file.
     local count
-    count=$(grep -c "cs -whoami" "$SKILLS_DIR/sweep/SKILL.md" || true)
+    count=$(grep -c "cs -whoami" "$SWEEP_PASS" || true)
     if [ "$count" -lt 2 ]; then
-        echo "  FAIL: sweep.md must repeat 'cs -whoami' in the narrative step (found $count)"
+        echo "  FAIL: the sweep pass must repeat 'cs -whoami' in the narrative step (found $count)"
         return 1
     fi
 }
@@ -491,10 +521,10 @@ test_sweep_adds_check_tasks_and_keeps_the_entry() {
     # A rule-shaped entry usually carries the incident or measurement behind the rule,
     # which a check's failure message would lose, so a check that can carry the rule
     # becomes a task beside the entry, never a replacement for it.
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "Could a check carry it instead" \
-        "the sweep skill must ask whether a mechanical check could carry a rule" || return 1
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "add a task to build it and keep the memory entry as written" \
-        "the sweep skill must add a task for the check and keep the memory entry, never replace it" || return 1
+    assert_file_contains "$SWEEP_PASS" "Could a check carry it instead" \
+        "the sweep pass must ask whether a mechanical check could carry a rule" || return 1
+    assert_file_contains "$SWEEP_PASS" "add a task to build it and keep the memory entry as written" \
+        "the sweep pass must add a task for the check and keep the memory entry, never replace it" || return 1
 }
 
 # ============================================================================
@@ -540,8 +570,8 @@ test_store_secret_confirms_only_on_success() {
 
 test_prose_hygiene_scoring_reports_either_way_and_defers_revision() {
     # The Scoring section's bare 'means revise' left who-revises/what-to-output/loop
-    # unstated. The skill judges only (revising + the loop are the caller's, single-source
-    # in summary.md); it must report the total whether or not it passes.
+    # unstated. The skill judges only (revising and any loop are the caller's); it must
+    # report the total whether or not it passes.
     assert_file_contains "$SKILLS_DIR/prose-hygiene/SKILL.md" "This skill only judges" \
         "scoring must state the skill judges only and reports the total either way" || return 1
     assert_file_contains "$SKILLS_DIR/prose-hygiene/SKILL.md" "belong to the caller" \
@@ -623,19 +653,30 @@ echo ""
 # and still succeeds, since a wrap outside Claude Code has no band to hide.
 test_wrap_marks_the_wrapped_conversation() {
     local block dir
-    block=$(awk '/^## Pass 4/{p=1; next} /^## /{p=0} p && /^```/{f=!f; next} p && f' "$SKILLS_DIR/wrap/SKILL.md")
-    [ -n "$block" ] || { echo "  FAIL: wrap.md has no Pass 4 command block"; return 1; }
+    block=$(awk '/^## Pass [0-9]+ — Mark the wrap finished/{p=1; next} /^## /{p=0} p && /^```/{f=!f; next} p && f' "$SKILLS_DIR/wrap/SKILL.md")
+    [ -n "$block" ] || { echo "  FAIL: wrap.md has no command block under its Mark the wrap finished pass"; return 1; }
     dir="$TEST_TMPDIR/wrapped"
-    mkdir -p "$dir/.cs/local"
+    mkdir -p "$dir/.cs/local" "$TEST_TMPDIR/csbin"
+    ln -sf "$SCRIPT_DIR/../bin/cs" "$TEST_TMPDIR/csbin/cs"
     printf 'claude_session_id: 99999999-9999-4999-8999-999999999999\n' > "$dir/.cs/local/state"
-    (cd "$dir" && CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555 bash -c "$block") \
+    (cd "$dir" && PATH="$TEST_TMPDIR/csbin:$PATH" CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555 bash -c "$block") \
         || { echo "  FAIL: the Pass 4 command failed"; return 1; }
     assert_eq "11111111-2222-4333-8444-555555555555" "$(cat "$dir/.cs/local/wrapped")" \
         "the marker names the conversation the wrap ran in, not the state's lead" || return 1
     rm -f "$dir/.cs/local/wrapped"
-    (cd "$dir" && env -u CLAUDE_CODE_SESSION_ID bash -c "$block") \
+    (cd "$dir" && PATH="$TEST_TMPDIR/csbin:$PATH" env -u CLAUDE_CODE_SESSION_ID bash -c "$block") \
         || { echo "  FAIL: the Pass 4 command must succeed with no conversation id"; return 1; }
     assert_not_exists "$dir/.cs/local/wrapped" "no id, no marker" || return 1
+    # cs is asked first, and while git tracks the control files it refuses and
+    # the pass adds nothing there, still succeeding: the wrap itself finished.
+    git -C "$dir" init -q
+    git -C "$dir" add .cs/local/state
+    git -C "$dir" -c user.name=t -c user.email=t@example.com commit -q -m tracked
+    (cd "$dir" && PATH="$TEST_TMPDIR/csbin:$PATH" CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555 \
+        bash -c "$block" 2>/dev/null) \
+        || { echo "  FAIL: the Pass 4 command must succeed while git tracks the control files"; return 1; }
+    assert_eq "" "$(git -C "$dir" status --porcelain --ignored -- .cs/local)" \
+        "nothing is added under a tracked .cs/local" || return 1
 }
 
 run_test test_checkpoint_allowed_tools_hyphenated
@@ -665,14 +706,13 @@ run_test test_wrap_does_not_duplicate_memory_bars
 run_test test_wrap_does_not_duplicate_summary_skeleton
 run_test test_scoring_threshold_owned_by_skill
 run_test test_summary_reads_narrative
-run_test test_prose_critic_pinned_and_contracted
+run_test test_summary_pass_runs_no_critic
 run_test test_prose_hygiene_has_modes_and_technical_carveout
 run_test test_release_names_uninstall_source_not_bincs
 run_test test_release_changelog_step_follows_approval
 run_test test_prose_hygiene_records_upstream_sync
 run_test test_summary_replaces_existing_file
 run_test test_summary_bounds_git_log_to_session
-run_test test_summary_prose_loop_is_bounded
 run_test test_wrap_report_is_not_two_line
 run_test test_checkpoint_routes_reserved_subcommands
 run_test test_checkpoint_quotes_label_and_stops_on_failure
@@ -680,6 +720,7 @@ run_test test_sweep_supersedes_stale_entries
 run_test test_sweep_states_filename_convention
 run_test test_sweep_scopes_when_not_to_write
 run_test test_sweep_states_memory_pointer_format
+run_test test_sweep_demotes_pointers_to_the_archive_before_rewording
 run_test test_sweep_resolves_actor_before_narrative_append
 run_test test_sweep_adds_check_tasks_and_keeps_the_entry
 run_test test_store_secret_opener_softened_and_stops_on_nothing
@@ -711,9 +752,9 @@ run_test test_release_has_code_review_gate
 # files they point at are only read lazily, so a poisoned pointer reaches
 # context even when nothing opens the entry.
 test_sweep_requires_identity_facts_to_be_keyed() {
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "keyed" \
-        "sweep.md must require identity facts to be keyed to an actor" || return 1
-    assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "pointers load at startup" \
+    assert_file_contains "$SWEEP_PASS" "keyed" \
+        "the sweep pass must require identity facts to be keyed to an actor" || return 1
+    assert_file_contains "$SWEEP_PASS" "pointers load at startup" \
         "the rule must govern index pointer lines, not just entry bodies" || return 1
 }
 
@@ -745,14 +786,54 @@ test_wrap_rotates_the_narrative_after_the_summary() {
         "the report gains a third item" || return 1
 }
 
+# A wrap makes no commit (Alex, 2026-10-14: "No commits at all"): the memory
+# entries, the summary, the narrative cut and the task archive stay on disk,
+# and files under .cs/ are committed only when the user asks. The command says
+# so in its archive pass, gives no git add or git commit to run, and its
+# report has no commit item.
+test_wrap_makes_no_commit() {
+    local pass4
+    pass4=$(awk '/^## Pass 4 /{p=1; print; next} /^## /{p=0} p' "$SKILLS_DIR/wrap/SKILL.md")
+    assert_eq "## Pass 4 — Task archive" "$(printf '%s\n' "$pass4" | head -1)" \
+        "the fourth pass is the task archive alone" || return 1
+    assert_output_contains "$pass4" "The wrap makes no commit." "the pass says no commit is made" || return 1
+    assert_output_contains "$pass4" "stay on disk, uncommitted" "and that the files stay on disk" || return 1
+    assert_output_contains "$pass4" "commit them only when the user asks." \
+        "and that only the user's ask commits them" || return 1
+    assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" "git commit" "the wrap runs no git commit" || return 1
+    assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" "git add" "and stages nothing" || return 1
+    assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" "session: wrap" "and names no commit subject" || return 1
+    assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" '\*\*Commit:\*\*' "the report has no commit item" || return 1
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" 'the four labeled items below' "it has four items" || return 1
+}
+
+# /wrap archives completed task rows the way /rotate does, from the one place
+# the procedure is written (the rotate skill's step 8), after the narrative
+# pass and before the pass that marks the wrap finished, and reports the line.
+test_wrap_archives_completed_task_rows() {
+    local passes
+    passes=$(grep '^## Pass ' "$SKILLS_DIR/wrap/SKILL.md" | sed 's/ — .*//; s/^## //' | tr '\n' ',')
+    assert_eq "Pass 1,Pass 2,Pass 3,Pass 4,Pass 5," "$passes" "wrap runs five passes" || return 1
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" "^## Pass 4 — Task archive" "the fourth pass archives task rows" || return 1
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" "^## Pass 5 — Mark the wrap finished" "marking the wrap stays last" || return 1
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" '\.\./rotate/SKILL\.md` step 8' \
+        "the pass follows the rotate skill's step rather than restating it" || return 1
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" '4\. \*\*Tasks:\*\*' "the report gains a fourth item" || return 1
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" 'ask as step 8 does for `forced: no`, whatever the plan'"'"'s `forced:` line says' \
+        "a wrap is never a forced rotation, so it asks as a manual /rotate does" || return 1
+    assert_file_not_contains "$SKILLS_DIR/wrap/SKILL.md" 'CS_ROTATE_FORCE_CTX' "the threshold setting decides nothing here" || return 1
+}
+
 test_summary_reads_live_narratives_not_archives() {
-    assert_file_not_contains "$SKILLS_DIR/summary/SKILL.md" "read all of them" \
+    assert_file_not_contains "$SUMMARY_PASS" "read all of them" \
         "the read-all instruction is gone" || return 1
-    assert_file_contains "$SKILLS_DIR/summary/SKILL.md" "narrative-archive" \
+    assert_file_contains "$SUMMARY_PASS" "narrative-archive" \
         "summary knows where older sections went" || return 1
 }
 
 run_test test_wrap_rotates_the_narrative_after_the_summary
+run_test test_wrap_makes_no_commit
+run_test test_wrap_archives_completed_task_rows
 run_test test_wrap_marks_the_wrapped_conversation
 run_test test_summary_reads_live_narratives_not_archives
 

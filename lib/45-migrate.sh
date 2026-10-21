@@ -5,25 +5,131 @@ setup_merge_attributes() {
     local dir="$1"
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     git -C "$dir" config merge.ours.driver true 2>/dev/null || _CS_MIGRATE_CLEAN=0
-    local ga="$dir/.gitattributes"
-    if ! grep -q 'MEMORY\.md merge=ours' "$ga" 2>/dev/null; then
-        printf '.cs/memory/MEMORY.md merge=ours\n' >> "$ga"
-    fi
-    if ! grep -q 'timeline\.jsonl merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/timeline.jsonl merge=union\n' >> "$ga"
-    fi
-    if ! grep -q 'narrative\.\*\.md merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/memory/narrative.*.md merge=union\n' >> "$ga"
-    fi
+    _append_merge_attribute_lines "$dir/.gitattributes"
 }
 
-# Refuse to proceed if per-actor local state has been committed to git.
-cs_assert_local_untracked() {
-    local dir="$1"
-    git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    if [ -n "$(git -C "$dir" ls-files -- .cs/local 2>/dev/null)" ]; then
-        error ".cs/local/ is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'"
+# Append to an attributes file each of cs's merge lines it lacks. A line
+# counts as present only as a whole line, the way git reads one (blanks and a
+# CR around it ignored), so one an earlier append glued onto the line before
+# is added again.
+_append_merge_attribute_lines() {  # file
+    local attrs="$1" line
+    for line in '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+            '.cs/memory/narrative.*.md merge=union' '.cs/memory/reference_memory_archive.md merge=union'; do
+        _attribute_line_present "$attrs" "$line" || _append_attribute_line "$attrs" "$line"
+    done
+}
+
+# Whether an attributes file holds <line> as a whole line: compared as text
+# once each run of blanks (a CR too) is one space and none leads or trails.
+# Bytes, not characters: awk stops on a line a multibyte locale cannot decode,
+# and every open would then append the lines again.
+_attribute_line_present() {  # file line
+    env LC_ALL=C awk -v want="$2" '
+        { gsub(/[[:space:]]+/, " "); sub(/^ /, ""); sub(/ $/, "") }
+        $0 == want { found = 1; exit }
+        END { exit !found }
+    ' "$1" 2>/dev/null
+}
+
+# Append one line to an attributes file on a line of its own: a file whose
+# last line has no newline gets one first, or git would read the two as one.
+_append_attribute_line() {  # file line
+    if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+        printf '\n' >> "$1"
     fi
+    printf '%s\n' "$2" >> "$1"
+}
+
+# A clone delivers symlinks like any other file, and cs writes through them
+# at open: `.cs/README.md -> ~/.zshrc` would take the README's frontmatter.
+# Refuse any link under .cs, or at a root file cs rewrites, whose writes land
+# outside the session. A link to a directory inside the session is followed
+# and that directory scanned too: .cs/memory -> ../payload makes payload's
+# links cs's write targets. A hand-made vault's mount is the user's and is not
+# walked; cs_write_atomic still refuses a write leading out of it.
+_refuse_links_out_of_session() {  # dir
+    local dir="$1" dir_p p link real cur todo out seen="" prune="" cfg=""
+    dir_p=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 0
+    # cs links the shell's settings, skills and the rest into an encrypted
+    # session's config dir by design; that dir is skipped only while
+    # .cs/claude-config is cs's own link into a vault set up by hand. A clone
+    # can commit the layout but not the pre-open that makes it a vault.
+    if _cs_hand_made_vault "$dir" >/dev/null; then
+        prune="$dir_p/.cs/vault-mnt"
+        if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
+            cfg=$(cd -P -- "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+        fi
+    fi
+    # A flat-layout session (Codex r2 #1) has Phase 1 move these root entries
+    # into .cs/ and then write them; vet them before the move.
+    local roots="CLAUDE.local.md .gitignore .gitattributes .claude .claude/settings.local.json"
+    if needs_cs_migration "$dir_p"; then
+        roots="$roots logs archives age-recipients README.md discoveries.md summary.md secrets.enc secrets.age"
+    fi
+    for p in $roots; do
+        [ -L "$dir_p/$p" ] || continue
+        out=$(_cs_write_leaves_session "$dir" "$dir_p/$p") || continue
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
+        error "$p is a symlink to $(_cs_plain_name "$(readlink "$dir_p/$p")" 160), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+    done
+    todo="$dir_p/.cs"
+    while [ -n "$todo" ]; do
+        cur=${todo%%$'\n'*}
+        if [ "$cur" = "$todo" ]; then todo=""; else todo=${todo#*$'\n'}; fi
+        case "$cur" in "$prune"|"$prune"/*) [ -n "$prune" ] && continue ;; esac
+        case "$cur" in "$cfg"|"$cfg"/*) [ -n "$cfg" ] && continue ;; esac
+        case "$seen" in *$'\n'"$cur"$'\n'*) continue ;; esac
+        seen="$seen"$'\n'"$cur"$'\n'
+        while IFS= read -r -d '' p; do
+            link=$p real=""
+            if [ -d "$p" ]; then
+                # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
+                real=$(cd -P -- "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
+                # The walk list is newline-separated, so such a name would split
+                # into two entries and neither would be scanned (Codex r2 #2).
+                # Named before the link check, which refuses the same link as
+                # leading out without saying why.
+                case "$real" in *$'\n'*)
+                    error "$(_cs_plain_name "${link#"$dir_p"/}" 160) leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+                esac
+            fi
+            if out=$(_cs_write_leaves_session "$dir" "$p"); then
+                case "$out" in "cs could not ask git"*) error "$out" ;; esac
+                error "$(_cs_plain_name "${p#"$dir_p"/}" 160) is a symlink to $(_cs_plain_name "$(readlink "$p")" 160), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+            fi
+            [ -n "$real" ] || continue
+            todo="$todo${todo:+$'\n'}$real"
+        done < <(find "$cur" \( -path "${prune:-/nonexistent}" -o -path "${cfg:-/nonexistent}" \) -prune -o -type l -print0 2>/dev/null)
+    done
+}
+
+# Refuse to proceed if per-actor local state has been committed to git, or
+# sits behind a symlink: git tracks a link as one path, so `.cs -> payload`
+# or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
+# check below while the link resolves to it on disk.
+cs_assert_local_untracked() {
+    local dir="$1" sub tracked
+    for sub in .cs .cs/local; do
+        [ -L "$dir/$sub" ] || continue
+        error "$sub is a symlink to $(_cs_plain_name "$(readlink "$dir/$sub")" 160) (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
+    done
+    # A submodule or nested repository at .cs keeps its files out of the
+    # session's index, so the pathspec check below would never see them.
+    if _cs_nested_cs "$dir"; then
+        error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
+    fi
+    # Asked before the link walk: a vault set up by hand needs git's answer
+    # about .cs/local before its links out are let through, so when git
+    # cannot answer, git's own error is the one shown.
+    ! tracked=$(cs_tracked_files_notice "$dir/.cs/local" "$dir") || error "$tracked"
+    _refuse_links_out_of_session "$dir"
+    # .cs/private takes .cs/local's place for the queue, the mailbox and the
+    # rotation marker (cs_private_dir), so nothing in it may come from git
+    # either. Asked of the directory the name resolves to, in whichever
+    # repository lists it: an encrypted session commits the link itself, and
+    # a clone can commit the link beside a directory it tracks elsewhere.
+    ! tracked=$(cs_tracked_files_notice "$dir/.cs/private" "$dir") || error "$tracked"
 }
 
 # For a checkout cs hides itself in through info/exclude (git_bookkeeping:
@@ -32,16 +138,23 @@ cs_assert_local_untracked() {
 # lands on the target, which may be tracked). Empty when the open is safe. An
 # exclude hides only untracked files, so a tracked one here would be dirtied
 # on every open; checked at adoption to skip, and at every open to refuse,
-# since the branch moves on.
+# since the branch moves on. A git that cannot answer prints "cs could not ask
+# git ...", which both callers refuse as it stands.
 _exclude_session_tracked_conflict() {  # dir
-    local dir="$1" p
+    local dir="$1" p list why
     for p in .claude .claude/settings.local.json CLAUDE.local.md .cs; do
         if [ -L "$dir/$p" ]; then
             printf '%s is a symlink' "$p"
             return 0
         fi
     done
-    git -C "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null | head -1
+    if ! list=$(_cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null); then
+        why=$(_cs_git_error_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md)
+        ! _cs_git_not_a_repo "$why" || return 0
+        printf 'cs could not ask git whether the branch tracks a file cs rewrites at open: %s' "$(_cs_git_complaint "$why")"
+        return 0
+    fi
+    printf '%s' "${list%%$'\n'*}"
 }
 
 # True when cs created this session directory, and so owns its mode. Two ways to
@@ -55,12 +168,12 @@ _exclude_session_tracked_conflict() {  # dir
 # on exactly the machines it was written on.
 _session_root_is_cs_owned() {  # session_dir
     local dir root e
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-    root=$(cd "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    root=$(cd -- "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
     case "$dir" in "$root"/*) ;; *) return 1 ;; esac
     for e in "${SESSIONS_ROOT:-}"/*; do
         [ -L "$e" ] || continue
-        [ "$(cd "$e" 2>/dev/null && pwd -P)" = "$dir" ] && return 1
+        [ "$(cd -- "$e" 2>/dev/null && pwd -P)" = "$dir" ] && return 1
     done
     return 0
 }
@@ -87,15 +200,19 @@ _harden_session_meta() {  # session_dir
 # is never committed, so a cloned session cannot make cs run code (a file sync
 # copies it like any other file).
 # It runs in the session directory on the user's terminal (a password prompt
-# needs the TTY), and any non-zero exit aborts the open.
+# needs the TTY), and any non-zero exit aborts the open. CS_LIVE_LOCK_PID
+# carries the pid live_lock_pid reads from the session lock, empty when no
+# running process holds it, so the hook needs no lock rule of its own. The
+# open has not taken the lock yet, so the pid is the previous holder's.
 _run_pre_open() {  # session_name, session_dir
-    local hook="$2/.cs/local/pre-open" rc=0
+    local hook="$2/.cs/local/pre-open" rc=0 lock_pid
     [ -e "$hook" ] || return 0
     # `git add -f` can still commit into the ignored .cs/local/; refuse before
     # running anything a clone could have delivered.
     cs_assert_local_untracked "$2"
     [ -x "$hook" ] || error "$1: .cs/local/pre-open is not executable; chmod +x it, or remove it."
-    (cd "$2" && "$hook") || rc=$?
+    lock_pid=$(live_lock_pid "$2/.cs")
+    (cd -- "$2" && CS_LIVE_LOCK_PID="$lock_pid" "$hook") || rc=$?
     [ "$rc" -eq 0 ] || error "$1: .cs/local/pre-open exited $rc; not opening the session."
     _arm_vault_detach "$2"
 }
@@ -114,7 +231,7 @@ _refuse_unmounted_meta() {  # session_name, session_dir
             error "$1: .cs/$sub is a file, not a directory or a link into encrypted storage. Remove it, or link it into the vault, then reopen."
         fi
         [ -L "$link" ] && [ ! -e "$link" ] || continue
-        target=$(readlink "$link")
+        target=$(_cs_plain_name "$(readlink "$link")" 160)
         error "$1: .cs/$sub points at $target, which is missing (encrypted storage not mounted?). Mount it, then reopen."
     done
     _refuse_plaintext_beside_private "$1" "$2"
@@ -135,8 +252,8 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 # The cs content files a plain session keeps in .cs/local and an encrypted one
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
 # and cs -encrypt moves each into the vault.
-CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot mail
-    queue queue.tmp queue.state queue.mode queue.done queue.declined queue.migrating
+CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot memory-archive.snapshot mail
+    queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
     pending-switch finish-progress.json"
 
@@ -214,8 +331,16 @@ EOF
     fi
 
 
-    # Initialize session log (machine-local; never git-synced)
-    cat > "$session_dir/.cs/local/session.log" << EOF
+    # adopt runs this in the user's own project, whose CLAUDE.local.md may
+    # already hold their lines.
+
+    # Initialize session log (machine-local; never git-synced). Only when
+    # absent: re-adopted records already carry their command log, an
+    # encrypted session's behind .cs/private. While that vault is locked
+    # there is nowhere to write it, and the open refuses the locked vault.
+    local log_dir
+    if log_dir=$(cs_private_dir "$session_dir/.cs") && [ ! -e "$log_dir/session.log" ]; then
+        cat > "$log_dir/session.log" << EOF
 Agent Sessions Log
 Session: $(basename "$session_dir")
 Started: $(date '+%Y-%m-%d %H:%M:%S')
@@ -224,6 +349,7 @@ Location: $(hostname):$(pwd)
 ================================================================================
 
 EOF
+    fi
 
     # Portable storage exists regardless of the selected provider.
     mkdir -p "$session_dir/.cs"/{memory,plans}
@@ -330,10 +456,17 @@ migrate_mailbox() {  # session_dir
     _convert_legacy_inbox "$maildir"
 }
 
-# Check if session needs migration from flat layout to .cs/ directory
+# Check if session needs migration from flat layout to .cs/ directory. The
+# migration moves README.md and rewrites .gitignore, so it needs proof
+# the directory is a cs session, not just a logs/ dir any project can have:
+# every flat-layout session cs created opened logs/session.log with the line
+# "Claude Code Session Log".
 needs_cs_migration() {
-    local session_dir="$1"
-    [[ ! -d "$session_dir/.cs" ]] && { [[ -d "$session_dir/logs" ]] || [[ -f "$session_dir/discoveries.md" ]]; }
+    local session_dir="$1" first_line=""
+    [ -d "$session_dir/.cs" ] && return 1
+    [ -f "$session_dir/logs/session.log" ] || return 1
+    IFS= read -r first_line < "$session_dir/logs/session.log" || true
+    [ "${first_line%$'\r'}" = "Claude Code Session Log" ]
 }
 
 # Rewrite the read-all-narratives sentences cs wrote into existing sessions, and
@@ -409,10 +542,11 @@ _migrate_session_documents() {  # session_dir, actor_slug
             created_date=$(git -C "$session_dir" log --diff-filter=A --format=%as -- .cs/README.md 2>/dev/null | tail -1 || true)
         fi
         if [ -z "$created_date" ]; then
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
+            # GNU stat first, as _epoch_mtime asks it.
+            if created_date=$(stat -c '%y' "$readme" 2>/dev/null); then
+                created_date=${created_date%% *}
             else
-                created_date=$(stat -c '%y' "$readme" 2>/dev/null | cut -d' ' -f1 || date '+%Y-%m-%d')
+                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
             fi
         fi
         local existing_content
@@ -422,7 +556,7 @@ _migrate_session_documents() {  # session_dir, actor_slug
         # write that does not complete leaves nothing behind.
         if cs_write_atomic "$readme" printf -- '---\nstatus: active\ncreated: %s\ntags: []\naliases: ["%s"]\n---\n%s\n' \
             "$created_date" "$session_name" "$existing_content" 2>/dev/null; then
-            warn "Added frontmatter to .cs/README.md"
+            notice .cs/README.md "added frontmatter"
         else
             _CS_MIGRATE_CLEAN=0
         fi
@@ -485,7 +619,7 @@ _migrate_session_documents() {  # session_dir, actor_slug
             fm && line ~ re          { next }
             { print }
         ' "$readme"; then
-            warn "Moved machine-local fields from .cs/README.md to .cs/local/state"
+            notice .cs/README.md "machine-local fields moved to .cs/local/state or dropped"
         else
             warn "could not rewrite $readme; its machine-local fields stay in it"
             _CS_MIGRATE_CLEAN=0
@@ -560,10 +694,11 @@ _migration_stamp_state() {  # session_dir, actor_raw
             return 0
         fi
     done
-    # setup_merge_attributes sets merge.ours.driver in a checkout cs commits
-    # into, and the doctor's advice for a missing one is to launch once. Every
-    # `git config` write rewrites .git/config (SessionStart's hideRefs on each
-    # launch among them), so its modification time says nothing: read the value.
+    # setup_merge_attributes sets merge.ours.driver in every checkout but an
+    # adopted Claude Code worktree, and the doctor's advice for a missing one
+    # is to launch once. Every `git config` write rewrites .git/config
+    # (SessionStart's hideRefs on each launch among them), so its modification
+    # time says nothing: read the value.
     if [ -e "$1/.git" ] && [ "$(_read_local_state "$1/.cs/local/state" git_bookkeeping)" != "exclude" ] \
         && [ "$(git -C "$1" config --get merge.ours.driver 2>/dev/null)" != "true" ]; then
         echo "stale: merge.ours.driver is not set"
@@ -597,6 +732,10 @@ _write_migration_stamp() {  # session_dir, actor_raw, actor_slug, engine
 migrate_session() {
     local session_dir="$1" engine="${2:-claude}"
 
+    # Per-actor local state must never be committed or linked elsewhere;
+    # refuse before the hardening below chmods through a link.
+    cs_assert_local_untracked "$session_dir"
+
     # Sessions created before cs set a mode are still world-readable on disk,
     # and git does not record directory modes, so a fresh clone recreates .cs
     # under the cloner's umask however it was set on the other machine.
@@ -611,13 +750,12 @@ migrate_session() {
         chmod 700 "$session_dir" 2>/dev/null || true
     fi
 
-    # Per-actor local state must never be committed; refuse if it has been.
-    cs_assert_local_untracked "$session_dir"
     if [ "$(_read_local_state "$session_dir/.cs/local/state" git_bookkeeping)" = "exclude" ]; then
         local conflict
         conflict=$(_exclude_session_tracked_conflict "$session_dir")
         if [ -n "$conflict" ]; then
             case "$conflict" in
+                "cs could not ask git"*) error "$conflict" ;;
                 *symlink) error "$conflict in $session_dir, and cs writes through it at every open. Replace it with a real file or directory, or cs -rm the session." ;;
                 *) error "$conflict is tracked on the branch in $session_dir, and cs would rewrite it at every open. Stop tracking it, or cs -rm the session." ;;
             esac
@@ -666,6 +804,10 @@ migrate_session() {
     if [ "$tracked_tree_is_ours" = 1 ] && [ "$repair" = all ]; then
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
+        # Names the rules just appended to a tracked .gitignore. Adopt merges
+        # the same rules and names .gitignore in its own row of what it left
+        # (_explain_nothing_committed) instead.
+        _explain_gitignore_additions "$session_dir"
     fi
 
     # Phase 1: Structural migration (flat layout -> .cs/ directory)
@@ -684,23 +826,18 @@ migrate_session() {
         migrate_if_exists "$session_dir/secrets.enc" "$session_dir/.cs/secrets.enc"
         migrate_if_exists "$session_dir/secrets.age" "$session_dir/.cs/secrets.age"
 
-        # Update .gitignore for new structure
-        create_session_gitignore "$session_dir"
+        # Merged, not written: the session's own rules keep hiding their
+        # files from the user's next `git add`.
+        ensure_cs_gitignore_entries "$session_dir"
 
-        echo ""
-        echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"
-        echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
-        echo ""
+        notice .cs/ "holds the session metadata, moved out of the workspace root"
 
-        # Commit the migration if git is initialized
+        # The moves stay in the working tree for the user to commit, and the
+        # session records the mode its features take, as adopt does.
         if [ -d "$session_dir/.git" ]; then
-            (
-                cd "$session_dir" || exit 0
-                git add -A 2>/dev/null || true
-                if ! git diff --cached --quiet 2>/dev/null; then
-                    git commit -q -m "Migrate session structure to .cs/ metadata directory" 2>/dev/null || true
-                fi
-            )
+            _explain_nothing_committed "$session_dir" .cs logs archives age-recipients \
+                README.md discoveries.md summary.md secrets.enc secrets.age .gitignore .gitattributes
+            _record_feature_mode "$session_dir"
         fi
     fi
 
@@ -741,7 +878,7 @@ migrate_session() {
         if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$ga" ] && grep -q 'logs/session\.log merge=union' "$ga"; then
             cs_write_atomic "$ga" awk '!/logs\/session\.log merge=union/' "$ga" 2>/dev/null || true
         fi
-        warn "Moved .cs/logs/session.log to ${log_dir#"$session_dir"/}/session.log"
+        notice session.log "moved from .cs/logs/ to ${log_dir#"$session_dir"/}/"
     fi
 
     # Remove inert sync/remote metadata left by older versions (the sync
@@ -760,10 +897,17 @@ migrate_session() {
     # ensure the narrative file + index pointer exist (idempotent; skipped while
     # the migration stamp is fresh).
     migrate_discoveries_to_narrative "$session_dir"
+    actor_slug=$(_slugify "$actor_raw")
     if [ "$repair" != none ]; then
-        actor_slug=$(_slugify "$actor_raw")
         ensure_narrative_file "$session_dir" "$actor_slug"
     fi
+
+    # Phase 13: the resume protocol reads live narratives only; rewrite the
+    # read-all sentences cs wrote into files that predate rotation. The
+    # narrative is no stamp probe and old wording can come back into it (a
+    # merge, a restore), so this runs on every open: its probe reads eight
+    # lines of the narrative and greps MEMORY.md and CLAUDE.local.md.
+    migrate_narrative_resume_wording "$session_dir" "$actor_slug"
 
     if [ "$repair" = all ]; then
         _migrate_session_documents "$session_dir" "$actor_slug"

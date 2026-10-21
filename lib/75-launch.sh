@@ -36,10 +36,11 @@ _handoff_is_local() {  # handoff_file, session_dir
         }
     ' "$1" 2>/dev/null)
     [ -n "$parent" ] || return 1
-    # Anchored to the line session-start.sh writes, not a bare substring: the
-    # bash-logger appends every command to this same file, so an unanchored
-    # match reads a logged `claude --resume <uuid>` as proof this checkout ran
-    # that conversation and drops the one warning shown before r.
+    # Anchored to the line session-start.sh writes, not a bare substring: this
+    # file can hold the `BASH:` command lines the retired bash-logger hook
+    # appended, so an unanchored match reads a logged `claude --resume <uuid>`
+    # as proof this checkout ran that conversation and drops the one warning
+    # shown before r.
     grep -Fq "Session started" "$log" 2>/dev/null \
         && grep -E -q "Session started \(.*ID: $parent\)" "$log" 2>/dev/null
 }
@@ -58,15 +59,17 @@ _handoff_is_local() {  # handoff_file, session_dir
 # a spent or absent file is stale and the scan still answers. The marker names
 # a basename, never a path: a separator would resolve outside the handoff store.
 _pending_handoff_pick() {  # session_dir
-    local session_dir="$1" pending="" hf armed handoffs
+    local session_dir="$1" pending="" hf armed handoffs skipped=""
     # An encrypted session keeps its handoffs in its vault; a locked one
     # offers nothing (the open has already refused it).
     handoffs=$(cs_handoff_dir "$session_dir/.cs") || return 0
     for hf in "$handoffs"/*.md; do
         [ -f "$hf" ] || continue
         _handoff_is_unconsumed "$hf" || continue
+        _cs_is_plain_name "${hf##*/}" || { skipped=1; continue; }
         pending="$hf"
     done
+    [ -z "$skipped" ] || printf 'Skipped a rotation handoff in %s/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it.\n' "${handoffs#"$session_dir/"}" >&2
     armed=$(_rotation_marker_basename "$session_dir")
     if [ -n "$armed" ] && [ -f "$handoffs/$armed" ] \
         && _handoff_is_unconsumed "$handoffs/$armed"; then
@@ -83,6 +86,7 @@ _rotation_marker_basename() {  # session_dir
     [ -f "$marker" ] || return 0
     armed=$(tr -d '[:space:]' < "$marker" 2>/dev/null) || armed=""
     case "$armed" in */*|*\\*) armed="" ;; esac
+    _cs_is_plain_name "$armed" || armed=""
     printf '%s' "$armed"
 }
 
@@ -135,8 +139,9 @@ _rotate_force_notice_file() {
 }
 
 # Mirrors forceThreshold() in mods/cs/hooks/register.tsx: unset is the
-# default, `off` (any case) and zero turn it off, digits move it, and anything
-# else is the default rather than silence. KEEP IN SYNC with that resolver.
+# default, `off` (any case) and zero turn it off, 1 to 100 moves it, and
+# anything else, a number past 100 included, is the default rather than
+# silence. KEEP IN SYNC with that resolver.
 _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     local raw="${CS_ROTATE_FORCE_CTX-}"
     raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
@@ -146,7 +151,9 @@ _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     esac
     case "$raw" in
         *[!0-9]*) echo 80; return 0 ;;
-        *) [ "$((10#$raw))" -eq 0 ] && return 0; echo "$((10#$raw))" ;;
+        *) [ "$((10#$raw))" -eq 0 ] && return 0
+           [ "$((10#$raw))" -gt 100 ] && { echo 80; return 0; }
+           echo "$((10#$raw))" ;;
     esac
 }
 
@@ -307,7 +314,7 @@ _seed_session_claude_json() (  # session_config_dir, shell_claude_json
         esac
         hops=$((hops + 1))
     done
-    parent=$(cd "$(dirname "$dest")" && pwd -P) || return 1
+    parent=$(cd -- "$(dirname "$dest")" && pwd -P) || return 1
     dest="$parent/$(basename "$dest")"
     lock="$dest.lock"
     # Bash 3.2 unwinds function locals before an EXIT trap after error().
@@ -462,15 +469,7 @@ _launch_claude_bound() {
     local force="${4:-}"
     local merge_feature="${5:-}"
     local intent="${6:-auto}"
-
-    # Terminal theme (and its real background RGB when known) for the statusline
-    # and hooks, detected while cs still owns the tty and reused by the session
-    # launched next.
-    _export_term_theme
-    # Refresh the palette now that the theme is known so everything below —
-    # the collision menu and the launch banner — reads on a light canvas
-    # (colors were first set at startup, defaulting to dark).
-    setup_palette
+    local remote_mode="${7:-}"
 
     # The core acquired the lease and exported this run's session context.
     # A force selected in its collision menu also bypasses native duplicates.
@@ -510,7 +509,7 @@ _launch_claude_bound() {
         _found=$(_discover_session_uuid_in "$(_claude_project_dir "$session_dir")")
         if _is_uuid "$_found"; then
             _set_local_state "$session_dir/.cs/local/state" claude_session_id "$_found"
-            warn "Bound claude_session_id in .cs/local/state to $_found"
+            notice .cs/local/state "bound claude_session_id to $_found"
             claude_session_id="$_found"
         fi
     fi
@@ -582,12 +581,16 @@ _launch_claude_bound() {
     # A pane claude opens itself (an agent-team teammate) is started by the
     # tmux server, which hands it the server's session environment, not the
     # lead's: the truecolor override cs exported for claude never reaches it,
-    # so the teammate's status line renders in the muted 256-colour fallback.
-    # Publish the value into the tmux session this launch runs in, so panes
-    # split from it inherit it. Best-effort: a pane cs did not launch is the
-    # documented fallback, not a failure.
+    # so the teammate's status line renders in the muted 256-colour fallback,
+    # and neither does the sessions root, which the teammate's hooks need to
+    # recognise this session when they walk in from its directory (a session
+    # under a non-default root would decline). Publish both into the tmux
+    # session this launch runs in, so panes split from it inherit them.
+    # Best-effort: a pane cs did not launch is the documented fallback, not a
+    # failure.
     if [ -n "${TMUX:-}" ]; then
         _tmux set-environment CLAUDE_CODE_TMUX_TRUECOLOR "$CLAUDE_CODE_TMUX_TRUECOLOR" 2>/dev/null || true
+        _tmux set-environment CS_SESSIONS_ROOT "$SESSIONS_ROOT" 2>/dev/null || true
     fi
     _iterm_tab_through_tmux
     # An adopted session's name lives only in the symlink pointing here, which a
@@ -632,9 +635,17 @@ _launch_claude_bound() {
     else
         export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS="${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-1}"
     fi
+    # The secrets identity is this session's alone: a base launched from a
+    # shell inside a feature, or from one a cs -secrets arm started, would
+    # otherwise hand its claude that session's target (CS_SECRETS_SESSION) or
+    # caller (CS_SECRETS_CALLER), and cs-secrets reads both ahead of
+    # CLAUDE_SESSION_NAME.
     if [ -n "$cs_base" ]; then
         export CS_SECRETS_SESSION="$cs_base"
+    else
+        unset CS_SECRETS_SESSION
     fi
+    unset CS_SECRETS_CALLER
     # Export both names defensively: Claude Code's auto-memory resolver reads
     # CLAUDE_COWORK_MEMORY_PATH_OVERRIDE; the older CLAUDE_CODE_AUTO_MEMORY_PATH
     # is kept in case other Claude Code versions honor it instead.
@@ -661,15 +672,32 @@ _launch_claude_bound() {
     if [ -n "$claude_session_id" ]; then
         export CS_CLAUDE_SESSION_ID="$claude_session_id"
     fi
-    # Hooks identify the lead by the supervised native process's direct
-    # parent and this run's lease; descendants cannot inherit ownership.
+    # Hooks identify the native lead through its SessionStart claim and this
+    # run's lease; descendants cannot inherit ownership merely from the environment.
     export CS_LEAD_PID=$$
+    # The other test is the lead's claim on this launch, which its SessionStart
+    # writes to .cs/local/lead-pid (cs_lead_claim): the resume arm runs claude
+    # as this shell's child, and a CLAUDE_CODE_BIN that forks claude puts it
+    # further below. A claim a previous launch left is keyed by that launch's
+    # pid, which this one may have drawn again, so it goes before claude starts.
+    # After the lock: a launch that met a live session and stopped at the
+    # collision menu never gets here, so it leaves the live lead's claim.
+    # A link there is removed, not followed. A directory may hold what
+    # someone put there, so it is not removed: the open stops and names it.
+    # CS_LEAD_CLAIM tells the hooks this launch clears the file and takes the
+    # claim; under a launch without it they know the lead by the pid alone.
+    local claim_file="$session_dir/.cs/local/lead-pid"
+    if [ -d "$claim_file" ] && [ ! -L "$claim_file" ]; then
+        error "$claim_file is a directory, where cs keeps the lead's claim on its launch; remove it and open the session again"
+    fi
+    rm -f "$claim_file"
+    export CS_LEAD_CLAIM=1
 
     # Where this cs is, for the mods: `$.process.run` takes no shell and the
     # claude process's PATH is not this shell's. Set on every launch, so a
     # value inherited from a parent launch is always replaced by this one's.
     local self_bin
-    self_bin="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+    self_bin="$(cd -- "$(dirname "$0")" && pwd -P)/$(basename "$0")"
     export CS_BIN="$self_bin"
 
     # The cs-update mod draws the pending release's notes and runs the update
@@ -684,50 +712,206 @@ _launch_claude_bound() {
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
     fi
 
+    # The session is open and every export above is in place: `--remote`
+    # serves it through claude remote-control instead of starting claude.
+    # A staged spawn seed stays staged for an interactive open, since the
+    # server takes no prompt to kick it with, and one line says so.
+    if [ -n "$remote_mode" ]; then
+        [ ! -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ] \
+            || warn "A spawn seed is staged for $session_name; it stays staged for the next cs $session_name, since claude remote-control takes no prompt to start it with."
+        _serve_remote "$session_name" "$session_dir" "$remote_mode"
+        return $?
+    fi
+
     # Spawn seed: tasks and a brief staged by cs -spawn for this session.
     # Consumed here, after the already-running guard and before any exec arm,
     # so a window that died before launching self-heals on the session's next
     # open. A stale seed (>1h) is set aside with its brief, never silently
     # armed days later.
+    #
+    # Consent (audit H2): a seed is a file in .spawn/, and anything that can
+    # write there could arm the next open of this name with its own tasks and
+    # a kick that says "begin". Line 1 of the seed is a token the spawn's own
+    # tmux window carries in CS_SPAWN_TOKEN; only that window consumes unasked.
+    # Every other open (by hand, a script, a window that died and was reopened
+    # elsewhere) is shown the seed as data and asked. The token was taken out
+    # of the environment before the lock (above), so claude, a collision
+    # redirect and any nested launch never carry it.
     local spawn_kick=""
-    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed"
-    local _brief="$SESSIONS_ROOT/.spawn/$session_name.brief.md"
+    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed" _claim
     if [ -f "$_seed" ]; then
         local _now _age
         _now=$(date +%s)
         _age=$(( _now - $(_epoch_mtime "$_seed") ))
         if [ "$_age" -gt 3600 ]; then
             mv "$_seed" "$_seed.stale" 2>/dev/null || true
-            [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
             warn "Stale spawn seed set aside: $_seed.stale (re-run cs -spawn if still wanted)"
         else
-            local _spawner="" _line _n=0 _first=1 _has_brief=0
-            # The brief moves in before any task is queued, and a move that
-            # fails stops the launch with the seed and brief still staged, so
-            # the next open retries. Consuming the seed regardless would start
-            # the session without the brief it was opened for, and leave the
-            # brief to attach to a later spawn of the same name. errexit does
-            # not see a failed left operand, so the abort is explicit.
-            if [ -f "$_brief" ]; then
-                # A directory in the brief's place would take the file INSIDE
-                # it and the move would report success.
+            # Read the seed once: line 1 the token, line 2 the spawner, then
+            # one task per line up to the brief marker, if the seed has one;
+            # the brief is the rest of the file and is never read as tasks.
+            # Whitespace-only lines are skipped, not merely empty ones:
+            # _queue_add trims and then errors on an empty body, which under
+            # errexit would abort the whole session launch over a stray space
+            # in a hand-edited seed.
+            local _seed_token="" _spawner="" _line _lineno=0 _n=0 _mark
+            local _tasks
+            _tasks=()
+            # Everything below reads the seed under a name this open owns
+            # (_spawn_put_back_claim in lib/52-spawn.sh): a seed published in
+            # .spawn while the consent ask waits is not the one shown, and the
+            # tasks, the brief, a decline and the delete all belong to the
+            # seed that was shown. The traps put it back if the open stops.
+            _claim="$SESSIONS_ROOT/.spawn/.$session_name.seed.claim.$$"
+            mv "$_seed" "$_claim" \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
+            _CS_SPAWN_SEED="$_seed"
+            _CS_SPAWN_CLAIM="$_claim"
+            _mark=$(_spawn_brief_mark_line "$_claim") \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _lineno=$((_lineno + 1))
+                [ "$_lineno" != "$_mark" ] || break
+                case "$_lineno" in
+                    1) _seed_token="$_line"; continue ;;
+                    2) _spawner="$_line"; continue ;;
+                esac
+                case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
+                _tasks+=("$_line")
+                _n=$((_n + 1))
+            done < "$_claim"
+            # Never empty-equals-empty: a seed with no token line (older cs,
+            # or hand-written) is foreign to every open.
+            local _consume=1
+            if [ -n "$_spawn_token" ] && [ "$_spawn_token" = "$_seed_token" ]; then
+                :
+            else
+                _consume=0
+                # Shown as data: control characters stripped, so a crafted
+                # seed cannot draw over the question it is answering.
+                local _shown_spawner _shown
+                _shown_spawner=$(printf '%s' "$_spawner" | tr -d '[:cntrl:]')
+                echo
+                printf "${GOLD}A spawn seed is staged for this session:${NC} %s\n" "$_seed"
+                printf '    spawner: %s\n' "${_shown_spawner:-(none)}"
+                if [ -n "$_mark" ]; then
+                    printf '    brief:   inline, %s bytes (becomes .cs/brief.md)\n' \
+                        "$(tail -n +"$((_mark + 1))" "$_claim" | wc -c | tr -d ' ')"
+                fi
+                if [ "$_n" -gt 0 ]; then
+                    printf '    tasks (queued and armed; the walk-away drain runs them unattended):\n'
+                    local _i=0
+                    for _line in ${_tasks[@]+"${_tasks[@]}"}; do
+                        _i=$((_i + 1))
+                        _shown=$(printf '%s' "$_line" | tr -d '[:cntrl:]')
+                        printf '      %d. %s\n' "$_i" "$_shown"
+                    done
+                fi
+                # The answer is a keypress on a terminal, never redirected
+                # stdin: `cs name <<< ""` hands read a newline, which is the
+                # empty answer the default arm took (Codex round 1), and a
+                # script could type y as easily. With no terminal the seed
+                # stays staged for an attended open and this launch goes on
+                # without it. On a terminal: Enter or y takes the seed, n or
+                # Escape sets the seed and brief aside like a stale pair so
+                # the next open does not ask again, any other key asks
+                # again, and EOF leaves it staged.
+                if [ ! -t 0 ]; then
+                    _spawn_put_back_claim
+                    warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                else
+                    local _answer
+                    while :; do
+                        printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
+                        if ! IFS= read -rsn1 _answer; then
+                            echo
+                            _spawn_put_back_claim
+                            warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                            break
+                        fi
+                        echo
+                        case "$_answer" in
+                            ''|[yY]) _consume=1; break ;;
+                            $'\e'|[nN])
+                                _CS_SPAWN_CLAIM=""
+                                mv "$_claim" "$_seed.stale" 2>/dev/null || true
+                                warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
+                                break ;;
+                        esac
+                    done
+                fi
+            fi
+        fi
+        if [ "${_consume:-0}" = 1 ]; then
+            local _has_brief=0 _qdir
+            # The spawner becomes the worker's report-back address, in
+            # spawned-by and in the kick's `cs -msg <spawner>`, so a seed
+            # being taken has it held to the session-name rules cs -spawn
+            # holds it to, in a subshell since both rules exit on a bad name.
+            # A seed that breaks them is refused before anything is written
+            # or queued, and the trap puts it back. A seed left staged or
+            # declined above is not taken, so nothing is asked of it.
+            if [ -n "$_spawner" ] \
+                && ! ( cs_split_worktree_name "$_spawner" || validate_session_name "$_spawner" ) >/dev/null 2>&1; then
+                error "Spawn seed $_seed names a spawner that is not a session name: $(_cs_plain_name "$_spawner" 80) (seed kept; remove it or re-run cs -spawn, then re-open the session)"
+            fi
+            # The brief is written in before any task is queued, and a write
+            # that fails stops the launch with the seed still staged, so the
+            # next open retries. Consuming the seed regardless would start the
+            # session without the brief it was opened for. errexit does not
+            # see a failed left operand, so the abort is explicit.
+            if [ -n "$_mark" ]; then
+                # A link in the brief's place would turn the write into one
+                # over whatever it names; a directory would take the file.
+                [ ! -L "$session_dir/.cs/brief.md" ] \
+                    || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a link (seed kept; remove it and re-open the session to retry)"
                 [ ! -d "$session_dir/.cs/brief.md" ] \
                     || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a directory (seed kept; remove it and re-open the session to retry)"
-                mv "$_brief" "$session_dir/.cs/brief.md" \
+                cs_write_atomic "$session_dir/.cs/brief.md" tail -n +"$((_mark + 1))" "$_claim" \
                     || error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"
                 _has_brief=1
             fi
-            while IFS= read -r _line || [ -n "$_line" ]; do
-                if [ "$_first" = 1 ]; then _spawner="$_line"; _first=0; continue; fi
-                # Skip whitespace-only lines, not merely empty ones: _queue_add
-                # trims and then errors on an empty body, which under errexit
-                # would abort the whole session launch over a stray space in a
-                # hand-edited seed.
-                case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
-                _queue_add "$session_dir/.cs/local" "$_line"
-                _n=$((_n + 1))
-            done < "$_seed"
-            [ "$_n" -eq 0 ] || _queue_set_state "$session_dir/.cs/local" armed
+            # The queue is a cs content file: behind .cs/private in an
+            # encrypted session, where the drain reads it. spawned-by is an
+            # id and stays in .cs/local (docs/session-layout.md).
+            _qdir=$(cs_private_dir "$session_dir/.cs") \
+                || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            # Every write that can fail runs before the first task is queued:
+            # a failure stops the open with the seed staged again, and that
+            # seed is then the only copy of its tasks, so the retry queues
+            # each one once.
+            if [ -n "$_spawner" ] && { [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; }; then
+                printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
+                    || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
+            fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
+            for _line in ${_tasks[@]+"${_tasks[@]}"}; do
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
+            done
+            # Once its tasks are queued the seed is spent: only the claimed
+            # seed is deleted (one published since stays staged for its own
+            # open), and a failure from here on cannot put it back to be
+            # queued a second time.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
+            if [ "$_n" -gt 0 ]; then
+                _queue_set_state "$_qdir" armed \
+                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+            fi
             if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
                 local _work=""
                 [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."
@@ -737,13 +921,11 @@ _launch_claude_bound() {
                     _work="$_work Then begin."
                 fi
                 if [ -n "$_spawner" ]; then
-                    printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by"
                     spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg $_spawner -k result \"...\""
                 else
                     spawn_kick="$_work"
                 fi
             fi
-            rm -f "$_seed"
         fi
     fi
     # Arming the ritual is an explicit action the user took seconds ago, so it
@@ -900,7 +1082,7 @@ EOF
     _tab_color=$(_session_color_rgb "$claude_session_color")
     set_tab_title "cs: $session_name" "${_tab_color:-auto:$session_name}" "$session_name"
 
-    cd "$session_dir" || return 1
+    cd -- "$session_dir" || return 1
 
     # A new session with no recorded conversation stages its first identity
     # without asking. An existing one without a conversation is the resume
@@ -988,7 +1170,9 @@ EOF
                 local _origin=""
                 _handoff_is_local "$pending_handoff" "$session_dir" \
                     || _origin=" ${DIM}(from another checkout)${NC}"
-                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(basename "$pending_handoff")" "$_origin"
+                # .cs/handoffs/ is tracked, so a clone chooses the file name:
+                # it is printed as a plain name.
+                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)" "$_origin"
                 # One answer per row, key first, laid out like the already-open
                 # menu; the keys stay the letters the one-line ask used.
                 echo
@@ -1119,9 +1303,35 @@ _resume_lands_in_place() {  # session_dir, conversation id
     [ -f "$1/.cs/local/vault" ] && return 1
     [ -z "${CLAUDE_CONFIG_DIR+set}" ] || return 1
     file="$(_claude_project_dir "$1")/$2.jsonl"
+    [ -f "$file" ] || file=$(_relocated_worktree_transcript "$1" "$2") || return 1
     [ -f "$file" ] && command -v jq >/dev/null 2>&1 || return 1
     jq -n -R -e 'first(inputs | fromjson? | objects | select(.type == "user")) | true' \
         "$file" >/dev/null 2>&1
+}
+
+# The transcript of a session's conversation once `claude --worktree` has
+# exited: Claude Code moves it into the parent repo's project dir, and
+# `claude --resume <id>` run from the worktree still finds it there (measured
+# on 2.1.289). That dir also holds the parent's own conversations, so the file
+# counts only when it began in this worktree, by the record and first-prompt
+# checks of _discover_worktree_uuid_in, applied to that one file: the worktree
+# can hold older conversations than its newest, and the parent's other files
+# are never read. Discovery's bystander test is not applied: the id is the
+# session's already, and that test reads the first prompt's whole line, so a
+# prompt that only names the teammate frame would unbind it. The base dir is
+# the session's own, which is where the claude cs launches for this session
+# reads. Prints the path; fails when the session is no linked worktree or the
+# conversation did not begin in it.
+_relocated_worktree_transcript() {  # session_dir, conversation id
+    local git_dir common parent proj
+    git_dir=$(_git_path_abs "$1" --git-dir) || return 1
+    common=$(_git_path_abs "$1" --git-common-dir) || return 1
+    [ "$git_dir" -ef "$common" ] && return 1
+    parent=$(cd -- "$common/.." 2>/dev/null && pwd -P) || return 1
+    proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
+    [ -f "$proj/$2.jsonl" ] || return 1
+    _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
+    printf '%s\n' "$proj/$2.jsonl"
 }
 
 # Follow a chain of symlinks to the file at its end, portably (BSD readlink

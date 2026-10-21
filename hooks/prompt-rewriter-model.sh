@@ -82,7 +82,10 @@ SYS
 # EMPTY array as an unbound variable under `set -u` and aborts — so on exactly
 # the machines with no timeout(1), the ones this fallback exists for, the
 # rewrite would die before reaching the model.
-_limit="${CS_REWRITE_TIMEOUT:-25}"
+#
+# The bound is prompt-rewriter.sh's, which checks CS_REWRITE_TIMEOUT once for
+# both its countdown and this; run on its own, this takes the same default.
+_limit="${_CS_REWRITE_LIMIT:-25}"
 _tmo=()
 if command -v timeout >/dev/null 2>&1; then
     _tmo=(timeout "$_limit")
@@ -123,7 +126,7 @@ _securestore="${CLAUDE_SECURESTORAGE_CONFIG_DIR-${CLAUDE_CONFIG_DIR-}}"
 _attempt() {  # 1 = drop the ambient key, 0 = keep it
     local scrub="$1"
     if [ "$scrub" = 1 ]; then
-        cd "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
+        cd -- "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
             CLAUDE_SECURESTORAGE_CONFIG_DIR="$_securestore" \
             env -u CLAUDE_COWORK_MEMORY_PATH_OVERRIDE -u CLAUDE_CODE_AUTO_MEMORY_PATH \
                 -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_NAME \
@@ -134,7 +137,7 @@ _attempt() {  # 1 = drop the ambient key, 0 = keep it
             --tools "" \
             --system-prompt "$_system" 2>/dev/null
     else
-        cd "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
+        cd -- "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
             CLAUDE_SECURESTORAGE_CONFIG_DIR="$_securestore" \
             env -u CLAUDE_COWORK_MEMORY_PATH_OVERRIDE -u CLAUDE_CODE_AUTO_MEMORY_PATH \
                 -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_NAME \
@@ -161,11 +164,18 @@ out=$(_attempt 1) || _rc=$?
 _took=$(( SECONDS - _began ))
 
 # A user whose only credential is a Console API key has no login to fall back
-# on, so the scrubbed attempt fails in about a second. Give the key one go
-# rather than leaving the feature dead for them. Only after a FAST failure: an
-# attempt that already spent the timeout has nothing left to spend, and a second
-# would double the freeze this timeout exists to bound.
-if _failed "$_rc" "$out" && [ -n "${ANTHROPIC_API_KEY:-}" ] && [ "$_took" -lt 5 ]; then
+# on, so the scrubbed attempt answers "Not logged in". Give the key one go
+# rather than leaving the feature dead for them. That answer never spent the
+# timeout, so it is retried however long a loaded machine took to give it. Any
+# other failure is retried only when it was FAST: an attempt that already spent
+# the timeout has nothing left to spend, and a second would double the freeze
+# this timeout exists to bound.
+_not_logged_in() {  # output
+    case "$1" in 'Not logged in'*) return 0 ;; esac
+    return 1
+}
+if _failed "$_rc" "$out" && [ -n "${ANTHROPIC_API_KEY:-}" ] \
+    && { _not_logged_in "$out" || [ "$_took" -lt 5 ]; }; then
     _rc=0
     out=$(_attempt 0) || _rc=$?
 fi

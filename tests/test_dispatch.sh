@@ -72,6 +72,15 @@ test_a_separator_inside_a_verbs_arguments_survives() {
         "a separator inside a mail body belongs to the body" || return 1
 }
 
+# bin/cs is every lib/ file in one script, and bash keeps the last definition
+# of a name without a word: a second function under an existing name replaces
+# the first for every caller, which then runs code it never asked for.
+test_bin_cs_defines_each_function_once() {
+    local dups
+    dups=$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*\(\)' "$CS_BIN" | sort | uniq -d)
+    assert_eq "" "$dups" "a function defined twice in bin/cs (the later one wins)" || return 1
+}
+
 echo ""
 echo "cs argument dispatch tests"
 echo "=========================="
@@ -82,5 +91,6 @@ run_test test_separator_before_a_verb_runs_that_verb
 run_test test_a_lone_separator_reads_as_no_arguments
 run_test test_separator_after_a_session_name_still_takes_its_flags
 run_test test_a_separator_inside_a_verbs_arguments_survives
+run_test test_bin_cs_defines_each_function_once
 
 report_results

@@ -43,25 +43,29 @@ test_create_path_writes_local_md() {
 }
 
 test_pure_cs_claude_md_moves_wholesale() {
-    local dir
+    local dir out
     dir=$(create_test_session "pure")
     printf '<!-- cs:session-protocol -->\n# Session Documentation Protocol\n\nSee .cs/ for metadata.\n' > "$dir/CLAUDE.md"
-    "$CS_BIN" "pure" < /dev/null > /dev/null 2>&1 || true
+    out=$("$CS_BIN" "pure" < /dev/null 2>&1 || true)
     assert_file_not_exists "$dir/CLAUDE.md" "pure cs file is removed after the move" || return 1
     assert_file_contains "$dir/CLAUDE.local.md" "cs:session-protocol" \
         "content moved to CLAUDE.local.md" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  holds the cs session protocol, moved from CLAUDE.md' <<< "$out" \
+        || { echo "  FAIL: the open says the whole protocol moved from CLAUDE.md"; return 1; }
 }
 
 test_mixed_claude_md_splits_at_first_sentinel() {
-    local dir
+    local dir out
     dir=$(create_test_session "mixed")
     printf '# User Head\n\nUSER-KEEP\n\n<!-- cs:session-protocol -->\n# Session Documentation Protocol\n\nprotocol body .cs/\n\n<!-- cs:memory-note -->\nnote body\n' > "$dir/CLAUDE.md"
-    "$CS_BIN" "mixed" < /dev/null > /dev/null 2>&1 || true
+    out=$("$CS_BIN" "mixed" < /dev/null 2>&1 || true)
     assert_file_contains "$dir/CLAUDE.md" "USER-KEEP" "user head stays" || return 1
     assert_file_not_contains "$dir/CLAUDE.md" "cs:session-protocol" "cs sections left CLAUDE.md" || return 1
     assert_file_contains "$dir/CLAUDE.local.md" "cs:session-protocol" "protocol in local file" || return 1
     assert_file_contains "$dir/CLAUDE.local.md" "cs:memory-note" "memory note rode along" || return 1
     assert_file_not_contains "$dir/CLAUDE.local.md" "USER-KEEP" "user head did not ride along" || return 1
+    grep -Fxq -- "  CLAUDE.local.md  holds cs's sections, moved from CLAUDE.md, where your own lines stay" <<< "$out" \
+        || { echo "  FAIL: the open says cs's sections moved and the user's head stayed"; return 1; }
 }
 
 test_pre_sentinel_template_left_alone() {
@@ -123,12 +127,14 @@ test_migration_idempotent_byte_for_byte() {
 }
 
 test_memory_note_lands_in_local_md() {
-    local dir
+    local dir out
     dir=$(create_test_session "note")
     printf '<!-- cs:session-protocol -->\nprotocol only, no note, references .cs/\n' > "$dir/CLAUDE.md"
-    "$CS_BIN" "note" < /dev/null > /dev/null 2>&1 || true
+    out=$("$CS_BIN" "note" < /dev/null 2>&1 || true)
     assert_file_contains "$dir/CLAUDE.local.md" "cs:memory-note" \
         "Phase 9 adds the note to the local file" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  added cs:memory-note' <<< "$out" \
+        || { echo "  FAIL: the open says it added the note"; return 1; }
     assert_file_not_exists "$dir/CLAUDE.md" "CLAUDE.md not recreated by Phase 9" || return 1
 }
 
@@ -558,13 +564,14 @@ make_encrypted_test_session() {
     dir=$(create_test_session "$1")
     mkdir -p "$TEST_TMPDIR/vault-$1/private"
     ln -s "$TEST_TMPDIR/vault-$1/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
     echo "$dir"
 }
 
 test_encrypted_session_gains_the_encrypted_protocol() {
-    local dir
+    local dir out
     dir=$(make_encrypted_test_session "vaulted")
-    CS_ACTOR=alice "$CS_BIN" "vaulted" < /dev/null > /dev/null 2>&1 || true
+    out=$(CS_ACTOR=alice "$CS_BIN" "vaulted" < /dev/null 2>&1 || true)
     # Positive control: the open reached migrate_session's later phases.
     assert_file_contains "$dir/CLAUDE.local.md" "cs:wrap-cues" \
         "migrate ran on the encrypted session" || return 1
@@ -574,6 +581,8 @@ test_encrypted_session_gains_the_encrypted_protocol() {
         "the objective and outcome go to the narrative" || return 1
     assert_file_contains "$dir/CLAUDE.local.md" '\.cs/private/session\.log' \
         "the block names the session log behind .cs/private" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  added the encrypted-session protocol' <<< "$out" \
+        || { echo "  FAIL: the open says it added the encrypted-session protocol"; return 1; }
 }
 
 test_plain_session_has_no_encrypted_protocol() {

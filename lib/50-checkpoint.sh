@@ -1,12 +1,14 @@
 # ABOUTME: Labelled state checkpoints (save/list/show).
 # ABOUTME: Backs 'cs -checkpoint'.
 
+# A file's mtime as local date and time, "-" when it cannot be read. GNU stat
+# is asked first, as _epoch_mtime does, and its answer keeps the seconds.
 get_file_mtime() {
-    local file="$1"
-    if [[ "$OSTYPE" == darwin* ]]; then
-        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
+    local file="$1" mtime
+    if mtime=$(stat -c "%y" "$file" 2>/dev/null); then
+        printf '%s\n' "${mtime%%.*}"
     else
-        stat -c "%y" "$file" 2>/dev/null | cut -d. -f1 || echo "-"
+        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
     fi
 }
 
@@ -105,16 +107,15 @@ save_checkpoint() {
     # was taken.
     local sealed=false
     [ "$checkpoints_dir" = "$meta_dir/private/checkpoints" ] && sealed=true
-    _terminate_jsonl "$timeline_file"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$timeline_file" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "checkpoint" \
            --arg label "$label" \
            --arg file "$filename" \
            --arg branch "$timeline_branch" \
            --argjson sealed "$sealed" \
            'if $sealed then {ts: $ts, event: $event, branch: $branch}
-            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end' \
-        >> "$timeline_file"; } 2>/dev/null || true
+            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end'
 
     info "Checkpoint saved: $filename"
     echo "  Label: $label"
@@ -135,11 +136,14 @@ list_checkpoints() {
     fi
     echo "Checkpoints for session: ${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
     echo ""
+    # .cs/checkpoints is tracked in a plaintext session, so a clone chooses
+    # the file names and the labels: a name prints plain, a label without its
+    # control bytes.
     local f name label
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        name=$(basename "$f" .md)
-        label=$(grep -m1 '^# Checkpoint:' "$f" 2>/dev/null | sed 's/^# Checkpoint: //' || echo "-")
+        name=$(_cs_plain_name "$(basename "$f" .md)" 160)
+        label=$(grep -m1 '^# Checkpoint:' "$f" 2>/dev/null | sed 's/^# Checkpoint: //' | _scrub_controls || echo "-")
         printf "  %s\n    %s\n" "$name" "$label"
     done < <(ls -t "$checkpoints_dir"/*.md 2>/dev/null)
 }
@@ -160,7 +164,8 @@ show_checkpoint() {
     if [ ! -f "$path" ]; then
         error "Checkpoint not found: $name"
     fi
-    cat "$path"
+    # A clone chooses what the file says too.
+    _scrub_controls < "$path"
 }
 
 # Dispatcher for cs -checkpoint subcommand
@@ -187,7 +192,9 @@ run_checkpoint() {
 # Machine-local queue of prompts drained by the Stop hook. Files live in
 # <session>/.cs/local/ (.cs/private/ in an encrypted session): queue/ (one
 # file per task, staged via queue.tmp/),
-# queue.done, queue.state (idle|armed|draining), queue.declined (epoch).
+# queue.done, queue.state (idle|armed|draining), queue.current (the task the
+# drain last handed out), queue.failed (a reported failure the drain has not
+# parked on yet).
 # Plain files so the standalone Stop hook can read them without bin/cs's
 # helpers.
 

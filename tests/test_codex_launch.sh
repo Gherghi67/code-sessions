@@ -592,6 +592,84 @@ test_explicit_fresh_replaces_only_codex_binding() {
     assert_output_contains "$event" "\"from\":\"$old_id\"" "prior binding recorded" || return 1
 }
 
+test_fresh_acknowledgment_keeps_rotated_and_started_after_a_torn_tail() {
+    local old_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status=0 events
+    local timeline="$CS_TEST_SESSION_DIR/.cs/timeline.jsonl"
+    printf '%s\n' "$old_id" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    printf '{"event":"torn"' > "$timeline"
+
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" fresh 2>&1) || status=$?
+
+    assert_eq 0 "$status" "fresh acknowledgment failed: $output" || return 1
+    events=$(jq -cRs '[split("\n")[] | fromjson? | select(.engine == "codex")]' "$timeline")
+    assert_eq 'rotated,started' "$(jq -r 'map(.event) | join(",")' <<< "$events")" \
+        "both acknowledged events remain readable after the torn record" || return 1
+    assert_eq "$old_id" "$(jq -r '.[0].from' <<< "$events")" "rotation keeps the prior binding" || return 1
+    assert_eq "$CS_THREAD_ID" "$(jq -r '.[0].to' <<< "$events")" "rotation records the acknowledged candidate" || return 1
+    assert_eq "$CS_THREAD_ID" "$(jq -r '.[1].session_id' <<< "$events")" "the new conversation has a readable start" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-binding-codex.json" \
+        "durable lineage clears the transition's recovery record" || return 1
+}
+
+test_first_acknowledgment_keeps_started_after_a_torn_tail() {
+    local output status=0 events timeline="$CS_TEST_SESSION_DIR/.cs/timeline.jsonl"
+    printf '{"event":"torn"' > "$timeline"
+
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+
+    assert_eq 0 "$status" "first acknowledgment failed: $output" || return 1
+    events=$(jq -cRs '[split("\n")[] | fromjson? | select(.engine == "codex")]' "$timeline")
+    assert_eq started "$(jq -r 'map(.event) | join(",")' <<< "$events")" \
+        "a first start remains readable without a rotation to terminate the torn record" || return 1
+    assert_eq "$CS_THREAD_ID" "$(jq -r '.[0].session_id' <<< "$events")" "the acknowledged thread is recorded" || return 1
+    assert_eq fresh "$(jq -r '.[0].source' <<< "$events")" "the event identifies a fresh conversation" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-binding-codex.json" \
+        "the durable start clears the transition's recovery record" || return 1
+}
+
+test_resume_acknowledgment_keeps_started_after_a_torn_tail() {
+    local output status=0 events timeline="$CS_TEST_SESSION_DIR/.cs/timeline.jsonl"
+    printf '%s\n' "$CS_THREAD_ID" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    printf '{"event":"torn"' > "$timeline"
+
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+
+    assert_eq 0 "$status" "resume acknowledgment failed: $output" || return 1
+    events=$(jq -cRs '[split("\n")[] | fromjson? | select(.engine == "codex")]' "$timeline")
+    assert_eq started "$(jq -r 'map(.event) | join(",")' <<< "$events")" \
+        "a resumed start remains readable after the torn record" || return 1
+    assert_eq "$CS_THREAD_ID" "$(jq -r '.[0].session_id' <<< "$events")" "the resumed thread is recorded" || return 1
+    assert_eq resume "$(jq -r '.[0].source' <<< "$events")" "the event identifies a resumed conversation" || return 1
+}
+
+_assert_timeline_failure_keeps_pending_binding() {  # previous native id, or empty for first open
+    local previous="$1" output status=0 outside="$TEST_TMPDIR/outside-timeline.jsonl"
+    local pending="$CS_TEST_SESSION_DIR/.cs/local/pending-binding-codex.json"
+    if [ -n "$previous" ]; then
+        printf '%s\n' "$previous" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    fi
+    printf '{"event":"outside"' > "$outside"
+    ln -s "$outside" "$CS_TEST_SESSION_DIR/.cs/timeline.jsonl"
+
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" fresh 2>&1) || status=$?
+
+    assert_eq 1 "$status" "refused lineage append must fail acknowledgment: $output" || return 1
+    assert_output_contains "$output" 'prior transition remains recoverable' "the failure explains recovery" || return 1
+    assert_file_exists "$pending" "the transition remains available for recovery" || return 1
+    assert_eq "$previous" "$(jq -r '.previous_id' "$pending")" "recovery preserves the previous binding" || return 1
+    assert_eq "$CS_THREAD_ID" "$(jq -r '.candidate_id' "$pending")" "recovery records the acknowledged candidate" || return 1
+    assert_eq '{"event":"outside"' "$(cat "$outside")" "neither repair nor append writes through the link" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "the interactive CLI waits for durable acknowledgment" || return 1
+}
+
+test_refused_rotated_append_keeps_the_pending_binding() {
+    _assert_timeline_failure_keeps_pending_binding aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+}
+
+test_refused_started_append_keeps_the_pending_binding() {
+    _assert_timeline_failure_keeps_pending_binding ""
+}
+
 test_failed_fresh_preserves_codex_binding() {
     local old_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status=0
     printf '%s\n' "$old_id" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
@@ -812,6 +890,11 @@ run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
 run_test test_failed_codex_help_cannot_advertise_compatibility
 run_test test_codex_help_prose_is_not_an_approval_option
 run_test test_native_approval_launches_without_automatic_approval_support
+run_test test_fresh_acknowledgment_keeps_rotated_and_started_after_a_torn_tail
+run_test test_first_acknowledgment_keeps_started_after_a_torn_tail
+run_test test_resume_acknowledgment_keeps_started_after_a_torn_tail
+run_test test_refused_rotated_append_keeps_the_pending_binding
+run_test test_refused_started_append_keeps_the_pending_binding
 run_test test_explicit_fresh_replaces_only_codex_binding
 run_test test_failed_fresh_preserves_codex_binding
 run_test test_resume_without_binding_does_not_create

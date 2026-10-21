@@ -2,11 +2,20 @@
 
 The installer configures Claude Code hooks that enable session management features.
 
+## Skills
+
+| Skill | Behavior |
+|-------|----------|
+| [`prose-hygiene`](../skills/prose-hygiene/SKILL.md) | Judges a draft with a scoring rubric and reports its score. The caller controls revision and repeated scoring. |
+| [`/write-as-me`](../skills/write-as-me/SKILL.md) | Drafts in your voice using a writing profile. Its corpus contains typed transcript messages and supplementary writing from `.voice/sources/*.md`, included on each build. |
+
 ## How a hook finds its session (`cs-resolve.sh`)
 
 Every hook opens by sourcing `cs-resolve.sh`, a library shipped alongside them and
 never registered against an event, and calling `cs_resolve_session`. The library
-also carries `_cs_terminate_jsonl`, which repairs a JSONL tail left unterminated by
+also carries the lead claim and the tests built on it (`cs_lead_claim`,
+`cs_lead_claim_end`, `cs_is_lead`, `cs_is_shown_nested_child`, described below), and
+`_cs_terminate_jsonl`, which repairs a JSONL tail left unterminated by
 an interrupted write so the next append cannot splice two records onto one line —
 hooks cannot source `bin/cs`, so the shape is shared rather than the code. Each hook
 that appends to a JSONL journal — the shared `timeline.jsonl` or the machine-local
@@ -21,10 +30,24 @@ never registered against an event. It carries the actor rules (`cs_actor_raw`,
 `cs_actor_slug`, `_slugify`), the narrative budget (`CS_NARRATIVE_MAX_DEFAULT`,
 `CS_NARRATIVE_KEEP_DEFAULT`, `_narrative_budget`), the atomic file rewrite
 (`cs_write_atomic`: a uniquely named `.cs-tmp.` temp file in the destination's directory,
-which a session's `.gitignore` ignores, the destination's mode kept, renamed into place only when the command succeeded) and the
+which a session's `.gitignore` ignores, the destination's mode kept, renamed into place only when the command succeeded), its append and directory
+twins (`cs_append_inside`, `cs_mkdir_inside`), the link check all three run first (the
+session is the nearest directory above the destination that holds a `.cs`, unless a link
+inside an outer session leads to it, and then the outer session is the one checked; the writer
+refuses a write a link would carry out of it and names the link on stderr, and checks a
+new directory at its nearest existing level, makes it only inside a `.cs` that exists and never the `.cs` or anything above it, one level at a time, so a writer for a session removed under it fails instead of building it again; a path or link target with a name ending in a newline is refused,
+since `$(...)` drops that newline and would check a different path; hooks set `CS_WRITE_QUIET=1`, so any other write
+failure stays silent), and the
 machine-local state writers (`cs_local_state_set`, `cs_local_state_unset`), which take a
-lock beside `.cs/local/state` so cs and session-start.sh take turns, the vault holder list's add and drop (`cs_vault_holder_add`, `cs_vault_holder_drop`), and the mkdir lock they and the window title share (`_cs_mkdir_lock`,
-`_cs_mkdir_unlock`). A writer that has waited 5 seconds on a live holder writes anyway. Edit the `lib/` file and rebuild; CI's
+lock beside `.cs/local/state` so cs and session-start.sh take turns, the vault holder list's add and drop (`cs_vault_holder_add`, `cs_vault_holder_drop`), and the lock they and the window title share (`_cs_lock`,
+`_cs_unlock`): flock(2) on a `<file>.mutex.lock` file, taken through perl on fd 9, which the kernel releases when its holder exits or dies. A writer that has waited 5 seconds on a live holder writes anyway. The hooks also read a session through it the way cs does: where the content files live
+(`cs_local_dir` and `cs_private_dir`, which answer nothing while git tracks a file there, and
+`cs_handoff_dir`), whether git tracks one (`cs_files_tracked_notice`, and `_cs_head_on_git_walk`
+for a directory git would take for a repository), the pid in `.cs/session.lock` when that
+process runs (`live_lock_pid`), the `cs <name> --remote` server's pid (`_remote_server_pid`),
+the tmux window title (`cs_tmux_title_window`), and the rule that prints a name a clone
+supplies as plain text (`_cs_plain_name`). The library holds more than the functions named
+here. Edit the `lib/` file and rebuild; CI's
 build-sync job fails on a `hooks/cs-shared.sh` that differs from the build. A hook sources
 it under the same guard as `cs-resolve.sh`, and carries no copy of its own: without it,
 session-start.sh names the actor `unknown` and says the library is missing and that
@@ -40,11 +63,21 @@ path (a silent exit, or the approval payload the blocking hooks owe Claude Code)
    `cs` exports them before `exec`, so a CLI session resolves here and never reaches
    the walk. This path is what it always was.
 2. **The directory**, otherwise: walk up from `CLAUDE_PROJECT_DIR` (or the hook
-   input's `cwd`) looking for the `.cs/` that marks a session root. The nearest one
-   wins, so a session cloned inside another belongs to itself, and the walk stops at
-   `$HOME` so a stray `~/.cs` cannot adopt everything beneath it. There is no `$PWD`
-   fallback: a hook's working directory is wherever the front end left it, not a
-   statement about which session is open.
+   input's `cwd`) looking for the `.cs/` that marks a session root, and accept it only
+   when the sessions root knows it: an entry under `~/.claude-sessions` (or
+   `CS_SESSIONS_ROOT`, when the front end passes it on) that is the directory or a
+   link to it, compared by inode. cs puts every session it makes there, so a cloned
+   repository that ships a `.cs/` of its own is not a session, whatever it carries
+   under `.cs/local/`; a hook cannot run the checks `cs` runs at open, so nothing
+   inside the directory can stand in for the entry. The nearest `.cs/` decides and an
+   unknown one declines, so such a clone inside a real session binds to nothing rather
+   than to the session around it. The walk stops at `$HOME` so a stray `~/.cs` cannot
+   adopt everything beneath it. There is no `$PWD` fallback: a hook's working
+   directory is wherever the front end left it, not a statement about which session
+   is open. An agent-team teammate walks in the same way, from a pane the tmux
+   server started with its own environment, so a launch inside tmux publishes
+   `CS_SESSIONS_ROOT` into that tmux session (as it does the truecolor flag) and a
+   session under a non-default root stays recognised by its teammates.
 
 The walk is what lets cs work in front ends that fire hooks but cannot export
 environment into a session — Claude Code desktop among them, where `CLAUDE_ENV_FILE`
@@ -85,42 +118,177 @@ session fires its hooks — agent-team teammates (full claude processes with the
 top-level `SessionStart`, not in-process subagents), headless `claude -p` children,
 desktop conversations, a bare `claude` started in a session folder. The session's
 recorded conversation (`claude_session_id`) is a single slot, so exactly one of them
-may write it: the one `cs` launched. `cs` exports `CS_LEAD_PID` with the pid it hands
-to claude and Claude Code stamps every hook env with `CLAUDE_PID`, which the hook
-matches two ways, because `cs` launches two ways. The fresh-spawn arms `exec`, so
-claude carries `cs`'s own pid; the resume arm runs claude as a child — it needs the
-exit status to fall through to a fresh rebind when there is nothing to resume — so
-there `cs` is claude's parent. A context-limit fork and an in-process `/clear` keep
-the process either way. Environment cannot answer this on its own: children inherit
-exports, so a teammate carries `CS_LEAD_PID` while owning a different pid.
+may write it: the one `cs` launched (the lead). `cs` exports `CS_LEAD_PID` with the pid
+it hands to claude and Claude Code stamps every hook env with `CLAUDE_PID`. The
+fresh-spawn arms `exec`, so there claude carries `cs`'s own pid and the two are
+equal. The resume arm runs claude as a child, since it needs the exit status to fall
+through to a fresh rebind when there is nothing to resume, and a `CLAUDE_CODE_BIN`
+that forks claude rather than `exec`-ing it (`op run --`, a script without `exec`)
+puts claude below the launch pid on any arm. What the lead starts (a mod's process
+run, a `claude -p` from the Bash tool) sits below the launch pid as well and inherits
+every export, so neither the environment nor the process tree tells the lead from
+its children.
 
-The parent arm is the looser of the two, and its limit is worth stating. After an
-`exec` launch `CS_LEAD_PID` is the lead claude's own pid, so a claude that is a
-*direct* child of the lead claude is admitted. Nothing in cs spawns one, and the
-route that would otherwise reach it — a `claude -p` run through the Bash tool —
-does not, because that command runs under an intermediate shell and the nested
-claude is a grandchild. A user hook or wrapper that `exec`-chains straight into
-`claude -p` inside a session would take the slot.
+Instead, the lead claims its launch. Every launch exports `CS_LEAD_CLAIM=1` beside
+`CS_LEAD_PID`, and under it, on every `SessionStart` source, session-start.sh
+writes `.cs/local/lead-pid` as `<CS_LEAD_PID> <CLAUDE_PID> <session_id>`
+(`cs_lead_claim`). The claude carrying the launch pid always claims. Any other claude
+claims only when `ps` shows the launch pid among its ancestors, and only while no
+live claude holds the claim or the holder is one it started. Reading the holder and
+writing the claim are one step under `.cs/local/lead-pid.mutex.lock`, so two claudes
+that start at once take turns. The lead's
+`SessionStart` runs before the lead can start anything, so the first claude under
+the launch to claim is the lead and keeps the claim while it lives; a claude the
+lead started before its own `SessionStart` ran (another plugin's `SessionStart` hook
+running `claude -p`) claims first and gives way when the lead's turn comes, and gives
+way too when the two claim at the same moment. A hook
+takes a claude as the lead (`cs_is_lead`) when `CLAUDE_PID` equals `CS_LEAD_PID` or
+the claim for this launch names `CLAUDE_PID`. A claim keyed by another launch pid
+counts for nothing, and every launch removes the file once it holds the session lock,
+before claude starts, so a claim cannot speak for a later launch that drew the same
+pid. A claim whose claude pid is not a positive number (`0`, `00`, `-1`), or whose
+line goes on past the conversation id with anything but a single `ended`, is no claim
+to any hook: it names no lead, shows no claude a guest, and a claude under the launch
+claims over it. A claim with no end mark that names no live claude (its claude died
+without a `SessionEnd`) holds nothing and shows no one a guest, so the lead claims over
+it. Only a regular file is a claim:
+a hook never follows a link in its place and writes neither through a link nor over
+a directory there, silently. A launch removes a link there; it refuses to open while
+a directory sits there, and names it, since cs does not remove a directory it did not
+make. The lead's `SessionEnd`, at an end other than `/clear` or `/resume`, marks the
+claim ended, `<CS_LEAD_PID> <CLAUDE_PID> <session_id> ended`, under the same lock
+(`cs_lead_claim_end`), and leaves it in place. Claude Code runs `SessionEnd` hooks
+while the lead still lives, and a claude another `SessionEnd` hook starts then (a
+`claude -p` that summarises the session) finds the claim naming a live claude it did
+not start and gives way. Claude Code cancels a `SessionEnd` hook that runs past its
+timeout, and a claude that hook started may outlive it, so that claude may start, or
+stop, after the lead has exited. Under an ended claim every claude that is not the lead shows as
+a guest whether the lead still lives or not, so it neither rebinds the recorded
+conversation nor takes an armed rotation, the queue digest or the attention flag.
+Once the lead has exited, a claude its hooks left running is no longer under the
+launch pid, so it cannot claim either. The fresh conversation the resume arm starts
+after a quick failure carries the launch pid and claims over the ended claim; behind a
+`CLAUDE_CODE_BIN` that forks claude that conversation runs as the launch pid's child
+and claims over it too, since the lead the claim names has exited. The next launch removes the file. A
+context-limit fork, an in-process `/clear` and a compaction keep the process, and the
+next start renews the claim under the conversation now running; a `/clear` or a
+`/resume` leaves the claim unchanged.
+
+Under `cs <name> --remote` the launch pid is the remote-control server's, and the
+conversations it starts run as its children with the launch's exports. The first one
+to start claims the launch and is the lead. One started while the lead's claude
+lives, before or after the lead's conversation ended, is a guest for its whole life,
+since a conversation claims only at its `SessionStart`. The next conversation
+started after the lead's claude has exited claims over the ended claim and is the
+lead.
+
+The hooks take the first claude under the launch to claim for the lead, and that sets
+the contract for a `CLAUDE_CODE_BIN` wrapper: it must `exec` claude, or start exactly
+one claude. A claude session the wrapper runs before it `exec`s or starts the real one
+(a `claude -p` that tests a login, say) reaches its `SessionStart` while no claim stands
+and takes it. While that claude lives the launch has two leads: it rebinds
+`claude_session_id` to its own conversation, loads an armed rotation and raises the
+attention flag, and its end removes the session lock, so the real claude runs with no
+lock and the next `cs <name>` opens a duplicate without the collision menu. No hook can
+tell that claude from the real one.
+
+A session opened by a `cs` from before the claim carries no `CS_LEAD_CLAIM`, and an
+update can install these hooks while the session runs. Its hooks write and read no
+claim, so the claude carrying the launch pid is its only lead until the next
+`cs <name>`, and every other claude under the launch shows as a guest. On the exec
+arm that is every `claude -p` the lead runs: it cannot rebind the recorded
+conversation or remove the lock, and it takes neither the armed rotation nor the
+queue digest nor the attention flag. On the resume arm, or behind a
+`CLAUDE_CODE_BIN` that forks claude, the lead itself shows as a guest: no claude
+rebinds the recorded conversation or removes the lock at its end, a `/clear` loads
+no rotation, the digest stays unread, and its `Stop` raises no attention flag and
+bounces no dock. An armed rotation stays armed and unconsumed, so the next
+`cs <name>` offers it. Its hooks do none of the lead's other work either: its `Stop`
+runs no queue drain, no mail wake and no rotation nudge and gives no narrative
+reminder, and no hook arms the mailbox watch that wakes it when mail arrives. Its
+`SessionStart` sets no tab title (the tmux window or the terminal tab), and its
+`SessionEnd` does not hand the tmux window back. Behind a forking `CLAUDE_CODE_BIN`
+on a launch where claude replaces cs, an encrypted session's vault stays attached
+when the lead ends, until the next open detaches it; on the resume arm cs, still
+claude's parent, detaches it when claude exits.
+
+A claude under the launch that the claim does not name is a guest. A hook *shows*
+it to be one (`cs_is_shown_nested_child`) when the claim names another claude that
+is still alive, when the claim carries the end mark, or when the launch takes no claim and the
+claude does not carry the launch pid. Where no claim stands under a launch that takes claims, because the
+lead's `SessionStart` could not write one (git tracks a file under `.cs/local`) or
+`ps` could not show the lead was under the launch, no claude shows as a guest: what
+a guest must not take from the lead (the armed rotation, the once-only queue
+digest, the attention flag) stays with whichever claude asks, and what a guest must
+not remove (the lock) stays where it is.
+
+Each hook also asks git one question as it resolves its session: does it track a file
+in the directory that holds the queue, the mailbox and the rotation marker (`.cs/local`,
+or `.cs/private` once that name exists)? `cs` refuses to open such a session, but a
+`git pull`, a merge or a checkout can put committed files there while the session is
+open. A repository wrote a tracked file, not this session, so while git tracks one the
+hooks read no queue, mail or rotation marker from that directory and write nothing there:
+the Stop hook hands out no task, the prompt hook shows no mail, stamps no date and leaves
+the attention flag, a `/clear` loads no handoff, SessionStart records no conversation id,
+SessionEnd's vault waiter records no pid (it still detaches the vault), and the session log
+(`session.log`) stops. The status line, the `cs` and `cs-update` mods, the `rotate` skill's
+arming of its marker and `/wrap`'s last pass stand down too. The status line
+cannot ask git on every render, so each hook run leaves its answer in
+`~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
+runs. The status line reads the mark only for a name the hooks would write one for, never
+an empty name or one holding `/`. The mods, the `rotate` skill and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
+environment (`GIT_LITERAL_PATHSPECS` and its three siblings) are cleared for the question,
+since a literal pathspec would match no file and read as nothing tracked, and so are
+configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_PARAMETERS`), and cs passes `core.fsmonitor` empty, which turns it off, so a
+repository's config cannot make the question run a command. Before it asks git anything, cs
+walks from that directory up to the first directory that holds `.git`, as git's own search
+does, comparing directories by the filesystem rather than by the spelling of their paths. A
+directory on the way that holds `HEAD`, a link that leads nowhere included, counts as
+tracked, since git would take it for a repository and run the commands its config names; the
+walk catches a committed link into such a layout the same way, inside the session or out of
+it. The message names one inside the session relative to it, with the `HEAD` to delete. It
+names one outside it (a bare repository or a checkout's `.git` that holds the session, or a
+bare repository that is the session directory itself) by its whole path and ends `Run cs -rm
+to remove the session.` Git that fails to answer for any reason other than "not a git
+repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
+`safe.directory` refusal, no git on `PATH` or one that cannot run) counts as tracked: the hooks stand down the same way, `cs` refuses
+to open the session, a named verb (`cs <name> -queue` and the rest) refuses, and the message
+carries git's first `fatal:` or `error:` line, or says git is not installed or not on `PATH`, or that the git it found there cannot run. Lines that `GIT_TRACE` or a trace2 setting
+print ahead of it are not a failure. A file git tracks there still counts after you delete
+its directory. One write stays: the prompt hook's launch
+mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
+refuse on the same question. Each finished turn says why, in a system message that names the file
+and the `git rm --cached` command that untracks it, or the directory git would take for a repository. That message is all the Stop hook
+does until then: it sends no narrative reminder and no rotation nudge, and raises no
+attention flag. Its other two events do nothing: no mail wake, no rotation kick, no
+watch re-armed. The check is one `git ls-files` per
+hook run, about 0.05 to 0.09 s. `prompt-rewriter.sh` asks once per run and writes no
+`rewrite.trace` while git tracks one; `memory-index-guard.sh` asks before each subcommand
+and refuses all three with exit 2, naming the file.
 
 ## session-start.sh (SessionStart)
 
 Runs when Claude Code starts a session:
 - Logs session start (including source: `startup`, `resume`, `clear`, `compact`) to `.cs/local/session.log` (`.cs/private/session.log` in an [encrypted session](session-layout.md#encrypted-sessions), and nowhere while its vault is locked) and appends a `started` event to `.cs/timeline.jsonl`
 - On all sources: clears the statusline's attention marker (`.cs/local/attention`) — a fresh session is attended by definition — and, inside iTerm2 with shell integration installed, cancels any dock bounce the previous conversation left running (`CS_NO_ITERM2=1` disables)
-- On all sources, **for the launched conversation only** (`CLAUDE_PID` = `CS_LEAD_PID`, see above): rebinds `claude_session_id` in the machine-local `.cs/local/state` to the live conversation UUID from the hook input. Claude Code forks a new UUID when a conversation is continued past the context limit (the old transcript stays on disk), so the recorded binding can silently go stale and `cs` would resume the pre-fork conversation. Non-UUID session ids are ignored; each rebind is logged to `session.log`. Any other claude resolving the same session — teammate, `claude -p` child, desktop, walked-in — leaves the slot alone, so `cs <name>` always resumes the conversation that was opened and the `rotated` timeline lineage stays true
+- On all sources, for a claude `cs` launched under `CS_LEAD_CLAIM`: claims the launch in `.cs/local/lead-pid` (`cs_lead_claim`, see [How a hook finds its session](#how-a-hook-finds-its-session-cs-resolvesh)) before anything else asks which claude is the lead. It writes nothing while git tracks a file under `.cs/local`
+- On all sources, **for the launched conversation only** (`cs_is_lead`, after this start's claim): rebinds `claude_session_id` in the machine-local `.cs/local/state` to the live conversation UUID from the hook input. Claude Code forks a new UUID when a conversation is continued past the context limit (the old transcript stays on disk), so the recorded binding can silently go stale and `cs` would resume the pre-fork conversation. Non-UUID session ids are ignored; each rebind is logged to `session.log`. Any other claude resolving the same session — teammate, `claude -p` child, desktop, walked-in — leaves the slot alone, so `cs <name>` always resumes the conversation that was opened and the `rotated` timeline lineage stays true
 - On `startup`/`resume` only: configures `transfer.hideRefs`, and recovers autosaved changes from a crash of **this conversation only** — it reads just the current conversation's own ref (`refs/worktree/cs/session/<conversation-uuid>`), so a live sibling session's in-flight ref is never misread as a crash. It also renames its ref across a context-fork UUID rebind (a clean continuation), claims any pre-upgrade shared ref once via a compare-and-swap delete, and garbage-collects other conversations' refs older than 14 days. The whole-tree restore (`checkout <shadow ref> -- .`) is offered only when the snapshot's recorded base HEAD still matches the current HEAD; if HEAD has moved since the snapshot (a commit or rebase) or the snapshot predates base recording, it instead warns and points at per-file inspection — a blanket restore over diverged history would overwrite committed work
-- On `resume` only: injects dynamic context (last activity, recent commits, objective, up to 5 most recently active sibling sessions with their objectives, followed by the full `cs -msg <session> "<body>"` send form and its `--kind` values, which appear only when a sibling exists to send to; scope-prompt.sh's digest already carries inbound mail, so this block is the only place cs states the outbound form. The block asks Claude to raise an AskUserQuestion before starting work that belongs to a sibling's stated goal rather than merely sharing its vocabulary, and to offer both paths rather than push one; the bar sits high on purpose, since a routing prompt that fires on every overlap becomes a block nobody reads), and a per-actor digest of shared memory/narrative activity since this actor's `.cs/local/watermark` (grouped by git author; and, for each teammate narrative that grew since that watermark, committed or not, the added-section count and the line the new content starts on, taken from the first added hunk of a diff against the working tree, so the actor reads its own file in full and only those lines of the others; a narrative nobody has committed goes unmentioned, since nothing exists to measure it against, and the hook names uncommitted growth again on every resume until a commit carries it), then advances the watermark and stamps the day's date into `last_resumed`
+- On `resume` only: injects dynamic context (last activity, recent commits with the plain file names among the first five files they touched, objective, up to 5 most recently active sibling sessions with their objectives, followed by the full `cs -msg <session> "<body>"` send form and its `--kind` values, which appear only when a sibling exists to send to; scope-prompt.sh's digest already carries inbound mail, so this block is the only place cs states the outbound form. The block asks Claude to raise an AskUserQuestion before starting work that belongs to a sibling's stated goal rather than merely sharing its vocabulary, and to offer both paths rather than push one; the bar sits high on purpose, since a routing prompt that fires on every overlap becomes a block nobody reads), and a per-actor digest of shared memory/narrative activity since this actor's `.cs/local/watermark` (grouped by git author; and, for each teammate narrative that grew since that watermark, committed or not, and is a regular file with a plain name directly below `.cs/memory`, the added-section count and the line the new content starts on, taken from the last hunk that adds lines in a diff against the working tree, so the actor reads its own file in full and only those lines of the others; a narrative nobody has committed goes unmentioned, since nothing exists to measure it against, and the hook names uncommitted growth again on every resume until a commit carries it), then advances the watermark and stamps the day's date into `last_resumed`
 - In a feature worktree (when `task_branch` is in machine-local state): injects a Feature Worktree contract instructing Claude that integration and retirement both go through `/finish <feature>` in the base session, that retirement waits for this conversation to close, and never to merge the branch manually
 - Where the conversation genuinely starts clean — source `clear`, or source `startup` with `CS_FRESH_REBIND=1` — injects a Fresh Conversation notice so Claude treats the turn as a clean break. The source is part of the test because `CS_FRESH_REBIND` is exported before `exec` and outlives the launch: on its own it would tell a later `/compact` of a rebound session that its transcript is not loaded while it still is
-- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or by the launch prompt's `r` answer): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. The next rotation commits that report (the rotate skill's step 8) unless the repo ignores `.cs/handoffs/`, and the skill's prune skips a handoff with uncommitted changes, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`
-- On all sources: surfaces the same queue-inbox digest as scope-prompt.sh — unseen entries in `.cs/local/notifications.jsonl` (task counts, the last breaker trip if any), gated by the `.cs/local/notifications.seen` cursor so it's shown at most once. Whichever of the two injection points runs first (this hook fires once at session start/resume; scope-prompt.sh fires on every prompt) claims the surfacing and advances the cursor for the other. Shares the `_build_digest` jq recipe verbatim with scope-prompt.sh ; the recipe has not moved into `cs-shared.sh`, so an edit to one copy goes into the other as well
+- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or by the launch prompt's `r` answer): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff, or a file name that is not plain, is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. Where no claim stands under a launch that takes claims (the lead's `SessionStart` could not write one, or `ps` could not show the lead was under the launch), a `claude` the hooks cannot show to be a guest keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds. Under a launch that takes no claim (no `CS_LEAD_CLAIM`), only the claude carrying the launch pid gets the rotation: on the resume arm or behind a forking `CLAUDE_CODE_BIN` the lead does not, and the marker and the handoff wait for the next `cs <name>`
+- On all sources: surfaces the same queue-inbox digest as scope-prompt.sh — unseen entries in `.cs/local/notifications.jsonl` (task counts, the last breaker trip if any), gated by the `.cs/local/notifications.seen` cursor so it's shown at most once. Whichever of the two injection points runs first (this hook fires once at session start/resume; scope-prompt.sh fires on every prompt) claims the surfacing and advances the cursor for the other. Shares the `_build_digest` jq recipe verbatim with scope-prompt.sh ; the recipe has not moved into `cs-shared.sh`, so an edit to one copy goes into the other as well. A `claude` started from inside the session, or a tmux teammate, is not shown the digest and does not move the cursor
 - Does NOT surface the cross-session mail digest: that lives only in scope-prompt.sh now (it fires on every prompt), so duplicating it here would double-inject the same unread bodies on every startup and resume
 - On all sources: names the current actor and its narrative file in the injected context, and states that the durable memory buckets are shared while only narratives are per-actor, so an entry naming someone else as the user was written by or for another actor. `.cs/memory/` is one store for every actor on a git-synced session, so a `type: user` entry written as an unconditional claim loads for all of them and reads as settled fact; a bare identity line is not enough, because a global instruction naming the right person was already in context and lost to such an entry. The actor precedence (`$CS_ACTOR`, then `.cs/local/identity`, then git `user.email`/`user.name`) is `cs_actor_raw` from `cs-shared.sh`, the same function `cs -whoami` runs; shelling out to `cs` instead would make the hook depend on `cs` being on `PATH`
-- On all sources, every actor: measures each `.cs/memory/narrative.*.md` against `CS_NARRATIVE_MAX_BYTES` (default 229376, from `cs-shared.sh`, the same value `cs -narrative rotate` uses) and, for any over budget, adds a `NARRATIVE OVER BUDGET` block naming the file and its size. For the actor's own file it says run `cs -narrative rotate` before the full read; a teammate's is theirs to rotate, so it says read only from the line the digest names. The Read tool refuses a file over 256 KiB, and the protocol's "read it in full" would otherwise send the model straight into that refusal. The hook rotates nothing: rotation commits, and cs never commits on its own
+- On all sources, every actor: measures each `.cs/memory/narrative.*.md` against `CS_NARRATIVE_MAX_BYTES` (default 131072, from `cs-shared.sh`, the same value `cs -narrative rotate` uses) and, for any over budget, adds a `NARRATIVE OVER BUDGET` block naming the file and its size. For the actor's own file it says run `cs -narrative rotate` before the full read; a teammate's is theirs to rotate, so it says read only from the line the digest names. The Read tool refuses a file over 256 KiB, and the protocol's "read it in full" would otherwise send the model straight into that refusal. The hook rotates nothing; it only names the over-budget files
 - On all sources, for the launched conversation only: sets the tab title back to `cs: <name>`. cs sets it at launch and restores it on exit; the hook also restores it after in-process transitions such as `/clear`. Inside tmux it goes through the server: `select-pane -T` titles the pane with this session alone, and the window is named after every cs session running in its panes, `cs: a | b` in pane order, each pane recording its own in the `@cs_session` pane option. iTerm's tmux integration keeps the tab's title itself and never takes it from a tmux rename, so when `LC_TERMINAL` is `iTerm2` (and `CS_NO_ITERM2` is unset) every claim and release also starts `cs-iterm-tab.py` in the background, which sets the tab showing this window to the same `cs: a | b` through iTerm's Python API (the `iterm2` module, on the first `python3` in `PATH`). A tab counts only when iTerm's attachment answers for the same tmux server (`#{pid}` and `#{socket_path}`), since window numbers repeat across servers; if the last session leaves while the title is being set, the helper hands the window back to `automatic-rename` as the release did. Nothing waits on it and its output is discarded, so without iTerm's API or the module the tab keeps its last title and nothing else changes. Every claim turns `allow-rename` and `allow-set-title` off again, so a window a `/clear` briefly released does not rename itself after the running program. Outside it the hook writes the OSC 0 escape to the terminal device, and a front end with no terminal skips it
 - On all sources: exports session environment variables, injects session context into Claude's system prompt
 
 ## autosave-commits.sh (completed file changes)
+
+New sessions begin with one commit of their initial files.
 
 Runs after successful Claude Write/Edit reports or completed Codex patches,
 through the adapters' common `files_changed` event. Codex reports a whole
@@ -148,26 +316,26 @@ Registered for three events. On `CwdChanged` it only re-arms the maildir watch a
 
 **Mail wake.** Unread cross-session mail (`cs -msg`) takes a turn, so an agent-to-agent exchange advances without waiting for a keystroke. Two events cover two moments: `Stop` reaches a session that has just finished work, `FileChanged` reaches one already parked at the prompt, because Claude Code's file watcher runs on its own event loop. The watched path is the session's `mail/new/` (under `.cs/local/`, or `.cs/private/` in an [encrypted session](session-layout.md#encrypted-sessions), whose wake stands down while the vault is locked), handed over as `watchPaths` from session-start.sh, which also creates the maildir first — a watch armed on a path missing two levels never fires again for the process's lifetime. A cwd change then *replaces* that dynamic watch list with whatever the session's `CwdChanged` hooks collectively return rather than merging into it, so a session that answers nothing loses the maildir watch for the rest of its life, and nothing later restores it: `watchPaths` rides on only three events, of which `SessionStart` has already happened and `FileChanged` cannot fire once the watch it depends on is gone. Registering a `FileChanged` hook is itself what makes cwd changes replace the list, so the mailbox arms the event that disarms it. The `CwdChanged` branch answers with the maildir — creating it first, for the same reason — which turns the event that wiped the watch into the one that re-arms it, and exits before the drain: an unhandled event falls through into the walk-away run and pops a queued task, so a directory change would silently consume work. The `FileChanged` entry carries no matcher (for that event the matcher doubles as a dispatch query tested against the changed file's *basename*, which is unpredictable for a maildir), so the hook filters `file_path` to its own mailbox and ignores `unlink`, which fires once per message as `cs -msg` moves mail to `cur/`.
 - Delivery differs by event: `Stop` emits a `block`; `FileChanged` writes the reason to stderr and exits 2 (`asyncRewake`), which Claude Code wraps in a system-reminder and enqueues at `priority: "next"` — so it arrives as trusted context rather than as fabricated keyboard input
-- The reason names the count and the senders — `Unread cross-session mail (2), new from alice` — so a woken session knows who is writing before it opens the mailbox. Each sender comes out of the same `jq` call that already reads the document's `.kind`, so naming costs no extra pass, and repeat senders collapse to one name. The clause says **new from** because the two halves describe different sets: the count covers every unread document, while the names come only from the ones this wake announces, since the discharge skip runs ahead of the read that would learn a sender. Naming every unread sender instead would cost one `jq` per unread document per turn end — what the scan is built to avoid, and what the wake ceiling makes ordinary rather than rare. A sender is the document's `.from`, falling back to `.actor` when `.from` is empty: `cs -msg` records `.from` as the sending session's name, which is empty for a send from a plain terminal, and jq's `//` fires on null but not on `""`
-- Fires once per arrival. `.cs/local/mail/woke` holds the filenames already discharged — announced by a wake, or owned by the queue (`task` kind) — written tmp-then-rename under a per-process name because both events write it and the idle one overlaps itself. Neither a count nor a newest-filename mark would work: unread drops to zero whenever `cs -msg` moves files to `cur/`, and filenames are not ordered by arrival
+- The reason names the count and the senders — `Unread cross-session mail (2), new from "alice"` — so a woken session knows who is writing before it opens the mailbox. Each sender comes out of the same `jq` call that already reads the document's `.kind`, so naming costs no extra pass, and repeat senders collapse to one name. Each name is cut to 40 characters, anything in it outside letters, digits and `. _ @ : -` becomes `_`, and it is quoted, so a name that reads as words cannot run on into the instruction beside it. The clause says **new from** because the two halves describe different sets: the count covers every unread document, while the names come only from the ones this wake announces, since the discharge skip runs ahead of the read that would learn a sender. Naming every unread sender instead would cost one `jq` per unread document per turn end — what the scan is built to avoid, and what the wake ceiling makes ordinary rather than rare. A sender is the document's `.from`, falling back to `.actor` when `.from` is empty: `cs -msg` records `.from` as the sending session's name, which is empty for a send from a plain terminal, and jq's `//` fires on null but not on `""`
+- Fires once per arrival. `.cs/local/mail/woke` holds the filenames already discharged, meaning announced by a wake, written tmp-then-rename under a per-process name because both events write it and the idle one overlaps itself. Neither a count nor a newest-filename mark would work: unread drops to zero whenever `cs -msg` moves files to `cur/`, and filenames are not ordered by arrival
 - A run silenced by `CS_NO_MAIL_WAKE=1` or by an armed/draining queue records nothing, so the message still wakes once the gate lifts. An empty queue never gates, whatever `queue.state` records
-- Only the launched conversation wakes (the same `CS_LEAD_PID`/`CLAUDE_PID` test session-start.sh uses): a tmux teammate is a full claude with its own `Stop`, and N wakers on one maildir race to read it where the first `mv` wins
+- Only the launched conversation wakes (the same `cs_is_lead` test session-start.sh uses): a tmux teammate is a full claude with its own `Stop`, and N wakers on one maildir race to read it where the first `mv` wins
 - Bounded by `CS_MAIL_WAKE_MAX` (default 5) wakes, counted in `.cs/local/mail/wakes` and cleared by the next user prompt — nothing else caps two sessions volleying at each other
 
 On `Stop`, also:
-- Raises the statusline's attention marker (`.cs/local/attention`, machine-local) so the Claude mark takes its darker `brandshade` color until the user next interacts; skipped inside subagents
-- Inside iTerm2 with shell integration installed (`~/.iterm2/it2attention`), also starts a dock bounce so the finished turn reaches a user working in another app; escapes go to `/dev/tty` because hook stdout is captured. `CS_NO_ITERM2=1` disables; silent everywhere else
-- Drains the task queue (`.cs/local/queue`) at each stop boundary when armed, on the lead's Stop only (a tmux teammate shares the directory and fires its own top-level Stop; ungated, each of its idle turns would pop a task) — pops and injects one task at a time and instructs Claude to mirror progress into the native task list; every injected task, the first included, carries a scope block (do every behavior the task asks for, leave pre-existing bugs and unmentioned behavior as follow-ups in the narrative, implement the most direct reading of an ambiguous task and state the assumption) because a walk-away run has nobody watching to say so — taking priority over the narrative reminder below while a drain is armed or running (returns early); each transition also appends an event to the per-machine inbox (`.cs/local/notifications.jsonl`): `drain_started` on armed→draining, `task_done` per advance, `drain_finished` when the queue empties
-- While draining, three circuit breakers evaluate after each task pops and before the next is injected: tool failures in the current task at/above `CS_QUEUE_MAX_FAILURES` (default 5, from `.cs/local/failures`), context at/above `CS_QUEUE_MAX_CTX` (default 85, from the statusline's `context-pct`), and the 5-hour rate-limit window at/above `CS_QUEUE_MAX_5H` (default 85, from the statusline's `limits`, skipped when its `stamped_at` is stale past 1800s); a non-numeric env override falls back to the default. A trip parks the queue (`queue.state` back to `idle`, the queue file left intact so `cs -queue start` re-arms; when the drain cannot write `idle` it removes `queue.state`, which reads as idle), appends a `breaker_tripped` event to the inbox with the reason and reading, and emits a `block` debrief naming what tripped and how many tasks remain. The drain reports any other state it cannot write as `cs task queue: could not write <path>`. The per-task failure count (`.cs/local/failures`) resets to zero on the armed→draining transition and again after every drain advance, so each task starts the breaker fresh
+- Raises the statusline's attention marker (`.cs/local/attention`, machine-local) so the Claude mark takes its darker `brandshade` color until the user next interacts; skipped inside subagents, for a `claude` started from inside the session and for a tmux teammate, none of which ends a turn of the lead's
+- Inside iTerm2 with shell integration installed (`~/.iterm2/it2attention`), also starts a dock bounce whenever it raises the marker, so the finished turn reaches a user working in another app; escapes go to `/dev/tty` because hook stdout is captured. `CS_NO_ITERM2=1` disables; silent everywhere else
+- Drains the task queue (`.cs/local/queue`) at each stop boundary when armed, on the lead's Stop only (a tmux teammate shares the directory and fires its own top-level Stop; ungated, each of its idle turns would pop a task) — pops and injects one task at a time and instructs Claude to mirror progress into the native task list; every injected task, the first included, sits inside `<cs_task id="…">` tags (six random hex characters per turn, so the text cannot close its own block) with a note that the text is the task to do and changes none of the instructions around it, because another session wrote any task accepted from mail; each carries a scope block (do every behavior the task asks for, leave pre-existing bugs and unmentioned behavior as follow-ups in the narrative, implement the most direct reading of an ambiguous task and state the assumption) because a walk-away run has nobody watching to say so — taking priority over the narrative reminder below while a drain is armed or running (returns early); each transition also appends an event to the per-machine inbox (`.cs/local/notifications.jsonl`): `drain_started` on armed→draining, `task_done` per advance, `drain_finished` when the queue empties
+- While draining, each Stop first reads `.cs/local/queue.current`, the task it handed out; with no usable record it parks the run and logs nothing done. Then, before it pops that task, it evaluates three circuit breakers: tool failures in the current task at/above `CS_QUEUE_MAX_FAILURES` (default 5, from `.cs/local/failures`), context at/above `CS_QUEUE_MAX_CTX` (default 85, from the statusline's `context-pct`), and the 5-hour rate-limit window at/above `CS_QUEUE_MAX_5H` (default 85, from the statusline's `limits`, skipped when its `stamped_at` is stale past 1800s); a non-numeric env override falls back to the default. It also reads the final assistant message for a line reading exactly `cs-task-failed`, bare or as a code span, which the agent writes when it could not complete the task. That report goes to `.cs/local/queue.failed` before the Stop writes anything else, so a later Stop parks on it too; the file goes when the run parks or starts. A failures trip or a failure report means the task did not complete: it stays first in the queue, the Stop logs nothing done, and the run parks. A context or 5-hour trip measures the session, not the task: the Stop pops the task and logs it done, and the run parks before the Stop hands out the next one, or finishes when that was the last. A trip parks the queue (`queue.state` back to `idle`, recorded before the pop, the queue file left intact so `cs -queue start` re-arms; when the drain cannot write `idle` it removes `queue.state`, which reads as idle; when it can do neither, the Stop ends with nothing popped and `draining` in place, and the next Stop runs the same checks on the same task), appends a `breaker_tripped` event to the inbox with the reason and reading (`task_failed` for a failure report), and emits a `block` debrief naming what tripped and how many tasks remain. The drain reports any other state it cannot write as `cs task queue: could not write <path>`. The per-task failure count (`.cs/local/failures`) resets to zero on the armed→draining transition and again after every drain advance, so each task starts the breaker fresh
 - Spawned workers report back: when `.cs/local/spawned-by` exists, drain completion sends the spawner a mailbox notify and deletes the marker (one-shot); a breaker trip notifies but keeps the marker so the eventual drain still reports.
-- When idle with tasks queued, gates a one-time `AskUserQuestion` (Start/Not yet, and in the same call In this conversation/In subagents/As workflows, which picks `cs -queue start`, `cs -queue start subagents` or `cs -queue start workflow`), reading the statusline's stamped `.cs/local/context-pct` (see [Status line](statusline.md)) to suggest compacting above 60% context; a decline cools down 10 minutes via `.cs/local/queue.declined`, cleared as soon as the queue changes. Task text is arbitrary, so the injected `block` reason is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
+- When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ queue N · start` key. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
 - Rotation nudge: when context is at or above `CS_ROTATE_NUDGE_CTX` (default 65, non-numeric override falls back to the default) per the statusline's `context-pct`, and this conversation hasn't already been nudged (`.cs/local/rotate-nudged`, an append-only list of conversation UUIDs, so a tmux teammate sharing the directory cannot re-arm the lead's notice), emits a one-time `block` suggesting the `rotate` skill to write a handoff and arm it, after which the user runs `/clear` to continue in a fresh conversation. Only reached when the queue isn't gating or draining above — an armed/draining queue owns the turn loop
 - Both context tiers below read `.cs/local/context-pct`, which the status line writes for the launched conversation alone, so both stay silent in a tmux teammate: the reading is the lead's, and a teammate acting on it would announce the lead's context as its own.
 - Context warning: one tier below the nudge — when context is in the `[CS_CTX_WARN_CTX, CS_ROTATE_NUDGE_CTX)` band (defaults 40 to 65; a non-numeric override falls back to its default) and this conversation hasn't been warned (`.cs/local/ctx-warned`, an append-only list of conversation UUIDs, so a tmux teammate sharing the directory cannot re-arm the lead's notice), emits a one-time `block` telling Claude to let the user know context crossed into wind-down territory. At or above the nudge threshold only the rotation nudge fires — never both in one Stop
 - Reminds Claude to review and append to its per-actor narrative (`.cs/memory/narrative.<actor>.md`, the session lab notebook), keyed on the most recently modified `narrative.*.md`, when it has not been touched recently. The contract is append-only: a disproven entry gets a dated correction that names it; earlier sections are never rewritten or deleted (that is what keeps `cs -narrative rotate`'s head-truncation safe under `merge=union`)
-- Carries a commit cadence: batch narrative appends into one commit at a handoff or wrap rather than one commit per append, and says uncommitted appends are safe because `autosave-commits.sh` already snapshots every edit to the shadow ref. It rides this reminder rather than the generated session protocol because the protocol is read once at startup and is stale by the time a commit happens, while this fires at the append itself — and because the reason string is rebuilt every run, so every existing session picks it up on upgrade with no migration phase. Unconditional rather than gated on whether `.cs/` is tracked: the check is cheap, but the advice is inert rather than wrong where `.cs/` is gitignored, and a condition the model has to evaluate is one it will not
-- Cooldown-gated via `.cs/.narrative-reminder-cooldown` (at most once per 5 minutes). The same stat pass measures every narrative against `CS_NARRATIVE_MAX_BYTES` (default 229376) and appends one line per file over budget naming it and pointing at `cs -narrative rotate`; nothing is rotated from the hook
-- Appends a second-opinion note to that same reminder when `claude-council` or the codex plugin is present, naming what each offers: `/claude-council:advise` to put the conversation to external models, and `/codex:review` before Claude calls built work done, with `/codex:rescue` when a run stalls. It rides the narrative reminder rather than taking a second `Stop` entry, because the event has one emit slot and a second registration would compete instead of compose. For the same reason there is one note and one cooldown stamp whatever the plugin count: two independent notes would double the appended text and race the same stamp. Detection reads `installPath` from `~/.claude/plugins/installed_plugins.json` and then requires the plugin's own command file on disk (`commands/advise.md`, `commands/review.md`), because the install record outlives an uninstall, so the file decides. The council half suggests and never sends, and asks Claude to check with the user first, because a digest of the conversation goes to third-party providers and nothing a hook can read says whose words it holds (inside a subagent the ambient session id names the parent). The codex half offers `/codex:review` rather than promising to run it: that command carries `disable-model-invocation`, so only the user can type it, while `/codex:rescue` does not and Claude may invoke it. Cooldown-gated via `.cs/local/.advisor-nudge-cooldown` (per-machine state, never git-synced) at most once per 30 minutes, and silent when no plugin is present. Only the launched conversation nudges: a tmux teammate shares the directory and the single cooldown stamp, so an ungated note would let a teammate consume the lead's slot
+- Carries the commit rule: the model never commits narrative appends or anything else under `.cs/` on its own, not even beside a project change, since cs commits files under `.cs/` only in the commit that creates a session and the merge `/finish` makes, and the model commits them only when the user asks; a commit holding narrative appends is pushed only when the user asks; and uncommitted appends are safe because `autosave-commits.sh` already snapshots every edit to the shadow ref. The generated session protocol states the same rule in its `cs:session-commits` section, and it rides this reminder as well because the protocol is read once at startup and is stale by the time a commit happens, while this fires at the append itself — and because the reason string is rebuilt every run, so every existing session picks it up on upgrade with no migration phase. Unconditional rather than gated on whether `.cs/` is tracked: the check is cheap, but the advice is inert rather than wrong where `.cs/` is gitignored, and a condition the model has to evaluate is one it will not
+- Cooldown-gated via `.cs/.narrative-reminder-cooldown` (at most once per 5 minutes). The same stat pass measures every narrative against `CS_NARRATIVE_MAX_BYTES` (default 131072) and appends one line per file over budget naming it and pointing at `cs -narrative rotate`; nothing is rotated from the hook
+- Appends a second-opinion note to that same reminder when [claude-council](https://github.com/hex/claude-council) or the codex plugin is present, naming what each offers: `/claude-council:advise` to put the conversation to external models, and `/codex:review` before Claude calls built work done, with `/codex:rescue` when a run stalls. It rides the narrative reminder rather than taking a second `Stop` entry, because the event has one emit slot and a second registration would compete instead of compose. For the same reason there is one note and one cooldown stamp whatever the plugin count: two independent notes would double the appended text and race the same stamp. Detection reads `installPath` from `~/.claude/plugins/installed_plugins.json` and then requires the plugin's own command file on disk (`commands/advise.md`, `commands/review.md`), because the install record outlives an uninstall, so the file decides. The council half suggests and never sends, and asks Claude to check with the user first, because a digest of the conversation goes to third-party providers and nothing a hook can read says whose words it holds (inside a subagent the ambient session id names the parent). The codex half offers `/codex:review` rather than promising to run it: that command carries `disable-model-invocation`, so only the user can type it, while `/codex:rescue` does not and Claude may invoke it. Cooldown-gated via `.cs/local/.advisor-nudge-cooldown` (per-machine state, never git-synced) at most once per 30 minutes, and silent when no plugin is present. Only the launched conversation nudges: a tmux teammate shares the directory and the single cooldown stamp, so an ungated note would let a teammate consume the lead's slot
 - Approves silently inside subagents and outside cs sessions, and when the narrative was modified within the cooldown window
 
 ## session-end.sh (SessionEnd)
@@ -176,16 +344,18 @@ Runs when Claude Code session ends:
 - Logs session end time and the end reason Claude Code sends (`clear`, `resume`, `logout`, `prompt_input_exit` or `other`; `missing` when the payload has none) and appends an `ended` event to `.cs/timeline.jsonl`
 - Deletes only the ending conversation's own shadow ref (`refs/worktree/cs/session/<conversation-uuid>`); a concurrent sibling's ref is left untouched
 - Leaves supervised `.cs/session.lock` and its run lease to the launcher, including during `/clear` and `/resume`. An ending child or stale hook cannot unlock a successor. For an older PID-only lock, cleanup removes only a demonstrably stale PID; inherited session environment alone never permits deleting a live lock.
+- At the lead's terminal end, marks its lead claim ended; a nested child cannot take the ending lead's claim.
 - For a session `cs -encrypt` built (`.cs/local/vault` names its container), an end other than `/clear` or `/resume` in the launched conversation leaves a background waiter (`.cs/local/vault-waiter.pid`). Once that Claude Code exits, the waiter detaches the vault with a plain `hdiutil detach` (`.cs/local/vault-detach.pid` while it runs), unless the session reopened or a pid in `.cs/local/vault-holders` is still alive. See [Encrypting a session with cs -encrypt](session-layout.md#encrypting-a-session-with-cs--encrypt)
 - Regenerates the sessions index (`<sessions-root>/index.md`) — a table of every session's status, objective, and created date. Written only where sessions actually live: the session's own directory must sit under the sessions root, compared physically on both sides so a `$HOME` reached through a symlink still matches. An adopted session, whose directory is an unrelated project path, writes no index beside that project
-- Inside tmux, for the launched conversation only (`cs_is_lead`): releases this pane's `@cs_session` and renames the window, and the iTerm tab, after the cs sessions still running there; with none left the window names itself again (`automatic-rename on`). A `claude -p` run inside the session inherits `TMUX_PANE`, so without the lead check its end would release the lead's claim. A `/clear` ends here too, and its SessionStart claims the pane back. If cs's launch exits without reaching claude (a cancelled resume prompt), its cleanup trap releases the pane the same way
+- Inside tmux, for the launched conversation only (`cs_is_lead`): releases this pane's `@cs_session` and renames the window, and the iTerm tab, after the cs sessions still running there; with none left the window names itself again (`automatic-rename on`). A `claude -p` run inside the session inherits `TMUX_PANE`, so without the lead check its end would release the lead's claim. A `/clear` ends here too, and its SessionStart claims the pane back. If cs's launch exits without reaching claude (a cancelled resume prompt), its cleanup trap releases the pane the same way. While `.cs/local/remote.pid` names a process running `remote-control --name <name>`, the lead's end leaves the window alone, since its start never claimed it
 - Skipped entirely inside subagents (guarded on the hook input's `agent_id`)
 
 ## subagent-context.sh (SubagentStart)
 
 Runs when Claude Code spawns a subagent (via the Agent tool):
 - Injects session context into subagents so they know about the cs session
-- Provides the session directory and key rules (secrets handling, documentation protocol)
+- Provides the session directory and two key rules: secrets go to the session secret store through `cs -secrets set` on stdin from a file, and the subagent returns its findings in its final message, never in the session narrative unless asked
+- In a feature worktree (when `task_branch` is in machine-local state), adds that integration and retirement go only through `/finish` in the base session and that the subagent never merges or deletes the branch or the worktree
 - Uses `additionalContext` in the same format as SessionStart
 
 ## tool-failure-logger.sh (PostToolUseFailure)
@@ -198,23 +368,24 @@ Runs when a tool call fails (async, non-blocking):
 ## session-auto-approve.sh (PermissionRequest on Write/Edit)
 
 Runs when Claude Code would show a permission dialog for Write or Edit:
-- Auto-approves writes to files inside the session's `.cs/` metadata directory
-- Falls through to the normal permission prompt for all other files
-- Scoped narrowly to session metadata only — project files always require explicit approval
-
-## bash-logger.sh (PreToolUse on Bash)
-
-Runs before every Bash tool call (sync, fast):
-- Logs `[timestamp] BASH: command` to `.cs/local/session.log` (`.cs/private/session.log` in an encrypted session, and nowhere while its vault is locked)
-- Creates a complete audit trail of all commands Claude runs
-- Truncates long commands at 200 chars
-- Never blocks — uses `set -uo pipefail` without `set -e`
+- Auto-approves writes to the content files inside the session's `.cs/` directory: README, summary, memory and narratives, plans, handoffs, checkpoints, research notes, and the `pending-handoff` marker the rotate skill arms (session-start.sh rejects any marker with a path separator in it)
+- Falls through to the normal permission prompt for everything cs itself acts on: every file under `.cs/local/` (`pre-open` runs at the next open, the queue and the mailbox execute, `state` and `identity` bind the checkout), `.cs/claude-config/`, `.cs/age-recipients/`, every file at the root of `.cs/` that is not Markdown (the `secrets.*` sync files, `session.lock`, `session.mutex.lock`, `archived`, `timeline.jsonl`, the reminder's cooldown stamp, and a file named like a control directory cs has not made yet), and everything in `.cs/private/` except `handoffs/`, `checkpoints/` and `narrative-archive/`
+- Falls through for an Edit of any executable file under `.cs/` (Edit keeps the mode bits), for a target that is itself a symlink, and for every write while `.cs` or `.cs/local` is a symlink (cs refuses to open such a session, but a `claude` started in the directory by hand still runs this hook)
+- Falls through for `CLAUDE.md` and `CLAUDE.local.md` anywhere under `.cs/` (Claude Code loads the one beside a file it reads) and for a write inside a git directory kept under `.cs/`: a `.git` directory or file, a `.git` that is a link, and a bare clone or a linked worktree's own directory under any name. The hook takes a directory for a git directory by the rule cs refuses a session's state by (`_cs_head_on_git_walk` in `cs-shared.sh`): the write's real parent, or a directory above it before the first that holds `.git`, holds `HEAD`, a link that leads nowhere included. A write of a file named `HEAD`, `commondir`, `gitdir`, `config` or `config.worktree`, in any case, falls through too, since writing those in the right order would build a git directory there one approved write at a time. When the hook cannot load `cs-shared.sh`, or finds no such rule in it, it approves nothing and prints `cs auto-approve: not approving, <path> is missing or outdated` on stderr
+- Falls through for any name under `.cs/` that holds a character outside ASCII. The Mac filesystem folds some of them (a long s reads as `s`, the Kelvin sign as `k`), so such a name can be another spelling of a control file, and comparing strings does not show it. Only the part of the path below `.cs/` counts: a session whose own directory has such a character keeps its approvals
+- Approves the first write into a directory that does not exist yet only for `handoffs`, `checkpoints`, `narrative-archive`, `memory`, `plans` and `research`, directly at the root of `.cs/` (the Write tool makes the directory). An encrypted session keeps those in its vault, so there a new one at the root prompts. Any other missing parent prompts
+- Classifies by where the write really lands, compared lowercased (the Mac filesystem keeps the case you typed, so `LOCAL/` is `local/`): the hook resolves each control directory to its real path, so a committed link from a shared directory into `.cs/local` counts as `.cs/local`, and an encrypted session's links into `vault-mnt/` classify as the names they carry
+- Never follows a symlink under a control directory. Any symlink under `.cs/local/`, `.cs/age-recipients/`, `.cs/private/`, `.cs/claude-config/`, the project's own `.claude/` (which Claude Code reads and git shares), or a `CLAUDE_CONFIG_DIR` that sits inside the session, and a `.mcp.json` at the session root that is itself a symlink, makes every write prompt until you remove it, wherever the link points. The hook names the first link it found on stderr (`cs auto-approve: not approving, symlink under a control directory: <path>`); the hook exits 0, so Claude Code acts on the absent decision and shows its normal prompt, and you see the line when you run the hook by hand. The walk (`find -P`) has no depth limit; it skips only `.claude/worktrees/`, where `claude --worktree` keeps whole checkouts. A project whose `.claude/skills` links to `../.agents/skills` prompts for every `.cs/` write as well
+- Allows only the links cs itself makes. In an encrypted session `.cs/private` and `.cs/claude-config` are links into the vault mount (`.cs/vault-mnt/`); the hook accepts each one only when the link and the vault's entry of that name are the same directory and `vault-mnt` is a real directory, then scans inside the vault instead. Inside `claude-config`, the hook accepts a link only when it sits directly in the directory, carries one of the names cs shares from your Claude Code config (`settings.json`, `settings.local.json`, `CLAUDE.md`, `AGENTS.md`, `rules`, `skills`, `commands`, `agents`, `hooks`, `plugins`, `output-styles`, `keybindings.json`, `vale`) and is the same file as that name in `~/.claude`, or in the `CLAUDE_CONFIG_DIR` your shell had when cs launched. Any other link there prompts, including the `debug/latest` link Claude Code keeps when it logs to a file, and a shared link left dangling after you remove its source from `~/.claude`. A vault that is not mounted leaves its root links dangling, which prompts as well. A `.cs/claude-config` linked anywhere else, into `memory/` for example, makes every write prompt
+- A `CLAUDE_CONFIG_DIR` that sits inside the session counts as a control directory, so writes under it prompt; one outside the session belongs to you and stays out of the scan
+- Falls through for an existing target with more than one hard link, which can share its inode with a file anywhere on the volume, and for one whose link count neither `stat -c %h` nor `stat -f %l` can read. This check runs after every other one, of a write the hook would otherwise approve, so its line names the one reason the write prompts: `cs auto-approve: not approving, <path> has <n> names`, or `cs auto-approve: not approving, could not read the link count of <path>`, the path printed plain. A hard-linked target that an earlier check already turns away prompts with that check's line, or with none
+- Falls through to the normal permission prompt for all other files. Project files always require explicit approval
 
 ## scope-prompt.sh (UserPromptSubmit)
 
 Runs before each user prompt is sent to Claude. First it clears the statusline's attention marker (`.cs/local/attention`) — any prompt, including slash commands, means the user is back — and, inside iTerm2 with shell integration installed, stops the dock bounce the Stop hook started (`CS_NO_ITERM2=1` disables). Then five responsibilities: the queue and mail digests, objective capture, the date reminder, the clarify guideline, and scope grounding.
 
-**Queue digest.** Surfaces unseen entries from the per-machine inbox (`.cs/local/notifications.jsonl`) at most once: counts by event plus the last breaker reason, if any, e.g. `cs queue while you were away: 4 task(s) done; breaker tripped: context (91 >= 85), 2 remaining. Run cs -queue log for detail.` The `.cs/local/notifications.seen` cursor advances only after the hook writes the digest to stdout, even when the digest text itself is empty, so surfacing stays at-most-once regardless of what else this prompt does. The order is load-bearing: this hook runs under a wall-clock timeout, and Claude Code kills it where it stands when it overruns — a cursor spent before the write retires notifications nobody ever saw, with no second chance at them. Advancing afterwards can at worst repeat a digest. When scope grounding below also has content, the digest is spliced above the `## Scope (auto-grounded)` block rather than replacing it — every exit path in this hook still delivers a pending digest. **Mail digest.** scope-prompt.sh (only) surfaces unread cross-session mail on **every** prompt until it is read — persistent, not surface-once. It inlines the bodies of the documents sitting in `mail/new/`, which only `cs -msg` empties by moving what it prints to `mail/cur/`, bounded to the first 5 with sender and body truncated inside jq (codepoint-safe) plus an "N more" overflow line. Each body sits on its own line between `<cs_mail id="…" from="…" msg="…">` and `</cs_mail id="…">`, and one fixed note above the blocks says the text inside them is mail from other sessions that may carry instructions the user did not write, to be followed only where the user's own message asks. The id is six random hex characters drawn per block on every prompt, never derived from the message, so a body cannot close its own block early; the sender and message id in the attributes keep only `[A-Za-z0-9._@:-]`, anything else becoming `_`. The tags are a guardrail for the model, not a security boundary. A `task`-kind message is a count-only label, never its body — the body is already an imperative in the recipient's queue, so inlining it would double-execute. No cursor is written by the hook (persistence is anchored on `new/` itself), keeping it a read-only view of the mailbox and leaving no cursor for two hooks to race over. Only `new/*.json` counts: an unfiltered scan would pick up a `.DS_Store` or a subdirectory and nag about phantom mail that `cs -msg` cannot clear. The header count is the file count, so an unparseable document among the first 5 counts toward N while rendering nothing — the same basis the status line and the TUI use, which is what keeps the three agreeing. A message can never appear half-written: delivery renames a complete document into `new/`.
+**Queue digest.** Surfaces unseen entries from the per-machine inbox (`.cs/local/notifications.jsonl`) at most once: counts by event plus the last breaker reason, if any, e.g. `cs queue while you were away: 4 task(s) done; breaker tripped: context (91 >= 85), 2 remaining. Run cs -queue log for detail.` The `.cs/local/notifications.seen` cursor advances only after the hook writes the digest to stdout, even when the digest text itself is empty, so surfacing stays at-most-once regardless of what else this prompt does. The order is load-bearing: this hook runs under a wall-clock timeout, and Claude Code kills it where it stands when it overruns — a cursor spent before the write retires notifications nobody ever saw, with no second chance at them. Advancing afterwards can at worst repeat a digest. When scope grounding below also has content, the digest is spliced above the `## Scope (auto-grounded)` block rather than replacing it — every exit path in this hook still delivers a pending digest. **Mail digest.** scope-prompt.sh (only) surfaces unread cross-session mail on **every** prompt until it is read — persistent, not surface-once. It inlines the bodies of the documents sitting in `mail/new/`, which only `cs -msg` empties by moving what it prints to `mail/cur/`, bounded to the first 5 with sender and body truncated inside jq (codepoint-safe) plus an "N more" overflow line. Each body sits on its own line between `<cs_mail id="…" from="…" kind="…" msg="…">` and `</cs_mail id="…">`, and one fixed note above the blocks says the text inside them is mail from other sessions that may carry instructions the user did not write, to be followed only where the user's own message asks. The id is six random hex characters drawn per block on every prompt, never derived from the message, so a body cannot close its own block early; the sender, kind and message id in the attributes keep only `[A-Za-z0-9._@:-]`, anything else becoming `_`. The tags are a guardrail for the model, not a security boundary. A body longer than the 160-character preview ends in `[cut: N more characters]`. A `task`-kind message is inlined like any other, with `kind="task"` in its tag and, under the block, the command that queues it, or, when the preview is cut, an instruction to read the whole message with `cs -msg` first: the body is an offer from another session, and only `cs -queue accept <id>`, run in the recipient, moves it into the queue (once per id, recorded in `queue.accepted`). `cs -msg` itself, which the wake tells an unattended agent to run, prints the same note above its listing and flattens the sender name into one line. No cursor is written by the hook (persistence is anchored on `new/` itself), keeping it a read-only view of the mailbox and leaving no cursor for two hooks to race over. Only `new/*.json` counts: an unfiltered scan would pick up a `.DS_Store` or a subdirectory and nag about phantom mail that `cs -msg` cannot clear. The header count is the file count, so an unparseable document among the first 5 counts toward N while rendering nothing — the same basis the status line and the TUI use, which is what keeps the three agreeing. A message can never appear half-written: delivery renames a complete document into `new/`.
 
 **Objective capture.** Records the first substantive prompt of a session as the `## Objective` in `.cs/README.md`, but only while it still holds the unedited template placeholder — so the first real prompt wins, nothing afterwards churns it, and a hand-written objective is never overwritten. Skips slash commands, `!` shell passthrough, and trivially short prompts; collapses to one line and truncates to ~100 chars. The prompt is written via `awk` `ENVIRON` (no escape/replacement processing of arbitrary text), atomically via tmp+rename. Opt-out per-session: `export CS_OBJECTIVE_CAPTURE_DISABLE=1`. An encrypted session (`.cs/private` present, mounted or not) skips the capture: its objective goes in the narrative inside the vault, so the plaintext README never holds the prompt.
 
@@ -242,7 +413,7 @@ The default rewriter, `prompt-rewriter-model.sh`, calls a fast model with the pr
 
 **Rewriting with Grok.** `CS_REWRITE_PROVIDER=grok` (or `xai`) routes to xAI's OpenAI-compatible endpoint, reading `XAI_API_KEY` or `GROK_API_KEY`. There is no `grok-api` spelling because xAI ships no rewriter CLI: there is nothing to prefer and so nothing for a suffix to reach past. The default model is `grok-4.3`, chosen by measurement rather than by recency. Over 8 prompts run twice against every candidate, `grok-4.3` preserved every unspecified thing as an open item; the much faster `grok-4.20-0309-non-reasoning` resolved them by fiat in 7 of 10 vague prompts — answering `Use jq.` to "should i use jq or awk here?", picking a database unprompted, and once returning the input verbatim. A rewriter that decides for you is worse than no rewriter. Note that Grok is not faster than what already ships: `gemini-flash-lite-latest` was the quickest model measured and matched `grok-4.3` on fidelity.
 
-The vendor rewriter runs the CLI from the same neutral directory the default uses, because `codex` reads `AGENTS.md` from its working directory and `agy` takes that directory as its workspace — launched from your checkout, the rewrite would inherit that project's instructions. It closes the CLI's stdin, since Claude Code hands the shim the real tty and an agentic CLI that decides it is interactive would paint over the progress screen. On the API arms the key travels in a mode-600 `curl --config` file and the prompt in a payload file, so neither reaches `argv`, where `ps` shows it to every user on the machine; the CLI arms are the exception, as `agy` and `codex` both take the prompt as an argument and offer no stdin path.
+The vendor rewriter runs the CLI from the same neutral directory the default uses, because `codex` reads `AGENTS.md` from its working directory and `agy` takes that directory as its workspace — launched from your checkout, the rewrite would inherit that project's instructions. The CLI's stdin is a pipe carrying the prompt, never the inherited terminal, since Claude Code hands the shim the real tty and an agentic CLI that decides it is interactive would paint over the progress screen. No arm puts the prompt in `argv`, where `ps` shows it to every user on the machine: `codex exec` reads it from stdin when given no positional prompt, and `agy` takes it as one stream-json user message on stdin (`--input-format stream-json --output-format stream-json -p=`), the rewrite being the `response` of its `result` event. On the API arms the key travels in a mode-600 `curl --config` file and the prompt in a payload file, so neither reaches `argv`.
 
 Three failure modes here are not the ones the contract anticipates. `agy` prints `CLI error: …` on **stdout and still exits 0**, so a status check alone would hand that string back as your next message; the gate judges the output as well as the status. A reasoning model can return a rewrite truncated at the token cap, which is non-empty and so passes an emptiness check while being unusable — `gemini-2.5-flash` was observed spending 1963 reasoning tokens against a 2048 cap and stopping mid-sentence, though it also completes normally on other calls — so a `finishReason` other than `STOP` declines. And Gemini's endpoint has been observed answering with a bare HTTP 404 and a zero-byte body, transiently, so an empty response declines rather than being treated as an answer. Only `/v1/chat/completions` is used for OpenAI: reasoning models are the wrong tool for a rewrite that blocks the interface, and an `o3`/`o4` model set through `CS_REWRITE_MODEL` gets a 400 and declines.
 
@@ -258,7 +429,7 @@ You cannot interrupt a rewrite from the keyboard, and the screen does not preten
 
 The shim still handles `INT` and `TERM`, for the case where it receives one anyway. The handler exists to reap, not to cancel: it signals the rewriter's whole process group, restores nothing because it has written nothing, and exits 0. Without it, a shim dying alongside its session would orphan the `claude -p` it started — detached, invisible, and still billed until it finished. That matters most in exactly the situation nothing can prevent.
 
-Every invocation appends one line to `.cs/local/rewrite.trace` naming the path it took — `exit passthrough-prefix`, `exit real-editor`, `rewriter-forked`, `exit rewritten`, and so on. This shim is driven by a keypress and draws onto a screen that is torn down, and each of its do-nothing paths leaves the buffer byte-identical, so without the trace a rewrite that declined, one that was disabled, and one that was never a composer buffer at all are indistinguishable after the fact. The trace is machine-local and written only when `CLAUDE_SESSION_META_DIR` resolves to a real session.
+Every invocation appends one line to `.cs/local/rewrite.trace` naming the path it took — `exit passthrough-prefix`, `exit real-editor`, `rewriter-forked`, `exit rewritten`, and so on. This shim is driven by a keypress and draws onto a screen that is torn down, and each of its do-nothing paths leaves the buffer byte-identical, so without the trace a rewrite that declined, one that was disabled, and one that was never a composer buffer at all are indistinguishable after the fact. The trace is machine-local and written only when `CLAUDE_SESSION_META_DIR` resolves to a real session. It goes through `cs-shared.sh`'s writers, which refuse a link out of the session: the shim loads the library from beside itself at the first trace, after a `bash -n` check, and writes no trace when the library is missing or does not parse. An [encrypted session](session-layout.md#encrypted-sessions) keeps the trace in `.cs/private/`; with its vault locked, the shim writes none. While git tracks a file in `.cs/local` (or `.cs/private`), the shim writes no trace.
 
 Every drawing path checks `[ -t 2 ]` first, so a piped or scripted run emits nothing.
 
@@ -298,15 +469,16 @@ A run the deadline below stops early ends `budget=1500`, `skip`, `exit` instead 
 
 A run that overruns the hook's timeout leaves a trail that stops mid-run, which names the stage it hung on — the only evidence such a run ever produces, since it never reaches an exit where it could write a summary. A trail ending anywhere but `exit` or `emit` marks a killed run. Before anything that can stall (the library parse-check, its source, the session resolve), a run in a cs-launched session writes a `launch` line carrying absolute epoch milliseconds, so a run killed before the trace opens still leaves that one line: `launch` with no `start` after it means the process started and stalled in its first forks, and no `launch` at all means it never ran. The line needs an existing `.cs/local/` and creates nothing itself. It reads `$EPOCHREALTIME` without a fork; bash 3.2 has no builtin epoch clock, so there one `date` fork supplies whole seconds, and a `date` that stalls leaves no line. The rest of the trace reads the clock through shell builtins only (`$EPOCHREALTIME`, or `$SECONDS` on bash 3.2), so it adds no forks to a hook already under suspicion for running slow. The file is machine-local — which machine was slow is half the finding — and one run in 64 trims it to its last 2000 lines. Opt-out per-session: `export CS_SCOPE_TRACE_DISABLE=1`.
 
-## memory-index-guard.sh (not a hook — run by `/sweep`)
+## memory-index-guard.sh (not a hook — run by `/wrap`'s memory pass)
 
 Ships inside the sweep skill (`skills/sweep/scripts/`) and deploys with it, so it reaches every engine the skill does; earlier versions deployed it with the hooks, and the installer removes that copy (`RETIRED_HOOKS`). It is never registered against an event. It sources `cs-shared.sh` for the snapshot's location and exits 2 when that file is missing. `/sweep` runs it from the session root to check its own rewrites of `.cs/memory/MEMORY.md`:
 
-- `snapshot` copies `MEMORY.md` to `.cs/local/memory-index.snapshot` (`.cs/private/` in an encrypted session, exit 2 while its vault is locked), before the sweep edits anything. Claude Code writes `MEMORY.md` with the first memory entry, so in a session that has none yet it records an empty snapshot; outside a session root (no `.cs/memory`) it exits 2.
-- `check` exits 1 and names each problem when a pointer in the snapshot is gone, when an entry in the four memory buckets (`user_`, `feedback_`, `project_`, `reference_`) has no pointer, or when the file is over the 24400-byte budget. A pointer is a line opening with `- [title](file)`; a link later on that line is supporting text. It always prints the size against the budget. With no snapshot, an unreadable one, or no `MEMORY.md` it exits 2, so a skipped snapshot never passes as a clean rewrite. The bucket check covers entries written after the snapshot and a second sweep that snapshotted an index the first had already damaged; the snapshot itself is one per session, so two concurrent sweeps share it.
-- `restore` copies the snapshot back byte for byte.
+- `snapshot` copies `MEMORY.md` to `.cs/local/memory-index.snapshot` and the memory archive to `.cs/local/memory-archive.snapshot` (both in `.cs/private/` in an encrypted session, exit 2 while its vault is locked), before the sweep edits anything. A file that does not exist yet (Claude Code writes `MEMORY.md` with the first memory entry; the first demotion writes the archive) gets an empty snapshot; outside a session root (no `.cs/memory`) it exits 2.
+- `check` exits 1 and names each problem: a pointer that was in `MEMORY.md` or the archive at the snapshot and is in neither now (`removed:`); a pointer whose entry file is not in `.cs/memory/` (`dangling:`); a pointer in both `MEMORY.md` and the archive (`duplicate:`); an entry in the four memory buckets (`user_`, `feedback_`, `project_`, `reference_`) with no pointer in either file, or the archive with no pointer in `MEMORY.md` (`unindexed:`); and a `MEMORY.md` over the 24400-byte or the 196-line budget (`over budget:`). It names a pointer that left `MEMORY.md` for the archive `demoted:` and passes it. A pointer is a line opening with `- [title](file)`; a link later on that line is supporting text. A pointer names an entry file only when its target is a bare file name ending in `.md` with no `/` and no `:`, so a URL or a `file.md#section` link is not checked for `dangling:`, in either file. It counts lines as Claude Code does before its 200-line cut, never fewer: every line, blank and heading lines too, a last line with no newline, and a lone CR, U+2028 or U+2029 each as a line break. It always prints the size and the line count against their budgets. With no snapshot of either file, an unreadable one, or no `MEMORY.md` it exits 2, so a skipped snapshot never passes as a clean rewrite. The bucket check covers entries written after the snapshot and a second sweep that snapshotted an index the first had already damaged; the snapshot itself is one per session, so two concurrent sweeps share it.
+- `restore` copies the `MEMORY.md` snapshot back byte for byte and leaves the archive alone: a pointer the sweep moved into the archive is then in both files, and `check` names it `duplicate:`.
+- While git tracks a file in `.cs/local` (or `.cs/private`), all three exit 2 and name the file, so the guard never restores a committed snapshot over `MEMORY.md` and writes none beside it.
 
-`check` never restores on its own. A sweep that pushes the file over budget by adding a pointer has to compress other pointers, and an automatic restore would throw the new pointer away, leaving its entry unindexed.
+`check` never restores on its own. A sweep that pushes the file over budget by adding a pointer has to demote or compress other pointers, and an automatic restore would throw the new pointer away, leaving its entry unindexed.
 
 ## cs (not a hook script — a Claude Code mod)
 
@@ -347,7 +519,12 @@ session launched before `keybindings.json` existed gets the file at its next
 launch.
 
 Ctrl+X 1 runs `/rotate`, as if typed: the `rotate` skill draws the purpose from
-the conversation. Beside it the band draws `wrap up this session`. That key
+the conversation. Before it runs, the press writes the conversation id to
+`.cs/local/cs.pressed`, so `cs -archive-tasks plan` reports `forced: yes` and
+the one-key rotation skips the task-archive question as a forced one does. The
+end of the main loop's next turn, whatever ended it, empties the file, and so
+does a run the engine refuses, so a `/rotate` typed later in the conversation
+asks as a manual one does. Beside it the band draws `wrap up this session`. That key
 runs `/wrap`, which distills memory, replaces `.cs/summary.md` and rotates the
 narrative: two Opus passes and a shell helper, minutes and real tokens, so the
 press asks first. Ctrl+X 2 opens the engine's own AskUserQuestion dialog —
@@ -360,8 +537,8 @@ while it names this one the band draws the rotate key alone. The next turn
 that starts from a prompt empties it and the wrap key comes back: queued work,
 a new request, or a second `/wrap` (which, if it fails a pass, leaves no marker
 of its own). A continuation turn, one started with no prompt as a Stop hook's
-feedback starts one, leaves it in place. A summary written any other way,
-a standalone `/summary` included, hides nothing, and a wrap that fails a pass
+feedback starts one, leaves it in place. A summary written any other way
+hides nothing, and a wrap that fails a pass
 skips the marker. Below the band the mod draws nothing, and it draws nothing while a
 turn runs or while a survey holds the band; the `/finish` gate band below is the
 one exception. It never submits a prompt of its own.
@@ -388,9 +565,9 @@ the session under Codex from it. The grace below counts the same way and reads
 `/exit in 20s`.
 
 The mod presses the button for you by default. The forcing is **on at 80%**;
-`CS_ROTATE_FORCE_CTX=<percent>` in the shell that launches cs moves it,
-`CS_ROTATE_FORCE_CTX=off` (or `0`) turns it off, and a value that is neither —
-a typo — is the default rather than silence, since a value nobody can read must
+`CS_ROTATE_FORCE_CTX=<percent>` (1 to 100) in the shell that launches cs moves
+it, `CS_ROTATE_FORCE_CTX=off` (or `0`) turns it off, and a value that is neither —
+a typo, or a number past 100 — is the default rather than silence, since a value nobody can read must
 not quietly disable a rotation you are relying on. The first launch on a machine
 that has not been told prints one notice naming the threshold and the way out,
 and records it in `${XDG_CONFIG_HOME:-~/.config}/cs/rotate-force-notice`. The
@@ -414,7 +591,8 @@ is time, the status bar's amber from ten seconds and its crit red under five
 At zero the mod runs the `/clear` itself, only if
 the band is idle at that moment (no turn running, no survey), the handoff still
 armed and this still the lead; otherwise the count stops and the button waits
-for you. Ctrl+X 1 during the count clears at once. Sending a prompt, from
+for you. Ctrl+X 1 during the count clears at once. A press while the mod's own `/clear` is
+still running does nothing, so it cannot clear the conversation that `/clear` opened. Sending a prompt, from
 the composer or anywhere else a prompt enters the session, stops the count;
 the next turn's end starts it again from 20. A `/clear` from anywhere else
 (typed, or another plugin's) ends it too. The count is module state: it does
@@ -447,7 +625,7 @@ that (measured at 1). The mod refuses that loop: a conversation born of a
 `/clear` it saw run (its own at zero, or one typed) is judged by the context its
 first turn ended with, and one that already sat past the threshold is never
 forced; a toast says so once
-(`CS_ROTATE_FORCE_CTX=5 is below this conversation's starting context (8%)`),
+(`cs: CS_ROTATE_FORCE_CTX=5 is below this conversation's starting context (8%); not forcing a rotation`),
 and the button stays. The conversation the mod meets at launch, after a reload,
 or through a `/resume` is not judged: a session resumed at 72% with the knob at
 70 is exactly the one the person asked to have rotated. A handoff the person
@@ -457,10 +635,14 @@ mod writes the handoff while the conversation is still whole.
 
 The button is for the lead conversation of a cs session only: past the threshold
 the mod also checks that the cwd has `.cs/local`, that `.cs/local/disabled` is
-absent, and that its own conversation id is the `claude_session_id` in
+absent, that the sessions root (`CS_SESSIONS_ROOT`, else `~/.claude-sessions`) has an
+entry, under the directory's own name or the `session_name` its state records, that
+resolves to the cwd, and that its own conversation id is the `claude_session_id` in
 `.cs/local/state`. A teammate claude in the same directory, or a plain Claude
 conversation, gets no button, because the handoff the skill writes carries that
-id and arms the marker cs launched the lead with. The plugin's own id follows
+id and arms the marker cs launched the lead with. A cloned repository that carries
+a `.cs/local` of its own gets none either, since nothing inside a directory can
+prove the directory a session. The plugin's own id follows
 `/clear` (measured: after a `/clear` the band returned only once
 `.cs/local/state` named the new transcript), and cs's SessionStart hook rebinds
 `state` on every fresh conversation, so the lead keeps its button across
@@ -485,7 +667,8 @@ even when the shell carried one. cs writes no settings file.
 
 When Claude Code loads the plugin, at process start or on a plugin reload but
 not on `/clear`, the mod writes `.cs/local/cs.heartbeat` (one UTC
-timestamp) when the cwd has `.cs/local`, and `cs -doctor` reports the mod by
+timestamp) when the cwd has `.cs/local`, the sessions root has an entry for it (as
+for the button), and `cs -vet-session` passes, and `cs -doctor` reports the mod by
 that file inside a session: `last ran <stamp> in this session` as OK, or a WARN
 when the directory is there and no heartbeat is, naming the ways that happens
 (no cs launch since the install, function hooks withheld by
@@ -528,7 +711,7 @@ conversation, In subagents, As workflows; free text under "Other" is refused
 with a toast) before anything runs, and Start runs `cs -queue start` with
 `subagents` or `workflow` for those answers, and when the last band render saw no turn
 running it also sends one `$.prompt.submit`, since the Stop hook hands over
-each task only as a turn ends; Not yet runs `cs -queue defer`; Compact first
+each task only as a turn ends; Not yet runs nothing; Compact first
 calls `$.session.compact()` and then does what Start does, and a compaction a
 hook vetoes or the engine refuses (it refuses while a turn runs) leaves the
 queue unarmed and says why in a toast; a dismissed dialog runs nothing. A
@@ -537,6 +720,8 @@ The child inherits the claude process's environment, so the
 `CLAUDE_SESSION_META_DIR` the launch exported picks the session's queue. A
 refused task (empty, or more than one line) prints cs's exit code and the end
 of its stderr as cs wrote them.
+
+![Statusline without queued tasks, two pending tasks, then statusline with two queued tasks](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/queue.svg)
 
 `/finish` gets a toast at each end. While `cs <base> -integrate-feature` and
 `-retire-feature` run, cs replaces a progress record at each step
@@ -574,7 +759,8 @@ the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
 `cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds even when the
 launching shell already carries it.
 
-The mod reads two variables the launch exports and nothing else:
+The mod reads two variables the launch exports, and `HOME` and `CS_SESSIONS_ROOT` to find
+the notes cache and the sessions root:
 `CS_UPDATE_AVAILABLE`, the pending version, exported only when a launch finds
 a newer cs, and `CS_BIN`, the path of the running cs, exported on every
 launch. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
@@ -586,19 +772,22 @@ bash's `_md_strip_inline` does, and opens one pane titled `cs <version> is
 available`. A version that cached no span, or a span the cache lost, still
 opens the pane with a one-line fallback instead of a blank body.
 
-The pane is for the lead conversation of a cs session only: the mod checks
-`.cs/local/state`'s `claude_session_id` against its own conversation id, as
-the `cs` mod's button does, and a `.cs/local/disabled` directory refuses it
-outright. A teammate claude in the same directory reads the same state file
-and does not match, so it gets no pane of its own.
+The pane is for the lead conversation of a cs session only. The sessions root
+must name the directory, by its own name or by the `session_name` its state
+records, as the `cs` mod asks. The mod then checks `.cs/local/state`'s
+`claude_session_id` against its own conversation id, as the `cs` mod's button
+does. A `.cs/local/disabled` directory refuses the pane outright. A teammate
+claude in the same directory reads the same state file and does not match, so
+it gets no pane of its own. A cloned repository that carries `.cs/local` gets
+none either.
 
 The launch pane opens once per load of the mod (a launch, or a plugin
 reload), never again for the same conversation, whether or not the update key
-was pressed. `/cs-update`, which the mod registers as its primary slash
-command, opens the same pane on demand; `/cs-update` remains a compatibility
-alias. Use it after a dismiss, with the `/config` row off, or with
-nothing else having shown it. Run from a teammate it says the pane belongs to
-the conversation cs launched; run with nothing pending it says so instead of
+was pressed. `/cs-update`, which the mod registers at every load, opens the
+same pane on demand: after a dismiss, with the `/config` row off, or with
+nothing else having shown it. Run from a teammate, or in a directory the
+sessions root does not name, it says the pane belongs to the conversation cs
+launched; run with nothing pending it says so instead of
 opening an empty pane.
 
 Pressing `1` runs `cs -update` through the engine's own process runner
@@ -620,12 +809,16 @@ blank a pane still showing "Update finished". A clean exit also writes
 re-renders the open pane the instant it reloads the module, before
 `session.start` (which does not fire on a reload, only at load) gets a
 chance, so the reloaded module reads the marker back and redraws the finished
-pane from its own next render. A pane dismissed before the install landed
+pane from its own next render. That redraw asks the lead check first,
+so a directory the sessions root does not name gets no pane back. A pane dismissed before the install landed
 leaves nothing open to redraw, so `/cs-update` after the reload reads the
 marker too and shows the finished pane instead of offering the install a
 second time. The mod clears the marker (writes it empty) the next launch,
 render, or `/cs-update` that finds nothing pending for that version, since
-`$.fs` offers no delete.
+`$.fs` offers no delete. In a directory the sessions root does not name, or
+while `cs -vet-session` refuses the session (git tracks its control files), the
+mod writes neither the marker nor its heartbeat and
+leaves a stale marker in place.
 
 The `/config` row `cs-update.showReleaseNotes` (on by default) turns off only
 the launch pane; `/cs-update` still opens it with the option off.
@@ -634,7 +827,8 @@ the launch pane; `/cs-update` still opens it with the option off.
 `hooks/hooks.json`, `hooks/register.tsx`) under `~/.claude/skills/cs-update/`,
 the same layout as the `cs` mod, and `cs -uninstall` removes the directory. When
 Claude Code loads the plugin, the mod writes `.cs/local/cs-update.heartbeat`
-(one UTC timestamp) when the cwd has `.cs/local`, and `cs -doctor` reports the
+(one UTC timestamp) when the cwd has `.cs/local`, the sessions root names the directory (as
+for the pane) and `cs -vet-session` passes, and `cs -doctor` reports the
 mod from that file through the same `_doctor_check_mod` check it runs for
 the `cs` mod: OK naming when it last ran in this session, or a WARN naming the
 ways it has not (no cs launch since the install, function hooks withheld by
@@ -647,6 +841,86 @@ lead gate) and `claude plugin validate` when each binary is on PATH, and always
 checks the manifest and its `/config` field, the cache-name pin against
 `lib/20-update.sh`, and that the installer and doctor name the mod.
 
+## cs-mermaid (not a hook script — a Claude Code mod)
+
+`mods/cs-mermaid/` is a Claude Code function-hooks plugin, deployed and gated
+the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
+environment, writes no file and runs no process. Unlike the `cs` mod it needs no
+cs session: with function hooks on it draws, and adds its prompt section, in any
+directory and for every prompt the engine composes, a subagent's included. It
+needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
+and refuses the whole module, so nothing draws there.
+
+![Reply prose, then the same prose with a drawn Mermaid chart](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg)
+
+It hooks two events:
+
+- `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
+  ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
+  into prose, which goes back to the engine (so the reply keeps its opening
+  bullet, on its first part only), and fences, each parsed (`hooks/parse.ts`) and
+  laid out (`hooks/layout.ts`) in character cells; the last 32 layouts are
+  kept, since a streaming reply re-renders on every flush. Nodes are solid
+  blocks, three rows tall, taller or wider where more than one edge meets them,
+  coloured by their role in the flow, in a light or dark palette from the
+  `theme` row of `/config`: a decision (`{ }`, `{{ }}`, or any node with two
+  or more outgoing edges) amber, a start (`(( ))`, or a node nothing leads to)
+  green, an end (a node that leads nowhere) grey, every other step lavender.
+  Mermaid itself fills every node the same; the roles are the terminal's
+  reading of the chart, and `style`, `classDef`, `class` and `:::` fills win
+  over them, as does a shape over the edge count. Edges are box-drawing glyphs
+  with `▼▲►◄` heads, a shared cell is always a crossing (`┼`), and each label
+  sits beside its edge's first vertical run, so the corner and the head stay; a
+  label that answers a decision (`yes`, `pass`, `healthy`; `no`, `fail`,
+  `degraded`) is drawn in green or red, any other in the line colour. The mod turns a left-to-right chart wider
+  than the terminal top-down. It measures the terminal: beside a docked pane
+  the transcript is narrower, and a chart sized to the terminal can wrap
+  there. A fence the parser refuses (any statement outside the supported
+  subset refuses the whole chart: subgraphs, self-loops, non-flowchart
+  diagram types, more than 200 nodes, 400 edges or 60-cell
+  labels) or one still too wide stays a code block with `mermaid: <reason>`
+  under it.
+- `prompt.compose`. When the prompt is for a session that draws in a terminal
+  (`terminal` among `e.surfaces`), not `--bare`, and the session directory has
+  no `.cs/local/disabled`, the mod appends one `session`-scope section,
+  `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
+  only for a flow that branches, loops or has four or more stages, never for a
+  task list or numbered steps; one fence, short labels, no subgraphs, `{ }`
+  for a decision, `(( ))` for a start or end, `[ ]` for a step. It is
+  part of every request's system prompt, on the session side of the prompt
+  cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
+  organization lists in managed settings when it manages Claude Code; there
+  the drawing still works and the section is not sent. `cs -doctor` lists the
+  section among the authority rows, `off` when `CS_NO_FUNCTION_HOOKS` withholds
+  the mod (it cannot read the `/config` row).
+
+The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
+fences show as source and the model is not told they draw.
+
+The mod also ships a skill, `skills/show-me/SKILL.md`, which the engine lists
+as `/cs-mermaid:show-me`. Its description names the asks that call for a
+picture ("show me", "draw it", "diagram this", "how does X work" about a flow
+or a layout), so the model picks it unasked when one fits; the body puts a
+`graph TD` flowchart first, in the subset the mod draws, then text sketches
+(pseudocode, a call tree, a component tree, a file tree, a diff) for
+structure without a flow. The `/config` row leaves the skill in place: with
+drawing off, its flowchart shows as source.
+
+`install.sh` deploys the mod's seven files (`.claude-plugin/plugin.json`,
+`hooks/hooks.json`, `hooks/register.tsx`, `hooks/parse.ts`, `hooks/layout.ts`,
+`hooks/text.ts`, `skills/show-me/SKILL.md`) under `~/.claude/skills/cs-mermaid/`,
+and `cs -uninstall` removes the directory. The mod writes no heartbeat, so `cs -doctor` has no
+"last ran" row for it.
+
+Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
+with `claude plugin test` (they use the engine's own `claude-code/testing` kit:
+the parser, exact picture fixtures for the layout, the inline drawing, the
+fallback to source, the option and each prompt-section gate) and
+`claude plugin validate` when `claude` is on PATH and knows `prompt.compose`
+(both skip on an older build), and always checks the manifest, its `/config`
+field and that the installer names the mod.
+
 ## Hook Configuration
 
 The hooks are configured in `~/.claude/settings.json`:
@@ -656,9 +930,6 @@ The hooks are configured in `~/.claude/settings.json`:
   "hooks": {
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "~/.claude/hooks/cs/session-start.sh", "timeout": 30 }] }
-    ],
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "~/.claude/hooks/cs/bash-logger.sh", "timeout": 5 }] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit", "hooks": [{ "type": "command", "command": "~/.claude/hooks/cs/autosave-commits.sh", "timeout": 10, "async": true }] }

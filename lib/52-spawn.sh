@@ -23,17 +23,76 @@ _sq() {  # text
 # ~/.local/bin, so the window command must not rely on lookup).
 _cs_self() {
     case "$0" in
-        */*) printf '%s/%s' "$(cd "$(dirname "$0")" && pwd)" "$(basename "$0")";;
+        */*) printf '%s/%s' "$(cd -- "$(dirname "$0")" && pwd)" "$(basename "$0")";;
         *)   command -v -- "$0" 2>/dev/null || printf '%s' "$0";;
     esac
+}
+
+# The line in a seed that ends its task lines: every line after it is the
+# spawn's brief, verbatim. The brief rides inside the seed so the pair is
+# published, consumed and set aside as one file. cs -spawn refuses a task
+# equal to it.
+SPAWN_BRIEF_MARK='--- cs-spawn-brief ---'
+
+# The line number of a seed's brief marker; nothing when the seed carries no
+# brief. Lines 1 and 2 are the token and the spawner, never the marker.
+_spawn_brief_mark_line() {  # seed
+    awk -v m="$SPAWN_BRIEF_MARK" 'NR > 2 && $0 == m { print NR; exit }' "$1"
+}
+
+# The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
+# session name, and of what the launch sets aside when the seed ages out, one
+# per line. Nothing stages or reads a .brief.md name; a session's removal still
+# deletes one found there. Twin of SPAWN_STAGING_SUFFIXES in
+# tui/src/session.rs; the two lists change together.
+_spawn_staging_suffixes() {
+    printf '%s\n' .seed .seed.stale .brief.md .brief.md.stale
+}
+
+# An open reads a seed only after renaming it to a name of its own,
+# .<name>.seed.claim.<pid>, so a seed cs -spawn publishes while the open asks
+# is never the one it reads, sets aside or deletes. The launch's EXIT trap
+# (which INT and TERM reach through their exit) calls _spawn_put_back_claim,
+# so an open that stops before it consumed the seed leaves it staged again
+# under <name>.seed.
+_CS_SPAWN_CLAIM=""
+_CS_SPAWN_SEED=""
+
+# Put a claimed seed back under its staged name. ln refuses a name a newer
+# spawn published meanwhile; the claimed seed is then set aside as .stale.
+_spawn_put_back_claim() {
+    local claim="$_CS_SPAWN_CLAIM" seed="$_CS_SPAWN_SEED"
+    _CS_SPAWN_CLAIM=""
+    [ -n "$claim" ] && [ -e "$claim" ] || return 0
+    if ln "$claim" "$seed" 2>/dev/null; then
+        rm -f "$claim"
+    elif mv "$claim" "$seed.stale" 2>/dev/null; then
+        warn "A newer spawn seed is staged: $seed; the one this open read is set aside: $seed.stale"
+    else
+        warn "Spawn seed could not be put back: $claim"
+    fi
+    return 0
 }
 
 # Delete any staged or stale seed and brief for a name. Called when the
 # session is deleted: a leftover seed would block re-spawning the name and arm
 # a future same-name session with dead tasks and a dead brief.
 _spawn_discard_seeds() {  # name
-    rm -f "$SESSIONS_ROOT/.spawn/$1.seed" "$SESSIONS_ROOT/.spawn/$1.seed.stale" \
-          "$SESSIONS_ROOT/.spawn/$1.brief.md" "$SESSIONS_ROOT/.spawn/$1.brief.md.stale"
+    local suffix staged
+    for suffix in $(_spawn_staging_suffixes); do
+        rm -f "$SESSIONS_ROOT/.spawn/$1$suffix"
+    done
+    # The staging file cs -spawn leaves when killed before it published:
+    # mktemp's .<name>.seed.XXXXXX. Exactly six characters follow, so a
+    # session named <name>.seed never has its own staging file matched. And
+    # the claim an open killed outright leaves: .<name>.seed.claim.<pid>, a
+    # digit first, so a session named <name>.seed.claim never has its own
+    # claim matched. Twin of the staging match in tui/src/session.rs.
+    for staged in "$SESSIONS_ROOT/.spawn/.$1.seed."?????? \
+                  "$SESSIONS_ROOT/.spawn/.$1.seed.claim."[0-9]*; do
+        [ -e "$staged" ] || continue
+        rm -f "$staged"
+    done
 }
 
 # True when the tmux session named $CS_TMUX_SESSION carries cs's stamp. Only
@@ -47,14 +106,13 @@ _cs_tmux_managed() {
 
 # Pre-window checks that must pass BEFORE the seed is written, so a refused
 # spawn never leaves a pending seed behind.
-_spawn_precheck() {  # name
-    local name="$1" tmux_session="${CS_TMUX_SESSION:-cs}"
-    # tmux will not keep ':' or '.' in a session name (a target uses them to
-    # reach a window or pane), so no later '-t' would find what '-s' made.
-    case "$tmux_session" in
-        *[:.]*) error "CS_TMUX_SESSION=$tmux_session: a tmux session name cannot contain ':' or '.'";;
-    esac
-    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "cs -spawn needs tmux"
+# The window to open is named <window>, the session name unless given, and
+# <asker> names the cs command that wants it (cs -spawn unless given).
+_spawn_precheck() {  # name, [window], [asker]
+    local tmux_session="${CS_TMUX_SESSION:-cs}"
+    case "$tmux_session" in *[:.]*) error "CS_TMUX_SESSION=$tmux_session: a tmux session name cannot contain colon or dot" ;; esac
+    local name="$1" window="${2:-$1}" asker="${3:-cs -spawn}"
+    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "$asker needs tmux"
     if session_is_live "$SESSIONS_ROOT/$name/.cs"; then
         error "Session $name is already live"
     fi
@@ -65,8 +123,8 @@ _spawn_precheck() {  # name
         # rename a window out from under this name match, and the only cost of a
         # miss is a duplicate window name in the cs session, never a second live
         # launch. Do not add locking here for that benign case.
-        if _spawn_tmux list-windows -t "=$tmux_session" -F '#{window_name}' 2>/dev/null | grep -Fxq "$name"; then
-            error "A window named $name already exists in tmux session $tmux_session"
+        if _spawn_tmux list-windows -t "=${CS_TMUX_SESSION:-cs}" -F '#{window_name}' 2>/dev/null | grep -Fxq "$window"; then
+            error "A window named $window already exists in tmux session ${CS_TMUX_SESSION:-cs}"
         fi
     fi
 }
@@ -86,22 +144,35 @@ _spawn_attach_hint() {
     fi
 }
 
-_spawn_window() {  # name
-    local name="$1" tmux_session="${CS_TMUX_SESSION:-cs}" cmd wid
-    cmd="$(_sq "$(_cs_self)") $(_sq "$name")"
+_spawn_window() {  # name, token
+    local name="$1" token="$2" cmd
+    # The token proves to the launch that this window is the spawn's own, so
+    # only it consumes the seed unasked (see the seed consumer in
+    # lib/75-launch.sh). It is correlation, not a secret: anyone who can read
+    # the seed can read it, and `ps` shows it for as long as the launch runs.
+    # `env` rather than a VAR=value prefix, which tmux's default-shell need
+    # not understand.
+    cmd="env $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
+    _cs_tmux_window "$name" "$cmd"
+    info "spawned $name in tmux session ${CS_TMUX_SESSION:-cs} (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
+}
+
+# Open a window named <window> running <cmd> in the cs-owned tmux session, and
+# leave its id in _CS_TMUX_WID. A global rather than printed: the options call
+# below would print into a capture, and error would end only the capture.
+_CS_TMUX_WID=""
+_cs_tmux_window() {  # window, cmd
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if wid=$(_spawn_tmux new-session -d -s "$tmux_session" -n "$name" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_spawn_tmux new-session -d -s "${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
-        # the exact name was just created by new-session, so this cannot misfire.
-        _spawn_tmux set-option -t "$tmux_session" @cs_managed 1
-        info "spawned $name in tmux session $tmux_session (window $wid). Attach: $(_spawn_attach_hint)"
+        # exact 'cs' was just created by new-session, so this cannot misfire.
+        _spawn_tmux set-option -t "${CS_TMUX_SESSION:-cs}" @cs_managed 1
         return 0
     fi
-    wid=$(_spawn_tmux new-window -t "=$tmux_session" -n "$name" -P -F '#{window_id}' "$cmd") \
-        || error "tmux new-window failed for $name"
-    info "spawned $name in tmux session $tmux_session (window $wid). Attach: $(_spawn_attach_hint)"
+    _CS_TMUX_WID=$(_spawn_tmux new-window -t "=${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$2") \
+        || error "tmux new-window failed for $1"
 }
 
 run_spawn() {
@@ -118,6 +189,8 @@ run_spawn() {
                 t="$(_trim "$1")"
                 [ -n "$t" ] || error "cs -spawn --task needs a non-empty task"
                 _queue_require_single_line "$t"
+                [ "$t" != "$SPAWN_BRIEF_MARK" ] \
+                    || error "cs -spawn --task: '$SPAWN_BRIEF_MARK' marks where a seed's brief starts and cannot be a task"
                 tasks+=("$t");;
             --brief)
                 [ $# -ge 2 ] || error "--brief needs a file"
@@ -137,50 +210,68 @@ run_spawn() {
     if ! cs_split_worktree_name "$name"; then
         validate_session_name "$name"
     fi
+    # The spawner is whatever the environment says. It becomes the worker's
+    # report-back address and goes into its kick prompt, so it must be a
+    # session name; an empty one means "no spawner" (no report-back wiring).
+    local spawner="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
+    if [ -n "$spawner" ] && ! cs_split_worktree_name "$spawner"; then
+        # validate_session_name exits on a bad name; a subshell turns that
+        # into a status so the error can name where the name came from.
+        ( validate_session_name "$spawner" ) >/dev/null 2>&1 \
+            || error "cs -spawn: CLAUDE_SESSION_NAME is not a session name: $spawner"
+    fi
+    # The spawn's own window runs a seed's tasks and brief unasked, so a seed
+    # for a session that already exists is work handed to that session's
+    # user. Another session's work goes through task mail they accept; a
+    # terminal outside any session, and the base briefing one of its own
+    # features, are that user.
+    if [ -n "$spawner" ] && { [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; } \
+        && is_session_dir "$SESSIONS_ROOT/$name" \
+        && [ "${spawner%%@*}" != "${name%%@*}" ]; then
+        error "session $spawner cannot hand work to the existing session $name; send it as task mail for $name's user to accept: cs -msg $name --kind task \"<task>\""
+    fi
     _spawn_precheck "$name"
+    # One token per spawn, for the window command and the seed alike. The
+    # launch consumes the seed unasked only when the two match.
+    local token
+    token=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+    [ "${#token}" -eq 32 ] || error "cs -spawn: could not read 16 random bytes from /dev/urandom"
     # A brief is staged with a seed even when there are no tasks: the seed
     # carries the spawner, which the brief's report-back line needs.
     if [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; then
-        local sdir="$SESSIONS_ROOT/.spawn" seed
+        local sdir="$SESSIONS_ROOT/.spawn" seed staged
         seed="$sdir/$name.seed"
-        # The check-then-write below is deliberately unlocked, and both temp
-        # names are fixed. Two spawns of one name started in the same instant
-        # can therefore interleave on them: one run fails at its publishing
-        # rename, or a seed is torn, or it is published beside the other
-        # run's brief. One user spawning one name twice at once is the only
-        # way in, so it is left as it is.
         [ ! -f "$seed" ] || error "A pending spawn for $name exists: $seed"
-        mkdir -p "$sdir"
-        # Order: seed content first (to a temp file), brief second, seed
-        # published last. The launch treats the seed as the signal, so the
-        # brief must exist before the seed is visible; and because the seed is
-        # published last, a write that fails leaves nothing staged and this
-        # abort never deletes a file another spawn of the same name published.
-        # Each step is an AND list, which errexit does not judge, so every
-        # abort is explicit.
-        #
-        # One printf, so one status covers the whole seed: a brace group
-        # reports only its LAST command, and a failed first write with a
-        # succeeding task line published a seed whose spawner line was missing.
+        mkdir -p "$sdir" || error "cs -spawn: cannot create $sdir"
+        # The whole spawn is one file: the token, the spawner, one task per
+        # line, then the brief marker and the brief verbatim. It is written
+        # under a name of its own and published with ln, which refuses an
+        # existing name, so two spawns of one name cannot both publish and a
+        # seed never pairs with another run's brief. A run killed before ln
+        # leaves only its own dot-named temp, which no launch reads. Each step
+        # is an AND list, which errexit does not judge, so every abort is
+        # explicit.
+        staged=$(mktemp "$sdir/.$name.seed.XXXXXX") \
+            || error "cs -spawn: cannot stage the seed in $sdir"
+        # One printf for the lines before the brief, so one status covers
+        # them: a brace group reports only its LAST command. An empty array is
+        # unbound under bash 3.2's set -u; the guard expands to nothing then.
         local _payload _t
-        _payload="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}
+        _payload="$token
+$spawner
 "
-        # An empty array is unbound under bash 3.2's set -u, and a brief alone
-        # leaves it empty; the guard expands to nothing in that case.
         for _t in ${tasks[@]+"${tasks[@]}"}; do _payload="$_payload$_t
 "; done
-        printf '%s' "$_payload" > "$seed.tmp" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
-        if [ -n "$brief" ]; then
-            cp "$brief" "$sdir/$name.brief.md.tmp" \
-                && mv "$sdir/$name.brief.md.tmp" "$sdir/$name.brief.md" \
-                || { rm -f "$sdir/$name.brief.md.tmp" "$seed.tmp" 2>/dev/null || :
-                     error "cs -spawn --brief: cannot stage $brief in $sdir"; }
+        [ -z "$brief" ] || _payload="$_payload$SPAWN_BRIEF_MARK
+"
+        { printf '%s' "$_payload" && { [ -z "$brief" ] || cat "$brief"; }; } > "$staged" \
+            || { rm -f "$staged" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
+        if ! ln "$staged" "$seed" 2>/dev/null; then
+            rm -f "$staged" 2>/dev/null || :
+            [ ! -e "$seed" ] || error "A pending spawn for $name exists: $seed"
+            error "cs -spawn: cannot publish the seed in $sdir (ln failed; the filesystem may not support hard links)"
         fi
-        # A failed rename means another spawn of this name consumed the temp
-        # path and published its own pair; its brief is not this run's to remove.
-        mv "$seed.tmp" "$seed" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot publish the seed in $sdir"; }
+        rm -f "$staged" || warn "cs -spawn: could not remove the staging file $staged"
     fi
-    _spawn_window "$name"
+    _spawn_window "$name" "$token"
 }

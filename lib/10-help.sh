@@ -22,17 +22,20 @@ Commands:
   <name> --model MODEL --effort LEVEL  Choose native model and reasoning effort
   <name> --approve-for-me  Use the engine's automatic approval review
   <name> --native-approval  Use native approval defaults (Codex otherwise reviews automatically)
+  <name> --remote     Serve <name> through claude remote-control instead of opening claude (in its own window of the cs tmux session when run inside tmux)
+  <name> --remote --permission-mode <mode>  The permission mode of the sessions the server starts (default: the mode CLAUDE_CODE_BIN sets, else default)
   <base>@<feature>    Open a parallel feature worktree of session <base>
   <base> -features          List a base's feature worktrees and their merge readiness
   <base> -finish <feature>  Open <base> and run /finish for <feature> (integrate, then retire the worktree)
-  <name> -secrets <cmd>  Run secrets command on <name> without launching session
-  <name> -narrative rotate  Rotate <name>'s narrative without launching session
+  <name> -secrets <cmd>  Run secrets command on <name> without launching session (from inside another session, a write is refused while <name> is live)
+  <name> -narrative rotate  Rotate <name>'s narrative without launching session (refused from inside another session while <name> is live)
   -search <query>     Search across all sessions (--include-archived searches archived too)
   -checkpoint "<label>"  Save labelled state snapshot (run from inside a session)
   -checkpoint list    List checkpoints for current session
   -checkpoint show <name>  Print a specific checkpoint
   -narrative rotate   Archive the oldest sections of your narrative once it passes its byte budget (/wrap runs it)
   -queue add "<task>" Add a task to the session's walk-away queue
+  -queue accept <id>  Queue a task another session sent by mail (the id is shown by cs -msg)
   -queue list         Show pending and completed queued tasks
   -queue rm <n>       Remove pending task n
   -queue clear        Empty the queue and stop draining
@@ -50,7 +53,7 @@ Commands:
   -detect-theme       Show the detected terminal theme (light|dark)
   -tui                Open the interactive session manager (bare 'cs' does too)
   -list, -ls          List sessions (--tag <tag> filters; --archived shows only archived)
-  -adopt <name> [--engine claude|codex]  Adopt current directory as a session
+  -adopt <name> [--engine claude|codex]  Adopt current directory as a session (--yes re-adopts orphaned records without asking)
   -adopt --worktrees  Register Claude Code's .claude/worktrees/* here as <repo>.<worktree> sessions (--dry-run previews)
   -whoami             Show the current actor (for shared, multi-person sessions)
   -who                Show who contributed to shared memory/narrative (git history)
@@ -59,12 +62,13 @@ Commands:
   -live               List sessions running right now on this machine
   -usage              Per-session token usage over the 5h/weekly rate-limit windows
   -tag add|rm <tag>   Tag the current session (frontmatter); -tag list [<name>] to view
-  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live)
+  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live, but from inside a session not for another session's live one, nor for a base with a live feature unless run from that base)
   -unarchive <name>...  Restore archived sessions to the listings
   -encrypt <name>     Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
-  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live; --delete-files lets --force remove those files)
-  -secrets <cmd>      Manage current session secrets (requires CS_SESSION_NAME)
+  -vet-session <dir>  Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
+  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but from inside a session not for another session's live one, nor for a base with a live feature unless run from that base; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
+  -secrets <cmd>      Manage current session secrets (requires CS_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live, and a feature's write to its base's while a sibling feature is live)
   -update             Update cs to latest version
     --check, -c       Check for updates without installing
     --force, -f       Force reinstall even if up to date
@@ -144,6 +148,7 @@ _is_help_flag() {  # arg
 }
 
 warn() {
+    _CS_NOTICE_HEADED=""
     printf "${YELLOW}%s${NC}\n" "$1"
 }
 

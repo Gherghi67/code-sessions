@@ -22,6 +22,8 @@ setup() {
     ARGV_DUMP="$TEST_TMPDIR/argv"
     mkdir -p "$FAKE_BIN"
     export CS_TEST_ARGV_DUMP="$ARGV_DUMP"
+    STDIN_DUMP="$TEST_TMPDIR/stdin"
+    export CS_TEST_STDIN_DUMP="$STDIN_DUMP"
     # PATH is replaced, not prepended. Prepending leaves the developer's own agy
     # and codex resolvable, so every "the CLI is absent" test would quietly run
     # the real binary — a live, billed, ten-second call that still reports the
@@ -132,15 +134,39 @@ test_the_api_key_never_reaches_argv() {
 }
 
 # The prompt is untrusted text. On the API arm it rides a payload file, so a
-# shell in any later link of the chain never sees it. The CLI arms are the
-# documented exception: agy and codex both take the prompt as an argument and
-# offer no stdin path, which is the council's position too.
+# shell in any later link of the chain never sees it.
 test_the_prompt_never_reaches_argv_on_the_api_arm() {
     fake_bin curl 'printf "%s" "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}"'
     CS_REWRITE_PROVIDER=gemini GEMINI_API_KEY=not-a-real-key \
         run_rewrite 'rm -rf $HOME && echo pwned' >/dev/null
     assert_exists "$ARGV_DUMP" "curl ran, so there is an argv to inspect" || return 1
     assert_file_not_contains "$ARGV_DUMP" 'pwned' "no prompt text reaches argv"
+}
+
+# On the CLI arms the prompt goes to the vendor on stdin, never in argv, where
+# `ps` shows it to every user on the box.
+# agy reads it as one stream-json user message and answers in stream-json, so
+# the fake answers with the result event the arm extracts.
+test_the_prompt_reaches_agy_on_stdin_never_argv() {
+    fake_bin agy 'cat > "$CS_TEST_STDIN_DUMP"
+printf "%s\n" "{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"REWRITTEN BY AGY\"}}"'
+    local out rc=0
+    out=$(CS_REWRITE_PROVIDER=gemini run_rewrite 'fix the zebra-quartz-4417 widget') || rc=$?
+    [ "$rc" -eq 0 ] || { echo "expected success from the agy arm, got $rc"; return 1; }
+    [ "$out" = "REWRITTEN BY AGY" ] || { echo "expected the extracted response, got: $out"; return 1; }
+    assert_file_contains "$STDIN_DUMP" 'zebra-quartz-4417' "the prompt reaches agy on stdin" || return 1
+    assert_file_not_contains "$ARGV_DUMP" 'zebra-quartz-4417' "no prompt text reaches agy's argv"
+}
+
+test_the_prompt_reaches_codex_on_stdin_never_argv() {
+    fake_bin codex 'cat > "$CS_TEST_STDIN_DUMP"
+printf "REWRITTEN BY CODEX"'
+    local out rc=0
+    out=$(CS_REWRITE_PROVIDER=openai run_rewrite 'fix the zebra-quartz-4417 widget') || rc=$?
+    [ "$rc" -eq 0 ] || { echo "expected success from the codex arm, got $rc"; return 1; }
+    [ "$out" = "REWRITTEN BY CODEX" ] || { echo "expected the CLI output, got: $out"; return 1; }
+    assert_file_contains "$STDIN_DUMP" 'zebra-quartz-4417' "the prompt reaches codex on stdin" || return 1
+    assert_file_not_contains "$ARGV_DUMP" 'zebra-quartz-4417' "no prompt text reaches codex's argv"
 }
 
 # No CLI and no key is not an error to report, it is a decline. The shim keeps
@@ -208,6 +234,11 @@ printf "ok"'
     assert_file_not_contains "$ARGV_DUMP" "PWD=$PWD" "never the project directory"
 }
 
+# Exits 0 once process group <pgid> runs the stand-in curl's sleep.
+_group_runs_curl() {  # pgid
+    [ -n "$(pgrep -g "$1" -f 'sleep 30' 2>/dev/null)" ]
+}
+
 # The shim's cancel handler signals the rewriter's whole process group, so this
 # script is killed mid-call as a matter of routine, not as an edge case. Cleaning
 # up only on the way out of the normal path leaves the mode-600 config file
@@ -236,13 +267,9 @@ test_a_killed_rewrite_leaves_no_credential_on_disk() {
     set -m
     ( printf 'fix the login thing' | CS_REWRITE_PROVIDER=gemini \
         GEMINI_API_KEY="$fake_key" "$VENDOR" >/dev/null 2>&1 ) &
-    local pid=$! waited=0
+    local pid=$!
     set +m
-    while [ "$waited" -lt 50 ] && [ -z "$(pgrep -g "$pid" -f 'sleep 30' 2>/dev/null)" ]; do
-        sleep 0.1
-        waited=$((waited + 1))
-    done
-    [ -n "$(pgrep -g "$pid" -f 'sleep 30' 2>/dev/null)" ] || { echo "the API arm never reached curl"; return 1; }
+    wait_until _group_runs_curl "$pid" || { echo "the API arm never reached curl"; return 1; }
 
     # The whole group, exactly as the shim's cancel handler does. Signalling the
     # script alone would leave it blocked in curl with the cleanup unreached,
@@ -424,6 +451,8 @@ run_test test_openai_prefers_the_codex_cli
 run_test test_openai_falls_back_to_the_api_when_the_cli_is_absent
 run_test test_the_api_key_never_reaches_argv
 run_test test_the_prompt_never_reaches_argv_on_the_api_arm
+run_test test_the_prompt_reaches_agy_on_stdin_never_argv
+run_test test_the_prompt_reaches_codex_on_stdin_never_argv
 run_test test_a_provider_with_neither_a_cli_nor_a_key_declines
 run_test test_an_unknown_provider_declines
 run_test test_an_empty_api_response_declines

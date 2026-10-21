@@ -11,17 +11,20 @@ _cs_completions() {
     }
 
     # Global flags
-    local global_flags="-tui -list -ls -adopt -remove -rm -whoami -who -engine -switch -secrets -checkpoint -narrative -queue -msg -spawn -conversations -search -statusline -detect-theme -doctor -diag -update -uninstall -help -h -version -v -live -usage -status -tag -archive -unarchive -encrypt"
+    local global_flags="-tui -list -ls -adopt -remove -rm -whoami -who -engine -switch -secrets -checkpoint -narrative -queue -msg -spawn -conversations -search -statusline -detect-theme -doctor -diag -update -uninstall -help -h -version -v -live -usage -status -vet-session -tag -archive -unarchive -encrypt"
 
     # Secrets subcommands
-    local secrets_cmds="set store get list ls delete rm purge export export-file import-file migrate migrate-backend backend age"
+    local secrets_cmds="set store get list ls delete rm purge rename export export-file import-file migrate migrate-backend backend age"
+
+    # Secrets options
+    local secrets_flags="--session --replace --allow-unsigned --redact --from --delete-source --help"
 
     # Checkpoint subcommands
     local checkpoint_cmds="list show"
     local narrative_cmds="rotate"
 
     # Queue subcommands
-    local queue_cmds="add list ls rm clear start defer log"
+    local queue_cmds="add accept list ls rm clear start log"
 
     # Tag subcommands
     local tag_cmds="add rm list"
@@ -30,7 +33,7 @@ _cs_completions() {
     local update_cmds="--check -c --force -f"
 
     # Session-level options
-    local session_opts="-secrets -queue -msg -narrative -conversations -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --from-handoff --force"
+    local session_opts="-secrets -queue -msg -narrative -conversations -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --from-handoff --force --remote --permission-mode"
     local engine_values="claude codex"
 
     # Get list of session names. cs owns the definition of a session, including
@@ -181,16 +184,19 @@ _cs_completions() {
         return
     fi
 
-    # Context: after -adopt. A new session name completes nothing; the options
-    # choose the engine, or register Claude Code's worktrees instead.
+    # Context: after -adopt. A new session name completes nothing; --yes
+    # chooses the engine or answers the re-adopt question, and --worktrees, only as the first word,
+    # registers Claude Code's worktrees instead.
     if $after_adopt; then
         COMPREPLY=()
         case "$cur" in
             -*)
                 if [[ "${words[cword-1]}" == "--worktrees" ]]; then
                     COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
+                elif [[ "${words[cword-1]}" == "-adopt" ]]; then
+                    COMPREPLY=($(compgen -W "--worktrees --yes" -- "$cur"))
                 else
-                    COMPREPLY=($(compgen -W "--worktrees --engine" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--yes --engine" -- "$cur"))
                 fi
                 ;;
         esac
@@ -222,9 +228,13 @@ _cs_completions() {
         return
     fi
 
-    # Context: after -secrets, complete with secrets subcommands
+    # Context: after -secrets, complete with secrets subcommands, or with the
+    # options cs-secrets takes once the word starts with a dash
     if $in_secrets; then
-        COMPREPLY=($(compgen -W "$secrets_cmds" -- "$cur"))
+        case "$cur" in
+            -*) COMPREPLY=($(compgen -W "$secrets_flags" -- "$cur")) ;;
+            *) COMPREPLY=($(compgen -W "$secrets_cmds" -- "$cur")) ;;
+        esac
         return
     fi
 

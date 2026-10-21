@@ -34,14 +34,16 @@ git status -sb   # shows current branch and ahead/behind vs origin
 
 If you are not on `main`, or `main` is behind `origin/main`, STOP and ask the user
 via **AskUserQuestion** before proceeding — bumping, committing, and tagging from a
-feature branch or a stale `main` puts the tag on the wrong commit (and Step 8's bare
+feature branch or a stale `main` puts the tag on the wrong commit (and Step 8c's bare
 `git push` may fail). Only continue once you are on `main` and up to date with origin.
 
 ### 0b. Preflight: The Release Content Must Be Green on CI First
 
-Step 5 runs the suite **locally**, which is one platform. Every job in
-`.github/workflows/test.yml` must have judged the content being released
-**before** the tag is cut, or the tag lands on a commit CI has never seen.
+The ghost gate (Step 8b) runs the suite on one machine and one shell (bash
+5.3). Every job in `.github/workflows/test.yml` must have judged the content
+being released **before** the tag is cut, or the tag lands on a commit CI has
+never seen. Step 8c gates the tag on the release commit's own run; this step
+catches a red lane before the bump and the notes are written.
 
 Push anything unpushed, then wait for the Test workflow on `HEAD` and read every
 job:
@@ -79,8 +81,13 @@ MONTH=$(date +%-m)  # No leading zero
 - If current version's YYYY.MM matches today's YYYY.M: increment BUILD by 1
 - If current version's YYYY.MM is older: reset to YYYY.M.1
 
-Update the VERSION line in `lib/00-header.sh`, then run `./build.sh` to regenerate
-`bin/cs` from the `lib/` fragments. `bin/cs` is assembled — never edit it directly.
+Update the VERSION line in `lib/00-header.sh`, then run `./build.sh --add-release-hashes`
+to regenerate `bin/cs` from the `lib/` fragments. `bin/cs` is assembled — never edit it directly.
+
+The flag adds the sha256 of every file this release deploys under `~/.claude` to
+`CS_KNOWN_SHA256` in `lib/01-manifests.sh` before building, so a later install still
+knows those files as cs's and replaces them after someone deletes `~/.claude/hooks/cs`,
+install record included, by hand.
 
 ### 2. Verify Install/Uninstall Parity
 
@@ -134,7 +141,7 @@ the review is auditable rather than a skim.
 
 Invoke the `/simplify` skill via the Skill tool to review all pending changes for reuse, quality, and efficiency. This catches duplicated logic, hacky patterns, and inefficiencies before they ship.
 
-The skill fans out three parallel review agents (reuse, quality, efficiency) over the diff and auto-applies fixes it finds. The subsequent test run (Step 5) validates that nothing was broken.
+The skill fans out three parallel review agents (reuse, quality, efficiency) over the diff and auto-applies fixes it finds. The ghost gate on the release commit (Step 8b) and its CI run (Step 8c) validate that nothing was broken.
 
 An empty working-tree diff is expected, not an anomaly, when the release's changes were
 already committed in earlier sessions (the normal case) — `/simplify` reviews only the
@@ -197,15 +204,14 @@ population and the defect has nowhere to sit.
 
 ### 5. Run Tests
 
-Run the full test suite to verify nothing is broken before releasing:
+The bash suites do not run on this machine. They run twice on the release
+commit itself, once it exists: on ghost (Step 8b), then in CI (Step 8c). A
+local full run loads the dev box for minutes and judges nothing the ghost run
+does not. Here, run only the Rust tests:
 
 ```bash
-bash tests/run_all.sh                        # aggregates every suite; fails if any suite fails
 cargo test --manifest-path tui/Cargo.toml    # cs-tui binaries ship in the release
 ```
-
-(Do not use `bash tests/test_*.sh` — bash runs only the first glob match and
-passes the rest as ignored arguments, so all but one suite silently never run.)
 
 Stop immediately if any tests fail. Do not proceed with the release until all tests pass.
 
@@ -253,38 +259,111 @@ CHANGELOG.md exists at the repo root. Now that the release notes are approved (S
 
 The CHANGELOG entry is committed as part of the release commit in Step 8.
 
-### 8. Commit and Push
+### 8. Commit
 
 ```bash
+# Steps 2-7 may have changed a hook, command, skill or mod file, and the table
+# must hold the payload this commit ships; a run with nothing to add changes
+# nothing
+./build.sh --add-release-hashes
+
 # Run git status first to verify what's being included
 git status
 
 # Stage all changes
 git add -A
 
-# Commit with version
+# Commit with version; do not push yet
 git commit -m "Release vX.Y.Z"
 
-# Push to remote
-git push
+# The full sha every later step names
+SHA=$(git rev-parse HEAD)
 ```
 
 **Inspect the `git status` output before `git add -A`.** If it shows files unrelated to
 the release — scratch scripts, test artifacts, `.DS_Store`, stray build output — do NOT
-use `-A`: stage the release files explicitly (`git add lib/00-header.sh bin/cs
-CHANGELOG.md <docs you touched>`) and ask the user about the strays before committing.
+use `-A`: stage the release files explicitly (`git add lib/00-header.sh
+lib/01-manifests.sh bin/cs install.sh hooks/cs-shared.sh CHANGELOG.md <docs you touched>`,
+plus every file under `hooks/`, `commands/`, `skills/` and `mods/` that Steps 2-7
+changed) and ask the user about the strays before committing.
 `-A` is only safe when status shows exactly the release's own changes.
+
+### 8b. Ghost Gate on the Release Commit
+
+Run the full bash suite on ghost against exactly `$SHA`, with the claude-tmux
+plugin's `remote-tests` script (`scripts/remote-tests.sh`):
+
+```bash
+GATE=<scratchpad>/release-gate-$SHA
+git clone --quiet . "$GATE" \
+  && git -C "$GATE" checkout --quiet --detach "$SHA" \
+  && [ "$(git -C "$GATE" rev-parse HEAD)" = "$SHA" ] \
+  && bash <claude-tmux>/scripts/remote-tests.sh --host ghost@ghost --repo "$GATE" \
+       --cmd 'bash tests/run_all.sh'
+```
+
+The clone checks out `$SHA` itself, never `main`'s tip: a commit that lands on
+`main` after Step 8 would otherwise be the one judged. If the clone, the
+checkout or the sha check fails, nothing launches; stop and find out why.
+
+- Gate from a clone, never a git worktree: a worktree's `.git` points at a path
+  that exists only on this machine, and every git-using suite fails on ghost.
+- Use the literal `--host ghost@ghost`; the bare name needs `/remote`'s host
+  store. A remote-tests failure is a reason to try the literal form, never to
+  fall back to a local run.
+- One suite command per launch. `tests/run_all.sh` is the multi-suite command;
+  a `;`-chained `--cmd` keeps only the last suite's output. Never glob
+  (`bash tests/test_*.sh`): bash runs the first match and passes the rest as
+  ignored arguments, so all but one suite silently never run.
+- The script returns once the run starts. Remove any stale `suite.status` in
+  the remote directory before launching, then wait for it from a background
+  shell (never a foreground `sleep`) and read the exit code it holds, not a
+  count of failures.
+- ghost runs bash 5.3, so it never judges a bash 3.2 defect; only CI's
+  macos-latest lane does (Step 8c). Before reading a mod-suite failure or skip
+  there, compare `claude --version` on both machines; a stale ghost Claude Code
+  refuses newer plugin manifest keys.
+
+Stop if the exit code is not 0. Fix the failure in a new commit, then repeat
+Step 8 and this step on the new sha.
+
+### 8c. Push and Wait for That Commit's CI
+
+```bash
+git push
+gh run list --workflow=test.yml --commit "$SHA" --limit 1 \
+  --json databaseId,status,conclusion --jq '.[0]'
+# once completed, read every job; an overall "success" is not enough
+gh run view <databaseId> --json jobs --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
+```
+
+Poll from a background shell; the lanes take about 15 minutes. Judge by the
+per-job conclusions of the run whose commit is `$SHA`, never by
+`gh run watch`'s exit status, which can return 1 while a job is still running.
+A job `cancelled` with zero steps is infrastructure, not code: check
+`https://www.githubstatus.com/api/v2/incidents/unresolved.json`, then
+`gh run rerun <databaseId> --failed`. A code failure gets a fix in a new
+commit; repeat Step 8 from its `./build.sh --add-release-hashes` line (the fix
+may touch a hook, command, skill or mod file), then Steps 8b and 8c on the new
+sha. Do not tag until every job is `success`.
 
 ### 9. Create GitHub Release
 
-Create a GitHub release with the approved release notes using the `gh` CLI:
+Create a GitHub release with the approved release notes using the `gh` CLI, on
+the commit Steps 8b and 8c judged:
 
 ```bash
-gh release create vX.Y.Z --title "vX.Y.Z" --notes "$(cat <<'EOF'
+gh release create vX.Y.Z --target "$SHA" --title "vX.Y.Z" --notes "$(cat <<'EOF'
 <approved release notes here>
 EOF
 )"
 ```
+
+`--target` takes the FULL sha; a short one fails with "target_commitish is
+invalid". It pins the tag to the release commit even when another commit (a
+session-state commit, say) has landed on `main` since. Hold the tag while
+GitHub reports Actions runners delayed: `release.yml` builds the assets after
+the tag, and a cancelled build leaves the release public with none.
 
 ### 10. Verify the Release Workflow Succeeded
 
@@ -316,7 +395,7 @@ No manual signing is needed — CI handles everything on tag push.
 
 - Do NOT skip the documentation review - it's the most important part
 - If you find significant documentation issues, list them before fixing
-- The version bump is a single Edit to the VERSION line in `lib/00-header.sh`, followed by `./build.sh` — never edit `bin/cs` directly (it is assembled, and CI fails if it drifts from `lib/`)
+- The version bump is a single Edit to the VERSION line in `lib/00-header.sh`, followed by `./build.sh --add-release-hashes` — never edit `bin/cs` directly (it is assembled, and CI fails if it drifts from `lib/`)
 - Run `git status` before committing to verify what's being included
-- Always create the GitHub release after pushing
+- Create the GitHub release only after the release commit passed the ghost gate and every CI job, with `--target <full sha>`
 - Do NOT commit or push until release notes are approved

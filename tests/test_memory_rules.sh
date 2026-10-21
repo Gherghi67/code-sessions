@@ -11,7 +11,6 @@ teardown() {
         rm -rf "$TEST_TMPDIR"
     fi
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN
-    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 }
 
 # Current sentinel — managed by cs, marks the disclosure note section.
@@ -52,16 +51,16 @@ test_new_session_has_no_legacy_rules_block() {
         "new sessions must not ship behavioral instruction prose" || return 1
 }
 
-# The secrets guidance must not teach piping a value into `cs -secrets set`: the
-# bash-logger captures the whole Bash command into .cs/local/session.log, so a
-# `printf '%s' secret | cs -secrets set` lands the plaintext in the log. The safe
-# form (per the store-secret skill) feeds the value in via a stdin redirect.
+# The secrets guidance must not teach piping a value into `cs -secrets set`: a
+# `printf '%s' secret | cs -secrets set` puts the plaintext in the Bash command
+# itself. The safe form (per the store-secret skill) feeds the value in via a
+# stdin redirect.
 test_new_session_secret_guidance_is_log_safe() {
     "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
     local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
 
     assert_file_not_contains "$claude_md" "| cs -secrets set" \
-        "must not pipe a secret into cs -secrets set (bash-logger logs the command)" || return 1
+        "must not pipe a secret into cs -secrets set (the value would sit in the command)" || return 1
     assert_file_contains "$claude_md" "store-secret" \
         "should point at the store-secret skill's log-safe procedure" || return 1
 }
@@ -248,7 +247,7 @@ EOF
 }
 
 test_phase9_retires_v1_block_to_note() {
-    local session_dir
+    local session_dir out
     session_dir=$(_seed_session_with_legacy_rules_block "v1-session" "v1")
 
     assert_file_contains "$session_dir/CLAUDE.md" '<!-- cs:memory-rules -->' \
@@ -256,7 +255,10 @@ test_phase9_retires_v1_block_to_note() {
     assert_file_contains "$session_dir/CLAUDE.md" '^## Auto-memory bucket guidance$' \
         "precondition: v1 header (no suffix) present" || return 1
 
-    "$CS_BIN" v1-session <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" v1-session <<< "" 2>&1 || true)
+
+    grep -Fxq -- '  CLAUDE.local.md  cs:memory-note replaces the auto-memory bucket guidance' <<< "$out" \
+        || { echo "  FAIL: the open names the note that replaced the bucket guidance"; return 1; }
 
     assert_file_contains "$session_dir/CLAUDE.md" "Session Documentation Protocol" \
         "the head above the sentinel stays in CLAUDE.md" || return 1
@@ -429,7 +431,7 @@ run_test test_memory_note_discloses_shared_store
 # every turn to look up an answer already sitting in context, in both the
 # protocol file and the injected block that names the actor four lines earlier.
 # The command stays a documented verb, and the two on-demand surfaces that need
-# it — commands/sweep.md and the narrative reminder — keep theirs.
+# it — hooks/wrap-sweep.md (/wrap's memory pass) and the narrative reminder — keep theirs.
 test_always_loaded_surfaces_do_not_re_derive_the_resolved_actor() {
     "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
     local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
@@ -461,12 +463,14 @@ test_secrets_section_keeps_the_rules_the_skill_less_path_needs() {
     local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
 
     assert_file_exists "$claude_md" "session CLAUDE.local.md should exist" || return 1
-    # bash-logger records the whole Bash command, so stdin alone is not safety:
-    # a pipe or a heredoc puts the plaintext in .cs/local/session.log verbatim.
+    # Stdin alone is not safety: a pipe or a heredoc puts the plaintext in the
+    # Bash command itself.
     assert_file_contains "$claude_md" "into a pipe or a Bash heredoc" \
-        "the section must forbid the two stdin forms the command log captures" || return 1
-    assert_file_contains "$claude_md" "bash-logger" \
+        "the section must forbid the two stdin forms that carry the value in the command" || return 1
+    assert_file_contains "$claude_md" "puts the plaintext in the Bash command itself" \
         "the prohibition must carry its reason" || return 1
+    assert_file_not_contains "$claude_md" "bash-logger" \
+        "the retired bash-logger is not the reason" || return 1
     # A Write inside the session directory is snapshotted into the autosave ref
     # and survives the later rm, so location is the mechanism, not cleanup.
     assert_file_contains "$claude_md" "OUTSIDE the session" \
@@ -476,15 +480,17 @@ test_secrets_section_keeps_the_rules_the_skill_less_path_needs() {
 }
 
 run_test test_secrets_section_keeps_the_rules_the_skill_less_path_needs
-# Subagents get their own always-loaded rules, and bash-logger records their Bash
-# commands too — so the pipe form leaks a secret there exactly as it does in the
-# lead. This surface was the one the secrets pass missed.
+# Subagents get their own always-loaded rules, and their Bash commands carry a
+# piped value exactly as the lead's do. This surface was the one the secrets
+# pass missed.
 test_subagent_secrets_rule_names_the_redirect_form() {
     local hook="$SCRIPT_DIR/../hooks/subagent-context.sh"
     assert_file_contains "$hook" "FILE REDIRECT" \
-        "the subagent rule must name the form that keeps the value out of the log" || return 1
-    assert_file_contains "$hook" "bash-logger" \
+        "the subagent rule must name the form that keeps the value out of the command" || return 1
+    assert_file_contains "$hook" "puts the value in the Bash command itself" \
         "and carry its reason" || return 1
+    assert_file_not_contains "$hook" "bash-logger" \
+        "the retired bash-logger is not the reason" || return 1
     assert_file_not_contains "$hook" "value on stdin) and reference" \
         "the bare stdin wording implied any stdin form was safe" || return 1
 }

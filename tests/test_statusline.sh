@@ -1179,6 +1179,29 @@ test_display_width_counts_codepoints_not_bytes() {
       assert_eq "4" "$_WIDTH" "a multibyte session name should count codepoints, not bytes" )
 }
 
+# The width is counted the same way under every bash and locale, and the
+# shell never changes its own locale for it: a bash linked against libintl
+# that sets a locale of its own inside a command substitution, with no locale
+# variable set, dies of SIGSEGV. Each cell is one fresh bash with one locale
+# setting, counting "café ✳" (six codepoints) inside $( ).
+test_display_width_leaves_the_shells_own_locale_alone() {
+    local b utf8 loc out own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        for loc in ${utf8:+"LC_ALL=$utf8"} LC_ALL=C none; do
+            [ "$loc" = none ] && loc=""
+            out=$(env -i PATH="$PATH" HOME="$TEST_TMPDIR" $loc "$b" -c '
+                CS_STATUSLINE_LIB=1 . "$1" 2>/dev/null
+                set -x
+                w=$(_display_width "$2"; printf "%s" "$_WIDTH")
+                printf "%s" "$w"' x "$SL" "$(printf 'caf\303\251 \342\234\263')" 2>"$TEST_TMPDIR/trace")
+            assert_eq "6" "$out" "$b ${loc:-with no locale}: the width of the name" || return 1
+            own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+            assert_eq "" "$own" "$b ${loc:-with no locale} must not assign its own locale in _display_width" || return 1
+        done
+    done
+}
+
 test_parse_rgb_triplet_accepts_valid_and_rejects_malformed() {
     ( _load_sl_functions
       _parse_rgb_triplet "250;248;242"
@@ -1418,12 +1441,9 @@ _make_ps_table() {
 # verdict for parent $1 and the TMUX claim $2, so the next render reads a
 # settled answer rather than racing one. Non-zero if it never arrives.
 settle_tmux_verdict() {
-    local key="$1,$2" n=0
+    local key="$1,$2"
     key=${key//\//-}; key=${key//[^A-Za-z0-9._,-]/_}   # as _cache_key sanitises
-    while [ ! -s "$HOME/.cache/cs/tmux-real/$key" ] && [ "$n" -lt 200 ]; do
-        n=$((n + 1)); sleep 0.05
-    done
-    [ -s "$HOME/.cache/cs/tmux-real/$key" ]
+    wait_until test -s "$HOME/.cache/cs/tmux-real/$key"
 }
 
 # The pane id is a claim about where this conversation lives, and TMUX_PANE is
@@ -1698,6 +1718,7 @@ run_test test_ctx_zero_vs_absent
 run_test test_unknown_segment_ignored
 run_test test_session_color_never_reaches_the_bar
 run_test test_display_width_counts_codepoints_not_bytes
+run_test test_display_width_leaves_the_shells_own_locale_alone
 run_test test_parse_rgb_triplet_accepts_valid_and_rejects_malformed
 
 # ============================================================================
@@ -2049,6 +2070,56 @@ test_shared_clock_normalizes_leading_zero_pin() {
     assert_file_contains "$lim" "stamped_at: 8$" "leading-zero pin normalized to base-10" || return 1
 }
 
+# The bar repaints on every Claude Code event and once a minute when idle, so
+# a claude still running after `cs -rm <name> --force` renders for a session
+# that is gone. The render stamps context-pct and limits only in a .cs that
+# is there, making the missing .cs/local in it; a removed session stays
+# removed. Rendered under the bash running this suite.
+test_render_never_recreates_a_removed_session() {
+    local fixture='{"session_name":"s","workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42},"rate_limits":{"five_hour":{"used_percentage":10},"seven_day":{"used_percentage":20}}}'
+    mkdir -p "$CS_SESSIONS_ROOT/live/.cs"
+    printf '%s' "$fixture" | CLAUDE_SESSION_NAME=live "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the render for a live session failed"; return 1; }
+    assert_eq "42" "$(cat "$CS_SESSIONS_ROOT/live/.cs/local/context-pct" 2>/dev/null)" "a live session gets its context-pct" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/live/.cs/local/limits" "^five_hour_used_pct: 10$" "a live session gets its limits" || return 1
+    printf '%s' "$fixture" | CLAUDE_SESSION_NAME=gone "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the render for a removed session failed"; return 1; }
+    assert_not_exists "$CS_SESSIONS_ROOT/gone" "the render does not make a removed session again" || return 1
+}
+
+# A hook or a second render can make .cs/local between a render's look for it
+# and its mkdir. A DEBUG trap loaded through BASH_ENV stands in for that
+# writer: before each mkdir of the render it makes the directory. The
+# directory is there, which is all the stamp needs: the render still writes
+# its reading, the context one and, in a render that carries only limits, the
+# limits one.
+test_render_counts_a_local_dir_another_writer_made_first() {
+    local seam="$TEST_TMPDIR/peer-seam.sh"
+    cat > "$seam" << 'SEAM'
+set -o functrace
+_cs_test_peer() {
+    case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+    command mkdir "$CS_TEST_PEER_DIR" 2>/dev/null
+    : > "$CS_TEST_PEER_RAN"
+    return 0
+}
+trap _cs_test_peer DEBUG
+SEAM
+    mkdir -p "$CS_SESSIONS_ROOT/ctx/.cs" "$CS_SESSIONS_ROOT/lim/.cs"
+    printf '%s' '{"session_name":"s","workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42}}' \
+        | CLAUDE_SESSION_NAME=ctx BASH_ENV="$seam" CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran-ctx" \
+            CS_TEST_PEER_DIR="$CS_SESSIONS_ROOT/ctx/.cs/local" "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the context render failed"; return 1; }
+    assert_exists "$TEST_TMPDIR/peer-ran-ctx" "the second writer ran before the context render's mkdir" || return 1
+    assert_eq "42" "$(cat "$CS_SESSIONS_ROOT/ctx/.cs/local/context-pct" 2>/dev/null)" "the context reading is stamped" || return 1
+    printf '%s' '{"session_name":"s","workspace":{"current_dir":"/tmp"},"rate_limits":{"five_hour":{"used_percentage":10}}}' \
+        | CLAUDE_SESSION_NAME=lim BASH_ENV="$seam" CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran-lim" \
+            CS_TEST_PEER_DIR="$CS_SESSIONS_ROOT/lim/.cs/local" "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the limits render failed"; return 1; }
+    assert_exists "$TEST_TMPDIR/peer-ran-lim" "the second writer ran before the limits render's mkdir" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/lim/.cs/local/limits" "^five_hour_used_pct: 10$" "the limits reading is stamped" || return 1
+}
+
 # ============================================================================
 # Theme resolution: CS_TERM_THEME pin wins; else follow the terminal live
 # (macOS OS appearance, tty-safe) so a mid-session dark-mode switch is tracked;
@@ -2233,6 +2304,8 @@ run_test test_shared_clock_ignores_inherited_now
 run_test test_shared_clock_replaces_inherited_garbage
 run_test test_shared_clock_ignores_inherited_ready_flag
 run_test test_shared_clock_normalizes_leading_zero_pin
+run_test test_render_never_recreates_a_removed_session
+run_test test_render_counts_a_local_dir_another_writer_made_first
 run_test test_sl_theme_user_pin_overrides
 run_test test_sl_theme_non_macos_uses_frozen_launch_value
 run_test test_sl_theme_non_macos_defaults_dark
@@ -2776,6 +2849,11 @@ test_fable_segment_costs_nothing_off_fable() {
     assert_not_exists "$CS_USAGE_DIR" "a non-fable model must not create the usage cache dir" || return 1
 }
 
+# Exits 0 when the cached fable reading for org-abc is <pct>.
+_usage_pct_is() {  # pct
+    [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json" 2>/dev/null)" = "$1" ]
+}
+
 # The refresh must actually fire when the cache is due — a render that never
 # kicks one would leave the chip frozen at its first reading forever.
 test_fable_segment_kicks_a_refresh_when_due() {
@@ -2784,11 +2862,9 @@ test_fable_segment_kicks_a_refresh_when_due() {
     seed_usage_cache org-abc 42 "2026-08-29T03:59:59Z" 1787816000 1787816300
     local json='{"session_name":"s","model":{"id":"claude-fable-5","display_name":"Fable"},"workspace":{"current_dir":"/none"}}'
     PATH="$USAGE_BINDIR:$PATH" CS_STATUSLINE_NOW=1787816400 run_sl "$json" >/dev/null
-    # The refresher is detached, so wait for the write rather than racing it.
-    local i=0
-    while [ "$i" -lt 50 ] && [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" = "42" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    # The refresher is detached and starts later on a loaded machine, so wait
+    # for its write rather than racing it.
+    wait_until _usage_pct_is 86
     assert_eq "86" "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" \
         "a due cache must trigger a detached refresh that rewrites the reading" || return 1
 }
@@ -2929,15 +3005,11 @@ test_fable_segment_does_spawn_when_curl_is_present() {
     # ms after the spawn, so a loop waiting for it to vanish can fall through
     # before it ever exists and leave teardown racing a live refresher. The
     # seeded pct differs from the shim body's 86 so the write is observable.
-    local i=0
-    while [ "$i" -lt 50 ] && [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json" 2>/dev/null)" != "86" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    wait_until _usage_pct_is 86
     assert_eq "86" "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" "the kicked refresher must complete its write" || return 1
-    i=0
-    while [ "$i" -lt 50 ] && [ -d "$CS_USAGE_DIR/.lock" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    # The refresher drops its lock after the write; teardown waits for that.
+    wait_until test ! -d "$CS_USAGE_DIR/.lock" \
+        || { echo "  FAIL: the kicked refresher never dropped its lock"; return 1; }
 }
 
 run_test test_fable_segment_does_not_spawn_a_refresher_without_curl
@@ -3938,13 +4010,17 @@ make_full_render_fixture() {
 # forks a dozen runs past Claude Code's limit and the tick is killed.
 test_warm_render_forks_only_the_interpreter_and_jq() {
     make_full_render_fixture
+    # Every cache ages against the render's own clock, so the renders share one
+    # pinned second: "warm" is a fact about that clock, not about how quickly
+    # this machine gets from one render to the next.
+    local now; now=$(date +%s)
     # What the bar shows without the shims, rendered from this same shell (a
     # pipeline would give it another parent and so another ancestry verdict).
     printf '%s' "$FULL_JSON" > "$TEST_TMPDIR/stdin.json"
-    bash "$SL" < "$TEST_TMPDIR/stdin.json" > "$TEST_TMPDIR/plain.txt" 2>/dev/null
+    CS_STATUSLINE_NOW="$now" bash "$SL" < "$TEST_TMPDIR/stdin.json" > "$TEST_TMPDIR/plain.txt" 2>/dev/null
     local plain; plain=$(cat "$TEST_TMPDIR/plain.txt")
-    count_render_forks "$FULL_JSON"   # the cold render fills the caches
-    count_render_forks "$FULL_JSON"
+    CS_STATUSLINE_NOW="$now" count_render_forks "$FULL_JSON"   # the cold render fills the caches
+    CS_STATUSLINE_NOW="$now" count_render_forks "$FULL_JSON"
     assert_eq "0" "$FORKS_RC" "the counted render exits cleanly" || return 1
     assert_eq "$plain" "$FORKS_OUT" "the counted render draws the same line" || return 1
     assert_output_contains_f "$FORKS_OUT" "main +1!1" "and the line carries the git segment" || return 1
@@ -3953,11 +4029,14 @@ test_warm_render_forks_only_the_interpreter_and_jq() {
     # been seen, or the shims were never installed and the count means nothing.
     grep -qx bash "$TEST_TMPDIR/forks" || { echo "  FAIL: the interpreter was not counted; shims missing"; return 1; }
     grep -qx jq "$TEST_TMPDIR/forks" || { echo "  FAIL: jq was not counted; shims missing"; return 1; }
-    # A bash without a builtin clock (3.2, macOS stock) forks date once for the
-    # render's shared clock; nothing else is allowed through.
-    local limit=2
-    bash -c 'printf "%(%s)T" -1' >/dev/null 2>&1 || limit=3
-    [ "$FORKS" -le "$limit" ] || { echo "  FAIL: warm render forked $FORKS external commands (limit $limit):"; sed 's/^/    /' "$TEST_TMPDIR/forks"; return 1; }
+    [ "$FORKS" -le 2 ] || { echo "  FAIL: warm render forked $FORKS external commands (limit 2):"; sed 's/^/    /' "$TEST_TMPDIR/forks"; return 1; }
+    # The clock itself, read for real: a bash without a builtin clock (3.2,
+    # macOS stock) forks date once for the render's shared clock, never once
+    # per reader. Only date is counted here, since this render's caches may
+    # have aged.
+    count_render_forks "$FULL_JSON"
+    local dates; dates=$(grep -cx date "$TEST_TMPDIR/forks" || true)
+    [ "$dates" -le 1 ] || { echo "  FAIL: a render on the real clock forked date $dates times (limit 1)"; return 1; }
 }
 
 run_test test_warm_render_forks_only_the_interpreter_and_jq
@@ -4079,6 +4158,11 @@ test_the_deferred_walk_starts_from_the_parent_and_caches_real() {
 
 run_test test_the_deferred_walk_starts_from_the_parent_and_caches_real
 
+# Exits 0 once the stalled ps stand-in has logged at least <count> calls.
+_stalled_walkers_reach() {  # count
+    [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -ge "$1" ]
+}
+
 # A `ps` that never answers must not mint a walker every render. The render that
 # spawns one marks the walk in flight, and every render inside
 # TMUX_WALK_MARK_TTL renders without spawning another; past the TTL one render
@@ -4087,36 +4171,62 @@ test_a_stalled_walk_is_not_respawned_every_render() {
     export CS_TERM_THEME=light FORCE_COLOR=0
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
-    export CS_STATUSLINE_PARENT=4242
+    # The longest deadline the render accepts, so the first walker still holds
+    # its mark while the four renders run.
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=9
     # A ps that never returns within the run: each invocation records itself,
     # so the count of records is the count of walkers spawned.
     mkdir -p "$TEST_TMPDIR/fakebin"
     export STALLLOG="$TEST_TMPDIR/stalled"
     : > "$STALLLOG"
-    printf '#!/bin/sh\necho x >> "$STALLLOG"\nsleep 30\n' > "$TEST_TMPDIR/fakebin/ps"
+    printf '#!/bin/sh\necho x >> "$STALLLOG"\nexec sleep 300\n' > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
-    local json='{"session_id":"sid-1"}' i=0 spawned
+    local json='{"session_id":"sid-1"}' i=0 spawned stamp
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     while [ "$i" -lt 4 ]; do
         i=$((i + 1))
         CS_STATUSLINE_NOW=$((1000 + i)) run_sl "$json" >/dev/null
     done
-    # Give the children time to reach their ps before counting.
-    local n=0
-    while [ ! -s "$STALLLOG" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
-    sleep 0.3
+    # A render that spawns a walker stamps the mark with its own clock first,
+    # in the render itself, so the stamp names the last render that spawned
+    # one however late that walker's ps would start.
+    stamp=""
+    [ -f "$mark" ] && IFS=$'\t' read -r stamp _ < "$mark"
+    assert_eq "1001" "$stamp" "only the first of four renders inside the TTL spawns a walker" || return 1
+    # The walker is detached and its ps starts later on a loaded machine.
+    wait_until test -s "$STALLLOG"
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "1" "$spawned" "four renders inside the TTL must spawn one walker" || return 1
     # Past the mark's TTL a render tries again, so a dead child cannot wedge
     # the verdict for the rest of the conversation.
     CS_STATUSLINE_NOW=1012 run_sl "$json" >/dev/null   # past TMUX_WALK_MARK_TTL (10)
-    n=0
-    while [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -lt 2 ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
+    wait_until _stalled_walkers_reach 2
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "2" "$spawned" "past the TTL one render walks again" || return 1
 }
 
 run_test test_a_stalled_walk_is_not_respawned_every_render
+
+# A `sleep` for the render's PATH that logs each call to $DEADLOG as
+# "<parent pid> <own pid> <seconds asked>", then sleeps what it was asked plus
+# $2 seconds, if any. With no extra it execs the real sleep, so the own pid is
+# the sleep's. A walker kills ps only once its deadline sleep ends, so a logged
+# line comes before the kill and before the mark is cleared: the distinct
+# parents count walkers without racing them, as a stalled ps logging itself
+# would, whatever number of sleeps a walker's deadline takes. The deadline
+# being a single sleep is pinned by the wall-time test alone.
+_make_deadline_sleep() {  # dir extra-seconds
+    local real
+    real=$(command -v sleep)
+    mkdir -p "$1"
+    if [ "$2" = 0 ]; then
+        printf '#!/bin/sh\necho "$PPID $$ $1" >> "$DEADLOG"\nexec %s "$@"\n' "$real" > "$1/sleep"
+    else
+        printf '#!/bin/sh\necho "$PPID $$ $1" >> "$DEADLOG"\n%s "$@"\nexec %s %s\n' "$real" "$real" "$2" > "$1/sleep"
+    fi
+    chmod +x "$1/sleep"
+}
 
 # The mark only spaces walkers out; what keeps them from piling up is that a
 # walker gives its ps a deadline shorter than the mark and kills it by the pid
@@ -4126,33 +4236,37 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
     export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
+    local real_sleep deadbin="$TEST_TMPDIR/deadbin"
+    real_sleep=$(command -v sleep)
     mkdir -p "$TEST_TMPDIR/fakebin"
-    export STALLLOG="$TEST_TMPDIR/stalled"
-    : > "$STALLLOG"
-    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec sleep 30\n' > "$TEST_TMPDIR/fakebin/ps"
+    export STALLLOG="$TEST_TMPDIR/stalled" DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$STALLLOG"; : > "$DEADLOG"
+    # The ps logs its pid for the alive check below; it may be killed before
+    # it gets that far, so walkers are counted by their deadlines instead. It
+    # stalls far longer than the poll below can stretch under load, so only
+    # the walker's kill can end it while the test watches.
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
+    _make_deadline_sleep "$deadbin" 0
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
-    local json='{"session_id":"sid-1"}' now p alive n
+    local json='{"session_id":"sid-1"}' now p alive
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     for now in 1001 1012 1023; do
-        CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
-        n=0
-        while [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -lt $(( (now - 990) / 11 )) ] && [ "$n" -lt 100 ]; do
-            n=$((n + 1)); sleep 0.05
-        done
-        sleep 1.6   # past the one-second deadline
+        PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
+        # The walker clears the mark as its last act, after it has killed and
+        # reaped its ps, so a cleared mark means this window's walker is done.
+        # The next window starts only then. The wait outlasts the walker's 1 s
+        # deadline however loaded the machine, and a walker that never kills
+        # leaves its ps, and so its mark, up for 300 s, past the wait.
+        wait_until test ! -e "$mark"
+        [ ! -e "$mark" ] \
+            || { echo "  FAIL: the walker spawned at $now never killed its stalled ps"; return 1; }
     done
-    assert_eq "3" "$(wc -l < "$STALLLOG" | tr -d ' ')" "each mark window spawns one walker" || return 1
-    # The walker polls its ps with a sleep and a fork per tick, so on a slow
-    # runner the one-second deadline lands well after one second. The claim
-    # is that the kill comes before the mark expires (TMUX_WALK_MARK_TTL, 10 s),
-    # so wait for it up to eight seconds rather than a fixed pause.
-    n=0
-    while [ "$n" -lt 80 ]; do
-        alive=0
-        while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
-        [ "$alive" -eq 0 ] && break
-        n=$((n + 1)); sleep 0.1
-    done
+    assert_eq "3" "$(cut -d' ' -f1 "$DEADLOG" | sort -u | wc -l | tr -d ' ')" "each mark window spawns one walker" || return 1
+    # Every walker has cleared its mark, which it does only after killing and
+    # reaping its ps, so no recorded ps may still be alive.
+    alive=0
+    while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
     assert_eq "0" "$alive" "no stalled ps outlives its deadline" || return 1
     # The killed walk is a ps that could not answer: no verdict, and the pane
     # still draws as real.
@@ -4161,6 +4275,96 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
 }
 
 run_test test_a_stalled_walker_is_killed_before_its_mark_expires
+
+# The deadline is wall time. On a loaded machine every `sleep` costs its fork
+# on top of what it was asked for, so a deadline counted in sleeps runs long
+# by that cost once per sleep and can outlast the mark, letting the next render
+# start a second walker beside the first. Here each sleep the walker runs takes
+# 1 s longer than asked: a deadline of 1 s counted as 10 sleeps of 0.1 s
+# would take 11 s, past TMUX_WALK_MARK_TTL (10 s); one sleep takes 2 s.
+test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
+    export CS_TERM_THEME=light FORCE_COLOR=0
+    export CS_STATUSLINE_SEGMENTS=pane
+    export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
+    local real_sleep slowbin="$TEST_TMPDIR/slowbin"
+    real_sleep=$(command -v sleep)
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    export STALLLOG="$TEST_TMPDIR/stalled" DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$STALLLOG"; : > "$DEADLOG"
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    _make_deadline_sleep "$slowbin" 1
+    export PATH="$TEST_TMPDIR/fakebin:$PATH"
+    local json='{"session_id":"sid-1"}' alive=0 p start
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
+    start=$SECONDS
+    # Only the render, and the walker it leaves behind, see the slow sleep.
+    PATH="$slowbin:$PATH" CS_STATUSLINE_NOW=1001 run_sl "$json" >/dev/null
+    # Wall time, because that is how the mark ages. SECONDS counts whole
+    # seconds, so this gives up between 9 and 10 s after the render started.
+    while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 10 ]; do sleep 0.1; done
+    [ ! -e "$mark" ] \
+        || { echo "  FAIL: the walker still held its stalled ps when its mark expired"; return 1; }
+    assert_eq "1" "$(cut -d' ' -f3 "$DEADLOG")" "the walker sleeps once, for its 1 s deadline" || return 1
+    while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
+    assert_eq "0" "$alive" "the walker's ps is dead once its mark is cleared" || return 1
+}
+
+run_test test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long
+
+# A ps that answers ends the walk at once: the walker stops its watchdog and
+# the watchdog's sleep instead of waiting out the deadline, and leaves neither
+# behind. With a 9 s deadline, a walker that waited on its watchdog would land
+# its verdict and clear its mark 9 s late, and a sleep left running would
+# still be alive after the mark is gone.
+test_a_walk_whose_ps_answers_stops_its_deadline() {
+    export CS_TERM_THEME=light FORCE_COLOR=0
+    export CS_STATUSLINE_SEGMENTS=pane
+    export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=9
+    local deadbin="$TEST_TMPDIR/deadbin" real_sleep
+    real_sleep=$(command -v sleep)
+    export DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$DEADLOG"
+    _make_deadline_sleep "$deadbin" 0
+    # The ps answers (the parent under the server) as soon as the watchdog's
+    # sleep has started, so there is a sleep to stop; a ps that won outright
+    # would leave nothing to check. Its own pauses use the real sleep.
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\ni=0\nwhile [ ! -s "$DEADLOG" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); %s 0.05; done\necho "4242 2216"\necho "2216 1"\n' \
+        "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export PATH="$TEST_TMPDIR/fakebin:$PATH"
+    local json='{"session_id":"sid-1"}' start elapsed p alive
+    local key="4242,-tmp-fake,2216,0"
+    local mark="$HOME/.cache/cs/tmux-walking/$key"
+    start=$SECONDS
+    PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=1001 run_sl "$json" >/dev/null
+    # Bounded past the deadline, so a walker that waits it out is measured,
+    # not cut off.
+    while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 15 ]; do sleep 0.1; done
+    elapsed=$((SECONDS - start))
+    [ ! -e "$mark" ] || { echo "  FAIL: the walker never cleared its mark"; return 1; }
+    assert_eq "real" "$(tail -1 "$HOME/.cache/cs/tmux-real/$key" 2>/dev/null)" \
+        "the walk caches the answered verdict" || return 1
+    # SECONDS counts whole seconds, so 5 is under 6 s of wall time: far past a
+    # walk on a loaded machine, far short of the 9 s deadline.
+    [ "$elapsed" -le 5 ] \
+        || { echo "  FAIL: the verdict took ${elapsed}s, waiting on the 9 s deadline"; return 1; }
+    assert_eq "1" "$(wc -l < "$DEADLOG" | tr -d ' ')" "the walker arms one deadline" || return 1
+    # The watchdog signals its sleep on its way out; give the signal a moment.
+    start=$SECONDS
+    while :; do
+        alive=0
+        while read -r _ p _; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$DEADLOG"
+        [ "$alive" -eq 0 ] || [ $((SECONDS - start)) -ge 2 ] && break
+        sleep 0.1
+    done
+    assert_eq "0" "$alive" "no deadline sleep outlives an answered walk" || return 1
+}
+
+run_test test_a_walk_whose_ps_answers_stops_its_deadline
 
 # The usage refresher paints no bar, so it has no use for the terminal's theme
 # or the ancestry verdict behind it. It must not run the walk at all: a ps that
@@ -4188,6 +4392,57 @@ test_usage_refresher_never_walks_the_process_tree() {
 }
 
 run_test test_usage_refresher_never_walks_the_process_tree
+
+# The walker's deadline reaches shell arithmetic, which runs a command
+# substitution held in an array subscript. PATH[...] is the payload because
+# set -u aborts on an unset array base before the subscript is expanded.
+_walk_deadline_payload() {  # marker
+    printf 'PATH[$(touch %s)]' "$1"
+}
+
+# The subagent bar sources this script in library mode, which walks in-process
+# at load, so a _SL_WALK_DEADLINE in its environment would reach the walk.
+test_an_inherited_walk_deadline_is_never_read() {
+    local marker="$TEST_TMPDIR/ran"
+    _make_ps_chain "2216:1"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")" \
+            bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_not_exists "$marker" "an inherited _SL_WALK_DEADLINE must not run as code" || return 1
+}
+
+# A well-formed number inherited from the environment is ignored too: the
+# in-process walk reads ps directly, over a pipe, and only the detached walker
+# takes the deadline path, which writes ps's answer to a file.
+test_an_inherited_numeric_walk_deadline_is_ignored() {
+    local log="$TEST_TMPDIR/ps-stdout"
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nk=other; [ -p /dev/stdout ] && k=pipe\necho "$k" >> "%s"\necho "2216 1"\n' \
+        "$log" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE=5 bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_eq "pipe" "$(cat "$log" 2>/dev/null)" \
+        "the walk must read ps directly, not by an inherited deadline" || return 1
+}
+
+test_the_walk_reads_its_deadline_only_as_digits() {
+    local marker="$TEST_TMPDIR/ran"
+    ( _load_sl_functions
+      _make_ps_chain "500:2216 2216:1"
+      export PATH="$TEST_TMPDIR/fakebin:$PATH"
+      mkdir -p "$HOME/.cache/cs/tmux-walking"
+      _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")"
+      _sl_tmux_walk 500 2216 2>/dev/null
+      assert_eq "0" "$?" "a walk with an unusable deadline still answers from ps" || return 1 )
+    assert_not_exists "$marker" "a non-numeric deadline must not run as code" || return 1
+}
+
+run_test test_an_inherited_walk_deadline_is_never_read
+run_test test_an_inherited_numeric_walk_deadline_is_ignored
+run_test test_the_walk_reads_its_deadline_only_as_digits
 
 # The org id is kept for ORG_CACHE_TTL under the config path, so an account
 # swap shows within five minutes and a render never walks the config twice in
@@ -4379,6 +4634,54 @@ test_teammate_heartbeat_does_not_reset_the_lead_cadence() {
 }
 
 run_test test_teammate_heartbeat_does_not_reset_the_lead_cadence
+
+# While git tracks the session's control files the hooks mark the session under
+# ~/.cache/cs/tracked (hooks/cs-resolve.sh), and the render adds, changes and
+# removes nothing in .cs/local: neither the context stamp nor the limits stamp.
+# The control render, unmarked, writes both, so the check is sensitive.
+test_render_writes_nothing_into_a_tracked_control_directory() {
+    export CLAUDE_SESSION_NAME=trackedsess
+    local sess="$CS_SESSIONS_ROOT/trackedsess" porcelain
+    local input='{"session_id":"lead","context_window":{"used_percentage":30},"rate_limits":{"five_hour":{"used_percentage":12,"resets_at":2000}},"workspace":{"current_dir":"/none"}}'
+    mkdir -p "$sess/.cs/local"
+    printf 'claude_session_id: lead\n' > "$sess/.cs/local/state"
+    git -C "$sess" init -q
+    git -C "$sess" add .cs/local/state
+    git -C "$sess" -c user.name=t -c user.email=t@example.com commit -q -m tracked
+    mkdir -p "$HOME/.cache/cs/tracked"
+    : > "$HOME/.cache/cs/tracked/trackedsess"
+    CS_STATUSLINE_NOW=1000 run_sl "$input" >/dev/null
+    porcelain=$(git -C "$sess" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$porcelain" "a marked session's control directory is left as git has it" || return 1
+    rm "$HOME/.cache/cs/tracked/trackedsess"
+    CS_STATUSLINE_NOW=1000 run_sl "$input" >/dev/null
+    assert_eq "30" "$(cat "$sess/.cs/local/context-pct" 2>/dev/null)" "unmarked, the render stamps the context" || return 1
+    assert_file_exists "$sess/.cs/local/limits" "and the limits" || return 1
+}
+
+run_test test_render_writes_nothing_into_a_tracked_control_directory
+
+# The mark is read under the rule hooks/cs-resolve.sh writes it by: a session
+# name that is empty or holds "/" is never marked, so it never reads as
+# tracked, whatever a path built from it happens to reach under
+# ~/.cache/cs/tracked. A plain name with its mark present is the control.
+test_tracked_mark_is_read_only_for_a_name_the_hooks_mark() {
+    ( _load_sl_functions
+      mkdir -p "$HOME/.cache/cs/tracked/grp"
+      : > "$HOME/.cache/cs/tracked/sess"
+      : > "$HOME/.cache/cs/tracked/grp/sess"
+      local rc
+      rc=0; CLAUDE_SESSION_NAME=sess _session_files_tracked || rc=$?
+      assert_eq "0" "$rc" "a plain name with its mark reads as tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME=grp/sess _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "a name holding / reads as not tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME=../tracked/sess _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "a name climbing out of the mark directory reads as not tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME='' _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "an empty name reads as not tracked" || return 1 )
+}
+
+run_test test_tracked_mark_is_read_only_for_a_name_the_hooks_mark
 
 
 # A config that yields no account (caught mid-rewrite, or malformed) leaves no

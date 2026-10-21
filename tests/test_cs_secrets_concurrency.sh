@@ -21,6 +21,9 @@ setup() {
     # exist, which the CS_AGE_BIN seam reads as "no age on this machine".
     export CS_AGE_BIN="$TEST_TMPDIR/no-such-age"
     mkdir -p "$CS_SESSIONS_ROOT" "$HOME"
+    # The session CLAUDE_SESSION_NAME names: export-file and the age commands
+    # refuse a name the sessions root does not have.
+    mkdir -p "$CS_SESSIONS_ROOT/test-session/.cs"
 }
 
 teardown() {
@@ -106,13 +109,27 @@ set -u
 sub="${1:-}"
 sess="${FAKE_SECURITY_SESSION:-test-session}"
 
-# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value]] [-U]
-acct=""; service=""; value=""; have_value=0
+# FAKE_SECURITY_ARGVLOG records the argv this process was started with, which
+# is exactly what `ps` would show, so a test can prove a value never reached it.
+[ -n "${FAKE_SECURITY_ARGVLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SECURITY_ARGVLOG"
+
+# `security -i` reads its command line from stdin. Parse that line the way the
+# real tokenizer does for what cs-secrets sends (double-quoted words with \\
+# and \" escapes) and carry on as if it had been argv.
+if [ "$sub" = "-i" ]; then
+    IFS= read -r line || true
+    eval "set -- $line"
+    sub="${1:-}"
+fi
+
+# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value] | -X <hex>] [-U]
+acct=""; service=""; value=""; have_value=0; hex=""; have_hex=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -a) acct="${2:-}"; shift 2 ;;
         -s) service="${2:-}"; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        -X) hex="${2:-}"; have_hex=1; shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -171,12 +188,26 @@ case "$sub" in
             : > "$FAKE_SECURITY_SLOW_STORE"
             sleep 1
         fi
+        # A store that touches <hold>.began and then waits for <hold>.release,
+        # two seconds at most, stays in flight until a test lets it go.
+        if [ -n "${FAKE_SECURITY_HOLD_STORE:-}" ]; then
+            : > "$FAKE_SECURITY_HOLD_STORE.began"
+            held=0
+            until [ -e "$FAKE_SECURITY_HOLD_STORE.release" ] || [ "$held" -ge 40 ]; do
+                sleep 0.05
+                held=$((held + 1))
+            done
+        fi
         case "${FAKE_SECURITY_MODE:-}" in
             storefail) echo "security: could not add credential" >&2; exit 1 ;;
         esac
         if [ -n "$store" ]; then
             mkdir -p "$store"
-            { printf '%s\n' "$service"; [ "$have_value" -eq 1 ] && printf '%s' "$value"; } > "$(slot)"
+            {
+                printf '%s\n' "$service"
+                [ "$have_value" -eq 1 ] && printf '%s' "$value"
+                [ "$have_hex" -eq 1 ] && printf '%s' "$hex" | perl -ne 'print pack("H*", $_)'
+            } > "$(slot)"
         fi
         exit 0
         ;;
@@ -185,6 +216,9 @@ case "$sub" in
             [ -f "$(slot)" ] || exit 44
             rm -f "$(slot)"
         fi
+        # A delete that touches a marker tells a test the caller has begun
+        # deleting.
+        [ -n "${FAKE_SECURITY_DELETE_MARKER:-}" ] && : > "$FAKE_SECURITY_DELETE_MARKER"
         exit 0
         ;;
     *)
@@ -241,6 +275,8 @@ if [ "\$1" = "rand" ]; then sleep 0.4; fi
 exec "$real_ssl" "\$@"
 SHIM
     chmod +x "$shim/openssl"
+    create_test_session salt-A >/dev/null
+    create_test_session salt-B >/dev/null
 
     PATH="$shim:$PATH" CLAUDE_SESSION_NAME="salt-A" "$CS_SECRETS_BIN" set k "vA" >/dev/null 2>&1 &
     sleep 0.15   # B reaches the salt read while A's file is still mid-write
@@ -265,6 +301,7 @@ SHIM
 # left no lock behind.
 test_encrypted_signal_terminates_writer_mid_critical_section() {
     local sess="sig-term"
+    create_test_session "$sess" >/dev/null
     local real_ssl shim
     real_ssl=$(command -v openssl)
     shim="$TEST_TMPDIR/sig-shim"
@@ -293,6 +330,8 @@ SHIM
     [ "$rc" -ne 0 ] || { echo "  FAIL: writer must exit non-zero when TERMed mid-store (got $rc)"; return 1; }
     assert_file_not_exists "$HOME/.cs-secrets/.lock.$sess" \
         "the lock must be released after the signal" || return 1
+    assert_file_not_exists "$CS_SESSIONS_ROOT/.secrets-lock.$sess" \
+        "the write lock must be released after the signal" || return 1
 }
 
 # codex round 3 finding: encrypted_purge deleted the store without holding the
@@ -304,6 +343,7 @@ SHIM
 # runs after the store commits and leaves the store empty, not resurrected.
 test_encrypted_purge_serialized_with_concurrent_store() {
     local sess="purge-race"
+    create_test_session "$sess" >/dev/null
     CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set A vA >/dev/null 2>&1
 
     local real_ssl shim
@@ -344,6 +384,7 @@ SHIM
 # the backup keeps every secret.
 test_export_serialized_against_concurrent_store_no_stale_overwrite() {
     local sess="export-race"
+    mkdir -p "$CS_SESSIONS_ROOT/$sess/.cs"
     CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set A vA >/dev/null 2>&1
 
     # Force the .enc path (no age) and slow ONLY the export's encrypt. The shim
@@ -403,8 +444,8 @@ test_migrate_delete_source_preserves_concurrent_store() {
     PATH="$bindir:$PATH" FAKE_SECURITY_STORE="$kcstore" FAKE_SECURITY_SLOW_STORE="$marker" \
         "$CS_SECRETS_BIN" migrate-backend keychain --from encrypted --delete-source >/dev/null 2>&1 &
     local mpid=$!
-    local waited=0
-    until [ -f "$marker" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+    wait_until test -f "$marker" \
+        || { echo "  FAIL: fixture: the migration never reached its target store"; wait "$mpid"; return 1; }
     "$CS_SECRETS_BIN" set B vB >/dev/null 2>&1
     wait "$mpid" || true
 
@@ -426,8 +467,8 @@ test_migrate_delete_source_tolerates_concurrently_deleted_key() {
     PATH="$bindir:$PATH" FAKE_SECURITY_STORE="$kcstore" FAKE_SECURITY_SLOW_STORE="$marker" \
         "$CS_SECRETS_BIN" migrate-backend keychain --from encrypted --delete-source >/dev/null 2>&1 &
     local mpid=$!
-    local waited=0
-    until [ -f "$marker" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+    wait_until test -f "$marker" \
+        || { echo "  FAIL: fixture: the migration never reached its target store"; wait "$mpid"; return 1; }
     # Concurrently delete the migrated key A from the source before delete-source.
     "$CS_SECRETS_BIN" delete A >/dev/null 2>&1
     local rc=0
@@ -442,11 +483,853 @@ test_migrate_delete_source_tolerates_concurrently_deleted_key() {
         "migrated secret A must have reached the target" || return 1
 }
 
+# Codex (batch 1, round 1): on the keychain backend nothing serialises an
+# export against `age remove` and a second export. Export A snapshots the
+# recipient set {self, R} and is slow inside age; meanwhile R is removed and
+# export B writes a ciphertext for {self} and records that digest; A then
+# renames its {self, R} ciphertext over B's. The sync file still admits the
+# revoked key. Every export, `age add` and `age remove` must hold the one
+# per-session lock across recipient snapshot, encryption, rename and digest
+# record, on every backend. The slow age shim is bound to export A only
+# (CS_AGE_BIN); the removal and export B run the real binary.
+test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend() {
+    local age_bin keygen_bin
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store-age"
+    local sess="export-revoke-race"
+    local meta="$CS_SESSIONS_ROOT/$sess/.cs"
+    mkdir -p "$meta"
+    local sync
+    sync="$meta/secrets.$(_machine_id).age"
+    # Every cs-secrets call below runs on the (fake) keychain backend with the
+    # real age; `kc` keeps the three overrides in one place.
+    kc() {
+        PATH="$bindir:$PATH" FAKE_SECURITY_STORE="$kcstore" FAKE_SECURITY_SESSION="$sess" \
+            CS_SECRETS_BACKEND=keychain CLAUDE_SESSION_NAME="$sess" CS_AGE_BIN="${KC_AGE:-$age_bin}" \
+            "$CS_SECRETS_BIN" "$@"
+    }
+    "$keygen_bin" -o "$TEST_TMPDIR/r.key" 2>/dev/null || { echo "  FAIL: age-keygen"; return 1; }
+    "$keygen_bin" -y "$TEST_TMPDIR/r.key" > "$TEST_TMPDIR/r.pub" || return 1
+    kc age init >/dev/null 2>&1 || { echo "  FAIL: age init"; return 1; }
+    kc set api_key sk_123 >/dev/null 2>&1 || { echo "  FAIL: set"; return 1; }
+    # First export auto-adds and pins this machine's own key.
+    kc export-file >/dev/null 2>&1 || { echo "  FAIL: first export"; return 1; }
+    kc age add "$TEST_TMPDIR/r.pub" >/dev/null 2>&1 || { echo "  FAIL: age add"; return 1; }
+    kc export-file >/dev/null 2>&1 || { echo "  FAIL: export to self+R"; return 1; }
+    if ! "$age_bin" -d -i "$TEST_TMPDIR/r.key" < "$sync" 2>/dev/null | grep -qF sk_123; then
+        echo "  FAIL: fixture: R must decrypt the export made while it was a recipient"
+        return 1
+    fi
+
+    # An age that sleeps on encrypt (-o) only: decrypts for the unchanged check
+    # stay fast, so A's pause sits exactly between recipient snapshot and rename.
+    local slow="$TEST_TMPDIR/slow-age"
+    cat > "$slow" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do [ "\$a" = "-o" ] && sleep 2 && break; done
+exec "$age_bin" "\$@"
+SHIM
+    chmod +x "$slow"
+
+    kc set api_key sk_456 >/dev/null 2>&1 || { echo "  FAIL: set 2"; return 1; }
+    KC_AGE="$slow" kc export-file >"$TEST_TMPDIR/export-a.out" 2>&1 &
+    local apid=$!
+    sleep 0.5
+    kc age remove r >"$TEST_TMPDIR/remove.out" 2>&1 \
+        || { echo "  FAIL: age remove: $(cat "$TEST_TMPDIR/remove.out")"; kill "$apid" 2>/dev/null; return 1; }
+    kc export-file >"$TEST_TMPDIR/export-b.out" 2>&1 \
+        || { echo "  FAIL: export B: $(cat "$TEST_TMPDIR/export-b.out")"; kill "$apid" 2>/dev/null; return 1; }
+    wait "$apid" || { echo "  FAIL: export A: $(cat "$TEST_TMPDIR/export-a.out")"; return 1; }
+
+    if "$age_bin" -d -i "$TEST_TMPDIR/r.key" < "$sync" >/dev/null 2>&1; then
+        echo "  FAIL: the sync file left behind by the race still decrypts with the revoked key"
+        return 1
+    fi
+    if ! "$age_bin" -d -i "$HOME/.cs-secrets/id_ed25519" < "$sync" 2>/dev/null | grep -qF sk_456; then
+        echo "  FAIL: this machine's own key must decrypt the final export to the latest value"
+        return 1
+    fi
+    assert_file_contains "$HOME/.cs-secrets/sessions/$sess/age-exported-to" " $sync\$" "the recipient digest is recorded for the sync file" || return 1
+}
+
+# Two cs processes that both find no machine key each generate one. The first
+# to place its private key wins and the second adopts that pair: a key some
+# sync file is already encrypted to is never replaced. The ssh-keygen shim
+# delays each generation by a different amount, so both are under way before
+# either lands and the first has reported its key before the second places.
+test_two_first_runs_keep_one_machine_key() {
+    local age_bin real_keygen
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    real_keygen=$(command -v ssh-keygen 2>/dev/null) || real_keygen=""
+    if [ -z "$age_bin" ] || [ -z "$real_keygen" ]; then
+        echo "    SKIP (age and ssh-keygen are not installed)"
+        return 77
+    fi
+    local shim="$TEST_TMPDIR/keygen-shim" log="$TEST_TMPDIR/keygen.log"
+    mkdir -p "$shim"
+    cat > "$shim/ssh-keygen" <<SHIM
+#!/bin/bash
+case " \$* " in
+    *" -t "*) echo generate >> "$log"; sleep "\${SHIM_SLEEP:-0}" ;;
+esac
+exec "$real_keygen" "\$@"
+SHIM
+    chmod +x "$shim/ssh-keygen"
+
+    PATH="$shim:$PATH" SHIM_SLEEP=2 CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init > "$TEST_TMPDIR/first.out" 2>&1 &
+    local first_pid=$!
+    PATH="$shim:$PATH" SHIM_SLEEP=5 CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init > "$TEST_TMPDIR/second.out" 2>&1 &
+    local second_pid=$!
+    wait "$first_pid" || { echo "  FAIL: the first age init failed: $(cat "$TEST_TMPDIR/first.out")"; wait "$second_pid"; return 1; }
+    wait "$second_pid" || { echo "  FAIL: the second age init failed: $(cat "$TEST_TMPDIR/second.out")"; return 1; }
+
+    assert_eq "2" "$(grep -c generate "$log")" "both processes generated a key (the race ran)" || return 1
+    local kept key_type key_body
+    kept=$(CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age pubkey 2>&1)
+    read -r key_type key_body _ <<< "$("$real_keygen" -y -f "$HOME/.cs-secrets/id_ed25519")"
+    assert_eq "$key_type $key_body" "$kept" "the public key belongs to the private key that was kept" || return 1
+    assert_eq "Public key: $kept" "$(grep '^Public key:' "$TEST_TMPDIR/first.out" | tail -1)" \
+        "the key the first process reported is the one kept" || return 1
+    assert_eq "Public key: $kept" "$(grep '^Public key:' "$TEST_TMPDIR/second.out" | tail -1)" \
+        "the second process reports the same key" || return 1
+    assert_eq "" "$(find "$HOME/.cs-secrets" -name '.keygen.*')" "no staging directory is left" || return 1
+}
+
+# A Keychain set that passed its session check before the picker moved the
+# session directory, and writes while rename moves the session's entries: the
+# set says it stored the value, so the value must end up under the new name.
+# The set's write is held in flight; it is let go when rename begins deleting
+# the old entries, which is after rename copied the earlier value. With no
+# lock shared by the two, rename reaches that point and the held value lands
+# under the old name or is deleted. With the lock rename waits, the held write
+# times out of its wait, and rename then moves what the set stored.
+test_keychain_set_during_a_rename_is_moved_with_the_session() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" hold="$TEST_TMPDIR/hold"
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    printf 'v2-concurrent' > "$TEST_TMPDIR/v2c"
+    _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+    _kcs --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K2 failed"; return 1; }
+
+    FAKE_SECURITY_HOLD_STORE="$hold" _kcs --session alpha set K2 < "$TEST_TMPDIR/v2c" > "$TEST_TMPDIR/set.out" 2>&1 &
+    local spid=$!
+    wait_for_file_or_exit "$hold.began" "$spid" "fixture: the held set never reached its write" \
+        || { echo "    the set said: $(cat "$TEST_TMPDIR/set.out")"; return 1; }
+
+    # The picker moves the directory, then runs rename.
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+    FAKE_SECURITY_DELETE_MARKER="$hold.release" _kcs --session alpha rename bravo > "$TEST_TMPDIR/rename.out" 2>&1 &
+    local rpid=$! src=0 rrc=0
+    wait "$spid" || src=$?
+    wait "$rpid" || rrc=$?
+
+    assert_eq "0" "$src" "the set exits 0: $(cat "$TEST_TMPDIR/set.out")" || return 1
+    assert_eq "Stored secret: K2" "$(cat "$TEST_TMPDIR/set.out")" "the set says it stored K2" || return 1
+    assert_eq "0" "$rrc" "rename exits 0: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$(cat "$TEST_TMPDIR/rename.out")" "rename says what it did" || return 1
+    assert_eq "v2-concurrent" "$(_kcs --session bravo get K2 2>&1)" "the value the set stored is bravo's" || return 1
+    assert_eq "value-one" "$(_kcs --session bravo get K1 2>&1)" "K1 moved" || return 1
+    local f services=""
+    for f in "$kc"/*; do
+        [ -f "$f" ] && services="$services$(head -1 "$f") "
+    done
+    assert_eq "cs:bravo:K1 cs:bravo:K2 " "$services" "nothing is left under alpha" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A set that waits on the write lock while the picker moves its session away
+# checks the session once it holds the lock: a value stored under the old name
+# is one no session reads. The lock wait's sleep is the only one cs-secrets
+# runs, so a sleep that leaves a marker shows the set is waiting; PID 1 stands
+# for the rename holding the lock.
+test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" shim="$TEST_TMPDIR/sleep-shim" lock="$CS_SESSIONS_ROOT/.secrets-lock.alpha"
+    local real_sleep; real_sleep=$(command -v sleep)
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'late' > "$TEST_TMPDIR/late"
+    printf '1\n' > "$lock"
+
+    PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=30 _kcs --session alpha set K1 < "$TEST_TMPDIR/late" > "$TEST_TMPDIR/set.out" 2>&1 &
+    local spid=$! rc=0
+    wait_until test -f "$TEST_TMPDIR/waiting"
+    [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: the set never waited on the write lock"; kill "$spid"; wait "$spid"; return 1; }
+
+    # The picker moves the directory; rename finds nothing and lets the lock go.
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+    rm -f "$lock"
+    wait "$spid" || rc=$?
+
+    assert_eq "1" "$rc" "the set exits 1: $(cat "$TEST_TMPDIR/set.out")" || return 1
+    assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/set.out")" \
+        "the set names the session it no longer finds" || return 1
+    assert_eq "No secrets stored for session: alpha" "$(_kcs --session alpha list 2>&1)" "nothing is stored under alpha" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A TERM to a Keychain set while `security` writes keeps the write lock until
+# that write is done: a rename that took the lock the moment it went would
+# move the session's entries while the value still lands under the old name.
+# The store is held in flight for two seconds at most; the set exits after it,
+# so the stored value is there the moment the set has exited.
+test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" hold="$TEST_TMPDIR/hold" slot="$TEST_TMPDIR/kc-store/cs_alpha_K1"
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+
+    # Started directly, not through _kcs: the TERM must reach cs-secrets, not
+    # a subshell running the function.
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" FAKE_SECURITY_HOLD_STORE="$hold" \
+        "$CS_SECRETS_BIN" --session alpha set K1 < "$TEST_TMPDIR/v1" > "$TEST_TMPDIR/set.out" 2>&1 &
+    local spid=$! rc=0 written_first=0
+    wait_for_file_or_exit "$hold.began" "$spid" "fixture: the set never reached its write" \
+        || { echo "    the set said: $(cat "$TEST_TMPDIR/set.out")"; return 1; }
+    kill -TERM "$spid"
+    wait "$spid" || rc=$?
+    [ -f "$slot" ] && written_first=1
+    # A store left running writes on its own; let it finish before teardown.
+    wait_until test -f "$slot"
+
+    assert_eq "1" "$written_first" "the Keychain write finished before the set exited" || return 1
+    assert_eq "143" "$rc" "the set exits 143: $(cat "$TEST_TMPDIR/set.out")" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/set.out")" "the set does not say it stored the value" || return 1
+    assert_eq "value-one" "$(_kcs --session alpha get K1 2>&1)" "the write in flight stored its value" || return 1
+    assert_eq "alpha
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# Two renames of alpha to different names: the second waits on alpha's write
+# lock while the first writes its marker naming bravo and stops partway, with
+# K1 moved and K2 still alpha's. The second reads the marker once it holds the
+# lock and refuses, naming the move to finish; it moves nothing to charlie.
+# PID 1 stands for the first rename holding the lock, and the sleep shim's
+# marker shows the second is waiting on it.
+test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" shim="$TEST_TMPDIR/sleep-shim" lock="$CS_SESSIONS_ROOT/.secrets-lock.alpha"
+    local real_sleep; real_sleep=$(command -v sleep)
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+    _kcs --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K2 failed"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$CS_SESSIONS_ROOT/charlie/.cs"
+    printf '1\n' > "$lock"
+
+    PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=30 _kcs --session alpha rename charlie > "$TEST_TMPDIR/rename.out" 2>&1 &
+    local rpid=$! rc=0
+    wait_until test -f "$TEST_TMPDIR/waiting"
+    [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: the rename never waited on the write lock"; kill "$rpid"; wait "$rpid"; return 1; }
+
+    # The first rename's marker and its first move, K1, then it stops.
+    mkdir -p "$HOME/.cs-secrets"
+    printf 'bravo\n' > "$HOME/.cs-secrets/.rename.alpha"
+    _kcs --session bravo set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set bravo K1 failed"; wait "$rpid"; return 1; }
+    rm -f "$kc/cs_alpha_K1"
+    rm -f "$lock"
+    wait "$rpid" || rc=$?
+
+    assert_eq "1" "$rc" "the second rename exits 1: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'charlie': an earlier move of 'alpha' to 'bravo' did not finish; rerun: cs -secrets --session alpha rename bravo" \
+        "$(cat "$TEST_TMPDIR/rename.out")" "the refusal names the move to finish" || return 1
+    local f services=""
+    for f in "$kc"/*; do
+        [ -f "$f" ] && services="$services$(head -1 "$f") "
+    done
+    assert_eq "cs:alpha:K2 cs:bravo:K1 " "$services" "nothing moved to charlie" || return 1
+    assert_eq "bravo" "$(cat "$HOME/.cs-secrets/.rename.alpha")" "the marker still names bravo" || return 1
+    assert_eq "bravo
+charlie
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A TERM to a rename while it stores a Keychain entry under the new name puts
+# the move back once that store is done: the entry is alpha's alone again,
+# with no marker and no lock left. The store is held in flight for two
+# seconds at most.
+test_a_term_to_a_rename_puts_back_what_it_moved() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" hold="$TEST_TMPDIR/hold"
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+
+    # Started directly, not through _kcs: the TERM must reach cs-secrets, not
+    # a subshell running the function.
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" FAKE_SECURITY_HOLD_STORE="$hold" \
+        "$CS_SECRETS_BIN" --session alpha rename bravo > "$TEST_TMPDIR/rename.out" 2>&1 &
+    local rpid=$! rc=0
+    wait_for_file_or_exit "$hold.began" "$rpid" "fixture: the rename never reached its Keychain store" || return 1
+    kill -TERM "$rpid"
+    wait "$rpid" || rc=$?
+
+    assert_eq "143" "$rc" "the rename exits 143: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/rename.out")" "the rename prints nothing" || return 1
+    local f services=""
+    for f in "$kc"/*; do
+        [ -f "$f" ] && services="$services$(head -1 "$f") "
+    done
+    assert_eq "cs:alpha:K1 " "$services" "the Keychain holds alpha's entry and none of bravo's" || return 1
+    assert_eq "value-one" "$(_kcs --session alpha get K1 2>&1)" "K1 reads under alpha" || return 1
+    assert_not_exists "$HOME/.cs-secrets/.rename.alpha" "no marker is left" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/bravo" "no age state is left under bravo" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A signal that reaches rename after every value has moved does not end it
+# nonzero: the picker reads a nonzero exit as "still under the old name" and
+# moves the directory back over secrets that are all under the new one. Two
+# windows: the write-lock release (its `cat` of the lock) and the removal of
+# the old name's empty age directory (its `rmdir`). A stand-in pauses there
+# until the test lets it go, two seconds at most.
+test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" shim="$TEST_TMPDIR/tail-shim" tool pattern real out rc f services
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for tool in cat rmdir; do
+        case "$tool" in
+            cat) pattern="*/.secrets-lock.alpha" ;;
+            rmdir) pattern="*/sessions/alpha" ;;
+        esac
+        rm -rf "$kc" "$HOME/.cs-secrets" "$shim" "$CS_SESSIONS_ROOT/bravo" "$TEST_TMPDIR/pause."*
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$shim"
+        _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed ($tool)"; return 1; }
+        mkdir -p "$HOME/.cs-secrets/sessions/alpha"
+        printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/alpha/age-trusted"
+        mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        real=$(command -v "$tool")
+        cat > "$shim/$tool" <<SHIM
+#!/usr/bin/env bash
+case "\$1" in
+    $pattern)
+        : > "$TEST_TMPDIR/pause.began"
+        n=0
+        until [ -e "$TEST_TMPDIR/pause.release" ] || [ "\$n" -ge 40 ]; do sleep 0.05; n=\$((n + 1)); done ;;
+esac
+exec "$real" "\$@"
+SHIM
+        chmod +x "$shim/$tool"
+
+        PATH="$shim:$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" \
+            "$CS_SECRETS_BIN" --session alpha rename bravo > "$TEST_TMPDIR/rename.out" 2>&1 &
+        local rpid=$!
+        wait_for_file_or_exit "$TEST_TMPDIR/pause.began" "$rpid" "fixture: the rename never reached its $tool" || return 1
+        kill -TERM "$rpid"
+        : > "$TEST_TMPDIR/pause.release"
+        rc=0
+        wait "$rpid" || rc=$?
+
+        assert_eq "0" "$rc" "the rename exits 0 after a TERM during its $tool: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+        assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$(cat "$TEST_TMPDIR/rename.out")" "the rename says what it did ($tool)" || return 1
+        services=""
+        for f in "$kc"/*; do
+            [ -f "$f" ] && services="$services$(head -1 "$f") "
+        done
+        assert_eq "cs:bravo:K1 " "$services" "the entry is bravo's ($tool)" || return 1
+        assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pins are bravo's ($tool)" || return 1
+        assert_not_exists "$HOME/.cs-secrets/.rename.alpha" "no marker is left ($tool)" || return 1
+        assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root ($tool)" || return 1
+    done
+}
+
+# A TERM to an encrypted-backend purge while it removes the session's age
+# state keeps the write lock until that removal is done: a rename that took
+# the lock at once would move the age state while it is being deleted. A
+# stand-in rm holds the removal for two seconds at most.
+test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state() {
+    local shim="$TEST_TMPDIR/rm-shim" real_rm age="$HOME/.cs-secrets/sessions/alpha" rc=0 gone_first=0
+    real_rm=$(command -v rm)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$shim"
+    printf 'value-enc' > "$TEST_TMPDIR/ve"
+    CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set E1 < "$TEST_TMPDIR/ve" >/dev/null 2>&1 || { echo "  FAIL: fixture: set E1 failed"; return 1; }
+    mkdir -p "$age"
+    printf 'pin-fingerprint\n' > "$age/age-trusted"
+    cat > "$shim/rm" <<SHIM
+#!/usr/bin/env bash
+case "\$*" in
+    "-rf $age")
+        : > "$TEST_TMPDIR/pause.began"
+        n=0
+        until [ -e "$TEST_TMPDIR/pause.release" ] || [ "\$n" -ge 40 ]; do sleep 0.05; n=\$((n + 1)); done ;;
+esac
+exec "$real_rm" "\$@"
+SHIM
+    chmod +x "$shim/rm"
+
+    PATH="$shim:$PATH" CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" purge > "$TEST_TMPDIR/purge.out" 2>&1 &
+    local pid=$!
+    wait_for_file_or_exit "$TEST_TMPDIR/pause.began" "$pid" "fixture: the purge never reached its rm -rf" || return 1
+    kill -TERM "$pid"
+    wait "$pid" || rc=$?
+    [ -e "$age" ] || gone_first=1
+    # A removal left running finishes on its own; let it go before teardown.
+    : > "$TEST_TMPDIR/pause.release"
+    wait_until test ! -e "$age"
+
+    assert_eq "1" "$gone_first" "the age state was removed before the purge exited" || return 1
+    assert_eq "143" "$rc" "the purge exits 143: $(cat "$TEST_TMPDIR/purge.out")" || return 1
+    assert_eq "Purged 1 secret(s) for session: alpha" "$(cat "$TEST_TMPDIR/purge.out")" "the purge says what it removed" || return 1
+    assert_eq "alpha
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# An age add or an export that waits on a session's age lock while a rename
+# of that session removes the age directory the lock lives in takes the lock
+# once the rename is done: the wait makes the directory again before each
+# try. The directory goes in one step, lock and all, as the rename's release
+# and rmdir leave it; a two-step removal could hand the waiter the lock in
+# between. PID 1 stands for the rename holding the lock, and the sleep shim's
+# marker shows the command is waiting on it.
+test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory() {
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc expected age_bin
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; the export runs without it, so it takes the password path.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    real_sleep=$(command -v sleep)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=bravo "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+
+    for cmd in age-add export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting"
+        mkdir -p "$age"
+        printf '1\n' > "$age/.age.lock"
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo CS_AGE_BIN="$age_bin" \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Added recipient: laptop
+Public key: $key" ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Exported 1 secret(s) to: $TEST_TMPDIR/sync.enc (password encrypted)" ;;
+        esac
+        pid=$!
+        wait_until test -f "$TEST_TMPDIR/waiting"
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited on the age lock"; kill "$pid"; wait "$pid"; return 1; }
+
+        # The rename releases its lock and removes the directory.
+        mv "$age" "$TEST_TMPDIR/gone"
+        rc=0
+        wait "$pid" || rc=$?
+
+        assert_eq "0" "$rc" "$cmd exits 0: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "$expected" "$(cat "$TEST_TMPDIR/out")" "$cmd says what it did" || return 1
+        assert_not_exists "$age/.age.lock" "$cmd releases the age lock" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# An age add, age remove or export-file for alpha that waits on alpha's age
+# lock while alpha is renamed to bravo refuses once it holds the lock: alpha
+# is no session any more. It writes nothing: no recipient, no sync file, no
+# pin of this machine's key, and no age directory under alpha. PID 1 stands
+# for the rename holding the lock; the picker's move of the session directory
+# and the rename's removal of alpha's age directory, lock and all, follow
+# once the sleep shim's marker shows the command is waiting.
+test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name() {
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc age_bin
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; remove and the export run without it.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    real_sleep=$(command -v sleep)
+    mkdir -p "$shim" "$HOME/.cs-secrets"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    # This machine's key, so a command that runs on under alpha pins it there.
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwnMachineKeyBodyForTheTestOnly test@example.com\n' \
+        > "$HOME/.cs-secrets/id_ed25519.pub"
+
+    for cmd in age-add age-remove export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/sync.enc" \
+            "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients" "$age"
+        printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients/peer.pub"
+        CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: set K1 failed ($cmd)"; return 1; }
+        printf '1\n' > "$age/.age.lock"
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha CS_AGE_BIN="$age_bin" \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 & ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 & ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 & ;;
+        esac
+        pid=$!
+        wait_until test -f "$TEST_TMPDIR/waiting"
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited on the age lock"; kill "$pid"; wait "$pid"; return 1; }
+
+        # The picker moves the session; the rename releases its lock and
+        # removes alpha's age directory.
+        mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mv "$age" "$TEST_TMPDIR/gone"
+        rc=0
+        wait "$pid" || rc=$?
+
+        assert_eq "1" "$rc" "$cmd for the old name exits 1: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/out")" \
+            "$cmd refuses the old name" || return 1
+        assert_not_exists "$age" "$cmd leaves no age directory, and no pin, under alpha" || return 1
+        assert_not_exists "$TEST_TMPDIR/sync.enc" "$cmd writes no sync file" || return 1
+        assert_eq "peer.pub" "$(ls -A "$CS_SESSIONS_ROOT/bravo/.cs/age-recipients")" "$cmd changes no recipient" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A command waiting on alpha's age lock makes alpha's age directory and then
+# sets its mode before every try. A rename that removes the directory between
+# those two steps leaves the mode step nothing to act on; the waiter makes the
+# directory again, takes the lock and refuses the old name, as it does when
+# the removal lands anywhere else in its wait. The chmod on PATH is the
+# rename: on the first mode step after the command has started waiting (the
+# sleep shim's marker), it moves the session and removes alpha's age
+# directory, lock and all, and then runs the real chmod on what is left.
+test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through() {
+    local shim="$TEST_TMPDIR/race-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep real_chmod cmd rc age_bin
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; remove and the export run without it.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    real_sleep=$(command -v sleep)
+    real_chmod=$(command -v chmod)
+    mkdir -p "$shim" "$HOME/.cs-secrets"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    cat > "$shim/chmod" <<SHIM
+#!/usr/bin/env bash
+if [ -f "$TEST_TMPDIR/waiting" ] && [ ! -e "$TEST_TMPDIR/gone" ]; then
+    for a in "\$@"; do
+        if [ "\$a" = "$age" ]; then
+            mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+            mv "$age" "$TEST_TMPDIR/gone"
+            break
+        fi
+    done
+fi
+exec "$real_chmod" "\$@"
+SHIM
+    chmod +x "$shim/sleep" "$shim/chmod"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwnMachineKeyBodyForTheTestOnly test@example.com\n' \
+        > "$HOME/.cs-secrets/id_ed25519.pub"
+
+    for cmd in age-add age-remove export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/sync.enc" \
+            "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients" "$age"
+        printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients/peer.pub"
+        CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: set K1 failed ($cmd)"; return 1; }
+        printf '1\n' > "$age/.age.lock"
+        rc=0
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha CS_AGE_BIN="$age_bin" \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+        esac
+
+        [ -d "$TEST_TMPDIR/gone" ] || { echo "  FAIL: fixture: the removal never landed in $cmd's mode step: $(cat "$TEST_TMPDIR/out")"; return 1; }
+        assert_eq "1" "$rc" "$cmd for the old name exits 1: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/out")" \
+            "$cmd refuses the old name" || return 1
+        assert_not_exists "$age" "$cmd leaves no age directory, and no pin, under alpha" || return 1
+        assert_not_exists "$TEST_TMPDIR/sync.enc" "$cmd writes no sync file" || return 1
+        assert_eq "peer.pub" "$(ls -A "$CS_SESSIONS_ROOT/bravo/.cs/age-recipients")" "$cmd changes no recipient" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# An age directory that cannot be made, or whose mode cannot be set while it
+# is there, fails the age lock at once: one try, no wait, the tool's own
+# error and the refusal. Only a directory that is gone again by the mode step
+# is made again. The command runs in the background so that one that kept
+# trying is stopped and reported instead of hanging the suite.
+test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once() {
+    local shim="$TEST_TMPDIR/once-shim" age="$HOME/.cs-secrets/sessions/test-session" real_sleep real_chmod how pid
+    local refusal="Error: Refusing to change the age recipients for session 'test-session': could not acquire the age recipients lock"
+    real_sleep=$(command -v sleep)
+    real_chmod=$(command -v chmod)
+    mkdir -p "$shim" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n' \
+        > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    cat > "$shim/chmod" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "$age" ]; then
+        printf 'x\n' >> "$TEST_TMPDIR/mode-steps"
+        if [ -f "$TEST_TMPDIR/refuse-mode" ]; then
+            echo "chmod: $age: Operation not permitted" >&2
+            exit 1
+        fi
+    fi
+done
+exec "$real_chmod" "\$@"
+SHIM
+    chmod +x "$shim/sleep" "$shim/chmod"
+
+    for how in unmakeable unsecurable; do
+        rm -rf "$HOME/.cs-secrets" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/mode-steps" "$TEST_TMPDIR/refuse-mode" "$TEST_TMPDIR/rc"
+        mkdir -p "$HOME/.cs-secrets"
+        case "$how" in
+            # A file where the directory of per-session age state belongs.
+            unmakeable) : > "$HOME/.cs-secrets/sessions" ;;
+            unsecurable) : > "$TEST_TMPDIR/refuse-mode" ;;
+        esac
+        ( rc=0
+          PATH="$shim:$PATH" "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$TEST_TMPDIR/rc" ) &
+        pid=$!
+        wait_until test -f "$TEST_TMPDIR/rc"
+        if [ ! -f "$TEST_TMPDIR/rc" ]; then
+            pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            echo "  FAIL: age remove kept trying an age directory it could not make or secure ($how): $(wc -l < "$TEST_TMPDIR/mode-steps" 2>/dev/null) mode steps"
+            return 1
+        fi
+        wait "$pid"
+        assert_eq "1" "$(cat "$TEST_TMPDIR/rc")" "age remove exits 1 ($how): $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "$refusal" "$(tail -1 "$TEST_TMPDIR/out")" "age remove says it could not take the lock ($how)" || return 1
+        assert_eq "2" "$(wc -l < "$TEST_TMPDIR/out" | tr -d ' ')" "one line from the tool that failed, then the refusal ($how)" || return 1
+        assert_not_exists "$TEST_TMPDIR/waiting" "age remove does not wait ($how)" || return 1
+        case "$how" in
+            unmakeable)
+                assert_not_exists "$TEST_TMPDIR/mode-steps" "no mode step follows a directory that was not made" || return 1 ;;
+            unsecurable)
+                assert_eq "chmod: $age: Operation not permitted" "$(head -1 "$TEST_TMPDIR/out")" "the mode step's own error is shown" || return 1 ;;
+        esac
+        assert_file_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub" "the recipient is left alone ($how)" || return 1
+    done
+}
+
+# Exits 0 once the sleep shim has marked a wait, or <pid> has exited.
+_waiting_or_gone() {  # pid
+    [ -f "$TEST_TMPDIR/waiting" ] || ! kill -0 "$1" 2>/dev/null
+}
+
+# `age add` and `age remove` change the recipient set an export snapshots, so
+# each waits while an export holds the session's age lock and runs once the
+# export is done. The export's age blocks on encrypt (-o) until the test
+# releases it, so the export holds the lock for as long as the test looks;
+# the sleep shim's marker shows the add or remove is waiting on that lock.
+# The test releases it on every path; the held age's own 300 s of wall time
+# only stops a hang, and outlasts the test's 120 s waits while it holds.
+test_age_add_and_remove_wait_while_an_export_holds_the_age_lock() {
+    local age_bin keygen_bin real_sleep cmd pid xpid rc expected key
+    local shim="$TEST_TMPDIR/sleep-shim" slow="$TEST_TMPDIR/held-age"
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    real_sleep=$(command -v sleep)
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    cat > "$slow" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "-o" ]; then
+        : > "$TEST_TMPDIR/encrypting"
+        deadline=\$((SECONDS + 300))
+        until [ -f "$TEST_TMPDIR/release" ] || [ "\$SECONDS" -ge "\$deadline" ]; do "$real_sleep" 0.05; done
+        break
+    fi
+done
+exec "$age_bin" "\$@"
+SHIM
+    chmod +x "$slow"
+    "$keygen_bin" -o "$TEST_TMPDIR/r.key" 2>/dev/null || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    "$keygen_bin" -y "$TEST_TMPDIR/r.key" > "$TEST_TMPDIR/r.pub" || return 1
+    key=$(cat "$TEST_TMPDIR/r.pub")
+    CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: fixture: age init"; return 1; }
+
+    for cmd in age-add age-remove; do
+        rm -f "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/encrypting" "$TEST_TMPDIR/release" "$TEST_TMPDIR/out"
+        printf 'value-%s' "$cmd" > "$TEST_TMPDIR/v"
+        "$CS_SECRETS_BIN" set api_key < "$TEST_TMPDIR/v" >/dev/null 2>&1 || { echo "  FAIL: fixture: set ($cmd)"; return 1; }
+        CS_AGE_BIN="$slow" "$CS_SECRETS_BIN" export-file > "$TEST_TMPDIR/export.out" 2>&1 &
+        xpid=$!
+        wait_until test -f "$TEST_TMPDIR/encrypting"
+        [ -f "$TEST_TMPDIR/encrypting" ] || { echo "  FAIL: fixture: the export never reached its encrypt ($cmd): $(cat "$TEST_TMPDIR/export.out")"; kill "$xpid"; wait "$xpid"; return 1; }
+
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/r.pub" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Added recipient: r
+Public key: $key" ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age remove r > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Removed recipient: r
+
+Note: Existing secrets.age files can still be decrypted by this recipient.
+Run 'cs -secrets export-file' to re-encrypt without this recipient; each machine
+re-encrypts only its own sync file, and copies in git history stay readable to them." ;;
+        esac
+        pid=$!
+        wait_until _waiting_or_gone "$pid"
+        if ! kill -0 "$pid" 2>/dev/null; then
+            : > "$TEST_TMPDIR/release"; wait "$xpid"; wait "$pid"
+            echo "  FAIL: $cmd finished while the export held the age lock: $(cat "$TEST_TMPDIR/out")"
+            return 1
+        fi
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited"; : > "$TEST_TMPDIR/release"; kill "$pid"; wait "$xpid"; wait "$pid"; return 1; }
+        assert_eq "" "$(cat "$TEST_TMPDIR/out")" "$cmd says nothing while it waits" || { : > "$TEST_TMPDIR/release"; wait "$xpid"; wait "$pid"; return 1; }
+
+        : > "$TEST_TMPDIR/release"
+        rc=0
+        wait "$xpid" || rc=$?
+        assert_eq "0" "$rc" "the export holding the lock exits 0 ($cmd): $(cat "$TEST_TMPDIR/export.out")" || { wait "$pid"; return 1; }
+        rc=0
+        wait "$pid" || rc=$?
+        assert_eq "0" "$rc" "$cmd exits 0 once the export is done" || return 1
+        assert_eq "$expected" "$(cat "$TEST_TMPDIR/out")" "$cmd says what it did" || return 1
+    done
+}
+
+# CS_SECRETS_LOCK_TIMEOUT counts whole seconds. Anything but a positive whole
+# number (a word, a fraction, zero) is the default of 10: no arithmetic error,
+# and no giving up before the first wait. PID 1 holds the write lock for the
+# whole test; the three writers wait on it side by side, so the test takes
+# one timeout, not three.
+test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default() {
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" value pid rc
+    printf '1\n' > "$lock"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for value in abc 1.5 0; do
+        CS_SECRETS_LOCK_TIMEOUT="$value" "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" > "$TEST_TMPDIR/out.$value" 2>&1 &
+        printf '%s\n' "$!" > "$TEST_TMPDIR/pid.$value"
+    done
+    for value in abc 1.5 0; do
+        pid=$(cat "$TEST_TMPDIR/pid.$value")
+        rc=0
+        wait "$pid" || rc=$?
+        assert_eq "1" "$rc" "set with CS_SECRETS_LOCK_TIMEOUT=$value exits 1 once it times out" || return 1
+        assert_eq "Error: timed out after 10s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" \
+            "$(cat "$TEST_TMPDIR/out.$value")" "CS_SECRETS_LOCK_TIMEOUT=$value waits the default 10 seconds" || return 1
+    done
+}
+
+# A timeout with a leading zero is read in base 10: 08 is eight seconds, not
+# an octal number that does not exist. PID 1 holds the write lock.
+test_a_lock_timeout_with_a_leading_zero_is_read_in_base_ten() {
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" out rc=0
+    printf '1\n' > "$lock"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    out=$(CS_SECRETS_LOCK_TIMEOUT=08 "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "set exits 1 once it times out" || return 1
+    assert_eq "Error: timed out after 8s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" \
+        "$out" "CS_SECRETS_LOCK_TIMEOUT=08 waits eight seconds" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
 run_test test_export_serialized_against_concurrent_store_no_stale_overwrite
 run_test test_migrate_delete_source_preserves_concurrent_store
 run_test test_migrate_delete_source_tolerates_concurrently_deleted_key
+run_test test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend
+run_test test_two_first_runs_keep_one_machine_key
+run_test test_keychain_set_during_a_rename_is_moved_with_the_session
+run_test test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away
+run_test test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes
+run_test test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile
+run_test test_a_term_to_a_rename_puts_back_what_it_moved
+run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
+run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
+run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
+run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
+run_test test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through
+run_test test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once
+run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
+run_test test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default
+run_test test_a_lock_timeout_with_a_leading_zero_is_read_in_base_ten
 
 report_results

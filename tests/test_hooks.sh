@@ -18,6 +18,9 @@ setup() {
     # "declines outside a session" fail, and worse, ones that assert silence
     # stay green while the hook writes into that live session.
     unset CLAUDE_PROJECT_DIR
+    # The hook treats an in-session CLAUDE_CONFIG_DIR as a control directory;
+    # the developer's own (outside any fixture) must not reach the tests.
+    unset CLAUDE_CONFIG_DIR
     export CLAUDE_SESSION_NAME="test-session"
     export CLAUDE_SESSION_DIR="$TEST_TMPDIR/session"
     export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
@@ -76,6 +79,37 @@ test_narrative_reminder_tracks_per_actor() {
     assert_output_contains "$output" "narrative.alex.md" "Reminder should point at the per-actor narrative" || return 1
 }
 
+# Homebrew's coreutils can put GNU stat ahead of the system's on a Mac, and GNU
+# `stat -f` reports the file system rather than the file's mtime. The hook reads
+# the mtime by what the stat on PATH answers, so a fresh narrative is left alone
+# and a stale one is found. Both are asserted: an mtime misread as 0 makes every
+# narrative stale, which the stale arm alone would pass. bash takes OSTYPE from
+# the environment, so a Mac's value here puts the same question to the hook on a
+# Linux runner.
+test_narrative_reminder_reads_mtimes_with_gnu_stat_on_a_mac() {
+    local gnu shim="$TEST_TMPDIR/gnubin" output
+    if gstat --version 2>/dev/null | grep -q GNU; then
+        gnu=$(command -v gstat)
+    elif stat --version 2>/dev/null | grep -q GNU; then
+        gnu=$(command -v stat)
+    else
+        echo "  SKIP: no GNU stat on this machine"
+        return 77
+    fi
+    mkdir -p "$shim"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$gnu" > "$shim/stat"
+    chmod +x "$shim/stat"
+    echo "# Session narrative" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md"
+    rm -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    output=$(echo '{}' | PATH="$shim:$PATH" OSTYPE=darwin24 bash "$HOOKS_DIR/narrative-reminder.sh")
+    assert_eq '{"decision": "approve"}' "$output" "a fresh narrative is left alone with GNU stat first on a Mac" || return 1
+    _backdate "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md"
+    rm -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    output=$(echo '{}' | PATH="$shim:$PATH" OSTYPE=darwin24 bash "$HOOKS_DIR/narrative-reminder.sh")
+    assert_output_contains "$output" '"decision":"block"' "a stale narrative is found with GNU stat first on a Mac" || return 1
+    assert_output_contains "$output" "narrative.md" "the reminder points at the narrative" || return 1
+}
+
 test_narrative_reminder_asks_for_appended_corrections_not_rewrites() {
     echo "# Session narrative (alice)" > "$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
     _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
@@ -96,6 +130,34 @@ test_narrative_reminder_flags_a_narrative_over_budget() {
     output=$(echo '{}' | CS_NARRATIVE_MAX_BYTES=2048 bash "$HOOKS_DIR/narrative-reminder.sh")
     assert_output_contains "$output" "narrative.alice.md is 2 KB, over the 2 KB budget" "names the file and the budget" || return 1
     assert_output_contains "$output" "cs -narrative rotate" "points at the rotation" || return 1
+}
+
+# .cs/memory is tracked, so a clone chooses a narrative's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The Stop hook's reason names the newest
+# narrative and the one over budget as plain names, each character a plain
+# name lacks replaced by _. Without the shared library it names neither.
+test_narrative_reminder_names_a_narrative_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local nf="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.a$bad.md" partial="$TEST_TMPDIR/partial-hooks"
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } > "$nf"
+    _backdate "$nf"
+    rm -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    local reason newest
+    reason=$(echo '{}' | CS_NARRATIVE_MAX_BYTES=2048 bash "$HOOKS_DIR/narrative-reminder.sh" | jq -r '.reason')
+    newest=$(sed -n 's/.*Newest on disk is \([^ ]*\) .*/\1/p' <<< "$reason")
+    assert_eq "narrative.a$shown.md." "${newest##*/}" "the reason names the newest narrative as a plain name" || return 1
+    assert_output_contains "$reason" " narrative\.a$shown\.md is 2 KB, over the 2 KB budget" \
+        "the reason names the narrative over budget as a plain name" || return 1
+    assert_no_escape_bytes "$reason" "no escape byte reaches Claude" || return 1
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    rm -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    reason=$(echo '{}' | bash "$partial/narrative-reminder.sh" | jq -r '.reason')
+    newest=$(sed -n 's/.*Newest on disk is \([^ ]*\) .*/\1/p' <<< "$reason")
+    assert_eq "?." "${newest##*/}" "without the library the reason withholds the name" || return 1
+    assert_no_escape_bytes "$reason" "no escape byte reaches Claude without the library" || return 1
 }
 
 # The same octal trap as SessionStart's: `08` passes _num_or and aborts the
@@ -171,6 +233,22 @@ test_narrative_reminder_respects_cooldown() {
     local output
     output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh")
     assert_output_contains "$output" "approve" "Fresh cooldown should suppress the reminder" || return 1
+}
+
+# The stamp sits at the .cs root, where a write needs no approval, so its
+# content is whatever anyone put there. Shell arithmetic runs a command
+# substitution found in an operand's array subscript; the array is PATH because
+# the hook runs under set -u, which stops on an unset name before the
+# substitution is reached.
+test_narrative_reminder_reads_its_cooldown_stamp_as_data() {
+    echo "# Session narrative" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md"
+    _backdate "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md"
+    printf 'PATH[$(:>%s)]' "$TEST_TMPDIR/ran-from-stamp" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    local output
+    output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
+    assert_file_not_exists "$TEST_TMPDIR/ran-from-stamp" "A cooldown stamp's content must never run" || return 1
+    assert_output_contains "$output" "block" "A stamp that is not a time counts as no stamp: the reminder fires" || return 1
+    assert_output_contains "$output" "narrative.md" "Reminder should point at narrative.md" || return 1
 }
 
 test_narrative_reminder_approves_for_subagent() {
@@ -270,6 +348,1063 @@ test_auto_approve_rejects_leaf_symlink() {
         echo "  FAIL: a symlinked target must fall through to the prompt, got: $output"
         return 1
     fi
+}
+
+# A hard link has no link to see: a content file under .cs/ that shares its
+# inode with a file elsewhere (a project setting, say) passes every path and
+# symlink check, and an in-place Edit then changes that other file. An
+# existing target with more than one link falls through to the prompt, and
+# stderr says how many names it has, the name printed plain as the symlink
+# decline prints one; once the second name is gone, the same write is
+# approved again and stderr is empty.
+test_auto_approve_rejects_a_hard_linked_target() {
+    local outside="$TEST_TMPDIR/project-settings.json"
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    echo '{"hooks":{}}' > "$outside"
+    ln "$outside" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
+
+    _assert_falls_through Edit "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/config.md" \
+        "a hard-linked target" \
+        "cs auto-approve: not approving, ${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/config.md has 2 names" || return 1
+
+    local input output
+    input=$(jq -n --arg path "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/config.md" \
+        '{tool_name: "Edit", tool_input: {file_path: $path}}')
+    rm -f "$outside"
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>"$TEST_TMPDIR/auto-approve.err")
+    assert_eq "allow" "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" \
+        "the same file with one name is approved" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/auto-approve.err")" \
+        "an approval says nothing on stderr" || return 1
+
+    # A name the session's writer chose is printed through the plain-name rule.
+    ln "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/config.md" "$TEST_TMPDIR/second-name" \
+        || { echo "  FAIL: hard link fixture"; return 1; }
+    mv "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/config.md" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/two words.md"
+    _assert_falls_through Edit "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/two words.md" \
+        "a hard-linked target with a space in its name" \
+        "cs auto-approve: not approving, ${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/two_words.md has 2 names" || return 1
+}
+
+# A link count that neither stat form can read is no evidence of one name:
+# the write falls through to the prompt, and stderr says the count could not
+# be read, the name printed plain. The stand-in stat fails both forms; the
+# same write with the system stat is approved, so the stand-in is the one
+# reason it prompts.
+test_auto_approve_declines_a_target_whose_link_count_cannot_be_read() {
+    local shim="$TEST_TMPDIR/failing-stat" target="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/two words.md"
+    mkdir -p "$shim" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    printf '#!/bin/sh\nexit 1\n' > "$shim/stat"
+    chmod +x "$shim/stat"
+    echo "# notes" > "$target"
+
+    _assert_allowed Edit "$target" "a one-name target with the system stat" || return 1
+    PATH="$shim:$PATH" _assert_falls_through Edit "$target" \
+        "a target whose link count cannot be read" \
+        "cs auto-approve: not approving, could not read the link count of ${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/two_words.md" || return 1
+}
+
+# The link count is asked last, so a write that also meets an earlier decline
+# prints that one: a hard-linked target beside a link under .cs/local names
+# the link. With the link gone, the same target declines for its two names,
+# so the hard link alone is enough and the first line is the order's.
+test_auto_approve_names_a_control_link_before_a_hard_linked_target() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" outside="$TEST_TMPDIR/project-settings.json" real
+    mkdir -p "$meta/memory"
+    echo '{"hooks":{}}' > "$outside"
+    ln "$outside" "$meta/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
+    ln -s "$TEST_TMPDIR" "$meta/local/planted"
+    real="$(cd "$meta/local" && pwd -P)"
+
+    _assert_falls_through Edit "$meta/memory/config.md" \
+        "a hard-linked target beside a link in local/" \
+        "$(_link_reason "$real/planted")" || return 1
+    rm "$meta/local/planted"
+    _assert_falls_through Edit "$meta/memory/config.md" \
+        "the same hard-linked target with the link gone" \
+        "cs auto-approve: not approving, $meta/memory/config.md has 2 names" || return 1
+}
+
+# Audit C2: approval covered every file under .cs/, including the ones cs
+# itself acts on: `.cs/local/pre-open` runs at the next open (Edit keeps the
+# exec bit), `.cs/claude-config/` is Claude Code's own config in an encrypted
+# session, the queue and the mailbox are execution channels. A prompt-injected
+# Write there landed with no prompt. Those paths now fall through to the
+# prompt; the content files (memory, narratives, handoffs, notes) stay
+# frictionless. The parent of every target is created first: a parent that
+# does not resolve already falls through, which would make a missing-parent
+# test green for the wrong reason.
+_auto_approve_output() {
+    # $1 tool, $2 path
+    local input
+    input=$(jq -n --arg tool "$1" --arg path "$2" \
+        '{tool_name: $tool, tool_input: {file_path: $path}}')
+    echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh"
+}
+
+_assert_falls_through() {
+    # $1 tool, $2 path, $3 what, [$4 the decline the hook prints on stderr;
+    # without it the hook must print nothing there]
+    local output
+    output=$(_auto_approve_output "$1" "$2" 2>"$TEST_TMPDIR/auto-approve.err")
+    if [[ -n "$output" ]]; then
+        echo "  FAIL: $3 must fall through to the prompt, got: $output"
+        return 1
+    fi
+    assert_eq "${4:-}" "$(cat "$TEST_TMPDIR/auto-approve.err")" \
+        "what the hook prints on stderr for $3" || return 1
+}
+
+_assert_allowed() {
+    # $1 tool, $2 path, $3 what
+    local output
+    output=$(_auto_approve_output "$1" "$2")
+    assert_output_contains "$output" '"allow"' "$3 should be auto-approved" || return 1
+}
+
+test_auto_approve_rejects_pre_open() {
+    printf '#!/bin/sh\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pre-open"
+    chmod 755 "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pre-open"
+    _assert_falls_through Edit "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pre-open" \
+        "an Edit of .cs/local/pre-open" || return 1
+    rm "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pre-open"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pre-open" \
+        "a Write of .cs/local/pre-open" || return 1
+}
+
+test_auto_approve_rejects_local_state_files() {
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/queue"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/queue/0001" \
+        "a queued task" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state" \
+        ".cs/local/state" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/identity" \
+        ".cs/local/identity" || return 1
+}
+
+# The marker the rotate skill arms is the one machine-local file Claude writes
+# as part of a ritual; session-start.sh rejects any content with a separator,
+# so it names a handoff Claude already wrote and nothing else.
+test_auto_approve_allows_pending_handoff_marker() {
+    _assert_allowed Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pending-handoff" \
+        "the pending-handoff marker" || return 1
+}
+
+test_auto_approve_rejects_claude_config_and_keys() {
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/claude-config" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/age-recipients"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/claude-config/.claude.json" \
+        "Claude Code's config" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/age-recipients/x.pub" \
+        "an age recipient" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/session.lock" \
+        "the session lock" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/secrets.age" \
+        "the secret sync file" || return 1
+}
+
+# .cs/private holds the content files of an encrypted session beside its queue
+# and mailbox: only the content directories stay frictionless there.
+test_auto_approve_private_allows_content_not_queue() {
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private/handoffs" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private/queue"
+    _assert_allowed Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private/handoffs/2026-01-01-x.md" \
+        "a handoff in the vault" || return 1
+    _assert_allowed Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private/pending-handoff" \
+        "the vault's pending-handoff marker" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private/queue/0001" \
+        "a queued task in the vault" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private/session.log" \
+        "the vault's session log" || return 1
+}
+
+# An encrypted session links memory and claude-config into .cs/vault-mnt
+# (lib/63-encrypt.sh), so every real path there starts with vault-mnt/. The
+# classification must see memory/ as content and claude-config/ as config
+# through the link, not the mount directory as one unknown name.
+test_auto_approve_classifies_through_vault_links() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    rm -r "$meta/memory"
+    mkdir -p "$meta/vault-mnt/memory" "$meta/vault-mnt/claude-config" "$meta/vault-mnt/private"
+    ln -s vault-mnt/memory "$meta/memory"
+    ln -s vault-mnt/claude-config "$meta/claude-config"
+    ln -s vault-mnt/private "$meta/private"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative behind the vault link" || return 1
+    _assert_falls_through Write "$meta/claude-config/settings.json" \
+        "a setting behind the vault link" || return 1
+    # A control name that resolves into the vault is still a name: on a
+    # case-sensitive filesystem PRIVATE/ and CLAUDE-CONFIG/ beside the links
+    # are plain directories, and a write there prompts as the spelled name
+    # does. On APFS they are the links themselves.
+    mkdir -p "$meta/PRIVATE" "$meta/CLAUDE-CONFIG"
+    _assert_falls_through Write "$meta/PRIVATE/x.md" \
+        ".cs/PRIVATE beside a vault-linked private" || return 1
+    _assert_falls_through Write "$meta/CLAUDE-CONFIG/settings.json" \
+        ".cs/CLAUDE-CONFIG beside a vault-linked claude-config" || return 1
+}
+
+# A shared directory under .cs/ can carry a committed symlink into local/;
+# the spelled path looks like content, only the real one shows the target.
+test_auto_approve_rejects_link_into_local() {
+    ln -s ../local "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/notes"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/notes/pre-open" \
+        "a write through a link into local/" || return 1
+}
+
+# Edit keeps the exec bit, so an executable anywhere under .cs/ is a script
+# whatever directory it sits in.
+test_auto_approve_rejects_executable_target() {
+    printf '#!/bin/sh\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/run.sh"
+    chmod 755 "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/run.sh"
+    _assert_falls_through Edit "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/run.sh" \
+        "an executable file" || return 1
+}
+
+# cs refuses to open a session whose .cs or .cs/local is a symlink (audit C1),
+# but a claude started in the directory by hand still runs this hook.
+test_auto_approve_rejects_linked_cs_dir() {
+    local real="$TEST_TMPDIR/elsewhere"
+    mkdir -p "$real/memory"
+    rm -r "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    ln -s "$real" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md" \
+        "a write under a linked .cs" || return 1
+    rm "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    ln -s "$real" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md" \
+        "a write under a linked .cs/local" || return 1
+}
+
+# APFS keeps the case a caller typed, so pwd -P returns LOCAL/ for local/.
+# On a case-sensitive filesystem LOCAL is another directory, and the parent
+# is created so the test does not pass on a missing parent there. The
+# fixture holds a local/ that the lowercased LOCAL matches, and no
+# age-recipients/ or private/: a case variant prompts whether or not the
+# control directory it spells exists.
+test_auto_approve_rejects_case_variants() {
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/LOCAL" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/AGE-RECIPIENTS" \
+        "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/PRIVATE"
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/LOCAL/state" \
+        ".cs/LOCAL/state" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/AGE-RECIPIENTS/x.pub" \
+        ".cs/AGE-RECIPIENTS/x.pub" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/PRIVATE/x.md" \
+        ".cs/PRIVATE/x.md" || return 1
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/SESSION.LOCK" \
+        ".cs/SESSION.LOCK" || return 1
+}
+
+# The root of .cs/ holds the notes people and Claude read beside the files cs
+# acts on: the stamps the Stop hook reads, the locks, the archive marker, the
+# timeline, and the names cs gives its control directories. Only a Markdown
+# file is approved there, so a name cs reads later cannot be written unseen.
+test_auto_approve_prompts_for_a_reminder_stamp() {
+    local stamp="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    _assert_falls_through Write "$stamp" "a new reminder stamp" || return 1
+    echo 1700000000 > "$stamp"
+    _assert_falls_through Edit "$stamp" "an Edit of the reminder stamp" || return 1
+}
+
+# A control directory cs has not made yet is a free name at the root: taken
+# by a file, it is what cs finds where it expects its directory.
+test_auto_approve_prompts_for_a_control_directory_name_taken_by_a_file() {
+    local name
+    for name in private claude-config age-recipients .git vault-mnt; do
+        _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/$name" \
+            "a file named .cs/$name" || return 1
+    done
+}
+
+test_auto_approve_prompts_for_the_open_lock() {
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/session.mutex.lock" \
+        "the lock an open holds" || return 1
+}
+
+test_auto_approve_prompts_for_the_archive_marker() {
+    _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/archived" \
+        "the archive marker" || return 1
+}
+
+test_auto_approve_prompts_for_the_timeline() {
+    local timeline="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl"
+    _assert_falls_through Write "$timeline" "a new timeline" || return 1
+    echo '{"event":"session_started"}' > "$timeline"
+    _assert_falls_through Edit "$timeline" "an Edit of the timeline" || return 1
+}
+
+# Claude Code loads a CLAUDE.md from the directory of a file it reads, so one
+# at the root of .cs/ is instructions, not notes.
+test_auto_approve_prompts_for_instructions_at_the_root() {
+    local name
+    for name in CLAUDE.md CLAUDE.local.md claude.md; do
+        _assert_falls_through Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/$name" \
+            ".cs/$name" || return 1
+    done
+}
+
+# The same holds in every directory below .cs/: Claude Code reads the
+# CLAUDE.md beside a file it opens, and it opens memory/ in every session.
+test_auto_approve_prompts_for_instructions_in_a_content_directory() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/plans" "$meta/private/handoffs"
+    _assert_falls_through Write "$meta/memory/CLAUDE.md" \
+        ".cs/memory/CLAUDE.md" || return 1
+    _assert_falls_through Write "$meta/plans/CLAUDE.local.md" \
+        ".cs/plans/CLAUDE.local.md" || return 1
+    _assert_falls_through Write "$meta/private/handoffs/claude.md" \
+        ".cs/private/handoffs/claude.md" || return 1
+    _assert_allowed Write "$meta/memory/claude-notes.md" \
+        "a memory topic whose name only starts with claude" || return 1
+}
+
+# The Write tool makes a missing parent directory, so the first handoff,
+# checkpoint or plan of a session lands in a directory that is not there yet.
+# The directories cs itself keeps content in are approved by name, directly
+# at the root of .cs/; the hook makes nothing itself.
+test_auto_approve_allows_the_first_write_into_a_content_directory() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" name
+    rm -r "$meta/memory"
+    for name in handoffs checkpoints narrative-archive memory plans research; do
+        _assert_allowed Write "$meta/$name/2026-01-01-x.md" \
+            "the first file in a missing .cs/$name" || return 1
+        assert_not_exists "$meta/$name" "the hook leaves .cs/$name unmade" || return 1
+    done
+}
+
+# Any other missing directory keeps its prompt: a control directory cs has not
+# made yet, a name cs does not use, a second missing level, another spelling,
+# one of cs's names below the root, and a dangling link where the directory
+# would go.
+test_auto_approve_prompts_for_the_first_write_into_any_other_directory() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" path
+    for path in private/queue/0001 private/handoffs/x.md queue/0001 notes/x.md \
+        handoffs/deep/x.md Handoffs/x.md claude-config/settings.json memory/plans/x.md; do
+        _assert_falls_through Write "$meta/$path" \
+            "the first file at .cs/$path" || return 1
+    done
+    ln -s "$TEST_TMPDIR/nowhere" "$meta/plans"
+    _assert_falls_through Write "$meta/plans/x.md" \
+        "a file behind a dangling link at .cs/plans" || return 1
+}
+
+# An encrypted session keeps its handoffs and checkpoints in the vault, so a
+# new directory of that name at the plaintext root is not where they go.
+test_auto_approve_prompts_for_a_new_plaintext_directory_in_an_encrypted_session() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/private"
+    _assert_falls_through Write "$meta/handoffs/2026-01-01-x.md" \
+        "a first handoff at the plaintext root of an encrypted session" || return 1
+}
+
+test_auto_approve_allows_markdown_at_the_root() {
+    _assert_allowed Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/README.md" \
+        "the session README" || return 1
+    echo "# Changes" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/changes.md"
+    _assert_allowed Edit "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/changes.md" \
+        "an Edit of a Markdown file at the root" || return 1
+    _assert_allowed Write "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/topic_notes.md" \
+        "a memory topic" || return 1
+}
+
+# A filesystem that folds names (APFS reads a long s as s and the Kelvin sign
+# as k) makes a name outside ASCII another spelling of a control file, and no
+# comparison of strings sees it. Below .cs/ such a name always prompts. The
+# names are written as byte escapes so this file stays ASCII.
+test_auto_approve_prompts_for_a_non_ascii_name_in_content() {
+    local memory="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    _assert_falls_through Write "$memory/caf"$'\xc3\xa9'".md" \
+        "a memory file named with a precomposed e-acute" || return 1
+    _assert_falls_through Write "$memory/cafe"$'\xcc\x81'".md" \
+        "a memory file named with a combining acute" || return 1
+    mkdir -p "$memory/r"$'\xc3\xa9'"sum"
+    _assert_falls_through Write "$memory/r"$'\xc3\xa9'"sum/notes.md" \
+        "a file in a memory directory named outside ASCII" || return 1
+}
+
+# mkdir -p of the folded spelling is the existing control directory where the
+# filesystem folds it and a directory of its own where it does not; the write
+# prompts either way, and never on a missing parent.
+test_auto_approve_prompts_for_a_folded_control_name() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    _assert_falls_through Write "$meta/"$'\xc5\xbf'"ession.lock" \
+        "the session lock spelled with a long s" || return 1
+    mkdir -p "$meta/age-recipients"
+    mkdir -p "$meta/age-recipient"$'\xc5\xbf'
+    _assert_falls_through Write "$meta/age-recipient"$'\xc5\xbf'"/k.pub" \
+        "a recipient key under a directory spelled with a long s" || return 1
+}
+
+# A repository kept below .cs/ (a clone under a notes directory) has a git
+# directory of its own, and git reads config and runs hooks from it whenever
+# git runs there. The note beside it is the control.
+test_auto_approve_prompts_inside_a_git_directory_below_cs() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/artifacts/repo/.git/hooks" "$meta/memory/sub"
+    _assert_falls_through Write "$meta/artifacts/repo/.git/config" \
+        "the config of a repository kept below .cs" || return 1
+    _assert_falls_through Write "$meta/artifacts/repo/.git/hooks/pre-commit" \
+        "a hook of a repository kept below .cs" || return 1
+    _assert_falls_through Write "$meta/memory/sub/.git" \
+        "a .git file in a content directory" || return 1
+    _assert_allowed Write "$meta/artifacts/repo/notes.md" \
+        "a note beside that repository" || return 1
+}
+
+# The name is not what makes a git directory. A .git that is a link resolves
+# to its target's name, and a bare clone is a git directory under a name of
+# its own; both are read by git the same way.
+test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/research/repo" "$meta/research/gitdata"
+    ln -s ../gitdata "$meta/research/repo/.git"
+    _assert_falls_through Write "$meta/research/repo/.git/config" \
+        "the config behind a linked .git" || return 1
+    mkdir -p "$meta/artifacts/mirror/objects" "$meta/artifacts/mirror/refs" "$meta/artifacts/mirror/hooks"
+    echo 'ref: refs/heads/main' > "$meta/artifacts/mirror/HEAD"
+    _assert_falls_through Write "$meta/artifacts/mirror/config" \
+        "the config of a bare clone kept below .cs" || return 1
+    _assert_falls_through Write "$meta/artifacts/mirror/hooks/pre-commit" \
+        "a hook of a bare clone kept below .cs" || return 1
+    _assert_allowed Write "$meta/artifacts/notes.md" \
+        "a note beside the bare clone" || return 1
+    # A linked worktree's own directory holds HEAD and names the shared one in
+    # commondir; git reads config.worktree from it.
+    mkdir -p "$meta/research/admin"
+    echo 'ref: refs/heads/main' > "$meta/research/admin/HEAD"
+    echo '/elsewhere/.git' > "$meta/research/admin/commondir"
+    _assert_falls_through Write "$meta/research/admin/config.worktree" \
+        "the config of a worktree's git directory kept below .cs" || return 1
+    _assert_falls_through Write "$meta/research/admin/index" \
+        "the index of a worktree's git directory kept below .cs" || return 1
+}
+
+# A git directory can be assembled one write at a time. Git takes a directory
+# that holds HEAD beside objects/ and refs/, or beside a commondir naming
+# another store, and then reads config and config.worktree from it; a
+# worktree's own directory names its checkout in gitdir. A write of any of
+# these names prompts below .cs/ whatever is there already, and in any case,
+# since the Mac volume reads head as HEAD. Each file is written after its
+# prompt, as an approval would, so the next name meets what the last left.
+test_auto_approve_prompts_for_a_git_file_name_in_any_order() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" name
+    for name in config config.worktree HEAD commondir gitdir; do
+        _assert_falls_through Write "$meta/memory/$name" \
+            ".cs/memory/$name written in turn" || return 1
+        case "$name" in
+            config|config.worktree) printf '[core]\n\tpager = echo planted\n' > "$meta/memory/$name" ;;
+            HEAD) echo 'ref: refs/heads/main' > "$meta/memory/$name" ;;
+            *) printf '%s\n' "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.git" > "$meta/memory/$name" ;;
+        esac
+        _assert_falls_through Edit "$meta/memory/$name" \
+            "an Edit of .cs/memory/$name" || return 1
+    done
+    mkdir -p "$meta/plans"
+    for name in Config CONFIG CONFIG.WORKTREE Config.Worktree head Head CommonDir \
+        COMMONDIR GitDir GITDIR; do
+        _assert_falls_through Write "$meta/plans/$name" \
+            ".cs/plans/$name in an empty directory" || return 1
+    done
+    for name in config.md headers.md commondir-notes.md gitdir.txt; do
+        _assert_allowed Write "$meta/plans/$name" \
+            "a note named .cs/plans/$name" || return 1
+    done
+    # A clone delivers objects/ and refs/ with no HEAD: the config and the
+    # HEAD that would make it a bare repository both prompt.
+    mkdir -p "$meta/research/x/objects" "$meta/research/x/refs"
+    _assert_falls_through Write "$meta/research/x/config" \
+        "the config of a bare layout with no HEAD yet" || return 1
+    _assert_falls_through Write "$meta/research/x/HEAD" \
+        "the HEAD that completes a bare layout" || return 1
+}
+
+# A directory is a git directory to the hook by the rule cs refuses a
+# session's state by: it holds HEAD. A HEAD that is a link into refs/ counts
+# whether or not the link leads anywhere (git takes the directory for a
+# repository either way), so does a HEAD with nothing beside it, and so does
+# one at the root of .cs/ itself. A write in or below any of them prompts.
+test_auto_approve_prompts_inside_any_directory_that_holds_head() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/artifacts/linked/objects" "$meta/artifacts/linked/refs" "$meta/artifacts/linked/hooks"
+    ln -s refs/heads/main "$meta/artifacts/linked/HEAD"
+    _assert_falls_through Write "$meta/artifacts/linked/config" \
+        "the config of a layout whose HEAD is a dangling link" || return 1
+    _assert_falls_through Write "$meta/artifacts/linked/hooks/pre-commit" \
+        "a hook of a layout whose HEAD is a dangling link" || return 1
+    _assert_allowed Write "$meta/artifacts/notes.md" \
+        "a note beside that layout" || return 1
+    mkdir -p "$meta/research/lone"
+    echo 'ref: refs/heads/main' > "$meta/research/lone/HEAD"
+    _assert_falls_through Write "$meta/research/lone/notes.md" \
+        "a note in a directory holding HEAD and nothing else" || return 1
+    mkdir -p "$meta/memory" "$meta/objects" "$meta/refs"
+    echo 'ref: refs/heads/main' > "$meta/HEAD"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative under a .cs/ that holds HEAD" || return 1
+}
+
+# A write can make a git directory, too: a clone delivers objects/, refs/ and
+# a config under .cs/memory with no HEAD (nothing there is a git directory
+# yet), and a file named HEAD completes the layout. A commondir names the
+# store a HEAD beside it uses. A write of either name prompts, in any case
+# (the volume may fold it), and a note beside them is still approved.
+test_auto_approve_prompts_for_a_file_that_makes_its_directory_a_git_directory() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" name
+    mkdir -p "$meta/memory/objects" "$meta/memory/refs"
+    : > "$meta/memory/objects/.keep"
+    : > "$meta/memory/refs/.keep"
+    printf '[core]\n\tbare = false\n\tworktree = ..\n' > "$meta/memory/config"
+    for name in HEAD head Head commondir COMMONDIR; do
+        _assert_falls_through Write "$meta/memory/$name" "a write of $name beside objects/ and refs/" || return 1
+        _assert_falls_through Edit "$meta/memory/$name" "an Edit of $name beside objects/ and refs/" || return 1
+    done
+    _assert_allowed Write "$meta/memory/notes.md" "a note beside objects/ and refs/" || return 1
+}
+
+# That rule lives in the shared library (cs-shared.sh). A partial deployment
+# without it cannot tell a git directory from content, so every write
+# prompts, and stderr says what is missing.
+test_auto_approve_declines_without_the_shared_library() {
+    local partial="$TEST_TMPDIR/partial-hooks" input output err="$TEST_TMPDIR/partial-hook.err"
+    mkdir -p "$partial" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    input=$(jq -n --arg path "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.md" \
+        '{tool_name: "Write", tool_input: {file_path: $path}}')
+    output=$(echo "$input" | bash "$partial/session-auto-approve.sh" 2>"$err")
+    assert_eq "" "$output" "a narrative write falls through to the prompt" || return 1
+    assert_eq "cs auto-approve: not approving, $partial/cs-shared.sh is missing or outdated" "$(cat "$err")" \
+        "the hook names the missing library" || return 1
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh")
+    assert_output_contains "$output" '"allow"' "the same write is approved with the library" || return 1
+}
+
+# The same for a session whose own path has a .git component above .cs/: the
+# git-directory rule reads the path below .cs/ only.
+test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
+    local home="$TEST_TMPDIR/checkout/.git"
+    mkdir -p "$home"
+    mv "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "$home/session"
+    CLAUDE_SESSION_DIR="$home/session" CLAUDE_SESSION_META_DIR="$home/session/.cs" \
+        _assert_allowed Write "$home/session/.cs/memory/narrative.md" \
+        "a narrative in a session path holding a .git component" || return 1
+}
+
+# Only the part of the path below .cs/ is judged: a session that lives under
+# a directory named outside ASCII keeps its content writes frictionless.
+test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path() {
+    local home="$TEST_TMPDIR/caf"$'\xc3\xa9'
+    mkdir -p "$home"
+    mv "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "$home/session"
+    CLAUDE_SESSION_DIR="$home/session" CLAUDE_SESSION_META_DIR="$home/session/.cs" \
+        _assert_allowed Write "$home/session/.cs/memory/narrative.md" \
+        "a narrative in a session path named outside ASCII" || return 1
+}
+
+# cs accepts a .cs/claude-config that is a link to any resolving directory
+# and launches Claude Code with CLAUDE_CONFIG_DIR pointing there. Linked into a
+# content directory, the config's real parent reads as memory/ and a write to
+# either spelling would land Claude Code settings and hooks. The only
+# claude-config link cs places is the one into the vault mount, so this one
+# declines every write.
+test_auto_approve_rejects_config_linked_into_content() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/memory/config"
+    ln -s memory/config "$meta/claude-config"
+    _assert_falls_through Write "$meta/claude-config/settings.json" \
+        "a setting through the config link" || return 1
+    _assert_falls_through Write "$meta/memory/config/settings.json" \
+        "a setting at the config link's target" || return 1
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the linked config" \
+        "$(_link_reason "$meta/claude-config")" || return 1
+}
+
+# A link beneath a control directory can point the other way, into content:
+# Claude Code reads .cs/claude-config/settings.json through the link, and the
+# queue drain reads .cs/local/queue through it, while the write itself lands
+# in memory/ and reads as content.
+test_auto_approve_rejects_settings_link_target() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s ../memory/config.json "$meta/claude-config/settings.json"
+    local reason; reason=$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the target of a settings link" "$reason" || return 1
+    # A planted link under a control directory declines every write, not
+    # only its target: the shapes compound and none is followed.
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the planted link" "$reason" || return 1
+}
+
+test_auto_approve_rejects_queue_link_target() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/memory/tasks"
+    ln -s ../memory/tasks "$meta/local/queue"
+    local reason; reason=$(_link_reason "$(cd "$meta" && pwd -P)/local/queue")
+    _assert_falls_through Write "$meta/memory/tasks/0001" \
+        "a file under the target of a queue link" "$reason" || return 1
+    # A planted link under a control directory declines every write, not
+    # only its target: the shapes compound and none is followed.
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the planted link" "$reason" || return 1
+}
+
+# The link under the control directory can point at another link in content,
+# and the file Claude Code reads is the end of that chain.
+test_auto_approve_rejects_settings_link_chain_target() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/real.json"
+    ln -s real.json "$meta/memory/hop.json"
+    ln -s ../memory/hop.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/real.json" \
+        "the end of a settings link chain" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")" || return 1
+}
+
+# A link inside a linked control directory: local/queue -> memory/tasks, and
+# memory/tasks/0001 -> ../task.txt. The queue drain reads task.txt as a task.
+test_auto_approve_rejects_link_inside_linked_control_dir() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/memory/tasks"
+    printf 'original task\n' > "$meta/memory/task.txt"
+    ln -s ../memory/tasks "$meta/local/queue"
+    ln -s ../task.txt "$meta/memory/tasks/0001"
+    _assert_falls_through Edit "$meta/memory/task.txt" \
+        "the target of a link inside a linked queue" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/local/queue")" || return 1
+}
+
+# A link name ending in a newline: $(readlink) strips it, so a hop-by-hop
+# resolver would check a name that does not exist and lose the chain. The
+# control directory scan follows no link, so the planted settings link
+# declines the write whatever its chain spells; the scan is what this pins.
+test_auto_approve_rejects_newline_link_chain() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/real.json"
+    ln -s real.json "$meta/memory/hop
+"
+    ln -s "../memory/hop
+" "$meta/claude-config/settings.json"
+    # A decoy at the stripped name points outside the session, so a
+    # resolver that lost the newline would call the link harmless.
+    ln -s / "$meta/memory/hop"
+    _assert_falls_through Edit "$meta/memory/real.json" \
+        "the end of a chain through a newline-named link" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")" || return 1
+}
+
+# Claude Code reads the project's own .claude/ and .mcp.json from the
+# session root, and both are git-shared: a link from there into .cs/
+# content turns an approved content write into settings, a hook or an MCP
+# server. No link there is followed: a .claude/ that links elsewhere in the
+# session, even a skills directory beside it, prompts for every write.
+test_auto_approve_rejects_project_claude_link_into_content() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$root/.claude" "$root/.agents/skills/x"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s ../.cs/memory/config.json "$root/.claude/settings.json"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the target of a project settings link" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/settings.json")" || return 1
+    rm "$root/.claude/settings.json"
+    ln -s ../.agents/skills/x "$root/.claude/skills"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a project skills link" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills")" || return 1
+}
+
+# A hooks directory linked elsewhere in the session, whose entry links on
+# into .cs/ content: reachable from .claude/ through the directory link.
+test_auto_approve_rejects_project_hook_link_behind_dir_link() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$root/.claude" "$root/.agents/hooks"
+    printf 'notes\n' > "$meta/memory/notes.md"
+    ln -s ../.agents/hooks "$root/.claude/hooks"
+    ln -s ../../.cs/memory/notes.md "$root/.agents/hooks/pre.sh"
+    _assert_falls_through Edit "$meta/memory/notes.md" \
+        "a hook reached through a linked directory" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/hooks")" || return 1
+}
+
+# .mcp.json linked at a content file that does not exist yet: the Write
+# creates the file Claude Code will read as MCP servers.
+test_auto_approve_rejects_mcp_link_to_new_content() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    ln -s .cs/memory/mcp.json "$root/.mcp.json"
+    _assert_falls_through Write "$meta/memory/mcp.json" \
+        "the dangling target of an .mcp.json link" \
+        "$(_link_reason "$root/.mcp.json")" || return 1
+}
+
+# The planted link can step out of .cs/ first: claude-config/settings.json
+# -> ../../hop.json at the session root (a shared project file), and hop.json
+# -> .cs/memory/config.json. A parent outside .cs/ proves nothing while it is
+# inside the session.
+test_auto_approve_rejects_link_hopping_through_session_root() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s .cs/memory/config.json "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/hop.json"
+    ln -s ../../hop.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the end of a chain through the session root" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")" || return 1
+}
+
+# On a case-sensitive filesystem SESSION/ beside session/ is another
+# directory; a containment check that folds case would take its .cs/ for
+# ours and classify against ours, which has no claude-config to decline on.
+# On a case-insensitive filesystem the mkdir would land in our own .cs/ and
+# the write would decline as our own claude-config, proving nothing, so the
+# test skips there (reproduced on a case-sensitive APFS image: the old
+# containment approved it, the exact one is silent).
+test_auto_approve_rejects_case_sibling_session() {
+    mkdir -p "$TEST_TMPDIR/Probe"
+    [ -d "$TEST_TMPDIR/probe" ] && return 77
+    local sibling="$TEST_TMPDIR/SESSION"
+    mkdir -p "$sibling/.cs/claude-config"
+    _assert_falls_through Write "$sibling/.cs/claude-config/settings.json" \
+        "a setting in a case-sibling session" || return 1
+}
+
+# A write whose real parent ends in a newline: $(pwd -P) strips it, so the
+# hook would judge the plain directory at the stripped name while the write
+# lands in the newline-named one. A real path holding a newline falls
+# through. The link that reaches it sits in content, which the control
+# directory scan does not walk, and the spelled path holds no newline, so the
+# exact real path is all that decides.
+test_auto_approve_rejects_newline_real_parent() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/memory/store" "$meta/memory/store
+"
+    ln -s "store
+" "$meta/memory/notes"
+    _assert_allowed Write "$meta/memory/store/0001" \
+        "a write in the plain directory at the stripped name" || return 1
+    _assert_falls_through Write "$meta/memory/notes/0001" \
+        "a write whose real parent is the newline-named directory" || return 1
+}
+
+# CLAUDE_SESSION_META_DIR may sit outside CLAUDE_SESSION_DIR; the metadata
+# root is then a containment domain of its own for planted control links.
+test_auto_approve_rejects_queue_link_under_separate_meta_dir() {
+    export CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/meta"
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/local" "$meta/memory/tasks"
+    ln -s ../memory/tasks "$meta/local/queue"
+    _assert_falls_through Write "$meta/memory/tasks/0001" \
+        "a file under a queue link in a separate metadata root" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/local/queue")" || return 1
+}
+
+# .claude itself linked at a content directory, with no settings file yet:
+# the Write creates .claude/settings.json. The parent, not a file, is what
+# must match.
+test_auto_approve_rejects_new_file_under_linked_claude_dir() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    ln -s .cs/memory "$root/.claude"
+    _assert_falls_through Write "$meta/memory/settings.json" \
+        "a new file in a directory .claude links to" \
+        "$(_link_reason "$root/.claude")" || return 1
+}
+
+# A requested path that ends in a newline: $(jq -r) strips it, so the hook
+# would judge the plain file at the stripped name while the Edit lands on
+# the newline-named file beside it. A requested path holding a newline falls
+# through. No link is planted, so neither the control directory scan nor a
+# link check carries the verdict: the exact read and the newline check do.
+test_auto_approve_rejects_newline_file_path() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    local target="$meta/memory/config.json
+"
+    printf '{}\n' > "$target"
+    printf '{}\n' > "$meta/memory/config.json"
+    _assert_allowed Edit "$meta/memory/config.json" \
+        "an Edit of the plain file at the stripped name" || return 1
+    _assert_falls_through Edit "$target" \
+        "an Edit of the newline-named file beside it" || return 1
+}
+
+# cs keeps a CLAUDE_CONFIG_DIR the shell set when the session has no vault
+# config (lib/75-launch.sh), so Claude Code's active config directory can be
+# a content directory of the session. One outside the session is the user's
+# own and stays out of the scan.
+test_auto_approve_rejects_config_dir_inside_session() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/memory/cfg" "$meta/plans"
+    export CLAUDE_CONFIG_DIR="$meta/memory/cfg"
+    _assert_falls_through Write "$meta/memory/cfg/settings.json" \
+        "a setting in a CLAUDE_CONFIG_DIR inside the session" || return 1
+    _assert_allowed Write "$meta/plans/plan.md" \
+        "a plan beside an in-session config dir" || return 1
+    export CLAUDE_CONFIG_DIR="$TEST_TMPDIR/outside-config"
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative with the config dir outside the session" || return 1
+    unset CLAUDE_CONFIG_DIR
+}
+
+# The session's git directory relocated into content (.git -> .cs/memory/repo,
+# or a .git file naming it): git reads config there, and core.fsmonitor runs.
+test_auto_approve_rejects_git_dir_inside_content() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/memory/repo"
+    printf '[core]\n' > "$meta/memory/repo/config"
+    ln -s .cs/memory/repo "$root/.git"
+    _assert_falls_through Edit "$meta/memory/repo/config" \
+        "git config behind a relocated .git link" || return 1
+    _assert_falls_through Write "$meta/memory/repo/description" \
+        "a file in the git directory a .git link leads to" || return 1
+    rm "$root/.git"
+    printf 'gitdir: .cs/memory/repo\n' > "$root/.git"
+    _assert_falls_through Edit "$meta/memory/repo/config" \
+        "git config behind a .git file" || return 1
+    _assert_falls_through Write "$meta/memory/repo/description" \
+        "a file in the git directory a .git file names" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside the relocated git dir" || return 1
+}
+
+# Audit #886: no symlink under a control directory is reasoned about. Any
+# link there declines every write, wherever it points, and the hook says
+# which link on stderr. The scan roots are .cs/local, .cs/age-recipients,
+# .cs/private, .cs/claude-config, the project's .claude/ (and .mcp.json),
+# and an in-session CLAUDE_CONFIG_DIR.
+_auto_approve_stderr() {
+    # $1 tool, $2 path: the hook's stderr, its stdout dropped.
+    local input
+    input=$(jq -n --arg tool "$1" --arg path "$2" \
+        '{tool_name: $tool, tool_input: {file_path: $path}}')
+    { echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" >/dev/null; } 2>&1
+}
+
+_link_reason() {
+    printf 'cs auto-approve: not approving, symlink under a control directory: %s' "$1"
+}
+
+test_auto_approve_declines_on_any_control_link() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    local outside="$TEST_TMPDIR/outside" real
+    mkdir -p "$outside" "$meta/private/handoffs"
+    # A link under local/ that points outside the session entirely.
+    ln -s "$outside" "$meta/local/elsewhere"
+    real="$(cd "$meta/local" && pwd -P)"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in local/ pointing outside" \
+        "$(_link_reason "$real/elsewhere")" || return 1
+    assert_eq "$(_link_reason "$real/elsewhere")" \
+        "$(_auto_approve_stderr Write "$meta/memory/narrative.md")" \
+        "the decline names the link" || return 1
+    rm "$meta/local/elsewhere"
+    # Nested deep under private/.
+    mkdir -p "$meta/private/handoffs/a/b"
+    ln -s "$outside" "$meta/private/handoffs/a/b/deep"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a nested link in private/" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/private/handoffs/a/b/deep")" || return 1
+    rm "$meta/private/handoffs/a/b/deep"
+    # private itself linked anywhere but the vault mount.
+    mv "$meta/private" "$outside/private"
+    ln -s "$outside/private" "$meta/private"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a private/ linked outside the vault" \
+        "$(_link_reason "$meta/private")" || return 1
+    rm "$meta/private"
+    # Under the project's .claude/, deep and pointing outside.
+    mkdir -p "$root/.claude/skills/x/scripts"
+    ln -s "$outside" "$root/.claude/skills/x/scripts/ref"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in the project's .claude/" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills/x/scripts/ref")" || return 1
+    rm "$root/.claude/skills/x/scripts/ref"
+    # .mcp.json as a link, wherever it points.
+    printf '{}\n' > "$outside/mcp.json"
+    ln -s "$outside/mcp.json" "$root/.mcp.json"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a linked .mcp.json" \
+        "$(_link_reason "$root/.mcp.json")" || return 1
+    rm "$root/.mcp.json"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative once every link is gone" || return 1
+}
+
+# The positive control for the scan: a session with no link anywhere keeps
+# its content writes frictionless, and the hook says nothing on stderr.
+test_auto_approve_allows_content_without_links() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/plans" "$meta/private/handoffs" "$meta/claude-config" \
+        "$meta/age-recipients" "$root/.claude/skills/x"
+    printf '{}\n' > "$root/.claude/settings.json"
+    printf '{}\n' > "$meta/claude-config/settings.json"
+    _assert_allowed Write "$meta/memory/narrative.md" "a narrative" || return 1
+    _assert_allowed Write "$meta/plans/plan.md" "a plan" || return 1
+    _assert_allowed Write "$meta/private/handoffs/2026-01-01-x.md" \
+        "a handoff in private/" || return 1
+    assert_eq "" "$(_auto_approve_stderr Write "$meta/memory/narrative.md")" \
+        "an approval says nothing on stderr" || return 1
+}
+
+# A clone chooses the name of a link it commits under the project's .claude/,
+# and the name can carry a terminal escape: a raw ESC or BEL byte, or
+# backslash text echo -e would turn into one. The decline names the link as a
+# plain path, each character a plain path lacks replaced by _.
+test_auto_approve_names_a_control_link_as_a_plain_path() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" err real
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    mkdir -p "$root/.claude/skills"
+    ln -s "$TEST_TMPDIR/outside" "$root/.claude/skills/link$bad"
+    real="$(cd "$root/.claude/skills" && pwd -P)"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in the project's .claude/" \
+        "$(_link_reason "$real/link$shown")" || return 1
+    err=$(_auto_approve_stderr Write "$meta/memory/narrative.md")
+    assert_eq "$(_link_reason "$real/link$shown")" "$err" \
+        "the decline names the link as a plain path" || return 1
+    assert_no_escape_bytes "$err" "no escape byte reaches the terminal" || return 1
+}
+
+# cs links the shell's shared config names into .cs/claude-config
+# (lib/75-launch.sh _link_shared_claude_config). Those links, by those names
+# and pointing where cs points them, are the only ones allowed there.
+_make_shared_config_links() {
+    # $1 the claude-config directory, $2 the shell config dir
+    local name
+    mkdir -p "$2/rules" "$2/skills" "$2/plugins"
+    printf '{}\n' > "$2/settings.json"
+    printf '# shared\n' > "$2/CLAUDE.md"
+    for name in settings.json CLAUDE.md rules skills plugins; do
+        ln -s "$2/$name" "$1/$name"
+    done
+}
+
+test_auto_approve_allows_cs_shared_config_links() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" home="$TEST_TMPDIR/home" name
+    mkdir -p "$meta/claude-config/projects"
+    _make_shared_config_links "$meta/claude-config" "$home/.claude"
+    HOME="$home" _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside cs's own config links" || return 1
+    # A shell that ran with its own CLAUDE_CONFIG_DIR: cs linked from there,
+    # and the launch keeps it in CLAUDE_SECURESTORAGE_CONFIG_DIR.
+    for name in settings.json CLAUDE.md rules skills plugins; do
+        rm "$meta/claude-config/$name"
+    done
+    _make_shared_config_links "$meta/claude-config" "$TEST_TMPDIR/shell-config"
+    HOME="$home" CLAUDE_SECURESTORAGE_CONFIG_DIR="$TEST_TMPDIR/shell-config" \
+        _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside config links into the shell's own config dir" || return 1
+}
+
+test_auto_approve_rejects_foreign_config_link() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" home="$TEST_TMPDIR/home"
+    mkdir -p "$meta/claude-config"
+    _make_shared_config_links "$meta/claude-config" "$home/.claude"
+    # A name cs never links, pointing into the shell config like the rest.
+    printf '{}\n' > "$home/.claude/extra.json"
+    ln -s "$home/.claude/extra.json" "$meta/claude-config/extra.json"
+    local config; config="$(cd "$meta/claude-config" && pwd -P)"
+    HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a foreign-named config link" \
+        "$(_link_reason "$config/extra.json")" || return 1
+    rm "$meta/claude-config/extra.json"
+    # A shared name pointing somewhere cs does not point it.
+    printf '{}\n' > "$TEST_TMPDIR/other.json"
+    rm "$meta/claude-config/settings.json"
+    ln -s "$TEST_TMPDIR/other.json" "$meta/claude-config/settings.json"
+    HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a settings link cs did not make" \
+        "$(_link_reason "$config/settings.json")" || return 1
+    rm "$meta/claude-config/settings.json"
+    ln -s "$home/.claude/settings.json" "$meta/claude-config/settings.json"
+    # A shared name one level down is not where cs puts it.
+    mkdir -p "$meta/claude-config/sub"
+    ln -s "$home/.claude/rules" "$meta/claude-config/sub/rules"
+    HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a shared name below the config root" \
+        "$(_link_reason "$config/sub/rules")" || return 1
+    rm -r "$meta/claude-config/sub"
+    HOME="$home" _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative once only cs's links remain" || return 1
+}
+
+# An encrypted session (lib/63-encrypt.sh): memory, plans, claude-config and
+# private are links into .cs/vault-mnt by design (CS_VAULT_LINKS), and the
+# config dir's shared names link out to the shell config. Content writes
+# there must stay frictionless: the scan follows only the root links cs
+# places, then looks inside the vault directories they name.
+_make_vaulted_meta() {
+    # $1 the metadata root, $2 the shell config dir
+    local meta="$1" sub
+    mkdir -p "$meta/vault-mnt/private/handoffs" "$meta/vault-mnt/claude-config/projects" \
+        "$meta/vault-mnt/plans"
+    mv "$meta/memory" "$meta/vault-mnt/memory"
+    for sub in memory plans claude-config private; do
+        ln -s "vault-mnt/$sub" "$meta/$sub"
+    done
+    _make_shared_config_links "$meta/vault-mnt/claude-config" "$2"
+}
+
+test_auto_approve_allows_vaulted_session_content() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" home="$TEST_TMPDIR/home"
+    _make_vaulted_meta "$meta" "$home/.claude"
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative in an encrypted session" || return 1
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_allowed Write "$meta/plans/plan.md" \
+        "a plan in an encrypted session" || return 1
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_allowed Write "$meta/private/handoffs/2026-01-01-x.md" \
+        "a handoff in an encrypted session" || return 1
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_falls_through Write "$meta/claude-config/settings.local.json" \
+        "a setting in an encrypted session" || return 1
+    # A planted link inside the vault's private/ still declines.
+    ln -s "$TEST_TMPDIR" "$meta/vault-mnt/private/handoffs/planted"
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link planted inside the vault" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/vault-mnt/private/handoffs/planted")" || return 1
+}
+
+# `claude --worktree` keeps whole checkouts under the project's
+# .claude/worktrees/, links and all, and Claude Code does not read them as
+# this session's config: only that one directory is skipped. A worktrees/
+# deeper down is scanned like the rest, and so is a session directory whose
+# path holds find's pattern characters.
+test_auto_approve_skips_project_worktrees_only() {
+    local root="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    local outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside" "$root/.claude/worktrees/w" "$root/.claude/skills/x/worktrees"
+    ln -s "$outside" "$root/.claude/worktrees/w/committed-link"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside a link inside a claude worktree" || return 1
+    ln -s "$outside" "$root/.claude/skills/x/worktrees/planted"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link under a nested worktrees/" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills/x/worktrees/planted")" || return 1
+    rm "$root/.claude/skills/x/worktrees/planted"
+    local odd="$TEST_TMPDIR/odd [x]*"
+    mkdir -p "$odd"
+    mv "$root" "$odd/session"
+    CLAUDE_SESSION_DIR="$odd/session" CLAUDE_SESSION_META_DIR="$odd/session/.cs" \
+        _assert_allowed Write "$odd/session/.cs/memory/narrative.md" \
+        "a narrative in a session path holding [ ] *" || return 1
+}
+
+# Claude Code itself keeps a debug/latest link in its config dir when it
+# logs to a file. In an encrypted session that dir is .cs/claude-config, and
+# the strict rule declines on it like any other foreign link.
+test_auto_approve_declines_on_config_debug_link() {
+    local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    mkdir -p "$meta/claude-config/debug"
+    printf 'log\n' > "$meta/claude-config/debug/x.txt"
+    ln -s "$meta/claude-config/debug/x.txt" "$meta/claude-config/debug/latest"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside Claude Code's debug/latest link" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/debug/latest")" || return 1
 }
 
 test_auto_approve_skips_outside_session() {
@@ -436,6 +1571,9 @@ session_start_setup() {
     # a child claude or a walked-in front end override CLAUDE_PID inline.
     export CS_LEAD_PID=$$
     export CLAUDE_PID=$$
+    # The launch is this cs's, which takes the lead's claim, so a child claude
+    # cs's resume arm runs is the lead once its SessionStart claims.
+    export CS_LEAD_CLAIM=1
     # test_lib scopes TMUX and the title device at source time; the title
     # tests read the escape from a file of their own.
     export CS_TITLE_TTY="$TEST_TMPDIR/title-tty"
@@ -449,8 +1587,10 @@ session_start_setup() {
     mkdir -p "$CLAUDE_SESSION_META_DIR"/{local,memory}
     touch "$CLAUDE_SESSION_META_DIR/local/session.log"
 
-    # Initialize git so the dynamic context block runs
-    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > README.md && git add -A && git commit -q -m init)
+    # Initialize git so the dynamic context block runs. .cs/local stays out of
+    # the commit, as in every session cs makes: hooks act on no file git
+    # tracks there.
+    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > README.md && printf '.cs/local/\n' > .gitignore && git add -A && git commit -q -m init)
 
     # Create README with frontmatter and placeholder objective
     cat > "$CLAUDE_SESSION_META_DIR/README.md" << 'EOF'
@@ -472,6 +1612,50 @@ session_start_teardown() {
     teardown
     unset CS_SESSIONS_ROOT 2>/dev/null || true
     export CS_TITLE_TTY="$HOME/title-tty"
+}
+
+# While git tracks a file in a session's control directory (a pull brought it
+# in), the hooks read no queue, mail or rotation there, and SessionStart writes
+# nothing there either: no state line, no context date, no lock, no attention
+# drop. Every change it made would be a change to the repository's files.
+test_session_start_writes_nothing_into_a_control_directory_git_tracks() {
+    session_start_setup
+    local m="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local" rc source changed
+    printf 'attended\n' > "$m/attention"
+    printf 'session_name: current-session\n' > "$m/state"
+    mkdir -p "$m/rotation-kick"
+    printf 'pending\n' > "$m/rotation-kick/delivered"
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" add -f .cs/local
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" commit -q -m "ship the control directory"
+    # A resume advances the digest watermark and a lead's /clear spends a kick
+    # left in flight; each source has writes of its own.
+    for source in startup resume clear; do
+        rc=0
+        echo '{"session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","source":"'"$source"'","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+            | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>"$TEST_TMPDIR/ss.err" || rc=$?
+        assert_eq "0" "$rc" "SessionStart ($source) stands down, it does not fail: $(cat "$TEST_TMPDIR/ss.err")" || return 1
+        changed=$(git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" status --porcelain --ignored -- .cs/local)
+        assert_eq "" "$changed" "SessionStart ($source) adds, changes or removes nothing under the tracked .cs/local" || return 1
+    done
+}
+
+# The status line cannot ask git on every render, so each hook run leaves its
+# answer where a render reads it with a builtin test: a mark under
+# ~/.cache/cs/tracked named after the session, there while git tracks the
+# control files and gone once they are untracked and committed.
+test_hooks_mark_the_session_while_git_tracks_its_control_files() {
+    session_start_setup
+    local mark="$HOME/.cache/cs/tracked/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
+    local input='{"session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","source":"startup","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}'
+    printf 'session_name: current-session\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" add -f .cs/local/state
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" commit -q -m "ship the control directory"
+    echo "$input" | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || true
+    assert_file_exists "$mark" "a hook run marks the session while git tracks its control files" || return 1
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rm -q --cached .cs/local/state
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" commit -q -m "untrack the control directory"
+    echo "$input" | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || true
+    assert_file_not_exists "$mark" "the next run drops the mark once they are untracked" || return 1
 }
 
 # A tmux stub on PATH that records every call's argv, one bracketed word per
@@ -590,17 +1774,24 @@ test_each_pane_is_titled_with_its_own_session_alone() {
 # window renames never reach; only iTerm's Python API sets it. Every claim and
 # release hands the window to hooks/cs-iterm-tab.py in the background, and only
 # when the terminal is iTerm2 and CS_NO_ITERM2 is unset. A stand-in python3
-# records its call, then takes five seconds and fails loudly: the hook must
-# return without waiting on it and carry none of its output.
+# records its call, then stays up until the test releases it and fails loudly:
+# the hook must return without waiting on it and carry none of its output.
+# Whether the hook waited is read from the stand-in, never from the clock: a
+# loaded machine makes the hook itself slow, and a time limit then fails a
+# hook that waited on nothing.
 _fake_tab_python() {
     FAKE_PY_PATH="$TEST_TMPDIR/pybin"
     FAKE_PY_CALLS="$TEST_TMPDIR/py-calls"
+    FAKE_PY_RELEASE="$TEST_TMPDIR/py-release"
+    FAKE_PY_DONE="$TEST_TMPDIR/py-done"
     mkdir -p "$FAKE_PY_PATH"
     cat > "$FAKE_PY_PATH/python3" <<EOF
 #!/bin/sh
 { printf '[%s]' "\$@"; printf '[%s]\n' "\$TMUX"; } >> "$FAKE_PY_CALLS"
 echo "stand-in python3 failing on purpose" >&2
-sleep 5
+i=0
+while [ ! -e "$FAKE_PY_RELEASE" ] && [ -d "$FAKE_PY_PATH" ] && [ "\$i" -lt 300 ]; do sleep 0.1; i=\$((i + 1)); done
+[ -d "$FAKE_PY_PATH" ] && : > "$FAKE_PY_DONE"
 exit 1
 EOF
     chmod +x "$FAKE_PY_PATH/python3"
@@ -611,27 +1802,29 @@ _tt_tab_hook() {  # hook, pane, session name, LC_TERMINAL, CS_NO_ITERM2; prints 
           TMUX="$TT_SOCK,1,0" TMUX_PANE="$2" CLAUDE_SESSION_NAME="$3" LC_TERMINAL="$4" \
           bash "$HOOKS_DIR/$1" 2>&1
 }
-_wait_for_file() { local i=0; while [ ! -s "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
+# The tab helper starts in the background, and a loaded machine can start it
+# seconds after the hook returns, so each test waits on its record through
+# wait_until (test_lib), whose 120 s guard only stops a hang.
 
 test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     session_start_setup
     _real_tmux_window || return $?
     _fake_tab_python
-    local window out rc start
+    local window out rc
     window=$(_tt display-message -p -t "$TT_PANE_A" '#{window_id}')
-    start=$SECONDS
     out=$(_tt_tab_hook session-start.sh "$TT_PANE_A" current-session iTerm2 ""); rc=$?
     assert_eq "0" "$rc" "the hook succeeds while the helper fails" || { _tt kill-server; return 1; }
-    assert_eq "1" "$(( SECONDS - start < 4 ))" \
-        "the hook returns while the five-second helper still runs" || { _tt kill-server; return 1; }
-    _wait_for_file "$FAKE_PY_CALLS"
+    assert_eq "still running" "$([ -e "$FAKE_PY_DONE" ] && echo finished || echo "still running")" \
+        "the hook returns while the helper it started still runs" || { _tt kill-server; return 1; }
+    wait_until test -s "$FAKE_PY_CALLS"
+    : > "$FAKE_PY_RELEASE"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a claim runs the tab helper once on its window, on the same tmux server" || { _tt kill-server; return 1; }
     assert_output_not_contains "$out" "stand-in python3" \
         "the helper's output never reaches the hook's" || { _tt kill-server; return 1; }
     : > "$FAKE_PY_CALLS"
     _tt_tab_hook session-end.sh "$TT_PANE_A" current-session iTerm2 "" >/dev/null
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a release runs it too, so the tab drops the session that left" || { _tt kill-server; return 1; }
     _tt kill-server
@@ -796,7 +1989,7 @@ test_a_claim_outside_iterm_runs_no_tab_helper() {
     _tt_tab_hook session-start.sh "$TT_PANE_B" fignity iTerm2 1 >/dev/null
     # Positive control on the same server: an iTerm2 claim does run it.
     _tt_tab_hook session-start.sh "$TT_PANE_A" current-session iTerm2 "" >/dev/null
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     assert_eq "1" "$(cat "$FAKE_PY_CALLS" 2>/dev/null | wc -l | tr -d ' ')" \
         "neither a terminal other than iTerm2 nor CS_NO_ITERM2 runs the helper; the control does" || { _tt kill-server; return 1; }
     _tt kill-server
@@ -850,8 +2043,8 @@ test_concurrent_claims_leave_the_name_the_claims_make() {
 }
 
 # A lock that can never be made (TMPDIR gone or read-only, a full disk) must
-# not stall the title: the wait is bounded at five seconds however the mkdir
-# fails, and the name is still written without the lock. The call runs in the
+# not stall the title: the wait is bounded at five seconds however the lock
+# file's create fails, and the name is still written without the lock. The call runs in the
 # background so an unbounded wait fails the test instead of hanging the suite.
 test_an_unmakeable_lock_still_names_the_window_in_bounded_time() {
     session_start_setup
@@ -885,8 +2078,8 @@ test_a_launch_cleanup_releases_its_pane_and_keeps_the_others_title() {
     local lib="$SCRIPT_DIR/../lib"
     _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
         || { _tt kill-server; return 1; }
-    local i=0
-    while [ ! -e "$TEST_TMPDIR/cleaned" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    # The pane's shell starts later on a loaded machine; wait for its mark.
+    wait_until test -e "$TEST_TMPDIR/cleaned"
     assert_eq "cs: current-session" "$(_tt_window_name)" \
         "the cleaned-up launch leaves the window to the session still running" || { _tt kill-server; return 1; }
     assert_eq "" "$(_tt show-options -p -v -t "$TT_PANE_B" @cs_session 2>/dev/null)" \
@@ -944,8 +2137,8 @@ test_a_launch_in_a_second_pane_joins_the_window_name() {
     local lib="$SCRIPT_DIR/../lib"
     _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
         || { _tt kill-server; return 1; }
-    local i=0
-    while [ ! -e "$TEST_TMPDIR/launched" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    # The pane's shell starts later on a loaded machine; wait for its mark.
+    wait_until test -e "$TEST_TMPDIR/launched"
     assert_eq "cs: current-session | fignity" "$(_tt_window_name)" \
         "a cs launched in the other pane joins the window name" || { _tt kill-server; return 1; }
     assert_eq "cs: fignity" "$(_tt display-message -p -t "$TT_PANE_B" '#{pane_title}')" \
@@ -1031,6 +2224,21 @@ test_session_start_names_a_teammate_narrative_over_budget_as_theirs() {
         "the teammate's file is theirs to rotate" || return 1
     assert_output_not_contains "$context" "run \`cs -narrative rotate\` BEFORE" \
         "the rotate instruction is for the actor's own file only" || return 1
+}
+
+# A clone chooses a narrative's file name; the over-budget notice names it as a
+# plain name, each character a plain name lacks replaced by _.
+test_session_start_names_a_narrative_over_budget_as_a_plain_name() {
+    session_start_setup
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m context
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } \
+        > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.b$bad.md"
+    context=$(echo '{"session_id":"s","source":"startup","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+        | CS_NARRATIVE_MAX_BYTES=2048 CS_ACTOR=alice bash "$HOOKS_DIR/session-start.sh" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "- narrative.b$shown.md is 2 KB, over the 2 KB budget; not yours: read it only from the line the digest names, never whole" \
+        "$(grep '^- narrative\.b' <<< "$context")" "the notice names the narrative as a plain name" || return 1
+    assert_no_escape_bytes "$context" "no escape byte reaches Claude" || return 1
 }
 
 # Within budget, nothing is added: the warning would otherwise ride every
@@ -1268,6 +2476,23 @@ test_resume_digest_reports_memory_activity() {
     assert_eq "$head" "$wm" "watermark should advance to HEAD after resume" || return 1
 }
 
+# A clone's history chooses its commit author names, and git keeps an ESC or
+# BEL byte in one. The digest names each author as a plain name, each
+# character a plain name lacks replaced by _.
+test_resume_digest_names_an_author_as_a_plain_name() {
+    session_start_setup
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m context
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rev-parse HEAD > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/watermark"
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && mkdir -p .cs/memory && echo "fact" > .cs/memory/new-fact.md \
+        && git add -A && GIT_AUTHOR_NAME="Jane $bad" GIT_AUTHOR_EMAIL=jane.roe@example.com git commit -q -m "add memory" )
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "(author: commits): Jane_$shown (1);" \
+        "the digest names the author as a plain name" || return 1
+    assert_no_escape_bytes "$context" "no escape byte reaches Claude" || return 1
+}
+
 # Nobody can read a teammate's whole narrative on resume (one dormant file
 # measured 801 KB). Narratives are append-only, so everything committed since
 # this actor's watermark is a tail: the digest names each teammate file that
@@ -1299,6 +2524,101 @@ test_resume_digest_names_where_a_teammates_narrative_grew() {
         "the actor's own narrative is never listed as a teammate delta" || return 1
     assert_output_not_contains "$context" "Skim their narrative" \
         "the whole-file skim instruction is gone" || return 1
+}
+
+# A clone chooses a teammate narrative's file name, and the digest hands Claude
+# the path to read with sed. git quotes a control byte in a path, but not a
+# shell metacharacter, so a name a plain name lacks is passed over, as a
+# rotation handoff's is: the path Claude is told is always the file itself.
+# A narrative is one file directly below .cs/memory, so one in a directory
+# whose name holds the metacharacters is passed over too.
+test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain() {
+    session_start_setup
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    local bob="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs/memory/narrative.bob.md"
+    local odd="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs/memory/narrative.x;echo pwned;.md"
+    local below="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs/memory/narrative.x;echo pwned;/y.md"
+    mkdir -p "${below%/*}"
+    printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
+    printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$odd"
+    printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$below"
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rev-parse HEAD > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/watermark"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$odd"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$below"
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "teammate narratives grew: \.cs/memory/narrative\.bob\.md: 1 new section(s) from line 5\. Read your own" \
+        "the digest names only the plain teammate narrative" || return 1
+    assert_output_not_contains "$context" "pwned" "the digest never names the narrative whose name is not plain" || return 1
+}
+
+# A clone can commit a link named like a narrative. Claude would read its
+# target, a file outside the session the clone chose, so the digest names only
+# a narrative that is a regular file.
+test_resume_digest_passes_over_a_narrative_that_is_a_link() {
+    session_start_setup
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    local bob="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs/memory/narrative.bob.md"
+    local eve="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs/memory/narrative.eve.md"
+    printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
+    printf -- '## 2026-01-01 first\n' > "$TEST_TMPDIR/outside1.txt"
+    printf -- '## 2026-01-01 first\n\n## 2026-01-02 second\n' > "$TEST_TMPDIR/outside2.txt"
+    ln -s "$TEST_TMPDIR/outside1.txt" "$eve"
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rev-parse HEAD > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/watermark"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
+    ln -sfn "$TEST_TMPDIR/outside2.txt" "$eve"
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "teammate narratives grew: \.cs/memory/narrative\.bob\.md: 1 new section(s) from line 5\. Read your own" \
+        "the digest names only the teammate narrative that is a file" || return 1
+    assert_output_not_contains "$context" "narrative\.eve" "the digest never names a narrative that is a link" || return 1
+}
+
+# The same holds for the files the recent commits touched: the hook names
+# each one Claude might open, so only a plain name is listed.
+test_session_start_lists_only_recent_files_with_plain_names() {
+    session_start_setup
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" git commit -q --amend --no-edit --date="2020-01-01T00:00:00Z" \
+        && echo plan > plan.md && echo odd > "a;echo pwned;.md" && git add plan.md "a;echo pwned;.md" && git commit -q -m "recent" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Recent commits: 1 in last 7 days (plan\.md)$" \
+        "the recent commits name only the file whose name is plain" || return 1
+    assert_output_not_contains "$context" "pwned" "the recent commits never name a file whose name is not plain" || return 1
+}
+
+# Checking a name forks (_cs_plain_name's cut, which a stand-in on PATH
+# counts), so the list checks at most the first five files the commits touched,
+# however many there are. Ten names that are not plain are never written to the
+# list, so nothing ends the checks early.
+test_session_start_checks_at_most_five_recent_files() {
+    session_start_setup
+    local shim="$TEST_TMPDIR/shim" calls="$TEST_TMPDIR/cut.calls" i
+    mkdir -p "$shim"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec /usr/bin/cut "$@"\n' "$calls" > "$shim/cut"
+    chmod +x "$shim/cut"
+    ( cd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" && GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" git commit -q --amend --no-edit --date="2020-01-01T00:00:00Z" \
+        && for i in 0 1 2 3 4 5 6 7 8 9; do echo odd > "x y$i.md"; done && git add -- "x y"*.md && git commit -q -m "recent" )
+
+    local context checks
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+        | PATH="$shim:$PATH" bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Recent commits: 1 in last 7 days$" \
+        "the recent commits name no file whose name is not plain" || return 1
+    checks=$(grep -c '^-c1-160$' "$calls" 2>/dev/null || true)
+    [ "${checks:-0}" -ge 1 ] || { echo "  FAIL: the cut stand-in counted no name check (got '${checks}')"; return 1; }
+    [ "$checks" -le 5 ] || { echo "  FAIL: the recent files list checked $checks names, more than five"; return 1; }
 }
 
 # Rotation head-truncates a narrative (oldest sections move to the archive), so
@@ -1579,6 +2899,12 @@ test_session_start_sibling_line_carries_the_send_syntax() {
         session_start_teardown
         return 1
     fi
+    # A task is mail like any other kind: it reaches the recipient's queue only
+    # when that session's user runs its accept command (lib/53-mail.sh,
+    # lib/55-queue.sh), so the line must not promise an unattended run.
+    assert_eq 'Add --kind notify|task|text|result (default text; a task waits in that session'"'"'s mailbox until its user accepts it with cs -queue accept <id>).' \
+        "$(grep -F 'Add --kind' <<< "$context")" \
+        "the --kind line says where a task waits and what queues it" || { session_start_teardown; return 1; }
 
     session_start_teardown
 }
@@ -1952,7 +3278,7 @@ Test the index generation feature
 
 Local dev
 EOF
-    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > f && git add -A && git commit -q -m init)
+    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > f && printf '.cs/local/\n' > .gitignore && git add -A && git commit -q -m init)
 }
 
 index_teardown() {
@@ -2216,6 +3542,9 @@ test_lifecycle_hooks_log_into_the_private_dir() {
     rm "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/session.log"
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _mark_hand_made_vault "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    # A hand-made vault needs an untracked .cs/local; the fixture's commit took it in.
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rm -rq --cached --ignore-unmatch .cs/local
 
     echo '{"session_id":"test-123","source":"startup","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
         | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1
@@ -2302,6 +3631,7 @@ run_test test_narrative_reminder_approves_outside_session
 run_test test_narrative_reminder_approves_when_recently_modified
 run_test test_narrative_reminder_blocks_when_stale
 run_test test_narrative_reminder_tracks_per_actor
+run_test test_narrative_reminder_reads_mtimes_with_gnu_stat_on_a_mac
 run_test test_narrative_reminder_asks_for_appended_corrections_not_rewrites
 # Without the shared library the budget is unknown, and a warning built on a
 # guessed budget is worse than none: the reminder runs and says nothing about
@@ -2321,7 +3651,30 @@ test_narrative_reminder_skips_the_budget_check_without_the_shared_library() {
     assert_output_not_contains "$output" "over the" "no budget warning without the budget" || return 1
 }
 
+# The tracked-files notice is one hook run's answer. A value that came in with
+# the environment changes nothing, even where no shared library loads to drop
+# it: the Stop hook gives the turn the answer it gives without one.
+test_stop_ignores_an_inherited_tracked_files_notice_without_the_shared_library() {
+    local nf="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.alice.md"
+    printf '# Session narrative (alice)\n' > "$nf"
+    _backdate "$nf"
+    local partial="$TEST_TMPDIR/partial-hooks"
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    local plain inherited
+    rm -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    plain=$(echo '{}' | bash "$partial/narrative-reminder.sh")
+    rm -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.narrative-reminder-cooldown"
+    inherited=$(echo '{}' | CS_TRACKED_FILES_NOTICE="x is tracked in git" CS_TRACKED_FILES_META="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" \
+        bash "$partial/narrative-reminder.sh")
+    assert_output_contains "$plain" "Narrative check" "the reminder fires" || return 1
+    assert_eq "$plain" "$inherited" "an inherited notice changes nothing" || return 1
+}
+
 run_test test_narrative_reminder_flags_a_narrative_over_budget
+run_test test_narrative_reminder_names_a_narrative_as_a_plain_name
+run_test test_stop_ignores_an_inherited_tracked_files_notice_without_the_shared_library
 # A zero budget in any spelling is the default, not "warn on everything": the
 # validator runs its zero check on the normalised number, and the hook reads
 # the result rather than keeping a rule of its own.
@@ -2343,6 +3696,7 @@ run_test test_narrative_reminder_is_silent_about_budget_when_under
 run_test test_narrative_reminder_survives_an_unreadable_narrative
 run_test test_narrative_reminder_budget_line_covers_a_teammates_file
 run_test test_narrative_reminder_respects_cooldown
+run_test test_narrative_reminder_reads_its_cooldown_stamp_as_data
 run_test test_stop_raises_attention_marker
 run_test test_stop_no_attention_marker_for_subagents
 run_test test_narrative_reminder_approves_for_subagent
@@ -2352,7 +3706,66 @@ run_test test_auto_approve_ignores_non_cs_path
 run_test test_auto_approve_ignores_non_write_tools
 run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
+run_test test_auto_approve_rejects_a_hard_linked_target
+run_test test_auto_approve_declines_a_target_whose_link_count_cannot_be_read
+run_test test_auto_approve_names_a_control_link_before_a_hard_linked_target
 run_test test_auto_approve_skips_outside_session
+run_test test_auto_approve_rejects_pre_open
+run_test test_auto_approve_rejects_local_state_files
+run_test test_auto_approve_allows_pending_handoff_marker
+run_test test_auto_approve_rejects_claude_config_and_keys
+run_test test_auto_approve_private_allows_content_not_queue
+run_test test_auto_approve_classifies_through_vault_links
+run_test test_auto_approve_rejects_link_into_local
+run_test test_auto_approve_rejects_executable_target
+run_test test_auto_approve_rejects_linked_cs_dir
+run_test test_auto_approve_rejects_case_variants
+run_test test_auto_approve_prompts_for_a_reminder_stamp
+run_test test_auto_approve_prompts_for_a_control_directory_name_taken_by_a_file
+run_test test_auto_approve_prompts_for_the_open_lock
+run_test test_auto_approve_prompts_for_the_archive_marker
+run_test test_auto_approve_prompts_for_the_timeline
+run_test test_auto_approve_prompts_for_instructions_at_the_root
+run_test test_auto_approve_prompts_for_instructions_in_a_content_directory
+run_test test_auto_approve_allows_the_first_write_into_a_content_directory
+run_test test_auto_approve_prompts_for_the_first_write_into_any_other_directory
+run_test test_auto_approve_prompts_for_a_new_plaintext_directory_in_an_encrypted_session
+run_test test_auto_approve_allows_markdown_at_the_root
+run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
+run_test test_auto_approve_prompts_for_a_folded_control_name
+run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
+run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
+run_test test_auto_approve_prompts_inside_any_directory_that_holds_head
+run_test test_auto_approve_prompts_for_a_file_that_makes_its_directory_a_git_directory
+run_test test_auto_approve_declines_without_the_shared_library
+run_test test_auto_approve_prompts_for_a_git_file_name_in_any_order
+run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
+run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
+run_test test_auto_approve_rejects_config_linked_into_content
+run_test test_auto_approve_rejects_settings_link_target
+run_test test_auto_approve_rejects_queue_link_target
+run_test test_auto_approve_rejects_settings_link_chain_target
+run_test test_auto_approve_rejects_link_inside_linked_control_dir
+run_test test_auto_approve_rejects_newline_link_chain
+run_test test_auto_approve_rejects_link_hopping_through_session_root
+run_test test_auto_approve_rejects_case_sibling_session
+run_test test_auto_approve_rejects_project_claude_link_into_content
+run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
+run_test test_auto_approve_rejects_mcp_link_to_new_content
+run_test test_auto_approve_rejects_newline_real_parent
+run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
+run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
+run_test test_auto_approve_rejects_newline_file_path
+run_test test_auto_approve_rejects_config_dir_inside_session
+run_test test_auto_approve_rejects_git_dir_inside_content
+run_test test_auto_approve_declines_on_any_control_link
+run_test test_auto_approve_names_a_control_link_as_a_plain_path
+run_test test_auto_approve_allows_content_without_links
+run_test test_auto_approve_allows_cs_shared_config_links
+run_test test_auto_approve_rejects_foreign_config_link
+run_test test_auto_approve_allows_vaulted_session_content
+run_test test_auto_approve_declines_on_config_debug_link
+run_test test_auto_approve_skips_project_worktrees_only
 
 # Subagent context
 run_test test_subagent_injects_session_name
@@ -2396,6 +3809,7 @@ run_test test_session_start_reasserts_tab_title_on_the_terminal_device
 run_test test_session_start_tab_title_skips_silently_without_a_terminal
 run_test test_session_start_warns_about_an_over_budget_narrative
 run_test test_session_start_names_a_teammate_narrative_over_budget_as_theirs
+run_test test_session_start_names_a_narrative_over_budget_as_a_plain_name
 run_test test_session_start_is_silent_when_narratives_fit
 run_test test_session_start_survives_a_leading_zero_budget_override
 run_test test_session_start_emits_session_state_on_resume
@@ -2411,13 +3825,20 @@ run_test test_subagent_context_deliverable_is_final_message
 run_test test_session_start_narrative_is_per_actor
 run_test test_session_start_secrets_guidance_is_stdin_and_backend_neutral
 run_test test_resume_digest_reports_memory_activity
+run_test test_resume_digest_names_an_author_as_a_plain_name
 run_test test_resume_digest_silent_without_watermark
 run_test test_resume_digest_names_where_a_teammates_narrative_grew
+run_test test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain
+run_test test_resume_digest_passes_over_a_narrative_that_is_a_link
+run_test test_session_start_lists_only_recent_files_with_plain_names
+run_test test_session_start_checks_at_most_five_recent_files
 run_test test_resume_digest_delta_survives_a_rotated_teammate_narrative
 run_test test_resume_digest_counts_two_commits_and_an_uncommitted_tail
 run_test test_hooks_parse_under_bin_bash
 run_test test_resume_digest_reports_uncommitted_teammate_growth
 run_test test_resume_digest_says_nothing_about_an_untracked_teammate_narrative
+run_test test_session_start_writes_nothing_into_a_control_directory_git_tracks
+run_test test_hooks_mark_the_session_while_git_tracks_its_control_files
 run_test test_resume_digest_start_line_ignores_a_head_edit
 run_test test_resume_digest_works_when_the_session_is_a_repo_subdirectory
 run_test test_resume_digest_silent_when_nothing_changed
@@ -2515,24 +3936,21 @@ run_test test_session_end_leaves_legacy_updated_line_alone
 # Retired-hooks cleanup (install.sh + run_uninstall)
 # ============================================================================
 
+# The two tests below run cs's own code, sourced from lib/: the uninstaller's
+# pass over every hook name (_strip_cs_hook_registrations), which strips each
+# one whose file is gone and then drops the events left with nothing, and the
+# strip filter that pass and install.sh share (_strip_hook_registration).
 test_retired_hooks_strip_settings_json() {
-    # Settings.json with one retired hook (PreCompact only) and one current hook (PostToolUse)
+    # Settings.json with one retired hook whose file is gone (PreCompact only)
+    # and one hook whose file is still in the flat hooks directory, so its
+    # registration stays (PostToolUse)
     local settings='{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/discoveries-archiver.sh","timeout":10}]}],"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/discovery-commits.sh","timeout":10}]}]}}'
-    local p="$HOME/.claude/hooks/discoveries-archiver.sh"
-    local t="~/.claude/hooks/discoveries-archiver.sh"
+    local parent="$TEST_TMPDIR/hooks"
+    mkdir -p "$parent/cs"
+    : > "$parent/discovery-commits.sh"
     local stripped
-    stripped=$(echo "$settings" | jq --arg p "$p" --arg t "$t" '
-        if .hooks then
-            .hooks |= with_entries(
-                .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
-                )
-            )
-            | .hooks |= with_entries(select(.value | length > 0))
-            | if .hooks == {} then del(.hooks) else . end
-        else . end
-    ')
+    stripped=$(. "$SCRIPT_DIR/../lib/01-manifests.sh" && . "$SCRIPT_DIR/../lib/85-adopt-uninstall.sh" \
+        && echo "$settings" | _strip_cs_hook_registrations "$parent/cs" "$parent")
     if echo "$stripped" | jq -e '.hooks.PreCompact' >/dev/null 2>&1; then
         echo "  FAIL: PreCompact event should be empty/gone after stripping its only (retired) hook"
         echo "  got: $stripped"
@@ -2550,16 +3968,7 @@ test_retired_hooks_strip_preserves_coexisting_hook() {
     local p="$HOME/.claude/hooks/discoveries-archiver.sh"
     local t="~/.claude/hooks/discoveries-archiver.sh"
     local stripped
-    stripped=$(echo "$settings" | jq --arg p "$p" --arg t "$t" '
-        if .hooks then
-            .hooks |= with_entries(
-                .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
-                )
-            )
-        else . end
-    ')
+    stripped=$(. "$SCRIPT_DIR/../lib/01-manifests.sh" && _strip_hook_registration "$settings" "$p" "$t")
     local remaining_count
     remaining_count=$(echo "$stripped" | jq '.hooks.PostToolUse[0].hooks | length')
     if [ "$remaining_count" != "1" ]; then
@@ -2588,15 +3997,65 @@ run_test test_retired_hooks_strip_preserves_coexisting_hook
 # leave flat or unrelated wrappers untouched, then append the cs entry.
 _install_merge_filter() {
     cat << 'JQ'
-.hooks[$event] = (
-    ((.hooks[$event] // []) | map(
-        if .hooks then
-            .hooks |= map(select(.command != $path and .command != $tilde))
-        else . end
-    ) | map(select(.hooks == null or (.hooks | length > 0))))
-    + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
-)
+if .hooks[$event] != null and (.hooks[$event] | type) != "array" then
+    error("hooks.\($event) is not a list")
+else
+    .hooks[$event] = (
+        ((.hooks[$event] // []) | map(
+            if type == "object" and (.hooks | type) == "array" then
+                .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
+            else . end
+        ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
+        + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
+    )
+end
 JQ
+}
+
+# A jq filter text on stdin without its indentation, blank lines or the line
+# that appends cs's entry (install.sh.in appends $append, the copy above a
+# fixed wrapper), on stdout.
+_merge_filter_strip_and_drop_lines() {
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^$' -e '^+ \['
+}
+
+# The spec tests below run the copy above, never install.sh.in, so they say
+# something about the installer only while the two texts are the same: the
+# lines of _merge_cs_hook's filter that strip and drop are compared with the
+# copy's.
+test_install_merge_filter_copy_matches_install_sh_in() {
+    local theirs ours
+    theirs=$(awk '
+        /^[ \t]*_merge_cs_hook\(\) \{/ { infn=1 }
+        infn && /--argjson append "\$append" '\''$/ { grab=1; next }
+        grab {
+            if ($0 ~ /^[ \t]*'\''\)/) exit
+            print
+        }
+    ' "$SCRIPT_DIR/../install.sh.in" | _merge_filter_strip_and_drop_lines)
+    ours=$(_install_merge_filter | _merge_filter_strip_and_drop_lines)
+    assert_eq "$theirs" "$ours" "the copy of the merge filter matches install.sh.in" || return 1
+}
+
+# An event whose value is not a list is the user's: the merge stops, naming
+# the event, rather than rewrite it. A null event is one the merge creates.
+test_install_merge_stops_on_an_event_that_is_not_a_list() {
+    # shellcheck disable=SC2088  # the spelling settings.json holds, never expanded
+    local tilde="~/.claude/hooks/session-start.sh" value out rc
+    for value in '{"custom":{"hooks":[]}}' 'false' '"notify"' '7'; do
+        rc=0
+        out=$(jq -n --argjson value "$value" '{hooks: {SessionStart: $value}}' | jq -c \
+            --arg event "SessionStart" --arg path "$HOME/.claude/hooks/session-start.sh" \
+            --arg tilde "$tilde" --argjson timeout 30 "$(_install_merge_filter)" 2>&1) || rc=$?
+        assert_eq "5" "$rc" "jq exit status for the value $value" || { echo "$out"; return 1; }
+        assert_output_contains "$out" "^jq: error (at <stdin>:[0-9]*): hooks\.SessionStart is not a list$" \
+            "the error names the event for the value $value" || return 1
+    done
+    out=$(echo '{"hooks":{"SessionStart":null}}' | jq -c \
+        --arg event "SessionStart" --arg path "$HOME/.claude/hooks/session-start.sh" \
+        --arg tilde "$tilde" --argjson timeout 30 "$(_install_merge_filter)" 2>&1)
+    assert_eq '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]}]}}' "$out" \
+        "a null event becomes the list holding cs's entry" || return 1
 }
 
 test_install_preserves_coshipped_hook_in_wrapper() {
@@ -2685,6 +4144,8 @@ test_install_leaves_flat_entries_alone() {
     fi
 }
 
+run_test test_install_merge_filter_copy_matches_install_sh_in
+run_test test_install_merge_stops_on_an_event_that_is_not_a_list
 run_test test_install_preserves_coshipped_hook_in_wrapper
 run_test test_install_drops_emptied_wrapper_when_only_cs_hook_present
 run_test test_install_leaves_flat_entries_alone
@@ -2814,6 +4275,9 @@ test_session_start_arms_the_vault_maildir() {
     session_start_setup
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _mark_hand_made_vault "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    # A hand-made vault needs an untracked .cs/local; the fixture's commit took it in.
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rm -rq --cached --ignore-unmatch .cs/local
     local output wp rc=0
     output=$(echo '{"session_id":"s","source":"startup","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
         | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null)
@@ -2946,7 +4410,7 @@ run_test test_session_end_survives_an_unset_home
 # second front end can inherit these variables while the live run still owns
 # the lock, so SessionEnd must leave that PID for launcher cleanup.
 test_session_end_spares_a_live_sessions_lock() {
-    local proj="$TEST_TMPDIR/lockheld"
+    local proj="$TEST_TMPDIR/.claude-sessions/lockheld"
     mkdir -p "$proj/.cs/local"
     touch "$proj/.cs/local/session.log"
     # $$ is this test runner: a PID that is definitely alive.
@@ -2968,7 +4432,7 @@ test_session_end_spares_a_live_sessions_lock() {
 
 # A lock left by a process that is gone is exactly what SessionEnd should clear.
 test_session_end_clears_a_stale_lock() {
-    local proj="$TEST_TMPDIR/lockstale"
+    local proj="$TEST_TMPDIR/.claude-sessions/lockstale"
     mkdir -p "$proj/.cs/local"
     touch "$proj/.cs/local/session.log"
     # A PID that cannot be running: start a shell and let it exit.
@@ -2985,8 +4449,207 @@ test_session_end_clears_a_stale_lock() {
         || { echo "  FAIL: a stale lock was left behind"; return 1; }
 }
 
+# SessionEnd reads the lock by live_lock_pid's rule: "0" and "-1" name process
+# groups and "+<pid>" is not a pid, so each is a stale lock to clear.
+test_session_end_reads_the_lock_by_the_one_lock_rule() {
+    local proj="$TEST_TMPDIR/.claude-sessions/lockrule"
+    mkdir -p "$proj/.cs/local"
+    touch "$proj/.cs/local/session.log"
+    local text
+    for text in "0" "-1" "+$$"; do
+        printf '%s\n' "$text" > "$proj/.cs/session.lock"
+        env -i PATH="$PATH" HOME="$TEST_TMPDIR" CLAUDE_PROJECT_DIR="$proj" \
+            /bin/bash "$HOOKS_DIR/session-end.sh" \
+            <<< "{\"session_id\":\"11111111-2222-4333-8444-555555555555\",\"cwd\":\"$proj\",\"source\":\"user_exit\"}" \
+            >/dev/null 2>&1 || true
+        [ ! -f "$proj/.cs/session.lock" ] \
+            || { echo "  FAIL: a lock of '$text' was left behind: $(cat "$proj/.cs/session.lock")"; return 1; }
+    done
+}
+
+# A cs-shared.sh from before live_lock_pid shipped in it, under a newer
+# session-end.sh, cannot tell a live lock from a stale one, so the hook
+# leaves the lock to the next open rather than remove a live session's.
+test_session_end_without_the_lock_rule_leaves_the_lock() {
+    local partial="$TEST_TMPDIR/partial-hooks"
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    printf '\nunset -f live_lock_pid\n' >> "$partial/cs-shared.sh"
+    local proj="$TEST_TMPDIR/.claude-sessions/lockrule-old"
+    mkdir -p "$proj/.cs/local"
+    touch "$proj/.cs/local/session.log"
+    printf '%s\n' "$$" > "$proj/.cs/session.lock"
+    local rc=0
+    env -i PATH="$PATH" HOME="$TEST_TMPDIR" CLAUDE_PROJECT_DIR="$proj" \
+        /bin/bash "$partial/session-end.sh" \
+        <<< "{\"session_id\":\"11111111-2222-4333-8444-555555555555\",\"cwd\":\"$proj\",\"source\":\"user_exit\"}" \
+        >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "the hook runs to its end" || return 1
+    assert_eq "$$" "$(cat "$proj/.cs/session.lock" 2>/dev/null)" "the live lock is left as it was" || return 1
+}
+
 run_test test_session_end_spares_a_live_sessions_lock
 run_test test_session_end_clears_a_stale_lock
+run_test test_session_end_reads_the_lock_by_the_one_lock_rule
+run_test test_session_end_without_the_lock_rule_leaves_the_lock
+
+# `cs -rm <name> --force` can land while the claude it removes is still ending:
+# its SessionEnd has already found the session directory and goes on writing.
+# Nothing it writes may bring the directory back, or the picker shows an empty
+# shell holding the end's log line, timeline event and lock files. A DEBUG trap
+# loaded through BASH_ENV removes the directory before the hook's Nth command,
+# for every N the hook runs, so wherever the removal lands is covered without
+# naming a line or a command of the hook. The hook runs under the bash running
+# this suite; run the suite under /bin/bash too for cs's 3.2 floor.
+test_session_end_never_recreates_a_removed_session() {
+    local seam="$TEST_TMPDIR/remove-at-step.sh" root="$TEST_TMPDIR/rm-sessions"
+    local dir="$root/ending" steps_file="$TEST_TMPDIR/steps" sh="$BASH" steps n rc
+    cat > "$seam" << 'SEAM'
+_cs_test_step=0
+_cs_test_remove_at_step() {
+    case "$1" in */session-end.sh) ;; *) return 0 ;; esac
+    _cs_test_step=$((_cs_test_step + 1))
+    if [ "$_cs_test_step" = "${CS_TEST_REMOVE_AT:-}" ]; then
+        rm -rf "$CS_TEST_REMOVE_DIR"
+        : > "$CS_TEST_REMOVED_MARK"
+    fi
+    printf '%s\n' "$_cs_test_step" > "$CS_TEST_STEPS_FILE"
+    return 0
+}
+trap '_cs_test_remove_at_step "${BASH_SOURCE[0]:-}"' DEBUG
+SEAM
+    _stage_ending_session() {
+        rm -rf "$dir"
+        mkdir -p "$dir/.cs/local"
+        printf '# Session: ending\n' > "$dir/.cs/README.md"
+        : > "$dir/.cs/local/session.log"
+        printf '%s\n' "$$" > "$dir/.cs/session.lock"
+    }
+    _run_ending_hook() {  # bash, step to remove at ("" for none)
+        env -i HOME="$TEST_TMPDIR" PATH="$PATH" CS_SESSIONS_ROOT="$root" \
+            CLAUDE_SESSION_NAME=ending CLAUDE_SESSION_DIR="$dir" \
+            CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+            BASH_ENV="$seam" CS_TEST_REMOVE_AT="$2" CS_TEST_REMOVE_DIR="$dir" \
+            CS_TEST_REMOVED_MARK="$TEST_TMPDIR/removed" CS_TEST_STEPS_FILE="$steps_file" \
+            "$1" "$HOOKS_DIR/session-end.sh" \
+            <<< '{"session_id":"11111111-2222-4333-8444-555555555555","reason":"other"}' \
+            >/dev/null 2>&1
+    }
+    mkdir -p "$root"
+    # Positive control: untouched, the hook writes its end into the session.
+    _stage_ending_session
+    _run_ending_hook "$sh" "" || { echo "  FAIL: $sh: session-end failed with no removal"; return 1; }
+    assert_file_contains "$dir/.cs/timeline.jsonl" '"event":"ended"' \
+        "$sh: the hook records the end when the session stays" || return 1
+    steps=$(cat "$steps_file")
+    [ "$steps" -ge 20 ] || { echo "  FAIL: $sh: the seam counted only $steps hook commands"; return 1; }
+    n=1
+    while [ "$n" -le "$steps" ]; do
+        _stage_ending_session
+        rm -f "$TEST_TMPDIR/removed"
+        rc=0
+        _run_ending_hook "$sh" "$n" || rc=$?
+        assert_exists "$TEST_TMPDIR/removed" "$sh: the session was removed before hook command $n" || return 1
+        assert_eq "0" "$rc" "$sh: session-end exits 0 when the session goes before command $n" || return 1
+        if [ -e "$dir" ]; then
+            echo "  FAIL: $sh: removed before hook command $n of $steps, the session came back holding: $(cd "$root" && find ending | tr '\n' ' ')"
+            return 1
+        fi
+        n=$((n + 1))
+    done
+}
+
+run_test test_session_end_never_recreates_a_removed_session
+
+# The Stop hook runs at every turn end and raises .cs/local/attention after it
+# has found the session, so a `cs -rm <name> --force` landing while a turn ends
+# meets the same window as SessionEnd. A DEBUG trap loaded through BASH_ENV
+# removes the session before the hook's Nth command, for every N. functrace
+# carries the trap into functions, sourced files and command substitutions, so
+# N also lands inside the library's writers, between their checks and their
+# mkdir; the control run proves the trap fired inside cs_mkdir_inside. Each
+# command appends one byte to a file every process of the run shares, and the
+# file's size is the count, so a command substitution and a pipeline count on
+# from their parent. Wherever the removal lands, the hook exits 0 with its
+# approval and the session stays removed. Untouched, the hook makes the missing
+# .cs/local and raises the marker in it. Eight runs at a time, each in its own
+# directory; the hook runs under the bash running this suite.
+test_stop_never_recreates_a_removed_session() {
+    local seam="$TEST_TMPDIR/remove-at-step.sh" work="$TEST_TMPDIR/rm-steps" sh="$BASH"
+    local steps n first w pids ran
+    cat > "$seam" << 'SEAM'
+set -o functrace
+_cs_test_remove_at_step() {
+    local seen=""
+    [ -n "${CS_TEST_STEPS_FILE:-}" ] || return 0
+    printf x >> "$CS_TEST_STEPS_FILE"
+    [ "${FUNCNAME[1]:-}" != cs_mkdir_inside ] || : > "$CS_TEST_STEPS_FILE.in-writer"
+    [ -n "${CS_TEST_REMOVE_AT:-}" ] || return 0
+    [ ! -e "$CS_TEST_STEPS_FILE.removed" ] || return 0
+    IFS= read -r -d '' seen < "$CS_TEST_STEPS_FILE" || true
+    if [ "${#seen}" -ge "$CS_TEST_REMOVE_AT" ]; then
+        rm -rf "$CS_TEST_REMOVE_DIR"
+        : > "$CS_TEST_STEPS_FILE.removed"
+    fi
+    return 0
+}
+trap _cs_test_remove_at_step DEBUG
+SEAM
+    _run_stop_hook_removing_at() {  # step ("" for none): leaves <work>/<step or control>/{out,rc,steps*,root}
+        local w="$work/${1:-control}"
+        mkdir -p "$w/root/ending/.cs/memory" "$w/home"
+        printf '# Session: ending\n' > "$w/root/ending/.cs/README.md"
+        env -i HOME="$w/home" PATH="$PATH" CS_SESSIONS_ROOT="$w/root" \
+            CLAUDE_SESSION_NAME=ending CLAUDE_SESSION_DIR="$w/root/ending" \
+            CLAUDE_SESSION_META_DIR="$w/root/ending/.cs" \
+            CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+            BASH_ENV="$seam" CS_TEST_REMOVE_AT="$1" CS_TEST_REMOVE_DIR="$w/root/ending" \
+            CS_TEST_STEPS_FILE="$w/steps" \
+            "$sh" "$HOOKS_DIR/narrative-reminder.sh" \
+            <<< '{"hook_event_name":"Stop","session_id":"11111111-2222-4333-8444-555555555555"}' \
+            > "$w/out" 2>/dev/null
+        echo $? > "$w/rc"
+    }
+    # Positive control: untouched, the hook makes .cs/local and raises the marker.
+    _run_stop_hook_removing_at ""
+    w="$work/control"
+    assert_eq "0" "$(cat "$w/rc")" "$sh: the Stop hook exits 0 with no removal" || return 1
+    assert_eq '{"decision": "approve"}' "$(cat "$w/out")" "$sh: the hook approves the stop" || return 1
+    assert_file_exists "$w/root/ending/.cs/local/attention" "$sh: the hook raises the attention marker when the session stays" || return 1
+    assert_exists "$w/steps.in-writer" "$sh: the seam steps inside cs_mkdir_inside" || return 1
+    steps=$(wc -c < "$w/steps" | tr -d ' ')
+    n=1
+    while [ "$n" -le "$steps" ]; do
+        first=$n pids=""
+        while [ "$n" -le "$steps" ] && [ $((n - first)) -lt 8 ]; do
+            _run_stop_hook_removing_at "$n" &
+            pids="$pids $!"
+            n=$((n + 1))
+        done
+        # shellcheck disable=SC2086  # a list of pids
+        wait $pids
+        while [ "$first" -lt "$n" ]; do
+            w="$work/$first"
+            if [ ! -e "$w/steps.removed" ]; then
+                # A run can end in fewer commands than the control did; then it had nothing to remove before.
+                ran=$(wc -c < "$w/steps" | tr -d ' ')
+                [ "$ran" -lt "$first" ] \
+                    || { echo "  FAIL: $sh: the seam removed nothing before hook command $first, in a run of $ran"; return 1; }
+            else
+                assert_eq "0" "$(cat "$w/rc")" "$sh: the Stop hook exits 0 when the session goes before command $first" || return 1
+                assert_eq '{"decision": "approve"}' "$(cat "$w/out")" "$sh: the hook approves the stop when the session goes before command $first" || return 1
+                if [ -e "$w/root/ending" ]; then
+                    echo "  FAIL: $sh: removed before hook command $first of $steps, the session came back holding: $(cd "$w/root" && find ending | LC_ALL=C sort | tr '\n' ' ')"
+                    return 1
+                fi
+            fi
+            rm -rf "$w"
+            first=$((first + 1))
+        done
+    done
+}
+
+run_test test_stop_never_recreates_a_removed_session
 
 
 # --- A torn JSONL tail must not take the next record down with it ---
@@ -3130,6 +4793,29 @@ test_session_state_scrubs_a_real_control_byte_in_content() {
     session_start_teardown
 }
 
+# The Session State scrub hands tr the C locale through env: the shell never
+# changes its own locale for it, which can crash a bash linked against
+# libintl in the forked copy the scrub runs in. The control bytes go and a
+# multibyte character stays whole.
+test_session_state_scrubs_without_the_shell_assigning_its_own_locale() {
+    session_start_setup
+    printf '# test-session\n\n## Objective\n\nship \033[31mred\033[0m \342\200\224 thing\001\n' \
+        > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/README.md"
+    local b utf8 output line own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        output=$(echo '{"session_id":"test","source":"resume","cwd":"'"${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"'","hook_event_name":"SessionStart"}' \
+            | env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$HOOKS_DIR/session-start.sh" 2>"$TEST_TMPDIR/trace")
+        line=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext' | grep '^Objective: ')
+        assert_eq "$(printf 'Objective: ship [31mred[0m \342\200\224 thing')" "$line" \
+            "$b: the objective, scrubbed byte for byte" || { session_start_teardown; return 1; }
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale in the SessionStart hook" \
+            || { session_start_teardown; return 1; }
+    done
+    session_start_teardown
+}
+
 test_session_state_still_renders_its_own_line_breaks() {
     # The fix removes %b, so cs's OWN newlines must survive the change — the
     # block is multi-line and a regression would fuse it into one line.
@@ -3152,6 +4838,7 @@ test_session_state_still_renders_its_own_line_breaks() {
 
 run_test test_session_state_does_not_interpret_backslash_escapes_in_content
 run_test test_session_state_scrubs_a_real_control_byte_in_content
+run_test test_session_state_scrubs_without_the_shell_assigning_its_own_locale
 run_test test_session_state_still_renders_its_own_line_breaks
 
 # ============================================================================
@@ -3194,8 +4881,33 @@ test_session_start_withholds_the_contract_from_a_walked_in_front_end() {
     session_start_teardown
 }
 
+# Claude Code sources CLAUDE_ENV_FILE as shell, so each value is written as
+# data: a sessions root holding a quote, a double quote, a command substitution
+# and a space must read back as the same path and run nothing when sourced.
+test_session_start_publishes_a_path_with_shell_metacharacters_as_data() {
+    session_start_setup
+    local envfile="$TEST_TMPDIR/envfile" root got
+    root="$TEST_TMPDIR/r 'q\" \$(touch sentinel) x"
+    mv "$CS_SESSIONS_ROOT" "$root"
+    export CS_SESSIONS_ROOT="$root"
+    export CLAUDE_SESSION_DIR="$root/current-session"
+    export CLAUDE_SESSION_META_DIR="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs"
+    : > "$envfile"
+
+    jq -n -c --arg cwd "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" \
+        '{session_id: "s", source: "startup", cwd: $cwd, hook_event_name: "SessionStart"}' \
+        | CLAUDE_ENV_FILE="$envfile" bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1
+
+    got=$(cd "$TEST_TMPDIR" && env -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR bash -c '. "$1" 2>/dev/null; printf "%s|%s|%s" "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"' _ "$envfile")
+    assert_not_exists "$TEST_TMPDIR/sentinel" "sourcing the env file runs nothing" || { session_start_teardown; return 1; }
+    assert_eq "current-session|$root/current-session|$root/current-session/.cs" "$got" \
+        "the env file gives back the exact name and paths" || { session_start_teardown; return 1; }
+    session_start_teardown
+}
+
 run_test test_session_start_publishes_the_contract_for_a_cs_launch
 run_test test_session_start_withholds_the_contract_from_a_walked_in_front_end
+run_test test_session_start_publishes_a_path_with_shell_metacharacters_as_data
 
 # A teammate resolves by walking, and is the one walked-in front end that needs
 # the contract: its own `cs -secrets`, `cs -msg` and status line read the
@@ -3207,11 +4919,9 @@ test_session_start_publishes_the_contract_to_a_teammate() {
     : > "$envfile"
     printf '#!/usr/bin/env bash\nsleep 30\n' > "$script"; chmod +x "$script"
     "$script" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$pid" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1)); sleep 0.1
-    done
+    local pid=$!
+    wait_until pid_args_match "$pid" fake-claude \
+        || { kill "$pid" 2>/dev/null; echo "  FAIL: fixture: ps never showed the stand-in teammate"; session_start_teardown; return 1; }
 
     env -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR \
         CLAUDE_CODE_ENTRYPOINT="cli" CLAUDE_PID="$pid" CLAUDE_PROJECT_DIR="$dir" \
@@ -3222,7 +4932,7 @@ test_session_start_publishes_the_contract_to_a_teammate() {
 
     assert_file_contains "$envfile" "CLAUDE_SESSION_NAME" \
         "a teammate needs the session in its own environment" || { session_start_teardown; return 1; }
-    assert_file_contains "$envfile" "CS_RESOLVED_FROM=\"walk\"" \
+    assert_file_contains "$envfile" "CS_RESOLVED_FROM='walk'" \
         "and must stay marked as not being the launch" || { session_start_teardown; return 1; }
     session_start_teardown
 }
@@ -3441,16 +5151,27 @@ test_reminder_carries_the_commit_cadence() {
 
     # Sessions that track .cs/ were committing once per append (328 such
     # commits in one repo, 74 in a day). The reminder is the only surface that
-    # fires AT the append, so the cadence rides with it rather than in the
+    # fires AT the append, so the rule rides with it as well as in the
     # session protocol, which is read once at startup and stale by then.
     local output
     output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
-    assert_output_contains "$output" "never one commit per append" \
-        "Reminder should carry the commit cadence" || return 1
+    # The session protocol's cs:session-commits rule says the same: cs commits
+    # files under .cs/ only in the create commit and /finish's integrate merge,
+    # and the model commits them only when the user asks (Alex, 2026-10-14:
+    # "No commits at all"; 2026-10-15: keep the create commit, fix the text).
+    assert_output_contains "$output" "Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs commits files under .cs/ only in the commit that creates a session and the merge /finish makes, and you commit them only when the user asks." \
+        "Reminder should say appends are committed only when the user asks, as the protocol does" || return 1
+    assert_output_not_contains "$output" "commit them with the next handoff" \
+        "no commit is named for appends to ride in" || return 1
     # Naming the safe alternative matters: without it the instruction reads as
     # a reason to delay appends, which loses work the autosave ref already holds.
     assert_output_contains "$output" "autosave" \
         "Cadence should say uncommitted appends are safe" || return 1
+    # A session whose own notes say to push after each commit pushed every
+    # narrative commit to a deploy branch, one redeploy each. The reminder
+    # fires at the append, so it is where the push rule has to be.
+    assert_output_contains "$output" "Never push a commit that holds narrative appends unless the user asks." \
+        "Cadence should say a narrative-only commit is never pushed" || return 1
 }
 
 run_test test_advisor_nudge_cooldown_lands_in_the_machine_local_dir

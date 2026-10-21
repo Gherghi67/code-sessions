@@ -20,6 +20,9 @@ set -euo pipefail
 # CLAUDE_CONFIG_DIR goes because it outranks HOME: an install or uninstall
 # under a fake HOME would still read and write the keybindings.json of the
 # config dir the suite was started from.
+# The session identity goes because cs trusts it: a send under test files its
+# sent copy in the mailbox of the session the suite was started from, and
+# signs the mail with that session's name.
 unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_CONFIG_DIR 2>/dev/null || true
 # A developer's preferred runtime must not turn a legacy Claude fixture into
 # a real Codex launch. Runtime suites set their own isolated overrides.
@@ -35,6 +38,21 @@ unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null
 # run identity. These ambient selectors outrank the fixture's HOME/session.
 unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_APPROVAL CS_RUN_OWNER_PID CS_LEAD_PID CS_PROFILE CODE_SESSIONS_HOME \
     CS_SECRETS_SESSION CS_SECRETS_KEYCHAIN_PREFIX CLAUDE_SECURESTORAGE_CONFIG_DIR 2>/dev/null || true
+# CS_SECRETS_SESSION is the same identity for cs-secrets, which reads it ahead
+# of the session name: a feature worktree exports its base session there.
+# CS_SECRETS_CALLER is the session cs-secrets refuses writes on behalf of,
+# set by cs's -secrets arms and read ahead of CLAUDE_SESSION_NAME.
+unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_SESSION CS_SECRETS_CALLER 2>/dev/null || true
+# CS_CLAUDE_DIR outranks HOME for Claude Code's settings.json, and a
+# SessionStart hook appends the session it ran for to CLAUDE_ENV_FILE.
+unset CS_CLAUDE_DIR CLAUDE_ENV_FILE 2>/dev/null || true
+# CLAUDE_PID and CS_LEAD_PID name the claude a hook fires for and the cs that
+# launched it: inherited, a hook under test reads the caller's own process, so
+# a suite run by a tmux teammate sees a teammate and one run by a lead sees
+# the lead. A test that models either sets it itself. CS_LEAD_CLAIM says the
+# launch takes the lead's claim; inherited from a lead's launch, it would turn
+# the claim on for a test that models a launch without it.
+unset CLAUDE_PID CS_LEAD_PID CS_LEAD_CLAIM 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
@@ -64,6 +82,30 @@ _file_mode() {
     else
         stat -L -f "%Lp" "$1"
     fi
+}
+
+# A directory whose `stat` is GNU coreutils' stat, for a caller to put first on
+# PATH the way Homebrew's gnubin does on a Mac. GNU stat reads -f as
+# --file-system and prints text instead of failing, so code that asks BSD
+# stat first reads that text. Callers also run cs with OSTYPE=darwin, so a
+# Linux runner, whose own stat is GNU, stands in for that Mac (bash keeps an
+# OSTYPE it inherits). Prints the directory; fails when this machine has no
+# GNU stat, and the caller skips.
+_gnu_stat_first_dir() {
+    local c gnu=""
+    for c in gstat /opt/homebrew/opt/coreutils/libexec/gnubin/stat \
+        /usr/local/opt/coreutils/libexec/gnubin/stat stat; do
+        c=$(command -v "$c" 2>/dev/null) || continue
+        if "$c" --version 2>/dev/null | grep -q 'GNU coreutils'; then
+            gnu="$c"
+            break
+        fi
+    done
+    [ -n "$gnu" ] || return 1
+    mkdir -p "$TEST_TMPDIR/gnubin"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$gnu" > "$TEST_TMPDIR/gnubin/stat"
+    chmod +x "$TEST_TMPDIR/gnubin/stat"
+    printf '%s\n' "$TEST_TMPDIR/gnubin"
 }
 
 # Make a directory reject new files, and prove it did. A filesystem that does
@@ -259,6 +301,12 @@ unset CS_TMUX_SOCKET CS_TMUX_SESSION
 # for every suite that drives the hook: tests time nothing, and a loaded
 # runner must not turn a scan assertion into a skip. The deadline tests in
 # test_scope_prompt.sh set their own budgets per run.
+# Seven suites unset every CS_* variable in their own setup(), this one
+# included. The two that assert on the scope block (test_clarify.sh,
+# test_scope_prompt.sh) set it again there. The same loop drops CS_PS_BIN,
+# CS_TITLE_TTY and CS_NO_UPDATE_CHECK, which costs nothing: none of the seven
+# runs cs, ps, curl or the SessionStart hook. Do not re-fix; a suite that
+# starts to run one of those sets the variable again after its loop.
 export CS_SCOPE_BUDGET_MS="600000"
 # The SessionStart hook re-asserts the session's tab title: through the tmux
 # server when TMUX is set, else as an escape on a terminal device. Fourteen
@@ -277,6 +325,42 @@ export CS_NO_UPDATE_CHECK=1
 # ~/.local/bin — and CI, which installs nothing, finds them at all.
 _CS_TEST_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin"
 case ":$PATH:" in *":$_CS_TEST_BIN:"*) ;; *) export PATH="$_CS_TEST_BIN:$PATH" ;; esac
+
+# Retire moves ignored files to the system trash with `trash` (macOS) or
+# `gio trash` (Linux). No test may reach the developer's real trash: these
+# stand-ins come first on PATH for every suite and refuse loudly. A test that
+# exercises the trash puts its own stand-in in front (fake_trash_bin).
+_CS_TEST_TRASH_GUARD="${HOME%/home}/trash-guard"
+mkdir -p "$_CS_TEST_TRASH_GUARD"
+for _cs_trash_cmd in trash gio; do
+    printf '#!/usr/bin/env bash\necho "a test reached the system trash command: %s $*" >&2\nexit 1\n' \
+        "$_cs_trash_cmd" > "$_CS_TEST_TRASH_GUARD/$_cs_trash_cmd"
+    chmod +x "$_CS_TEST_TRASH_GUARD/$_cs_trash_cmd"
+done
+unset _cs_trash_cmd
+export PATH="$_CS_TEST_TRASH_GUARD:$PATH"
+
+# A directory holding a stand-in for the system trash command, to put first
+# on PATH: named `trash`, or `gio` taking `trash` as its first argument. Both
+# record each path they are given in $TEST_TMPDIR/trash.log; `moves` then
+# moves each into $TEST_TMPDIR/trash-bin as <n>-<name>, `fails` moves nothing
+# and exits 1.
+fake_trash_bin() {  # moves|fails trash|gio
+    local bin="$TEST_TMPDIR/fake-$2-$1" log="$TEST_TMPDIR/trash.log" can="$TEST_TMPDIR/trash-bin"
+    mkdir -p "$bin" "$can"
+    {
+        echo '#!/usr/bin/env bash'
+        [ "$2" = gio ] && echo '[ "$1" = trash ] || { echo "gio: unexpected command $1" >&2; exit 2; }; shift'
+        echo "for p in \"\$@\"; do printf '%s\\n' \"\$p\" >> '$log'; done"
+        if [ "$1" = moves ]; then
+            echo "n=0; for p in \"\$@\"; do n=\$((n + 1)); mv \"\$p\" '$can'/\"\$n-\${p##*/}\" || exit 1; done"
+        else
+            echo "echo 'trash: the items could not be moved (stand-in failure)' >&2; exit 1"
+        fi
+    } > "$bin/$2"
+    chmod +x "$bin/$2"
+    echo "$bin"
+}
 
 # --- Setup / Teardown ---
 
@@ -334,16 +418,23 @@ use_fake_keychain() {
 #!/usr/bin/env bash
 set -u
 sub="${1:-}"
+if [ "$sub" = -i ]; then
+    IFS= read -r line || true
+    eval "set -- $line"
+    sub="${1:-}"
+fi
 [ $# -gt 0 ] && shift
-service=""; value=""; have_value=0
+service=""; value=""; have_value=0; hex=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -s) service="${2:-}"; shift 2 ;;
         -a) shift 2 ;;
+        -X) hex="${2:-}"; have_value=1; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
         *) shift ;;
     esac
 done
+[ -z "$hex" ] || value=$(perl -e 'print pack("H*", $ARGV[0])' "$hex")
 slot="$FAKE_KEYCHAIN/$(printf '%s' "$service" | od -An -tx1 | tr -d ' \n')"
 case "$sub" in
     dump-keychain)
@@ -439,6 +530,17 @@ assert_eq() {
         echo "  FAIL: $msg"
         echo "    expected: $expected"
         echo "    actual:   $actual"
+        return 1
+    fi
+}
+
+# Fails when <text> holds an ESC (0x1b) or BEL (0x07) byte, the bytes that
+# start and end a terminal escape sequence.
+assert_no_escape_bytes() {
+    local text="$1" msg="${2:-}" n
+    n=$(printf '%s' "$text" | LC_ALL=C tr -dc '\033\007' | wc -c | tr -d ' ')
+    if [[ "$n" != 0 ]]; then
+        echo "  FAIL: $msg ($n ESC or BEL bytes)"
         return 1
     fi
 }
@@ -577,6 +679,71 @@ _pty_run() {  # command, args...
     fi
 }
 
+# Runs a command in its own process group and kills the whole group once $1
+# seconds pass: install.sh and cs set an EXIT trap, and a shell holding one
+# puts off a signal until the command substitution it waits on returns, so
+# signalling the shell alone never stops one blocked inside a substitution.
+# Exits with the command's status, or 142 when the time ran out.
+_run_bounded() {  # seconds, command...
+    perl -e '
+        my $secs = shift;
+        my $pid = fork;
+        defined $pid or die "fork: $!\n";
+        if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n" }
+        my $late = 0;
+        $SIG{ALRM} = sub { $late = 1; kill "KILL", -$pid };
+        alarm $secs;
+        1 while waitpid($pid, 0) == -1 && $!{EINTR};
+        exit 142 if $late;
+        exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+    ' "$@"
+}
+
+# Runs <command> until it succeeds, so a test waits on the event it means and
+# not on a count of polls: a loaded machine starts a detached writer seconds
+# late, and the count runs out first. The 120 s guard only stops a hang.
+# Returns 0 once the command succeeds, else 1 at the guard. Prints nothing; the
+# test's own assertion after the wait says what was missing. A condition that
+# needs more than one command goes in a small function passed by name.
+wait_until() {  # command...
+    local deadline=$((SECONDS + 120))
+    until "$@"; do
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 0.05
+    done
+}
+
+# Exits 0 when ps shows <pattern> in the command line of <pid>, printing
+# nothing. A script started in the background shows the shell that forked it
+# until it has exec'd, so a test that hands its pid on for its argv to be read
+# waits on this first: wait_until pid_args_match "$pid" fake-claude.
+pid_args_match() {  # pid, pattern
+    ps -o args= -p "$1" 2>/dev/null | grep -q -- "$2"
+}
+
+# Waits until <file> exists or <pid>, a child of this shell, has exited, so a
+# test waits on the step it means and not on a count of polls that load
+# stretches or shrinks. The 300 s guard only stops a hang. Returns 0, printing
+# nothing, once the file is there. Otherwise prints "  FAIL: <what>: " and why,
+# and returns 1: the exit status when the pid exited first (it is reaped here),
+# or "not there after 300 s", the pid then killed. The file's existence is the
+# event, so its writer makes it whole in one step (a touch, or a write and a mv).
+wait_for_file_or_exit() {  # file, pid, what
+    local deadline=$((SECONDS + 300)) rc=0
+    while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.05
+    done
+    [ -e "$1" ] && return 0
+    if kill -0 "$2" 2>/dev/null; then
+        kill -KILL "$2" 2>/dev/null
+        echo "  FAIL: $3: not there after 300 s"
+    else
+        wait "$2" || rc=$?
+        echo "  FAIL: $3: it exited first, status $rc"
+    fi
+    return 1
+}
+
 # --- Launch Helpers ---
 
 # Create an executable stub that prints its environment, so a test can assert
@@ -601,6 +768,40 @@ _make_launch_sentinel() {
     printf '#!/bin/bash\necho launched >> "%s"\n' "$TEST_TMPDIR/launched" > "$TEST_TMPDIR/claude"
     chmod +x "$TEST_TMPDIR/claude"
     export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude"
+}
+
+# Mark a session's vault as set up by hand: such a vault mounts from
+# .cs/local/pre-open, and only while one exists may the four vault links lead
+# outside the session. The script does nothing; the test mounts nothing.
+_mark_hand_made_vault() {  # session_dir
+    mkdir -p "$1/.cs/local"
+    printf '#!/bin/sh\nexit 0\n' > "$1/.cs/local/pre-open"
+    chmod +x "$1/.cs/local/pre-open"
+}
+
+# Write a BASH_ENV file whose DEBUG trap removes <session_dir> just after a
+# cs verb's own "is the .cs there" check ([ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ])
+# passes, the way `cs -rm --force` can land while the verb runs, so the
+# writers behind that check are what meet the removal. It removes once and
+# leaves <file>.removed when it has. Prints the file's path.
+_seam_remove_after_the_meta_check() {  # session_dir
+    local seam="$TEST_TMPDIR/seam-after-check.sh"
+    {
+        printf 'SEAM_DIR=%q\nSEAM_MARK=%q\n' "$1" "$seam"
+        cat <<'SEAM'
+set -o functrace
+_seam_after_check() {
+    [ ! -e "$SEAM_MARK.removed" ] || return 0
+    if [ -e "$SEAM_MARK.armed" ]; then
+        rm -rf "$SEAM_DIR"; : > "$SEAM_MARK.removed"; return 0
+    fi
+    case "$BASH_COMMAND" in '[ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]') : > "$SEAM_MARK.armed" ;; esac
+    return 0
+}
+trap _seam_after_check DEBUG
+SEAM
+    } > "$seam"
+    printf '%s' "$seam"
 }
 
 # --- Session Helpers ---
@@ -645,6 +846,12 @@ GITIGNORE
     echo "$session_dir"
 }
 
+# The line of <output> that is exactly <row>, then the line under it: a
+# notice row and the action line cs prints beneath it.
+row_and_action() {  # output, row
+    printf '%s\n' "$1" | grep -F -x -A1 -- "$2"
+}
+
 # Parse a JSONL file the way cs reads it — one record per line, malformed lines
 # dropped (lib/54-conversations.sh's `fromjson? // empty`) — and print each
 # surviving record's .event, comma-joined. A line holding two records spliced
@@ -659,4 +866,52 @@ jsonl_events() {  # file
 # trailing newlines, so a terminated file yields the empty string here.
 jsonl_tail_is_torn() {  # file
     [ -s "$1" ] && [ -n "$(tail -c 1 "$1" 2>/dev/null)" ]
+}
+
+# Fills directory $1 with links to every command on the current PATH except
+# those whose name matches glob $2, for a PATH that lacks a tool (jq, perl).
+link_path_without() {  # dir, name glob
+    local dir f IFS=:
+    mkdir -p "$1"
+    for dir in $PATH; do
+        for f in "$dir"/*; do
+            [ -x "$f" ] && [ ! -d "$f" ] || continue
+            # shellcheck disable=SC2254  # the glob is the caller's pattern
+            case "${f##*/}" in $2) continue ;; esac
+            [ -e "$1/${f##*/}" ] || ln -s "$f" "$1/${f##*/}"
+        done
+    done
+}
+
+# Every bash this machine offers, one path a line: /bin/bash, then each other
+# one on PATH. A Mac with Homebrew has two (3.2 and 5.x); a Linux runner one.
+every_bash() {
+    local seen=" " b
+    for b in /bin/bash $(type -aP bash 2>/dev/null); do
+        [ -x "$b" ] || continue
+        case "$seen" in *" $b "*) continue ;; esac
+        seen="$seen$b "
+        printf '%s\n' "$b"
+    done
+}
+
+# A UTF-8 locale this machine has, empty when it has none.
+utf8_locale() {
+    local have name
+    have="$(locale -a 2>/dev/null || true)"
+    for name in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
+        case "
+$have
+" in *"
+$name
+"*) printf '%s' "$name"; return 0 ;; esac
+    done
+}
+
+# The locale assignments a bash made to itself, read from the set -x trace in
+# file $1 (default PS4): a temporary `LC_ALL=C cmd` traces as a line of its
+# own, while a locale handed to a command as an argument of env traces inside
+# the env line. Empty when the shell assigned none.
+shell_locale_assignments() {  # trace file
+    grep -E '^\++ ((local|export|declare|typeset|readonly) )?(LC_[A-Z_]+|LANG|LANGUAGE)=' "$1" || true
 }

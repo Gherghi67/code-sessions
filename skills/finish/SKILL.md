@@ -147,19 +147,40 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
    and read its `retire:` key.
 6. **Retire.** The worktree goes through one entry and nothing else:
    - `retire: ready` — run `cs <base> -retire-feature <task> <sha>`.
+   - `retire: content-landed` — the branch is not an ancestor of base, but
+     every path it changed since it left the base (`retire_paths_checked`
+     counts them) is byte for byte on base HEAD, so retiring it loses only
+     history. Run `cs <base> -retire-feature <task> <sha> --force`, whatever
+     `pr_state` and `pr_head_oid` say, and with no PR at all (a local
+     squash or a cherry-pick lands content the same way).
    - `retire: not-landed` — the branch is not an ancestor of base (a squash
-     or rebase landing). When `pr_state` is `MERGED` AND `pr_head_oid`
-     equals the captured `sha`, that is the PR's evidence the work is in:
+     or rebase landing) and base HEAD holds some path it changed
+     differently: the `retire_differs:` lines name up to ten, and
+     `retire_differs_more:` counts the rest. A captured commit that shares
+     no history with base (no merge base) is `not-landed` too, with no
+     path lines, since there is no change of its own to compare; what
+     follows applies to it with no paths to print. When `pr_state` is `MERGED`
+     AND `pr_head_oid` equals the captured `sha`, that is the PR's evidence
+     the work is in:
      run `cs <base> -retire-feature <task> <sha> --force`. A `pr_head_oid`
      that differs means the PR landed an older or newer tip than the
      worktree holds, so the branch may carry work the PR never had: print
-     both shas and stop. Any other `pr_state`: print `retire_note` and
-     stop; nothing is removed. (The entry refuses a tip past the captured
-     commit under --force as well.)
+     both shas and the differing paths, and stop. Any other `pr_state`:
+     print `retire_note` and the differing paths, and stop; nothing is
+     removed. (The entry refuses a tip past the captured commit under
+     --force as well.)
    - `retire: N commit(s) ... not integrated` — print it and stop; the next
      `/finish <task>` captures them.
 
-   The entry answers `retired <task> <sha>` or refuses. Print a refusal
+   The entry answers `retired <task> <sha>` or refuses. Before `retired` it
+   may print `Moved N ignored files to the system trash:` with one line per
+   file it moved, and one per directory it moved whole (its path and the
+   number of files inside): relay that block whole, since the user's ignored
+   files went there. In ignored mode it may also print `The feature's
+   <file> is kept at <path>` for the feature's README.md or summary.md:
+   relay each such line, since that is where the feature's copy now lives.
+   A refusal can carry the same block (`... before this failed:`); print it
+   with the refusal. Print a refusal
    verbatim: it is written for the user, and the one that matters most says
    the feature conversation is still open and asks them to close it
    themselves and run `/finish <task>` here again. Never work around a

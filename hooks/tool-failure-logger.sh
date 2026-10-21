@@ -42,6 +42,14 @@ fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
 # Nor is the failure count written without the library's writer.
 if ! command -v cs_write_atomic >/dev/null 2>&1; then
     cs_write_atomic() { return 1; }
@@ -67,7 +75,7 @@ ERROR=$(echo "$INPUT" | jq -r '.error // "no error message"')
 # || true protects against SIGPIPE from head closing input early
 ERROR_SHORT=$(echo "$ERROR" | head -1 | cut -c1-200 || true)
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tool failure: $TOOL_NAME - $ERROR_SHORT" >> "$LOG_FILE"
+cs_append_inside "$LOG_FILE" echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tool failure: $TOOL_NAME - $ERROR_SHORT" || true
 
 # Count failures for the queue circuit breaker. Reset per task by the drain
 # (Stop hook); absent or non-numeric reads as 0. Best-effort — this hook

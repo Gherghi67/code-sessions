@@ -5,12 +5,23 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.10.7"
+VERSION="2026.10.10"
 # This build is code-sessions, a fork of cs. It runs as cs inside its own
 # profile; outside, the code-sessions (ccs) launcher starts it and cs is the
 # original. install.sh greps this line to tell its own build from the original.
 # shellcheck disable=SC2034  # read by cs -version in lib/99-main.sh
 CS_FORK="code-sessions"
+# A relative CS_SESSIONS_ROOT names a directory under the one cs started in.
+# cs moves into a session before it launches claude, and claude's hooks, the
+# status line and cs-secrets read the variable from wherever they run, so it is
+# made absolute here, once, in the environment cs hands on. $PWD rather than
+# cd, because the root may not exist yet. Unset or empty keeps the default.
+# A ./x or ../x root keeps its dots, which _cs_session_root_of's string stop
+# never matches, so its link walk runs past that root: accepted, not re-fixed.
+case "${CS_SESSIONS_ROOT:-/}" in
+    /*) ;;
+    *) export CS_SESSIONS_ROOT="${PWD%/}/$CS_SESSIONS_ROOT" ;;
+esac
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}"
 CLAUDE_CODE_BIN="${CLAUDE_CODE_BIN:-claude}"
 CODEX_BIN="${CODEX_BIN:-codex}"

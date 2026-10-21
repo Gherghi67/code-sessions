@@ -95,9 +95,13 @@ test_mod_ramp_inks_match_the_statusline() {
         "mod crit dark and light == statusline crit" || return 1
 
     # The band's chip: the bar's brand coral, and its white, softer on dark.
+    # BRAND names a palette colour; its value is that colour's, read above.
+    local brand_name
+    brand_name="$(sed -n 's/^export const BRAND = SESSION_PALETTE\.\([a-z]*\)$/\1/p' "$mod")"
+    [ -n "$brand_name" ] || { echo "  FAIL: BRAND is not a SESSION_PALETTE colour in register.tsx"; return 1; }
     assert_eq "$(sed -n 's/^ *brand) *rgb="\([0-9;]*\)" ;;.*/\1/p' <<< "$truecolor" | tr ';' ',')" \
-        "$(sed -n "s/^export const BRAND = '\([0-9,]*\)'$/\1/p" "$mod")" \
-        "mod BRAND == statusline brand" || return 1
+        "$(sed -n "s/.*[{ ]$brand_name: '\([0-9,]*\)'.*/\1/p" "$mod")" \
+        "mod BRAND ($brand_name) == statusline brand" || return 1
     assert_eq "$(sed -n 's/^ *\[ "\$SL_THEME" = "dark" \] && rgb="\([0-9;]*\)" || rgb="\([0-9;]*\)" ;;$/\1 \2/p' <<< "$(sed -n '/^ *white)$/,/;;/p' <<< "$truecolor")" | tr ';' ',')" \
         "$(sed -n "s/^export const WHITE_DARK = '\([0-9,]*\)'$/\1/p" "$mod") $(sed -n "s/^export const WHITE_LIGHT = '\([0-9,]*\)'$/\1/p" "$mod")" \
         "mod white dark and light == statusline white" || return 1
@@ -181,15 +185,19 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     fi
     assert_output_contains "$out" "hooks: session.start, command.run{command=queue}, turn.complete, skill.prompt{skill=finish}, prompt.submit, command.run{command=clear}, turn.start, ui.render{component=AbovePrompt}, ui.render{component=Pane}" "all nine hooks inventoried" || return 1
     assert_output_not_contains "$out" '$.prompt.fill' "nothing fills the composer any more" || return 1
-    assert_output_contains "$out" 'env reads: CLAUDE_CONFIG_DIR, CS_BIN, CS_ROTATE_BUTTON_CTX, CS_ROTATE_FORCE_CTX, CS_RUN_ID, CS_STATUSLINE_CAPS, CS_STATUSLINE_CTX_WARN, CS_TERM_BG_RGB, CS_TERM_THEME, HOME, XDG_CONFIG_HOME' "the canonical and legacy executable paths, the run id a pending switch is checked against, the two thresholds, the bar's warn band, the measured background, the theme, the caps consent and where keybindings.json and the caps answer live are read from the environment" || return 1
+    assert_output_contains "$out" 'env reads: CLAUDE_CONFIG_DIR, CS_BIN, CS_ROTATE_BUTTON_CTX, CS_ROTATE_FORCE_CTX, CS_RUN_ID, CS_SESSIONS_ROOT, CS_STATUSLINE_CAPS, CS_STATUSLINE_CTX_WARN, CS_TERM_BG_RGB, CS_TERM_THEME, HOME, XDG_CONFIG_HOME' "the canonical and legacy executable paths, the run id a pending switch is checked against, the two thresholds, the bar's warn band, the measured background, the theme, the caps consent and where keybindings.json and the caps answer live are read from the environment" || return 1
     assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart), $.session.compact (via offerToStart), $.session.cwd' "/queue runs cs from its own hook and its start offer, which alone submits a prompt and compacts; nothing else runs a process" || return 1
     assert_output_contains "$out" '$.command.run (via askToWrap, clearAndContinue, exitAndContinue, rotate)' "the keys run their commands (a pending switch's /exit among them), and nothing else runs one" || return 1
     assert_output_contains "$out" '$.clock.after (via forceRotation, startCountdown), $.clock.every (via startCountdown, watchFinish), $.clock.now (via withGateBand)' "the forced /rotate and the pane's open are one-shot timers, the grace and the /finish watch tickers, and the gate band alone reads the time" || return 1
     assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToStart)' "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
-    assert_output_contains "$out" '$.ui.close (via openPreview, stopCountdown)' "the handoff pane closes where the count ends, and where it lands after one" || return 1
-    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, capsWanted, forceRotation, pendingSwitch, queueRunning, readFinish, readState, readWrapped)' "the wrap marker, the state, the pending switch, the queue's state, the /finish record, keybindings.json and the caps answer are read, never a file's age" || return 1
-    assert_output_not_contains "$out" '$.fs.stat' "no rule hangs on a modification time" || return 1
-    assert_output_contains "$out" '$.ui.open (via openPreview)' "and opens in one place" || return 1
+    assert_output_contains "$out" '$.ui.close (via closeHandoffPane, openPreview, stopCountdown)' "the handoff pane closes where the count ends, and where it lands after one" || return 1
+    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, capsWanted, clearPressed, forceRotation, isCsSession, pendingSwitch, queueRunning, readFinish, readState, readWrapped)' "the wrap marker, the state, the pending switch, the queue's state, the /finish record, keybindings.json and the caps answer are read, never a file's age" || return 1
+    assert_output_contains "$out" '$.fs.stat (via resolvedPath)' "session identity is checked by resolved path" || return 1
+    # Recent validators cap the calls note (in JSON too). A capped note cannot
+    # inventory its final call; the Bun tests above exercise opening the pane.
+    if ! grep -Fq '… [+' <<< "$out"; then
+        assert_output_contains "$out" '$.ui.open (via openPreview)' "and opens in one place" || return 1
+    fi
 }
 
 run_test test_mod_manifest_names_the_plugin_and_its_module

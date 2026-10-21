@@ -66,9 +66,16 @@ leaves the machine usable while it runs. One gate per checkout: a second
 `run_all.sh` started while one is running refuses with the holder's pid and
 exits 3 (`tests/.run_all.lock`; a lock whose pid is dead is taken over).
 
-The gate stops a suite that runs past 600 seconds, along with its child
-processes, counts it as failed and names it in a `timed out after 600s` line;
-the other suites still run. The slowest suite takes about 200 seconds on a loaded machine.
+The lanes take suites from one queue, longest file first, so a lane that
+finishes picks up the next suite rather than waiting on a fixed share.
+`CS_TEST_SHARD=N/M` runs shard N of M, balanced by line count; CI runs the bash
+suites as two shards per OS. A suite that runs long for its length carries a
+`# run_all-weight: N` line and counts as N times its lines, as `test_install.sh`
+does with 2.
+
+The gate stops a suite that runs past 1200 seconds, along with its child
+processes, counts it as failed and names it in a `timed out after 1200s` line;
+the other suites still run. The slowest suite, `test_install.sh`, takes about 600 seconds on a loaded machine.
 `CS_TEST_SUITE_TIMEOUT` sets the cap in seconds.
 
 ### Which tests to run, and when
@@ -83,7 +90,8 @@ The full gate takes minutes. Most of the time you do not want it.
 | About to push a shell change | `bash tests/lint_shell.sh` (the shellcheck lane CI runs; the suites never run it) |
 
 `tests/lint_shell.sh` fails on any shellcheck error, and on a warning count that differs from
-`.shellcheck-warnings`. The count is measured with the shellcheck version CI pins in
+`.shellcheck-warnings`. It runs shellcheck once per file, as many at once as the machine has
+processors, and stops with exit 2 naming any file shellcheck could not run on. The count is measured with the shellcheck version CI pins in
 `.github/workflows/test.yml` (v0.11.0); another version can count differently. When you fix
 warnings, lower that number in the same commit.
 
@@ -121,11 +129,12 @@ masked; `run_all.sh` reports every failing suite.
 
 ## Adding a Hook
 
-1. **Create the hook script** in `hooks/your-hook.sh`. Copy an existing hook (e.g., `hooks/bash-logger.sh`) as a starting template.
+1. **Create the hook script** in `hooks/your-hook.sh`. Copy an existing hook (e.g., `hooks/tool-failure-logger.sh`) as a starting template.
 
 2. **Register it**:
    - Add the filename to the `CS_HOOKS` array in `lib/01-manifests.sh`, then run `./build.sh`, which folds it into `bin/cs` and splices it into `install.sh` (deploy, flat-layout cleanup, registration stripping, uninstall and doctor all derive from it)
    - Add a `_merge_cs_hook <Event> your-hook.sh <timeout> [matcher] [async]` call in `install.sh.in` alongside the existing ones (see the block around its `_merge_cs_hook SessionStart ...` calls) to register it in `settings.json` under the appropriate event (`SessionStart`, `PreToolUse`, `PostToolUse`, etc.); it derives the deploy and `~`-relative paths from the filename
+   - If cs has no hook under that event yet, add the event to `CS_HOOK_EVENTS` in `lib/01-manifests.sh`: the installer reads it to refuse a `settings.json` whose value for one of those events is not a list, and `tests/test_install.sh` fails until it names every event `_register_cs_hooks` registers under
 
 3. **Never edit `install.sh` or `bin/cs` by hand** — `./build.sh` writes both. `tests/test_install.sh` fails if the committed built files differ from the build or the array disagrees with the actual contents of `hooks/`.
 
@@ -152,8 +161,8 @@ lists the command files the installer and uninstaller delete.
 - Match the style of surrounding code.
 - Every code file starts with a 2-line `ABOUTME:` comment explaining what the file does:
   ```bash
-  # ABOUTME: Logs every Bash tool call to .cs/local/session.log with timestamp.
-  # ABOUTME: Truncates long commands at 200 chars; never blocks on errors.
+  # ABOUTME: PostToolUseFailure hook that logs failed tool calls for debugging
+  # ABOUTME: Writes tool name, error, and timestamp to the session log (.cs/local or .cs/private)
   ```
 - No emojis in code or documentation (unless part of a functional emoji set).
 - No temporal names (`NewAPI`, `LegacyHandler`, `ImprovedParser`). Name things for what they do, not their history.

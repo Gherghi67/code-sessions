@@ -20,16 +20,17 @@ run_conversations() {
     jq -rRs --arg claude "$current_claude" --arg codex "$current_codex" '
         def key: [.engine, .session_id] | tojson;
         def conversation_label($engine; $id): $engine + ":" + $id[0:8];
-        [split("\n")[] | select(length > 0) | (fromjson? // empty)
-         | select(type == "object")
-         | .engine = (.engine // "claude")
-         | select((.engine | type) == "string" and (.ts | type) == "string")
-         | select(((.source // "") | type) == "string" and
-                  ((.reason // "") | type) == "string" and
-                  ((.handoff // "") | type) == "string" and
-                  ((.from // "") | type) == "string")
-         | select((.event == "started" and (.session_id | type) == "string")
-               or (.event == "rotated" and (.to | type) == "string"))] as $ev |
+        def str_or_null: type == "string" or . == null;
+        def well_typed: (.engine | str_or_null) and (.ts | str_or_null) and
+            (if .event == "started"
+             then (.session_id | type == "string") and (.source | str_or_null)
+             else (.to | type == "string") and (.from | str_or_null)
+                 and (.reason | str_or_null) and (.handoff | str_or_null) end);
+        [split("\n") | to_entries[] | select(.value | length > 0)
+         | {line: (.key + 1), e: (.value | fromjson? // empty)}
+         | select((.e | type == "object") and (.e.event == "started" or .e.event == "rotated"))] as $all |
+        ($all[] | select(.e | well_typed | not) | "W:\(.line)"),
+        ([$all[] | select(.e | well_typed) | .e | .engine = (.engine // "claude")] as $ev |
         (reduce $ev[] as $e ({};
             if $e.event == "started"
             then .[$e | key] = (.[$e | key] // 0) + 1
@@ -56,7 +57,14 @@ run_conversations() {
                         + (if ($e.handoff // "") != "" then ": " + $e.handoff else "" end)
                         + ")")}]
             end)).out[] |
-        ((try (.ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch .ts))
-            + "  " + .txt
-    ' "$timeline"
+        "O:" + (((.ts as $ts | try ($ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch ($ts // "?"))
+            + "  " + .txt) | explode
+                | map(select(. == 9 or (. >= 32 and . != 127 and (. < 128 or . > 159))))
+                | implode))
+    ' "$timeline" | while IFS= read -r line; do
+        case "$line" in
+            W:*) warn "Skipped $timeline line ${line#W:}: a started or rotated record with a field of the wrong type" >&2 ;;
+            O:*) printf '%s\n' "${line#O:}" ;;
+        esac
+    done
 }

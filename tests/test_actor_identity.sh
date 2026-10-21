@@ -10,7 +10,6 @@ teardown() {
         rm -rf "$TEST_TMPDIR"
     fi
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_ACTOR
-    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 }
 
 # Run cs whoami inside an adopted project and capture the actor line.
@@ -100,7 +99,7 @@ test_guard_blocks_tracked_local() {
     # Resuming the session must refuse while .cs/local is tracked.
     local out
     out=$( "$CS_BIN" s1 <<< "" 2>&1 || true )
-    assert_output_contains "$out" ".cs/local/ is tracked" "guard should report tracked .cs/local/" || return 1
+    assert_output_contains "$out" ".cs/local/oops is tracked" "guard should name the tracked file under .cs/local/" || return 1
 }
 
 test_narrative_is_per_actor() {

@@ -1,11 +1,16 @@
 # ABOUTME: Status line enable/disable and terminal light/dark theme + background detection.
 # ABOUTME: Backs 'cs -statusline' and 'cs -detect-theme'.
 
+# Strip the statusLine registration when (and only when) it points at
+# cs-statusline; a status line the user configured themselves is left alone.
+# Returns 0 when stripped, 1 when absent or foreign, 2 when the write failed.
 _strip_statusline_registration() {
     local settings_file="$1"
     [ -f "$settings_file" ] || return 1
     jq -e '.statusLine.command // "" | endswith("/cs-statusline")' "$settings_file" >/dev/null 2>&1 || return 1
-    cs_write_atomic "$settings_file" jq 'del(.statusLine)' "$settings_file" 2>/dev/null || return 2
+    cs_settings_update "$settings_file" jq \
+        'if (.statusLine.command // "" | endswith("/cs-statusline")) then del(.statusLine) else . end' \
+        2>/dev/null || return 2
 }
 
 # endswith("/cs-subagent-statusline") never matches "/cs-statusline", so this
@@ -16,7 +21,9 @@ _strip_subagent_statusline_registration() {
     [ -f "$settings_file" ] || return 1
     jq -e '.subagentStatusLine.command // "" | endswith("/cs-subagent-statusline")' \
         "$settings_file" >/dev/null 2>&1 || return 1
-    cs_write_atomic "$settings_file" jq 'del(.subagentStatusLine)' "$settings_file" 2>/dev/null || return 2
+    cs_settings_update "$settings_file" jq \
+        'if (.subagentStatusLine.command // "" | endswith("/cs-subagent-statusline")) then del(.subagentStatusLine) else . end' \
+        2>/dev/null || return 2
 }
 
 # The installer remembers a declined status-line prompt here so `cs -update`
@@ -90,6 +97,9 @@ _statusline_codex() {  # enable|disable
 }
 
 # disable strips only an cs-statusline registration, never a foreign one.
+# Register or remove the cs-statusline entry in Claude Code's settings.json.
+# enable overwrites whatever is registered (the command is explicit consent);
+# disable strips only a cs-statusline registration, never a foreign one.
 run_statusline_cmd() {
     local action="${1:-}"
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
@@ -103,25 +113,29 @@ run_statusline_cmd() {
             [ -x "$bin" ] || warn "cs-statusline binary not found at $bin (run install.sh first)"
             [ -x "$subbin" ] || warn "cs-subagent-statusline binary not found at $subbin (run install.sh first)"
             mkdir -p "$(dirname "$settings")"
-            [ -f "$settings" ] || echo '{}' > "$settings"
             # refreshInterval 60 repaints an idle bar once a minute, which keeps
             # the context-pct heartbeat fresh for a conversation with no lock.
             # Each tick on Claude Code 2.1.286 lists every process with
             # `ps -A`; at 1 s a dozen sessions together hit the process limit.
-            if cs_write_atomic "$settings" jq --arg cmd "$bin" --arg subcmd "$subbin" \
+            if cs_settings_update "$settings" jq --arg cmd "$bin" --arg subcmd "$subbin" \
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}' \
-                "$settings" 2>/dev/null; then
+                2>/dev/null; then
                 rm -f "$declined"
                 info "Registered cs-statusline as the Claude Code status line"
                 info "Registered cs-subagent-statusline for the agent panel rows"
                 info "Claude Code reads both at startup: restart it to see them."
             else
-                error "Could not update $settings"
+                error "$CS_SETTINGS_ERROR"
             fi
             _statusline_codex enable
             ;;
         disable)
+            # A file jq cannot parse would read below as "not cs-statusline";
+            # it holds no answer either way, so say what is wrong with it.
+            if [ -f "$settings" ]; then
+                cs_settings_check "$settings" || error "$CS_SETTINGS_ERROR"
+            fi
             # Capture each stripper's exit code with `|| rc=$?`: a bare call
             # returning non-zero (foreign or absent registration) would trip
             # `set -e` before the following case ran, aborting the second strip.

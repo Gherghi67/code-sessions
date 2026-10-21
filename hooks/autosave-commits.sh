@@ -34,6 +34,14 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
 if ! command -v cs_resolve_session >/dev/null 2>&1; then
     cs_resolve_session() {
         [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ]
@@ -83,12 +91,12 @@ printf '%s' "$INPUT" | jq -e '
 # Ignore events entirely outside this checkout. Resolve existing parents to
 # handle native relative paths and symlinks without requiring another runtime.
 _cs_in_checkout=0
-_cs_top=$(cd "$SESSION_DIR" && pwd -P) || exit 0
+_cs_top=$(cd -- "$SESSION_DIR" && pwd -P) || exit 0
 _cs_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 [ -n "$_cs_cwd" ] || _cs_cwd="$_cs_top"
 while IFS= read -r FILE_PATH; do
     case "$FILE_PATH" in /*) ;; *) FILE_PATH="$_cs_cwd/$FILE_PATH" ;; esac
-    _cs_parent=$(cd "$(dirname "$FILE_PATH")" 2>/dev/null && pwd -P) || continue
+    _cs_parent=$(cd -- "$(dirname "$FILE_PATH")" 2>/dev/null && pwd -P) || continue
     case "$_cs_parent/" in "$_cs_top/"*) _cs_in_checkout=1 ;; esac
 done < <(printf '%s' "$INPUT" | jq -r '.files[]')
 [ "$_cs_in_checkout" = 1 ] || exit 0
@@ -129,7 +137,7 @@ done < <(printf '%s' "$INPUT" | jq -r '.files[]')
 # Autosave to shadow ref using git plumbing (does not touch HEAD or main branch)
 # Fires on ALL Write/Edit — protects all files, not just the narrative
 autosave_to_shadow_ref() {
-    cd "$SESSION_DIR" || return 0
+    cd -- "$SESSION_DIR" || return 0
 
     # The HEAD this snapshot sits on, read BEFORE the tree is written. An
     # integrate can fast-forward HEAD while the snapshot is in flight; a label
@@ -183,7 +191,7 @@ autosave_to_shadow_ref() {
         top=$(pwd -P)
         for sub in $CS_VAULT_LINKS; do
             [ -L "$META_DIR/$sub" ] || continue
-            target=$(cd "$META_DIR/$sub" 2>/dev/null && pwd -P) || continue
+            target=$(cd -- "$META_DIR/$sub" 2>/dev/null && pwd -P) || continue
             case "$target" in "$top"/*) excludes+=(":(exclude)${target#"$top"/}") ;; esac
         done
         GIT_INDEX_FILE="$TEMP_INDEX" git add -A -- ':/' "${excludes[@]}" 2>/dev/null || { rm -f "$TEMP_INDEX"; exit 0; }
@@ -214,7 +222,7 @@ cs-base: $base"
 
         if [ -n "$LATEST_ENTRY" ]; then
             if LOG_DIR=$(cs_private_dir "$META_DIR"); then
-                echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" >> "$LOG_DIR/session.log"
+                cs_append_inside "$LOG_DIR/session.log" echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" || true
             fi
         fi
     )

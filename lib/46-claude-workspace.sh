@@ -119,11 +119,11 @@ prune_commands_artifacts() {
             /^[0-9]+\. \*\*\.cs\/commands\.md\*\*/ { next }
             { print }
         ' "$claude_md" || error "could not rewrite $claude_md"
-        removed=1
+        notice CLAUDE.md "dropped the retired command tracker's section"
     fi
 
     if [ "$removed" -eq 1 ]; then
-        warn "Pruned retired command-tracker artifacts"
+        notice .cs/ "dropped the retired command tracker's files"
     fi
 }
 
@@ -141,6 +141,13 @@ _claude_migrate_workspace() {
         _claude_migrate_session_documents "$session_dir"
     fi
 
+    # Phase 7: prune retired command-tracker artifacts. Not in an adopted
+    # Claude Code worktree, whose tracked tree is the branch's (see
+    # _claude_tracked_tree_is_ours).
+    if _claude_tracked_tree_is_ours "$session_dir"; then
+        prune_commands_artifacts "$session_dir"
+    fi
+
     # Phase 8: Backfill only an absent binding. A missing native transcript
     # does not authorize replacing an existing conversation with a discovered one.
     {
@@ -151,7 +158,7 @@ _claude_migrate_workspace() {
             _bind_uuid=$(_discover_session_uuid_in "$_proj")
             if [ -n "$_bind_uuid" ]; then
                 _set_local_state_if_absent "$_state" claude_session_id "$_bind_uuid"
-                warn "Bound claude_session_id in .cs/local/state to $_bind_uuid"
+                notice .cs/local/state "bound claude_session_id to $_bind_uuid"
             fi
         fi
     }
@@ -168,7 +175,7 @@ _claude_migrate_workspace() {
         local _new_color
         _new_color=$(_alloc_random_color)
         _set_local_state_if_absent "$_state" claude_session_color "$_new_color"
-        warn "Backfilled claude_session_color in .cs/local/state ($_new_color)"
+        notice .cs/local/state "backfilled claude_session_color ($_new_color)"
     fi
 }
 
@@ -179,16 +186,35 @@ _claude_migrate_session_documents() {  # session_dir
     _claude_migrate_protocol_wording "$session_dir"
 
     _claude_ensure_workspace_protocol "$session_dir"
-
-    # Phase 7: prune retired command-tracker artifacts. Not in an adopted
-    # Claude Code worktree, whose tracked tree is the branch's (see
-    # _claude_tracked_tree_is_ours).
-    if _claude_tracked_tree_is_ours "$session_dir"; then
-        prune_commands_artifacts "$session_dir"
+    local claude_md="$session_dir/CLAUDE.md" tracked_tree_is_ours=0
+    _claude_tracked_tree_is_ours "$session_dir" && tracked_tree_is_ours=1
+    # Phase 16 on CLAUDE.md: a session cs wrote before v2026.5.5 keeps the
+    # /summary heading, protocol line and bullet cs wrote there (the whole
+    # protocol, when it predates sentinels; the head above them, when the
+    # first one is cs:memory-rules), and /summary is no longer a command.
+    # The exact lines cs wrote get their /wrap wording, as in CLAUDE.local.md
+    # (_ensure_claude_local_sections). It runs after the .cs/ test above,
+    # which the /wrap sentence's ".cs/summary.md" would otherwise change.
+    # Every CLAUDE.md Phase 5 leaves in place opens with "# Session
+    # Documentation Protocol" (the July 2026 template, which opens with a
+    # cs:session-protocol sentinel, is moved to CLAUDE.local.md); one that
+    # opens otherwise is the user's and is left alone. A CLAUDE.md
+    # cs cannot read or rewrite is named and left, and the open goes on
+    # without its stamp, so the next open tries again.
+    if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$claude_md" ]; then
+        local first_line
+        if ! first_line=$(awk '/[^[:space:]]/ { print; exit }' "$claude_md" 2>/dev/null) \
+            || { [ "$first_line" = "# Session Documentation Protocol" ] && ! _wrap_only_migrate "$claude_md"; }; then
+            warn "could not rewrite CLAUDE.md; any /summary line cs wrote there still points at a command that is gone"
+            _CS_MIGRATE_CLEAN=0
+        fi
     fi
+
+
+
 }
 
-# Phases 9, 10 and 14: the cs sections of CLAUDE.local.md.
+# Phases 9, 10, 14, 15 and 16: the cs sections of CLAUDE.local.md.
 _claude_ensure_local_sections() {  # session_dir
     local session_dir="$1"
 
@@ -215,9 +241,10 @@ _claude_ensure_local_sections() {  # session_dir
     # migrated sessions; legacy sessions skip these phases.
     # Phases 9 and 10 manage sections in CLAUDE.local.md ONLY. Sessions
     # still on a legacy CLAUDE.md (pre-sentinel era, or a user file that
-    # merely mentions .cs/) are left entirely alone — cs never writes to
-    # CLAUDE.md again. Both phases' existing [ -f ] guards make them
-    # no-ops when the local file is absent.
+    # merely mentions .cs/) get no cs section there; cs only removes or
+    # rewrites lines it wrote in such a CLAUDE.md (Phase 7's command-tracker
+    # lines, Phase 16's /summary lines). Both phases' existing [ -f ]
+    # guards make them no-ops when the local file is absent.
     local claude_md_p9="$session_dir/CLAUDE.local.md"
     if [ -f "$claude_md_p9" ]; then
         if grep -q '<!-- cs:memory-note -->' "$claude_md_p9"; then
@@ -236,7 +263,7 @@ _claude_ensure_local_sections() {  # session_dir
                     stripping && /^<!-- / { stripping = 0 }
                     !stripping { print }
                 ' "$claude_md_p9" || error "could not rewrite $claude_md_p9"
-                warn "Retired auto-memory bucket guidance; replaced with cs:memory-note"
+                notice CLAUDE.local.md "cs:memory-note replaces the auto-memory bucket guidance"
             # State 3: tombstone (sentinel without header) — preserve opt-out
             fi
         else
@@ -245,7 +272,7 @@ _claude_ensure_local_sections() {  # session_dir
                 echo ""
                 _emit_memory_note_block
             } >> "$claude_md_p9"
-            warn "Added cs:memory-note to CLAUDE.local.md"
+            notice CLAUDE.local.md "added cs:memory-note"
         fi
     fi
 
@@ -254,33 +281,17 @@ _claude_ensure_local_sections() {  # session_dir
     # "managed, do not re-add" — users opt out via tombstone (delete prose,
     # keep the HTML comment).
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:wrap-cues' "$claude_md_p9"; then
-        cat >> "$claude_md_p9" << 'EOF'
-
-<!-- cs:wrap-cues -->
-## Session wrap-up cues
-
-When the conversation reaches a natural stopping point — work shipped, a PR merged, a deploy completed, a bug fixed, or the user signaling they're winding down — proactively offer to distill the session via AskUserQuestion BEFORE the conversation drifts.
-
-**Strong signals (sufficient on their own — but only when the phrase describes work that actually completed; never fire when it reports a problem, is negated, or is part of a plan for later):**
-- "shipped", "PR merged", "PR up", "deployed", "released"
-- "let's call it", "wraps up", "done for the day", "good place to stop"
-- "all good now", "that did it", "ready to ship"
-
-**Soft signals (require a corroborating signal — a recent commit, an explicit "done", or two or more soft signals in succession):**
-- "that works", "looks good", "we're good", "all set"
-
-**When fired**, use AskUserQuestion with header "Wrap up?" and these options:
-- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)
-- "Run /sweep only" — just the memory pass; skip the narrative summary
-- "Run /summary only" — just the narrative; skip the memory pass
-- "Not yet — keep working"
-
-Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
-
-To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
-EOF
-        warn "Appended session wrap-up cues to CLAUDE.local.md"
+        { echo; _emit_wrap_cues_block; } >> "$claude_md_p9"
+        notice CLAUDE.local.md "added the session wrap-up cues"
     fi
+
+    # Phase 16: /wrap is the one command that runs the memory and summary
+    # passes, so a four-option cue block cs wrote (either wording) becomes the
+    # block _emit_wrap_cues_block writes, each /wrap line cs wrote loses the
+    # sentence offering /summary and /sweep on their own, and the protocol
+    # line, Best Practices bullet and heading cs wrote for /summary take their
+    # /wrap wording. _migrate_session_documents does the same to CLAUDE.md.
+    _wrap_only_migrate "$claude_md_p9" || error "could not rewrite $claude_md_p9"
 
     # Phase 14: an encrypted session (.cs/private present; a locked one was
     # refused before migrate) gains the encrypted protocol. The sentinel is a
@@ -288,7 +299,15 @@ EOF
     if [ -f "$claude_md_p9" ] && [ -d "$session_dir/.cs/private" ] \
         && ! grep -q 'cs:encrypted-protocol' "$claude_md_p9"; then
         { echo; _emit_encrypted_protocol_block; } >> "$claude_md_p9"
-        warn "Added the encrypted-session protocol to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the encrypted-session protocol"
+    fi
+
+    # Phase 15: the rule for committing session files, which sessions created
+    # before it lack. The sentinel is a tombstone like cs:wrap-cues: present
+    # means managed, never re-added.
+    if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
+        { echo; _emit_session_commits_block; } >> "$claude_md_p9"
+        notice CLAUDE.local.md "added the session-commits rule"
     fi
 }
 
@@ -323,10 +342,173 @@ _claude_ensure_workspace_protocol() {
         if [ -f "$claude_local" ]; then
             printf '\n' >> "$claude_local"
             _emit_session_claude_md >> "$claude_local"
-            warn "Appended the cs session protocol to your existing CLAUDE.local.md"
+            notice CLAUDE.local.md "added the cs session protocol below your own lines"
         else
             write_session_claude_md "$session_dir"
         fi
     fi
 
+}
+
+# The four-option cue block cs wrote from 2026-07-07: the cs:wrap-cues
+# sentinel through its opt-out line, as Phase 16 matches it.
+_emit_four_option_cue_with_signals() {
+    cat << 'EOF'
+<!-- cs:wrap-cues -->
+## Session wrap-up cues
+
+When the conversation reaches a natural stopping point — work shipped, a PR merged, a deploy completed, a bug fixed, or the user signaling they're winding down — proactively offer to distill the session via AskUserQuestion BEFORE the conversation drifts.
+
+**Strong signals (sufficient on their own — but only when the phrase describes work that actually completed; never fire when it reports a problem, is negated, or is part of a plan for later):**
+- "shipped", "PR merged", "PR up", "deployed", "released"
+- "let's call it", "wraps up", "done for the day", "good place to stop"
+- "all good now", "that did it", "ready to ship"
+
+**Soft signals (require a corroborating signal — a recent commit, an explicit "done", or two or more soft signals in succession):**
+- "that works", "looks good", "we're good", "all set"
+
+**When fired**, use AskUserQuestion with header "Wrap up?" and these options:
+- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)
+- "Run /sweep only" — just the memory pass; skip the narrative summary
+- "Run /summary only" — just the narrative; skip the memory pass
+- "Not yet — keep working"
+
+Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
+
+To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
+# The same block as cs wrote it from 2026-05-12, before the signal lists were
+# reworded: it differs in the two headings above them.
+_emit_four_option_cue_with_triggers() {
+    cat << 'EOF'
+<!-- cs:wrap-cues -->
+## Session wrap-up cues
+
+When the conversation reaches a natural stopping point — work shipped, a PR merged, a deploy completed, a bug fixed, or the user signaling they're winding down — proactively offer to distill the session via AskUserQuestion BEFORE the conversation drifts.
+
+**Strong triggers (fire on any single occurrence):**
+- "shipped", "PR merged", "PR up", "deployed", "released"
+- "let's call it", "wraps up", "done for the day", "good place to stop"
+- "all good now", "that did it", "ready to ship"
+
+**Soft triggers (require a corroborating signal — a recent commit, an explicit "done", or two or more soft signals in succession):**
+- "that works", "looks good", "we're good", "all set"
+
+**When fired**, use AskUserQuestion with header "Wrap up?" and these options:
+- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)
+- "Run /sweep only" — just the memory pass; skip the narrative summary
+- "Run /summary only" — just the narrative; skip the memory pass
+- "Not yet — keep working"
+
+Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
+
+To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
+# Phase 16's rewrite of file $2. With "check" it prints "cue" when the file
+# holds a cue block to rewrite and "line" when it holds a protocol line to
+# rewrite, one word per line, and nothing when neither; with "print" it prints
+# the rewritten file. Only text cs wrote is replaced, whole lines compared byte
+# for byte:
+#   - a cue block equal, line for line, to one of the two four-option blocks
+#     above becomes the block _emit_wrap_cues_block writes;
+#   - each /wrap line cs wrote from 2026-06-12 loses the sentence offering
+#     /summary and /sweep alone;
+#   - either protocol line cs wrote from 2025-11-24 to 2026-06-11 pointing at
+#     /summary becomes the /wrap sentence, and the Best Practices bullet of
+#     those years becomes the /wrap bullet cs wrote after it;
+#   - "## Summary Command" becomes "## Wrap-up Command" where the next line
+#     that is not empty or white space is one of those /summary protocol lines,
+#     as cs wrote it.
+# A block or line the user edited, or a CRLF copy, does not match and is
+# printed as it was.
+_wrap_only_rewrite() {  # check|print, file
+    OLD_TRIGGERS="$(_emit_four_option_cue_with_triggers)" \
+    OLD_SIGNALS="$(_emit_four_option_cue_with_signals)" \
+    NEW_BLOCK="$(_emit_wrap_cues_block)" \
+    MODE="$1" awk '
+        # Whether the n lines of old[] match the file from line i.
+        function block_at(i, old, n,    k) {
+            if (i + n - 1 > NR) return 0
+            for (k = 1; k <= n; k++) if (line[i + k - 1] != old[k]) return 0
+            return 1
+        }
+        # Whether the first line after line i that is not empty or white
+        # space is a /summary protocol line cs wrote.
+        function summary_line_follows(i,    j) {
+            for (j = i + 1; j <= NR; j++) {
+                if (line[j] ~ /^[ \t]*$/) continue
+                return line[j] in summary_line
+            }
+            return 0
+        }
+        BEGIN {
+            nt = split(ENVIRON["OLD_TRIGGERS"], trig, "\n")
+            ns = split(ENVIRON["OLD_SIGNALS"], sig, "\n")
+            wrap_sentence = "When the session is complete, use the `/wrap` command to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md)."
+            offers = " Use `/summary` for the narrative alone, or `/sweep` for the memory pass alone."
+            checkpoint_moments = " Mid-session, use `/checkpoint <label>` to snapshot git state and the narrative at meaningful moments (saved under .cs/checkpoints/)."
+            checkpoint_milestones = " Mid-session, use `/checkpoint <label>` to snapshot git state and the narrative — e.g. before a risky refactor or destructive operation, and after reaching a green milestone (tests passing, a feature working) — saved under .cs/checkpoints/."
+            reworded[wrap_sentence offers] = wrap_sentence
+            reworded[wrap_sentence offers checkpoint_moments] = wrap_sentence checkpoint_moments
+            reworded[wrap_sentence offers checkpoint_milestones] = wrap_sentence checkpoint_milestones
+            summary_line["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all documentation."] = 1
+            summary_line["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a summary.md file synthesizing all documentation."] = 1
+            for (s in summary_line) reworded[s] = wrap_sentence
+            reworded["- Run `/summary` at the end to create a cohesive record"] = "- Run `/wrap` at the end to distill memory and create a cohesive record"
+        }
+        { line[NR] = $0 }
+        END {
+            cue = 0
+            reworded_lines = 0
+            i = 1
+            while (i <= NR) {
+                if (line[i] == "<!-- cs:wrap-cues -->") {
+                    n = 0
+                    if (block_at(i, trig, nt)) n = nt
+                    else if (block_at(i, sig, ns)) n = ns
+                    if (n) {
+                        cue = 1
+                        if (ENVIRON["MODE"] == "print") print ENVIRON["NEW_BLOCK"]
+                        i += n
+                        continue
+                    }
+                }
+                out = line[i]
+                if (out in reworded) {
+                    out = reworded[out]
+                    reworded_lines = 1
+                } else if (out == "## Summary Command" && summary_line_follows(i)) {
+                    out = "## Wrap-up Command"
+                    reworded_lines = 1
+                }
+                if (ENVIRON["MODE"] == "print") print out
+                i++
+            }
+            if (ENVIRON["MODE"] == "check") {
+                if (cue) print "cue"
+                if (reworded_lines) print "line"
+            }
+        }
+    ' "$2"
+}
+
+# Phase 16 on file $1, a CLAUDE.local.md or a CLAUDE.md cs wrote: rewrite
+# what _wrap_only_rewrite matches and name what changed. Returns 1, the file
+# as it was, when it cannot read or rewrite the file; the caller says so.
+_wrap_only_migrate() {  # file
+    local f="$1" changes
+    [ -f "$f" ] || return 0
+    changes=$(_wrap_only_rewrite check "$f") || return 1
+    [ -n "$changes" ] || return 0
+    cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
+    case "$changes" in
+        *cue*) notice "${f##*/}" "offers /wrap alone, without /sweep or /summary" ;;
+    esac
+    case "$changes" in
+        *line*) notice "${f##*/}" "session protocol points at /wrap" ;;
+    esac
 }

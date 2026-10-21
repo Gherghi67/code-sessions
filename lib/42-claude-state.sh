@@ -31,7 +31,7 @@ _alloc_random_color() {
 _claude_project_dir() {
     local cwd="$1"
     local resolved base="${CS_TRANSCRIPTS_DIR:-$HOME/.claude/projects}"
-    resolved=$( (cd "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
+    resolved=$( (cd -- "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
     if [ -e "$cwd/.cs/claude-config" ] || [ -L "$cwd/.cs/claude-config" ]; then
         base="$cwd/.cs/claude-config/projects"
     fi
@@ -86,6 +86,9 @@ _is_bystander_transcript() {  # transcript_file
     local first
     first=$(grep -m1 '"type":"user"' "$1" 2>/dev/null) || return 1
     case "$first" in
+        # Any first prompt holding the text counts, so discovery and adopt
+        # skip a person's relocated conversation whose prompt quotes it.
+        # Decided; do not re-fix.
         *teammate-message*) return 0 ;;
         *'"entrypoint":"sdk-'*)
             # Any entrypoint value that does not begin `sdk-`.
@@ -135,27 +138,16 @@ _discover_session_uuid_in() {
 # first non-bystander file that passes both is the worktree's conversation.
 # Empty when none does.
 _discover_worktree_uuid_in() {  # parent_project_dir, wt_dir
-    local proj="$1" wt_real
+    local proj="$1" wt_json
     [ -d "$proj" ] || return 0
-    wt_real=$( (cd "$2" 2>/dev/null && pwd -P) || printf '%s' "$2" )
-    # The record is a JSON string, so a `\` or `"` in the path is escaped there;
-    # escape the same way before matching, or such a repo never matches.
-    wt_real=$(printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    wt_json=$(_worktree_json_path "$2")
     local listing
     listing=$(ls -t "$proj"/*.jsonl 2>/dev/null) || true
     [ -n "$listing" ] || return 0
-    local f first
+    local f
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        # The closing quote pins the whole path: a worktree named `wt` must not
-        # claim `wt2`'s conversation.
-        grep -m1 -F "\"worktreePath\":\"$wt_real\"" "$f" >/dev/null 2>&1 || continue
-        first=$(grep -m1 '"type":"user"' "$f" 2>/dev/null) || continue
-        case "$first" in
-            *"\"cwd\":\"$wt_real\""*) ;;
-            *) continue ;;
-        esac
-        if ! _is_bystander_transcript "$f"; then
+        if _is_worktree_own_transcript "$f" "$wt_json"; then
             basename "$f" .jsonl
             return 0
         fi

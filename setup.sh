@@ -328,8 +328,9 @@ move_profile() {
 profile_secrets() {  # backend ('' lets cs-secrets pick), cs-secrets arguments...
     secrets_backend=$1
     shift
-    env -u CS_SECRETS_BACKEND -u CS_SECRETS_KEYCHAIN_PREFIX -u CS_SESSION_NAME -u CLAUDE_SESSION_NAME \
+    env -u CS_SECRETS_BACKEND -u CS_SECRETS_KEYCHAIN_PREFIX -u CS_SESSION_NAME -u CLAUDE_SESSION_NAME -u CS_SECRETS_SESSION \
         ${secrets_backend:+CS_SECRETS_BACKEND=$secrets_backend} \
+        CS_SECRETS_CALLER= CS_SESSIONS_ROOT="$profile_home/sessions" \
         CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$profile_home/.cs-secrets" \
         "$profile_home/.local/bin/cs-secrets" "$@"
 }
@@ -358,6 +359,10 @@ move_secrets_to_keychain() {
         profile_secrets '' backend 2>/dev/null | grep -q '^Storage backend: keychain$' || return 0
         secrets_session=${store##*/}
         secrets_session=${secrets_session%.enc}
+        if [ ! -d "$profile_home/sessions/$secrets_session/.cs" ]; then
+            printf 'Left the secrets of %s in %s: no registered session uses that name.\n' "$secrets_session" "$store"
+            continue
+        fi
         if secrets_session_open "$secrets_session"; then
             printf 'Left the secrets of %s in %s: the session is open. Close it, then rerun setup.sh.\n' \
                 "$secrets_session" "$store"

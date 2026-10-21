@@ -13,6 +13,15 @@ create_session_gitignore() {
 # Per-actor local state (never shared)
 .cs/local/
 
+# The session's locks, by name as well as by *.lock: the rules
+# ensure_cs_gitignore_entries looks for
+.cs/session.lock
+.cs/session.mutex.lock
+
+# A session's cs files when a .cs/private directory holds them (the link an
+# encrypted session keeps there is committed; a directory is not)
+.cs/private/
+
 # Session archives (large binaries; unrelated to the tracked .cs/archived marker)
 .cs/archives/
 
@@ -42,13 +51,42 @@ Thumbs.db
 GITIGNORE
 }
 
+# True when a negation further down <dir>'s own .gitignore un-ignores <path>,
+# so a rule for it written above that line has no effect: git, asked by the
+# rules alone (--no-index, so a tracked file is judged as an untracked one
+# is), names a "!" line of that very file as the line that decides. The source
+# git names is relative to the repository's top, hence the prefix. A negation
+# in a deeper .gitignore (which outranks this file whatever its order), no
+# repository, or a git that cannot answer, is false.
+_cs_gitignore_negated_here() {  # dir, path
+    local prefix out
+    prefix=$(_cs_git_at "$1" rev-parse --show-prefix 2>/dev/null) || return 1
+    out=$(_cs_git_at "$1" check-ignore -v --no-index -- "$2" 2>/dev/null) || return 1
+    case "$out" in
+        "${prefix}.gitignore:"*) ;;
+        *) return 1 ;;
+    esac
+    out="${out#"${prefix}.gitignore:"}"
+    out="${out#*:}"
+    case "$out" in
+        "!"*) return 0 ;;
+    esac
+    return 1
+}
+
 # Append cs's .gitignore entries to a session's .gitignore if absent
 # (idempotent; never clobbers a project's existing .gitignore). Writes a fresh
 # cs .gitignore when none exists. Used by adopt and by migrate_session so older
 # sessions gain the .cs/local/ rule (per-actor state must never be committed).
+# The two session lock rules are appended again when a negation further down
+# the file (a project's !*.lock) overrides them, so the line at the end wins;
+# existing lines are never removed or reordered. The rules it appends to an
+# existing file are left in _CS_GITIGNORE_ADDED, comma-separated, for
+# _explain_gitignore_additions.
 ensure_cs_gitignore_entries() {
     local target_dir="$1"
     local gitignore="$target_dir/.gitignore"
+    _CS_GITIGNORE_ADDED=""
     if [ ! -f "$gitignore" ]; then
         create_session_gitignore "$target_dir"
         return 0
@@ -56,51 +94,179 @@ ensure_cs_gitignore_entries() {
     local entries
     entries=$(cat << 'ENTRIES'
 .cs/local/
+.cs/private/
 .cs/archives/
 .cs/vault-mnt/
 .cs/.narrative-reminder-cooldown
+.cs/session.lock
+.cs/session.mutex.lock
 .claude/settings.local.json
 CLAUDE.local.md
 .obsidian/
 .cs-tmp.*
 ENTRIES
     )
-    local line
+    local line append
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
-        if ! grep -qF "$line" "$gitignore" 2>/dev/null; then
+        # Whole lines only: a commented `# .cs/local/` or a negated
+        # `!.cs/local/` mentions the entry without ignoring the path.
+        append=""
+        if ! grep -qxF -- "$line" "$gitignore" 2>/dev/null; then
+            append=yes
+        else
+            case "$line" in
+                .cs/session.lock|.cs/session.mutex.lock)
+                    if _cs_gitignore_negated_here "$target_dir" "$line"; then
+                        append=yes
+                    fi
+                    ;;
+            esac
+        fi
+        if [ -n "$append" ]; then
+            # A last line with no newline would swallow the entry appended to it.
+            if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
+                printf '\n' >> "$gitignore"
+            fi
             echo "$line" >> "$gitignore"
+            _CS_GITIGNORE_ADDED="${_CS_GITIGNORE_ADDED:+$_CS_GITIGNORE_ADDED, }$line"
         fi
     done <<< "$entries"
 }
 
-# Adopt an existing project directory as a cs session
-adopt_session() {
-    local session_name="${1:-}" explicit_engine="" engine
-    [ "$#" -eq 0 ] || shift
+# One notice row naming the rules ensure_cs_gitignore_entries just appended,
+# when git tracks <dir>/.gitignore: in an adopted project that is the team's
+# file, and the rules would otherwise show up as an uncommitted change nobody
+# explained. A .gitignore git does not track, or a fresh one, gets no row.
+_explain_gitignore_additions() {  # dir
+    [ -n "${_CS_GITIGNORE_ADDED:-}" ] || return 0
+    _cs_git_at "$1" ls-files --error-unmatch -- .gitignore >/dev/null 2>&1 || return 0
+    notice .gitignore "ignores $_CS_GITIGNORE_ADDED" "tracked file: commit it with your next change"
+}
+
+# A notice row saying cs committed nothing, its action line naming each of
+# <path>... that git shows as changed or untracked in <dir>, in the order
+# given, a directory with a trailing slash: what adopt and the flat-layout
+# migration leave for the user to commit. No row when git shows none of them
+# or cannot say.
+_explain_nothing_committed() {  # dir, path...
+    local dir="$1" entry path shown=$'\n' p left="" count=0
+    shift
+    # -z: a name git would quote on a plain line keeps its leading component
+    # readable. A staged rename's second field reads as a name matching none
+    # of <path>, so it is skipped like any other.
+    while IFS= read -r -d '' entry; do
+        path="${entry:3}"
+        case "$path" in
+            */*) shown="$shown${path%%/*}/"$'\n' ;;
+            *) shown="$shown$path"$'\n' ;;
+        esac
+    done < <(_cs_git_at "$dir" --no-optional-locks status --porcelain -z --untracked-files=normal -- "$@" 2>/dev/null)
+    for p in "$@"; do
+        case "$shown" in
+            *$'\n'"$p/"$'\n'*) p="$p/" ;;
+            *$'\n'"$p"$'\n'*) ;;
+            *) continue ;;
+        esac
+        count=$((count + 1))
+        left="$left${left:+$'\n'}$p"
+    done
+    [ "$count" -gt 0 ] || return 0
+    local joined="" i=0
+    while IFS= read -r p; do
+        i=$((i + 1))
+        if [ "$i" -eq 1 ]; then
+            joined="$p"
+        elif [ "$i" -eq "$count" ]; then
+            joined="$joined and $p"
+        else
+            joined="$joined, $p"
+        fi
+    done <<< "$left"
+    notice "working tree" "cs committed nothing" "commit $joined with your next change"
+}
+
+# Record in <dir>/.cs/local/state the mode the session's features take, for
+# create_worktree_session, unless a cs_mode is already recorded there. Adopt
+# and the flat-layout migration commit nothing, so git tracks no .cs until the
+# user commits it, and a feature that inferred its mode from that would hide
+# the base's .cs through the common info/exclude. Features expect git to carry
+# .cs (tracked), unless the project's own rules already keep it out of git
+# (ignored). Asked of the directory, not a file in it: a file-type rule such
+# as *.md hides some of .cs's files and leaves the rest for git to show, and
+# cs's own rules name only paths inside .cs. `.cs/`, `.cs`, `/.cs/`, `.cs/*`
+# and `.cs/**` all match it.
+_record_feature_mode() {  # dir
+    local state="$1/.cs/local/state" mode=tracked
+    [ -z "$(_read_local_state "$state" cs_mode)" ] || return 0
+    if _cs_git_at "$1" check-ignore -q -- .cs/ 2>/dev/null; then
+        mode=ignored
+    fi
+    _set_local_state "$state" cs_mode "$mode"
+}
+
+# Adopt an existing project directory as a cs session. --yes (-y) answers the
+# one question adopt asks, whether to re-adopt orphaned records, so it runs
+# without a terminal.
+adopt_session() {  # name, [--yes|-y], in any order
+    local session_name="" assume_yes=false explicit_engine="" engine
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --yes|-y) assume_yes=true; shift ;;
             --engine)
                 [ -n "${2:-}" ] || error "--engine needs claude or codex"
                 explicit_engine="$2"; shift 2 ;;
             --engine=*) explicit_engine="${1#*=}"; shift ;;
-            *) error "Usage: cs -adopt <name> [--engine claude|codex]" ;;
+            -*) error "cs -adopt: unknown option '$1'. Usage: cs -adopt <name> [--yes] [--engine claude|codex]" ;;
+            *)
+                [ -z "$session_name" ] || error "cs -adopt: takes one session name, got '$session_name' and '$1'. Usage: cs -adopt <name> [--yes]"
+                session_name="$1"; shift ;;
         esac
-        cs_engine_known "$explicit_engine" || error "--engine needs claude or codex"
     done
+    [ -z "$explicit_engine" ] || cs_engine_known "$explicit_engine" || error "--engine needs claude or codex"
     local target_dir
     target_dir="$(pwd -P)"
 
     validate_session_name "$session_name"
     engine=$(_session_engine "$target_dir" "$explicit_engine")
 
-    # A linked git worktree keeps a `.git` FILE, so the init path below would
-    # read it as "not a repo", `git init` over it and `git add -A` the user's
-    # PR branch. Claude Code's worktrees have their own verb.
-    if [ -f "$target_dir/.git" ]; then
-        error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would commit into this branch."
+    # Adopting a directory with no .git runs git init there and writes cs's
+    # files into it: never the home directory or the filesystem root. -ef,
+    # not a string compare: either may be reached through a symlink or typed
+    # in another case.
+    if [ "$target_dir" -ef "${HOME:-}" ]; then
+        error "Refusing to adopt your home directory ($target_dir). Run cs -adopt from a project directory."
     fi
+    if [ "$target_dir" -ef / ]; then
+        error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
+    fi
+    # Nor the sessions root or a directory above it: the repo would hold
+    # every session, and the session link would land inside the project.
+    # Walked up on the physical path, each step compared by -ef.
+    local root ancestor
+    root=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
+    ancestor="$root"
+    while [ -n "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
+        if [ "$target_dir" -ef "$ancestor" ]; then
+            error "Refusing to adopt $target_dir: it is or contains the sessions root ($root). Run cs -adopt from a project directory."
+        fi
+        ancestor=$(dirname "$ancestor")
+    done
+
+    # A linked git worktree keeps a `.git` FILE, so the init path below would
+    # read it as "not a repo" and `git init` over the user's PR branch.
+    # Claude Code's worktrees have their own verb.
+    if [ -f "$target_dir/.git" ]; then
+        error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would run git init over this branch's checkout."
+    fi
+
+    # Adopt appends to .gitignore, .gitattributes and CLAUDE.local.md and
+    # writes under .cs, and a cloned project can commit any of those as a
+    # link out of the checkout, or commit per-actor state. The open refuses
+    # all of it; asked here, before the first write, so nothing lands behind
+    # a link and no session is linked that cannot open.
+    cs_assert_local_untracked "$target_dir"
 
     # A .cs/ directory with no session link is orphaned: `cs -rm`/the TUI's `d`
     # only ever remove the symlink, by design, so records survive a removal —
@@ -122,7 +288,21 @@ adopt_session() {
             error "Directory is already adopted as session '$existing_name' (open it with: cs $existing_name)"
         fi
 
-        if cs_interactive; then
+        # An encrypted session's records sit behind links into its vault
+        # (cs -encrypt makes one per CS_VAULT_LINKS name). With the vault
+        # locked they lead nowhere, and setting the session up over them
+        # stops partway, after the state has lost the conversation it names.
+        # Refuse before asking or writing anything.
+        local sub
+        for sub in $CS_VAULT_LINKS; do
+            if [ -L "$target_dir/.cs/$sub" ] && [ ! -e "$target_dir/.cs/$sub" ]; then
+                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(_cs_plain_name "$(readlink "$target_dir/.cs/$sub")" 160), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+            fi
+        done
+
+        if [ "$assume_yes" = true ]; then
+            :
+        elif cs_interactive; then
             local confirm
             read -r -p "Found existing session records (.cs/) with no session link. Re-adopt as '$session_name', preserving them? [y/N] " confirm
             if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -130,7 +310,7 @@ adopt_session() {
                 return 0
             fi
         else
-            error "Directory carries session records (.cs/) but no session link. Re-run interactively to re-adopt them as '$session_name', or remove .cs/ to adopt fresh."
+            error "Directory carries session records (.cs/) but no session link. Re-run interactively or with --yes to re-adopt them as '$session_name', or remove .cs/ to adopt fresh."
         fi
     fi
 
@@ -154,6 +334,16 @@ adopt_session() {
     prior_binding=$(_read_local_state "$target_dir/.cs/local/state" claude_session_id)
     prior_color=$(_read_local_state "$target_dir/.cs/local/state" claude_session_color)
     create_session_structure "$target_dir" "$engine"
+    # Re-adopted records of an encrypted session keep their command log behind
+    # .cs/private; with the vault locked there is nowhere to start one, and
+    # create_session_structure leaves it unwritten rather than write plaintext.
+    if ! cs_private_dir "$target_dir/.cs" >/dev/null; then
+        if [ -L "$target_dir/.cs/private" ]; then
+            warn "$session_name: .cs/private $(cs_private_state "$target_dir/.cs"), which is missing (encrypted storage not mounted?), so adopt started no command log there. Mount it before opening the session."
+        else
+            warn "$session_name: .cs/private is not a directory, so adopt started no command log there."
+        fi
+    fi
     if _is_uuid "$prior_binding"; then
         _set_local_state "$target_dir/.cs/local/state" claude_session_id "$prior_binding"
     else
@@ -195,38 +385,29 @@ adopt_session() {
     # path in the user's checkout (template .gitignore, branch renamed to main).
     if [ ! -e "$target_dir/.git" ]; then
         (
-            cd "$target_dir" || exit 0
-            create_session_gitignore "$target_dir"
+            cd -- "$target_dir" || exit 0
+            # Merged, not written: the project's own rules (an .env, a key
+            # file) must keep hiding those files from the user's first add.
+            ensure_cs_gitignore_entries "$target_dir"
             git init -q 2>/dev/null || true
             # See the session-init path: autocrlf would rewrite .gitignore to
             # CRLF and its patterns would stop matching.
             git config core.autocrlf false 2>/dev/null || true
             git branch -M main 2>/dev/null || true
             setup_merge_attributes "$target_dir"
-            git add -A 2>/dev/null || true
-            git commit -q -m "Adopt as cs session: $session_name" 2>/dev/null || true
         )
+        _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     else
-        # Merge cs's .gitignore entries into the project's existing .gitignore
+        # The project's own repo: cs merges its rules and attributes into the
+        # working tree and never touches the index, so whatever the user had
+        # staged stays staged and nothing is committed.
         ensure_cs_gitignore_entries "$target_dir"
-
-        # Commit the adoption
-        (
-            cd "$target_dir" || exit 0
-            setup_merge_attributes "$target_dir"
-            git add .cs/ .gitignore .gitattributes 2>/dev/null || true
-            # The commit names its own paths: this runs inside the user's
-            # project repo, and a bare `git commit` would sweep whatever they
-            # had staged into a commit titled "Adopt as cs session". The
-            # --cached check is scoped the same way, or a user's unrelated
-            # staged file would make cs commit when it has nothing to say.
-            # (`git commit -- <paths>` only matches TRACKED paths, so the add
-            # above is what makes the new .cs files eligible.)
-            if ! git diff --cached --quiet -- .cs/ .gitignore .gitattributes 2>/dev/null; then
-                git commit -q -m "Adopt as cs session: $session_name" -- .cs/ .gitignore .gitattributes 2>/dev/null || true
-            fi
-        )
+        setup_merge_attributes "$target_dir"
+        _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     fi
+
+    # Re-adopted records keep the mode they hold.
+    _record_feature_mode "$target_dir"
 
     info "Adopted $(basename "$target_dir") as session '$session_name'"
     echo -e "${DIM}Symlink: $session_link -> $target_dir${NC}"
@@ -250,8 +431,10 @@ _append_exclude_once() {  # exclude_file, entry...
 }
 
 # The .cs/ skeleton for a Claude Code worktree adopted as a session. Not
-# create_session_structure: that commits into the checkout, and the checkout
-# is a live PR branch. Not bootstrap_worktree_meta: its README names a base
+# create_session_structure: its README takes the directory's name as the
+# session's and asks for the Environment a new session works in, where an
+# adopted worktree's session is <repo>.<worktree> and its README names the
+# worktree it came from. Not bootstrap_worktree_meta: its README names a base
 # session and a cs/<task> branch, which an adopted worktree has neither of.
 _bootstrap_adopted_worktree_meta() {  # wt_dir, session_name
     local wt_dir="$1" session_name="$2"
@@ -306,7 +489,7 @@ adopt_worktrees() {  # [--dry-run]
     local repo
     repo=$(git rev-parse --show-toplevel 2>/dev/null) \
         || error "cs -adopt --worktrees reads <repo>/.claude/worktrees, and $(pwd) is not inside a git repository"
-    repo=$(cd "$repo" && pwd -P)
+    repo=$(cd -- "$repo" && pwd -P)
     local wt_root="$repo/.claude/worktrees"
     [ -d "$wt_root" ] || error "No Claude Code worktrees to adopt: $wt_root does not exist"
     local repo_name common
@@ -329,20 +512,41 @@ adopt_worktrees() {  # [--dry-run]
         fi
     done
 
-    local wt_dir wt_name session_name proj parent_proj uuid adopted=0 wt_top wt_common state tracked
+    local wt_dir wt_name wt_shown session_name proj parent_proj uuid adopted=0 wt_top wt_common wt_real layout state tracked
     for wt_dir in "$wt_root"/*/; do
         wt_dir="${wt_dir%/}"
         [ -d "$wt_dir" ] || continue
         wt_name=$(basename "$wt_dir")
+        # The repository chose the name, so it is printed with each character
+        # a plain path does not have replaced, and never through echo -e: a
+        # raw escape, or backslash text echo -e decodes into one, would reach
+        # the terminal.
+        wt_shown=$(_cs_plain_name "$wt_name")
         session_name="$repo_name.$wt_name"
         link="$SESSIONS_ROOT/$session_name"
         # Everything below writes into this directory, so it has to be a
         # checkout of this repo: its own worktree root, on this repo's common
         # git dir. A symlink to another project, or a plain folder, is neither.
-        wt_top=$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
-        wt_common=$(cd "$wt_dir" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
+        # git asked about it takes the nearest directory at or above it that
+        # holds HEAD for the repository, unless a .git comes first, and reads
+        # that directory's config, and a clone can commit such a layout here
+        # (git add -f), so one git's search from the entry would find is
+        # named before git is asked anything.
+        # The x keeps a trailing newline in a name that $( ) drops.
+        if ! wt_real=$(cd -P -- "$wt_dir" 2>/dev/null && pwd -P && printf x); then
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: not a worktree of $repo" "$NC"
+            continue
+        fi
+        wt_real=${wt_real%$'\n'x}
+        if layout=$(_cs_head_on_git_walk "$wt_real" "$repo"); then
+            layout=$(_cs_plain_name "$layout" 160)
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: $layout holds HEAD, so git takes it for a repository and would run commands its config names" "$NC"
+            continue
+        fi
+        wt_top=$(_cs_git_at "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
+        wt_common=$(cd -- "$wt_dir" && cd -- "$(_cs_git_at "$wt_dir" rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
         if [ -L "$wt_dir" ] || [ -z "$wt_top" ] || ! [ "$wt_top" -ef "$wt_dir" ] || ! [ "$wt_common" -ef "$common" ]; then
-            echo -e "${DIM}skip $wt_name: not a worktree of $repo${NC}"
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: not a worktree of $repo" "$NC"
             continue
         fi
         state="$wt_dir/.cs/local/state"
@@ -360,11 +564,11 @@ adopt_worktrees() {  # [--dry-run]
                     && [ -L "$link" ] && [ "$(readlink "$link")" = "$wt_dir" ] && [ "$dry_run" != 1 ]; then
                     _set_local_state "$state" adopted "$(date '+%Y-%m-%d')"
                 fi
-                echo -e "${DIM}skip $wt_name: already carries .cs/${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: already carries .cs/" "$NC"
                 continue
             fi
             if [ -n "$(_read_local_state "$state" adopted)" ]; then
-                echo -e "${DIM}skip $wt_name: removed with cs -rm (delete its .cs/ to adopt it again)${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: removed with cs -rm (delete its .cs/ to adopt it again)" "$NC"
                 continue
             fi
         fi
@@ -378,7 +582,7 @@ adopt_worktrees() {  # [--dry-run]
             parent_proj=$(_claude_project_dir "$repo")
             uuid=$(_discover_worktree_uuid_in "$parent_proj" "$wt_dir")
             if [ -z "$uuid" ]; then
-                echo -e "${DIM}skip $wt_name: no conversation under $proj, none relocated into $parent_proj${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: no conversation under $proj, none relocated into $parent_proj" "$NC"
                 continue
             fi
             proj="$parent_proj"
@@ -388,8 +592,9 @@ adopt_worktrees() {  # [--dry-run]
         tracked=$(_exclude_session_tracked_conflict "$wt_dir")
         if [ -n "$tracked" ]; then
             case "$tracked" in
-                *symlink) echo -e "${DIM}skip $wt_name: $tracked, and cs writes through it at every open${NC}" ;;
-                *) echo -e "${DIM}skip $wt_name: $tracked is tracked on its branch, and cs would rewrite it at every open${NC}" ;;
+                "cs could not ask git"*) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked" "$NC" ;;
+                *symlink) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked, and cs writes through it at every open" "$NC" ;;
+                *) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked is tracked on its branch, and cs would rewrite it at every open" "$NC" ;;
             esac
             continue
         fi
@@ -398,7 +603,7 @@ adopt_worktrees() {  # [--dry-run]
             error "Session '$session_name' already exists: the same repo name in two places? ($(readlink "$link" 2>/dev/null || echo "$link"))"
         fi
         if [ "$dry_run" = 1 ]; then
-            echo "would adopt $wt_name as '$session_name' (conversation $uuid)"
+            printf '%s\n' "would adopt $wt_shown as '$session_name' (conversation $uuid)"
             continue
         fi
         # Hidden before anything exists to hide, marked before anything else
@@ -420,7 +625,7 @@ adopt_worktrees() {  # [--dry-run]
         # from a session cs -rm removed.
         _set_local_state "$state" adopted "$(date '+%Y-%m-%d')"
         adopted=$((adopted + 1))
-        info "Adopted $wt_name as session '$session_name'"
+        info "Adopted $wt_shown as session '$session_name'"
     done
     [ "$dry_run" = 1 ] || echo -e "${DIM}$adopted adopted; open one with: cs $repo_name.<worktree>${NC}"
 }
@@ -465,11 +670,73 @@ _uninstall_rotate_wrap_keys() {
     fi
 }
 
+# Settings JSON on stdin without any cs hook, current or retired, on stdout:
+# stripped from any event that is a list, event-agnostic, matching both path
+# spellings ($HOME and ~) in both deployment layouts (subdirectory and flat).
+# Drops wrappers that empty out; sibling user hooks co-shipped in a wrapper
+# survive, and an event that is not a list stays as it is. A hook
+# file still present in either layout was kept as the user's (uninstall
+# removes only the files cs wrote), so its registration is the user's too
+# and stays.
+_strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
+    local settings strip_name
+    settings=$(cat)
+    for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
+        if [ ! -e "$1/$strip_name" ] && [ ! -L "$1/$strip_name" ]; then
+            settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        fi
+        if [ ! -e "$2/$strip_name" ] && [ ! -L "$2/$strip_name" ]; then
+            settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+        fi
+    done
+
+    # Clean up empty hook arrays. An event whose list is empty goes whether
+    # the strips emptied it or the user wrote it that way: the filter cannot
+    # tell the two apart and an empty list does nothing in Claude Code
+    # (deliberate: not a defect to fix). An event that is not a list stays.
+    echo "$settings" | jq '
+        if .hooks then
+            .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
+            | if .hooks == {} then del(.hooks) else . end
+        else . end
+    '
+}
+
+# Refuse the uninstall while a session under the sessions root is live (a
+# running lock pid, or a fresh statusline heartbeat for one opened outside
+# cs): the data step would delete its files from under it. The refusal says
+# what happens next by stage: before (nothing is removed yet, so close the
+# sessions and run cs -uninstall again) or data (cs is removed and the data
+# is kept, so close them and delete the root by hand).
+_uninstall_refuse_live_sessions() {  # stage: before | data
+    local stage="$1" live_sessions="" entry now
+    case "$stage" in
+        before | data) ;;
+        *) error "_uninstall_refuse_live_sessions: unknown stage '$stage'" ;;
+    esac
+    [ -d "$SESSIONS_ROOT" ] || return 0
+    now=$(date +%s)
+    # Hidden entries too: a session named before leading dots were
+    # refused (.work) can still be live, and `*` alone would skip it.
+    for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
+        [ -d "$entry/.cs" ] || continue
+        if session_display_live "$entry/.cs" "$now"; then
+            live_sessions="$live_sessions ${entry##*/}"
+        fi
+    done
+    [ -n "$live_sessions" ] || return 0
+    if [ "$stage" = before ]; then
+        error "Nothing was uninstalled: these sessions are live:$live_sessions. Close them and run cs -uninstall again."
+    fi
+    error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+}
+
 # Uninstall cs and all components
 run_uninstall() {
     local install_dir="${CS_INSTALL_DIR:-$HOME/.local/bin}"
     local install_engines install_config="${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines"
     install_engines=$(cat "$install_config" 2>/dev/null) || install_engines=claude,codex
+    local CS_INSTALL_ENGINES="$install_engines"
     local hooks_parent_dir="$HOME/.claude/hooks"
     local hooks_dir="$hooks_parent_dir/cs"
     local commands_dir="$HOME/.claude/commands"
@@ -491,6 +758,12 @@ run_uninstall() {
     # outlived a full uninstall and made the next install look up to date.
     local update_cache_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}"
 
+    _check_retired_names
+
+    # Before anything is removed: refusing after the tool is gone would leave
+    # the data with no cs to open it.
+    _uninstall_refuse_live_sessions before
+
     warn "This will uninstall cs and all its components:"
     echo "  - $install_dir/cs, $install_dir/cs-secrets, $install_dir/cs-codex-thread, $install_dir/cs-statusline, $install_dir/cs-subagent-statusline, $install_dir/cs-tui(.exe)"
     echo "  - Hooks in $hooks_dir/"
@@ -510,6 +783,9 @@ run_uninstall() {
         info "Uninstall cancelled."
         return 0
     fi
+    # The answer can take any time to arrive, and a session opened meanwhile
+    # is as live as one found before the prompt.
+    _uninstall_refuse_live_sessions before
 
     echo ""
     info "Uninstalling cs..."
@@ -518,7 +794,7 @@ run_uninstall() {
     # Remove the commands. `-L` includes a dangling symlink left by an
     # interrupted install or manual binary removal.
     local command_name
-    for command_name in cs cs-secrets cs-codex-thread; do
+    for command_name in cs cs-codex-thread; do
         if [ -e "$install_dir/$command_name" ] || [ -L "$install_dir/$command_name" ]; then
             rm -f "$install_dir/$command_name"
             info "Removed $install_dir/$command_name"
@@ -563,8 +839,7 @@ run_uninstall() {
     local hook dir
     for hook in "${CS_HOOKS[@]}" "${CS_HOOK_LIBS[@]}"; do
         for dir in "$hooks_dir" "$hooks_parent_dir"; do
-            if [ -f "$dir/$hook" ]; then
-                rm "$dir/$hook"
+            if [ -f "$dir/$hook" ] && _cs_remove_if_owned "$dir/$hook"; then
                 info "Removed $dir/$hook"
             fi
         done
@@ -574,19 +849,17 @@ run_uninstall() {
     local retired
     for retired in "${RETIRED_HOOKS[@]}"; do
         for dir in "$hooks_dir" "$hooks_parent_dir"; do
-            if [ -f "$dir/$retired" ]; then
-                rm "$dir/$retired"
+            if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
                 info "Removed retired $dir/$retired"
             fi
         done
     done
-    rm -f "$hooks_dir/.version"
-    rmdir "$hooks_dir" 2>/dev/null || true
 
-    # Remove the slash commands earlier versions shipped (now skills)
-    for cmd in "${RETIRED_COMMANDS[@]}"; do
-        if [ -f "$commands_dir/$cmd" ]; then
-            rm "$commands_dir/$cmd"
+    # Remove commands, current and retired. A linked commands directory is
+    # worked through by design, as install deploys into it: only content cs
+    # wrote is removed, so the link is no boundary here.
+    for cmd in "${CS_COMMANDS[@]+"${CS_COMMANDS[@]}"}" "${RETIRED_COMMANDS[@]}"; do
+        if [ -f "$commands_dir/$cmd" ] && _cs_remove_if_owned "$commands_dir/$cmd"; then
             info "Removed $commands_dir/$cmd"
         fi
     done
@@ -596,20 +869,16 @@ run_uninstall() {
     # both lists or it leaves cs files behind.
     local skill
     for skill in "${CS_SKILLS[@]}" "${RETIRED_SKILLS[@]}"; do
-        if [ -d "$skills_dir/$skill" ]; then
-            rm -rf "$skills_dir/$skill"
+        if [ -d "$skills_dir/$skill" ] && _cs_remove_tree_if_owned "$skills_dir/$skill"; then
             info "Removed $skills_dir/$skill/"
         fi
     done
 
     # Remove mods: each deploys under its own directory beside the skills.
-    # Ownership is by name, as for the skills above: cs deploys these names
-    # and removes them whole, extra files included. Do not re-fix.
     local mod_file mod
     for mod_file in "${CS_MOD_FILES[@]}"; do
         mod="${mod_file%%/*}"
-        if [ -d "$skills_dir/$mod" ]; then
-            rm -rf "$skills_dir/$mod"
+        if [ -d "$skills_dir/$mod" ] && _cs_remove_tree_if_owned "$skills_dir/$mod"; then
             info "Removed $skills_dir/$mod/"
         fi
     done
@@ -622,8 +891,7 @@ run_uninstall() {
     if [[ ",$install_engines," == *,codex,* ]]; then
     local skill
     for skill in "${CS_SKILLS[@]}"; do
-        if [ -d "$codex_skills_dir/$skill" ]; then
-            rm -rf "${codex_skills_dir:?}/$skill"
+        if [ -d "$codex_skills_dir/$skill" ] && _cs_remove_tree_if_owned "$codex_skills_dir/$skill"; then
             info "Removed $codex_skills_dir/$skill/"
         fi
     done
@@ -651,7 +919,6 @@ run_uninstall() {
     for recovery_file in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
         rm -f "${codex_skills_dir%/skills}/hooks/cs/$recovery_file"
     done
-    rmdir "${codex_skills_dir%/skills}/hooks/cs" 2>/dev/null || true
     local codex_sl_rc=0
     _codex_status_line_remove "${codex_skills_dir%/skills}" > /dev/null || codex_sl_rc=$?
     case $codex_sl_rc in
@@ -660,6 +927,9 @@ run_uninstall() {
         *) warn "Could not remove cs's status line from ${codex_skills_dir%/skills}/config.toml; remove its [tui] status_line by hand" ;;
     esac
     fi
+
+    rm -f "$hooks_dir/.version" "$hooks_dir/.tui-origin" "$(_cs_install_record)"
+    rmdir "$hooks_dir" "${codex_skills_dir%/skills}/hooks/cs" 2>/dev/null || true
 
     # Remove shell completions
     if [ -f "$bash_completion_dir/cs.bash" ] || [ -L "$bash_completion_dir/cs.bash" ]; then
@@ -688,34 +958,30 @@ run_uninstall() {
     fi
 
     if [[ ",$install_engines," == *,claude,* ]]; then
-    # Clean up settings.json (remove cs hooks, preserve others)
-    if [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; then
-        local settings
-        settings=$(cat "$settings_file")
-
-        # Strip every cs hook (current and retired) from any event,
-        # event-agnostic, matching both path spellings ($HOME and ~) in both
-        # deployment layouts (subdirectory and flat). Drops wrappers that
-        # empty out; sibling user hooks co-shipped in a wrapper survive.
-        local strip_name
-        for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
-            settings=$(_strip_hook_registration "$settings" "$hooks_dir/$strip_name" "~/.claude/hooks/cs/$strip_name")
-            settings=$(_strip_hook_registration "$settings" "$hooks_parent_dir/$strip_name" "~/.claude/hooks/$strip_name")
-        done
-
-        # Clean up empty hook arrays
-        settings=$(echo "$settings" | jq '
-            if .hooks then
-                .hooks |= with_entries(select(.value | length > 0))
-                | if .hooks == {} then del(.hooks) else . end
-            else . end
-        ')
-
-        echo "$settings" > "$settings_file"
-        info "Cleaned up $settings_file"
+    # Clean up settings.json (remove cs hooks, preserve others). A file jq
+    # cannot parse, or one that is not a regular file (cs_settings_check never
+    # opens it), is left as it is with a warning: the binaries are already
+    # gone, so the rest of the uninstall still runs.
+    if [ -e "$settings_file" ] && command -v jq >/dev/null 2>&1; then
+        if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
+            info "Cleaned up $settings_file"
+        else
+            warn "$CS_SETTINGS_ERROR"
+        fi
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"
+    fi
+
+    local settings_lock="$settings_file.mutex.lock"
+    if [ -f "$settings_lock" ]; then
+        # The one lock file cs removes (_cs_lock in lib/02-shared.sh): uninstall is its last user. It goes while held, so a writer still waiting on it, or still opening it, locks a fresh file.
+        if _cs_lock "$settings_lock"; then
+            rm -f "$settings_lock"
+            _cs_unlock "$settings_lock"
+        else
+            warn "Kept $settings_lock: cs could not take the lock to remove it"
+        fi
     fi
 
     _uninstall_rotate_wrap_keys
@@ -747,9 +1013,23 @@ run_uninstall() {
                 done
 
                 if [ -n "$secrets_script" ]; then
-                    echo "$sessions" | while read -r s; do
-                        "$secrets_script" --session "$s" purge 2>/dev/null || true
-                    done
+                    # A purge cs-secrets refuses (another session's live one,
+                    # a lock it cannot take) keeps that session's secrets:
+                    # its last error line says why, and the rest go on.
+                    local purge_err purge_rc
+                    {
+                        echo "$sessions" | while read -r s; do
+                            purge_rc=0
+                            purge_err=$("$secrets_script" --session "$s" purge 2>&1 >&3) || purge_rc=$?
+                            if [ "$purge_rc" -eq 0 ]; then
+                                continue
+                            fi
+                            purge_err="${purge_err%"${purge_err##*[![:space:]]}"}"
+                            purge_err="${purge_err##*$'\n'}"
+                            purge_err="${purge_err#Error: }"
+                            warn "Kept the secrets of session $s: ${purge_err:-cs-secrets purge exited $purge_rc}"
+                        done
+                    } 3>&1
                 else
                     warn "cs-secrets not found - cannot purge secrets automatically"
                 fi
@@ -759,11 +1039,20 @@ run_uninstall() {
         fi
     fi
 
+    # Removed only after the keychain purge above, which runs it.
+    if [ -f "$install_dir/cs-secrets" ]; then
+        rm "$install_dir/cs-secrets"
+        info "Removed $install_dir/cs-secrets"
+    fi
+
     # Ask about session data. rm -rf recurses into a mount, so with a volume
     # mounted inside the sessions root (an open encrypted session's vault) the
-    # data stays and the question is not asked.
+    # data stays and the question is not asked. Live sessions were refused
+    # before the first removal; asked again here, since one may have opened
+    # while the questions above waited.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
+        _uninstall_refuse_live_sessions data
         local mounted
         if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
@@ -774,6 +1063,14 @@ run_uninstall() {
             read -p "Delete session data? This cannot be undone. [y/N] " -n 1 -r
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # The answer can take any time: a session opened or a vault
+                # mounted meanwhile keeps the data, as it would have above.
+                _uninstall_refuse_live_sessions data
+                if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+                    error "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
+                elif [ -n "$mounted" ]; then
+                    error "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
+                fi
                 rm -rf "$SESSIONS_ROOT"
                 info "Removed $SESSIONS_ROOT"
             else

@@ -365,7 +365,8 @@ def profile_secrets_env(secrets_dir):
     rest of CS_*, as the launcher drops it.
     """
     env = scrubbed_env()
-    env.update(CS_SECRETS_KEYCHAIN_PREFIX="code-sessions", CS_SECRETS_DIR=secrets_dir)
+    env.update(CS_SECRETS_KEYCHAIN_PREFIX="code-sessions", CS_SECRETS_DIR=secrets_dir,
+               CS_SESSIONS_ROOT=os.path.join(os.path.dirname(secrets_dir), "sessions"), CS_SECRETS_CALLER="")
     return env
 
 
