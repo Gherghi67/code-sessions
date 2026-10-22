@@ -65,7 +65,14 @@ test_ci_release_manifest() {
             body && /^          / { print substr($0, 11) }
         ' "$workflow" > "$TEST_TMPDIR/step.sh"
         [ -s "$TEST_TMPDIR/step.sh" ] || { echo "  FAIL: release workflow must $step"; return 1; }
-        (cd "$TEST_TMPDIR/assets" && bash -e "$TEST_TMPDIR/step.sh") || return 1
+        (
+            cd "$TEST_TMPDIR/assets" || exit 1
+            if ! command -v sha256sum >/dev/null 2>&1; then
+                sha256sum() { shasum -a 256 "$@"; }
+                export -f sha256sum
+            fi
+            bash -e "$TEST_TMPDIR/step.sh"
+        ) || return 1
     done
     local names
     names=$(awk '{print $2}' "$TEST_TMPDIR/assets/SHA256SUMS")
@@ -81,6 +88,19 @@ test_ci_release_manifest() {
     assert_file_contains "$workflow" '^            SHA256SUMS$' 'the manifest is a release asset' || return 1
 }
 
+test_release_verification_documented() {
+    local docs="$SCRIPT_DIR/../docs"
+    assert_file_contains "$docs/configuration.md" 'CS_RELEASE_SIGNERS_FILE' 'configuration must document the signer-file test seam' || return 1
+    assert_file_contains "$docs/configuration.md" 'CS_RELEASE_REVOKED_FILE' 'configuration must document the revocation-file test seam' || return 1
+    assert_file_contains "$docs/configuration.md" 'ssh-keygen -Y verify' 'configuration must name the required verifier' || return 1
+    assert_file_contains "$docs/commands.md" 'SHA256SUMS' 'update documentation must name the authenticated manifest' || return 1
+    assert_file_contains "$SCRIPT_DIR/../README.md" 'ssh-keygen' 'README must name the release verifier requirement' || return 1
+    local features
+    features=$(awk '/^## 2026.10.10$/ {release=1; next} release && /^## / {exit} release && /^### Features$/ {features=1; next} features && /^### / {exit} features {print}' "$SCRIPT_DIR/../CHANGELOG.md")
+    assert_output_contains "$features" 'SSH.*minisign' 'release feature must describe SSH authentication and minisign removal' || return 1
+}
+
 run_test test_manifest_authentication
 run_test test_ci_release_manifest
+run_test test_release_verification_documented
 report_results

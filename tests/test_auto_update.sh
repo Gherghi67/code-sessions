@@ -85,7 +85,6 @@ test_verify_checksum_catches_mismatch() {
     echo "hello world" > "$tmpdir/test.txt"
     echo "0000000000000000000000000000000000000000000000000000000000000000  test.txt" > "$tmpdir/test.txt.sha256"
 
-    local result
     # source from a temp file: bash 3.2 (macOS stock) does not reliably define a
     # function via `source <(...)` process substitution.
     cp "$SCRIPT_DIR/../lib/20-update.sh" "$tmpdir/_vc.sh"

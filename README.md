@@ -24,6 +24,7 @@ cd claude-sessions
 
 Review [install.sh](install.sh) before running it. The piped command always installs the release, even inside a checkout.
 The installer puts the commands in `~/.local/bin/`, registers hooks, and installs skills, mods, and Bash and Zsh completions.
+Updates and prebuilt picker downloads require `ssh-keygen` with `-Y verify` support to check the [signed release manifest](docs/configuration.md#release-verification-and-notes).
 
 ## Usage
 

@@ -470,7 +470,7 @@ test_release_guards_stray_files_before_add_all() {
 }
 
 test_release_verifies_ci_workflow() {
-    # 'gh release create' returning is not the finish line; the signing/upload workflow can
+    # 'gh release create' returning is not the finish line; the release workflow can
     # still fail. The runbook must verify the workflow and the signed assets landed.
     assert_file_contains "$RELEASE_MD" "Verify the Release Workflow Succeeded" \
         "release.md must add a step to confirm the CI release workflow succeeded" || return 1

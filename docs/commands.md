@@ -30,7 +30,11 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -statusline caps on\|off\|ask` | Records whether your font displays rounded capsule ends. |
 | `cs -detect-theme` | Reports terminal theme detection. |
 | `cs -rm <name>...` | Confirms each removal and names user files, including untracked worktree files. |
-| `cs -update [--check\|--force]` | Updates cs. `--check` checks without installing, and `--force` reinstalls the latest release. |
+| `cs -update [--check\|--force]` | Updates cs after SSH verification of `SHA256SUMS` and the installer's digest. `--check` checks without installing, and `--force` reinstalls the latest release with the same verification. |
+
+Updates require `ssh-keygen -Y verify` and refuse missing signatures, missing
+manifest entries, digest mismatches, and releases that drop revoked keys.
+See [release verification](configuration.md#release-verification-and-notes).
 
 ## Sessions, locks, and safety
 

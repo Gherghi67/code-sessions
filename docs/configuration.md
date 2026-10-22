@@ -5,9 +5,8 @@ runs with sensible defaults out of the box — but you can set any of these in
 `~/.bashrc` or `~/.zshrc` to override behavior.
 
 This lists every variable a user would set, plus the ones cs exports for hooks
-and helper binaries. It deliberately excludes test seams and internal state —
-values cs computes and passes to itself, which change without notice and are
-documented in the code that reads them.
+and helper binaries. This page also lists the release verification test seams.
+Other test seams and internal state stay documented in the code that reads them.
 
 ## Installation, updates, and settings
 
@@ -57,10 +56,22 @@ Preserved files have these rules:
 
 ### Release verification and notes
 
-- Updates come from GitHub Releases with SHA-256 verification.
-- [minisign](https://jedisct1.github.io/minisign/) verification runs when both minisign and a release signature are available.
+- Updates authenticate `SHA256SUMS` with `SHA256SUMS.sig` using `ssh-keygen -Y verify`, then check the installer's SHA-256 digest.
+- Web installs apply the same check to the picker binary. Missing verification tools, assets, or manifest entries and failed checks refuse the download.
+- The verifier requires SSH signature support, the `release` identity, and the `cs-release` namespace. Embedded allowed signers and revoked public keys define which keys it trusts.
+- An update refuses an installer that drops any revoked key from the installed list. Minisign is not used.
 - `cs -update --check` prints the full pending release notes.
 - The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).
+
+The following environment variables are test seams for throwaway signing keys.
+They replace their embedded lists for both the updater and the installer.
+
+| Variable | File contents |
+|---|---|
+| `CS_RELEASE_SIGNERS_FILE` | An SSH `allowed_signers` file with entries such as `release namespaces="cs-release" ssh-ed25519 <public-key>`. |
+| `CS_RELEASE_REVOKED_FILE` | Revoked ed25519 public keys, one per line. An empty file means no revoked keys. The updater also uses this list for its carry-forward check. |
+
+Unset variables use `CS_RELEASE_SIGNERS` and `CS_RELEASE_REVOKED` from the installed release.
 
 ## Environment variables you set
 

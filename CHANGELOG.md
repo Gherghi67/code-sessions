@@ -7,6 +7,7 @@ All notable changes to cs are documented here. Release notes are also available 
 ## 2026.10.10
 
 ### Features
+- `cs -update` and the web installer require an SSH-signed `SHA256SUMS` manifest to verify installer and picker downloads. They use `ssh-keygen` instead of minisign.
 - The `cs-mermaid` mod ships a `show-me` skill (`/cs-mermaid:show-me`). Ask "show me", "draw it" or "how does X work" about a flow or a layout and the model answers with a picture beside a few lines of prose: a `graph TD` flowchart first, since the mod draws those, else a pseudocode, call-tree, file-tree or diff sketch. The description makes the model pick it unasked when an answer fits.
 - `memory-index-guard.sh refs` lists the memory entries that name a repo path, a `cs` verb or a `_cs_` identifier that no longer exists, one `dead:` line per reference, and `/wrap`'s memory pass runs it: at most five lines per sweep, the rest reported as a count. A file that lives outside the checkout is rewritten as an absolute path, not called gone. A worktree copy under `.claude/worktrees/` never keeps a reference alive.
 - A reference followed on the same line by ` (gone YYYY-MM-DD)`, as in `` `hooks/old.sh` (gone 2026-10-22) ``, is skipped by `refs` and left out of its count: the sweep writes that marker, with today's date, for a thing that no longer exists anywhere, and deletes a marker whose reference resolves again. Any other text between the reference and the marker, or a date in another form, does not suppress.
