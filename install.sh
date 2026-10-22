@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4465d9b3e8780b0f2172af64f0c68dab076bc2a229c1399dbbc9bcd9b65a008c  bin/cs"
+    "e70dbb440a2922f2074a017998d67f80b6b879e679318a89bc02810d148eb4e6  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "b4e9bae3e09b55cbd68703b894898794d2352902f1a1e8aec04d93cf1e2077eb  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -2299,6 +2299,15 @@ else
             fi
             ;;
     esac
+    # Twin: _statusline_chains_to_cs in lib/60-doctor.sh.
+    # Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
+    _statusline_chains_to_cs() {
+        local file rest
+        read -r file rest <<< "$1"
+        file="${file/#\~/$HOME}"
+        [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+    }
+
     # The rounded capsule caps are the bar's one private-use glyph, so the
     # renderer draws square ends until this machine has said its font has
     # them. Ask once, here, while the sample is still on screen; the answer
@@ -2306,7 +2315,8 @@ else
     # THE PATH IN SYNC with lib/70-statusline.sh and bin/cs-statusline).
     # Non-interactive installs write nothing and say how to answer later.
     _statusline_caps="${XDG_CONFIG_HOME:-$HOME/.config}/cs/statusline-caps"
-    if [ -n "$_register_statusline" ] && [ ! -f "$_statusline_caps" ]; then
+    if { [ -n "$_register_statusline" ] || _statusline_chains_to_cs "$_current_statusline"; } \
+        && [ ! -f "$_statusline_caps" ]; then
         if [ -t 0 ]; then
             printf '\n   %s\n' "$(printf '\xee\x82\xb6')cs-statusline$(printf '\xee\x82\xb4')"
             # An explicit y or n only: the registration question just above

@@ -1308,6 +1308,48 @@ test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct() {
         "a fresh context-pct holding no reading leaves the hedged WARN" || return 1
 }
 
+test_doctor_statusline_caps_follow_a_readable_bridge() {
+    # shellcheck disable=SC2088  # the literal path is the value under test
+    local home="$TEST_TMPDIR/bridge-home" cmd='~/bridge.sh --example'
+    local state output line expected
+    mkdir -p "$home/.claude" "$home/config/cs"
+    for state in unrelated missing chains rounded; do
+        # shellcheck disable=SC2088  # the literal path is the value under test
+        cmd='~/bridge.sh --example'
+        case "$state" in
+            unrelated) printf '%s\n' '#!/bin/sh' 'printf bar' > "$home/bridge.sh" ;;
+            missing)
+                # shellcheck disable=SC2088  # the literal path is the value under test
+                cmd='~/absent.sh --example'
+                ;;
+            chains) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh" ;;
+            rounded) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh"
+                printf '%s\n' on > "$home/config/cs/statusline-caps" ;;
+        esac
+        jq -n --arg cmd "$cmd" '{statusLine:{command:$cmd}}' > "$home/.claude/settings.json"
+        output=$(env -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME \
+            HOME="$home" XDG_CONFIG_HOME="$home/config" CS_CLAUDE_DIR="$home/.claude" \
+            "$CS_BIN" -doctor 2> "$TEST_TMPDIR/doctor.stderr") || true
+        line=$(printf '%s\n' "$output" | grep -E 'Statusline(:| caps:)' \
+            | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+        case "$state" in
+            unrelated|missing)
+                expected="  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline"
+                ;;
+            chains)
+                expected="  [ OK ] Statusline: $cmd chains to cs-statusline
+  [WARN] Statusline caps: square until answered — run: cs -statusline caps ask"
+                ;;
+            rounded)
+                expected="  [ OK ] Statusline: $cmd chains to cs-statusline
+  [ OK ] Statusline caps: rounded (this machine's font has the Powerline caps)"
+                ;;
+        esac
+        assert_eq "$expected" "$line" "$state bridge reports its status and caps accurately" || return 1
+        assert_eq '' "$(cat "$TEST_TMPDIR/doctor.stderr")" "$state bridge produces no stderr" || return 1
+    done
+}
+
 test_doctor_subagent_statusline_ok_when_registered_and_executable() {
     local fake_claude="$TEST_TMPDIR/ssl-claude"
     local fake_bin="$TEST_TMPDIR/ssl-bin"
@@ -1496,6 +1538,7 @@ test_doctor_no_warning_when_cs_tmux_session_managed() {
 }
 
 echo "Running doctor tests..."
+run_test test_doctor_statusline_caps_follow_a_readable_bridge
 run_test test_doctor_subcommand_exists
 run_test test_doctor_runs_default_checks_from_session
 run_test test_doctor_reports_pass_for_healthy_session
