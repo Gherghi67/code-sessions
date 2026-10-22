@@ -1,6 +1,55 @@
 # ABOUTME: Launch a cs session in Codex using a persistent, session-local thread binding.
 # ABOUTME: Refreshes CS context without a model turn and releases the shared lock on exit.
 
+# A separate named profile lets /clear reload the last rotation's /model choice
+# without changing defaults for other sessions. Reused per checkout, reset at each
+# launch; it contains only model settings, never authentication or permissions.
+_codex_rotation_profile_path() {  # session_dir
+    local key
+    key=$(python3 -I -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:20])' "$1") || return 1
+    printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
+}
+
+_codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
+    local profile tmp
+    profile=$(_codex_rotation_profile_path "$1") || return 1
+    mkdir -p "$(dirname "$profile")" || return 1
+    tmp=$(mktemp "$profile.XXXXXX") || return 1
+    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp" \
+        || ! mv "$tmp" "$profile"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    CS_CODEX_ROTATION_PROFILE=$profile
+}
+
+# A trusted project's .codex/config.toml outranks the profile, and command-line
+# overrides outrank both for the whole run, a later /model choice included. So
+# an explicit choice the project also sets stays on the command line, and every
+# other one seeds the profile, where Stop can replace it. What /clear reloads
+# regardless goes to the Stop hook as CS_CODEX_ROTATION_FIXED. When Codex cannot
+# say what the project sets, explicit choices stay on the command line.
+_codex_rotation_setup() {  # helper, codex_bin, session_dir; sets rotation_cli_* and the profile
+    local pinned plan
+    pinned=$(cs_run_child "$1" --codex-bin "$2" --cwd "$3" --project-config 2>/dev/null) || pinned=""
+    printf '%s' "$pinned" | jq -e 'type == "object"' >/dev/null 2>&1 || pinned=null
+    plan=$(jq -cn --argjson pinned "$pinned" \
+        --arg model "${CS_LAUNCH_MODEL:-}" --arg effort "${CS_LAUNCH_EFFORT:-}" '
+        reduce (["model", $model], ["model_reasoning_effort", $effort]) as [$key, $choice]
+            ({cli: {}, profile: {}, fixed: {}};
+            if $choice == "" then
+                if $pinned != null and ($pinned | has($key))
+                then .fixed[$key] = {value: $pinned[$key].value, source: $pinned[$key].file}
+                else . end
+            elif $pinned == null or ($pinned | has($key)) then
+                .cli[$key] = $choice | .fixed[$key] = {value: $choice, source: "the command line"}
+            else .profile[$key] = $choice end)') || return 1
+    rotation_cli_model=$(printf '%s' "$plan" | jq -r '.cli.model // ""') || return 1
+    rotation_cli_effort=$(printf '%s' "$plan" | jq -r '.cli.model_reasoning_effort // ""') || return 1
+    CS_CODEX_ROTATION_FIXED=$(printf '%s' "$plan" | jq -c '.fixed') || return 1
+    _codex_rotation_profile_prepare "$3" "$(printf '%s' "$plan" | jq -c '.profile')"
+}
+
 _codex_launch_error() {  # message
     printf 'Error: %s\n' "$1" >&2
     return 1
@@ -221,8 +270,8 @@ _launch_codex_bound() {
     esac
     # Automatic approval must refuse before preparation binds or spends context.
     # Native approval leaves policy to Codex and needs no automatic-review flag.
+    local codex_help=""
     if [ "${CS_LAUNCH_APPROVAL:-auto}" != native ]; then
-        local codex_help
         if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
             || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
             _codex_launch_error "Codex at $codex_bin must support --approve-for-me for automatic approval. Upgrade Codex, set CODEX_BIN to a supporting build, or use --native-approval to keep Codex's configured policy."
@@ -245,6 +294,24 @@ _launch_codex_bound() {
     if [ -e "$binding_file" ] || [ -L "$binding_file" ]; then
         _codex_thread_id_valid "$recorded_id" || {
             _codex_launch_error "Invalid Codex thread binding in $binding_file. Repair it before launching; no new thread was created."
+            return 1
+        }
+    fi
+
+    # File-backed named profiles are advertised as CONFIG_PROFILE_V2. Older
+    # builds keep their original launch behavior rather than getting a flag
+    # with different semantics. Native approval has not probed help yet. The
+    # profile is written before a thread is bound or a handoff spent, so a
+    # failure here leaves both for the retry.
+    local CS_CODEX_ROTATION_PROFILE="" CS_CODEX_ROTATION_FIXED="{}"
+    local rotation_cli_model="" rotation_cli_effort=""
+    export CS_CODEX_ROTATION_PROFILE CS_CODEX_ROTATION_FIXED
+    if [ -z "$codex_help" ]; then
+        codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) || codex_help=""
+    fi
+    if printf '%s\n' "$codex_help" | grep -F 'CONFIG_PROFILE_V2' >/dev/null; then
+        _codex_rotation_setup "$helper" "$codex_bin" "$session_dir" || {
+            _codex_launch_error "Could not prepare the scoped Codex model profile."
             return 1
         }
     fi
@@ -447,7 +514,18 @@ _launch_codex_bound() {
     # Signals and lock cleanup belong to the shared controller.
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
+    if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
+        # Only an explicit choice a project setting would shadow stays a CLI
+        # override; the profile carries the rest (_codex_rotation_setup).
+        local CS_LAUNCH_MODEL="$rotation_cli_model" CS_LAUNCH_EFFORT="$rotation_cli_effort"
+    else
+        printf '%s\n' 'cs: this Codex build cannot preserve /model choices across rotation; file-backed --profile support is required.'
+    fi
     _cs_native_launch_options codex || return 1
+    if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
+        local profile_name=${CS_CODEX_ROTATION_PROFILE##*/}
+        CS_NATIVE_LAUNCH_ARGS+=(--profile "${profile_name%.config.toml}")
+    fi
     # The run's approval, for its hooks and the automatic /clear's watcher: a
     # run with native approval never quits for a switch unattended.
     local CS_RUN_APPROVAL=auto

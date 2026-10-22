@@ -43,6 +43,7 @@ setup() {
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
     export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0
+    export CS_HELPER_PROJECT_CONFIG='{}' CS_HELPER_PROJECT_EXIT=0
     export CODEX_BIN="$TEST_TMPDIR/codex with spaces"
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/cs-codex-thread"
     export CS_BIN="$SCRIPT_DIR/../bin/cs"
@@ -53,7 +54,7 @@ if [ "${1:-}" = --help ]; then
     exit "$CS_CODEX_HELP_EXIT"
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
-env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
+env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_CODEX_ROTATION_FIXED=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
 if [ "$CS_CODEX_START" = 1 ]; then
     printf '{"session_id":"%s","source":"resume"}' "$CS_THREAD_ID" | "$CS_BIN" -codex-hook session-start
 fi
@@ -85,6 +86,11 @@ case " $* " in
         tail -n 1 "$CS_CODEX_TURNS" 2>/dev/null
         exit 0
         ;;
+    *' --project-config '*)
+        [ "$CS_HELPER_PROJECT_EXIT" -eq 0 ] || exit "$CS_HELPER_PROJECT_EXIT"
+        printf '%s\n' "$CS_HELPER_PROJECT_CONFIG"
+        exit 0
+        ;;
 esac
 printf '%s\n' "$@" > "$CS_HELPER_ARGS"
 printf 'called\n' >> "$CS_HELPER_COUNT"
@@ -103,6 +109,7 @@ teardown() {
     unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
+    unset CS_HELPER_PROJECT_CONFIG CS_HELPER_PROJECT_EXIT
     unset CS_TEST_PROBE
 }
 
@@ -186,6 +193,79 @@ test_native_approval_launches_without_automatic_approval_support() {
     grep -Fqx CS_RUN_APPROVAL=native "$CS_CODEX_ENV" \
         || { echo "  FAIL: the run's hooks are not told its approval is native"; return 1; }
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "native launch releases its lock" || return 1
+}
+
+test_rotation_profile_seeds_launch_choices_without_pinning_them() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    export CS_LAUNCH_MODEL='gpt-6-astra' CS_LAUNCH_EFFORT=xhigh
+    local output status=0 profile
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "$output" || return 1
+    grep -Fx -- '--profile' "$CS_CODEX_LOG" >/dev/null \
+        || { echo '  FAIL: no scoped profile to reload after /clear'; return 1; }
+    profile=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_file_contains "$HOME/.codex/$profile.config.toml" '^model = "gpt-6-astra"$' || return 1
+    assert_file_contains "$HOME/.codex/$profile.config.toml" '^model_reasoning_effort = "xhigh"$' || return 1
+    if grep -Eq -- '^--model$|^model_reasoning_effort=' "$CS_CODEX_LOG"; then
+        echo '  FAIL: fixed CLI overrides would shadow later /model choices on /clear'
+        return 1
+    fi
+    # A later launch starts from its own choices, rather than a stale rotation.
+    unset CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || return 1
+    assert_eq "" "$(cat "$HOME/.codex/$profile.config.toml")" 'new launch clears the old rotation defaults' || return 1
+    assert_eq '{}' "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" 'nothing fixed for the run' || return 1
+}
+
+_launched_with() {  # option, value
+    grep -A1 -Fx -- "$1" "$CS_CODEX_LOG" | tail -n 1 | grep -Fx -- "$2" >/dev/null
+}
+
+# A trusted project's .codex/config.toml outranks a --profile, so an explicit
+# choice the project also sets stays on the command line, and the run names
+# what /clear will reload for the Stop hook. The rest still seeds the profile.
+test_an_explicit_choice_a_trusted_project_sets_stays_on_the_command_line() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    export CS_HELPER_PROJECT_CONFIG='{"model":{"value":"gpt-project","file":"/p/.codex/config.toml"}}'
+    export CS_LAUNCH_MODEL='gpt-6-astra' CS_LAUNCH_EFFORT=xhigh
+    local output status=0 profile
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "$output" || return 1
+    _launched_with --model gpt-6-astra \
+        || { echo '  FAIL: the explicit model must outrank the project config'; return 1; }
+    if grep -Eq -- '^model_reasoning_effort=' "$CS_CODEX_LOG"; then
+        echo '  FAIL: an effort the project leaves alone belongs in the profile'
+        return 1
+    fi
+    profile=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_eq 'model_reasoning_effort = "xhigh"' "$(cat "$HOME/.codex/$profile.config.toml")" || return 1
+    assert_eq '{"model":{"value":"gpt-6-astra","source":"the command line"}}' \
+        "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" || return 1
+    # Without an explicit model the project's applies, and /clear reloads it.
+    unset CS_LAUNCH_MODEL
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || return 1
+    if grep -Fxq -- '--model' "$CS_CODEX_LOG"; then
+        echo '  FAIL: no model was asked for'
+        return 1
+    fi
+    assert_eq '{"model":{"value":"gpt-project","source":"/p/.codex/config.toml"}}' \
+        "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" || return 1
+}
+
+# When Codex cannot say which settings the project fixes, explicit choices
+# stay on the command line, where nothing outranks them.
+test_unknown_project_settings_keep_explicit_choices_on_the_command_line() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    export CS_HELPER_PROJECT_EXIT=1 CS_LAUNCH_MODEL='gpt-6-astra' CS_LAUNCH_EFFORT=xhigh
+    local output status=0 profile
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "$output" || return 1
+    _launched_with --model gpt-6-astra || { echo '  FAIL: explicit model dropped'; return 1; }
+    _launched_with -c 'model_reasoning_effort="xhigh"' || { echo '  FAIL: explicit effort dropped'; return 1; }
+    profile=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_eq "" "$(cat "$HOME/.codex/$profile.config.toml")" || return 1
+    assert_eq '{"model":{"value":"gpt-6-astra","source":"the command line"},"model_reasoning_effort":{"value":"xhigh","source":"the command line"}}' \
+        "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" || return 1
 }
 
 test_new_thread_binding_and_context() {
@@ -872,6 +952,45 @@ test_failed_direct_rotation_preserves_a_newer_pending_handoff() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$CS_CODEX_NEW_HANDOFF" '^status: unconsumed$' || return 1
 }
 
+# The scoped profile is written before a thread is bound or a handoff spent,
+# so a Codex home that refuses it leaves both for the retry.
+_refused_profile_spends_nothing() {
+    local intent output status
+    local binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    local h="$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF"
+    for intent in handoff fresh; do
+        _rotation_fixture unconsumed
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" "$intent" 2>&1) || status=$?
+        assert_eq 1 "$status" "$intent: $output" || return 1
+        assert_output_contains "$output" 'Could not prepare the scoped Codex model profile' || return 1
+        assert_file_contains "$h" '^status: unconsumed$' "$intent keeps the handoff" || return 1
+        assert_file_not_contains "$h" '^consumed_by:' || return 1
+        assert_eq "$ROTATION_HANDOFF" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" 2>/dev/null)" "$intent keeps the marker" || return 1
+        assert_eq "$ROTATION_OLD_THREAD" "$(cat "$binding")" "$intent keeps the binding" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "$intent prepares no thread" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "$intent starts no CLI" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
+    done
+    # A fresh start with nothing armed binds nothing either.
+    rm -f "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" "$h"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" fresh 2>&1) || status=$?
+    assert_eq 1 "$status" "fresh: $output" || return 1
+    assert_eq "$ROTATION_OLD_THREAD" "$(cat "$binding")" "fresh keeps the binding" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "fresh prepares no thread" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "fresh starts no CLI" || return 1
+}
+
+test_a_refused_rotation_profile_spends_nothing() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    local status=0
+    mkdir -p "$HOME/.codex" && chmod 500 "$HOME/.codex"
+    _refused_profile_spends_nothing || status=$?
+    chmod 700 "$HOME/.codex"
+    return "$status"
+}
+
 # Unattended or explicit resume never takes the rotation, so the marker goes.
 test_resume_disarms_an_armed_rotation() {
     _rotation_fixture unconsumed
@@ -889,6 +1008,9 @@ run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
 run_test test_failed_codex_help_cannot_advertise_compatibility
 run_test test_codex_help_prose_is_not_an_approval_option
+run_test test_rotation_profile_seeds_launch_choices_without_pinning_them
+run_test test_an_explicit_choice_a_trusted_project_sets_stays_on_the_command_line
+run_test test_unknown_project_settings_keep_explicit_choices_on_the_command_line
 run_test test_native_approval_launches_without_automatic_approval_support
 run_test test_fresh_acknowledgment_keeps_rotated_and_started_after_a_torn_tail
 run_test test_first_acknowledgment_keeps_started_after_a_torn_tail
@@ -908,6 +1030,7 @@ run_test test_direct_rotation_that_ran_behind_a_clear_only_hook_keeps_the_handof
 run_test test_direct_rotation_that_ran_behind_an_unfiltered_hook_logs_its_start
 run_test test_failed_rotation_with_unreadable_thread_history_keeps_the_handoff_consumed
 run_test test_failed_direct_rotation_preserves_a_newer_pending_handoff
+run_test test_a_refused_rotation_profile_spends_nothing
 run_test test_resume_disarms_an_armed_rotation
 run_test test_new_thread_binding_and_context
 run_test test_resume_refreshes_exact_thread
