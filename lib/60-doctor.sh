@@ -649,6 +649,27 @@ _doctor_check_claude_audit() {
     _doctor_ok "Audit: ${hooks_count} hooks, ${mcps_count} MCPs, ${perms_count} perm rules, ${env_count} env vars in settings.json"
 }
 
+# Twin: _statusline_chains_to_cs in install.sh.in.
+_statusline_chains_to_cs() {
+    local file rest
+    read -r file rest <<< "$1"
+    file="${file/#\~/$HOME}"
+    [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+}
+
+_doctor_statusline_caps_row() {
+    # The rounded caps are drawn only once this machine has answered
+    # the font question; until then the bar shows square ends.
+    local caps_file caps=""
+    caps_file="$(_statusline_caps_file)"
+    [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
+    case "$caps" in
+        on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
+        off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
+        *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
+    esac
+}
+
 _doctor_check_statusline() {
     local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
     local settings="$claude_dir/settings.json"
@@ -675,23 +696,15 @@ _doctor_check_statusline() {
             else
                 _doctor_fail "Statusline: registered as $cmd but the binary is missing or not executable"
             fi
-            # The rounded caps are drawn only once this machine has answered
-            # the font question; until then the bar shows square ends.
-            local caps_file caps=""
-            caps_file="$(_statusline_caps_file)"
-            [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
-            case "$caps" in
-                on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
-                off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
-                *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
-            esac
+            _doctor_statusline_caps_row
             ;;
         *)
             # A foreign command can chain to cs-statusline (a bridge that runs
             # the original), so inside a session the file itself decides: a
             # context-pct inside the heartbeat window means the gates are fed.
             # An empty or non-numeric file feeds no gate, however fresh.
-            local meta="${CLAUDE_SESSION_META_DIR:-}" now age reading=""
+            local meta="${CLAUDE_SESSION_META_DIR:-}" now age reading="" chains=""
+            _statusline_chains_to_cs "$cmd" && chains=1
             now=$(date +%s)
             [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
             case "$reading" in ''|*[!0-9]*) reading="" ;; esac
@@ -699,9 +712,12 @@ _doctor_check_statusline() {
                 age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
                 [ "$age" -ge 0 ] || age=0
                 _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
+            elif [ -n "$chains" ]; then
+                _doctor_ok "Statusline: $cmd chains to cs-statusline"
             else
                 _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating, unless it chains to cs-statusline"
             fi
+            [ -z "$chains" ] || _doctor_statusline_caps_row
             ;;
     esac
 }
