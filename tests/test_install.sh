@@ -265,6 +265,7 @@ EXPECT
         rc=0
         expect -f "$exp" > /dev/null 2>&1 || rc=$?
         assert_eq 0 "$rc" "$state bridge install completes" || return 1
+        # shellcheck disable=SC2088  # the literal path is the value under test
         assert_eq '~/bridge.sh --example' \
             "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" \
             "$state bridge registration stays unchanged" || return 1

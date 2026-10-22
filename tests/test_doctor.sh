@@ -1309,14 +1309,19 @@ test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct() {
 }
 
 test_doctor_statusline_caps_follow_a_readable_bridge() {
+    # shellcheck disable=SC2088  # the literal path is the value under test
     local home="$TEST_TMPDIR/bridge-home" cmd='~/bridge.sh --example'
     local state output line expected
     mkdir -p "$home/.claude" "$home/config/cs"
     for state in unrelated missing chains rounded; do
+        # shellcheck disable=SC2088  # the literal path is the value under test
         cmd='~/bridge.sh --example'
         case "$state" in
             unrelated) printf '%s\n' '#!/bin/sh' 'printf bar' > "$home/bridge.sh" ;;
-            missing) cmd='~/absent.sh --example' ;;
+            missing)
+                # shellcheck disable=SC2088  # the literal path is the value under test
+                cmd='~/absent.sh --example'
+                ;;
             chains) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh" ;;
             rounded) printf '%s\n' on > "$home/config/cs/statusline-caps" ;;
         esac
