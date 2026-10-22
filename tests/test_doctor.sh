@@ -1882,10 +1882,22 @@ EOF
 test_doctor_reports_the_diagram_tombstone_as_off() {
     local row
     unset CS_NO_FUNCTION_HOOKS
-    printf '<!-- cs:mermaid-diagrams -->\n\n' > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
+    # shellcheck source=lib/35-claudemd.sh
+    source "$SCRIPT_DIR/../lib/35-claudemd.sh"
+    _emit_session_claude_md | sed '/^## Diagrams$/d; /^Mermaid flowchart fences /d; /^To opt out,.*cs:mermaid-diagrams/d' \
+        > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
     row=$(_doctor_diagrams_row)
     assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
         "the diagram tombstone has no instruction" || return 1
+    cat >> "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
+## Additional instructions
+
+Keep a record of the session outcome.
+EOF
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "an unmarked heading ends the diagram section" || return 1
+    printf '<!-- cs:mermaid-diagrams -->\n\n' > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
     cat >> "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
 ## Diagrams
 

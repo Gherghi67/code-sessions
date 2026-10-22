@@ -896,7 +896,8 @@ _doctor_check_hook_authority() {
     local dir="${CLAUDE_SESSION_DIR:-}"
     if [ -n "$dir" ] && [ -f "$dir/CLAUDE.local.md" ] && awk '
         /^<!-- cs:mermaid-diagrams -->$/ { section=1; next }
-        /^<!-- cs:/ { section=0 }
+        section == 1 && /^## Diagrams$/ { section=2; next }
+        /^<!-- cs:/ || /^## / { section=0 }
         section && /[^[:space:]]/ && !/^[[:space:]]*(#|<!--)/ { prose=1 }
         END { exit !prose }
     ' "$dir/CLAUDE.local.md"; then

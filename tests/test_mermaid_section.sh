@@ -15,6 +15,10 @@ test_new_session_has_the_diagram_instruction() {
     assert_file_contains "$file" '^## Diagrams$' "the instruction has its heading" || return 1
     assert_file_contains "$file" '^Mermaid flowchart fences' \
         "the session tells the model that flowchart fences draw" || return 1
+    assert_eq '<!-- cs:mermaid-diagrams -->' "$(grep '^<!-- cs:' "$file" | tail -1)" \
+        "the diagram section is the last managed block" || return 1
+    assert_eq '## Diagrams' "$(grep '^## ' "$file" | tail -1)" \
+        "the diagram section follows every other heading" || return 1
     assert_eq 'Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.' \
         "$(grep '^Mermaid flowchart fences' "$file")" "the diagram instruction is verbatim" || return 1
 }

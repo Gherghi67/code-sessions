@@ -345,8 +345,6 @@ Treat these files as a lab notebook - document as you go, not just at the end.
 
 EOF
     _emit_session_commits_block
-    echo
-    _emit_mermaid_diagrams_block
     cat << 'EOF'
 
 ## Wrap-up Command
@@ -380,6 +378,8 @@ EOF
     _emit_memory_note_block
     echo
     _emit_wrap_cues_block
+    echo
+    _emit_mermaid_diagrams_block
 }
 
 # Write the session protocol template to the given directory (create path).
