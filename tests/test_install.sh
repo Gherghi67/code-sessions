@@ -2337,11 +2337,10 @@ test_install_removes_stale_opposite_platform_tui() {
     # under test is that the opposite-platform binary is removed regardless.
 }
 
-# Run install.sh's WEB path with the cs-tui download stubbed, so the checksum
-# gate can be driven into each of its "cannot verify" states. Echoes the bin dir.
+# Run install.sh's WEB path against signed local release assets. Echoes the bin dir.
 # The payload (raw.githubusercontent files) is served from this checkout, so
 # it passes the installer's own sha256 check and the run reaches cs-tui.
-# CS_TEST_SHA_FETCH=fail   -> the .sha256 sibling 404s
+# CS_TEST_SHA_FETCH=fail   -> the manifest fetch fails
 # CS_TEST_SHA_TOOL=fail    -> the digest tool exists but errors, so no digest
 # The home starts with the record "checkout /work/cs" unless the caller wrote
 # one into $TEST_TMPDIR/tui-verify-<tag>/home first.
@@ -2355,7 +2354,27 @@ _install_tui_with_broken_verification() {  # tag
         real_digest="$(command -v shasum) -a 256"
     fi
     mkdir -p "$bindir" "$sandbox/home/.claude/hooks/cs"
-    cp "$INSTALL_SH" "$sandbox/install.sh"
+    ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$sandbox/key"
+    ssh-keygen -q -t ed25519 -N '' -C other@example.com -f "$sandbox/other"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$sandbox/key.pub")" > "$sandbox/signers"
+    # The installer under test embeds the throwaway key as its trust list.
+    sed "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$sandbox/signers")'|" "$INSTALL_SH" > "$sandbox/install.sh"
+    printf 'stub-binary\n' > "$sandbox/binary"
+    local asset os arch digest key="$sandbox/key"
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch=$(uname -m)
+    [ "$arch" != x86_64 ] || arch=amd64
+    asset="cs-tui-$os-$arch"
+    digest=$(shasum -a 256 "$sandbox/binary" | awk '{print $1}')
+    [ "${CS_TEST_MANIFEST:-}" != missing-entry ] || asset=cs-tui-other
+    printf '%s  %s\n' "$digest" "$asset" > "$sandbox/SHA256SUMS"
+    [ "${CS_TEST_MANIFEST:-}" != wrong-key ] || key="$sandbox/other"
+    # install.sh verifies in the namespace of the release its bin/cs names.
+    local namespace
+    namespace="cs-release-v$(grep -m1 '^VERSION=' "$repo/bin/cs" | cut -d'"' -f2)"
+    [ "${CS_TEST_MANIFEST:-}" != other-tag ] || namespace=cs-release-v0.0.0
+    ssh-keygen -Y sign -f "$key" -n "$namespace" "$sandbox/SHA256SUMS" > "$sandbox/sign.log" 2>&1
+    [ "${CS_TEST_MANIFEST:-}" != edited ] || printf '\n' >> "$sandbox/SHA256SUMS"
     # An earlier install's record, which only a picker this install places
     # may replace.
     [ -f "$sandbox/home/.claude/hooks/cs/.tui-origin" ] \
@@ -2377,14 +2396,16 @@ case "\$url" in
         cp "$repo/\$rel" "\$out"
         exit 0
         ;;
-    *.sha256) [ "\${CS_TEST_SHA_FETCH:-ok}" = "fail" ] && exit 22 ;;
-    *.minisig) [ "\${CS_TEST_SIG_FETCH:-fail}" = "fail" ] && exit 22 ;;
+    */SHA256SUMS)
+        [ "\${CS_TEST_SHA_FETCH:-ok}" != fail ] || exit 22
+        cp "$sandbox/SHA256SUMS" "\$out"; exit \$? ;;
+    */SHA256SUMS.sig)
+        [ "\${CS_TEST_MANIFEST:-}" != missing-sig ] || exit 22
+        cp "$sandbox/SHA256SUMS.sig" "\$out"; exit \$? ;;
+    *.sha256|*.minisig) exit 22 ;;
 esac
 if [ -n "\$out" ]; then
-    case "\$out" in
-        *.sha256) printf 'deadbeef  x\n' > "\$out" ;;
-        *)    printf 'stub-binary\n' > "\$out" ;;
-    esac
+    cp "$sandbox/binary" "\$out"
 fi
 exit 0
 STUB
@@ -2402,35 +2423,17 @@ if [ ! -f "\$last" ]; then
     exec $real_digest
 fi
 [ "\${CS_TEST_SHA_TOOL:-ok}" = "fail" ] && exit 1
-printf '%s  %s\n' deadbeef "\$last"
+exec $real_digest "\$last"
 STUB
         chmod +x "$bindir/$t"
     done
     chmod +x "$bindir/curl"
-
-    # Reproduces the one minisign behaviour under test: a -m target that is not
-    # there fails, as real minisign does ("No such file or directory", exit 2).
-    cat > "$bindir/minisign" <<'STUB'
-#!/usr/bin/env bash
-m=""; prev=""
-for a in "$@"; do
-    case "$prev" in -m) m="$a" ;; esac
-    prev="$a"
-done
-[ -f "$m" ] || exit 2
-exit 0
-STUB
-    chmod +x "$bindir/minisign"
 
     PATH="$bindir:$PATH" HOME="$sandbox/home" bash "$sandbox/install.sh" \
         > "$sandbox/install.out" 2>&1
     printf '%s' "$sandbox/home/.local/bin"
 }
 
-# A gate that cannot verify must not pass. lib/20-update.sh's verify_checksum
-# says so in as many words ("Fail closed: a verification gate that can't verify
-# must not pass"); install.sh reimplemented the same check inline and skipped
-# the whole block when the .sha256 could not be fetched, keeping the binary.
 test_tui_removed_when_checksum_cannot_be_fetched() {
     local bin
     bin=$(CS_TEST_SHA_FETCH=fail _install_tui_with_broken_verification fetch)
@@ -2461,13 +2464,8 @@ test_tui_removed_when_digest_cannot_be_computed() {
     done
 }
 
-# The checksum gate removes a binary it could not verify; the signature block
-# below it then ran minisign against that removed path. minisign fails on a file
-# that is not there, so the install blamed the release signature for a removal
-# the checksum gate had already reported and explained. Both diagnostics claimed
-# a different cause, and only one of them happened.
 test_tui_signature_not_blamed_for_a_checksum_gate_removal() {
-    CS_TEST_SHA_TOOL=fail CS_TEST_SIG_FETCH=ok \
+    CS_TEST_SHA_TOOL=fail \
         _install_tui_with_broken_verification sigblame >/dev/null
     local out
     out=$(cat "$TEST_TMPDIR/tui-verify-sigblame/install.out")
@@ -2475,6 +2473,24 @@ test_tui_signature_not_blamed_for_a_checksum_gate_removal() {
         "the checksum gate must still say why it removed the binary" || return 1
     assert_output_not_contains "$out" "signature verification failed" \
         "must not report a signature failure for a binary already removed" || return 1
+}
+
+test_tui_requires_an_authenticated_manifest_entry() {
+    local bin fault out expected
+    bin=$(_install_tui_with_broken_verification authenticated)
+    assert_eq 'stub-binary' "$(cat "$bin/cs-tui" 2>/dev/null)" 'signed binary must be installed' || return 1
+    for fault in wrong-key other-tag edited missing-entry missing-sig; do
+        bin=$(CS_TEST_MANIFEST="$fault" _install_tui_with_broken_verification "$fault")
+        assert_not_exists "$bin/cs-tui" "$fault binary is removed" || return 1
+        out=$(cat "$TEST_TMPDIR/tui-verify-$fault/install.out")
+        case "$fault" in
+            wrong-key|other-tag|edited) expected='cs-tui signature verification failed -- removed' ;;
+            missing-entry) expected='cs-tui could not be verified (manifest entry or digest unavailable) -- removed' ;;
+            missing-sig) expected='cs-tui could not be verified (manifest or signature unavailable) -- removed' ;;
+        esac
+        assert_eq "   ▲ $expected" "$(printf '%s\n' "$out" | grep -- '-- removed')" "$fault warning" || return 1
+        assert_eq 'checkout /work/cs' "$(cat "$TEST_TMPDIR/tui-verify-$fault/home/.claude/hooks/cs/.tui-origin")" 'refused binary keeps origin' || return 1
+    done
 }
 
 # A verified release asset is recorded as a release picker, which cs -doctor
@@ -3355,6 +3371,7 @@ run_test test_install_preserves_foreign_statusline
 run_test test_uninstall_removes_statusline
 run_test test_install_removes_stale_opposite_platform_tui
 run_test test_tui_removed_when_checksum_cannot_be_fetched
+run_test test_tui_requires_an_authenticated_manifest_entry
 run_test test_tui_removed_when_digest_cannot_be_computed
 run_test test_tui_signature_not_blamed_for_a_checksum_gate_removal
 run_test test_web_install_records_a_release_picker

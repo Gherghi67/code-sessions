@@ -85,10 +85,9 @@ test_verify_checksum_catches_mismatch() {
     echo "hello world" > "$tmpdir/test.txt"
     echo "0000000000000000000000000000000000000000000000000000000000000000  test.txt" > "$tmpdir/test.txt.sha256"
 
-    local result
     # source from a temp file: bash 3.2 (macOS stock) does not reliably define a
     # function via `source <(...)` process substitution.
-    grep -A 15 '^verify_checksum()' "$CS_BIN" > "$tmpdir/_vc.sh"
+    cp "$SCRIPT_DIR/../lib/20-update.sh" "$tmpdir/_vc.sh"
     if ( source "$tmpdir/_vc.sh"; verify_checksum "$tmpdir/test.txt" "$tmpdir/test.txt.sha256" ); then
         rm -rf "$tmpdir"
         echo "  FAIL: verify_checksum should reject mismatched checksum"
@@ -113,7 +112,9 @@ test_verify_checksum_accepts_match() {
         return 77
     fi
 
-    grep -A 15 '^verify_checksum()' "$CS_BIN" > "$tmpdir/_vc.sh"
+    awk '{print $1 "  test.txt"}' "$tmpdir/test.txt.sha256" > "$tmpdir/manifest"
+    mv "$tmpdir/manifest" "$tmpdir/test.txt.sha256"
+    cp "$SCRIPT_DIR/../lib/20-update.sh" "$tmpdir/_vc.sh"
     if ! ( source "$tmpdir/_vc.sh"; verify_checksum "$tmpdir/test.txt" "$tmpdir/test.txt.sha256" ); then
         rm -rf "$tmpdir"
         echo "  FAIL: verify_checksum should accept matching checksum"
@@ -121,20 +122,6 @@ test_verify_checksum_accepts_match() {
     fi
 
     rm -rf "$tmpdir"
-}
-
-test_do_update_downloads_checksum() {
-    if ! grep -q 'install.sh.sha256' "$CS_BIN"; then
-        echo "  FAIL: do_update should download install.sh.sha256"
-        return 1
-    fi
-}
-
-test_signature_is_optional() {
-    if ! grep -A 1 'install.sh.minisig' "$CS_BIN" | grep -q '2>/dev/null'; then
-        echo "  FAIL: minisig download should be best-effort"
-        return 1
-    fi
 }
 
 # ============================================================================
@@ -381,33 +368,58 @@ test_check_falls_back_when_fetch_fails() {
     assert_output_contains "$out" "releases" "fallback names the releases page" || return 1
 }
 
-# cs -update against a release whose optional install.sh.minisig asset is
-# missing. The stub curl answers the version probe with v2026.99.3, serves the
-# fixture installer and its checksum, and 404s (exit 22) everything else: the
-# .minisig and the changelog. The fixture installer installs a cs carrying the
-# new VERSION, as the real one does, prints a marker and exits with $2, so a
-# run that reached it says so. It carries a token unique to the run, which
-# _update_leftovers looks for. Prints the combined output; the exit status is
-# left in $TEST_TMPDIR/update-rc.
-_update_with_missing_minisig() {  # label, installer-exit-status
+# The transport serves local release assets; all authentication uses real keys.
+# The served release is v2026.99.3 unless CS_TEST_REMOTE_VERSION names
+# another; its manifest is signed in that release's namespace.
+_update_with_manifest() {  # label, installer-exit-status, optional fault
     local stub="$TEST_TMPDIR/$1-stub" home="$TEST_TMPDIR/$1-home" tmp="$TEST_TMPDIR/$1-tmp"
-    local installer="$TEST_TMPDIR/$1-install.sh" digest
+    local installer="$TEST_TMPDIR/$1-install.sh" digest fault="${3:-}" revoked=''
+    local remote="${CS_TEST_REMOTE_VERSION:-2026.99.3}" ref="v${CS_TEST_REMOTE_VERSION:-2026.99.3}"
     mkdir -p "$stub" "$home" "$tmp"
+    ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$stub/key"
+    ssh-keygen -q -t ed25519 -N '' -C other@example.com -f "$stub/other"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$stub/key.pub")" > "$stub/signers"
+    : > "$stub/revoked"
+    case "$fault" in
+        revoked-kept|revoked-lost)
+            cat "$stub/other.pub" > "$stub/revoked"
+            [ "$fault" != revoked-kept ] || revoked=$(cat "$stub/other.pub")
+            ;;
+    esac
+    [ "$fault" != wrong-ref ] || ref=main
     cat > "$installer" << INSTALLER
 #!/usr/bin/env bash
 # cs-update-fixture-$1-$$-$RANDOM$RANDOM
+CS_DEFAULT_REF=$ref
+CS_RELEASE_REVOKED='$revoked'
 mkdir -p "\$HOME/.local/bin"
-printf 'VERSION="2026.99.3"\n' > "\$HOME/.local/bin/cs"
+printf 'VERSION="$remote"\n' > "\$HOME/.local/bin/cs"
 echo "fixture installer ran at \$CS_INSTALL_REF"
 exit $2
 INSTALLER
+    case "$fault" in
+        duplicate-revoked) printf "CS_RELEASE_REVOKED=''\n" >> "$installer" ;;
+        executable-revoked) printf 'CS_RELEASE_REVOKED=$(touch "%s/executed")\n' "$stub" >> "$installer" ;;
+    esac
     digest=$(shasum -a 256 "$installer" | awk '{print $1}')
     [ -z "${CS_TEST_BAD_DIGEST:-}" ] || digest="0000000000000000000000000000000000000000000000000000000000000000"
+    printf '%s  install.sh\n' "$digest" > "$stub/SHA256SUMS"
+    case "$fault" in
+        missing-entry) printf '%s  other.sh\n' "$digest" > "$stub/SHA256SUMS" ;;
+        duplicate-entry) printf '%s  install.sh\n' "$digest" >> "$stub/SHA256SUMS" ;;
+    esac
+    local key="$stub/key" namespace="cs-release-v$remote"
+    [ "$fault" != wrong-key ] || key="$stub/other"
+    [ "$fault" != other-tag ] || namespace=cs-release-v2026.99.2
+    ssh-keygen -Y sign -f "$key" -n "$namespace" "$stub/SHA256SUMS" > "$stub/sign.log" 2>&1
+    [ "$fault" != edited ] || printf '\n' >> "$stub/SHA256SUMS"
+    [ "$fault" != missing-sig ] || rm "$stub/SHA256SUMS.sig"
+    [ "$fault" != missing-manifest ] || rm "$stub/SHA256SUMS"
     cat > "$stub/curl" << STUB
 #!/usr/bin/env bash
 case "\$*" in
     *" -w "*)
-        printf '%s' "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3"
+        printf '%s' "https://example.com/releases/tag/v$remote"
         exit 0
         ;;
 esac
@@ -418,14 +430,21 @@ for a in "\$@"; do
     prev="\$a"
 done
 case "\$*" in
-    *"/v2026.99.3/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
-    *"/v2026.99.3/install.sh.sha256 -o "*) printf '%s  install.sh\n' "$digest" > "\$out"; exit 0 ;;
+    *"/v$remote/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
+    *"/v$remote/SHA256SUMS -o "*) cp "$stub/SHA256SUMS" "\$out"; exit \$? ;;
+    *"/v$remote/SHA256SUMS.sig -o "*) cp "$stub/SHA256SUMS.sig" "\$out"; exit \$? ;;
 esac
 exit 22
 STUB
     chmod +x "$stub/curl"
+    # The cs under test is a copy whose embedded trust lists name the
+    # throwaway key: the lists are literals, nothing else can replace them.
+    sed -e "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$stub/signers")'|" \
+        -e "s|^CS_RELEASE_REVOKED=.*|CS_RELEASE_REVOKED='$(cat "$stub/revoked")'|" "$CS_BIN" > "$stub/cs"
+    chmod +x "$stub/cs"
     local rc=0 out
-    out=$(HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$CS_BIN" -update 2>&1) || rc=$?
+    out=$(HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$stub/cs" -update 2>&1) || rc=$?
+    assert_not_exists "$stub/executed" 'revocation data never executes' || return 1
     printf '%s' "$rc" > "$TEST_TMPDIR/update-rc"
     printf '%s\n' "$out"
 }
@@ -445,21 +464,49 @@ _update_leftovers() {  # label
     done
 }
 
-# The .minisig asset is optional: a release without one is verified by its
-# checksum alone, and the update goes on to run the installer.
-test_update_runs_the_installer_when_the_minisig_asset_is_missing() {
+test_update_authenticates_the_installer() {
     local out
-    out=$(_update_with_missing_minisig nosig 0)
+    out=$(_update_with_manifest signed 0)
     assert_eq "0" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update exit status" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Verified" "the checksum gate passed" || return 1
     assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the verified installer ran, pinned to the tag" || return 1
+    local fault expected
+    for fault in missing-sig missing-manifest wrong-key other-tag edited missing-entry duplicate-entry wrong-ref revoked-lost duplicate-revoked executable-revoked; do
+        out=$(_update_with_manifest "$fault" 0 "$fault")
+        assert_eq 1 "$(cat "$TEST_TMPDIR/update-rc")" "$fault refuses the update" || { echo "$out"; return 1; }
+        assert_output_not_contains "$out" "fixture installer ran" "$fault never executes installer" || return 1
+        case "$fault" in
+            missing-sig) expected='Error: Failed to download release manifest signature.' ;;
+            missing-manifest) expected='Error: Failed to download release manifest.' ;;
+            wrong-key|other-tag|edited) expected='Error: Release manifest signature verification failed. Update aborted.' ;;
+            wrong-ref) expected='Error: Downloaded installer is not pinned to v2026.99.3. Update aborted.' ;;
+            missing-entry|duplicate-entry) expected='Error: Checksum verification failed. Update aborted.' ;;
+            revoked-lost) expected="Error: Release dropped revoked key: $(awk '{print $1, $2}' "$TEST_TMPDIR/$fault-stub/other.pub")" ;;
+            *) expected='Error: Malformed CS_RELEASE_REVOKED in downloaded installer.' ;;
+        esac
+        assert_eq "$expected" "$(printf '%s\n' "$out" | tail -n 1)" "$fault diagnostic" || return 1
+    done
+    out=$(_update_with_manifest revoked-kept 0 revoked-kept)
+    assert_eq 0 "$(cat "$TEST_TMPDIR/update-rc")" 'revocations carried forward permit update' || { echo "$out"; return 1; }
+}
+
+# A release older than the installed cs is refused before anything is run,
+# however well it is signed: "latest" pointing at an old tag is not an update.
+test_update_refuses_a_downgrade() {
+    local out installed
+    installed=$(grep -m1 '^VERSION=' "$CS_BIN" | cut -d'"' -f2)
+    out=$(CS_TEST_REMOTE_VERSION=2000.1.1 _update_with_manifest downgrade 0)
+    assert_eq 1 "$(cat "$TEST_TMPDIR/update-rc")" 'a downgrade refuses the update' || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "fixture installer ran" 'the older installer never runs' || return 1
+    assert_eq "Error: Release v2000.1.1 is older than the installed cs $installed. Update aborted." \
+        "$(printf '%s\n' "$out" | tail -n 1)" 'downgrade diagnostic' || return 1
 }
 
 # The update's temp dir (installer, checksum, signature) is removed however the
 # update ends: here the installer itself fails, after verification passed.
 test_update_removes_its_temp_dir_when_the_installer_fails() {
     local out
-    out=$(_update_with_missing_minisig failinst 3)
+    out=$(_update_with_manifest failinst 3)
     assert_eq "3" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update passes the installer's failure on" || { echo "$out"; return 1; }
     assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the installer was reached" || return 1
     assert_eq "" "$(_update_leftovers failinst)" "no temp copy of the installer left behind" || return 1
@@ -468,7 +515,7 @@ test_update_removes_its_temp_dir_when_the_installer_fails() {
 # And when it ends on a refused checksum.
 test_update_removes_its_temp_dir_when_the_checksum_is_refused() {
     local out
-    out=$(CS_TEST_BAD_DIGEST=1 _update_with_missing_minisig badsum 0)
+    out=$(CS_TEST_BAD_DIGEST=1 _update_with_manifest badsum 0)
     assert_eq "1" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update refuses the installer" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Checksum verification failed" "the refusal is reported" || return 1
     assert_output_not_contains "$out" "fixture installer ran" "the refused installer never runs" || return 1
@@ -744,8 +791,6 @@ run_test test_update_auto_is_unknown
 run_test test_verify_checksum_present_in_source
 run_test test_verify_checksum_catches_mismatch
 run_test test_verify_checksum_accepts_match
-run_test test_do_update_downloads_checksum
-run_test test_signature_is_optional
 run_test test_span_extracts_versions_above_installed
 run_test test_span_empty_when_up_to_date
 run_test test_summaries_cap_and_collapse
@@ -755,7 +800,8 @@ run_test test_render_flushes_headers_for_bullet_first_sections
 run_test test_render_width_floor_survives_tiny_terminals
 run_test test_check_shows_rendered_span
 run_test test_check_falls_back_when_fetch_fails
-run_test test_update_runs_the_installer_when_the_minisig_asset_is_missing
+run_test test_update_authenticates_the_installer
+run_test test_update_refuses_a_downgrade
 run_test test_update_removes_its_temp_dir_when_the_installer_fails
 run_test test_update_removes_its_temp_dir_when_the_checksum_is_refused
 run_test test_launch_with_a_fresh_cache_and_no_update_skips_the_network
