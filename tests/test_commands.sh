@@ -107,6 +107,8 @@ test_sweep_runs_the_memory_index_guard() {
         assert_file_contains "$SWEEP_PASS" "bash ~/.claude/hooks/cs/memory-index-guard.sh $sub" \
             "the sweep pass must run the deployed guard's $sub" || return 1
     done
+    assert_file_contains "$SWEEP_PASS" 'bash ~/.claude/hooks/cs/memory-index-guard.sh refs' \
+        "the sweep pass must run the deployed guard's refs" || return 1
     assert_file_contains "$SCRIPT_DIR/../lib/01-manifests.sh" "^    memory-index-guard.sh$" \
         "the guard must ship with the hooks for that path to exist" || return 1
 }
@@ -263,6 +265,16 @@ test_sweep_names_the_entry_each_new_one_supersedes() {
     # one instead, so the answer is dead output unless that report carries it too.
     assert_file_contains "$COMMANDS_DIR/wrap.md" "supersedes: none" \
         "wrap.md's combined report must carry the supersedes answer the sweep decided" || return 1
+}
+
+test_sweep_bounds_the_dead_reference_pass() {
+    # The first sweep after the check ships meets a backlog; unbounded, it is a
+    # bulk edit of durable memory. A file in another repo or under ~/.claude is
+    # not gone, and a "gone" sentence about it would be a written falsehood.
+    assert_file_contains "$SWEEP_PASS" "at most five" \
+        "the sweep pass must bound the dead-reference work per sweep" || return 1
+    assert_file_contains "$SWEEP_PASS" "outside this checkout" \
+        "the sweep pass must distinguish a file elsewhere from a file that is gone" || return 1
 }
 
 test_sweep_states_filename_convention() {
@@ -528,6 +540,7 @@ run_test test_checkpoint_quotes_label_and_stops_on_failure
 run_test test_sweep_supersedes_stale_entries
 run_test test_sweep_stamps_measured_claims_with_their_provenance
 run_test test_sweep_names_the_entry_each_new_one_supersedes
+run_test test_sweep_bounds_the_dead_reference_pass
 run_test test_sweep_states_filename_convention
 run_test test_sweep_scopes_when_not_to_write
 run_test test_sweep_states_memory_pointer_format

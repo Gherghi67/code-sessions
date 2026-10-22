@@ -187,7 +187,7 @@ test_unknown_subcommand_prints_usage() {
     local out rc=0
     out=$(_guard verify 2>&1) || rc=$?
     assert_eq 2 "$rc" "an unknown subcommand must fail" || return 1
-    assert_output_contains "$out" "usage: memory-index-guard.sh snapshot|check|restore" \
+    assert_output_contains "$out" "usage: memory-index-guard.sh snapshot|check|restore|refs" \
         "the error must list the subcommands" || return 1
 }
 
@@ -503,7 +503,7 @@ test_every_subcommand_refuses_while_git_tracks_a_control_file() {
     git -C "$SESSION" init -q
     git -C "$SESSION" add .cs/local/memory-index.snapshot
     before=$(cat "$INDEX")
-    for sub in snapshot check restore; do
+    for sub in snapshot check restore refs; do
         rc=0
         out=$(_guard "$sub" 2>&1) || rc=$?
         assert_eq 2 "$rc" "$sub refuses" || return 1
@@ -548,6 +548,602 @@ MEMORY.md: 1/196 lines" "$out" "$b: the report, in byte order" || return 1
     done
 }
 
+test_refs_reports_dead_paths_once_in_sorted_order() {
+    _guard_session
+    printf '%s\n' 'Read `hooks/gone.sh`, `README.md`, and `hooks/gone.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    printf '%s\n' 'Also `hooks/gone.sh`.' > "$SESSION/.cs/memory/project_beta.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: README.md
+dead: .cs/memory/feedback_alpha.md: hooks/gone.sh
+dead: .cs/memory/project_beta.md: hooks/gone.sh' "$out" \
+        "refs names each dead path once per entry, in sorted order" || return 1
+    assert_eq 0 "$rc" "dead references are advisory" || return 1
+}
+
+test_refs_reports_a_verb_absent_from_the_dispatcher() {
+    local PATH=/bin:/usr/bin
+    _guard_session
+    mkdir -p "$SESSION/bin"
+    printf '%s\n' 'case "$1" in' '    -present) ;;' 'esac' > "$SESSION/bin/cs"
+    printf '%s\n' 'Run `cs -absent`.' > "$SESSION/.cs/memory/project_beta.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/project_beta.md: cs -absent' "$out" \
+        "refs names a verb the dispatcher does not contain" || return 1
+    assert_eq 0 "$rc" "a dead verb is advisory" || return 1
+}
+
+test_refs_counts_live_paths_identifiers_and_verbs_once() {
+    local PATH=/bin:/usr/bin
+    _guard_session
+    rm "$INDEX"
+    mkdir -p "$SESSION/bin" "$SESSION/lib" "$SESSION/hooks"
+    printf '%s\n' 'case "$1" in' '    -present) ;;' 'esac' > "$SESSION/bin/cs"
+    printf '%s\n' '_cs_present() { :; }' > "$SESSION/lib/helpers.sh"
+    : > "$SESSION/hooks/present.sh"
+    printf '%s\n' 'Use `hooks/present.sh`, `_cs_present` and `cs -present`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    printf '%s\n' 'Also `_cs_present` and `hooks/present.sh`.' \
+        > "$SESSION/.cs/memory/project_beta.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 3 references in 2 entries, none dead' "$out" \
+        "refs counts distinct live references across entries" || return 1
+    assert_eq 0 "$rc" "live references pass" || return 1
+    mv "$SESSION/lib/helpers.sh" "$SESSION/helpers.sh"
+    rmdir "$SESSION/lib"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 3 references in 2 entries, none dead' "$out" \
+        "identifier lookup uses the root when lib is absent" || return 1
+    rm "$SESSION/helpers.sh"
+    mkdir -p "$SESSION/.git"
+    printf '%s\n' '_cs_present' > "$SESSION/.git/identifier"
+    printf '%s\n' '_cs_present' > "$SESSION/.cs/local/identifier"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_present
+dead: .cs/memory/project_beta.md: _cs_present' "$out" \
+        "a deleted definition cannot match memory, local state or git metadata" || return 1
+    mkdir -p "$SESSION/lib"
+    printf '%s\n' 'cs_present() { :; }' > "$SESSION/hooks/helper.sh"
+    printf '%s\n' 'Use `cs_present` and `hooks/`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    : > "$SESSION/.cs/memory/project_beta.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "cs identifiers and directories are live references" || return 1
+    : > "$SESSION/cs_notes.md"
+    printf '%s\n' 'Read `cs_notes.md`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a path starting with cs_ still resolves as a path" || return 1
+    : > "$SESSION/hooks/topic:one.md"
+    printf '%s\n' 'Read `hooks/topic:one.md`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a colon inside a relative path does not make it a URL" || return 1
+    printf '%s\n' 'Use `_cs_missing`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_missing' "$out" \
+        "an identifier absent from bin, lib and hooks is dead" || return 1
+    : > "$TEST_TMPDIR/outside.md"
+    ln -s "$TEST_TMPDIR/outside.md" "$SESSION/hooks/outside.md"
+    printf '%s\n' 'Read `../outside.md` and `hooks/outside.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: ../outside.md
+dead: .cs/memory/feedback_alpha.md: hooks/outside.md' "$out" \
+        "existing files outside the checkout are dead, including symlink targets" || return 1
+}
+
+test_refs_ignores_frontmatter_the_index_and_narratives() {
+    _guard_session
+    mkdir -p "$SESSION/hooks"
+    : > "$SESSION/hooks/present.sh"
+    cat > "$SESSION/.cs/memory/feedback_alpha.md" << 'EOF'
+---
+description: '`hooks/header-only.sh` and `cs -header-only`'
+---
+Use `hooks/present.sh`.
+EOF
+    printf '%s\n' 'See `hooks/index-only.sh`.' > "$INDEX"
+    printf '%s\n' 'Used `hooks/narrative-only.sh`.' > "$SESSION/.cs/memory/narrative.example.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "refs reads entry bodies only, excluding the index and narratives" || return 1
+    assert_eq 0 "$rc" "ignored references do not fail the scan" || return 1
+}
+
+test_refs_ignores_placeholders_and_tokens_with_other_shapes() {
+    _guard_session
+    cat > "$SESSION/.cs/memory/feedback_alpha.md" << 'EOF'
+Try `hooks/<name>.sh`, `hooks/.../entry.md`, `hooks/*.sh` and `hooks/$NAME.sh`.
+Also `hooks/name>.sh`, `_cs_<name>` and `cs -<verb>`.
+Ignore `hooks/two words.sh`, `ordinary`, `notes.txt`, `cs -present args`,
+`https://example.com/hooks/example.sh`, `/outside/file.md` and `~/notes.md`.
+EOF
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "placeholders and other token shapes are not references" || return 1
+    assert_eq 0 "$rc" "ignored tokens do not fail the scan" || return 1
+}
+
+test_refs_without_memory_is_an_error() {
+    SESSION="$TEST_TMPDIR/elsewhere"
+    mkdir -p "$SESSION"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'memory-index-guard: no .cs/memory here; run from the session root' "$out" \
+        "refs names the missing memory directory" || return 1
+    assert_eq 2 "$rc" "refs outside a session root must fail" || return 1
+    assert_not_exists "$SESSION/.cs" "refs creates no session state" || return 1
+}
+
+test_refs_finds_basenames_in_subdirectories() {
+    _guard_session
+    mkdir -p "$SESSION/tests" "$SESSION/.git"
+    : > "$SESSION/tests/helper.sh"
+    : > "$SESSION/.git/hidden.sh"
+    printf '%s\n' 'Read `helper.sh`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a basename found under tests is live and counted" || return 1
+    printf '%s\n' 'Read `hidden.sh` and `hooks/helper.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hidden.sh
+dead: .cs/memory/feedback_alpha.md: hooks/helper.sh' "$out" \
+        "basename lookup excludes git and paths still resolve from the root" || return 1
+}
+
+test_refs_skips_names_without_lowercase_letters() {
+    _guard_session
+    printf '%s\n' 'Names: `CLAUDE_SESSION_NAME/DIR`, `DATABASE_URL`, `123/456`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "names without lowercase letters are neither reported nor counted" || return 1
+}
+
+test_refs_skips_host_paths() {
+    _guard_session
+    printf '%s\n' 'Read `example.com/api/v2/incidents/unresolved.json`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "host paths are neither reported nor counted" || return 1
+    mkdir -p "$SESSION/example.com-tools"
+    : > "$SESSION/example.com-tools/file.sh"
+    printf '%s\n' 'Read `example.com-tools/file.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a directory with a domain inside its name is still a path" || return 1
+}
+
+test_refs_requires_path_characters() {
+    _guard_session
+    local token out
+    for token in 's/^#\+//' '[y/N]' '--force/-f' '-doctor/-diag' \
+        'CLAUDE_SESSION_NAME/DIR' 'DATABASE_URL=postgres://user:pass@host' \
+        'docs/superpowers/{plans,specs}' 'example.com/api/v2/incidents/unresolved.json' \
+        '.sh'; do
+        printf 'Read `%s`.\n' "$token" > "$SESSION/.cs/memory/feedback_alpha.md"
+        out=$(_guard refs 2>&1) || return 1
+        assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+            "$token is neither reported nor counted as a path" || return 1
+    done
+}
+
+test_refs_resolves_line_suffixes_and_preserves_dead_tokens() {
+    _guard_session
+    mkdir -p "$SESSION/hooks"
+    : > "$SESSION/hooks/x.sh"
+    printf '%s\n' 'Read `hooks/x.sh:12`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a line suffix resolves to the live file" || return 1
+    rm "$SESSION/hooks/x.sh"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/x.sh:12' "$out" \
+        "a missing file retains its line suffix in the dead report" || return 1
+    : > "$SESSION/hooks/x.sh"
+    printf '%s\n' 'Read `x.sh:12`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a line suffix is stripped before matching a basename extension" || return 1
+    : > "$SESSION/hooks/topic:one.md"
+    : > "$SESSION/hooks/x.sh:12"
+    printf '%s\n' 'Read `hooks/topic:one.md:9` and `hooks/x.sh:12:34`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "only the final numeric suffix is stripped and internal colons stay" || return 1
+    printf '%s\n' 'Read `hooks/x.sh/` and `hooks/x.sh:10-20`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "trailing slashes and line ranges resolve to the live file" || return 1
+    rm "$SESSION/hooks/x.sh"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/x.sh/
+dead: .cs/memory/feedback_alpha.md: hooks/x.sh:10-20' "$out" \
+        "missing files retain trailing slashes and ranges in the dead report" || return 1
+}
+
+test_refs_skips_branch_prefixes() {
+    _guard_session
+    local prefix out
+    for prefix in feat fix perf chore docs ci test refactor release; do
+        printf 'Read `%s/anything`.\n' "$prefix" > "$SESSION/.cs/memory/feedback_alpha.md"
+        out=$(_guard refs 2>&1) || return 1
+        assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+            "$prefix branches are neither reported nor counted" || return 1
+    done
+    mkdir -p "$SESSION/features"
+    : > "$SESSION/features/anything"
+    : > "$SESSION/feat.md"
+    printf '%s\n' 'Read `features/anything` and `feat.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "branch prefixes match the complete first segment before a slash" || return 1
+}
+
+test_refs_uses_the_installed_dispatcher_or_skips_verbs() {
+    _guard_session
+    mkdir -p "$TEST_TMPDIR/commands"
+    local PATH="$TEST_TMPDIR/commands:/bin:/usr/bin" out
+    printf '%s\n' '#!/bin/bash' 'case "$1" in' '    -secrets) ;;' 'esac' \
+        > "$TEST_TMPDIR/commands/cs"
+    chmod +x "$TEST_TMPDIR/commands/cs"
+    printf '%s\n' 'Run `cs -secrets`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "verbs resolve through PATH without a repository dispatcher" || return 1
+    mkdir -p "$SESSION/bin"
+    printf '%s\n' 'case "$1" in' '    -other) ;;' 'esac' > "$SESSION/bin/cs"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "the installed dispatcher takes precedence over bin/cs" || return 1
+    rm "$TEST_TMPDIR/commands/cs"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: cs -secrets' "$out" \
+        "a verb absent from the fallback dispatcher is dead" || return 1
+    rm "$SESSION/bin/cs"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "verbs are skipped when neither dispatcher exists" || return 1
+    printf '%s\n' 'case "$1" in' '    -secrets) ;;' 'esac' > "$SESSION/bin/cs"
+    local rc=0
+    out=$(cs() { :; }; export -f cs; _guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "an exported cs function falls back to bin/cs without stderr" || return 1
+    assert_eq 0 "$rc" "the fallback scan succeeds with an exported function" || return 1
+}
+
+test_refs_matches_only_complete_dispatcher_arms() {
+    _guard_session
+    local PATH=/bin:/usr/bin out
+    mkdir -p "$SESSION/bin"
+    printf '%s\n' 'case "$1" in' '    -remove|-rm) ;;' 'esac' > "$SESSION/bin/cs"
+    printf '%s\n' 'Run `cs -rm`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a verb in a compound case arm is live" || return 1
+    printf '%s\n' 'case "$1" in' '    -rmdir) ;;' 'esac' '# find . -name foo' \
+        > "$SESSION/bin/cs"
+    printf '%s\n' 'Run `cs -rm` and `cs -name`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: cs -name
+dead: .cs/memory/feedback_alpha.md: cs -rm' "$out" \
+        "deleted verbs cannot match longer arms or comments" || return 1
+}
+
+test_refs_recognizes_dot_led_paths() {
+    _guard_session
+    mkdir -p "$SESSION/.github/workflows"
+    : > "$SESSION/.github/workflows/ci.yml"
+    : > "$SESSION/.cs/memory/x.md"
+    printf '%s\n' 'Read `.github/workflows/ci.yml` and `.cs/memory/x.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 3 entries, none dead' "$out" \
+        "dot-led paths with a name before the last dot are counted" || return 1
+    printf '%s\n' 'Read `.github/workflows/gone.yml`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: .github/workflows/gone.yml' "$out" \
+        "a missing dot-led path is dead" || return 1
+}
+
+test_refs_scans_unclosed_frontmatter_as_body() {
+    _guard_session
+    printf '%s\n' '---' 'description: `hooks/unclosed.sh`' 'Body with `hooks/unclosed.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/unclosed.sh' "$out" \
+        "unclosed frontmatter is scanned as body text" || return 1
+}
+
+test_refs_ignores_backticks_inside_code_fences() {
+    _guard_session
+    printf '%s\n' '```sh' 'echo `hooks/fenced-tick.sh`' '```' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 0 references in 2 entries, none dead' "$out" \
+        "backticks inside a code fence are neither reported nor counted" || return 1
+    printf '%s\n' 'Read `hooks/outside-fence.sh`.' >> "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside-fence.sh' "$out" \
+        "reference scanning resumes after the closing fence" || return 1
+    printf '%s\n' '   ```sh' 'Read `hooks/indented.sh`.' ' ```' \
+        'Read `hooks/outside.sh`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "indented fences hide their tokens and resume scanning after closing" || return 1
+    printf '%s\n' '~~~sh' 'Read `hooks/tilde.sh`.' '~~~' \
+        'Read `hooks/outside.sh`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "tilde fences hide their tokens and resume scanning after closing" || return 1
+    printf '%s\n' '````sh' '```' 'Read `hooks/short-fence.sh`.' \
+        '~~~~' 'Read `hooks/wrong-marker.sh`.' '```` not a closer' \
+        'Read `hooks/non-closing.sh`.' '`````   ' 'Read `hooks/outside.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "fences close only with the same marker at least as long and no text" || return 1
+}
+
+test_refs_distinguishes_search_hits_from_traversal_errors() {
+    [ "$(id -u)" -ne 0 ] || return 77
+    _guard_session
+    mkdir -p "$SESSION/blocked" "$SESSION/helpers" "$SESSION/node_modules" \
+        "$SESSION/target" "$SESSION/.cs/vault-mnt"
+    printf '%s\n' '_cs_found() { :; }' > "$SESSION/helpers/present.sh"
+    local token out rc
+    for token in missing.sh _cs_missing; do
+        printf 'Read `%s`.\n' "$token" > "$SESSION/.cs/memory/feedback_alpha.md"
+        chmod 000 "$SESSION/blocked"
+        rc=0
+        out=$(_guard refs 2>&1) || rc=$?
+        chmod 700 "$SESSION/blocked"
+        assert_eq 2 "$rc" "a search error without a hit fails the scan" || return 1
+        assert_eq "memory-index-guard: cannot search for $token" "$out" \
+            "a search error identifies the unresolved token" || return 1
+    done
+    for token in present.sh _cs_found; do
+        printf 'Read `%s`.\n' "$token" > "$SESSION/.cs/memory/feedback_alpha.md"
+        chmod 000 "$SESSION/blocked"
+        rc=0
+        out=$(_guard refs 2>&1) || rc=$?
+        chmod 700 "$SESSION/blocked"
+        assert_eq 0 "$rc" "a hit is live despite an unreadable directory" || return 1
+        assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+            "a hit produces a clean live report regardless of traversal errors" || return 1
+    done
+    printf '%s\n' '_cs_ignored' > "$SESSION/node_modules/ignored.sh"
+    : > "$SESSION/target/ignored.sh"
+    : > "$SESSION/.cs/vault-mnt/ignored.sh"
+    printf '%s\n' 'Read `ignored.sh` and `_cs_ignored`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    chmod 000 "$SESSION/node_modules" "$SESSION/target" "$SESSION/.cs/vault-mnt"
+    rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    chmod 700 "$SESSION/node_modules" "$SESSION/target" "$SESSION/.cs/vault-mnt"
+    assert_eq 0 "$rc" "pruned directories cannot cause search errors" || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_ignored
+dead: .cs/memory/feedback_alpha.md: ignored.sh' "$out" \
+        "pruned dependencies, build output and vault files are not lookup hits" || return 1
+}
+
+test_refs_finds_memory_basenames_in_git_sessions() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    : > "$SESSION/.cs/memory/narrative.example.md"
+    printf '%s\n' 'Read `MEMORY.md` and `narrative.example.md`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "memory basenames stay live when git ignores the session state" || return 1
+}
+
+test_refs_ignores_gitignored_copies() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' 'scratch/' '.claude/worktrees/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/scratch" "$SESSION/.claude/worktrees/example"
+    printf '%s\n' '_cs_copy' > "$SESSION/scratch/copied.sh"
+    printf '%s\n' '_cs_copy' > "$SESSION/.claude/worktrees/example/copied.sh"
+    printf '%s\n' 'Read `copied.sh`, `scratch/copied.sh` and `_cs_copy`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out expected
+    expected='dead: .cs/memory/feedback_alpha.md: _cs_copy
+dead: .cs/memory/feedback_alpha.md: copied.sh'
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq "$expected" "$out" "ignored copies cannot keep references live" || return 1
+    mkdir -p "$SESSION/scratch/x/.cs/memory"
+    mv "$SESSION/scratch/copied.sh" "$SESSION/scratch/x/.cs/memory/copied.sh"
+    expected="$expected
+dead: .cs/memory/feedback_alpha.md: scratch/copied.sh"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq "$expected" "$out" "nested ignored memory cannot keep references live" || return 1
+}
+
+test_refs_excludes_deleted_tracked_files() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' 'scratch/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/src" "$SESSION/scratch"
+    : > "$SESSION/src/deleted.sh"
+    git -C "$SESSION" add src/deleted.sh
+    rm "$SESSION/src/deleted.sh"
+    : > "$SESSION/scratch/deleted.sh"
+    printf '%s\n' 'Read `deleted.sh` and `src/deleted.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: deleted.sh
+dead: .cs/memory/feedback_alpha.md: src/deleted.sh' "$out" \
+        "tracked files removed from disk cannot keep references live" || return 1
+}
+
+test_refs_includes_untracked_files_outside_lib() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/lib" "$SESSION/source files"
+    printf '%s\n' '_cs_untracked' > "$SESSION/source files/untracked.sh"
+    printf '%s\n' 'Read `untracked.sh` and `_cs_untracked`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 2 references in 2 entries, none dead' "$out" \
+        "untracked files outside lib resolve names and identifiers" || return 1
+}
+
+test_refs_resolves_memory_basenames_without_git() {
+    _guard_session
+    printf '%s\n' 'Read `MEMORY.md`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "non-git sessions resolve memory basenames" || return 1
+}
+
+test_refs_prunes_nested_state_without_git() {
+    _guard_session
+    mkdir -p "$SESSION/nested/.cs/memory" "$SESSION/nested/node_modules" \
+        "$SESSION/nested/.git" "$SESSION/nested/target"
+    printf '%s\n' '_cs_nested' > "$SESSION/nested/.cs/memory/entry.md"
+    : > "$SESSION/nested/node_modules/dependency.sh"
+    : > "$SESSION/nested/.git/internal.sh"
+    : > "$SESSION/nested/target/built.sh"
+    printf '%s\n' 'Read `_cs_nested`, `dependency.sh`, `internal.sh` and `built.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_nested
+dead: .cs/memory/feedback_alpha.md: built.sh
+dead: .cs/memory/feedback_alpha.md: dependency.sh
+dead: .cs/memory/feedback_alpha.md: internal.sh' "$out" \
+        "non-git searches prune nested state and build directories" || return 1
+}
+
+test_refs_resolves_exact_paths_on_disk_in_git_sessions() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' 'scratch/' '.claude/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/tests" "$SESSION/lib" "$SESSION/scratch" \
+        "$SESSION/hooks" "$SESSION/.claude/worktrees/w/hooks"
+    : > "$SESSION/build.sh"
+    : > "$SESSION/scratch/keep.sh"
+    : > "$SESSION/.claude/worktrees/w/hooks/gone.sh"
+    : > "$TEST_TMPDIR/outside.sh"
+    ln -s "$TEST_TMPDIR/outside.sh" "$SESSION/hooks/outside.sh"
+    printf '%s\n' 'Read `tests/`, `lib/`, `./build.sh` and `scratch/keep.sh`.' \
+        'Read `hooks/gone.sh`, `gone.sh` and `hooks/outside.sh`.' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: gone.sh
+dead: .cs/memory/feedback_alpha.md: hooks/gone.sh
+dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
+        "exact paths resolve on disk inside the root without borrowing worktree copies" || return 1
+}
+
+test_refs_ignores_untracked_nested_repositories() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    git init -q "$SESSION/inner"
+    printf '%s\n' 'Nested repository.' > "$SESSION/inner/README.md"
+    printf '%s\n' 'Read `_cs_inner`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_inner' "$out" \
+        "a nested repository does not abort identifier lookup or print stderr" || return 1
+    assert_eq 0 "$rc" "a missing identifier beside a nested repository exits zero" || return 1
+}
+
+test_refs_does_not_search_inside_submodules() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/vendor"
+    printf '%s\n' '_cs_in_sub' > "$SESSION/vendor/helper.sh"
+    local tree commit out rc=0
+    tree=$(git -C "$SESSION" mktree < /dev/null) || return 1
+    commit=$(printf '%s\n' 'Fixture' | git -C "$SESSION" -c user.name=Example \
+        -c user.email=contributor@example.com commit-tree "$tree") || return 1
+    git -C "$SESSION" update-index --add --cacheinfo "160000,$commit,vendor"
+    printf '%s\n' 'Read `_cs_in_sub`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_in_sub' "$out" \
+        "submodule contents do not resolve identifiers or print stderr" || return 1
+    assert_eq 0 "$rc" "an identifier found only in a submodule exits zero" || return 1
+}
+
+test_refs_searches_regular_files_beside_directory_symlinks() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/real"
+    ln -s real "$SESSION/link"
+    printf '%s\n' '_cs_regular' > "$SESSION/helper.sh"
+    git -C "$SESSION" add link helper.sh
+    printf '%s\n' 'Read `_cs_regular`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a tracked regular file resolves beside a directory symlink without stderr" || return 1
+    assert_eq 0 "$rc" "a live identifier beside a directory symlink exits zero" || return 1
+    printf '%s\n' 'Read `_cs_absent`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_absent' "$out" \
+        "a directory symlink does not abort a missing identifier lookup" || return 1
+    assert_eq 0 "$rc" "a missing identifier beside a directory symlink exits zero" || return 1
+}
+
+run_test test_refs_ignores_untracked_nested_repositories
+run_test test_refs_does_not_search_inside_submodules
+run_test test_refs_searches_regular_files_beside_directory_symlinks
+run_test test_refs_resolves_exact_paths_on_disk_in_git_sessions
+run_test test_refs_excludes_deleted_tracked_files
+run_test test_refs_includes_untracked_files_outside_lib
+run_test test_refs_resolves_memory_basenames_without_git
+run_test test_refs_prunes_nested_state_without_git
+run_test test_refs_ignores_gitignored_copies
+run_test test_refs_finds_memory_basenames_in_git_sessions
+run_test test_refs_distinguishes_search_hits_from_traversal_errors
+run_test test_refs_ignores_backticks_inside_code_fences
+run_test test_refs_scans_unclosed_frontmatter_as_body
+run_test test_refs_recognizes_dot_led_paths
+run_test test_refs_matches_only_complete_dispatcher_arms
+run_test test_refs_uses_the_installed_dispatcher_or_skips_verbs
+run_test test_refs_skips_branch_prefixes
+run_test test_refs_resolves_line_suffixes_and_preserves_dead_tokens
+run_test test_refs_requires_path_characters
+run_test test_refs_skips_host_paths
+run_test test_refs_skips_names_without_lowercase_letters
+run_test test_refs_finds_basenames_in_subdirectories
+run_test test_refs_without_memory_is_an_error
+run_test test_refs_ignores_placeholders_and_tokens_with_other_shapes
+run_test test_refs_ignores_frontmatter_the_index_and_narratives
+run_test test_refs_counts_live_paths_identifiers_and_verbs_once
+run_test test_refs_reports_a_verb_absent_from_the_dispatcher
+run_test test_refs_reports_dead_paths_once_in_sorted_order
 run_test test_check_fails_when_a_link_is_removed
 run_test test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget
 run_test test_check_counts_bytes_not_characters

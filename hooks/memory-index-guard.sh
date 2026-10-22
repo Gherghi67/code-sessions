@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# ABOUTME: Guards /wrap's memory-pass rewrites of .cs/memory/MEMORY.md: snapshot, check, restore.
+# ABOUTME: Guards /wrap's memory index and reports dead references in its entries.
 # ABOUTME: Run by that pass (wrap-sweep.md) from the session root; not a hook itself.
 
 set -euo pipefail
 
 INDEX=".cs/memory/MEMORY.md"
+# These branch prefixes use slashes without naming repository paths.
+BRANCH_PREFIXES="feat fix perf chore docs ci test refactor release"
 # The archive index: a reference entry listing, in MEMORY.md's own pointer
 # shape, the pointers /wrap's memory pass moved out of MEMORY.md. Claude Code
 # reads it only through its pointer in MEMORY.md.
@@ -95,7 +97,208 @@ _need_snapshot() {
     [ -r "$SNAPSHOT" ] || _die "cannot read $SNAPSHOT"
 }
 
+# Each backticked repository reference in one memory entry body, without
+# interpreting its contents as shell text.
+_reference_tokens() {  # entry
+    env LC_ALL=C awk -v branch_prefixes="$BRANCH_PREFIXES" '
+        function scan(line, rest, token, path, segment, marker) {
+            if (match(line, /^ {0,3}(```+|~~~+)/)) {
+                marker = substr(line, 1, RLENGTH)
+                sub(/^ */, "", marker)
+                if (!fenced) {
+                    fenced = 1
+                    fence_character = substr(marker, 1, 1)
+                    fence_length = length(marker)
+                } else if (substr(marker, 1, 1) == fence_character &&
+                           length(marker) >= fence_length &&
+                           substr(line, RLENGTH + 1) ~ /^[ \t]*$/) {
+                    fenced = 0
+                }
+                return
+            }
+            if (fenced) return
+            rest = line
+            while (match(rest, /`[^`]+`/)) {
+                token = substr(rest, RSTART + 1, RLENGTH - 2)
+                rest = substr(rest, RSTART + RLENGTH)
+                if (token ~ /[<>*$]/ || index(token, "...")) continue
+                if (token ~ /^cs -[A-Za-z-]+$/) { print token; continue }
+                if (token ~ /^(_cs_|cs_)[A-Za-z0-9_]+$/) { print token; continue }
+                path = token
+                sub(/:[0-9]+(-[0-9]+)?$/, "", path)
+                if (path !~ /[a-z]/) continue
+                if (path !~ /^[A-Za-z0-9._\/:-]+$/ || path ~ /^[-\/]/) continue
+                if (path ~ /\./ && path !~ /[A-Za-z0-9].*\./) continue
+                if (path ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) continue
+                segment = path
+                sub(/\/.*/, "", segment)
+                if (segment ~ /\.(com|org|net|io|dev|ai)$/) continue
+                if (path ~ /\// && index(" " branch_prefixes " ", " " segment " ")) continue
+                if (path ~ /\// || path ~ /\.(sh|md|rs|mjs|json)$/) print token
+            }
+        }
+        FNR == 1 && /^---[[:space:]]*$/ { frontmatter = 1; next }
+        frontmatter {
+            if (/^(---|\.\.\.)[[:space:]]*$/) frontmatter = 0
+            else buffer[++buffered] = $0
+            next
+        }
+        { scan($0) }
+        END {
+            if (frontmatter) {
+                for (i = 1; i <= buffered; i++) scan(buffer[i])
+            }
+        }
+    ' "$1"
+}
+
+_reference_files() {
+    local path deleted_path removed deleted=() deleted_count=0
+    _refs_universe=$(mktemp "${TMPDIR:-/tmp}/cs-refs.XXXXXX") || _die "cannot create reference file list"
+    _refs_candidates=""
+    trap 'rm -f -- "$_refs_universe" "$_refs_candidates"' EXIT
+    _refs_candidates=$(mktemp "${TMPDIR:-/tmp}/cs-refs.XXXXXX") || _die "cannot create candidate file list"
+    git ls-files -z --deleted > "$_refs_candidates" || _die "cannot list deleted files"
+    while IFS= read -r -d '' path; do
+        deleted[$deleted_count]="$path"
+        deleted_count=$((deleted_count + 1))
+    done < "$_refs_candidates"
+    git ls-files -z --cached --others --exclude-standard > "$_refs_candidates" || _die "cannot list repository files"
+    while IFS= read -r -d '' path; do
+        removed=0
+        if [ "$deleted_count" -gt 0 ]; then
+            for deleted_path in "${deleted[@]}"; do
+                if [ "$path" = "$deleted_path" ]; then removed=1; break; fi
+            done
+        fi
+        [ "$removed" -eq 0 ] || continue
+        [ -f "$path" ] || continue
+        printf '%s\0' "$path"
+    done < "$_refs_candidates" > "$_refs_universe"
+    find .cs -path .cs/vault-mnt -prune -o -type f -print0 >> "$_refs_universe" \
+        || _die "cannot list session files"
+}
+
+_reference_sources() {
+    local path
+    if [ -n "$_refs_universe" ]; then
+        while IFS= read -r -d '' path; do
+            case "$path" in .cs/*|*/.cs/*) continue ;; esac
+            printf './%s\0' "$path"
+        done < "$_refs_universe"
+    else
+        find . -name .cs -prune -o -name .git -prune \
+            -o -name node_modules -prune -o -name target -prune -o -type f -print0
+    fi
+}
+
+_reference_live() {  # token dispatcher
+    local token="$1" dispatcher="$2" resolved root verb matches rc=0
+    case "$1" in
+        'cs -'*)
+            verb="${1#cs -}"
+            grep -qE '^[[:space:]]*(-[A-Za-z-]+\|)*-'"$verb"'(\|-[A-Za-z-]+)*\)' \
+                -- "$dispatcher" || rc=$?
+            [ "$rc" -le 1 ] || _die "cannot read $dispatcher"
+            return "$rc"
+            ;;
+        *[!a-zA-Z0-9_]*) ;;
+        _cs_*|cs_*)
+            matches=$(_reference_sources 2>/dev/null | xargs -0 sh -c '
+                [ "$#" -gt 1 ] || exit 0
+                grep -lF -- "$@" || [ "$?" -eq 1 ]
+            ' sh "$token" 2>/dev/null) || rc=$?
+            [ -z "$matches" ] || return 0
+            [ "$rc" -eq 0 ] || _die "cannot search for $token"
+            return 1
+            ;;
+    esac
+    token="${token%/}"
+    if [[ "$token" =~ :[0-9]+(-[0-9]+)?$ ]]; then
+        token="${token%:*}"
+    fi
+    token="${token#./}"
+    if [[ -n "$_refs_universe" && "$1" != */* ]]; then
+        while IFS= read -r -d '' resolved; do
+            [ "${resolved##*/}" != "$token" ] || return 0
+        done < "$_refs_universe"
+        return 1
+    fi
+    root=$(pwd -P) || _die "cannot resolve the session root"
+    case "$1" in
+        */*) ;;
+        *)
+            matches=$(find . -name .git -prune \
+                -o -name node_modules -prune -o -name target -prune \
+                -o -path ./.cs/vault-mnt -prune -o -name "$token" -print0 2>/dev/null \
+                | while IFS= read -r -d '' resolved; do
+                    [ -f "$resolved" ] || [ -d "$resolved" ] || continue
+                    resolved=$(_cs_write_target "$resolved") || continue
+                    if [[ "$resolved" = "$root" || "$resolved" = "$root"/* ]]; then
+                        printf 'live\n'
+                    fi
+                done) || rc=$?
+            [ -z "$matches" ] || return 0
+            [ "$rc" -eq 0 ] || _die "cannot search for $token"
+            return 1
+            ;;
+    esac
+    [ -e "$token" ] || return 1
+    resolved=$(_cs_write_target "./$token") || return 1
+    case "$resolved" in "$root"|"$root"/*) return 0 ;; esac
+    return 1
+}
+
+_refs() {
+    local entry tokens token seen=$'\n' dead="" entries=0 references=0
+    local dispatcher entry_seen missing=$'\n'
+    _refs_universe=""
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        _reference_files
+    fi
+    if ! dispatcher=$(type -P cs); then
+        [ ! -f bin/cs ] || dispatcher=bin/cs
+    fi
+    for entry in .cs/memory/*.md; do
+        case "$entry" in .cs/memory/MEMORY.md|.cs/memory/narrative.*.md) continue ;; esac
+        [ -f "$entry" ] || continue
+        entries=$((entries + 1))
+        entry_seen=$'\n'
+        tokens=$(_reference_tokens "$entry") || _die "cannot read $entry"
+        while IFS= read -r token; do
+            [ -n "$token" ] || continue
+            case "$token" in 'cs -'*) [ -n "$dispatcher" ] || continue ;; esac
+            case "$entry_seen" in *$'\n'"$token"$'\n'*) continue ;; esac
+            entry_seen="$entry_seen$token"$'\n'
+            case "$seen" in
+                *$'\n'"$token"$'\n'*) ;;
+                *)
+                    seen="$seen$token"$'\n'
+                    references=$((references + 1))
+                    if ! _reference_live "$token" "$dispatcher"; then
+                        missing="$missing$token"$'\n'
+                    fi
+                    ;;
+            esac
+            case "$missing" in
+                *$'\n'"$token"$'\n'*)
+                    dead="${dead}dead: $(_cs_plain_name "$entry" 240): $token"$'\n'
+                    ;;
+            esac
+        done <<< "$tokens"
+    done
+    if [ -n "$dead" ]; then
+        printf '%s' "$dead" | env LC_ALL=C sort
+    else
+        printf 'ok: %s references in %s entries, none dead\n' "$references" "$entries"
+    fi
+}
+
 case "${1:-}" in
+    refs)
+        [ -d .cs/memory ] || _die "no .cs/memory here; run from the session root"
+        _refs
+        ;;
     snapshot)
         [ -d .cs/memory ] || _die "no .cs/memory here; run from the session root"
         cs_mkdir_inside "$_snapshot_dir" || _die "cannot create $_snapshot_dir"
@@ -200,6 +403,6 @@ case "${1:-}" in
         printf 'restored: %s from %s\n' "$INDEX" "$SNAPSHOT"
         ;;
     *)
-        _die "usage: memory-index-guard.sh snapshot|check|restore"
+        _die "usage: memory-index-guard.sh snapshot|check|restore|refs"
         ;;
 esac
