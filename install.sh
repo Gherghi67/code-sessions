@@ -2148,10 +2148,11 @@ else
     }
 
     # Register cs-statusline as the Claude Code status line. A status line the
-    # user already configured is never replaced silently: keep a bridge that
-    # runs cs-statusline, otherwise prompt when a terminal is attached or
-    # keep it and print how to switch. The file is only looked at here;
-    # the registration is written with the rest.
+    # user already configured is never replaced silently: a bridge that runs
+    # cs-statusline is kept without recording a decline, even with a decline
+    # marker present. Otherwise prompt when a terminal is attached or keep it
+    # and print how to switch. The file is only looked at here; the registration
+    # is written with the rest.
     _statusline_cmd="$INSTALL_DIR/cs-statusline"
     _current_statusline=""
     if [ -s "$CLAUDE_SETTINGS" ]; then
@@ -2260,7 +2261,9 @@ else
             _register_statusline=quiet
             ;;
         *)
-            if [ -f "$_statusline_declined" ]; then
+            if _statusline_chains_to_cs "$_current_statusline"; then
+                info "Keeping current status line: $_current_statusline runs cs-statusline."
+            elif [ -f "$_statusline_declined" ]; then
                 info "Status line not registered (declined earlier). Enable any time with: cs -statusline enable"
             elif [ -z "$_current_statusline" ]; then
                 # The status bar is user-visible UI: claim it only with consent.
@@ -2285,11 +2288,7 @@ else
                     info "Status line not registered. Enable any time with: cs -statusline enable"
                 fi
             else
-                if _statusline_chains_to_cs "$_current_statusline"; then
-                    _remember_statusline_decline \
-                        "Keeping current status line: $_current_statusline runs cs-statusline." \
-                        ""
-                elif [ -t 0 ]; then
+                if [ -t 0 ]; then
                     _preview_statusline
                     echo -en "   Replace current status line ($_current_statusline) with ${BOLD}cs-statusline${NC}? [y/N] "
                     read -n 1 -r

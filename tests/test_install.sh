@@ -274,18 +274,43 @@ EXPECT
         if [ "$state" = chains ]; then
             assert_eq "" "$(printf '%s\n' "$output" | grep -F 'Replace current status line' || true)" \
                 "a chaining bridge must not be offered replacement" || return 1
-            assert_output_contains "$output" "Keeping current status line: ~/bridge.sh --example runs cs-statusline." \
+            assert_eq '   · Keeping current status line: ~/bridge.sh --example runs cs-statusline.' \
+                "$(printf '%s\n' "$output" | grep -F 'Keeping current status line')" \
                 "the installer explains why it keeps the bridge" || return 1
             assert_output_not_contains "$output" "To switch to cs-statusline" \
                 "a chaining bridge needs no switch hint" || return 1
-            assert_file_exists "$home/config/cs/statusline-declined" \
-                "keeping the bridge is remembered for updates" || return 1
+            assert_not_exists "$home/config/cs/statusline-declined" \
+                "keeping a chaining bridge must not record a decline" || return 1
+            assert_eq "" "$(printf '%s\n' "$output" | grep -F "     You won't be asked again." || true)" \
+                "keeping a chaining bridge needs no permanence hint" || return 1
             assert_eq '   Do the ends of that capsule render as rounded shapes (not boxes)? [y/n] y' \
                 "$(printf '%s\n' "$output" | grep -F 'Do the ends of that capsule')" \
                 "the retained bridge still gets the caps question" || return 1
             local answer=""
             [ ! -f "$caps" ] || answer=$(cat "$caps")
             assert_eq on "$answer" "a retained chaining bridge receives the caps answer" || return 1
+            local pass
+            for pass in repeat marked; do
+                if [ "$pass" = marked ]; then
+                    touch "$home/config/cs/statusline-declined"
+                fi
+                rc=0
+                env -u CLAUDE_CONFIG_DIR HOME="$home" XDG_CONFIG_HOME="$home/config" \
+                    bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/$pass.out" 2>&1 || rc=$?
+                assert_eq 0 "$rc" "$pass chaining bridge install completes" || return 1
+                output=$(sed $'s/\033\\[[0-9;]*m//g' "$TEST_TMPDIR/$pass.out" | tr -d '\r')
+                assert_eq '   · Keeping current status line: ~/bridge.sh --example runs cs-statusline.' \
+                    "$(printf '%s\n' "$output" | grep -F 'Keeping current status line' || true)" \
+                    "$pass install explains why it keeps the bridge" || return 1
+                assert_eq "" "$(printf '%s\n' "$output" | grep -F 'Status line not registered (declined earlier)' || true)" \
+                    "$pass install must not call a chaining bridge declined" || return 1
+                assert_eq "" "$(printf '%s\n' "$output" | grep -F "     You won't be asked again." || true)" \
+                    "$pass install needs no permanence hint" || return 1
+                if [ "$pass" = repeat ]; then
+                    assert_not_exists "$home/config/cs/statusline-declined" \
+                        "a non-interactive chaining install must not record a decline" || return 1
+                fi
+            done
         else
             assert_eq '   Replace current status line (~/bridge.sh --example) with cs-statusline? [y/N] n' \
                 "$(printf '%s\n' "$output" | grep 'Replace current status line')" \
