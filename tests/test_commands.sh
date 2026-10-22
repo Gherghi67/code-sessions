@@ -475,7 +475,19 @@ test_release_verifies_ci_workflow() {
     assert_file_contains "$RELEASE_MD" "Verify the Release Workflow Succeeded" \
         "release.md must add a step to confirm the CI release workflow succeeded" || return 1
     assert_file_contains "$RELEASE_MD" "release is not done until" \
-        "release.md must gate 'done' on the .minisig and install.sh assets appearing" || return 1
+        "release.md must gate completion on the signature asset" || return 1
+    assert_file_contains "$RELEASE_MD" 'ssh-keygen -Y sign' \
+        "release.md must sign the manifest locally after CI succeeds" || return 1
+    assert_file_contains "$RELEASE_MD" 'gh release upload.*SHA256SUMS.sig' \
+        "release.md must upload the manifest signature" || return 1
+    assert_file_contains "$RELEASE_MD" 'git show.*:install.sh' \
+        "release.md must compare the installer with its committed tag" || return 1
+    assert_file_contains "$RELEASE_MD" 'diff -u.*install.sh' \
+        "release.md must refuse an installer changed by CI" || return 1
+    assert_file_contains "$RELEASE_MD" 'shasum -a 256 -c SHA256SUMS' \
+        "release.md must support the macOS digest tool" || return 1
+    assert_file_contains "$RELEASE_MD" 'RELEASE_SIGNING_KEY' \
+        "release.md must describe the signing key override" || return 1
 }
 
 # ============================================================================

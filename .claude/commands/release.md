@@ -367,29 +367,69 @@ the tag, and a cancelled build leaves the release public with none.
 
 ### 10. Verify the Release Workflow Succeeded
 
-`gh release create` returning is NOT the finish line — the tag push kicks off the CI
-release workflow that signs and attaches the assets, and it can still fail (signing,
-asset upload). Watch it to completion:
+Wait for the release workflow for this tag to succeed before signing its assets.
 
 ```bash
-gh run list --workflow=release.yml --limit 1   # or: gh run watch
-gh release view vX.Y.Z --json assets --jq '.assets[].name'
+gh run list --workflow=release.yml --branch vX.Y.Z --limit 1 \
+  --json databaseId,status,conclusion,headSha
+gh run view <databaseId> --json jobs --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
 ```
 
-The release is not done until the `.minisig` signature files and `install.sh` appear as
-release assets. If the workflow fails, report it to the user before stopping — a green
-`gh release create` with a red workflow ships a release that installers cannot verify.
+Confirm that the run's `headSha` is `$SHA` and every job succeeded. If any job
+failed, stop and report the failure before signing.
+
+Download the assets, verify every manifest digest, and compare the installer
+with the tagged commit. The only permitted difference is `CS_DEFAULT_REF=main`
+replaced by the release tag. Run the following in one shell so a failed check
+stops before signing:
+
+```bash
+set -euo pipefail
+tag=vX.Y.Z
+git fetch origin "refs/tags/$tag:refs/tags/$tag"
+test "$(git rev-parse "$tag^{commit}")" = "$SHA"
+release_dir=$(mktemp -d)
+gh release download "$tag" -p SHA256SUMS -p install.sh -p 'cs-tui-*' -D "$release_dir"
+(
+  cd "$release_dir"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c SHA256SUMS
+  else
+    shasum -a 256 -c SHA256SUMS
+  fi
+)
+git show "$tag:install.sh" > "$release_dir/committed-install.sh"
+awk -v tag="$tag" '$0 == "CS_DEFAULT_REF=main" {$0="CS_DEFAULT_REF=" tag} {print}' \
+  "$release_dir/committed-install.sh" > "$release_dir/expected-install.sh"
+diff -u "$release_dir/expected-install.sh" "$release_dir/install.sh"
+(
+  cd "$release_dir"
+  ssh-keygen -Y sign -f "${RELEASE_SIGNING_KEY:-$HOME/.ssh/release-signing.pub}" -n cs-release SHA256SUMS
+)
+gh release upload "$tag" "$release_dir/SHA256SUMS.sig"
+gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF SHA256SUMS.sig
+```
+
+The release is not done until `SHA256SUMS.sig` is a release asset.
+Investigate a checksum failure or installer diff before signing.
+An installer changed by CI must never receive a local signature.
 
 ## Signed Releases
 
-The CI release workflow automatically:
-- Signs `install.sh` and all `cs-tui-*` binaries with minisign
-- Uploads `.minisig` signature files alongside the binaries
-- Includes `install.sh` as a release asset (updates download from releases, not main)
+CI publishes `install.sh`, the `cs-tui-*` binaries, and their `SHA256SUMS`
+manifest. It also publishes `install.sh.sha256` and each binary's `.sha256`
+file for installed copies that read those assets.
 
-The minisign private key is stored as GitHub Secret `MINISIGN_KEY`. The public key is embedded in `bin/cs` and `install.sh` as `CS_SIGN_PUBKEY`.
+Step 10 signs the manifest locally with the agent-held SSH key named by
+`~/.ssh/release-signing.pub`. Bitwarden's ssh-agent holds the private key.
+`RELEASE_SIGNING_KEY` overrides that path. CI holds no signing key.
 
-No manual signing is needed — CI handles everything on tag push.
+`cs -update` and the installer's picker download require
+`ssh-keygen -Y verify` to authenticate `SHA256SUMS.sig` in the `cs-release`
+namespace, then compare the downloaded file with its manifest digest.
+`CS_RELEASE_SIGNERS` contains the allowed signers and `CS_RELEASE_REVOKED`
+contains revoked public keys. An update refuses a release that drops any
+revoked key.
 
 ## Important
 
