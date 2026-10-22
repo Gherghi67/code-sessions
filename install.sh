@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "8c93dde5343effb0a66c245989c600b84b880deab7fcc30e1669ab7dac5289bb  bin/cs"
+    "abbf26497595bbf6a10c2b3c48f83759eae83832364fc7880e0d8ea6945f390c  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1346,7 +1346,7 @@ CS_PAYLOAD_SHA256=(
     "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
     "e72bd0eb10c455664d7da8cc9501295d16029f9ded31ade89781606b7e77b346  hooks/session-start.sh"
     "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
-    "791aaa9ced0e11217737f37510cbe7551268ca917561570f226d3c01ba6e65c3  hooks/narrative-reminder.sh"
+    "9cd183a1eea039c1936f574b0e3282acb910ed2cc7c0e47040d32ef0636ceabb  hooks/narrative-reminder.sh"
     "6ee7903b4c99d6e01888693635f430b40f42a82d7008fd285feee6f810585c9b  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
@@ -1357,8 +1357,8 @@ CS_PAYLOAD_SHA256=(
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f  skills/rotate/SKILL.md"
-    "bd99e120c472dbbed0028da0a5cd2dda62073459ad9e4c74fecf41e1187d5dc2  skills/finish/SKILL.md"
-    "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
+    "6ca06b43b1b156be1a7bd2a6f8ad1e35b18e627a247181909ce41fa726972094  skills/finish/SKILL.md"
+    "77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
     "a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8  skills/finish/scripts/finish.sh"

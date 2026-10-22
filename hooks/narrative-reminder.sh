@@ -677,6 +677,59 @@ _qpark() {  # kind reading limit remaining note
 # idle turn pops a task: an eight-task queue reads "all tasks complete" after
 # eight reviewer turns with nothing done. A teammate falls through to the
 # narrative reminder like any other Stop.
+# --- Staged feature retire ----------------------------------------------------
+# /finish's retire entry stages itself in .cs/local/retire-staged/<task> while
+# the feature conversation still holds its worktree (a directory cannot go from
+# under a running Claude). Once that conversation's lock is gone, the lead's
+# Stop runs the entry the stage records, and every refusal the entry makes runs
+# then as it would have at /finish. One stage per Stop: the outcome takes the
+# turn. A stage the lead cannot read is dropped and reported, never guessed at.
+# Lead only, for the reason the queue drain is: a teammate's Stop would race
+# the lead to the same removal.
+if [ "$HOOK_EVENT" = "Stop" ] && [ -d "$LOCAL/retire-staged" ] && _mail_is_lead \
+    && command -v live_lock_pid >/dev/null 2>&1; then
+    for _stage in "$LOCAL"/retire-staged/*; do
+        [ -f "$_stage" ] || continue
+        _task="${_stage##*/}"
+        _wt="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}/$CLAUDE_SESSION_NAME@$_task"
+        _sha=$(awk 'index($0, "sha: ") == 1 { print substr($0, 6); exit }' "$_stage" 2>/dev/null || true)
+        _force=$(awk 'index($0, "force: ") == 1 { print substr($0, 8); exit }' "$_stage" 2>/dev/null || true)
+        _stage_ok=1
+        case "$_sha" in ''|*[!0-9a-f]*) _stage_ok=0 ;; esac
+        case "$_force" in 0|1) ;; *) _stage_ok=0 ;; esac
+        if [ "$_stage_ok" = 0 ]; then
+            rm -f "$_stage"
+            jq -nc --arg r "cs: the staged retire of $_task at $_stage was unreadable and was removed; run /finish $_task again. Tell the user in one line." \
+                '{decision:"block", reason:$r}'
+            exit 0
+        fi
+        # Still open: the stage waits for the next Stop.
+        [ -z "$(live_lock_pid "$_wt/.cs")" ] || continue
+        if ! command -v cs >/dev/null 2>&1; then
+            jq -nc --arg r "cs: the '$CLAUDE_SESSION_NAME@$_task' conversation closed, but cs is not on PATH, so its staged retire could not run; run /finish $_task again. Tell the user in one line." \
+                '{decision:"block", reason:$r}'
+            exit 0
+        fi
+        _rc=0
+        if [ "$_force" = 1 ]; then
+            _out=$(cs "$CLAUDE_SESSION_NAME" -retire-feature "$_task" "$_sha" --force 2>&1 </dev/null) || _rc=$?
+        else
+            _out=$(cs "$CLAUDE_SESSION_NAME" -retire-feature "$_task" "$_sha" 2>&1 </dev/null) || _rc=$?
+        fi
+        # The conversation came back between the lock check and the entry (a
+        # resume): the entry re-staged itself, and the stage waits again.
+        case "$_out" in "staged $_task "*) continue ;; esac
+        rm -f "$_stage"
+        if [ "$_rc" = 0 ]; then
+            _r="cs: the '$CLAUDE_SESSION_NAME@$_task' conversation closed, and the retire /finish staged ran: $_out Tell the user in one line."
+        else
+            _r="cs: the '$CLAUDE_SESSION_NAME@$_task' conversation closed, and the retire /finish staged was refused: $_out The worktree is still there; tell the user, and run /finish $_task again once that is resolved."
+        fi
+        jq -nc --arg r "$_r" '{decision:"block", reason:$r}'
+        exit 0
+    done
+fi
+
 # A locked vault has no readable queue; an empty QDIR must not glob "/queue".
 QLEN=0
 [ -z "$QDIR" ] || QLEN=$(_qlen "$QUEUE")

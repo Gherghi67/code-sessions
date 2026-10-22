@@ -713,7 +713,9 @@ _feature_readiness() {  # base_name task
 
     # State is the first blocker retire_feature_worktree would hit, in its order.
     local state="ready"
-    if [ "$lock" != "none" ]; then
+    if [ "$lock" = "worktree" ] && [ -f "$base_dir/.cs/local/retire-staged/$task" ]; then
+        state="staged"
+    elif [ "$lock" != "none" ]; then
         state="locked"
     elif [ "$wt_dirty" = 1 ]; then
         state="dirty"
@@ -1129,10 +1131,19 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "$n_after commit(s) on $branch after $sha are not integrated; run /finish $task again before retiring"
     fi
 
-    local pid
+    local pid stage="$base_dir/.cs/local/retire-staged/$task"
     pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
     if [ -n "$pid" ]; then
-        error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running Claude. Close that session yourself (/exit there), then run /finish $task here again and it will be removed."
+        # A directory can't be removed from under a running Claude, so the
+        # decision this retire already made (the commit, --force or not) is
+        # staged in the base, and the base's Stop hook runs this entry again
+        # once that conversation's lock is gone. Every refusal below runs
+        # then as it would now.
+        _write_retire_stage "$stage" "$sha" "$force" \
+            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage. Close that session yourself (/exit there), then run /finish $task here again and it will be removed."
+        printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
+            "$task" "$sha" "$wt_name" "$pid"
+        return 0
     fi
     pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
     if [ -n "$pid" ]; then
@@ -1310,7 +1321,18 @@ $remove_err${trashed:+$nl$trashed}"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     _retire_trashed_note ""
+    rm -f "$stage"
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# Record a retire the base's Stop hook finishes once the feature conversation
+# closes: the captured commit and whether --force applied. Backs the stage
+# retire_feature_worktree writes while that conversation holds the worktree.
+_write_retire_stage() {  # stage_path sha force
+    local force=0
+    [ -z "$3" ] || force=1
+    cs_mkdir_inside "${1%/*}" || return 1
+    cs_write_atomic "$1" printf 'sha: %s\nforce: %s\n' "$2" "$force"
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault
