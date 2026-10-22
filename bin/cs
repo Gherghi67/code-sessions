@@ -2498,8 +2498,6 @@ _claude_encode_path() {
 CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 CS_RELEASE_REVOKED=''
 
-# Minisign public key for verifying signed releases
-CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark
 # values assume a dark canvas; on a light terminal the muted tones (comment,
 # white, dim) would wash out, so light gets darker ink mirroring the TUI palette.
@@ -3404,13 +3402,20 @@ _verify_manifest() {
 
 # Verify SHA-256 checksum (hard gate — always runs)
 verify_checksum() {
-    local file="$1" checksumfile="$2"
+    local file="$1" checksumfile="$2" asset="${3:-${1##*/}}"
     local expected actual
-    expected=$(awk '{print $1}' "$checksumfile")
+    expected=$(awk -v asset="$asset" '
+        $2 == asset {
+            count++
+            if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) bad=1
+            digest=$1
+        }
+        END { if (count != 1 || bad) exit 1; print digest }
+    ' "$checksumfile") || return 1
     if command -v sha256sum &>/dev/null; then
-        actual=$(sha256sum "$file" | awk '{print $1}')
+        actual=$(sha256sum "$file" | awk '{print $1}') || return 1
     elif command -v shasum &>/dev/null; then
-        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+        actual=$(shasum -a 256 "$file" | awk '{print $1}') || return 1
     else
         # Fail closed: a verification gate that can't verify must not pass.
         echo "Error: no sha256sum or shasum found — cannot verify download. Install one and retry." >&2
@@ -3419,13 +3424,50 @@ verify_checksum() {
     [ "$expected" = "$actual" ]
 }
 
-# Verify minisign signature (soft gate — only if minisign installed)
-verify_signature() {
-    local file="$1" sigfile="$2"
-    local ms_bin
-    ms_bin=$(command -v minisign 2>/dev/null) || ms_bin="$HOME/.local/bin/minisign"
-    [ -x "$ms_bin" ] || return 0
-    "$ms_bin" -Vm "$file" -P "$CS_SIGN_PUBKEY" -x "$sigfile" >/dev/null 2>&1
+_check_revocation_carry_forward() {
+    local installer="$1" key installed
+    # Parse the literal declaration as data, without executing the installer.
+    awk -v quote="'" '
+        function keyline(line, parts, n) {
+            if (line == "") return
+            n=split(line, parts, /[ \t]+/)
+            if (n < 2 || parts[1] != "ssh-ed25519" || parts[2] ~ /[^A-Za-z0-9+\/=]/) {
+                bad=1
+                return
+            }
+            print parts[1] " " parts[2]
+        }
+        /^[[:space:]]*(export[[:space:]]+)?CS_RELEASE_REVOKED[[:space:]]*=/ {
+            count++
+            if (active || index($0, "CS_RELEASE_REVOKED=" quote) != 1) { bad=1; next }
+            active=1
+            $0=substr($0, length("CS_RELEASE_REVOKED=" quote)+1)
+        }
+        active {
+            end=index($0, quote)
+            if (end) {
+                if (end != length($0)) bad=1
+                keyline(substr($0, 1, end-1))
+                active=0
+            } else keyline($0)
+        }
+        END { if (count != 1 || active || bad) exit 1 }
+    ' "$installer" > "$installer.revoked" || error "Malformed CS_RELEASE_REVOKED in downloaded installer."
+    if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
+        installed=$(cat "$CS_RELEASE_REVOKED_FILE") || error "Cannot read revoked keys: $CS_RELEASE_REVOKED_FILE"
+    else
+        installed="$CS_RELEASE_REVOKED"
+    fi
+    installed=$(printf '%s\n' "$installed" | awk '
+        NF {
+            if (NF < 2 || $1 != "ssh-ed25519" || $2 ~ /[^A-Za-z0-9+\/=]/) exit 1
+            print $1 " " $2
+        }
+    ') || error "Malformed installed CS_RELEASE_REVOKED."
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        grep -qxF "$key" "$installer.revoked" || error "Release dropped revoked key: $key"
+    done <<< "$installed"
 }
 
 # --- Update mechanism ---
@@ -3705,28 +3747,23 @@ do_update() {
     trap 'rm -rf "$_CS_UPDATE_TMPDIR"' EXIT
     local tmpdir="$_CS_UPDATE_TMPDIR"
 
-    # Download install.sh + checksum + signature from release assets
     curl -fsSL "$releases_url/install.sh" -o "$tmpdir/install.sh" || {
         error "Failed to download installer."
     }
-    curl -fsSL "$releases_url/install.sh.sha256" -o "$tmpdir/install.sh.sha256" || {
-        error "Failed to download checksum."
+    curl -fsSL "$releases_url/SHA256SUMS" -o "$tmpdir/SHA256SUMS" || {
+        error "Failed to download release manifest."
     }
-    # Signature file is optional (best-effort): a release without one is
-    # checked by its checksum alone, so a failed fetch must not end the update.
-    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null || true
+    curl -fsSL "$releases_url/SHA256SUMS.sig" -o "$tmpdir/SHA256SUMS.sig" || {
+        error "Failed to download release manifest signature."
+    }
 
-    # Verify checksum (hard gate)
-    if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/install.sh.sha256"; then
+    if ! _verify_manifest "$tmpdir/SHA256SUMS" "$tmpdir/SHA256SUMS.sig"; then
+        error "Release manifest signature verification failed. Update aborted."
+    fi
+    if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/SHA256SUMS"; then
         error "Checksum verification failed. Update aborted."
     fi
-
-    # Verify signature if minisign available (soft enhancement)
-    if [ -f "$tmpdir/install.sh.minisig" ]; then
-        if ! verify_signature "$tmpdir/install.sh" "$tmpdir/install.sh.minisig"; then
-            error "Signature verification failed. Update aborted."
-        fi
-    fi
+    _check_revocation_carry_forward "$tmpdir/install.sh"
 
     info "Verified"
 

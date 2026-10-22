@@ -10,8 +10,6 @@ _claude_encode_path() {
 CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 CS_RELEASE_REVOKED=''
 
-# Minisign public key for verifying signed releases
-CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark
 # values assume a dark canvas; on a light terminal the muted tones (comment,
 # white, dim) would wash out, so light gets darker ink mirroring the TUI palette.

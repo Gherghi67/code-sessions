@@ -21,8 +21,8 @@ test_manifest_authentication() {
     for source_file in "$SCRIPT_DIR/../lib/20-update.sh" "$SCRIPT_DIR/../install.sh.in"; do
         sed -n '/^_verify_manifest() {/,/^}/p' "$source_file" > "$TEST_TMPDIR/verify.sh"
         source "$TEST_TMPDIR/verify.sh"
-        CS_RELEASE_SIGNERS_FILE="$TEST_TMPDIR/signers"
-        CS_RELEASE_REVOKED_FILE="$TEST_TMPDIR/revoked"
+        export CS_RELEASE_SIGNERS_FILE="$TEST_TMPDIR/signers"
+        export CS_RELEASE_REVOKED_FILE="$TEST_TMPDIR/revoked"
         out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 2>&1) || {
             echo "  FAIL: a manifest signed by the release key must pass ($source_file): $out"
             return 1
@@ -48,6 +48,7 @@ test_manifest_authentication() {
         assert_eq 'Release manifest signature verification failed.' "$out" 'revocation diagnostic' || return 1
         : > "$TEST_TMPDIR/revoked"
         unset -f _verify_manifest
+        unset CS_RELEASE_SIGNERS_FILE CS_RELEASE_REVOKED_FILE
     done
 }
 
