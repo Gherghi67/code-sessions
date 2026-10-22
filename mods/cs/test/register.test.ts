@@ -32,6 +32,7 @@ let realPaths: Record<string, string>
 let timers: { ms: number; fn: () => void; kind: 'after' | 'every'; cancelled: boolean }[]
 let invalidated: string[]
 let toasts: string[]
+let logs: string[]
 let asks: { question: string; options: any }[]
 let panes: { op: 'open' | 'close'; args: any }[]
 // The engine's own record of this plugin's open panes, as `$.ui.panes()` answers.
@@ -92,6 +93,7 @@ const $ = {
     resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
     invalidate: (event: string) => { invalidated.push(event) },
     toast: (text: string) => { toasts.push(text) },
+    log: (text: string) => { logs.push(text) },
     open: async (args: any) => { panes.push({ op: 'open', args }) },
     close: async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) },
     panes: async () => enginePanes,
@@ -135,7 +137,7 @@ const findButton = (tree: any) => buttons(tree)[0]
 beforeEach(() => {
   for (const k of Object.keys(hooks)) delete hooks[k]
   percent = undefined; filled = []; ran = []; written = {}; existing = new Set(['/work/.cs/local'])
-  timers = []; invalidated = []; toasts = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []; enginePanes = []
+  timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []; enginePanes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
   nowMs = 1_800_000_000_000; livePids = new Set()
@@ -1187,6 +1189,57 @@ test('a conversation met at load is forced whatever it started at; one born of a
 
 const clearRun = () =>
   hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => ({ text: '' }))
+
+test('the first conversation leaves its session color to the launch', async () => {
+  await band()
+  await band()
+  await turnComplete()
+  expect(ran).toEqual([])
+})
+
+test('a conversation without a session color runs no color command', async () => {
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-lead\n'
+  await band()
+  await clearRun()
+  sessionId = 'uuid-next'
+  await band()
+  expect(ran).toEqual([])
+})
+
+test('a conversation outside a cs session runs no color command', async () => {
+  delete realPaths['/home/.claude-sessions/work']
+  await band()
+  await clearRun()
+  sessionId = 'uuid-next'
+  await band()
+  expect(ran).toEqual([])
+})
+
+test('a conversation after /clear reapplies the session color once', async () => {
+  await band()
+  await clearRun()
+  sessionId = 'uuid-next'
+  expect(await band()).toBe(DRAWN)
+  await band()
+  await turnComplete()
+  expect(ran).toEqual([{ command: 'color', args: 'red' }])
+})
+
+test('a refused session color leaves the drawn tree intact and logs once', async () => {
+  await band()
+  await clearRun()
+  sessionId = 'uuid-next'
+  const run = $.command.run
+  $.command.run = async (args) => { ran.push(args); throw new Error('command refused') }
+  try {
+    expect(await band()).toBe(DRAWN)
+    expect(await band()).toBe(DRAWN)
+  } finally {
+    $.command.run = run
+  }
+  expect(ran).toEqual([{ command: 'color', args: 'red' }])
+  expect(logs).toEqual(['cs: /color red did not run: Error: command refused'])
+})
 
 test('a successor that starts past the threshold still gets the countdown once the person arms a handoff themselves', async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
