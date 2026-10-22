@@ -16,7 +16,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -narrative rotate` | Archives the oldest narrative sections past the size budget. `cs <name> -narrative rotate` targets a named session. |
 | `cs -queue add "<task>"` | Adds a task. Other actions are `accept <id>`, `list`, `start [subagents\|workflow]`, `rm <n>`, `clear`, and `log`. |
 | `cs -msg <session> "note"` | Sends mail. Bare `cs -msg` reads unread mail. Use `log`, `thread <id>`, or `--reply <thread> "note"` for history and replies. |
-| `cs -spawn <name> [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. |
+| `cs -spawn <name> [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. A feature's brief (`<base>@<task>`) carries `## Goal`, `## Done when`, `## Constraints`, `## Context`, `## Review` and `## Report back`, each heading on its own line; one missing refuses the spawn and is named. |
 | `cs -conversations` | Shows the conversation chain. `cs <name> -conversations` targets another session. |
 | `cs -tag add\|rm <tag>` | Edits README frontmatter tags. Use `-tag list` or `cs <name> -tag ...` to inspect or target another session. |
 | `cs -archive <name>...`, `cs -unarchive <name>...` | Hides or restores sessions. Opening an archived session restores it. |
@@ -147,7 +147,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 
 ### Retirement
 
-- Finish can land work while the feature conversation runs, but retirement waits for it to close. Close it and rerun finish. No keystroke or signal closes the other session.
+- Finish can land work while the feature conversation runs. Retirement then waits for it to close: the retire entry writes `.cs/local/retire-staged/<task>` in the base (the captured commit and whether `--force` applied) and answers `staged <task> <sha>: ...`. When that conversation ends, its SessionEnd mails the base, and the base's Stop hook starts the entry detached (`--staged`, the stage standing in for the base's own ancestry), waits up to six seconds for it, and reports `retired` or the refusal in the turn that finds it ended. The entry re-reads the feature's lock under its openers' mutex right before the removal, so a conversation reopened meanwhile stages the retire again instead of losing its directory. `cs <base> -features` reads `staged` for it. No keystroke or signal closes the other session; the user does, when they are done there.
 - Retirement commits nothing and refuses dirty or untracked work.
 - Recreated build directories such as `node_modules`, `target`, and `.venv` go with the checkout.
 - Other ignored files go to system trash, with each file or whole-directory count listed.

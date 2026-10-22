@@ -160,6 +160,43 @@ _cs_tmux_window() {  # window, cmd
         || error "tmux new-window failed for $1"
 }
 
+# The sections a feature's brief carries, the feature skill's shape: the
+# session that reads it has nothing else of the conversation that wrote it.
+FEATURE_BRIEF_SECTIONS="Goal
+Done when
+Constraints
+Context
+Review
+Report back"
+
+# The section headings a brief carries, one per line, as Markdown reads
+# them: a heading is `## ` and the title on a line of its own, with a CR, a
+# byte-order mark on the first line, and trailing blanks ignored, and a
+# line inside a ``` or ~~~ fence is text, not a heading. Bytes, whatever the
+# locale: under a UTF-8 locale awk reads the mark as characters and the
+# byte comparison below misses it.
+_brief_sections() {  # file
+    LC_ALL=C awk '
+        NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+        { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
+        /^(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^## / { print substr($0, 4) }
+    ' "$1"
+}
+
+# Refuse a feature brief that lacks a section, naming the first missing one.
+_require_feature_brief() {  # file
+    local section present
+    present=$(_brief_sections "$1")
+    while IFS= read -r section; do
+        printf '%s\n' "$present" | grep -q -x -F -- "$section" \
+            || error "cs -spawn --brief: $1 has no '## $section' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line"
+    done <<EOF
+$FEATURE_BRIEF_SECTIONS
+EOF
+}
+
 run_spawn() {
     local name="" brief=""
     local usage='Usage: cs -spawn <name> [--brief <file>] [--task "..."] ...'
@@ -192,7 +229,9 @@ run_spawn() {
         shift
     done
     [ -n "$name" ] || error "$usage"
-    if ! cs_split_worktree_name "$name"; then
+    if cs_split_worktree_name "$name"; then
+        [ -z "$brief" ] || _require_feature_brief "$brief"
+    else
         validate_session_name "$name"
     fi
     # The spawner is whatever the environment says. It becomes the worker's

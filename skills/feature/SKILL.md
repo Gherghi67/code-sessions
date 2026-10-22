@@ -48,11 +48,25 @@ One paragraph: what to build and why.
 - Rules from this conversation the new session cannot see (design
   decisions already made, things rejected, files to leave alone).
 
+## Context
+- The base commit the feature forks from (`git rev-parse --short HEAD`)
+  and the recent commits or files on it that this work builds on.
+- What was tried or measured here that the new session would otherwise
+  repeat, with the outcome.
+
+## Review
+- What the result must pass before it is sent: the test command, and the
+  independent review expected (who runs it, what it checks).
+
 ## Report back
 When done, send a one-line result to the session that spawned you:
 cs -msg <spawner> -k result "<what landed, what is left>"
 The base session <base> then lands the work with /finish <feature>.
 ```
+
+Every section stays, each heading on its own line, with `none` under one
+that has nothing to say: `cs -spawn` refuses a feature brief that lacks one
+and names it, so a brief that reached the new session has them all.
 
 `<spawner>` is `$CLAUDE_SESSION_NAME`, this session, whatever its name: the
 result comes back here, to the conversation that asked for the feature.
@@ -81,10 +95,11 @@ the brief already carries the feature. Let the permission prompt on
 `cs -spawn` stand: that prompt is the user's confirmation that a worktree, a
 branch and a window are about to exist. Never work around it.
 
-cs refuses when the name is invalid, tmux is missing, the session is already
-open, or a pending spawn for the name exists (cs keeps the earlier brief and
-refuses the new one). Print the refusal verbatim and stop; do not retry with
-a different name on your own.
+cs refuses when the name is invalid, the brief lacks one of its sections,
+tmux is missing, the session is already open, or a pending spawn for the
+name exists (cs keeps the earlier brief and refuses the new one). A missing
+section is yours to add; print any other refusal verbatim and stop, and do
+not retry with a different name on your own.
 
 ## Report
 
@@ -93,4 +108,5 @@ attach -t cs`, or `tmux switch-client -t cs` from inside tmux). Then tell the
 user, in one or two lines, that the feature session reads its brief at
 `.cs/brief.md` and begins, that its result arrives here as mail from
 `cs -msg`, and that `/finish <feature>` lands it. This session continues with
-its own work.
+its own work. When the feature is landed, `/finish` retires its worktree
+at once, or by itself once the user closes the feature conversation.

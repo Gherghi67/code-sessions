@@ -54,6 +54,17 @@ test_feature_skill_teaches_the_spawn_with_a_brief() {
     assert_file_contains "$SKILL" "/finish" "the skill points at the landing ritual" || return 1
 }
 
+# The brief shape names every section cs -spawn requires of a feature brief
+# (lib/52-spawn.sh FEATURE_BRIEF_SECTIONS), and the skill says the spawner
+# refuses a brief without one, so the writer and the reader hold one rule.
+test_feature_skill_brief_shape_carries_context_and_review() {
+    local section
+    for section in "Goal" "Done when" "Constraints" "Context" "Review" "Report back"; do
+        assert_file_contains "$SKILL" "^## $section\$" "the shape has a '## $section' line" || return 1
+    done
+    assert_file_contains "$SKILL" "refuses a feature brief that lacks one" "the skill says the spawner refuses an incomplete brief" || return 1
+}
+
 # The brief is written to a scratch file the skill removes: the spawner copies
 # it into staging, so nothing of the skill's own lingers in the session.
 test_feature_skill_brief_is_a_temporary_file() {
@@ -65,6 +76,7 @@ run_test test_feature_skill_exists_with_frontmatter
 run_test test_feature_skill_is_model_invocable_and_keeps_the_prompt
 run_test test_feature_registered_in_all_manifests
 run_test test_feature_skill_teaches_the_spawn_with_a_brief
+run_test test_feature_skill_brief_shape_carries_context_and_review
 run_test test_feature_skill_brief_is_a_temporary_file
 
 report_results

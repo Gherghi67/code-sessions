@@ -61,7 +61,9 @@ test_finish_skill_teaches_the_ritual() {
     assert_file_contains "$SKILL" "[-]-force" "and takes force on the content or the PR evidence" || return 1
     assert_file_contains "$SKILL" "no merge base" "a not-landed capture with no shared history has no path lines" || return 1
     assert_file_contains "$SKILL" "equals the captured" "force needs the PR head to be the captured commit" || return 1
-    assert_file_contains "$SKILL" "conversation is still open" "the open-conversation refusal is the user's to act on" || return 1
+    assert_file_contains "$SKILL" 'retire-staged/<task>' "an open conversation stages the retire in the base" || return 1
+    assert_file_contains "$SKILL" "go by themselves after" "and the skill says the removal needs nothing more from the user" || return 1
+    assert_file_not_contains "$SKILL" "run \`/finish <task>\` here again" "no second /finish is asked for the open-conversation case" || return 1
     assert_file_not_contains "$SKILL" "[-]-merge" "the retired verb is never named" || return 1
     assert_file_contains "$SKILL" "handoff:" "feature-session hand-off documented" || return 1
     assert_file_contains "$SKILL" "NOT part of this integrate" "dirt is reported" || return 1
