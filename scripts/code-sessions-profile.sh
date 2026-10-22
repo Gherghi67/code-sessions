@@ -3,6 +3,13 @@
 # ABOUTME: Installed as code-sessions and ccs; inside the profile the fork runs as cs, and the original cs stays independent.
 set -eu
 profile_home=$(CDPATH='' cd -P "$(dirname "$0")/../share/code-sessions/home" && pwd)
+# The original cs's sessions root, as the original would read it here. A
+# session of this profile has the profile's root in CS_SESSIONS_ROOT, so the
+# launch that opened it hands the original's on; one opened by a launcher that
+# did not leaves it unknown.
+original_root=${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}
+case "$original_root" in /*) ;; *) original_root=${PWD%/}/$original_root ;; esac
+case "$original_root/" in "$profile_home/"*) original_root=${CODE_SESSIONS_ORIGINAL_ROOT:-} ;; esac
 
 case "${1:-}" in
     -update|-uninstall)
@@ -20,9 +27,6 @@ case "${1:-}" in
         # session is still inside that session.
         here=$(pwd -P)
         probe=$here
-        stable_root=${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}
-        # A session of this profile exports the profile's root.
-        case "$stable_root/" in "$profile_home/"*) stable_root=$HOME/.claude-sessions ;; esac
         case "$probe/" in
             "$profile_home/"*) ;;
             *)
@@ -38,13 +42,14 @@ case "${1:-}" in
                         done
                         [ -z "$ours" ] || break
                         theirs=
-                        if [ "$probe" = "$here" ]; then
+                        # With the original's root unknown, any .cs refuses.
+                        if [ "$probe" = "$here" ] || [ -z "$original_root" ]; then
                             theirs=1
                         else
                             # By inode, not by spelling: pwd -P keeps the case
                             # a folder was typed in where the filesystem
                             # ignores case.
-                            for entry in "$stable_root"/* "$stable_root"/.[!.]* "$stable_root"/..?*; do
+                            for entry in "$original_root"/* "$original_root"/.[!.]* "$original_root"/..?*; do
                                 if [ -d "$entry" ] && [ "$entry" -ef "$probe" ]; then
                                     theirs=1
                                     break
@@ -73,6 +78,7 @@ export CLAUDE_CONFIG_DIR="$profile_home/.claude" CODEX_HOME="$profile_home/.code
 export CLAUDE_SECURESTORAGE_CONFIG_DIR=''
 export CS_INSTALL_DIR="$profile_home/.local/bin"
 export CS_SESSIONS_ROOT="$profile_home/sessions" CS_CLAUDE_DIR="$profile_home/.claude"
+[ -z "$original_root" ] || export CODE_SESSIONS_ORIGINAL_ROOT="$original_root"
 export CS_HOOKS_DIR="$profile_home/.claude/hooks/cs" CS_TRANSCRIPTS_DIR="$profile_home/.claude/projects"
 export CS_COMMANDS_DIR="$profile_home/.claude/commands" CS_SKILLS_DIR="$profile_home/.claude/skills"
 export CS_CONFIG_DIR="$profile_home/.config/cs" CS_CACHE_DIR="$profile_home/.cache/cs"

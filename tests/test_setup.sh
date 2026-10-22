@@ -250,43 +250,69 @@ test_public_launchers_refuse_only_registered_original_workspaces_above() {
     run_setup --skip-tui-build || return 1
     cat > "$PROFILE/.local/bin/cs" <<'EOF'
 #!/bin/sh
-printf 'profile cs %s\n' "$*"
+printf 'profile cs %s, original root %s\n' "$*" "${CODE_SESSIONS_ORIGINAL_ROOT-unset}"
 EOF
     chmod +x "$PROFILE/.local/bin/cs"
-    local docs="$HOME/Documents" status output
+    # ccs -adopt from the user's shell, whose CS_SESSIONS_ROOT is the original
+    # cs's ('' for its default), or from inside a profile session, whose
+    # CS_SESSIONS_ROOT is the profile's and which knows the original's root
+    # only from the launch that opened it ('' for a launch that named none).
+    adopt_from() {  # outside|inside original_root dir
+        (
+            cd "$3" || exit
+            unset CODE_SESSIONS_ORIGINAL_ROOT
+            if [ "$1" = inside ]; then
+                export CS_SESSIONS_ROOT="$PROFILE/sessions"
+                [ -z "$2" ] || export CODE_SESSIONS_ORIGINAL_ROOT="$2"
+            else
+                export CS_SESSIONS_ROOT="$2"
+            fi
+            "$HOME/.local/bin/ccs" -adopt "${3##*/}"
+        )
+    }
+    refused() {  # adopt_from's arguments
+        local status=0
+        adopt_from "$@" > "$TEST_TMPDIR/refusal" 2>&1 || status=$?
+        assert_eq 1 "$status" || return 1
+        assert_file_contains "$TEST_TMPDIR/refusal" 'workspace of the original cs'
+    }
+    local docs="$HOME/Documents" stable="$HOME/.claude-sessions" status output
     mkdir -p "$docs/.cs" "$docs/my-neovim" "$docs/linked/.cs" "$docs/linked/sub" \
         "$docs/linked/clone/.cs" "$docs/linked/clone/work" \
-        "$HOME/.claude-sessions/stable-project/sub" \
-        "$HOME/.claude-sessions/stable-project/clone/.cs" "$HOME/.claude-sessions/stable-project/clone/work"
-    ln -s "$docs/linked" "$HOME/.claude-sessions/linked"
-    output=$(cd "$docs/my-neovim" && CS_SESSIONS_ROOT="$HOME/.claude-sessions" "$HOME/.local/bin/ccs" -adopt my-neovim) \
-        || return 1
-    assert_eq 'profile cs -adopt my-neovim' "$output" || return 1
+        "$stable/stable-project/sub" "$stable/stable-project/clone/.cs" "$stable/stable-project/clone/work"
+    ln -s "$docs/linked" "$stable/linked"
+    # The launcher hands the original's root on to the session it opens.
+    output=$(adopt_from outside '' "$docs/my-neovim") || return 1
+    assert_eq "profile cs -adopt my-neovim, original root $stable" "$output" || return 1
+    output=$(adopt_from inside "$stable" "$docs/my-neovim") || return 1
+    assert_eq "profile cs -adopt my-neovim, original root $stable" "$output" || return 1
     # The folder itself still refuses on any .cs the profile does not have.
     status=0
-    (cd "$docs" && CS_SESSIONS_ROOT="$HOME/.claude-sessions" "$HOME/.local/bin/ccs" .) \
+    (cd "$docs" && CS_SESSIONS_ROOT="$stable" "$HOME/.local/bin/ccs" .) \
         > "$TEST_TMPDIR/refusal" 2>&1 || status=$?
     assert_eq 1 "$status" || return 1
     assert_file_contains "$TEST_TMPDIR/refusal" 'workspace of the original cs' || return 1
-    # Below an adopted project or a session cs made in its root, including
-    # from inside a profile session, whose CS_SESSIONS_ROOT is the profile's,
-    # and below a repository with a .cs of its own cloned inside either.
-    local dir root dirs=("$docs/linked/sub" "$HOME/.claude-sessions/stable-project/sub" \
-        "$docs/linked/clone/work" "$HOME/.claude-sessions/stable-project/clone/work")
+    # Below an adopted project or a session cs made in its root, from either
+    # side, and below a repository with a .cs of its own cloned inside either.
+    local dir dirs=("$docs/linked/sub" "$stable/stable-project/sub" \
+        "$docs/linked/clone/work" "$stable/stable-project/clone/work")
     # A registered folder is the same folder however its path is spelled:
     # where the filesystem ignores case, pwd -P keeps the case it was typed in.
     if [ "$HOME/DOCUMENTS" -ef "$docs" ]; then
         dirs+=("$HOME/DOCUMENTS/LINKED/sub" "$HOME/.CLAUDE-SESSIONS/STABLE-PROJECT/sub")
     fi
     for dir in "${dirs[@]}"; do
-        for root in "$HOME/.claude-sessions" "$PROFILE/sessions"; do
-            status=0
-            (cd "$dir" && CS_SESSIONS_ROOT="$root" "$HOME/.local/bin/ccs" -adopt sub) \
-                > "$TEST_TMPDIR/refusal" 2>&1 || status=$?
-            assert_eq 1 "$status" || return 1
-            assert_file_contains "$TEST_TMPDIR/refusal" 'workspace of the original cs' || return 1
-        done
+        refused outside "$stable" "$dir" || return 1
+        refused inside "$stable" "$dir" || return 1
     done
+    # An original cs with a sessions root of its own. Inside a profile session
+    # with no root handed on, every .cs above refuses, as it did before the
+    # launcher asked the original's root.
+    mkdir -p "$HOME/own-root" "$docs/custom/.cs" "$docs/custom/sub"
+    ln -s "$docs/custom" "$HOME/own-root/custom"
+    refused outside "$HOME/own-root" "$docs/custom/sub" || return 1
+    refused inside "$HOME/own-root" "$docs/custom/sub" || return 1
+    refused inside '' "$docs/my-neovim" || return 1
 }
 
 # The profile kept its secrets in an encrypted file per session until the
