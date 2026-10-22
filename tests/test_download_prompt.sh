@@ -8,9 +8,18 @@ source "$SCRIPT_DIR/test_lib.sh"
 CS_SECRETS_BIN="$SCRIPT_DIR/../bin/cs-secrets"
 
 # ============================================================================
-# minisign is no longer a hard dependency (SHA-256 is primary)
-# Verify minisign_ensure_binary (download prompt) was removed
+# Release verification requires SSH signatures and manifest digests.
 # ============================================================================
+
+test_no_release_minisign() {
+    local file
+    for file in "$CS_BIN" "$SCRIPT_DIR/../install.sh"; do
+        if grep -Eq 'minisign|CS_SIGN_PUBKEY' "$file"; then
+            echo "  FAIL: release verification must not contain minisign or CS_SIGN_PUBKEY"
+            return 1
+        fi
+    done
+}
 
 test_no_minisign_download_prompt() {
     if grep -q 'Download minisign?' "$CS_BIN" 2>/dev/null; then
@@ -74,9 +83,10 @@ echo "cs download prompt tests"
 echo "========================"
 echo ""
 
-# minisign hard dep removed, SHA-256 is primary
+# Release authentication has no minisign download prompt.
 run_test test_no_minisign_download_prompt
 run_test test_no_minisign_ensure_binary
+run_test test_no_release_minisign
 run_test test_has_verify_checksum
 run_test test_has_sha256_verification
 
