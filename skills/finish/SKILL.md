@@ -154,7 +154,7 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
      both shas and the differing paths, and stop. Any other `pr_state`:
      print `retire_note` and the differing paths, and stop; nothing is
      removed. (The entry refuses a tip past the captured commit under
-     --force as well.)
+     --force as well, unless the base already holds that tip.)
    - `retire: N commit(s) ... not integrated` — print it and stop; the next
      `/finish <task>` captures them.
 
