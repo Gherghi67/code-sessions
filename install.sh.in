@@ -96,8 +96,8 @@ RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 
 # The sha256 of every file a web install downloads, as "<sha256>  <repo
 # path>", written by build.sh from the files it was built with. This
-# installer is checksum-verified (and signature-verified when minisign is
-# installed) before `cs -update` runs it, so a payload file that does not
+# installer is authenticated by an SSH-signed manifest before `cs -update`
+# runs it, so a payload file that does not
 # match is not the file that was released.
 # @@CS_PAYLOAD_SHA256@@
 
@@ -130,10 +130,8 @@ _refuse_a_hook_event_that_is_not_a_list() {
 }
 _refuse_a_hook_event_that_is_not_a_list
 
-# Minisign public key for verifying signed releases
 CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 CS_RELEASE_REVOKED=''
-CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 
 _verify_manifest() {
     (
@@ -161,6 +159,29 @@ _verify_manifest() {
             exit 1
         fi
     )
+}
+
+verify_checksum() {
+    local file="$1" checksumfile="$2" asset="${3:-${1##*/}}"
+    local expected actual
+    expected=$(awk -v asset="$asset" '
+        $2 == asset {
+            count++
+            if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) bad=1
+            digest=$1
+        }
+        END { if (count != 1 || bad) exit 1; print digest }
+    ' "$checksumfile") || return 1
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$file" | awk '{print $1}') || return 1
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}') || return 1
+    else
+        # Fail closed: a verification gate that can't verify must not pass.
+        echo "Error: no sha256sum or shasum found — cannot verify download. Install one and retry." >&2
+        return 1
+    fi
+    [ "$expected" = "$actual" ]
 }
 
 # Detect if running from cloned repo or web install. An installer read from a
@@ -432,69 +453,22 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
     _tui_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}"
     if [ -n "$_cs_version" ] && curl -fsSL --head "$_tui_url" >/dev/null 2>&1 \
         && curl -fsSL "$_tui_url" -o "$_tui_dst"; then
-        installed "cs-tui" "$INSTALL_DIR/cs-tui"
-
-        # Verify cs-tui checksum (hard gate). The rule is the one stated in
-        # lib/20-update.sh's verify_checksum: a gate that cannot verify must not
-        # pass. An unfetchable .sha256 and a digest that cannot be computed both
-        # leave the binary unverified, so both remove it.
-        _checksum_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}.sha256"
-        _verified=0
-        _mismatch=0
-        if curl -fsSL "$_checksum_url" -o "$_tui_dst.sha256" 2>/dev/null; then
-            _expected=$(awk '{print $1}' "$_tui_dst.sha256")
-            _actual=""
-            # `|| _actual=""`: the script runs under `set -euo pipefail`, so a
-            # digest tool that exits non-zero would otherwise abort the whole
-            # install here — leaving both the unverified binary and its .sha256
-            # behind — rather than falling through to the removal below.
-            if command -v sha256sum >/dev/null 2>&1; then
-                _actual=$(sha256sum "$_tui_dst" 2>/dev/null | awk '{print $1}') || _actual=""
-            elif command -v shasum >/dev/null 2>&1; then
-                _actual=$(shasum -a 256 "$_tui_dst" 2>/dev/null | awk '{print $1}') || _actual=""
-            fi
-            if [ -n "$_expected" ] && [ -n "$_actual" ]; then
-                if [ "$_expected" = "$_actual" ]; then
-                    _verified=1
-                else
-                    _mismatch=1
-                fi
-            fi
-            rm -f "$_tui_dst.sha256"
-        fi
-        if [ "$_verified" != 1 ]; then
+        _manifest_url="${RELEASES_URL}/v${_cs_version}/SHA256SUMS"
+        if ! curl -fsSL "$_manifest_url" -o "$STAGE_DIR/SHA256SUMS" 2>/dev/null \
+            || ! curl -fsSL "$_manifest_url.sig" -o "$STAGE_DIR/SHA256SUMS.sig" 2>/dev/null; then
             rm -f "$_tui_dst"
-            if [ "$_mismatch" = 1 ]; then
-                warn "cs-tui checksum verification failed -- removed"
-            else
-                warn "cs-tui could not be verified (no checksum or no digest tool) -- removed"
-            fi
-        fi
-
-        # Verify cs-tui signature (best-effort: minisign may not be installed)
-        _sig_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}.minisig"
-        if curl -fsSL "$_sig_url" -o "$_tui_dst.minisig" 2>/dev/null; then
-            _ms_bin=""
-            if command -v minisign >/dev/null 2>&1; then
-                _ms_bin=$(command -v minisign)
-            elif [ -x "$HOME/.local/bin/minisign" ]; then
-                _ms_bin="$HOME/.local/bin/minisign"
-            fi
-            # Nothing to verify once the checksum gate above removed the binary:
-            # minisign fails on a path that is not there, which would report a
-            # signature failure for a removal the gate has already explained,
-            # and send the reader after release-key tampering that never was.
-            if [ -n "$_ms_bin" ] && [ -f "$_tui_dst" ]; then
-                if ! "$_ms_bin" -Vm "$_tui_dst" -P "$CS_SIGN_PUBKEY" -x "$_tui_dst.minisig" >/dev/null 2>&1; then
-                    rm -f "$_tui_dst" "$_tui_dst.minisig"
-                    warn "cs-tui signature verification failed -- removed"
-                fi
-            fi
-            rm -f "$_tui_dst.minisig"
+            warn "cs-tui could not be verified (manifest or signature unavailable) -- removed"
+        elif ! _verify_manifest "$STAGE_DIR/SHA256SUMS" "$STAGE_DIR/SHA256SUMS.sig"; then
+            rm -f "$_tui_dst"
+            warn "cs-tui signature verification failed -- removed"
+        elif ! verify_checksum "$_tui_dst" "$STAGE_DIR/SHA256SUMS" "$_tui_base"; then
+            rm -f "$_tui_dst"
+            warn "cs-tui could not be verified (manifest entry or digest unavailable) -- removed"
         fi
         if [ -f "$_tui_dst" ]; then
             _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
             _record_tui_origin release
+            installed "cs-tui" "$INSTALL_DIR/cs-tui"
         fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
