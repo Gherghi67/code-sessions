@@ -169,13 +169,26 @@ Context
 Review
 Report back"
 
+# The section headings a brief carries, one per line, as Markdown reads
+# them: a heading is `## ` and the title on a line of its own, with a CR, a
+# byte-order mark on the first line, and trailing blanks ignored, and a
+# line inside a ``` or ~~~ fence is text, not a heading.
+_brief_sections() {  # file
+    awk '
+        NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+        { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
+        /^(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^## / { print substr($0, 4) }
+    ' "$1"
+}
+
 # Refuse a feature brief that lacks a section, naming the first missing one.
-# A section is its heading on a line of its own; a heading with words after
-# it is not the section.
 _require_feature_brief() {  # file
-    local section
+    local section present
+    present=$(_brief_sections "$1")
     while IFS= read -r section; do
-        grep -q -x -F -- "## $section" "$1" \
+        printf '%s\n' "$present" | grep -q -x -F -- "$section" \
             || error "cs -spawn --brief: $1 has no '## $section' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line"
     done <<EOF
 $FEATURE_BRIEF_SECTIONS

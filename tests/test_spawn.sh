@@ -363,6 +363,23 @@ test_spawn_refuses_a_feature_brief_missing_a_section() {
     assert_output_contains "$err" "has no '## Review' section" "a heading with extra words is not the section" || return 1
 }
 
+# The sections are read as Markdown reads them: CRLF, a byte-order mark and
+# trailing blanks do not hide a heading, and a heading inside a code fence is
+# not one.
+test_spawn_reads_feature_brief_sections_as_markdown() {
+    local brief="$TEST_TMPDIR/brief.md" err rc=0
+    _feature_brief "$brief"
+    { printf '\xef\xbb\xbf'; sed 's/$/\r/; s/^## Review\r$/## Review  \r/' "$brief"; } > "$brief.alt" && mv "$brief.alt" "$brief"
+    CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
+        || { echo "  a CRLF brief with a BOM and a trailing blank was refused"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/.spawn" "$FAKE_TMUX_DIR"; mkdir -p "$FAKE_TMUX_DIR"
+    _feature_brief "$brief"
+    { printf '# feature\n\n```\n'; sed 1d "$brief"; printf '```\n'; } > "$brief.alt" && mv "$brief.alt" "$brief"
+    err=$(CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" 2>&1 >/dev/null) && rc=1
+    [ "$rc" = 0 ] || { echo "  six headings inside a code fence passed as sections"; return 1; }
+    assert_output_contains "$err" "has no '## Goal' section" "a fenced heading is not a section" || return 1
+}
+
 test_spawn_accepts_a_complete_feature_brief() {
     local brief="$TEST_TMPDIR/brief.md"
     _feature_brief "$brief"
@@ -1060,6 +1077,7 @@ run_test test_spawn_rejects_an_invalid_spawner_name
 run_test test_spawn_stages_the_brief_inside_the_seed
 run_test test_spawn_refuses_a_feature_brief_missing_a_section
 run_test test_spawn_accepts_a_complete_feature_brief
+run_test test_spawn_reads_feature_brief_sections_as_markdown
 run_test test_spawn_brief_and_tasks_stage_together
 run_test test_spawn_refuses_a_task_equal_to_the_brief_marker
 run_test test_spawn_concurrent_same_name_publishes_one_whole_seed
