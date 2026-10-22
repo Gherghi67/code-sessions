@@ -684,8 +684,10 @@ _qpark() {  # kind reading limit remaining note
 # Stop starts the entry the stage records, detached from this hook: a retire
 # that fuses records and trashes ignored files outran the Stop budget (12.6 s
 # measured against 10 s), and a hook killed mid-fuse stranded every record.
-# The run's pid lands in <task>.run and its output in <task>.out; the Stop that
-# finds the run ended reports the outcome and takes the turn. One stage per
+# The run's pid lands in retire-runs/<task>.run and its output in
+# retire-runs/<task>.out, a directory of their own so a feature named x.run
+# can never be read as x's run; the Stop that finds the run ended reports the
+# outcome, drops the stage and both records, and takes the turn. One stage per
 # Stop. A stage the lead cannot read is dropped and reported, never guessed
 # at. Lead only, for the reason the queue drain is: a teammate's Stop would
 # race the lead to the same removal.
@@ -693,20 +695,20 @@ _retire_report() {  # reason
     jq -nc --arg r "$1" '{decision:"block", reason:$r}'
     exit 0
 }
-# Wait up to six seconds for the run <stage>.run names, then read its output:
+# Wait up to six seconds for the run <run>.run names, then read its output:
 # a run still going returns 1 and keeps everything; a re-stage (the
 # conversation came back before the removal) keeps the stage and returns 1;
 # any other end drops the stage and reports it, taking the turn.
-_retire_settle() {  # stage task
+_retire_settle() {  # stage task run
     local pid out waited=0 wt_name="$CLAUDE_SESSION_NAME@$2"
-    pid=$(tr -d '[:space:]' < "$1.run" 2>/dev/null || true)
+    pid=$(tr -d '[:space:]' < "$3.run" 2>/dev/null || true)
     while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 12 ]; do
         sleep 0.5
         waited=$((waited + 1))
     done
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
-    out=$(cat "$1.out" 2>/dev/null || true)
-    rm -f "$1.run" "$1.out"
+    out=$(cat "$3.out" 2>/dev/null || true)
+    rm -f "$3.run" "$3.out"
     if printf '%s\n' "$out" | grep -q "^staged $2 "; then return 1; fi
     rm -f "$1"
     if printf '%s\n' "$out" | grep -q "^retired $2 "; then
@@ -718,12 +720,12 @@ if [ "$HOOK_EVENT" = "Stop" ] && [ -d "$LOCAL/retire-staged" ] && _mail_is_lead 
     && command -v live_lock_pid >/dev/null 2>&1; then
     for _stage in "$LOCAL"/retire-staged/*; do
         [ -f "$_stage" ] || continue
-        case "$_stage" in *.run|*.out) continue ;; esac
         _task="${_stage##*/}"
+        _run="$LOCAL/retire-runs/$_task"
         _wt="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}/$CLAUDE_SESSION_NAME@$_task"
         # A run started by an earlier Stop: wait a little for it, then read it.
-        if [ -f "$_stage.run" ]; then
-            _retire_settle "$_stage" "$_task" || continue
+        if [ -f "$_run.run" ]; then
+            _retire_settle "$_stage" "$_task" "$_run" || continue
         fi
         _sha=$(awk 'index($0, "sha: ") == 1 { print substr($0, 6); exit }' "$_stage" 2>/dev/null || true)
         _force=$(awk 'index($0, "force: ") == 1 { print substr($0, 8); exit }' "$_stage" 2>/dev/null || true)
@@ -753,11 +755,12 @@ if [ "$HOOK_EVENT" = "Stop" ] && [ -d "$LOCAL/retire-staged" ] && _mail_is_lead 
         # cs locks with, so it is present wherever cs runs.
         set -- "$CLAUDE_SESSION_NAME" -retire-feature "$_task" "$_sha" --staged
         [ "$_force" = 0 ] || set -- "$@" --force
+        cs_mkdir_inside "$LOCAL/retire-runs" || _retire_report "cs: could not create $LOCAL/retire-runs to record the staged retire of $_task; run /finish $_task again. Tell the user in one line."
         perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127' -- "$_cs" "$@" \
-            > "$_stage.out" 2>&1 < /dev/null &
-        printf '%s\n' "$!" > "$_stage.run"
+            > "$_run.out" 2>&1 < /dev/null &
+        printf '%s\n' "$!" > "$_run.run"
         # Most retires end within the wait; the report then takes this Stop.
-        _retire_settle "$_stage" "$_task" || continue
+        _retire_settle "$_stage" "$_task" "$_run" || continue
     done
 fi
 

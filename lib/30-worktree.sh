@@ -1351,7 +1351,9 @@ $remove_err${trashed:+$nl$trashed}"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     _retire_trashed_note ""
-    rm -f "$stage"
+    # A staged run leaves the stage for the base's Stop hook, which reports
+    # the outcome and drops it; a direct retire has no hook behind it.
+    [ -n "$staged" ] || rm -f "$stage"
     printf 'retired %s %s\n' "$task" "$sha"
 }
 

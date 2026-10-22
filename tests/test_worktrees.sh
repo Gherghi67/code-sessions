@@ -1121,13 +1121,15 @@ test_stop_hook_keeps_a_stage_whose_run_restaged_behind_a_warning() {
     base_dir=$(create_test_session_with_git "myproj")
     { read -r stage; read -r sha; } < <(_staged_feature "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     # An ended run (a pid nothing runs) whose output warned before it re-staged.
-    printf '%s\n' 999999 > "$stage.run"
-    printf 'Warning: something about the base\nstaged fix-auth %s: the conversation reopened its worktree (PID 1); the worktree and branch are removed from this session once that conversation closes\n' "$sha" > "$stage.out"
+    local run="$base_dir/.cs/local/retire-runs/fix-auth"
+    mkdir -p "${run%/*}"
+    printf '%s\n' 999999 > "$run.run"
+    printf 'Warning: something about the base\nstaged fix-auth %s: the conversation reopened its worktree (PID 1); the worktree and branch are removed from this session once that conversation closes\n' "$sha" > "$run.out"
     out=$(_base_stop "$base_dir")
     case "$out" in *retire*) echo "  a re-stage was reported as an outcome: $out"; return 1 ;; esac
     assert_file_exists "$stage" "stage kept" || return 1
-    assert_not_exists "$stage.run" "run record cleared" || return 1
-    assert_not_exists "$stage.out" "run output cleared" || return 1
+    assert_not_exists "$run.run" "run record cleared" || return 1
+    assert_not_exists "$run.out" "run output cleared" || return 1
     assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
 }
 
@@ -1135,15 +1137,43 @@ test_stop_hook_leaves_a_run_still_going() {
     local base_dir stage out sleeper
     base_dir=$(create_test_session_with_git "myproj")
     stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    local run="$base_dir/.cs/local/retire-runs/fix-auth"
+    mkdir -p "${run%/*}"
     sleep 60 &
     sleeper=$!
-    printf '%s\n' "$sleeper" > "$stage.run"
-    : > "$stage.out"
+    printf '%s\n' "$sleeper" > "$run.run"
+    : > "$run.out"
     out=$(_base_stop "$base_dir")
     kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null || true
     case "$out" in *retire*) echo "  a running retire was reported: $out"; return 1 ;; esac
     assert_file_exists "$stage" "stage kept" || return 1
-    assert_file_exists "$stage.run" "run record kept while it runs" || return 1
+    assert_file_exists "$run.run" "run record kept while it runs" || return 1
+}
+
+# A retire that outruns the settle and succeeds: the entry leaves the stage
+# in place under --staged, so the Stop that finds the run ended still has
+# something to report and drops the stage with the run's records.
+test_stop_hook_reports_a_staged_success_that_outran_the_settle() {
+    local base_dir stage sha out sleeper
+    base_dir=$(create_test_session_with_git "myproj")
+    { read -r stage; read -r sha; } < <(_staged_feature "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    local run="$base_dir/.cs/local/retire-runs/fix-auth"
+    mkdir -p "${run%/*}"
+    "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" --staged > "$run.out" 2>&1 || { echo "  FAIL: staged retire: $(cat "$run.out")"; return 1; }
+    assert_file_exists "$stage" "a staged success leaves the stage for the hook" || return 1
+    sleep 60 &
+    sleeper=$!
+    printf '%s\n' "$sleeper" > "$run.run"
+    out=$(_base_stop "$base_dir")
+    case "$out" in *retire*) echo "  reported while the run was still going: $out"; return 1 ;; esac
+    kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null || true
+    out=$(_base_stop "$base_dir")
+    assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged ran: retired fix-auth $sha" \
+        "the Stop that finds the run ended reports the success" || return 1
+    assert_not_exists "$stage" "stage dropped" || return 1
+    assert_not_exists "$run.run" "run record dropped" || return 1
+    assert_not_exists "$run.out" "run output dropped" || return 1
 }
 
 test_stop_hook_drops_an_unreadable_stage_and_says_so() {
@@ -1209,6 +1239,7 @@ test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry() {
     kill "$holder" 2>/dev/null
     assert_eq "retired fix-auth $sha" "$output" "and the retire goes through" || return 1
     assert_not_exists "$wt" "worktree removed" || return 1
+    assert_file_exists "$stage" "a staged run leaves the stage for the hook to drop" || return 1
     rm -f "$base_dir/.cs/session.lock"
 }
 
@@ -2019,6 +2050,7 @@ run_test test_stop_hook_drops_a_stage_whose_worktree_is_already_gone
 run_test test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage
 run_test test_stop_hook_keeps_a_stage_whose_run_restaged_behind_a_warning
 run_test test_stop_hook_leaves_a_run_still_going
+run_test test_stop_hook_reports_a_staged_success_that_outran_the_settle
 run_test test_retire_refuses_a_foreign_caller_before_it_stages
 run_test test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry
 run_test test_retire_refuses_while_an_opener_holds_the_feature_mutex
