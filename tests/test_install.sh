@@ -234,6 +234,51 @@ EXPECT
     done
 }
 
+test_install_asks_caps_for_a_chaining_statusline() {
+    command -v expect >/dev/null 2>&1 \
+        || { echo "    SKIP (expect not installed; the caps question needs a tty)"; return 77; }
+    local state home exp caps rc
+    for state in unrelated chains; do
+        home="$TEST_TMPDIR/home-$state"
+        exp="$TEST_TMPDIR/$state.exp"
+        mkdir -p "$home/.claude"
+        case "$state" in
+            unrelated) printf '%s\n' '#!/bin/sh' 'printf bar' > "$home/bridge.sh" ;;
+            chains) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh" ;;
+        esac
+        printf '%s\n' '{"statusLine":{"command":"~/bridge.sh --example"}}' \
+            > "$home/.claude/settings.json"
+        cat > "$exp" <<EXPECT
+set timeout 120
+log_file -noappend $TEST_TMPDIR/$state.out
+spawn env -u CLAUDE_CONFIG_DIR HOME=$home XDG_CONFIG_HOME=$home/config bash $INSTALL_SH
+expect {
+    -re {status line.*\[y/N\]} { send "n"; exp_continue }
+    -re {rounded shapes.*\[y/n\]} { send "y"; exp_continue }
+    -re {$_ROTATE_WRAP_ASK_RE} { send "n"; exp_continue }
+    timeout { exit 124 }
+    eof
+}
+catch wait result
+exit [lindex \$result 3]
+EXPECT
+        rc=0
+        expect -f "$exp" > /dev/null 2>&1 || rc=$?
+        assert_eq 0 "$rc" "$state bridge install completes" || return 1
+        assert_eq '~/bridge.sh --example' \
+            "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" \
+            "$state bridge registration stays unchanged" || return 1
+        caps="$home/config/cs/statusline-caps"
+        if [ "$state" = chains ]; then
+            local answer=""
+            [ ! -f "$caps" ] || answer=$(cat "$caps")
+            assert_eq on "$answer" "a retained chaining bridge receives the caps answer" || return 1
+        else
+            [ ! -e "$caps" ] || { echo "  FAIL: an unrelated bridge must not get a caps answer"; return 1; }
+        fi
+    done
+}
+
 # `cs -statusline caps on|off` records this machine's answer to the rounded-
 # caps question, the file bin/cs-statusline reads before drawing a cap.
 test_statusline_caps_on_off_writes_the_answer_file() {
@@ -3221,6 +3266,7 @@ test_uninstall_removes_update_cache() {
 }
 
 
+run_test test_install_asks_caps_for_a_chaining_statusline
 run_test test_install_completes_when_zshrc_has_no_fpath
 run_test test_install_respects_custom_fpath_dir
 run_test test_manifest_arrays_in_sync
