@@ -1,6 +1,6 @@
 ---
 name: finish
-description: Land a finished feature in its base and retire its worktree - capture the feature commit, merge base+feature in a temporary worktree (running the repo's gates there only when asked with --gate), fast-forward the base, report GitHub PR state, then remove the worktree and branch once the feature conversation is closed. Invoke when the user asks to finish, land, integrate or retire a feature or worktree.
+description: Land a finished feature in its base and retire its worktree - capture the feature commit, merge base+feature in a temporary worktree (running the repo's gates there only when asked with --gate), fast-forward the base, report GitHub PR state, then remove the worktree and branch, at once or by itself once the feature conversation closes. Invoke when the user asks to finish, land, integrate or retire a feature or worktree.
 disable-model-invocation: true
 ---
 
@@ -9,10 +9,11 @@ retire. This skill integrates work that is already
 reviewed to the user's standard; it is the mechanical closer, not a review.
 The landing never touches the feature worktree. Retirement (fuse its session
 records into the base, remove the worktree, delete the branch) runs in the
-same ritual, but only once the feature conversation is closed: a directory
-cannot be removed from under a running Claude, so while that conversation is
-still open the skill says so plainly and the user closes it and runs
-`/finish <task>` again. Abandoning a feature instead is `cs -rm <base>@<task>`,
+same ritual. A directory cannot be removed from under a running Claude, so
+while the feature conversation is still open the entry stages the retire in
+the base instead, and this session's Stop hook runs it by itself once that
+conversation closes; the user closes it when they are done there and nothing
+else is asked of them. Abandoning a feature instead is `cs -rm <base>@<task>`,
 the user's own call.
 
 ## Detect the context
@@ -153,11 +154,18 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
      both shas and the differing paths, and stop. Any other `pr_state`:
      print `retire_note` and the differing paths, and stop; nothing is
      removed. (The entry refuses a tip past the captured commit under
-     --force as well.)
+     --force as well, unless the base already holds that tip.)
    - `retire: N commit(s) ... not integrated` — print it and stop; the next
      `/finish <task>` captures them.
 
-   The entry answers `retired <task> <sha>` or refuses. Before `retired` it
+   The entry answers `retired <task> <sha>`, `staged <task> <sha>: ...`, or
+   refuses. `staged` means the feature conversation is still open in the
+   worktree: the entry recorded the retire in the base
+   (`.cs/local/retire-staged/<task>`), and the base's Stop hook runs it once
+   that conversation's lock is gone, with every refusal intact. Relay the
+   line and tell the user the worktree and branch go by themselves after
+   they close that conversation; nothing else is needed, and a later turn
+   here reports `retired` or the refusal. Before `retired` it
    may print `Moved N ignored files to the system trash:` with one line per
    file it moved, and one per directory it moved whole (its path and the
    number of files inside): relay that block whole, since the user's ignored
@@ -166,17 +174,17 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
    relay each such line, since that is where the feature's copy now lives.
    A refusal can carry the same block (`... before this failed:`); print it
    with the refusal. Print a refusal
-   verbatim: it is written for the user, and the one that matters most says
-   the feature conversation is still open and asks them to close it
-   themselves and run `/finish <task>` here again. Never work around a
+   verbatim: it is written for the user. Never work around a
    refusal — no `git worktree remove`, no `git branch -d`/`-D`, no signals
-   or keystrokes into the other session.
+   or keystrokes into the other session, and never close the feature
+   conversation for the user.
 7. **Report.** End with, in this order: what landed (`sha -> base_head`);
    the `not_integrated` count ("N commits on cs/<task> after the captured
    commit are NOT integrated"); the dirt list ("NOT part of this integrate",
    and now gone with the worktree when retirement succeeded — say so); the
-   PR line; and the retirement outcome (the `retired` line, or the refusal
-   and what the user does next).
+   PR line; and the retirement outcome (the `retired` line, the `staged`
+   line with the one sentence above, or the refusal and what the user does
+   next).
 
 ## After a green integrate — offers, not actions
 
@@ -186,10 +194,12 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
 - Offer `/checkpoint <feature>-integrated`.
 - If the project instructions document a deploy step, offer it (one
   question). Never deploy unprompted.
-- When retirement was refused because the feature conversation is still
+- When retirement was staged because the feature conversation is still
   open and the user means to keep working there: `git merge <base branch>`
   in the worktree brings the landing back; never rebase once a PR exists;
-  after a squash landing, continue on a new task.
+  after a squash landing, continue on a new task. The stage still runs when
+  that conversation closes, and the entry then refuses a tip past the
+  captured commit, so new work there is never lost.
 
 ## Plain branch
 
@@ -221,8 +231,8 @@ weaken it.
 - Never push, to any remote — publishing is the user's decision.
 - Never delete anything in a cs session yourself: no `git worktree remove`,
   no `git branch -d` and never `git branch -D` on a cs branch. Removal
-  happens only inside `cs <base> -retire-feature`, which refuses over an
-  open conversation, dirt, or a branch the base lacks. (**Plain branch** on
+  happens only inside `cs <base> -retire-feature`, which stages itself over
+  an open conversation and refuses over dirt or a branch the base lacks. (**Plain branch** on
   an ordinary checkout may `git branch -d` a merged branch after the merge,
   and after green gates when `--gate` was given.)
 - Never merge over dirt or copy `.env`/untracked inputs into the temp.

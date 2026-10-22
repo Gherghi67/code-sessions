@@ -4664,7 +4664,9 @@ _feature_readiness() {  # base_name task
 
     # State is the first blocker retire_feature_worktree would hit, in its order.
     local state="ready"
-    if [ "$lock" != "none" ]; then
+    if [ "$lock" = "worktree" ] && [ -f "$base_dir/.cs/local/retire-staged/$task" ]; then
+        state="staged"
+    elif [ "$lock" != "none" ]; then
         state="locked"
     elif [ "$wt_dirty" = 1 ]; then
         state="dirty"
@@ -5031,14 +5033,15 @@ _retire_trashed_note() {  # heading_end
 # on GitHub's evidence that the PR merged, since the branch is then never an
 # ancestor — and every other refusal still applies. Every refusal names what
 # the user has to do next, in their own words; the skill prints them verbatim.
-retire_feature_worktree() {  # base_name task sha [--force]
-    local usage="Usage: cs <base> -retire-feature <task> <sha> [--force]"
+retire_feature_worktree() {  # base_name task sha [--force] [--staged]
+    local usage="Usage: cs <base> -retire-feature <task> <sha> [--force] [--staged]"
     [ $# -ge 3 ] || error "$usage"
-    local base_name="$1" task="$2" sha="$3" force=""
+    local base_name="$1" task="$2" sha="$3" force="" staged=""
     shift 3
     while [ $# -gt 0 ]; do
         case "$1" in
             --force) force=1; shift ;;
+            --staged) staged=1; shift ;;
             *) error "$usage" ;;
         esac
     done
@@ -5080,14 +5083,34 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "$n_after commit(s) on $branch after $sha are not integrated; run /finish $task again before retiring"
     fi
 
-    local pid
+    # --staged runs a stage this base wrote earlier, from its Stop hook, which
+    # is no descendant of the base's claude once detached: the stage, written
+    # only after the base-lock check below passed, stands in for that
+    # ancestry. It must exist and record this very decision.
+    local pid stage="$base_dir/.cs/local/retire-staged/$task"
+    if [ -n "$staged" ]; then
+        local force_word=0
+        [ -z "$force" ] || force_word=1
+        [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
+force: $force_word" ] || error "No stage at $stage records retiring $task at $sha with force=$force_word; run /finish $task to stage it"
+    else
+        pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
+        if [ -n "$pid" ]; then
+            error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
+        fi
+    fi
     pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
     if [ -n "$pid" ]; then
-        error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running Claude. Close that session yourself (/exit there), then run /finish $task here again and it will be removed."
-    fi
-    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
-    if [ -n "$pid" ]; then
-        error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
+        # A directory can't be removed from under a running Claude, so the
+        # decision this retire already made (the commit, --force or not) is
+        # staged in the base, and the base's Stop hook runs this entry again
+        # once that conversation's lock is gone. Every refusal below runs
+        # then as it would now.
+        _write_retire_stage "$stage" "$sha" "$force" \
+            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage. Close that session yourself (/exit there), then run /finish $task here again and it will be removed."
+        printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
+            "$task" "$sha" "$wt_name" "$pid"
+        return 0
     fi
 
     # git worktree remove --force recurses into a mount, so a volume mounted
@@ -5219,6 +5242,23 @@ $missing"
             || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish $task again."
         error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
+    # The removal below runs under the feature's openers' mutex, from the
+    # first file it moves to the worktree's end: an open that began after the
+    # lock check above would otherwise take session.lock in the middle of it
+    # and lose the directory from under its claude. Taken here, the opener
+    # waits at the mutex and then finds no worktree. The lock is read once
+    # more under it, since a conversation can have reopened meanwhile.
+    _cs_lock "$wt_dir/.cs/session.mutex.lock" \
+        || error "Could not take the openers' mutex of $wt_dir (another cs is opening or closing it); nothing was removed. Run /finish $task again."
+    pid=$(live_lock_pid "$wt_dir/.cs")
+    if [ -n "$pid" ]; then
+        _cs_unlock "$wt_dir/.cs/session.mutex.lock"
+        _write_retire_stage "$stage" "$sha" "$force" \
+            || error "The '$wt_name' conversation reopened its worktree (PID $pid) before the removal, and cs could not stage it again at $stage; nothing was removed. Run /finish $task here again once it closes."
+        printf "staged %s %s: the '%s' conversation reopened its worktree (PID %s) before the removal; the worktree and branch are removed from this session once that conversation closes\n" \
+            "$task" "$sha" "$wt_name" "$pid"
+        return 0
+    fi
     _retire_trash_ignored_work "$wt_dir" "$task"
     local trashed nl=$'\n'
     trashed=$(_retire_trashed_note " before this failed")
@@ -5240,6 +5280,7 @@ $remove_err${trashed:+$nl$trashed}"
         error "git worktree remove failed for $wt_dir; nothing was fused or deleted
 $remove_err${trashed:+$nl$trashed}"
     fi
+    _cs_unlock "$wt_dir/.cs/session.mutex.lock"
     if [ -n "$aside" ]; then
         ( fuse_session_records "$aside/cs" "$base_dir/.cs" "$task" ) \
             || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory.${trashed:+$nl$trashed}"
@@ -5261,7 +5302,20 @@ $remove_err${trashed:+$nl$trashed}"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     _retire_trashed_note ""
+    # A staged run leaves the stage for the base's Stop hook, which reports
+    # the outcome and drops it; a direct retire has no hook behind it.
+    [ -n "$staged" ] || rm -f "$stage"
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# Record a retire the base's Stop hook finishes once the feature conversation
+# closes: the captured commit and whether --force applied. Backs the stage
+# retire_feature_worktree writes while that conversation holds the worktree.
+_write_retire_stage() {  # stage_path sha force
+    local force=0
+    [ -z "$3" ] || force=1
+    cs_mkdir_inside "${1%/*}" || return 1
+    cs_write_atomic "$1" printf 'sha: %s\nforce: %s\n' "$2" "$force"
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault
@@ -9266,6 +9320,43 @@ _cs_tmux_window() {  # window, cmd
         || error "tmux new-window failed for $1"
 }
 
+# The sections a feature's brief carries, the feature skill's shape: the
+# session that reads it has nothing else of the conversation that wrote it.
+FEATURE_BRIEF_SECTIONS="Goal
+Done when
+Constraints
+Context
+Review
+Report back"
+
+# The section headings a brief carries, one per line, as Markdown reads
+# them: a heading is `## ` and the title on a line of its own, with a CR, a
+# byte-order mark on the first line, and trailing blanks ignored, and a
+# line inside a ``` or ~~~ fence is text, not a heading. Bytes, whatever the
+# locale: under a UTF-8 locale awk reads the mark as characters and the
+# byte comparison below misses it.
+_brief_sections() {  # file
+    LC_ALL=C awk '
+        NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+        { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
+        /^(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^## / { print substr($0, 4) }
+    ' "$1"
+}
+
+# Refuse a feature brief that lacks a section, naming the first missing one.
+_require_feature_brief() {  # file
+    local section present
+    present=$(_brief_sections "$1")
+    while IFS= read -r section; do
+        printf '%s\n' "$present" | grep -q -x -F -- "$section" \
+            || error "cs -spawn --brief: $1 has no '## $section' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line"
+    done <<EOF
+$FEATURE_BRIEF_SECTIONS
+EOF
+}
+
 run_spawn() {
     local name="" brief=""
     local usage='Usage: cs -spawn <name> [--brief <file>] [--task "..."] ...'
@@ -9298,7 +9389,9 @@ run_spawn() {
         shift
     done
     [ -n "$name" ] || error "$usage"
-    if ! cs_split_worktree_name "$name"; then
+    if cs_split_worktree_name "$name"; then
+        [ -z "$brief" ] || _require_feature_brief "$brief"
+    else
         validate_session_name "$name"
     fi
     # The spawner is whatever the environment says. It becomes the worker's
