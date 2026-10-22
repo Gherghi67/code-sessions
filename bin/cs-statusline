@@ -873,7 +873,7 @@ _sgr() {
                         [ "$_LUM" -ge 1530000 ] && rgb="180;83;9" || rgb="253;230;138"
                     elif [ "$SL_THEME" = "dark" ]; then rgb="253;230;138"
                     else rgb="180;83;9"; fi ;;
-                # Primary text on the capsule surface: a warm 35% shade of the
+                # Primary text on the capsule surface: a 35% shade of the
                 # surface on a light one, the soft white on a dark one — the same
                 # contrast pivot the old surface text used, resolved from the
                 # surface's own luminance rather than the theme flag.
@@ -884,8 +884,8 @@ _sgr() {
                     elif [ "$SL_THEME" = "dark" ]; then rgb="230;230;230"
                     else rgb="255;255;255"; fi ;;
                 # Secondary text: separators, effort, gauge labels, resting
-                # numbers. A shade of the surface like `ink`, so it tracks both
-                # the measured background and the taupe fallback; the 256 and
+                # numbers. A shade of the surface like `ink`, so it tracks the
+                # measured or assumed background; the 256 and
                 # basic arms instead pick fixed values that contrast their
                 # fixed fills.
                 ink2)
@@ -929,19 +929,18 @@ _sgr() {
                     # so they harmonize with it instead of sitting on top: a
                     # shade of CS_TERM_BG_RGB (darker on a light terminal,
                     # lighter on a dark one), resolved once per render and cached
-                    # since every gauge shares it. Falls back to the warm neutral
-                    # when the real background is unknown (no OSC 11 at launch).
+                    # since every gauge shares it. Without a measurement, shade
+                    # an assumed background in the theme's family.
                     if [ -z "$_SURFACE_RGB" ]; then
-                        if _bg_shade "${CS_TERM_BG_RGB:-}"; then _SURFACE_RGB="$_R;$_G;$_B"
-                        elif [ "$SL_THEME" = "dark" ]; then _SURFACE_RGB="140;132;122"
-                        else _SURFACE_RGB="128;120;110"; fi
+                        if ! _bg_shade "${CS_TERM_BG_RGB:-}"; then
+                            if [ "$SL_THEME" = "dark" ]; then _bg_shade "28;28;28"
+                            else _bg_shade "255;255;255"; fi
+                        fi
+                        _SURFACE_RGB="$_R;$_G;$_B"
                     fi
                     rgb="$_SURFACE_RGB" ;;
-                *)
-                    # Warm neutral (R>G>B) so the quiet blocks read as taupe,
-                    # not steel; light enough that the gauges recede beside the
-                    # identity capsule's ink while white label text holds.
-                    [ "$SL_THEME" = "dark" ] && rgb="140;132;122" || rgb="128;120;110" ;;
+                # Unreachable from rendering; unknown names use the surface.
+                *) _sgr "$kind" surface; return ;;
             esac
             _SGR="${kind};2;${rgb}"; _RGB="$rgb" ;;
         256)

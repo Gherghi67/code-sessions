@@ -445,12 +445,17 @@ test_detect_theme_tmux_non_darwin_unknown() {
 test_statusline_dark_theme_variant() {
     export COLORTERM=truecolor
     export CS_TERM_THEME=dark
+    unset CS_TERM_BG_RGB
     local json='{"session_name":"s","workspace":{"current_dir":"/none"},"context_window":{"used_percentage":8}}'
     local out
-    out=$(run_sl "$json")
-    assert_output_contains "$out" "48;2;140;132;122" "dark theme should lift the neutral grey" || return 1
-    assert_output_contains "$out" "38;2;230;230;230" "dark theme should soften white text" || return 1
-    assert_output_not_contains "$out" "48;2;128;120;110" "dark theme must not use the light-theme grey" || return 1
+    out=$(CS_STATUSLINE_NOW=1000 run_sl "$json")
+    assert_output_contains_f "$out" "48;2;50;50;50;38;2;230;230;230;1m" \
+        "an unmeasured dark terminal shades the assumed background with soft white ink" || return 1
+    local pill; pill=$(ctx_num_run "$out" 8)
+    assert_output_contains_f "$pill" "48;2;50;50;50;38;2;162;162;162;22m" \
+        "the dark fallback gauge uses the surface's secondary ink" || return 1
+    assert_output_not_contains "$out" "48;2;140;132;122" "the dark fallback must not paint dark taupe" || return 1
+    assert_output_not_contains "$out" "48;2;128;120;110" "the dark fallback must not paint light taupe" || return 1
 }
 
 # ============================================================================
@@ -769,12 +774,12 @@ test_ctx_normal_neutral_not_red() {
     export COLORTERM=truecolor
     local json='{"session_name":"s","workspace":{"current_dir":"/none"},"context_window":{"used_percentage":8}}'
     local out
-    out=$(run_sl "$json")
+    out=$(CS_STATUSLINE_NOW=1000 run_sl "$json")
     assert_output_not_contains "$out" "0;135;0" "healthy ctx must not shout green" || return 1
     assert_output_not_contains "$out" "48;2;215;0;21" "ctx 8% must not use the crit fill" || return 1
     local pill
     pill=$(ctx_num_run "$out" 8)
-    assert_output_contains "$pill" "38;2;197;194;189;22m" "ctx 8% number should sit at the secondary ink" || return 1
+    assert_output_contains "$pill" "38;2;125;125;125;22m" "ctx 8% number should sit at the secondary ink" || return 1
 }
 
 test_ctx_amber_band_is_amber() {
@@ -804,10 +809,10 @@ test_ctx_below_warn_is_neutral() {
     export COLORTERM=truecolor
     local json='{"session_name":"s","workspace":{"current_dir":"/none"},"context_window":{"used_percentage":39}}'
     local out
-    out=$(run_sl "$json")
+    out=$(CS_STATUSLINE_NOW=1000 run_sl "$json")
     local pill
     pill=$(ctx_pill "$out" 39)
-    assert_output_contains "$pill" "38;2;197;194;189;22m" "ctx 39% should sit at the secondary ink" || return 1
+    assert_output_contains "$pill" "38;2;125;125;125;22m" "ctx 39% should sit at the secondary ink" || return 1
     assert_output_not_contains "$pill" "180;83;9" "ctx 39% must not use amber" || return 1
     assert_output_not_contains "$pill" "215;0;21" "ctx 39% must not use the crit fill" || return 1
 }
@@ -1263,17 +1268,19 @@ test_gauge_uses_bg_derived_surface() {
         "a gauge with a known background must not use the fixed grey" || return 1
 }
 
-test_gauge_falls_back_to_grey_without_bg() {
+test_gauge_shades_the_assumed_light_background_without_bg() {
     export COLORTERM=truecolor CS_TERM_THEME=light
     unset CS_TERM_BG_RGB
     local json='{"session_name":"s","workspace":{"current_dir":"/none"},"context_window":{"used_percentage":10}}'
     local out
     out=$(CS_STATUSLINE_NOW=1000 run_sl "$json")
-    assert_output_contains_f "$out" "48;2;128;120;110;38;2;255;255;255;1m" \
-        "identity falls back to the warm neutral grey with light text" || return 1
+    assert_output_contains_f "$out" "48;2;229;229;229;38;2;80;80;80;1m" \
+        "an unmeasured light terminal shades the assumed background with primary ink" || return 1
     local pill; pill=$(ctx_num_run "$out" 10)
-    assert_output_contains_f "$pill" "48;2;128;120;110;38;2;197;194;189;22m" \
-        "with no known background a gauge number falls back to the warm neutral grey at the secondary ink" || return 1
+    assert_output_contains_f "$pill" "48;2;229;229;229;38;2;125;125;125;22m" \
+        "the light fallback gauge uses the surface's secondary ink" || return 1
+    assert_output_not_contains "$out" "48;2;140;132;122" "the light fallback must not paint dark taupe" || return 1
+    assert_output_not_contains "$out" "48;2;128;120;110" "the light fallback must not paint light taupe" || return 1
 }
 
 # ============================================================================
@@ -1658,7 +1665,7 @@ run_test test_bg_shade_darkens_light_background
 run_test test_bg_shade_lightens_dark_background
 run_test test_bg_shade_noop_on_malformed
 run_test test_gauge_uses_bg_derived_surface
-run_test test_gauge_falls_back_to_grey_without_bg
+run_test test_gauge_shades_the_assumed_light_background_without_bg
 run_test test_logo_mark_is_brand_ink
 run_test test_segment_icons_are_unicode
 run_test test_tab_color_palette_matches_statusline
@@ -3359,6 +3366,17 @@ test_sgr_ink_tokens_256_and_basic() {
     _sgr 38 critink; assert_eq "97" "$_SGR" "critink basic dark is white" || return 1
 }
 
+test_sgr_unknown_truecolor_name_uses_the_surface() {
+    _load_sl_functions
+    unset CS_TERM_BG_RGB
+    LEVEL=truecolor; SL_THEME=dark; _SURFACE_RGB=""
+    _sgr 48 nonsense || return 1
+    assert_eq "48;2;50;50;50" "$_SGR" "an unknown dark token uses the assumed surface" || return 1
+    SL_THEME=light; _SURFACE_RGB=""
+    _sgr 48 nonsense || return 1
+    assert_eq "48;2;229;229;229" "$_SGR" "an unknown light token uses the assumed surface" || return 1
+}
+
 test_thresh_color_emits_crit_and_defaults_to_ink2() {
     _load_sl_functions
     _thresh_color 10 40 65; assert_eq "ink2"  "$_COLOR" "below warn is the secondary ink" || return 1
@@ -3372,6 +3390,7 @@ run_test test_sgr_ink_tokens_truecolor_dark
 run_test test_sgr_amber_follows_surface_luminance_not_the_theme
 run_test test_sgr_ink_follows_surface_luminance
 run_test test_sgr_ink_tokens_256_and_basic
+run_test test_sgr_unknown_truecolor_name_uses_the_surface
 run_test test_thresh_color_emits_crit_and_defaults_to_ink2
 
 # ============================================================================
@@ -3701,10 +3720,10 @@ test_limits_5h_always_shown_and_coarse_windows_arrive_at_fifty() {
 test_limits_shown_window_is_neutral_below_seventy() {
     export COLORTERM=truecolor
     local json='{"session_name":"s","workspace":{"current_dir":"/none"},"rate_limits":{"five_hour":{"used_percentage":31},"seven_day":{"used_percentage":55}}}'
-    local out; out=$(run_sl "$json")
+    local out; out=$(CS_STATUSLINE_NOW=1000 run_sl "$json")
     assert_output_not_contains "$out" "180;83;9" "no amber below 70" || return 1
     assert_output_not_contains "$out" "48;2;215;0;21" "no crit fill below 90" || return 1
-    assert_output_contains_f "$out" "38;2;197;194;189;22m31%" "5h 31 sits at the secondary ink" || return 1
+    assert_output_contains_f "$out" "38;2;125;125;125;22m31%" "5h 31 sits at the secondary ink" || return 1
 }
 
 test_limits_at_sixty_nine_show_5h_then_wk() {
