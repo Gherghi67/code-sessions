@@ -1856,11 +1856,51 @@ test_doctor_lists_every_context_injecting_hook_with_its_switch() {
     assert_output_contains "$output" "CS_CLARIFY_DISABLE" "Should name the clarify off-switch" || return 1
     assert_output_contains "$output" "CS_DATE_REMINDER_DISABLE" "Should name the date reminder off-switch" || return 1
     assert_output_contains "$output" "CS_REWRITE_DISABLE" "Should name the rewriter off-switch" || return 1
-    assert_output_contains "$output" "cs-mermaid.drawDiagrams" "Should name the diagrams section's off-switch" || return 1
-    assert_output_contains "$output" "on   diagrams" "The diagrams section reads on while function hooks are not withheld" || return 1
-    output=$(CS_NO_FUNCTION_HOOKS=1 CS_CLAUDE_DIR="$TEST_TMPDIR/claude-auth" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" "off  diagrams" "CS_NO_FUNCTION_HOOKS withholds the mod, so the section reads off" || return 1
-    assert_output_contains "$output" ".cs/local/disabled" "Should name the universal off-switch" || return 1
+    assert_output_contains "$output" ".cs/local/disabled" "Should name the hooks' off-switch" || return 1
+}
+
+_doctor_diagrams_row() {
+    local output
+    output=$("$CS_BIN" -doctor 2>&1) || true
+    printf '%s\n' "$output" | awk '$2 == "diagrams" {$1=$1; print}'
+}
+
+test_doctor_reports_the_diagram_instruction_as_on() {
+    cat > "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
+<!-- cs:mermaid-diagrams -->
+## Diagrams
+
+Mermaid flowchart fences draw in this terminal.
+EOF
+    local row
+    touch "$CLAUDE_SESSION_META_DIR/local/disabled"
+    row=$(CS_NO_FUNCTION_HOOKS=1 _doctor_diagrams_row)
+    assert_eq "on diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "the file's instruction stays on when hooks and drawing are disabled" || return 1
+}
+
+test_doctor_reports_the_diagram_tombstone_as_off() {
+    local row
+    unset CS_NO_FUNCTION_HOOKS
+    printf '<!-- cs:mermaid-diagrams -->\n\n' > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "the diagram tombstone has no instruction" || return 1
+    cat >> "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
+## Diagrams
+
+<!-- cs:session-commits -->
+## Committing session files
+
+Commit session files when wrapping up.
+EOF
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "a heading and another managed section do not supply diagram prose" || return 1
+    printf 'Unrelated session instructions.\n' > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "a file without the diagram sentinel has no diagram instruction" || return 1
 }
 
 test_doctor_authority_section_shows_a_disabled_injection_as_off() {
@@ -1892,6 +1932,8 @@ test_doctor_authority_section_shows_a_zero_switch_as_on() {
 }
 
 run_test test_doctor_lists_every_context_injecting_hook_with_its_switch
+run_test test_doctor_reports_the_diagram_instruction_as_on
+run_test test_doctor_reports_the_diagram_tombstone_as_off
 run_test test_doctor_authority_section_shows_a_zero_switch_as_on
 run_test test_doctor_authority_section_shows_a_disabled_injection_as_off
 

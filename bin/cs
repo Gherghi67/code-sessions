@@ -11890,14 +11890,14 @@ _doctor_check_narrative_size() {
 # resolved its own session ID. The recorded UUID is the source of truth for
 # cs and hooks; doctor surfaces the divergence so the user can decide whether
 # to relaunch via cs or accept the drift.
-# Every place a cs hook changes what the model sees, with the switch that turns
+# Every place cs changes what the model sees, with the switch that turns
 # it off. The consent rule covers what the user looks at — status line, titles —
 # but a hook that injects context installs silently, so this is where that
 # authority is made visible. State is read live, not from config: a switch that
 # is set shows the injection as off.
 _doctor_check_hook_authority() {
     echo ""
-    echo "  Authority — hooks that inject into the model's context:"
+    echo "  Authority — instructions cs adds to the model's context:"
     local disabled_all=""
     if [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -f "${CLAUDE_SESSION_META_DIR}/local/disabled" ]; then
         disabled_all=1
@@ -11920,9 +11920,20 @@ _doctor_check_hook_authority() {
     _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
     _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
     _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
-    # CS_NO_FUNCTION_HOOKS withholds the mod at launch; the /config row is Claude Code's, not read here.
-    _doctor_authority_row "diagrams"      "cs-mermaid mod"     '/config cs-mermaid.drawDiagrams' "${CS_NO_FUNCTION_HOOKS:+1}"
-    echo "    .cs/local/disabled turns every row off for that session."
+    # Local instructions remain in the prompt even when session hooks are disabled.
+    disabled_all=""
+    local diagrams_off=1
+    local dir="${CLAUDE_SESSION_DIR:-}"
+    if [ -n "$dir" ] && [ -f "$dir/CLAUDE.local.md" ] && awk '
+        /^<!-- cs:mermaid-diagrams -->$/ { section=1; next }
+        /^<!-- cs:/ { section=0 }
+        section && /[^[:space:]]/ && !/^[[:space:]]*(#|<!--)/ { prose=1 }
+        END { exit !prose }
+    ' "$dir/CLAUDE.local.md"; then
+        diagrams_off=""
+    fi
+    _doctor_authority_row "diagrams" "CLAUDE.local.md" 'delete the prose under cs:mermaid-diagrams' "$diagrams_off"
+    echo "    .cs/local/disabled turns the hook rows off; CLAUDE.local.md still applies."
 }
 
 # setup_merge_attributes writes the per-clone merge driver with `|| true`, so a
