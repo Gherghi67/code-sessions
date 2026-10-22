@@ -1206,6 +1206,18 @@ test('a conversation without a session color runs no color command', async () =>
   expect(ran).toEqual([])
 })
 
+test('a conversation with an unknown session color runs no color command', async () => {
+  await band()
+  for (const color of ['mauve', 'constructor']) {
+    files['/work/.cs/local/state'] = `claude_session_color: ${color}\nclaude_session_id: uuid-lead\n`
+    await clearRun()
+    sessionId = `uuid-${color}`
+    await band()
+  }
+  expect(ran).toEqual([])
+  expect(logs).toEqual([])
+})
+
 test('a conversation outside a cs session runs no color command', async () => {
   delete realPaths['/home/.claude-sessions/work']
   await band()
