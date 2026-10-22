@@ -371,7 +371,7 @@ export function register(on: On) {
     const drawn = await withGateBand($, e, await next(e))
     // The band draws in a new conversation before any of its turns end, so
     // the birth is settled here: a later /resume is not mistaken for it.
-    noteConversation(await $.session.id())
+    await noteConversation($, await $.session.id())
     // A survey owns the band; a running turn cannot be rotated out of.
     turnRunning = e.props.isWorking
     bandIdle = !e.props.hasSurvey && !e.props.isWorking
@@ -504,12 +504,21 @@ async function forceThreshold($: EngineInterface): Promise<number | undefined> {
 // only when a /clear was seen since the last id; a /resume, a launch or a
 // reload adopt unjudged, and an earlier judgment of the same id is dropped
 // with them.
-function noteConversation(id: string): boolean {
+async function noteConversation($: EngineInterface, id: string): Promise<boolean> {
   if (id === adopted) return false
+  const reapplyColor = adopted !== undefined || clearSeen
   adopted = id
   startPercent = undefined
   birth = clearSeen ? id : undefined
   clearSeen = false
+  if (reapplyColor && (await isCsSession($, await $.session.cwd()))) {
+    const color = await sessionColor($)
+    if (color !== undefined && Object.hasOwn(SESSION_PALETTE, color)) {
+      $.command.run({ command: 'color', args: color }).catch(err => {
+        $.ui.log(`cs: /color ${color} did not run: ${String(err).replace(/[\r\n]+/g, ' ')}`)
+      })
+    }
+  }
   return true
 }
 
@@ -524,7 +533,7 @@ async function forceRotation($: EngineInterface) {
   if (!(await ownsRotation($))) return
   const id = await $.session.id()
   const { context } = await $.session.usage()
-  noteConversation(id)
+  await noteConversation($, id)
   if (birth === id) {
     birth = undefined
     startPercent = context.percent
