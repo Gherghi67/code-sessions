@@ -275,6 +275,10 @@ test_sweep_bounds_the_dead_reference_pass() {
         "the sweep pass must bound the dead-reference work per sweep" || return 1
     assert_file_contains "$SWEEP_PASS" "outside this checkout" \
         "the sweep pass must distinguish a file elsewhere from a file that is gone" || return 1
+    assert_file_contains "$SWEEP_PASS" 'append ` [(]gone YYYY-MM-DD[)]` immediately after its backticked reference' \
+        "the sweep pass must mark a gone reference where refs can skip it" || return 1
+    assert_file_contains "$SWEEP_PASS" 'Delete a marker if its reference resolves again' \
+        "the sweep pass must remove a gone marker that is no longer true" || return 1
 }
 
 test_sweep_states_filename_convention() {
