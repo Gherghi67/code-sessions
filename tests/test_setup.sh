@@ -271,9 +271,14 @@ EOF
     # Below an adopted project or a session cs made in its root, including
     # from inside a profile session, whose CS_SESSIONS_ROOT is the profile's,
     # and below a repository with a .cs of its own cloned inside either.
-    local dir root
-    for dir in "$docs/linked/sub" "$HOME/.claude-sessions/stable-project/sub" \
-        "$docs/linked/clone/work" "$HOME/.claude-sessions/stable-project/clone/work"; do
+    local dir root dirs=("$docs/linked/sub" "$HOME/.claude-sessions/stable-project/sub" \
+        "$docs/linked/clone/work" "$HOME/.claude-sessions/stable-project/clone/work")
+    # A registered folder is the same folder however its path is spelled:
+    # where the filesystem ignores case, pwd -P keeps the case it was typed in.
+    if [ "$HOME/DOCUMENTS" -ef "$docs" ]; then
+        dirs+=("$HOME/DOCUMENTS/LINKED/sub" "$HOME/.CLAUDE-SESSIONS/STABLE-PROJECT/sub")
+    fi
+    for dir in "${dirs[@]}"; do
         for root in "$HOME/.claude-sessions" "$PROFILE/sessions"; do
             status=0
             (cd "$dir" && CS_SESSIONS_ROOT="$root" "$HOME/.local/bin/ccs" -adopt sub) \

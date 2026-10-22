@@ -41,9 +41,11 @@ case "${1:-}" in
                         if [ "$probe" = "$here" ]; then
                             theirs=1
                         else
+                            # By inode, not by spelling: pwd -P keeps the case
+                            # a folder was typed in where the filesystem
+                            # ignores case.
                             for entry in "$stable_root"/* "$stable_root"/.[!.]* "$stable_root"/..?*; do
-                                [ -d "$entry" ] || continue
-                                if [ "$(CDPATH='' cd -P "$entry" 2>/dev/null && pwd)" = "$probe" ]; then
+                                if [ -d "$entry" ] && [ "$entry" -ef "$probe" ]; then
                                     theirs=1
                                     break
                                 fi
