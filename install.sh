@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "5d320f454e022b58ddd2bf1e10caa67e4a378b5ddbe7f1f022868dcba5d05fb0  bin/cs"
+    "64b6b4bd7e7b150faba8c7d4a3dcdef334a632ac3e02b46dd9367d7e89160367  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1344,10 +1344,10 @@ CS_PAYLOAD_SHA256=(
     "5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f  hooks/prompt-rewriter-vendor.sh"
     "1fa475982564ec70f12bf5295b874989dd95f89224f27bb6be4854cc5b8674e3  hooks/wrap-sweep.md"
     "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
-    "e72bd0eb10c455664d7da8cc9501295d16029f9ded31ade89781606b7e77b346  hooks/session-start.sh"
+    "a4486c60d3db91c0a466fb154602eec888ffeb5a9942d74d2c8aac92b8dd7c32  hooks/session-start.sh"
     "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
-    "9cd183a1eea039c1936f574b0e3282acb910ed2cc7c0e47040d32ef0636ceabb  hooks/narrative-reminder.sh"
-    "6ee7903b4c99d6e01888693635f430b40f42a82d7008fd285feee6f810585c9b  hooks/session-end.sh"
+    "b283838bac4ad00e82350837a773b636023aa716d3a7e625c9b9ecab6a602f73  hooks/narrative-reminder.sh"
+    "8377b722bd856d5ca918bb9ffea2cfb3e0a0077ee0b9441a1f52461fd7282739  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"
@@ -1357,7 +1357,7 @@ CS_PAYLOAD_SHA256=(
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f  skills/rotate/SKILL.md"
-    "6ca06b43b1b156be1a7bd2a6f8ad1e35b18e627a247181909ce41fa726972094  skills/finish/SKILL.md"
+    "fecf473047eafda663050dfcadeb98212c1b026190fc6b437c95e18cbf8ea45c  skills/finish/SKILL.md"
     "77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"

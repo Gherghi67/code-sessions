@@ -209,6 +209,28 @@ if [ -n "$_cs_lock_owner" ] && [ -n "$LOCAL_DIR" ] && command -v cs_lead_claim_e
     cs_lead_claim_end "$LOCAL_DIR" || true
 fi
 
+# A feature whose retire /finish staged in the base: the base's Stop hook runs
+# it once this lock is gone, and a base idle at its prompt has no Stop coming,
+# so this end tells it by mail, which wakes an idle lead (narrative-reminder.sh,
+# the mail wake). Only a real end of the lead's conversation: a /clear or
+# /resume keeps the lock, and the retire would only re-stage. The stage is
+# looked for under the base's directory in the sessions root, where every
+# feature's base lives (an adopted base as a link). cs is reached as the Stop
+# hook reaches it: on PATH, or where install.sh puts it.
+if [ -n "$_cs_lock_owner" ] && [ -f "$META_DIR/local/state" ]; then
+    _fe_base=$(awk 'index($0, "cs_base:") == 1 { sub(/^[^:]*:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$META_DIR/local/state" 2>/dev/null || true)
+    _fe_task="${CLAUDE_SESSION_NAME:-}"; _fe_task="${_fe_task#*@}"
+    _fe_root="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}"
+    if [ -n "$_fe_base" ] && [ -n "$_fe_task" ] && [ "$_fe_task" != "${CLAUDE_SESSION_NAME:-}" ] \
+        && [ -f "$_fe_root/$_fe_base/.cs/local/retire-staged/$_fe_task" ]; then
+        _fe_cs=$(command -v cs 2>/dev/null || true)
+        [ -n "$_fe_cs" ] || { [ -x "${HOME:-/nonexistent}/.local/bin/cs" ] && _fe_cs="$HOME/.local/bin/cs"; }
+        [ -z "$_fe_cs" ] || "$_fe_cs" -msg "$_fe_base" -k notify \
+            "Feature $_fe_task closed; the retire /finish staged for it runs when your current turn ends." \
+            </dev/null >/dev/null 2>&1 || true
+    fi
+fi
+
 # A session cs -encrypt built detaches its vault when the lead conversation
 # ends, so the next open asks for the password again. Claude Code still holds
 # the transcript under .cs/claude-config open while this hook runs, so a waiter

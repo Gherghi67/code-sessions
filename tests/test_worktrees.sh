@@ -1070,7 +1070,7 @@ test_stop_hook_reports_a_staged_retire_the_entry_refuses_and_drops_the_stage() {
     rm -f "$wt/.cs/session.lock"
     echo "wip" > "$wt/auth.txt"
     out=$(_base_stop "$base_dir")
-    assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged was refused: Error: Worktree has uncommitted changes; commit them in $wt first (cs never commits for you)" \
+    assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged did not go through: Error: Worktree has uncommitted changes; commit them in $wt first (cs never commits for you)" \
         "the refusal reaches the model verbatim" || return 1
     assert_output_contains "$out" "run /finish fix-auth again" "and names the next step" || return 1
     assert_not_exists "$stage" "a refused stage is dropped, so it is reported once" || return 1
@@ -1090,6 +1090,62 @@ test_stop_hook_of_a_teammate_leaves_a_staged_retire_alone() {
     assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
 }
 
+test_stop_hook_drops_a_stage_whose_worktree_is_already_gone() {
+    local base_dir stage out
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/myproj@fix-auth"
+    out=$(_base_stop "$base_dir")
+    assert_output_contains "$out" "cs: the feature worktree $CS_SESSIONS_ROOT/myproj@fix-auth is already gone, so the retire /finish staged for fix-auth has nothing to do; its stage was dropped." \
+        "a worktree removed another way is reported, not retired" || return 1
+    assert_not_exists "$stage" "stage dropped" || return 1
+}
+
+test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage() {
+    local base_dir stage out
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    out=$(printf '{}\n' | CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$base_dir" \
+        CLAUDE_SESSION_META_DIR="$base_dir/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+        HOME="$TEST_TMPDIR/nohome" PATH="/usr/bin:/bin" \
+        bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""')
+    assert_output_contains "$out" "no cs binary was found on PATH or at ~/.local/bin/cs, so its staged retire could not run; run /finish fix-auth again" \
+        "the hook says what it could not find" || return 1
+    assert_file_exists "$stage" "stage kept" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
+}
+
+test_stop_hook_keeps_a_stage_whose_run_restaged_behind_a_warning() {
+    local base_dir stage sha out
+    base_dir=$(create_test_session_with_git "myproj")
+    { read -r stage; read -r sha; } < <(_staged_feature "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    # An ended run (a pid nothing runs) whose output warned before it re-staged.
+    printf '%s\n' 999999 > "$stage.run"
+    printf 'Warning: something about the base\nstaged fix-auth %s: the conversation reopened its worktree (PID 1); the worktree and branch are removed from this session once that conversation closes\n' "$sha" > "$stage.out"
+    out=$(_base_stop "$base_dir")
+    case "$out" in *retire*) echo "  a re-stage was reported as an outcome: $out"; return 1 ;; esac
+    assert_file_exists "$stage" "stage kept" || return 1
+    assert_not_exists "$stage.run" "run record cleared" || return 1
+    assert_not_exists "$stage.out" "run output cleared" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
+}
+
+test_stop_hook_leaves_a_run_still_going() {
+    local base_dir stage out sleeper
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    sleep 60 &
+    sleeper=$!
+    printf '%s\n' "$sleeper" > "$stage.run"
+    : > "$stage.out"
+    out=$(_base_stop "$base_dir")
+    kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null || true
+    case "$out" in *retire*) echo "  a running retire was reported: $out"; return 1 ;; esac
+    assert_file_exists "$stage" "stage kept" || return 1
+    assert_file_exists "$stage.run" "run record kept while it runs" || return 1
+}
+
 test_stop_hook_drops_an_unreadable_stage_and_says_so() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
@@ -1101,6 +1157,134 @@ test_stop_hook_drops_an_unreadable_stage_and_says_so() {
         "an unreadable stage is reported, not acted on" || return 1
     assert_not_exists "$stage" "unreadable stage removed" || return 1
     assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
+}
+
+# A base held open by a conversation this caller is no part of: a live
+# process that is a sibling of the test shell, so no cs it runs descends from
+# it. Started in the test's own shell (a background job of a command
+# substitution dies with it); the caller reads $! and kills it.
+_foreign_base_lock() {  # base_dir
+    echo "$!" > "$1/.cs/session.lock"
+}
+
+test_retire_refuses_a_foreign_caller_before_it_stages() {
+    local base_dir output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" sha
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    echo "$$" > "$wt/.cs/session.lock"
+    sleep 120 &
+    local holder=$!
+    _foreign_base_lock "$base_dir"
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    kill "$holder" 2>/dev/null
+    assert_eq "1" "$status" "a foreign caller is refused" || return 1
+    assert_eq "Error: Base session 'myproj' is open elsewhere (PID $holder); run /finish fix-auth from that conversation" "$output" "before anything is staged" || return 1
+    assert_not_exists "$base_dir/.cs/local/retire-staged/fix-auth" "no stage written by a caller the base refuses" || return 1
+    rm -f "$wt/.cs/session.lock" "$base_dir/.cs/session.lock"
+}
+
+test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry() {
+    local base_dir output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" sha stage="$base_dir/.cs/local/retire-staged/fix-auth"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    sleep 120 &
+    local holder=$!
+    _foreign_base_lock "$base_dir"
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
+    assert_eq "1" "$status" "--staged without a stage is refused" || return 1
+    assert_eq "Error: No stage at $stage records retiring fix-auth at $sha with force=0; run /finish fix-auth to stage it" "$output" "and says what is missing" || return 1
+    mkdir -p "${stage%/*}"
+    printf 'sha: %s\nforce: 1\n' "$sha" > "$stage"   # a stage for a different decision
+    status=0
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
+    assert_eq "1" "$status" "a stage recording another force decision is not this one" || return 1
+    printf 'sha: %s\nforce: 0\n' "$sha" > "$stage"
+    status=0
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
+    assert_eq "0" "$status" "the recorded stage stands in for the base ancestry: $output" || return 1
+    kill "$holder" 2>/dev/null
+    assert_eq "retired fix-auth $sha" "$output" "and the retire goes through" || return 1
+    assert_not_exists "$wt" "worktree removed" || return 1
+    rm -f "$base_dir/.cs/session.lock"
+}
+
+test_retire_refuses_while_an_opener_holds_the_feature_mutex() {
+    local base_dir output status=0 holder
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" sha
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    perl -e 'use Fcntl qw(:flock); open(my $f, "+<", $ARGV[0]) or die; flock($f, LOCK_EX) or die; sleep 30' \
+        "$wt/.cs/session.mutex.lock" &
+    holder=$!
+    sleep 1
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null || true
+    assert_eq "1" "$status" "the removal waits for no one and refuses" || return 1
+    assert_eq "Error: Could not take the openers' mutex of $wt (another cs is opening or closing it); nothing was removed. Run /finish fix-auth again." "$output" "and says why" || return 1
+    assert_dir "$wt" "worktree kept" || return 1
+}
+
+test_retire_restages_when_the_feature_reopened_under_the_mutex() {
+    # The lock appears after the first check and before the mutex is taken:
+    # a ps seam cannot order that, so the second read is driven directly by
+    # a lock written by a live process between the two reads of live_lock_pid.
+    local base_dir output status=0 stub="$TEST_TMPDIR/relock"
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" sha stage="$base_dir/.cs/local/retire-staged/fix-auth"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    # The mount-table read sits between the two lock reads; a mount shim that
+    # also writes the feature lock is the reopen.
+    mkdir -p "$stub"
+    cat > "$stub/mount" <<STUB
+#!/bin/sh
+echo "$$" > "$wt/.cs/session.lock"
+exec /sbin/mount "\$@"
+STUB
+    chmod +x "$stub/mount"
+    output=$(PATH="$stub:$PATH" "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    rm -f "$wt/.cs/session.lock"
+    assert_eq "0" "$status" "a reopen before the removal is staged, not refused: $output" || return 1
+    assert_output_contains "$output" "staged fix-auth $sha: the 'myproj@fix-auth' conversation reopened its worktree" "the line says it reopened" || return 1
+    assert_dir "$wt" "worktree kept" || return 1
+    assert_file_exists "$stage" "staged again" || return 1
+}
+
+# The feature's SessionEnd, as the lead of its conversation ending for real,
+# with the built cs on PATH.
+_feature_end() {  # base_dir reason
+    printf '{"session_id":"s","reason":"%s","hook_event_name":"SessionEnd"}\n' "$2" \
+        | CLAUDE_SESSION_NAME="myproj@fix-auth" CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj@fix-auth" \
+          CLAUDE_SESSION_META_DIR="$CS_SESSIONS_ROOT/myproj@fix-auth/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+          PATH="$(cd "$(dirname "$CS_BIN")" && pwd):$PATH" \
+          bash "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1
+}
+
+test_feature_end_mails_the_base_when_a_retire_is_staged() {
+    local base_dir stage mail
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    _feature_end "$base_dir" other
+    mail=$(cat "$base_dir"/.cs/local/mail/new/*.json 2>/dev/null | jq -r '[.from, .kind, .body] | join("|")')
+    assert_eq "myproj@fix-auth|notify|Feature fix-auth closed; the retire /finish staged for it runs when your current turn ends." \
+        "$mail" "one notify mail from the feature to its base" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock" "the end released the lock first" || return 1
+}
+
+test_feature_end_sends_nothing_on_clear_or_without_a_stage() {
+    local base_dir stage
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    _feature_end "$base_dir" clear
+    assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "a /clear keeps the lock and sends nothing" || return 1
+    rm -f "$stage"
+    _feature_end "$base_dir" other
+    assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "an end with nothing staged sends nothing" || return 1
 }
 
 test_retire_from_live_base_session_succeeds() {
@@ -1831,6 +2015,16 @@ run_test test_stop_hook_retires_a_staged_feature_once_its_conversation_closed
 run_test test_stop_hook_reports_a_staged_retire_the_entry_refuses_and_drops_the_stage
 run_test test_stop_hook_of_a_teammate_leaves_a_staged_retire_alone
 run_test test_stop_hook_drops_an_unreadable_stage_and_says_so
+run_test test_stop_hook_drops_a_stage_whose_worktree_is_already_gone
+run_test test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage
+run_test test_stop_hook_keeps_a_stage_whose_run_restaged_behind_a_warning
+run_test test_stop_hook_leaves_a_run_still_going
+run_test test_retire_refuses_a_foreign_caller_before_it_stages
+run_test test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry
+run_test test_retire_refuses_while_an_opener_holds_the_feature_mutex
+run_test test_retire_restages_when_the_feature_reopened_under_the_mutex
+run_test test_feature_end_mails_the_base_when_a_retire_is_staged
+run_test test_feature_end_sends_nothing_on_clear_or_without_a_stage
 run_test test_retire_refuses_a_volume_mounted_inside_the_worktree
 run_test test_retire_refuses_when_the_mount_table_cannot_be_read
 run_test test_retire_from_live_base_session_succeeds
