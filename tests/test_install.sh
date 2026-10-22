@@ -237,7 +237,7 @@ EXPECT
 test_install_asks_caps_for_a_chaining_statusline() {
     command -v expect >/dev/null 2>&1 \
         || { echo "    SKIP (expect not installed; the caps question needs a tty)"; return 77; }
-    local state home exp caps rc
+    local state home exp caps rc output
     for state in unrelated chains; do
         home="$TEST_TMPDIR/home-$state"
         exp="$TEST_TMPDIR/$state.exp"
@@ -265,16 +265,31 @@ EXPECT
         rc=0
         expect -f "$exp" > /dev/null 2>&1 || rc=$?
         assert_eq 0 "$rc" "$state bridge install completes" || return 1
+        output=$(sed $'s/\033\\[[0-9;]*m//g' "$TEST_TMPDIR/$state.out" | tr -d '\r')
         # shellcheck disable=SC2088  # the literal path is the value under test
         assert_eq '~/bridge.sh --example' \
             "$(jq -r '.statusLine.command' "$home/.claude/settings.json")" \
             "$state bridge registration stays unchanged" || return 1
         caps="$home/config/cs/statusline-caps"
         if [ "$state" = chains ]; then
+            assert_eq "" "$(printf '%s\n' "$output" | grep -F 'Replace current status line' || true)" \
+                "a chaining bridge must not be offered replacement" || return 1
+            assert_output_contains "$output" "Keeping current status line: ~/bridge.sh --example runs cs-statusline." \
+                "the installer explains why it keeps the bridge" || return 1
+            assert_output_not_contains "$output" "To switch to cs-statusline" \
+                "a chaining bridge needs no switch hint" || return 1
+            assert_file_exists "$home/config/cs/statusline-declined" \
+                "keeping the bridge is remembered for updates" || return 1
+            assert_eq '   Do the ends of that capsule render as rounded shapes (not boxes)? [y/n] y' \
+                "$(printf '%s\n' "$output" | grep -F 'Do the ends of that capsule')" \
+                "the retained bridge still gets the caps question" || return 1
             local answer=""
             [ ! -f "$caps" ] || answer=$(cat "$caps")
             assert_eq on "$answer" "a retained chaining bridge receives the caps answer" || return 1
         else
+            assert_eq '   Replace current status line (~/bridge.sh --example) with cs-statusline? [y/N] n' \
+                "$(printf '%s\n' "$output" | grep 'Replace current status line')" \
+                "an unrelated bridge still gets the replacement question" || return 1
             [ ! -e "$caps" ] || { echo "  FAIL: an unrelated bridge must not get a caps answer"; return 1; }
         fi
     done
