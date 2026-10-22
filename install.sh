@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "8c93dde5343effb0a66c245989c600b84b880deab7fcc30e1669ab7dac5289bb  bin/cs"
+    "71d7e5e77f9d9c0c05a5c28564bd3ec2a8308bbafc7e7dde1beb6179e3177434  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1409,7 +1409,37 @@ _refuse_a_hook_event_that_is_not_a_list() {
 _refuse_a_hook_event_that_is_not_a_list
 
 # Minisign public key for verifying signed releases
+CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+CS_RELEASE_REVOKED=''
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
+
+_verify_manifest() {
+    (
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
+            exit 1
+        fi
+        trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
+        trap 'rm -rf "$trust_dir"' EXIT
+        if [ -n "${CS_RELEASE_SIGNERS_FILE:-}" ]; then
+            cat "$CS_RELEASE_SIGNERS_FILE" > "$trust_dir/signers" || exit 1
+        else
+            printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        fi
+        if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
+            cat "$CS_RELEASE_REVOKED_FILE" > "$trust_dir/revoked" || exit 1
+        else
+            printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
+        fi
+        local revocation_args=()
+        [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n cs-release \
+            -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            printf '%s\n' 'Release manifest signature verification failed.' >&2
+            exit 1
+        fi
+    )
+}
 
 # Detect if running from cloned repo or web install. An installer read from a
 # pipe (curl ... | bash) has no BASH_SOURCE: it is the web install, whatever

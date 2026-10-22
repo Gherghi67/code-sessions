@@ -131,7 +131,37 @@ _refuse_a_hook_event_that_is_not_a_list() {
 _refuse_a_hook_event_that_is_not_a_list
 
 # Minisign public key for verifying signed releases
+CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+CS_RELEASE_REVOKED=''
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
+
+_verify_manifest() {
+    (
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
+            exit 1
+        fi
+        trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
+        trap 'rm -rf "$trust_dir"' EXIT
+        if [ -n "${CS_RELEASE_SIGNERS_FILE:-}" ]; then
+            cat "$CS_RELEASE_SIGNERS_FILE" > "$trust_dir/signers" || exit 1
+        else
+            printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        fi
+        if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
+            cat "$CS_RELEASE_REVOKED_FILE" > "$trust_dir/revoked" || exit 1
+        else
+            printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
+        fi
+        local revocation_args=()
+        [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n cs-release \
+            -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            printf '%s\n' 'Release manifest signature verification failed.' >&2
+            exit 1
+        fi
+    )
+}
 
 # Detect if running from cloned repo or web install. An installer read from a
 # pipe (curl ... | bash) has no BASH_SOURCE: it is the web install, whatever
