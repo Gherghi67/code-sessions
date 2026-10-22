@@ -255,7 +255,9 @@ EOF
     chmod +x "$PROFILE/.local/bin/cs"
     local docs="$HOME/Documents" status output
     mkdir -p "$docs/.cs" "$docs/my-neovim" "$docs/linked/.cs" "$docs/linked/sub" \
-        "$HOME/.claude-sessions/stable-project/sub"
+        "$docs/linked/clone/.cs" "$docs/linked/clone/work" \
+        "$HOME/.claude-sessions/stable-project/sub" \
+        "$HOME/.claude-sessions/stable-project/clone/.cs" "$HOME/.claude-sessions/stable-project/clone/work"
     ln -s "$docs/linked" "$HOME/.claude-sessions/linked"
     output=$(cd "$docs/my-neovim" && CS_SESSIONS_ROOT="$HOME/.claude-sessions" "$HOME/.local/bin/ccs" -adopt my-neovim) \
         || return 1
@@ -267,9 +269,11 @@ EOF
     assert_eq 1 "$status" || return 1
     assert_file_contains "$TEST_TMPDIR/refusal" 'workspace of the original cs' || return 1
     # Below an adopted project or a session cs made in its root, including
-    # from inside a profile session, whose CS_SESSIONS_ROOT is the profile's.
+    # from inside a profile session, whose CS_SESSIONS_ROOT is the profile's,
+    # and below a repository with a .cs of its own cloned inside either.
     local dir root
-    for dir in "$docs/linked/sub" "$HOME/.claude-sessions/stable-project/sub"; do
+    for dir in "$docs/linked/sub" "$HOME/.claude-sessions/stable-project/sub" \
+        "$docs/linked/clone/work" "$HOME/.claude-sessions/stable-project/clone/work"; do
         for root in "$HOME/.claude-sessions" "$PROFILE/sessions"; do
             status=0
             (cd "$dir" && CS_SESSIONS_ROOT="$root" "$HOME/.local/bin/ccs" -adopt sub) \
