@@ -132,7 +132,7 @@ _refuse_a_hook_event_that_is_not_a_list
 
 CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 # Revoked release keys, one per line. cs -update reads this declaration out
-# of a downloaded installer as data: exactly one such line, single-quoted.
+# of a downloaded installer as data: exactly one declaration, single-quoted.
 CS_RELEASE_REVOKED=''
 
 # Verifies a release manifest against its signature: manifest, signature,

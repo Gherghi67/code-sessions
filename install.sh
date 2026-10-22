@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "1d66f48126c6c4316e1ab66a6412a8a52eee52a90102571fd8042b30306a56d3  bin/cs"
+    "3c2df07da1e421602107ffb92fa082428d559693c9a6b766122b0c2d2bac38aa  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1410,7 +1410,7 @@ _refuse_a_hook_event_that_is_not_a_list
 
 CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 # Revoked release keys, one per line. cs -update reads this declaration out
-# of a downloaded installer as data: exactly one such line, single-quoted.
+# of a downloaded installer as data: exactly one declaration, single-quoted.
 CS_RELEASE_REVOKED=''
 
 # Verifies a release manifest against its signature: manifest, signature,

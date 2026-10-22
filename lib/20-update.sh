@@ -391,7 +391,7 @@ do_update() {
     fi
     # The installer fetches its payload from the ref it names; a verified
     # installer pinned to another tag would install another release.
-    if ! grep -qx "CS_DEFAULT_REF=v${remote_version}" "$tmpdir/install.sh"; then
+    if ! grep -qxF "CS_DEFAULT_REF=v${remote_version}" "$tmpdir/install.sh"; then
         error "Downloaded installer is not pinned to v${remote_version}. Update aborted."
     fi
     _check_revocation_carry_forward "$tmpdir/install.sh"

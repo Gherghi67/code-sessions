@@ -388,6 +388,7 @@ set -euo pipefail
 tag=vX.Y.Z
 git fetch origin "refs/tags/$tag:refs/tags/$tag"
 test "$(git rev-parse "$tag^{commit}")" = "$SHA"
+test "$(git show "$tag:lib/00-header.sh" | grep -m1 '^VERSION=' | cut -d'"' -f2)" = "${tag#v}"
 release_dir=$(mktemp -d)
 gh release download "$tag" -p SHA256SUMS -p install.sh -p 'cs-tui-*' -D "$release_dir"
 (
@@ -411,7 +412,10 @@ gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF SHA256SUM
 ```
 
 The release is not done until `SHA256SUMS.sig` is a release asset.
-Investigate a checksum failure or installer diff before signing.
+The signature's namespace is the tag, and the verifiers derive it from the
+release's own `VERSION`, so a tag that does not match the tagged commit's
+`VERSION` is never signed. Investigate a checksum failure or installer diff
+before signing.
 An installer changed by CI must never receive a local signature.
 
 ## Signed Releases

@@ -478,6 +478,8 @@ test_release_verifies_ci_workflow() {
         "release.md must gate completion on the signature asset" || return 1
     assert_file_contains "$RELEASE_MD" 'ssh-keygen -Y sign' \
         "release.md must sign the manifest locally after CI succeeds" || return 1
+    assert_file_contains "$RELEASE_MD" 'git show "\$tag:lib/00-header.sh".*VERSION=' \
+        "release.md must confirm the tag names the tagged commit's VERSION before signing" || return 1
     assert_file_contains "$RELEASE_MD" 'gh release upload.*SHA256SUMS.sig' \
         "release.md must upload the manifest signature" || return 1
     assert_file_contains "$RELEASE_MD" 'git show.*:install.sh' \
