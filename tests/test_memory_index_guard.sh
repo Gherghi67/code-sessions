@@ -187,7 +187,7 @@ test_unknown_subcommand_prints_usage() {
     local out rc=0
     out=$(_guard verify 2>&1) || rc=$?
     assert_eq 2 "$rc" "an unknown subcommand must fail" || return 1
-    assert_output_contains "$out" "usage: memory-index-guard.sh snapshot|check|restore" \
+    assert_output_contains "$out" "usage: memory-index-guard.sh snapshot|check|restore|refs" \
         "the error must list the subcommands" || return 1
 }
 
