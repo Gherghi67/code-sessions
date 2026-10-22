@@ -892,7 +892,9 @@ or an absent section. Its off switch is to delete the prose under
 
 The `/config` row `cs-mermaid.drawDiagrams` (on by default) controls drawing
 only: off, fences show as source. It leaves the `CLAUDE.local.md` instruction
-in place, as does `.cs/local/disabled`.
+in place, as does `.cs/local/disabled`. The instruction reaches every Claude run
+started in the session directory, including headless `claude -p` and subagents,
+because the engine loads `CLAUDE.local.md` itself.
 
 The mod also ships a skill, `skills/show-me/SKILL.md`, which the engine lists
 as `/cs-mermaid:show-me`. Its description names the asks that call for a

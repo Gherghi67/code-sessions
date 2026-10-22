@@ -7,7 +7,7 @@ cs creates persistent workspaces for [Claude Code](https://github.com/anthropics
 ## Install
 
 Requires macOS or Linux, Bash 3.2+, git, jq, perl, Claude Code, and a UTF-8 locale.
-Mermaid needs Claude Code 2.1.300+, and remote control needs 2.1.299+.
+Remote control needs Claude Code 2.1.299+.
 Non-UTF-8 locales such as `ja_JP.eucJP`, `ko_KR.eucKR`, and `zh_CN.eucCN` cause syntax errors in cs and two of its hooks.
 
 ```bash
@@ -66,7 +66,7 @@ The [statusline guide](docs/statusline.md) covers the capsules, colors, threshol
 | Prompt rewriting | Ctrl+G rewrites a draft in the composer for you to review before sending. | [Prompt rewriter](docs/hooks.md#prompt-rewritersh-not-a-hook--an-editor-shim) |
 | Writing skills | Judges prose or drafts from a writing profile. | [Skills](docs/hooks.md#skills) |
 | Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
-| Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. Requires Claude Code 2.1.300+. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
+| Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
 | Release notes | Shows pending release notes in-session through `/cs-update`. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
 | Other front ends | Session hooks also work in desktop and IDE conversations opened in a `.cs/` workspace. | [Session resolution](docs/hooks.md#how-a-hook-finds-its-session-cs-resolvesh) |
 
