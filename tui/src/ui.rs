@@ -1061,7 +1061,7 @@ fn render_session_menu(app: &App, frame: &mut Frame) {
     let title = app
         .selected_session()
         .map(|s| match app.launch_choices.get(&s.name) {
-            Some(choice) => format!("{} · launch: {}", s.name, choice.engine),
+            Some(choice) => format!("launch: {} · {}", choice.engine, s.name),
             None => s.name.clone(),
         })
         .unwrap_or_else(|| "session".to_string());
@@ -4574,6 +4574,38 @@ mod tests {
                 continue;
             }
             assert!(menu.contains(label), "the menu must offer {}: {}", label, menu);
+        }
+    }
+
+    #[test]
+    fn session_menu_keeps_pending_engine_visible_in_narrow_terminal() {
+        for name in [
+            "code-sessions@tui-engine-selector",
+            "開発セッション@エンジンセレクター",
+        ] {
+            for engine in ["codex", "claude"] {
+                let mut sessions = one_session();
+                sessions[0].name = name.into();
+                let mut app = App::new(sessions);
+                app.mode = Mode::SessionMenu;
+                app.launch_choices.insert(
+                    name.into(),
+                    crate::app::LaunchChoice {
+                        engine: engine.into(),
+                        model: String::new(),
+                        effort: String::new(),
+                        automatic: false,
+                    },
+                );
+
+                let rows = rows_at(&mut app, 40, 24);
+                let title = rows.iter().find(|row| row.contains('┌')).unwrap();
+                assert!(
+                    title.contains(&format!("launch: {engine}")),
+                    "pending {engine} must stay visible for {name}: {title}"
+                );
+                assert!(rows.iter().any(|row| row.contains("Open")));
+            }
         }
     }
 
