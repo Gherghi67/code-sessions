@@ -8,6 +8,8 @@ _claude_encode_path() {
 }
 
 CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+# Revoked release keys, one per line. cs -update reads this declaration out
+# of a downloaded installer as data: exactly one such line, single-quoted.
 CS_RELEASE_REVOKED=''
 
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark

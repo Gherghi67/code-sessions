@@ -5,6 +5,13 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 
+# A refusal ends with the fixed diagnostic and carries ssh-keygen's reason
+# above it, so a failed update says why without a verify log to open.
+_assert_refusal_names_reason() {  # output, reason, label
+    assert_eq 'Release manifest signature verification failed.' "$(printf '%s\n' "$1" | tail -n 1)" "$3 diagnostic" || return 1
+    assert_output_contains "$1" "$2" "$3 refusal names the verifier's reason" || return 1
+}
+
 test_manifest_authentication() {
     local source_file out rc
     ssh-keygen -q -t ed25519 -N '' -C 'release@example.com' -f "$TEST_TMPDIR/key"
@@ -24,6 +31,8 @@ test_manifest_authentication() {
     for source_file in "$SCRIPT_DIR/../lib/20-update.sh" "$SCRIPT_DIR/../install.sh.in"; do
         sed -n '/^_verify_manifest() {/,/^}/p' "$source_file" > "$TEST_TMPDIR/verify.sh"
         source "$TEST_TMPDIR/verify.sh"
+        # Read by the sourced _verify_manifest.
+        # shellcheck disable=SC2034
         CS_RELEASE_SIGNERS=$(cat "$TEST_TMPDIR/signers")
         CS_RELEASE_REVOKED=''
         out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || {
@@ -34,18 +43,18 @@ test_manifest_authentication() {
         rc=0
         out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/wrong.sig" 9.9.9 2>&1) || rc=$?
         assert_eq 1 "$rc" 'a different signer is refused' || return 1
-        assert_eq 'Release manifest signature verification failed.' "$out" 'wrong signer diagnostic' || return 1
+        _assert_refusal_names_reason "$out" 'Could not verify signature' 'wrong signer' || return 1
         for sig in oldtag plain; do
             rc=0
             out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/$sig.sig" 9.9.9 2>&1) || rc=$?
             assert_eq 1 "$rc" "a signature for another tag is refused ($sig)" || return 1
-            assert_eq 'Release manifest signature verification failed.' "$out" "other-tag diagnostic ($sig)" || return 1
+            _assert_refusal_names_reason "$out" 'namespace does not match' "other tag ($sig)" || return 1
         done
         printf '%064d  install.sh\n' 1 > "$TEST_TMPDIR/edited"
         rc=0
         out=$(_verify_manifest "$TEST_TMPDIR/edited" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || rc=$?
         assert_eq 1 "$rc" 'editing a signed manifest is refused' || return 1
-        assert_eq 'Release manifest signature verification failed.' "$out" 'edited manifest diagnostic' || return 1
+        _assert_refusal_names_reason "$out" 'Could not verify signature' 'edited manifest' || return 1
         rc=0
         out=$(export PATH="$TEST_TMPDIR/no-tools"; hash -r; _verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || rc=$?
         assert_eq 1 "$rc" 'missing verifier is refused' || return 1
@@ -54,10 +63,12 @@ test_manifest_authentication() {
         rc=0
         out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || rc=$?
         assert_eq 1 "$rc" 'a revoked allowed signer is refused' || return 1
-        assert_eq 'Release manifest signature verification failed.' "$out" 'revocation diagnostic' || return 1
+        _assert_refusal_names_reason "$out" 'Could not verify signature' 'revocation' || return 1
         # The trust lists are the embedded ones alone: nothing in the
         # environment can point the verifier at other files.
+        # shellcheck disable=SC2034
         CS_RELEASE_REVOKED=''
+        # shellcheck disable=SC2034
         CS_RELEASE_SIGNERS="release namespaces=\"cs-release-*\" $(cat "$TEST_TMPDIR/other.pub")"
         rc=0
         out=$(CS_RELEASE_SIGNERS_FILE="$TEST_TMPDIR/signers" CS_RELEASE_REVOKED_FILE="$TEST_TMPDIR/revoked" \

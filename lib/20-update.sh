@@ -21,6 +21,8 @@ _verify_manifest() {  # manifest, signature, version
         [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
         if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
             -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            # The verifier's own reason, then the fixed diagnostic last.
+            tail -n 5 "$trust_dir/verify.log" >&2
             printf '%s\n' 'Release manifest signature verification failed.' >&2
             exit 1
         fi
