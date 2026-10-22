@@ -514,11 +514,9 @@ async function noteConversation($: EngineInterface, id: string): Promise<boolean
   if (!first && (await isCsSession($, await $.session.cwd()))) {
     const color = await sessionColor($)
     if (color !== undefined) {
-      try {
-        await $.command.run({ command: 'color', args: color })
-      } catch (err) {
+      $.command.run({ command: 'color', args: color }).catch(err => {
         $.ui.log(`cs: /color ${color} did not run: ${String(err).replace(/[\r\n]+/g, ' ')}`)
-      }
+      })
     }
   }
   return true

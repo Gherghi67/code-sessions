@@ -1241,6 +1241,35 @@ test('a refused session color leaves the drawn tree intact and logs once', async
   expect(logs).toEqual(['cs: /color red did not run: Error: command refused'])
 })
 
+test('a pending session color leaves rendering and running-turn guards responsive', async () => {
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  sessionId = 'uuid-fork'
+  files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-fork\n'
+  const run = $.command.run
+  $.command.run = (args) => {
+    if (args.command !== 'color') return run(args)
+    ran.push(args)
+    return new Promise(() => {})
+  }
+  try {
+    const rendered = await Promise.race([band({ isWorking: true }), settle().then(() => 'render blocked')])
+    expect(rendered).toBe(DRAWN)
+    await tick(GRACE_SECONDS)
+    expect(ran).toEqual([{ command: 'color', args: 'red' }])
+    runResult = LISTED
+    answer = QUEUE_START
+    await queue('')
+    await settle()
+    expect(runs.map(x => x.argv[2])).toEqual(['/work', 'list', 'start'])
+    expect(submitted).toEqual([])
+    expect(logs).toEqual([])
+  } finally {
+    $.command.run = run
+  }
+})
+
 test('a successor that starts past the threshold still gets the countdown once the person arms a handoff themselves', async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
   percent = 30
