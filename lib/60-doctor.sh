@@ -893,7 +893,7 @@ _doctor_check_hook_authority() {
     # Local instructions remain in the prompt even when session hooks are disabled.
     disabled_all=""
     local diagrams_off=1
-    local dir="${CLAUDE_SESSION_DIR:-}"
+    local dir="${CLAUDE_SESSION_DIR:-$PWD}"
     if [ -n "$dir" ] && [ -f "$dir/CLAUDE.local.md" ] && awk '
         /^<!-- cs:mermaid-diagrams -->$/ { section=1; next }
         section == 1 && /^## Diagrams$/ { section=2; next }

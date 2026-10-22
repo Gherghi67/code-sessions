@@ -1877,6 +1877,9 @@ EOF
     row=$(CS_NO_FUNCTION_HOOKS=1 _doctor_diagrams_row)
     assert_eq "on diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
         "the file's instruction stays on when hooks and drawing are disabled" || return 1
+    row=$(cd "$CLAUDE_SESSION_DIR" && unset CLAUDE_SESSION_DIR && _doctor_diagrams_row)
+    assert_eq "on diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "doctor finds the diagram instruction from the session working directory" || return 1
 }
 
 test_doctor_reports_the_diagram_tombstone_as_off() {
