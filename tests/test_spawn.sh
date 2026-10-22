@@ -335,10 +335,46 @@ test_spawn_from_a_terminal_still_hands_an_existing_session_its_tasks() {
     assert_eq "solo" "$(sed -n 3p "$(SEED)")" "the task is staged" || return 1
 }
 
+# A feature brief with every section the feature skill's shape names.
+_feature_brief() {  # path
+    printf '# feature\n\n## Goal\nShip it.\n\n## Done when\n- green\n\n## Constraints\n- none\n\n## Context\n- base at abc123\n\n## Review\n- independent review before the result\n\n## Report back\ncs -msg base -k result "done"\n' > "$1"
+}
+
+# A feature's brief is the feature skill's shape, and the spawner holds the
+# writer to it: a feature-named spawn whose brief lacks a section is refused
+# naming the first missing one, and nothing is staged. A plain session's brief
+# has no shape (test_spawn_stages_the_brief_inside_the_seed stages one with a
+# bare "# Goal").
+test_spawn_refuses_a_feature_brief_missing_a_section() {
+    local brief="$TEST_TMPDIR/brief.md" err rc=0
+    _feature_brief "$brief"
+    grep -v '^## Context$' "$brief" > "$brief.cut" && mv "$brief.cut" "$brief"
+    err=$(CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" 2>&1 >/dev/null) && rc=1
+    [ "$rc" = 0 ] || { echo "  a feature brief without ## Context was accepted"; return 1; }
+    assert_eq "Error: cs -spawn --brief: $brief has no '## Context' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line" \
+        "$err" "the refusal names the missing section and the shape" || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/.spawn" ] || [ -z "$(ls -A "$CS_SESSIONS_ROOT/.spawn")" ] \
+        || { echo "  something was staged for a refused brief"; return 1; }
+    # A heading with trailing words is not the section.
+    _feature_brief "$brief"
+    sed 's/^## Review$/## Review notes/' "$brief" > "$brief.cut" && mv "$brief.cut" "$brief"
+    err=$(CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" 2>&1 >/dev/null) && rc=1
+    [ "$rc" = 0 ] || { echo "  '## Review notes' passed for '## Review'"; return 1; }
+    assert_output_contains "$err" "has no '## Review' section" "a heading with extra words is not the section" || return 1
+}
+
+test_spawn_accepts_a_complete_feature_brief() {
+    local brief="$TEST_TMPDIR/brief.md"
+    _feature_brief "$brief"
+    CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
+        || { echo "  a complete feature brief was refused"; return 1; }
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/base@feature.seed" "the brief is staged" || return 1
+}
+
 test_spawn_from_the_base_still_briefs_its_existing_feature() {
     create_test_session base@feature >/dev/null
     local brief="$TEST_TMPDIR/brief.md"
-    printf '# feature\n' > "$brief"
+    _feature_brief "$brief"
     CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
         || { echo "  spawn failed"; return 1; }
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/base@feature.seed" "the brief is staged" || return 1
@@ -1022,6 +1058,8 @@ run_test test_spawn_writes_seed_and_opens_window
 run_test test_spawn_without_task_writes_no_seed
 run_test test_spawn_rejects_an_invalid_spawner_name
 run_test test_spawn_stages_the_brief_inside_the_seed
+run_test test_spawn_refuses_a_feature_brief_missing_a_section
+run_test test_spawn_accepts_a_complete_feature_brief
 run_test test_spawn_brief_and_tasks_stage_together
 run_test test_spawn_refuses_a_task_equal_to_the_brief_marker
 run_test test_spawn_concurrent_same_name_publishes_one_whole_seed
