@@ -562,6 +562,36 @@ dead: .cs/memory/project_beta.md: hooks/gone.sh' "$out" \
     assert_eq 0 "$rc" "dead references are advisory" || return 1
 }
 
+test_refs_skips_only_immediate_dated_gone_markers() {
+    _guard_session
+    cat > "$SESSION/.cs/memory/feedback_alpha.md" << 'EOF'
+Read `hooks/old.sh` (gone 2026-10-22) and `hooks/twin.sh` (gone 2026-10-22).
+The unmarked twin is `hooks/twin.sh`.
+EOF
+    local out suffix
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: hooks/twin.sh' "$out" \
+        "a gone marker skips only its reference occurrence" || return 1
+    for suffix in ' (gone)' ' was removed (gone 2026-10-22)' \
+        ' (gone 22-10-2026)' ' (gone 2026-1-22)' ' (gone 2026/10/22)' \
+        '  (gone 2026-10-22)' '(gone 2026-10-22)' $'\t(gone 2026-10-22)' \
+        $'\n (gone 2026-10-22)'; do
+        printf 'Read `x.sh`%s\n' "$suffix" > "$SESSION/.cs/memory/feedback_alpha.md"
+        out=$(_guard refs 2>&1) || return 1
+        assert_eq 'dead: .cs/memory/feedback_alpha.md: x.sh' "$out" \
+            "an inexact or separated gone marker does not suppress a reference" || return 1
+    done
+    mkdir -p "$SESSION/hooks"
+    : > "$SESSION/hooks/restored.sh"
+    : > "$SESSION/hooks/live.sh"
+    printf '%s\n' 'Read `hooks/restored.sh` (gone 2026-10-22) and `hooks/live.sh`.' \
+        'Also `hooks/old.sh` (gone 2026-10-22).' \
+        > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || return 1
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "marked live and dead references are silent and excluded from the count" || return 1
+}
+
 test_refs_reports_a_verb_absent_from_the_dispatcher() {
     local PATH=/bin:/usr/bin
     _guard_session
@@ -1144,6 +1174,7 @@ run_test test_refs_ignores_frontmatter_the_index_and_narratives
 run_test test_refs_counts_live_paths_identifiers_and_verbs_once
 run_test test_refs_reports_a_verb_absent_from_the_dispatcher
 run_test test_refs_reports_dead_paths_once_in_sorted_order
+run_test test_refs_skips_only_immediate_dated_gone_markers
 run_test test_check_fails_when_a_link_is_removed
 run_test test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget
 run_test test_check_counts_bytes_not_characters

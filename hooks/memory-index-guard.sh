@@ -121,6 +121,7 @@ _reference_tokens() {  # entry
             while (match(rest, /`[^`]+`/)) {
                 token = substr(rest, RSTART + 1, RLENGTH - 2)
                 rest = substr(rest, RSTART + RLENGTH)
+                if (rest ~ /^ \(gone [0-9]{4}-[0-9]{2}-[0-9]{2}\)/) continue
                 if (token ~ /[<>*$]/ || index(token, "...")) continue
                 if (token ~ /^cs -[A-Za-z-]+$/) { print token; continue }
                 if (token ~ /^(_cs_|cs_)[A-Za-z0-9_]+$/) { print token; continue }

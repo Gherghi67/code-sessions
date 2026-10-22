@@ -479,6 +479,8 @@ The scanner strips one leading `./` from exact paths, checks files and directori
 
 Verb lookup uses the installed `cs` found on `PATH`, falls back to `bin/cs`, and skips verbs when neither exists. Each scan resolves and counts a token once, but reports a dead token once in every entry that contains it.
 
+`refs` skips and does not count a reference followed immediately on the same line by ` (gone YYYY-MM-DD)`, such as `` `hooks/old.sh` (gone 2026-10-22) ``.
+
 `check` never restores on its own. A sweep that pushes the file over budget by adding a pointer has to demote or compress other pointers, and an automatic restore would throw the new pointer away, leaving its entry unindexed.
 
 ## cs (not a hook script — a Claude Code mod)
