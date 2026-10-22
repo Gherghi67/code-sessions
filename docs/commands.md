@@ -147,7 +147,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 
 ### Retirement
 
-- Finish can land work while the feature conversation runs. Retirement then waits for it to close: the retire entry writes `.cs/local/retire-staged/<task>` in the base (the captured commit and whether `--force` applied) and answers `staged <task> <sha>: ...`, and the base's Stop hook runs the entry once that conversation's lock is gone, every refusal intact, reporting `retired` or the refusal on the base's next turn. `cs <base> -features` reads `staged` for it. No keystroke or signal closes the other session; the user does, when they are done there.
+- Finish can land work while the feature conversation runs. Retirement then waits for it to close: the retire entry writes `.cs/local/retire-staged/<task>` in the base (the captured commit and whether `--force` applied) and answers `staged <task> <sha>: ...`. When that conversation ends, its SessionEnd mails the base, and the base's Stop hook starts the entry detached (`--staged`, the stage standing in for the base's own ancestry), waits up to six seconds for it, and reports `retired` or the refusal in the turn that finds it ended. The entry re-reads the feature's lock under its openers' mutex right before the removal, so a conversation reopened meanwhile stages the retire again instead of losing its directory. `cs <base> -features` reads `staged` for it. No keystroke or signal closes the other session; the user does, when they are done there.
 - Retirement commits nothing and refuses dirty or untracked work.
 - Recreated build directories such as `node_modules`, `target`, and `.venv` go with the checkout.
 - Other ignored files go to system trash, with each file or whole-directory count listed.
