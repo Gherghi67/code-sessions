@@ -1225,6 +1225,17 @@ test('a conversation after /clear reapplies the session color once', async () =>
   expect(ran).toEqual([{ command: 'color', args: 'red' }])
 })
 
+test('a /clear after a plugin reload reapplies the session color once', async () => {
+  await band()
+  // The harness captures hooks by matcher without the engine's On overloads.
+  register(on as any)
+  await clearRun()
+  sessionId = 'uuid-next'
+  await band()
+  await band()
+  expect(ran).toEqual([{ command: 'color', args: 'red' }])
+})
+
 test('a refused session color leaves the drawn tree intact and logs once', async () => {
   await band()
   await clearRun()

@@ -506,12 +506,12 @@ async function forceThreshold($: EngineInterface): Promise<number | undefined> {
 // with them.
 async function noteConversation($: EngineInterface, id: string): Promise<boolean> {
   if (id === adopted) return false
-  const first = adopted === undefined
+  const reapplyColor = adopted !== undefined || clearSeen
   adopted = id
   startPercent = undefined
   birth = clearSeen ? id : undefined
   clearSeen = false
-  if (!first && (await isCsSession($, await $.session.cwd()))) {
+  if (reapplyColor && (await isCsSession($, await $.session.cwd()))) {
     const color = await sessionColor($)
     if (color !== undefined) {
       $.command.run({ command: 'color', args: color }).catch(err => {
