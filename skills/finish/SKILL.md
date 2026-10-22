@@ -164,8 +164,8 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
    (`.cs/local/retire-staged/<task>`), and the base's Stop hook runs it once
    that conversation's lock is gone, with every refusal intact. Relay the
    line and tell the user the worktree and branch go by themselves after
-   they close that conversation; nothing else is needed, and the next turn
-   here reports `retired`. Before `retired` it
+   they close that conversation; nothing else is needed, and a later turn
+   here reports `retired` or the refusal. Before `retired` it
    may print `Moved N ignored files to the system trash:` with one line per
    file it moved, and one per directory it moved whole (its path and the
    number of files inside): relay that block whole, since the user's ignored
