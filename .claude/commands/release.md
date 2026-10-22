@@ -404,7 +404,7 @@ awk -v tag="$tag" '$0 == "CS_DEFAULT_REF=main" {$0="CS_DEFAULT_REF=" tag} {print
 diff -u "$release_dir/expected-install.sh" "$release_dir/install.sh"
 (
   cd "$release_dir"
-  ssh-keygen -Y sign -f "${RELEASE_SIGNING_KEY:-$HOME/.ssh/release-signing.pub}" -n cs-release SHA256SUMS
+  ssh-keygen -Y sign -f "${RELEASE_SIGNING_KEY:-$HOME/.ssh/release-signing.pub}" -n "cs-release-$tag" SHA256SUMS
 )
 gh release upload "$tag" "$release_dir/SHA256SUMS.sig"
 gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF SHA256SUMS.sig
@@ -425,8 +425,10 @@ Step 10 signs the manifest locally with the agent-held SSH key named by
 `RELEASE_SIGNING_KEY` overrides that path. CI holds no signing key.
 
 `cs -update` and the installer's picker download require
-`ssh-keygen -Y verify` to authenticate `SHA256SUMS.sig` in the `cs-release`
-namespace, then compare the downloaded file with its manifest digest.
+`ssh-keygen -Y verify` to authenticate `SHA256SUMS.sig` in the release's own
+namespace, `cs-release-vX.Y.Z`, then compare the downloaded file with its
+manifest digest. A signature made for one tag never verifies another, and
+`cs -update` refuses a release older than the installed cs.
 `CS_RELEASE_SIGNERS` contains the allowed signers and `CS_RELEASE_REVOKED`
 contains revoked public keys. An update refuses a release that drops any
 revoked key.

@@ -58,7 +58,7 @@ Preserved files have these rules:
 
 - Updates authenticate `SHA256SUMS` with `SHA256SUMS.sig` using `ssh-keygen -Y verify`, then check the installer's SHA-256 digest.
 - Web installs apply the same check to the picker binary. Missing verification tools, assets, or manifest entries and failed checks refuse the download.
-- The verifier requires SSH signature support, the `release` identity, and the `cs-release` namespace. Embedded allowed signers and revoked public keys define which keys it trusts.
+- The verifier requires SSH signature support, the `release` identity, and the release's own `cs-release-vX.Y.Z` namespace, so a signature made for one tag never verifies another. `cs -update` refuses a release older than the installed cs. Embedded allowed signers and revoked public keys define which keys it trusts.
 - An update refuses an installer that drops any revoked key from the installed list. Minisign is not used.
 - `cs -update --check` prints the full pending release notes.
 - The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).

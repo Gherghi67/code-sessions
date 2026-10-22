@@ -7,7 +7,7 @@ _claude_encode_path() {
     printf '%s' "$p"
 }
 
-CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 CS_RELEASE_REVOKED=''
 
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark

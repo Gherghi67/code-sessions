@@ -2357,7 +2357,7 @@ _install_tui_with_broken_verification() {  # tag
     cp "$INSTALL_SH" "$sandbox/install.sh"
     ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$sandbox/key"
     ssh-keygen -q -t ed25519 -N '' -C other@example.com -f "$sandbox/other"
-    printf 'release namespaces="cs-release" %s\n' "$(cat "$sandbox/key.pub")" > "$sandbox/signers"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$sandbox/key.pub")" > "$sandbox/signers"
     : > "$sandbox/revoked"
     printf 'stub-binary\n' > "$sandbox/binary"
     local asset os arch digest key="$sandbox/key"
@@ -2369,7 +2369,11 @@ _install_tui_with_broken_verification() {  # tag
     [ "${CS_TEST_MANIFEST:-}" != missing-entry ] || asset=cs-tui-other
     printf '%s  %s\n' "$digest" "$asset" > "$sandbox/SHA256SUMS"
     [ "${CS_TEST_MANIFEST:-}" != wrong-key ] || key="$sandbox/other"
-    ssh-keygen -Y sign -f "$key" -n cs-release "$sandbox/SHA256SUMS" > "$sandbox/sign.log" 2>&1
+    # install.sh verifies in the namespace of the release its bin/cs names.
+    local namespace
+    namespace="cs-release-v$(grep -m1 '^VERSION=' "$repo/bin/cs" | cut -d'"' -f2)"
+    [ "${CS_TEST_MANIFEST:-}" != other-tag ] || namespace=cs-release-v0.0.0
+    ssh-keygen -Y sign -f "$key" -n "$namespace" "$sandbox/SHA256SUMS" > "$sandbox/sign.log" 2>&1
     [ "${CS_TEST_MANIFEST:-}" != edited ] || printf '\n' >> "$sandbox/SHA256SUMS"
     # An earlier install's record, which only a picker this install places
     # may replace.
@@ -2476,12 +2480,12 @@ test_tui_requires_an_authenticated_manifest_entry() {
     local bin fault out expected
     bin=$(_install_tui_with_broken_verification authenticated)
     assert_eq 'stub-binary' "$(cat "$bin/cs-tui" 2>/dev/null)" 'signed binary must be installed' || return 1
-    for fault in wrong-key edited missing-entry missing-sig; do
+    for fault in wrong-key other-tag edited missing-entry missing-sig; do
         bin=$(CS_TEST_MANIFEST="$fault" _install_tui_with_broken_verification "$fault")
         assert_not_exists "$bin/cs-tui" "$fault binary is removed" || return 1
         out=$(cat "$TEST_TMPDIR/tui-verify-$fault/install.out")
         case "$fault" in
-            wrong-key|edited) expected='cs-tui signature verification failed -- removed' ;;
+            wrong-key|other-tag|edited) expected='cs-tui signature verification failed -- removed' ;;
             missing-entry) expected='cs-tui could not be verified (manifest entry or digest unavailable) -- removed' ;;
             missing-sig) expected='cs-tui could not be verified (manifest or signature unavailable) -- removed' ;;
         esac

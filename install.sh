@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4629c7cf47eb52ed342678def6e70601d96a2281f402d14e9fb5b8111340e3bc  bin/cs"
+    "250638d17856fce9f0ce935f51e0ad6032c2ec3e1b4aef2b747a708f19396947  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1408,10 +1408,14 @@ _refuse_a_hook_event_that_is_not_a_list() {
 }
 _refuse_a_hook_event_that_is_not_a_list
 
-CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 CS_RELEASE_REVOKED=''
 
-_verify_manifest() {
+# Verifies a release manifest against its signature: manifest, signature,
+# release version. The signature is bound to the release through its
+# namespace, cs-release-v<version>, so a manifest signed for one tag never
+# verifies another.
+_verify_manifest() {  # manifest, signature, version
     (
         if ! command -v ssh-keygen >/dev/null 2>&1; then
             printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
@@ -1431,7 +1435,7 @@ _verify_manifest() {
         fi
         local revocation_args=()
         [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
-        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n cs-release \
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
             -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
             printf '%s\n' 'Release manifest signature verification failed.' >&2
             exit 1
@@ -1736,7 +1740,7 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
             || ! curl -fsSL "$_manifest_url.sig" -o "$STAGE_DIR/SHA256SUMS.sig" 2>/dev/null; then
             rm -f "$_tui_dst"
             warn "cs-tui could not be verified (manifest or signature unavailable) -- removed"
-        elif ! _verify_manifest "$STAGE_DIR/SHA256SUMS" "$STAGE_DIR/SHA256SUMS.sig"; then
+        elif ! _verify_manifest "$STAGE_DIR/SHA256SUMS" "$STAGE_DIR/SHA256SUMS.sig" "$_cs_version"; then
             rm -f "$_tui_dst"
             warn "cs-tui signature verification failed -- removed"
         elif ! verify_checksum "$_tui_dst" "$STAGE_DIR/SHA256SUMS" "$_tui_base"; then

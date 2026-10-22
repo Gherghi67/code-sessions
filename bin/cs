@@ -2495,7 +2495,7 @@ _claude_encode_path() {
     printf '%s' "$p"
 }
 
-CS_RELEASE_SIGNERS='release namespaces="cs-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 CS_RELEASE_REVOKED=''
 
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark
@@ -3372,7 +3372,11 @@ session_uptime_secs() {  # meta_dir, now_epoch
 }
 # --- Release verification ---
 
-_verify_manifest() {
+# Verifies a release manifest against its signature: manifest, signature,
+# release version. The signature is bound to the release through its
+# namespace, cs-release-v<version>, so a manifest signed for one tag never
+# verifies another.
+_verify_manifest() {  # manifest, signature, version
     (
         if ! command -v ssh-keygen >/dev/null 2>&1; then
             printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
@@ -3392,7 +3396,7 @@ _verify_manifest() {
         fi
         local revocation_args=()
         [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
-        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n cs-release \
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
             -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
             printf '%s\n' 'Release manifest signature verification failed.' >&2
             exit 1
@@ -3728,6 +3732,8 @@ do_update() {
     local is_upgrade=false
     if version_greater "$remote_version" "$VERSION"; then
         is_upgrade=true
+    elif version_greater "$VERSION" "$remote_version"; then
+        error "Release v${remote_version} is older than the installed cs ${VERSION}. Update aborted."
     fi
 
     echo ""
@@ -3757,11 +3763,16 @@ do_update() {
         error "Failed to download release manifest signature."
     }
 
-    if ! _verify_manifest "$tmpdir/SHA256SUMS" "$tmpdir/SHA256SUMS.sig"; then
+    if ! _verify_manifest "$tmpdir/SHA256SUMS" "$tmpdir/SHA256SUMS.sig" "$remote_version"; then
         error "Release manifest signature verification failed. Update aborted."
     fi
     if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/SHA256SUMS"; then
         error "Checksum verification failed. Update aborted."
+    fi
+    # The installer fetches its payload from the ref it names; a verified
+    # installer pinned to another tag would install another release.
+    if ! grep -qx "CS_DEFAULT_REF=v${remote_version}" "$tmpdir/install.sh"; then
+        error "Downloaded installer is not pinned to v${remote_version}. Update aborted."
     fi
     _check_revocation_carry_forward "$tmpdir/install.sh"
 

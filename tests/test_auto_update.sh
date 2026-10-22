@@ -369,13 +369,16 @@ test_check_falls_back_when_fetch_fails() {
 }
 
 # The transport serves local release assets; all authentication uses real keys.
+# The served release is v2026.99.3 unless CS_TEST_REMOTE_VERSION names
+# another; its manifest is signed in that release's namespace.
 _update_with_manifest() {  # label, installer-exit-status, optional fault
     local stub="$TEST_TMPDIR/$1-stub" home="$TEST_TMPDIR/$1-home" tmp="$TEST_TMPDIR/$1-tmp"
     local installer="$TEST_TMPDIR/$1-install.sh" digest fault="${3:-}" revoked=''
+    local remote="${CS_TEST_REMOTE_VERSION:-2026.99.3}" ref="v${CS_TEST_REMOTE_VERSION:-2026.99.3}"
     mkdir -p "$stub" "$home" "$tmp"
     ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$stub/key"
     ssh-keygen -q -t ed25519 -N '' -C other@example.com -f "$stub/other"
-    printf 'release namespaces="cs-release" %s\n' "$(cat "$stub/key.pub")" > "$stub/signers"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$stub/key.pub")" > "$stub/signers"
     : > "$stub/revoked"
     case "$fault" in
         revoked-kept|revoked-lost)
@@ -383,12 +386,14 @@ _update_with_manifest() {  # label, installer-exit-status, optional fault
             [ "$fault" != revoked-kept ] || revoked=$(cat "$stub/other.pub")
             ;;
     esac
+    [ "$fault" != wrong-ref ] || ref=main
     cat > "$installer" << INSTALLER
 #!/usr/bin/env bash
 # cs-update-fixture-$1-$$-$RANDOM$RANDOM
+CS_DEFAULT_REF=$ref
 CS_RELEASE_REVOKED='$revoked'
 mkdir -p "\$HOME/.local/bin"
-printf 'VERSION="2026.99.3"\n' > "\$HOME/.local/bin/cs"
+printf 'VERSION="$remote"\n' > "\$HOME/.local/bin/cs"
 echo "fixture installer ran at \$CS_INSTALL_REF"
 exit $2
 INSTALLER
@@ -403,9 +408,10 @@ INSTALLER
         missing-entry) printf '%s  other.sh\n' "$digest" > "$stub/SHA256SUMS" ;;
         duplicate-entry) printf '%s  install.sh\n' "$digest" >> "$stub/SHA256SUMS" ;;
     esac
-    local key="$stub/key"
+    local key="$stub/key" namespace="cs-release-v$remote"
     [ "$fault" != wrong-key ] || key="$stub/other"
-    ssh-keygen -Y sign -f "$key" -n cs-release "$stub/SHA256SUMS" > "$stub/sign.log" 2>&1
+    [ "$fault" != other-tag ] || namespace=cs-release-v2026.99.2
+    ssh-keygen -Y sign -f "$key" -n "$namespace" "$stub/SHA256SUMS" > "$stub/sign.log" 2>&1
     [ "$fault" != edited ] || printf '\n' >> "$stub/SHA256SUMS"
     [ "$fault" != missing-sig ] || rm "$stub/SHA256SUMS.sig"
     [ "$fault" != missing-manifest ] || rm "$stub/SHA256SUMS"
@@ -413,7 +419,7 @@ INSTALLER
 #!/usr/bin/env bash
 case "\$*" in
     *" -w "*)
-        printf '%s' "https://example.com/releases/tag/v2026.99.3"
+        printf '%s' "https://example.com/releases/tag/v$remote"
         exit 0
         ;;
 esac
@@ -424,9 +430,9 @@ for a in "\$@"; do
     prev="\$a"
 done
 case "\$*" in
-    *"/v2026.99.3/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
-    *"/v2026.99.3/SHA256SUMS -o "*) cp "$stub/SHA256SUMS" "\$out"; exit \$? ;;
-    *"/v2026.99.3/SHA256SUMS.sig -o "*) cp "$stub/SHA256SUMS.sig" "\$out"; exit \$? ;;
+    *"/v$remote/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
+    *"/v$remote/SHA256SUMS -o "*) cp "$stub/SHA256SUMS" "\$out"; exit \$? ;;
+    *"/v$remote/SHA256SUMS.sig -o "*) cp "$stub/SHA256SUMS.sig" "\$out"; exit \$? ;;
 esac
 exit 22
 STUB
@@ -460,14 +466,15 @@ test_update_authenticates_the_installer() {
     assert_output_contains "$out" "Verified" "the checksum gate passed" || return 1
     assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the verified installer ran, pinned to the tag" || return 1
     local fault expected
-    for fault in missing-sig missing-manifest wrong-key edited missing-entry duplicate-entry revoked-lost duplicate-revoked executable-revoked; do
+    for fault in missing-sig missing-manifest wrong-key other-tag edited missing-entry duplicate-entry wrong-ref revoked-lost duplicate-revoked executable-revoked; do
         out=$(_update_with_manifest "$fault" 0 "$fault")
         assert_eq 1 "$(cat "$TEST_TMPDIR/update-rc")" "$fault refuses the update" || { echo "$out"; return 1; }
         assert_output_not_contains "$out" "fixture installer ran" "$fault never executes installer" || return 1
         case "$fault" in
             missing-sig) expected='Error: Failed to download release manifest signature.' ;;
             missing-manifest) expected='Error: Failed to download release manifest.' ;;
-            wrong-key|edited) expected='Error: Release manifest signature verification failed. Update aborted.' ;;
+            wrong-key|other-tag|edited) expected='Error: Release manifest signature verification failed. Update aborted.' ;;
+            wrong-ref) expected='Error: Downloaded installer is not pinned to v2026.99.3. Update aborted.' ;;
             missing-entry|duplicate-entry) expected='Error: Checksum verification failed. Update aborted.' ;;
             revoked-lost) expected="Error: Release dropped revoked key: $(awk '{print $1, $2}' "$TEST_TMPDIR/$fault-stub/other.pub")" ;;
             *) expected='Error: Malformed CS_RELEASE_REVOKED in downloaded installer.' ;;
@@ -476,6 +483,18 @@ test_update_authenticates_the_installer() {
     done
     out=$(_update_with_manifest revoked-kept 0 revoked-kept)
     assert_eq 0 "$(cat "$TEST_TMPDIR/update-rc")" 'revocations carried forward permit update' || { echo "$out"; return 1; }
+}
+
+# A release older than the installed cs is refused before anything is run,
+# however well it is signed: "latest" pointing at an old tag is not an update.
+test_update_refuses_a_downgrade() {
+    local out installed
+    installed=$(grep -m1 '^VERSION=' "$CS_BIN" | cut -d'"' -f2)
+    out=$(CS_TEST_REMOTE_VERSION=2000.1.1 _update_with_manifest downgrade 0)
+    assert_eq 1 "$(cat "$TEST_TMPDIR/update-rc")" 'a downgrade refuses the update' || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "fixture installer ran" 'the older installer never runs' || return 1
+    assert_eq "Error: Release v2000.1.1 is older than the installed cs $installed. Update aborted." \
+        "$(printf '%s\n' "$out" | tail -n 1)" 'downgrade diagnostic' || return 1
 }
 
 # The update's temp dir (installer, checksum, signature) is removed however the
@@ -777,6 +796,7 @@ run_test test_render_width_floor_survives_tiny_terminals
 run_test test_check_shows_rendered_span
 run_test test_check_falls_back_when_fetch_fails
 run_test test_update_authenticates_the_installer
+run_test test_update_refuses_a_downgrade
 run_test test_update_removes_its_temp_dir_when_the_installer_fails
 run_test test_update_removes_its_temp_dir_when_the_checksum_is_refused
 run_test test_launch_with_a_fresh_cache_and_no_update_skips_the_network
