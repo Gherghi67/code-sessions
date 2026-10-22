@@ -279,6 +279,18 @@ To opt out, delete the prose above but keep the `cs:session-commits` HTML commen
 EOF
 }
 
+# The diagram instruction shared by the session template and migration Phase 17.
+_emit_mermaid_diagrams_block() {
+    cat << 'EOF'
+<!-- cs:mermaid-diagrams -->
+## Diagrams
+
+Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.
+
+To opt out, delete the prose above but keep the `cs:mermaid-diagrams` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
 # The protocol for an encrypted session: migrate_session appends it once
 # .cs/private exists. It overrides the README instructions of the base
 # protocol, which every session gets from _emit_session_claude_md.
@@ -366,6 +378,8 @@ EOF
     _emit_memory_note_block
     echo
     _emit_wrap_cues_block
+    echo
+    _emit_mermaid_diagrams_block
 }
 
 # Write the session protocol template to the given directory (create path).

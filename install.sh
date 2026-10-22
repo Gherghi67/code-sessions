@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "e70dbb440a2922f2074a017998d67f80b6b879e679318a89bc02810d148eb4e6  bin/cs"
+    "8c93dde5343effb0a66c245989c600b84b880deab7fcc30e1669ab7dac5289bb  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1368,11 +1368,11 @@ CS_PAYLOAD_SHA256=(
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "85eed2ed78ad31901e690f600aa10b13b5e600cd181c67cf30224c271ca06eb2  mods/cs-update/hooks/register.tsx"
-    "83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085  mods/cs-mermaid/.claude-plugin/plugin.json"
+    "e31c75e10bc0cc8490691c61862c7865e7cda831f1ac1ec841e5ebe831204ea2  mods/cs-mermaid/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
     "17ded962d4bda355fb9f4c6e3707aab94062b42361df695e79a6e1702a8e8cf8  mods/cs-mermaid/hooks/layout.ts"
     "4258a64c8eb8a2a172fb0680c578204f90ad97f344e82b25b4ff1ff9be701633  mods/cs-mermaid/hooks/parse.ts"
-    "5a61c589f8e2a1e7c38aba026244c2ab1864f36035648872595de40fe6fe4cbc  mods/cs-mermaid/hooks/register.tsx"
+    "73f199c6f5820fa25b4ffb8dda8ebe468df187183fc685e23624f4d06210f516  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"

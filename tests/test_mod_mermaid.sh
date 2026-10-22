@@ -38,26 +38,11 @@ test_show_me_skill_names_itself_and_its_triggers() {
     fi
 }
 
-# The mod hooks prompt.compose, which a Claude Code before 2.1.300 does not
-# know; that build refuses the whole module, so both claude tests skip there.
-# Validate exits 1 on that build, so its output is read whole, never through a
-# pipe pipefail would judge by validate's status.
-_claude_knows_prompt_compose() {
-    local out
-    out=$(env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" 2>&1)
-    case "$out" in *'"prompt.compose" is not an event'*) return 1 ;; esac
-    return 0
-}
-
 # The tests import claude-code/testing, the engine's own kit, so they run under
 # `claude plugin test`, not bare bun; the kit runs only with function hooks on.
 test_mod_unit_tests_pass_under_the_engine_test_kit() {
     if ! command -v claude >/dev/null 2>&1; then
         echo "    SKIP: claude not on PATH"
-        return 77
-    fi
-    if ! _claude_knows_prompt_compose; then
-        echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) predates prompt.compose"
         return 77
     fi
     local out raw="${TMPDIR:-/tmp}/cs-mod-mermaid-test.$$"
@@ -78,10 +63,6 @@ test_mod_validate_inventories_the_hooks_and_calls() {
         echo "    SKIP: claude not on PATH"
         return 77
     fi
-    if ! _claude_knows_prompt_compose; then
-        echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) predates prompt.compose"
-        return 77
-    fi
     local out raw="${TMPDIR:-/tmp}/cs-mod-mermaid-validate.$$"
     env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" > "$raw" 2>&1
     local status=$?
@@ -92,8 +73,8 @@ test_mod_validate_inventories_the_hooks_and_calls() {
         echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) does not inventory function hooks"
         return 77
     fi
-    assert_output_contains "$out" 'hooks: prompt.compose, ui.render{component=AssistantMessage}' "the prompt section and the reply drawing, nothing else" || return 1
-    assert_output_contains "$out" 'calls: $.config.list, $.fs.exists, $.session.cwd, $.ui.resolve' "the mod reads the theme row, checks .cs/local/disabled and draws; no writes, processes or network" || return 1
+    assert_output_contains "$out" 'hooks: ui.render{component=AssistantMessage}' "the mod only draws replies" || return 1
+    assert_output_contains "$out" 'calls: $.config.list, $.ui.resolve' "the mod reads the theme row and draws; no files, writes, processes or network" || return 1
 }
 
 run_test test_mod_manifest_names_the_plugin_its_module_and_the_config_field

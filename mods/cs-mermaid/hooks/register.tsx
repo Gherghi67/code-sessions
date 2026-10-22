@@ -1,5 +1,5 @@
-// ABOUTME: cs-mermaid mod: draws each mermaid flowchart fence in a reply inline, as coloured blocks and line glyphs, and tells the model they draw.
-// ABOUTME: One /config row (`cs-mermaid.drawDiagrams`, on by default) turns off both the drawing and the system prompt section.
+// ABOUTME: cs-mermaid mod: draws each mermaid flowchart fence in a reply inline, as coloured blocks and line glyphs.
+// ABOUTME: One /config row (`cs-mermaid.drawDiagrams`, on by default) controls the drawing; CLAUDE.local.md carries the diagram instruction.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { layout } from './layout'
@@ -8,21 +8,8 @@ import { parse } from './parse'
 import type { Graph, GraphNode, ParseError } from './parse'
 import { cellWidth, padToWidth, truncateToWidth } from './text'
 
-// The /config row (`cs-mermaid.drawDiagrams`): off, fences stay source and the
-// model is not told they draw.
+// The /config row (`cs-mermaid.drawDiagrams`): off, fences stay source.
 export const OPTION = 'drawDiagrams'
-
-// Part of every request's system prompt: kept short, and narrow enough that
-// task lists and numbered steps never draw. prompt.compose needs Claude Code
-// 2.1.300 or later; an older one refuses this whole module.
-export const PROMPT_SECTION = {
-  id: 'cs-mermaid:diagrams',
-  text: 'Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.',
-  scope: 'session',
-} as const
-
-// cs's per-session opt-out of everything it injects (`cs -doctor`'s authority rows).
-export const DISABLED = '.cs/local/disabled'
 
 // A mermaid fence opens and closes on its own line with exactly three backticks. A line of four
 // or more backticks, or of three tildes, opens an outer block that quotes what it holds, closed by
@@ -192,15 +179,6 @@ export function fitSource(source: string, columns: number): Fitted | ParseError 
 
 export const register: Register = (on, options) => {
   if (options[OPTION] === false) return
-
-  // Only a prompt for a session that draws in a terminal says fences draw; `--bare` keeps its one section.
-  // A session's .cs/local/disabled turns off every cs injection into the model's context, this one too.
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    if (!e.surfaces.includes('terminal') || e.traits.includes('bare')) return composed
-    if (await $.fs.exists(`${await $.session.cwd()}/${DISABLED}`)) return composed
-    return { sections: [...composed.sections, PROMPT_SECTION] }
-  })
 
   // The prose around a fence goes back to the engine, so the reply keeps its bullet.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {

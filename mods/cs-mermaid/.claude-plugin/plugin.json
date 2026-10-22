@@ -1,13 +1,13 @@
 {
   "name": "cs-mermaid",
   "version": "0.1.0",
-  "description": "Draws mermaid flowcharts in replies inline, as coloured blocks and lines, and tells the model they draw.",
+  "description": "Draws mermaid flowcharts in replies inline, as coloured blocks and lines.",
   "author": { "name": "cs" },
   "userConfig": {
     "drawDiagrams": {
       "type": "boolean",
       "title": "Draw mermaid diagrams",
-      "description": "Draw mermaid flowchart fences in replies as diagrams, and tell the model they draw. Off, fences show as source and the model is not told.",
+      "description": "Draw mermaid flowchart fences in replies as diagrams. Off, fences show as source.",
       "required": false,
       "default": true
     }

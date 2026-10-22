@@ -6556,6 +6556,18 @@ To opt out, delete the prose above but keep the `cs:session-commits` HTML commen
 EOF
 }
 
+# The diagram instruction shared by the session template and migration Phase 17.
+_emit_mermaid_diagrams_block() {
+    cat << 'EOF'
+<!-- cs:mermaid-diagrams -->
+## Diagrams
+
+Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.
+
+To opt out, delete the prose above but keep the `cs:mermaid-diagrams` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
 # The protocol for an encrypted session: migrate_session appends it once
 # .cs/private exists. It overrides the README instructions of the base
 # protocol, which every session gets from _emit_session_claude_md.
@@ -6643,6 +6655,8 @@ EOF
     _emit_memory_note_block
     echo
     _emit_wrap_cues_block
+    echo
+    _emit_mermaid_diagrams_block
 }
 
 # Write the session protocol template to the given directory (create path).
@@ -8159,7 +8173,7 @@ _wrap_only_migrate() {  # file
     esac
 }
 
-# Phases 9, 10, 14, 15 and 16: the cs sections of CLAUDE.local.md.
+# Phases 9, 10, 14, 15, 16 and 17: the cs sections of CLAUDE.local.md.
 _ensure_claude_local_sections() {  # session_dir
     local session_dir="$1"
 
@@ -8253,6 +8267,12 @@ _ensure_claude_local_sections() {  # session_dir
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
         { echo; _emit_session_commits_block; } >> "$claude_md_p9"
         notice CLAUDE.local.md "added the session-commits rule"
+    fi
+
+    # Phase 17: the diagram instruction; a sentinel without prose is an opt-out.
+    if [ -f "$claude_md_p9" ] && ! grep -q 'cs:mermaid-diagrams' "$claude_md_p9"; then
+        { echo; _emit_mermaid_diagrams_block; } >> "$claude_md_p9"
+        notice CLAUDE.local.md "added the diagram instruction"
     fi
 }
 
@@ -11887,14 +11907,14 @@ _doctor_check_narrative_size() {
 # resolved its own session ID. The recorded UUID is the source of truth for
 # cs and hooks; doctor surfaces the divergence so the user can decide whether
 # to relaunch via cs or accept the drift.
-# Every place a cs hook changes what the model sees, with the switch that turns
+# Every place cs changes what the model sees, with the switch that turns
 # it off. The consent rule covers what the user looks at — status line, titles —
 # but a hook that injects context installs silently, so this is where that
 # authority is made visible. State is read live, not from config: a switch that
 # is set shows the injection as off.
 _doctor_check_hook_authority() {
     echo ""
-    echo "  Authority — hooks that inject into the model's context:"
+    echo "  Authority — instructions cs adds to the model's context:"
     local disabled_all=""
     if [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -f "${CLAUDE_SESSION_META_DIR}/local/disabled" ]; then
         disabled_all=1
@@ -11917,9 +11937,21 @@ _doctor_check_hook_authority() {
     _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
     _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
     _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
-    # CS_NO_FUNCTION_HOOKS withholds the mod at launch; the /config row is Claude Code's, not read here.
-    _doctor_authority_row "diagrams"      "cs-mermaid mod"     '/config cs-mermaid.drawDiagrams' "${CS_NO_FUNCTION_HOOKS:+1}"
-    echo "    .cs/local/disabled turns every row off for that session."
+    # Local instructions remain in the prompt even when session hooks are disabled.
+    disabled_all=""
+    local diagrams_off=1
+    local dir="${CLAUDE_SESSION_DIR:-$PWD}"
+    if [ -n "$dir" ] && [ -f "$dir/CLAUDE.local.md" ] && awk '
+        /^<!-- cs:mermaid-diagrams -->$/ { section=1; next }
+        section == 1 && /^## Diagrams$/ { section=2; next }
+        /^<!-- cs:/ || /^## / { section=0 }
+        section && /[^[:space:]]/ && !/^[[:space:]]*(#|<!--)/ { prose=1 }
+        END { exit !prose }
+    ' "$dir/CLAUDE.local.md"; then
+        diagrams_off=""
+    fi
+    _doctor_authority_row "diagrams" "CLAUDE.local.md" 'delete the prose under cs:mermaid-diagrams' "$diagrams_off"
+    echo "    .cs/local/disabled turns the hook rows off; CLAUDE.local.md still applies."
 }
 
 # setup_merge_attributes writes the per-clone merge driver with `|| true`, so a

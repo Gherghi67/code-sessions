@@ -842,14 +842,12 @@ checks the manifest and its `/config` field, the cache-name pin against
 the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
 `cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
 environment, writes no file and runs no process. Unlike the `cs` mod it needs no
-cs session: with function hooks on it draws, and adds its prompt section, in any
-directory and for every prompt the engine composes, a subagent's included. It
-needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
-and refuses the whole module, so nothing draws there.
+cs session: with function hooks on it draws in any directory. The flowchart
+instruction lives in a cs session's `CLAUDE.local.md`.
 
 ![Reply prose, then the same prose with a drawn Mermaid chart](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg)
 
-It hooks two events:
+It hooks one event:
 
 - `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
   ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
@@ -876,22 +874,29 @@ It hooks two events:
   diagram types, more than 200 nodes, 400 edges or 60-cell
   labels) or one still too wide stays a code block with `mermaid: <reason>`
   under it.
-- `prompt.compose`. When the prompt is for a session that draws in a terminal
-  (`terminal` among `e.surfaces`), not `--bare`, and the session directory has
-  no `.cs/local/disabled`, the mod appends one `session`-scope section,
-  `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
-  only for a flow that branches, loops or has four or more stages, never for a
-  task list or numbered steps; one fence, short labels, no subgraphs, `{ }`
-  for a decision, `(( ))` for a start or end, `[ ]` for a step. It is
-  part of every request's system prompt, on the session side of the prompt
-  cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
-  organization lists in managed settings when it manages Claude Code; there
-  the drawing still works and the section is not sent. `cs -doctor` lists the
-  section among the authority rows, `off` when `CS_NO_FUNCTION_HOOKS` withholds
-  the mod (it cannot read the `/config` row).
 
-The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
-fences show as source and the model is not told they draw.
+cs adds a `cs:mermaid-diagrams` section headed `Diagrams` to `CLAUDE.local.md`
+when it creates a session, or on migration when the sentinel is absent. The
+instruction says flowchart fences draw here: add one only for a flow that
+branches, loops or has four or more stages, never for a task list or numbered
+steps; one fence, short labels, no subgraphs, `{ }` for a decision, `(( ))` for
+a start or end, `[ ]` for a step. Claude Code reads the file into each request's
+system prompt without adding it to the transcript each turn. This delivery
+does not depend on an organization allowing a user-tier `prompt.compose` hook.
+To opt out, delete the section's prose and keep `<!-- cs:mermaid-diagrams -->`;
+migration leaves that tombstone alone. Outside a cs session, the mod adds no
+diagram instruction; the show-me skill still covers an explicit ask.
+
+`cs -doctor` lists the instruction as `diagrams`, carried by `CLAUDE.local.md`.
+The row reads `on` when the managed section has prose, `off` for a tombstone
+or an absent section. Its off switch is to delete the prose under
+`cs:mermaid-diagrams`. `CS_NO_FUNCTION_HOOKS` does not affect this row.
+
+The `/config` row `cs-mermaid.drawDiagrams` (on by default) controls drawing
+only: off, fences show as source. It leaves the `CLAUDE.local.md` instruction
+in place, as does `.cs/local/disabled`. The instruction reaches every Claude run
+started in the session directory, including headless `claude -p` and subagents,
+because the engine loads `CLAUDE.local.md` itself.
 
 The mod also ships a skill, `skills/show-me/SKILL.md`, which the engine lists
 as `/cs-mermaid:show-me`. Its description names the asks that call for a
@@ -911,10 +916,12 @@ and `cs -uninstall` removes the directory. The mod writes no heartbeat, so `cs -
 Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
 with `claude plugin test` (they use the engine's own `claude-code/testing` kit:
 the parser, exact picture fixtures for the layout, the inline drawing, the
-fallback to source, the option and each prompt-section gate) and
-`claude plugin validate` when `claude` is on PATH and knows `prompt.compose`
-(both skip on an older build), and always checks the manifest, its `/config`
-field and that the installer names the mod.
+fallback to source and the drawing option) and `claude plugin validate` when
+`claude` is on `PATH`. The engine tests skip when `plugin test` is unavailable;
+the hook inventory check skips when validation cannot list function hooks.
+The shell suite always checks the manifest, its `/config` field and that the
+installer names the mod. `tests/test_mermaid_section.sh` checks the session
+instruction and tombstone, and `tests/test_migrate_claude_md.sh` covers migration.
 
 ## Hook Configuration
 

@@ -923,7 +923,7 @@ _wrap_only_migrate() {  # file
     esac
 }
 
-# Phases 9, 10, 14, 15 and 16: the cs sections of CLAUDE.local.md.
+# Phases 9, 10, 14, 15, 16 and 17: the cs sections of CLAUDE.local.md.
 _ensure_claude_local_sections() {  # session_dir
     local session_dir="$1"
 
@@ -1017,6 +1017,12 @@ _ensure_claude_local_sections() {  # session_dir
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
         { echo; _emit_session_commits_block; } >> "$claude_md_p9"
         notice CLAUDE.local.md "added the session-commits rule"
+    fi
+
+    # Phase 17: the diagram instruction; a sentinel without prose is an opt-out.
+    if [ -f "$claude_md_p9" ] && ! grep -q 'cs:mermaid-diagrams' "$claude_md_p9"; then
+        { echo; _emit_mermaid_diagrams_block; } >> "$claude_md_p9"
+        notice CLAUDE.local.md "added the diagram instruction"
     fi
 }
 
