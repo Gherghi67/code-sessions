@@ -52,5 +52,35 @@ test_manifest_authentication() {
     done
 }
 
+test_ci_release_manifest() {
+    local workflow="$SCRIPT_DIR/../.github/workflows/release.yml" step
+    mkdir "$TEST_TMPDIR/assets"
+    printf 'installer\n' > "$TEST_TMPDIR/assets/install.sh"
+    printf 'linux\n' > "$TEST_TMPDIR/assets/cs-tui-linux-amd64"
+    printf 'darwin\n' > "$TEST_TMPDIR/assets/cs-tui-darwin-arm64"
+    for step in 'Generate manifest' 'Generate checksums'; do
+        awk -v step="$step" '
+            /^      - / { selected=($0 == "      - name: " step); body=0 }
+            selected && /^        run: \|/ { body=1; next }
+            body && /^          / { print substr($0, 11) }
+        ' "$workflow" > "$TEST_TMPDIR/step.sh"
+        [ -s "$TEST_TMPDIR/step.sh" ] || { echo "  FAIL: release workflow must $step"; return 1; }
+        (cd "$TEST_TMPDIR/assets" && bash -e "$TEST_TMPDIR/step.sh") || return 1
+    done
+    local names
+    names=$(awk '{print $2}' "$TEST_TMPDIR/assets/SHA256SUMS")
+    assert_eq $'install.sh\ncs-tui-darwin-arm64\ncs-tui-linux-amd64' "$names" 'manifest names installer first, then sorted binaries' || return 1
+    (cd "$TEST_TMPDIR/assets" && shasum -a 256 -c SHA256SUMS > "$TEST_TMPDIR/check.log") || return 1
+    for step in install.sh cs-tui-darwin-arm64 cs-tui-linux-amd64; do
+        (cd "$TEST_TMPDIR/assets" && shasum -a 256 -c "$step.sha256" > "$TEST_TMPDIR/check.log") || return 1
+    done
+    if grep -Eq 'minisign|MINISIGN_KEY|SHA256SUMS.sig' "$workflow"; then
+        echo '  FAIL: CI must not hold a signing key or publish signatures'
+        return 1
+    fi
+    assert_file_contains "$workflow" '^            SHA256SUMS$' 'the manifest is a release asset' || return 1
+}
+
 run_test test_manifest_authentication
+run_test test_ci_release_manifest
 report_results

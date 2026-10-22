@@ -1,5 +1,5 @@
 # ABOUTME: Builds cs-tui for macOS (arm64, amd64) and Linux (amd64) on version tags
-# ABOUTME: Creates a GitHub Release with signed, checksummed binaries for each platform
+# ABOUTME: Publishes release binaries and their manifest for local SSH signing
 
 name: Release
 
@@ -65,11 +65,6 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Install minisign
-        run: |
-          curl -fsSL https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz | tar xz
-          sudo mv minisign-linux/x86_64/minisign /usr/local/bin/
-
       # The published install.sh carries the sha256s of this tag's payload
       # files, so with no CS_INSTALL_REF it must fetch them from this tag, not
       # main. Done before signing and checksumming, which then cover it.
@@ -78,24 +73,15 @@ jobs:
           sed -i "s|^CS_DEFAULT_REF=main\$|CS_DEFAULT_REF=${GITHUB_REF_NAME}|" install.sh
           grep -qx "CS_DEFAULT_REF=${GITHUB_REF_NAME}" install.sh
 
-      - name: Sign release assets
-        env:
-          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+      - name: Generate manifest
         run: |
-          echo "$MINISIGN_KEY" > /tmp/minisign.key
-
-          minisign -Sm install.sh -s /tmp/minisign.key -t "cs ${GITHUB_REF_NAME}" -W
-          for bin in cs-tui-*; do
-            minisign -Sm "$bin" -s /tmp/minisign.key -t "cs ${GITHUB_REF_NAME}" -W
-          done
-
-          rm -f /tmp/minisign.key
+          export LC_ALL=C
+          sha256sum install.sh cs-tui-* > SHA256SUMS
 
       - name: Generate checksums
         run: |
           sha256sum install.sh > install.sh.sha256
           for bin in cs-tui-*; do
-            [[ "$bin" == *.minisig ]] && continue
             sha256sum "$bin" > "${bin}.sha256"
           done
 
@@ -104,9 +90,9 @@ jobs:
         with:
           files: |
             install.sh
-            install.sh.minisig
             install.sh.sha256
             cs-tui-*
+            SHA256SUMS
           generate_release_notes: true
           # A hyphenated tag (v1.2.3-rc1, v0.0.0-smoke) is a pre-release: it must
           # never become the repo's Latest, which is what installers resolve.
