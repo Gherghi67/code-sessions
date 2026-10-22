@@ -1323,7 +1323,8 @@ test_doctor_statusline_caps_follow_a_readable_bridge() {
                 cmd='~/absent.sh --example'
                 ;;
             chains) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh" ;;
-            rounded) printf '%s\n' on > "$home/config/cs/statusline-caps" ;;
+            rounded) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh"
+                printf '%s\n' on > "$home/config/cs/statusline-caps" ;;
         esac
         jq -n --arg cmd "$cmd" '{statusLine:{command:$cmd}}' > "$home/.claude/settings.json"
         output=$(env -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME \
