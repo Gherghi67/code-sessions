@@ -2354,11 +2354,11 @@ _install_tui_with_broken_verification() {  # tag
         real_digest="$(command -v shasum) -a 256"
     fi
     mkdir -p "$bindir" "$sandbox/home/.claude/hooks/cs"
-    cp "$INSTALL_SH" "$sandbox/install.sh"
     ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$sandbox/key"
     ssh-keygen -q -t ed25519 -N '' -C other@example.com -f "$sandbox/other"
     printf 'release namespaces="cs-release-*" %s\n' "$(cat "$sandbox/key.pub")" > "$sandbox/signers"
-    : > "$sandbox/revoked"
+    # The installer under test embeds the throwaway key as its trust list.
+    sed "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$sandbox/signers")'|" "$INSTALL_SH" > "$sandbox/install.sh"
     printf 'stub-binary\n' > "$sandbox/binary"
     local asset os arch digest key="$sandbox/key"
     os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -2429,8 +2429,7 @@ STUB
     done
     chmod +x "$bindir/curl"
 
-    CS_RELEASE_SIGNERS_FILE="$sandbox/signers" CS_RELEASE_REVOKED_FILE="$sandbox/revoked" \
-        PATH="$bindir:$PATH" HOME="$sandbox/home" bash "$sandbox/install.sh" \
+    PATH="$bindir:$PATH" HOME="$sandbox/home" bash "$sandbox/install.sh" \
         > "$sandbox/install.out" 2>&1
     printf '%s' "$sandbox/home/.local/bin"
 }

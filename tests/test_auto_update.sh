@@ -437,8 +437,13 @@ esac
 exit 22
 STUB
     chmod +x "$stub/curl"
+    # The cs under test is a copy whose embedded trust lists name the
+    # throwaway key: the lists are literals, nothing else can replace them.
+    sed -e "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$stub/signers")'|" \
+        -e "s|^CS_RELEASE_REVOKED=.*|CS_RELEASE_REVOKED='$(cat "$stub/revoked")'|" "$CS_BIN" > "$stub/cs"
+    chmod +x "$stub/cs"
     local rc=0 out
-    out=$(CS_RELEASE_SIGNERS_FILE="$stub/signers" CS_RELEASE_REVOKED_FILE="$stub/revoked" HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$CS_BIN" -update 2>&1) || rc=$?
+    out=$(HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$stub/cs" -update 2>&1) || rc=$?
     assert_not_exists "$stub/executed" 'revocation data never executes' || return 1
     printf '%s' "$rc" > "$TEST_TMPDIR/update-rc"
     printf '%s\n' "$out"

@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "250638d17856fce9f0ce935f51e0ad6032c2ec3e1b4aef2b747a708f19396947  bin/cs"
+    "5e84bae62f5f39ab16010edcd1523ba22b7b4b59d1d0f4c855d8ee1a2859e8a8  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1423,16 +1423,8 @@ _verify_manifest() {  # manifest, signature, version
         fi
         trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
         trap 'rm -rf "$trust_dir"' EXIT
-        if [ -n "${CS_RELEASE_SIGNERS_FILE:-}" ]; then
-            cat "$CS_RELEASE_SIGNERS_FILE" > "$trust_dir/signers" || exit 1
-        else
-            printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
-        fi
-        if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
-            cat "$CS_RELEASE_REVOKED_FILE" > "$trust_dir/revoked" || exit 1
-        else
-            printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
-        fi
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
         local revocation_args=()
         [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
         if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \

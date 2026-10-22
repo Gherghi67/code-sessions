@@ -15,16 +15,8 @@ _verify_manifest() {  # manifest, signature, version
         fi
         trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
         trap 'rm -rf "$trust_dir"' EXIT
-        if [ -n "${CS_RELEASE_SIGNERS_FILE:-}" ]; then
-            cat "$CS_RELEASE_SIGNERS_FILE" > "$trust_dir/signers" || exit 1
-        else
-            printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
-        fi
-        if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
-            cat "$CS_RELEASE_REVOKED_FILE" > "$trust_dir/revoked" || exit 1
-        else
-            printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
-        fi
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
         local revocation_args=()
         [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
         if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
@@ -88,12 +80,7 @@ _check_revocation_carry_forward() {
         }
         END { if (count != 1 || active || bad) exit 1 }
     ' "$installer" > "$installer.revoked" || error "Malformed CS_RELEASE_REVOKED in downloaded installer."
-    if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
-        installed=$(cat "$CS_RELEASE_REVOKED_FILE") || error "Cannot read revoked keys: $CS_RELEASE_REVOKED_FILE"
-    else
-        installed="$CS_RELEASE_REVOKED"
-    fi
-    installed=$(printf '%s\n' "$installed" | awk '
+    installed=$(printf '%s\n' "$CS_RELEASE_REVOKED" | awk '
         NF {
             if (NF < 2 || $1 != "ssh-ed25519" || $2 ~ /[^A-Za-z0-9+\/=]/) exit 1
             print $1 " " $2

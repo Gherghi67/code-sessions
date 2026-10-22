@@ -145,16 +145,8 @@ _verify_manifest() {  # manifest, signature, version
         fi
         trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
         trap 'rm -rf "$trust_dir"' EXIT
-        if [ -n "${CS_RELEASE_SIGNERS_FILE:-}" ]; then
-            cat "$CS_RELEASE_SIGNERS_FILE" > "$trust_dir/signers" || exit 1
-        else
-            printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
-        fi
-        if [ -n "${CS_RELEASE_REVOKED_FILE:-}" ]; then
-            cat "$CS_RELEASE_REVOKED_FILE" > "$trust_dir/revoked" || exit 1
-        else
-            printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
-        fi
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
         local revocation_args=()
         [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
         if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \

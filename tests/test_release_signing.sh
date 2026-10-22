@@ -24,8 +24,8 @@ test_manifest_authentication() {
     for source_file in "$SCRIPT_DIR/../lib/20-update.sh" "$SCRIPT_DIR/../install.sh.in"; do
         sed -n '/^_verify_manifest() {/,/^}/p' "$source_file" > "$TEST_TMPDIR/verify.sh"
         source "$TEST_TMPDIR/verify.sh"
-        export CS_RELEASE_SIGNERS_FILE="$TEST_TMPDIR/signers"
-        export CS_RELEASE_REVOKED_FILE="$TEST_TMPDIR/revoked"
+        CS_RELEASE_SIGNERS=$(cat "$TEST_TMPDIR/signers")
+        CS_RELEASE_REVOKED=''
         out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || {
             echo "  FAIL: a manifest signed by the release key must pass ($source_file): $out"
             return 1
@@ -50,14 +50,21 @@ test_manifest_authentication() {
         out=$(export PATH="$TEST_TMPDIR/no-tools"; hash -r; _verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || rc=$?
         assert_eq 1 "$rc" 'missing verifier is refused' || return 1
         assert_eq 'ssh-keygen is required to verify release manifests.' "$out" 'missing verifier diagnostic' || return 1
-        cat "$TEST_TMPDIR/key.pub" > "$TEST_TMPDIR/revoked"
+        CS_RELEASE_REVOKED=$(cat "$TEST_TMPDIR/key.pub")
         rc=0
         out=$(_verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || rc=$?
         assert_eq 1 "$rc" 'a revoked allowed signer is refused' || return 1
         assert_eq 'Release manifest signature verification failed.' "$out" 'revocation diagnostic' || return 1
-        : > "$TEST_TMPDIR/revoked"
+        # The trust lists are the embedded ones alone: nothing in the
+        # environment can point the verifier at other files.
+        CS_RELEASE_REVOKED=''
+        CS_RELEASE_SIGNERS="release namespaces=\"cs-release-*\" $(cat "$TEST_TMPDIR/other.pub")"
+        rc=0
+        out=$(CS_RELEASE_SIGNERS_FILE="$TEST_TMPDIR/signers" CS_RELEASE_REVOKED_FILE="$TEST_TMPDIR/revoked" \
+            _verify_manifest "$TEST_TMPDIR/SHA256SUMS" "$TEST_TMPDIR/good.sig" 9.9.9 2>&1) || rc=$?
+        assert_eq 1 "$rc" 'the environment cannot replace the embedded trust lists' || return 1
         unset -f _verify_manifest
-        unset CS_RELEASE_SIGNERS_FILE CS_RELEASE_REVOKED_FILE
+        unset CS_RELEASE_SIGNERS CS_RELEASE_REVOKED
     done
 }
 
@@ -99,8 +106,13 @@ test_ci_release_manifest() {
 
 test_release_verification_documented() {
     local docs="$SCRIPT_DIR/../docs"
-    assert_file_contains "$docs/configuration.md" 'CS_RELEASE_SIGNERS_FILE' 'configuration must document the signer-file test seam' || return 1
-    assert_file_contains "$docs/configuration.md" 'CS_RELEASE_REVOKED_FILE' 'configuration must document the revocation-file test seam' || return 1
+    local file
+    for file in "$docs/configuration.md" "$SCRIPT_DIR/../lib/20-update.sh" "$SCRIPT_DIR/../install.sh.in"; do
+        if grep -q 'CS_RELEASE_SIGNERS_FILE\|CS_RELEASE_REVOKED_FILE' "$file"; then
+            echo "  FAIL: no environment seam replaces the embedded trust lists ($file)"
+            return 1
+        fi
+    done
     assert_file_contains "$docs/configuration.md" 'ssh-keygen -Y verify' 'configuration must name the required verifier' || return 1
     assert_file_contains "$docs/commands.md" 'SHA256SUMS' 'update documentation must name the authenticated manifest' || return 1
     assert_file_contains "$SCRIPT_DIR/../README.md" 'ssh-keygen' 'README must name the release verifier requirement' || return 1
