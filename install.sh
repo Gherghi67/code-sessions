@@ -2148,9 +2148,11 @@ else
     }
 
     # Register cs-statusline as the Claude Code status line. A status line the
-    # user already configured is never replaced silently: prompt when a
-    # terminal is attached, otherwise keep it and print how to switch. The
-    # file is only looked at here; the registration is written with the rest.
+    # user already configured is never replaced silently: a bridge that runs
+    # cs-statusline is kept without recording a decline, even with a decline
+    # marker present. Otherwise prompt when a terminal is attached or keep it
+    # and print how to switch. The file is only looked at here; the registration
+    # is written with the rest.
     _statusline_cmd="$INSTALL_DIR/cs-statusline"
     _current_statusline=""
     if [ -s "$CLAUDE_SETTINGS" ]; then
@@ -2241,6 +2243,15 @@ else
         echo ""
     }
 
+    # Twin: _statusline_chains_to_cs in lib/60-doctor.sh.
+    # Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
+    _statusline_chains_to_cs() {
+        local file rest
+        read -r file rest <<< "$1"
+        file="${file/#\~/$HOME}"
+        [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+    }
+
     # Each branch only decides consent; the registration itself happens once
     # below. "quiet" re-registers an existing cs-statusline entry (refreshing
     # the path) without announcing it.
@@ -2250,7 +2261,9 @@ else
             _register_statusline=quiet
             ;;
         *)
-            if [ -f "$_statusline_declined" ]; then
+            if _statusline_chains_to_cs "$_current_statusline"; then
+                info "Keeping current status line: $_current_statusline runs cs-statusline."
+            elif [ -f "$_statusline_declined" ]; then
                 info "Status line not registered (declined earlier). Enable any time with: cs -statusline enable"
             elif [ -z "$_current_statusline" ]; then
                 # The status bar is user-visible UI: claim it only with consent.
@@ -2299,15 +2312,6 @@ else
             fi
             ;;
     esac
-    # Twin: _statusline_chains_to_cs in lib/60-doctor.sh.
-    # Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
-    _statusline_chains_to_cs() {
-        local file rest
-        read -r file rest <<< "$1"
-        file="${file/#\~/$HOME}"
-        [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
-    }
-
     # The rounded capsule caps are the bar's one private-use glyph, so the
     # renderer draws square ends until this machine has said its font has
     # them. Ask once, here, while the sample is still on screen; the answer
