@@ -506,6 +506,8 @@ them, by the bar's own rule (`CS_STATUSLINE_CAPS`, else the answer in
 `~/.config/cs/statusline-caps`), and only over a measured background. The
 percentage itself stays on the status bar: the band does not repeat it.
 
+The mod reapplies the session accent when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork.
+
 The band's keys are chords, never a bare digit: a digit typed to answer a
 numbered question belongs to the prompt and to other mods. Each Button answers
 an engine action, `strip:jump1` for the rotate (or `/clear`) key and
