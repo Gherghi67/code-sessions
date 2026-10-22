@@ -43,6 +43,7 @@ setup() {
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
     export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0
+    export CS_HELPER_PROJECT_CONFIG='{}' CS_HELPER_PROJECT_EXIT=0
     export CODEX_BIN="$TEST_TMPDIR/codex with spaces"
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/cs-codex-thread"
     export CS_BIN="$SCRIPT_DIR/../bin/cs"
@@ -53,7 +54,7 @@ if [ "${1:-}" = --help ]; then
     exit "$CS_CODEX_HELP_EXIT"
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
-env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
+env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_CODEX_ROTATION_FIXED=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
 if [ "$CS_CODEX_START" = 1 ]; then
     printf '{"session_id":"%s","source":"resume"}' "$CS_THREAD_ID" | "$CS_BIN" -codex-hook session-start
 fi
@@ -85,6 +86,11 @@ case " $* " in
         tail -n 1 "$CS_CODEX_TURNS" 2>/dev/null
         exit 0
         ;;
+    *' --project-config '*)
+        [ "$CS_HELPER_PROJECT_EXIT" -eq 0 ] || exit "$CS_HELPER_PROJECT_EXIT"
+        printf '%s\n' "$CS_HELPER_PROJECT_CONFIG"
+        exit 0
+        ;;
 esac
 printf '%s\n' "$@" > "$CS_HELPER_ARGS"
 printf 'called\n' >> "$CS_HELPER_COUNT"
@@ -103,6 +109,7 @@ teardown() {
     unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
+    unset CS_HELPER_PROJECT_CONFIG CS_HELPER_PROJECT_EXIT
     unset CS_TEST_PROBE
 }
 
@@ -207,6 +214,58 @@ test_rotation_profile_seeds_launch_choices_without_pinning_them() {
     unset CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || return 1
     assert_eq "" "$(cat "$HOME/.codex/$profile.config.toml")" 'new launch clears the old rotation defaults' || return 1
+    assert_eq '{}' "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" 'nothing fixed for the run' || return 1
+}
+
+_launched_with() {  # option, value
+    grep -A1 -Fx -- "$1" "$CS_CODEX_LOG" | tail -n 1 | grep -Fx -- "$2" >/dev/null
+}
+
+# A trusted project's .codex/config.toml outranks a --profile, so an explicit
+# choice the project also sets stays on the command line, and the run names
+# what /clear will reload for the Stop hook. The rest still seeds the profile.
+test_an_explicit_choice_a_trusted_project_sets_stays_on_the_command_line() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    export CS_HELPER_PROJECT_CONFIG='{"model":{"value":"gpt-project","file":"/p/.codex/config.toml"}}'
+    export CS_LAUNCH_MODEL='gpt-6-astra' CS_LAUNCH_EFFORT=xhigh
+    local output status=0 profile
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "$output" || return 1
+    _launched_with --model gpt-6-astra \
+        || { echo '  FAIL: the explicit model must outrank the project config'; return 1; }
+    if grep -Eq -- '^model_reasoning_effort=' "$CS_CODEX_LOG"; then
+        echo '  FAIL: an effort the project leaves alone belongs in the profile'
+        return 1
+    fi
+    profile=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_eq 'model_reasoning_effort = "xhigh"' "$(cat "$HOME/.codex/$profile.config.toml")" || return 1
+    assert_eq '{"model":{"value":"gpt-6-astra","source":"the command line"}}' \
+        "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" || return 1
+    # Without an explicit model the project's applies, and /clear reloads it.
+    unset CS_LAUNCH_MODEL
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || return 1
+    if grep -Fxq -- '--model' "$CS_CODEX_LOG"; then
+        echo '  FAIL: no model was asked for'
+        return 1
+    fi
+    assert_eq '{"model":{"value":"gpt-project","source":"/p/.codex/config.toml"}}' \
+        "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" || return 1
+}
+
+# When Codex cannot say which settings the project fixes, explicit choices
+# stay on the command line, where nothing outranks them.
+test_unknown_project_settings_keep_explicit_choices_on_the_command_line() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    export CS_HELPER_PROJECT_EXIT=1 CS_LAUNCH_MODEL='gpt-6-astra' CS_LAUNCH_EFFORT=xhigh
+    local output status=0 profile
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "$output" || return 1
+    _launched_with --model gpt-6-astra || { echo '  FAIL: explicit model dropped'; return 1; }
+    _launched_with -c 'model_reasoning_effort="xhigh"' || { echo '  FAIL: explicit effort dropped'; return 1; }
+    profile=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_eq "" "$(cat "$HOME/.codex/$profile.config.toml")" || return 1
+    assert_eq '{"model":{"value":"gpt-6-astra","source":"the command line"},"model_reasoning_effort":{"value":"xhigh","source":"the command line"}}' \
+        "$(sed -n 's/^CS_CODEX_ROTATION_FIXED=//p' "$CS_CODEX_ENV")" || return 1
 }
 
 test_new_thread_binding_and_context() {
@@ -950,6 +1009,8 @@ run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
 run_test test_failed_codex_help_cannot_advertise_compatibility
 run_test test_codex_help_prose_is_not_an_approval_option
 run_test test_rotation_profile_seeds_launch_choices_without_pinning_them
+run_test test_an_explicit_choice_a_trusted_project_sets_stays_on_the_command_line
+run_test test_unknown_project_settings_keep_explicit_choices_on_the_command_line
 run_test test_native_approval_launches_without_automatic_approval_support
 run_test test_fresh_acknowledgment_keeps_rotated_and_started_after_a_torn_tail
 run_test test_first_acknowledgment_keeps_started_after_a_torn_tail

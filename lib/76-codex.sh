@@ -10,19 +10,44 @@ _codex_rotation_profile_path() {  # session_dir
     printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
 }
 
-_codex_rotation_profile_prepare() {  # session_dir; sets CS_CODEX_ROTATION_PROFILE
+_codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
     local profile tmp
     profile=$(_codex_rotation_profile_path "$1") || return 1
     mkdir -p "$(dirname "$profile")" || return 1
     tmp=$(mktemp "$profile.XXXXXX") || return 1
-    if ! jq -nr --arg model "${CS_LAUNCH_MODEL:-}" --arg effort "${CS_LAUNCH_EFFORT:-}" '
-        (if $model == "" then empty else "model = " + ($model | tojson) end),
-        (if $effort == "" then empty else "model_reasoning_effort = " + ($effort | tojson) end)
-    ' > "$tmp" || ! mv "$tmp" "$profile"; then
+    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp" \
+        || ! mv "$tmp" "$profile"; then
         rm -f "$tmp"
         return 1
     fi
     CS_CODEX_ROTATION_PROFILE=$profile
+}
+
+# A trusted project's .codex/config.toml outranks the profile, and command-line
+# overrides outrank both for the whole run, a later /model choice included. So
+# an explicit choice the project also sets stays on the command line, and every
+# other one seeds the profile, where Stop can replace it. What /clear reloads
+# regardless goes to the Stop hook as CS_CODEX_ROTATION_FIXED. When Codex cannot
+# say what the project sets, explicit choices stay on the command line.
+_codex_rotation_setup() {  # helper, codex_bin, session_dir; sets rotation_cli_* and the profile
+    local pinned plan
+    pinned=$(cs_run_child "$1" --codex-bin "$2" --cwd "$3" --project-config 2>/dev/null) || pinned=""
+    printf '%s' "$pinned" | jq -e 'type == "object"' >/dev/null 2>&1 || pinned=null
+    plan=$(jq -cn --argjson pinned "$pinned" \
+        --arg model "${CS_LAUNCH_MODEL:-}" --arg effort "${CS_LAUNCH_EFFORT:-}" '
+        reduce (["model", $model], ["model_reasoning_effort", $effort]) as [$key, $choice]
+            ({cli: {}, profile: {}, fixed: {}};
+            if $choice == "" then
+                if $pinned != null and ($pinned | has($key))
+                then .fixed[$key] = {value: $pinned[$key].value, source: $pinned[$key].file}
+                else . end
+            elif $pinned == null or ($pinned | has($key)) then
+                .cli[$key] = $choice | .fixed[$key] = {value: $choice, source: "the command line"}
+            else .profile[$key] = $choice end)') || return 1
+    rotation_cli_model=$(printf '%s' "$plan" | jq -r '.cli.model // ""') || return 1
+    rotation_cli_effort=$(printf '%s' "$plan" | jq -r '.cli.model_reasoning_effort // ""') || return 1
+    CS_CODEX_ROTATION_FIXED=$(printf '%s' "$plan" | jq -c '.fixed') || return 1
+    _codex_rotation_profile_prepare "$3" "$(printf '%s' "$plan" | jq -c '.profile')"
 }
 
 _codex_launch_error() {  # message
@@ -278,13 +303,14 @@ _launch_codex_bound() {
     # with different semantics. Native approval has not probed help yet. The
     # profile is written before a thread is bound or a handoff spent, so a
     # failure here leaves both for the retry.
-    local CS_CODEX_ROTATION_PROFILE=""
-    export CS_CODEX_ROTATION_PROFILE
+    local CS_CODEX_ROTATION_PROFILE="" CS_CODEX_ROTATION_FIXED="{}"
+    local rotation_cli_model="" rotation_cli_effort=""
+    export CS_CODEX_ROTATION_PROFILE CS_CODEX_ROTATION_FIXED
     if [ -z "$codex_help" ]; then
         codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) || codex_help=""
     fi
     if printf '%s\n' "$codex_help" | grep -F 'CONFIG_PROFILE_V2' >/dev/null; then
-        _codex_rotation_profile_prepare "$session_dir" || {
+        _codex_rotation_setup "$helper" "$codex_bin" "$session_dir" || {
             _codex_launch_error "Could not prepare the scoped Codex model profile."
             return 1
         }
@@ -489,9 +515,9 @@ _launch_codex_bound() {
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
     if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
-        # CLI overrides outrank profiles, including after a later /model choice.
-        # Seed those choices in the profile instead so Stop can replace them.
-        local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT=""
+        # Only an explicit choice a project setting would shadow stays a CLI
+        # override; the profile carries the rest (_codex_rotation_setup).
+        local CS_LAUNCH_MODEL="$rotation_cli_model" CS_LAUNCH_EFFORT="$rotation_cli_effort"
     else
         printf '%s\n' 'cs: this Codex build cannot preserve /model choices across rotation; file-backed --profile support is required.'
     fi

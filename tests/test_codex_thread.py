@@ -63,6 +63,8 @@ for line in sys.stdin:
         reply({'result':[]});continue
     if method == 'thread/turns/list':
         reply({'result':{'data':json.loads(os.environ.get('FAKE_TURNS', '[]')),'nextCursor':None}});continue
+    if method == 'config/read':
+        reply({'result':json.loads(os.environ.get('FAKE_CONFIG', '{}'))});continue
     if method in ('thread/start','thread/resume'):
         tid = '01900000-0000-7000-8000-000000000001'
         if mode == 'mismatch' and method == 'thread/resume':
@@ -293,6 +295,43 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, '')
 
+    def project_config(self, config, mode=''):
+        command = [sys.executable, str(HELPER), '--codex-bin', str(self.fake), '--cwd', str(self.cwd),
+                   '--timeout', '5', '--project-config']
+        result = subprocess.run(command, env=dict(self.env, FAKE_MODE=mode, FAKE_CONFIG=json.dumps(config)),
+                                capture_output=True, text=True, timeout=10)
+        self.assert_cleaned_up()
+        return result
+
+    def test_project_config_names_only_what_a_project_layer_sets(self):
+        folder = str(self.root / 'repo' / '.codex')
+        result = self.project_config({
+            'config': {'model': 'gpt-project', 'model_reasoning_effort': 'high'},
+            'origins': {
+                'model': {'name': {'type': 'project', 'dotCodexFolder': folder}, 'version': 'sha256:a'},
+                'model_reasoning_effort': {'name': {'type': 'user', 'file': '/home/config.toml'},
+                                           'version': 'sha256:b'}}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout),
+                         {'model': {'value': 'gpt-project', 'file': folder + '/config.toml'}})
+        requests = self.requests()
+        self.assertEqual([r['request']['method'] for r in requests], ['initialize', 'initialized', 'config/read'])
+        self.assertEqual(requests[2]['request']['params'], {'cwd': str(self.cwd.resolve()), 'includeLayers': False})
+        result = self.project_config({'config': {'model': 'gpt-user'},
+                                      'origins': {'model': {'name': {'type': 'user', 'file': '/c'}}}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {})
+
+    def test_project_config_rejects_a_malformed_answer(self):
+        for config in ({'config': {}}, {'config': [], 'origins': {}}):
+            result = self.project_config(config)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertIn('config/read', result.stderr)
+        result = self.project_config({}, 'invalid_result')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+
     def test_latest_turn_needs_a_thread_and_no_instructions(self):
         result = self.latest_turn((), '', '--instructions-file', str(self.instructions))
         self.assertNotEqual(result.returncode, 0)
@@ -342,6 +381,26 @@ class BootstrapTests(unittest.TestCase):
                                capture_output=True, text=True, timeout=40)
         self.assertEqual(turns.returncode, 0, turns.stderr)
         self.assertEqual(turns.stdout, '\n', 'context alone starts no turn')
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_codex_names_a_trusted_project_model(self):
+        # A trusted project's config outranks a --profile; an untrusted one is not read.
+        home = self.root / 'isolated-codex-home'
+        home.mkdir()
+        project = self.root / 'trusted project'
+        (project / '.codex').mkdir(parents=True)
+        (project / '.codex' / 'config.toml').write_text('model = "gpt-project"\n')
+        user = 'model = "gpt-user"\nmodel_reasoning_effort = "high"\n[analytics]\nenabled = false\n'
+        trust = '[projects."{}"]\ntrust_level = "trusted"\n'.format(project.resolve())
+        env = dict(os.environ, CODEX_HOME=str(home))
+        command = [sys.executable, str(HELPER), '--codex-bin', os.environ['CS_CODEX_REAL_BIN'],
+                   '--cwd', str(project), '--project-config']
+        for config, expected in ((user + trust, {'model': {
+                'value': 'gpt-project', 'file': str(project.resolve() / '.codex' / 'config.toml')}}), (user, {})):
+            (home / 'config.toml').write_text(config)
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=40)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), expected)
 
 
 if __name__ == '__main__':

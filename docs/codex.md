@@ -193,6 +193,13 @@ that launch's choices. Other sessions keep their own defaults. Restart an
 already running cs/Codex once after installing this support. Older Codex builds
 print a notice that model carryover needs file-backed profile support.
 
+A trusted project's `.codex/config.toml` outranks that profile. When it sets
+`model` or `model_reasoning_effort`, an explicit `--model` or `--effort` for the
+same setting stays a command-line override, so it still wins, and that setting
+is fixed for the run: `/clear` reloads it whatever `/model` chose since. The
+turn that arms the handoff then says which setting `/clear` will use, and no
+automatic `/clear` is counted down; choose again with `/model` after `/clear`.
+
 `$rotate` works. It writes and arms a handoff, then tells you to run `/clear`
 and send any message: Codex starts no turn by itself, and the handoff loads with
 that first message through the SessionStart hook cs registers for Codex

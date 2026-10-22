@@ -37,6 +37,7 @@ setup() {
 teardown() {
     rm -rf "$TEST_TMPDIR"
     unset CS_ACTOR CS_CACHE_DIR CODEX_HOME CS_RUN_ENGINE CS_RUN_ID CS_RUN_OWNER_PID CS_SESSION_DIR CS_CODEX_ROTATION_PROFILE
+    unset CS_CODEX_ROTATION_FIXED
 }
 
 _handoff() {  # status
@@ -206,8 +207,9 @@ test_unknown_hook_event_is_a_usage_error() {
 # directory, so this runs cs with that one check stood down: bin/cs without
 # its closing `main "$@"`, the stub, then main. tests/test_codex_autoclear.sh
 # exercises the real check.
-_turn_hook() {  # verb, thread, [run_id]
-    printf '{"session_id":"%s","turn_id":"turn-1","cwd":"%s","hook_event_name":"x"}' "$2" "$SESSION" \
+_turn_hook() {  # verb, thread, [run_id]; TURN_TRANSCRIPT adds the turn's transcript_path
+    printf '{"session_id":"%s","turn_id":"turn-1","cwd":"%s","hook_event_name":"x"%s}' "$2" "$SESSION" \
+        "${TURN_TRANSCRIPT:+,\"transcript_path\":\"$TURN_TRANSCRIPT\"}" \
         | env CS_RUN_ENGINE=codex CS_RUN_ID="${3:-$RUN}" CS_RUN_OWNER_PID="$$" \
             CS_SESSION_DIR="$SESSION" CS_SESSION_NAME=demo bash -c '
                 eval "$(sed "\$d" "$1")"
@@ -236,8 +238,6 @@ test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
         "$(printf '%s' "$out" | jq -r .systemMessage)" "the TUI says what will happen" || return 1
 }
 
-# A grace with a leading zero is decimal: 08 is eight seconds, not an
-# arithmetic error that fails the turn and strands the temp file.
 test_rotation_keeps_the_last_turn_model_with_manual_clear() {
     _handoff unconsumed; _arm
     export CODEX_HOME="$TEST_TMPDIR/codex" CS_RUN_ENGINE=codex CS_RUN_ID="$RUN"
@@ -272,6 +272,35 @@ test_rotation_keeps_the_last_turn_model_with_manual_clear() {
     assert_output_contains "$out" 'could not preserve' || return 1
 }
 
+# A setting fixed for the run, an explicit choice a trusted project's config
+# would shadow or the project's own, wins on /clear over the saved /model
+# choice: the turn says so instead of counting down to the wrong model.
+test_a_setting_fixed_for_the_run_is_named_instead_of_the_count() {
+    _handoff unconsumed; _arm
+    export CODEX_HOME="$TEST_TMPDIR/codex" CS_CODEX_ROTATION_PROFILE
+    mkdir -p "$CODEX_HOME"
+    CS_CODEX_ROTATION_PROFILE="$CODEX_HOME/cs-rotation-$(python3 -I -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:20])' "$SESSION").config.toml"
+    : > "$CS_CODEX_ROTATION_PROFILE"
+    local transcript="$TEST_TMPDIR/rollout.jsonl" out
+    jq -cn --arg id "$OLD_THREAD" --arg cwd "$SESSION" \
+        '{type:"session_meta",payload:{id:$id,cwd:$cwd}}' > "$transcript"
+    printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"xhigh"}}' >> "$transcript"
+    export CS_CODEX_ROTATION_FIXED='{"model":{"value":"gpt-project","source":"/p/.codex/config.toml"}}'
+    out=$(CS_CODEX_CLEAR_GRACE=20 TURN_TRANSCRIPT="$transcript" _turn_hook stop "$OLD_THREAD") \
+        || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_eq "cs: /clear will use model gpt-project (not gpt-6-astra) from /p/.codex/config.toml; choose again with /model after /clear." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+    assert_not_exists "$STAMP" "no count toward a /clear that drops the choice" || return 1
+    assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model_reasoning_effort = "xhigh"$' "the effort still carries over" || return 1
+    # The fixed value is the one chosen: nothing is lost, so the count goes ahead.
+    export CS_CODEX_ROTATION_FIXED='{"model":{"value":"gpt-6-astra","source":"the command line"}}'
+    out=$(CS_CODEX_CLEAR_GRACE=20 TURN_TRANSCRIPT="$transcript" _turn_hook stop "$OLD_THREAD") || return 1
+    assert_file_exists "$STAMP" || return 1
+    assert_output_contains "$out" '/clear and go in 20 s' || return 1
+}
+
+# A grace with a leading zero is decimal: 08 is eight seconds, not an
+# arithmetic error that fails the turn and strands the temp file.
 test_a_grace_with_a_leading_zero_is_decimal() {
     _handoff unconsumed; _arm
     local out now deadline
@@ -483,6 +512,7 @@ run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
 run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
 run_test test_rotation_keeps_the_last_turn_model_with_manual_clear
+run_test test_a_setting_fixed_for_the_run_is_named_instead_of_the_count
 run_test test_a_grace_with_a_leading_zero_is_decimal
 run_test test_a_turn_end_never_writes_into_the_workspace
 run_test test_no_run_dir_means_no_count_and_no_message

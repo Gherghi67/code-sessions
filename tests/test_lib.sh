@@ -28,7 +28,7 @@ unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CL
 # a real Codex launch. Runtime suites set their own isolated overrides.
 # CODEX_HOME goes too: a cs Codex session exports it, and an install under
 # test would deploy into that real Codex home instead of the test HOME.
-unset CS_DEFAULT_ENGINE CODEX_BIN CS_CODEX_THREAD_BIN CODEX_HOME CS_CODEX_ROTATION_PROFILE 2>/dev/null || true
+unset CS_DEFAULT_ENGINE CODEX_BIN CS_CODEX_THREAD_BIN CODEX_HOME CS_CODEX_ROTATION_PROFILE CS_CODEX_ROTATION_FIXED 2>/dev/null || true
 # The session a suite runs inside is not the session under test: a cs
 # session exports these, and a suite that inherits them writes into it (mail
 # copies in its mail/out, a tag in its README).

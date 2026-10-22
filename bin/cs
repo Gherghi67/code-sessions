@@ -16505,19 +16505,44 @@ _codex_rotation_profile_path() {  # session_dir
     printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
 }
 
-_codex_rotation_profile_prepare() {  # session_dir; sets CS_CODEX_ROTATION_PROFILE
+_codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
     local profile tmp
     profile=$(_codex_rotation_profile_path "$1") || return 1
     mkdir -p "$(dirname "$profile")" || return 1
     tmp=$(mktemp "$profile.XXXXXX") || return 1
-    if ! jq -nr --arg model "${CS_LAUNCH_MODEL:-}" --arg effort "${CS_LAUNCH_EFFORT:-}" '
-        (if $model == "" then empty else "model = " + ($model | tojson) end),
-        (if $effort == "" then empty else "model_reasoning_effort = " + ($effort | tojson) end)
-    ' > "$tmp" || ! mv "$tmp" "$profile"; then
+    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp" \
+        || ! mv "$tmp" "$profile"; then
         rm -f "$tmp"
         return 1
     fi
     CS_CODEX_ROTATION_PROFILE=$profile
+}
+
+# A trusted project's .codex/config.toml outranks the profile, and command-line
+# overrides outrank both for the whole run, a later /model choice included. So
+# an explicit choice the project also sets stays on the command line, and every
+# other one seeds the profile, where Stop can replace it. What /clear reloads
+# regardless goes to the Stop hook as CS_CODEX_ROTATION_FIXED. When Codex cannot
+# say what the project sets, explicit choices stay on the command line.
+_codex_rotation_setup() {  # helper, codex_bin, session_dir; sets rotation_cli_* and the profile
+    local pinned plan
+    pinned=$(cs_run_child "$1" --codex-bin "$2" --cwd "$3" --project-config 2>/dev/null) || pinned=""
+    printf '%s' "$pinned" | jq -e 'type == "object"' >/dev/null 2>&1 || pinned=null
+    plan=$(jq -cn --argjson pinned "$pinned" \
+        --arg model "${CS_LAUNCH_MODEL:-}" --arg effort "${CS_LAUNCH_EFFORT:-}" '
+        reduce (["model", $model], ["model_reasoning_effort", $effort]) as [$key, $choice]
+            ({cli: {}, profile: {}, fixed: {}};
+            if $choice == "" then
+                if $pinned != null and ($pinned | has($key))
+                then .fixed[$key] = {value: $pinned[$key].value, source: $pinned[$key].file}
+                else . end
+            elif $pinned == null or ($pinned | has($key)) then
+                .cli[$key] = $choice | .fixed[$key] = {value: $choice, source: "the command line"}
+            else .profile[$key] = $choice end)') || return 1
+    rotation_cli_model=$(printf '%s' "$plan" | jq -r '.cli.model // ""') || return 1
+    rotation_cli_effort=$(printf '%s' "$plan" | jq -r '.cli.model_reasoning_effort // ""') || return 1
+    CS_CODEX_ROTATION_FIXED=$(printf '%s' "$plan" | jq -c '.fixed') || return 1
+    _codex_rotation_profile_prepare "$3" "$(printf '%s' "$plan" | jq -c '.profile')"
 }
 
 _codex_launch_error() {  # message
@@ -16773,13 +16798,14 @@ _launch_codex_bound() {
     # with different semantics. Native approval has not probed help yet. The
     # profile is written before a thread is bound or a handoff spent, so a
     # failure here leaves both for the retry.
-    local CS_CODEX_ROTATION_PROFILE=""
-    export CS_CODEX_ROTATION_PROFILE
+    local CS_CODEX_ROTATION_PROFILE="" CS_CODEX_ROTATION_FIXED="{}"
+    local rotation_cli_model="" rotation_cli_effort=""
+    export CS_CODEX_ROTATION_PROFILE CS_CODEX_ROTATION_FIXED
     if [ -z "$codex_help" ]; then
         codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) || codex_help=""
     fi
     if printf '%s\n' "$codex_help" | grep -F 'CONFIG_PROFILE_V2' >/dev/null; then
-        _codex_rotation_profile_prepare "$session_dir" || {
+        _codex_rotation_setup "$helper" "$codex_bin" "$session_dir" || {
             _codex_launch_error "Could not prepare the scoped Codex model profile."
             return 1
         }
@@ -16984,9 +17010,9 @@ _launch_codex_bound() {
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
     if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
-        # CLI overrides outrank profiles, including after a later /model choice.
-        # Seed those choices in the profile instead so Stop can replace them.
-        local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT=""
+        # Only an explicit choice a project setting would shadow stays a CLI
+        # override; the profile carries the rest (_codex_rotation_setup).
+        local CS_LAUNCH_MODEL="$rotation_cli_model" CS_LAUNCH_EFFORT="$rotation_cli_effort"
     else
         printf '%s\n' 'cs: this Codex build cannot preserve /model choices across rotation; file-backed --profile support is required.'
     fi
@@ -17677,15 +17703,18 @@ _codex_autoclear_grace() {
 # Stop runs outside the workspace sandbox, before either a manual or automatic
 # /clear. Read only the bound thread's native transcript; never infer a model
 # from handoff prose. Atomic replacement leaves the previous profile on errors.
+# A setting fixed for the run (CS_CODEX_ROTATION_FIXED, lib/76-codex.sh) wins
+# on /clear; when it differs from the final turn's, the save still happens,
+# fails, and prints the line that says so.
 _codex_rotation_model_save() {  # session_dir, session_id, Stop input
     [ -n "${CS_CODEX_ROTATION_PROFILE:-}" ] || return 0
-    local expected transcript tmp
+    local expected transcript tmp note status=0
     expected=$(_codex_rotation_profile_path "$1") || return 1
     [ "$CS_CODEX_ROTATION_PROFILE" = "$expected" ] || return 1
     [ -f "$expected" ] && [ ! -L "$expected" ] || return 1
     transcript=$(printf '%s' "$3" | jq -er '.transcript_path | select(type == "string" and length > 0)' 2>/dev/null) || return 1
     tmp=$(mktemp "$expected.XXXXXX" 2>/dev/null) || return 1
-    if ! python3 -I -c '
+    note=$(python3 -I -c '
 import json, os, sys
 session, thread, transcript = sys.argv[1:]
 metadata = None
@@ -17717,19 +17746,32 @@ try:
     print("model = " + json.dumps(model, ensure_ascii=False))
     if effort is not None:
         print("model_reasoning_effort = " + json.dumps(effort))
+    fixed = json.loads(os.environ.get("CS_CODEX_ROTATION_FIXED") or "{}")
+    lost = []
+    for key, label, chosen in (("model", "model", model), ("model_reasoning_effort", "effort", effort)):
+        pin = fixed.get(key) if isinstance(fixed, dict) else None
+        if isinstance(pin, dict) and chosen is not None and pin.get("value") != chosen:
+            lost.append("{} {} (not {}) from {}".format(label, pin.get("value"), chosen, pin.get("source")))
+    if lost:
+        print("cs: /clear will use " + " and ".join(lost) + "; choose again with /model after /clear.",
+              file=sys.stderr)
+        sys.exit(3)
 except (OSError, ValueError, TypeError):
     sys.exit(1)
-' "$1" "$2" "$transcript" > "$tmp" 2>/dev/null || ! mv "$tmp" "$expected"; then
+' "$1" "$2" "$transcript" 2>&1 > "$tmp") || status=$?
+    # 3: the profile is written, and a fixed setting outranks it on /clear.
+    if { [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; } || ! mv "$tmp" "$expected" 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
         return 1
     fi
+    [ "$status" -eq 0 ] || { printf '%s\n' "$note"; return 1; }
 }
 
 # Only the conversation this run launched and the session is bound to counts
 # down; a turn in any other thread, or a teammate's, never clears it. The hook
 # must never fail a turn, so every path returns 0.
 _codex_hook_stop() {
-    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline action sysmsg
+    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline action sysmsg note=""
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     session_dir="$CS_SESSION_DIR"
@@ -17743,8 +17785,10 @@ _codex_hook_stop() {
     bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
     [ "$bound" = "$session_id" ] || return 0
     handoff=$(_rotation_armed_handoff "$session_dir")
-    if [ -n "$handoff" ] && ! _codex_rotation_model_save "$session_dir" "$session_id" "$input"; then
-        jq -n '{systemMessage: "cs: could not preserve the selected model for rotation; select it again with /model after /clear."}' 2>/dev/null || true
+    # A choice /clear would drop gets no count toward that /clear.
+    if [ -n "$handoff" ] && ! note=$(_codex_rotation_model_save "$session_dir" "$session_id" "$input"); then
+        jq -n --arg m "${note:-cs: could not preserve the selected model for rotation; select it again with /model after /clear.}" \
+            '{systemMessage: $m}' 2>/dev/null || true
         return 0
     fi
     # No private directory, no watcher: nothing would type the keys, so the
