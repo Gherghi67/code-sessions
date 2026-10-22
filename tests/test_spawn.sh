@@ -369,7 +369,7 @@ test_spawn_refuses_a_feature_brief_missing_a_section() {
 test_spawn_reads_feature_brief_sections_as_markdown() {
     local brief="$TEST_TMPDIR/brief.md" err rc=0
     _feature_brief "$brief"
-    { printf '\xef\xbb\xbf'; sed 's/$/\r/; s/^## Review\r$/## Review  \r/' "$brief"; } > "$brief.alt" && mv "$brief.alt" "$brief"
+    { printf '\xef\xbb\xbf'; sed '1,2d; s/$/\r/; s/^## Review\r$/## Review  \r/' "$brief"; } > "$brief.alt" && mv "$brief.alt" "$brief"
     CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
         || { echo "  a CRLF brief with a BOM and a trailing blank was refused"; return 1; }
     rm -rf "$CS_SESSIONS_ROOT/.spawn" "$FAKE_TMUX_DIR"; mkdir -p "$FAKE_TMUX_DIR"

@@ -172,9 +172,11 @@ Report back"
 # The section headings a brief carries, one per line, as Markdown reads
 # them: a heading is `## ` and the title on a line of its own, with a CR, a
 # byte-order mark on the first line, and trailing blanks ignored, and a
-# line inside a ``` or ~~~ fence is text, not a heading.
+# line inside a ``` or ~~~ fence is text, not a heading. Bytes, whatever the
+# locale: under a UTF-8 locale awk reads the mark as characters and the
+# byte comparison below misses it.
 _brief_sections() {  # file
-    awk '
+    LC_ALL=C awk '
         NR == 1 { sub(/^\xef\xbb\xbf/, "") }
         { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
         /^(```|~~~)/ { fence = !fence; next }
