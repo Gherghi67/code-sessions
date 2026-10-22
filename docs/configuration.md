@@ -393,9 +393,11 @@ or `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=0` withholds the mod, since otherwise
 the mod shows the full notes in the session.
 
 Mermaid drawing is a Claude Code `/config` row, `cs-mermaid.drawDiagrams` (on by
-default). Off, ` ```mermaid ` fences in replies show as source and the system
-prompt no longer says they draw. `.cs/local/disabled` turns off only the prompt
-section, as it does every other cs injection into the model's context.
+default). Off, ` ```mermaid ` fences in replies show as source. The diagram
+instruction lives under `cs:mermaid-diagrams` in a cs session's `CLAUDE.local.md`;
+neither this toggle nor `.cs/local/disabled` removes it. To opt out of the
+instruction, delete its prose but keep the `<!-- cs:mermaid-diagrams -->`
+comment so migration does not add it again.
 
 ## Environment variables cs sets for you
 
