@@ -1,9 +1,9 @@
 // ABOUTME: Engine test-kit tests for the cs-mermaid register module: inline drawing, the fallback to source, fit and palette helpers.
-// ABOUTME: Also pins the drawDiagrams option, which turns off both the drawing and the system prompt section.
+// ABOUTME: Also pins the drawDiagrams option, which turns off the drawing.
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DISABLED, OPTION, PROMPT_SECTION, blockRows, fencesOf, fillFor, fit, labelColor, paletteFor, roleOf, splitReply } from '../hooks/register'
+import { OPTION, blockRows, fencesOf, fillFor, fit, labelColor, paletteFor, roleOf, splitReply } from '../hooks/register'
 import { parse } from '../hooks/parse'
 
 const TEXT = ['Flow:', '', '```mermaid', 'graph TD', '  A[prompt] --> B{cached?}', '  B -->|no| C[render]', '```'].join('\n')
@@ -93,41 +93,6 @@ test('with drawDiagrams off, a reply with a fence is left to the engine', { opti
   expect(await reply.find({ type: 'Text', text: 'engine drew it' })).toBeDefined()
   expect(await reply.find({ type: 'Text', text: 'cached?' })).toBeUndefined()
   await reply.unmount()
-})
-
-const ENGINE_SECTIONS = { sections: [{ id: 'intro', text: 'engine intro', scope: 'shared' as const }] }
-const TERMINAL_PROMPT = { model: 'claude-test', promptModel: 'claude-test', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as const
-
-// The session directory, and which paths exist under it.
-function session(on: On, existing: string[]) {
-  on('session.cwd', () => ({ value: '/work/demo' }))
-  on('fs.exists', ($, e) => ({ value: existing.includes(e.path) }))
-}
-
-test('a terminal session prompt ends with the diagrams section', async ($, on) => {
-  session(on, [])
-  on('prompt.compose', () => ENGINE_SECTIONS)
-  const composed = await $.prompt.compose(TERMINAL_PROMPT)
-  expect(composed.sections.map(s => s.id)).toEqual(['intro', 'cs-mermaid:diagrams'])
-  expect(composed.sections[1]).toEqual(PROMPT_SECTION)
-})
-
-test('a session with .cs/local/disabled gets no diagrams section', async ($, on) => {
-  session(on, [`/work/demo/${DISABLED}`])
-  on('prompt.compose', () => ENGINE_SECTIONS)
-  expect((await $.prompt.compose(TERMINAL_PROMPT)).sections.map(s => s.id)).toEqual(['intro'])
-})
-
-test('a prompt with no terminal, or a --bare one, gets no diagrams section', async ($, on) => {
-  session(on, [])
-  on('prompt.compose', () => ENGINE_SECTIONS)
-  expect((await $.prompt.compose({ ...TERMINAL_PROMPT, surfaces: [], traits: ['print'] })).sections.map(s => s.id)).toEqual(['intro'])
-  expect((await $.prompt.compose({ ...TERMINAL_PROMPT, traits: ['bare'] })).sections.map(s => s.id)).toEqual(['intro'])
-})
-
-test('with drawDiagrams off, the prompt gets no diagrams section', { options: { [OPTION]: false } }, async ($, on) => {
-  on('prompt.compose', () => ENGINE_SECTIONS)
-  expect((await $.prompt.compose(TERMINAL_PROMPT)).sections.map(s => s.id)).toEqual(['intro'])
 })
 
 test('fit turns a wide LR chart, keeps one that fits, and reports one that cannot fit', () => {
