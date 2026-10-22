@@ -893,6 +893,45 @@ test_failed_direct_rotation_preserves_a_newer_pending_handoff() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$CS_CODEX_NEW_HANDOFF" '^status: unconsumed$' || return 1
 }
 
+# The scoped profile is written before a thread is bound or a handoff spent,
+# so a Codex home that refuses it leaves both for the retry.
+_refused_profile_spends_nothing() {
+    local intent output status
+    local binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    local h="$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF"
+    for intent in handoff fresh; do
+        _rotation_fixture unconsumed
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" "$intent" 2>&1) || status=$?
+        assert_eq 1 "$status" "$intent: $output" || return 1
+        assert_output_contains "$output" 'Could not prepare the scoped Codex model profile' || return 1
+        assert_file_contains "$h" '^status: unconsumed$' "$intent keeps the handoff" || return 1
+        assert_file_not_contains "$h" '^consumed_by:' || return 1
+        assert_eq "$ROTATION_HANDOFF" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" 2>/dev/null)" "$intent keeps the marker" || return 1
+        assert_eq "$ROTATION_OLD_THREAD" "$(cat "$binding")" "$intent keeps the binding" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "$intent prepares no thread" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "$intent starts no CLI" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
+    done
+    # A fresh start with nothing armed binds nothing either.
+    rm -f "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" "$h"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" fresh 2>&1) || status=$?
+    assert_eq 1 "$status" "fresh: $output" || return 1
+    assert_eq "$ROTATION_OLD_THREAD" "$(cat "$binding")" "fresh keeps the binding" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "fresh prepares no thread" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "fresh starts no CLI" || return 1
+}
+
+test_a_refused_rotation_profile_spends_nothing() {
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    local status=0
+    mkdir -p "$HOME/.codex" && chmod 500 "$HOME/.codex"
+    _refused_profile_spends_nothing || status=$?
+    chmod 700 "$HOME/.codex"
+    return "$status"
+}
+
 # Unattended or explicit resume never takes the rotation, so the marker goes.
 test_resume_disarms_an_armed_rotation() {
     _rotation_fixture unconsumed
@@ -930,6 +969,7 @@ run_test test_direct_rotation_that_ran_behind_a_clear_only_hook_keeps_the_handof
 run_test test_direct_rotation_that_ran_behind_an_unfiltered_hook_logs_its_start
 run_test test_failed_rotation_with_unreadable_thread_history_keeps_the_handoff_consumed
 run_test test_failed_direct_rotation_preserves_a_newer_pending_handoff
+run_test test_a_refused_rotation_profile_spends_nothing
 run_test test_resume_disarms_an_armed_rotation
 run_test test_new_thread_binding_and_context
 run_test test_resume_refreshes_exact_thread

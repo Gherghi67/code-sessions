@@ -245,8 +245,8 @@ _launch_codex_bound() {
     esac
     # Automatic approval must refuse before preparation binds or spends context.
     # Native approval leaves policy to Codex and needs no automatic-review flag.
+    local codex_help=""
     if [ "${CS_LAUNCH_APPROVAL:-auto}" != native ]; then
-        local codex_help
         if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
             || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
             _codex_launch_error "Codex at $codex_bin must support --approve-for-me for automatic approval. Upgrade Codex, set CODEX_BIN to a supporting build, or use --native-approval to keep Codex's configured policy."
@@ -269,6 +269,23 @@ _launch_codex_bound() {
     if [ -e "$binding_file" ] || [ -L "$binding_file" ]; then
         _codex_thread_id_valid "$recorded_id" || {
             _codex_launch_error "Invalid Codex thread binding in $binding_file. Repair it before launching; no new thread was created."
+            return 1
+        }
+    fi
+
+    # File-backed named profiles are advertised as CONFIG_PROFILE_V2. Older
+    # builds keep their original launch behavior rather than getting a flag
+    # with different semantics. Native approval has not probed help yet. The
+    # profile is written before a thread is bound or a handoff spent, so a
+    # failure here leaves both for the retry.
+    local CS_CODEX_ROTATION_PROFILE=""
+    export CS_CODEX_ROTATION_PROFILE
+    if [ -z "$codex_help" ]; then
+        codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) || codex_help=""
+    fi
+    if printf '%s\n' "$codex_help" | grep -F 'CONFIG_PROFILE_V2' >/dev/null; then
+        _codex_rotation_profile_prepare "$session_dir" || {
+            _codex_launch_error "Could not prepare the scoped Codex model profile."
             return 1
         }
     fi
@@ -471,19 +488,7 @@ _launch_codex_bound() {
     # Signals and lock cleanup belong to the shared controller.
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
-    local CS_CODEX_ROTATION_PROFILE=""
-    export CS_CODEX_ROTATION_PROFILE
-    # File-backed named profiles are advertised as CONFIG_PROFILE_V2. Older
-    # builds keep their original launch behavior rather than getting a flag
-    # with different semantics. Native approval also needs this help probe.
-    if [ -z "${codex_help:-}" ]; then
-        codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) || codex_help=""
-    fi
-    if printf '%s\n' "$codex_help" | grep -F 'CONFIG_PROFILE_V2' >/dev/null; then
-        _codex_rotation_profile_prepare "$session_dir" || {
-            _codex_launch_error "Could not prepare the scoped Codex model profile."
-            return 1
-        }
+    if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
         # CLI overrides outrank profiles, including after a later /model choice.
         # Seed those choices in the profile instead so Stop can replace them.
         local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT=""
