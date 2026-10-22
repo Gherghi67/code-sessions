@@ -103,8 +103,8 @@ export CS_TERM_THEME="light"   # or "dark"
 
 # Override the terminal's real background color (default: auto-detected via
 # the same OSC 11 query as CS_TERM_THEME, when it succeeds). The statusline's
-# capsule surface is a shade of it; unset, the surface falls back to a fixed
-# warm taupe per theme.
+# capsule surface is a shade of it; unset, it shades an assumed dark or light
+# background by 10%.
 export CS_TERM_BG_RGB="250;248;242"   # r;g;b, 0-255 each
 
 # Disable colors (see https://no-color.org)
