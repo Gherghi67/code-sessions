@@ -939,11 +939,8 @@ _sgr() {
                         _SURFACE_RGB="$_R;$_G;$_B"
                     fi
                     rgb="$_SURFACE_RGB" ;;
-                *)
-                    # Warm neutral (R>G>B) so the quiet blocks read as taupe,
-                    # not steel; light enough that the gauges recede beside the
-                    # identity capsule's ink while white label text holds.
-                    [ "$SL_THEME" = "dark" ] && rgb="140;132;122" || rgb="128;120;110" ;;
+                # Unreachable from rendering; unknown names use the surface.
+                *) _sgr "$kind" surface; return ;;
             esac
             _SGR="${kind};2;${rgb}"; _RGB="$rgb" ;;
         256)

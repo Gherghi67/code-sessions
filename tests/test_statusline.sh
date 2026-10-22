@@ -3366,6 +3366,17 @@ test_sgr_ink_tokens_256_and_basic() {
     _sgr 38 critink; assert_eq "97" "$_SGR" "critink basic dark is white" || return 1
 }
 
+test_sgr_unknown_truecolor_name_uses_the_surface() {
+    _load_sl_functions
+    unset CS_TERM_BG_RGB
+    LEVEL=truecolor; SL_THEME=dark; _SURFACE_RGB=""
+    _sgr 48 nonsense || return 1
+    assert_eq "48;2;50;50;50" "$_SGR" "an unknown dark token uses the assumed surface" || return 1
+    SL_THEME=light; _SURFACE_RGB=""
+    _sgr 48 nonsense || return 1
+    assert_eq "48;2;229;229;229" "$_SGR" "an unknown light token uses the assumed surface" || return 1
+}
+
 test_thresh_color_emits_crit_and_defaults_to_ink2() {
     _load_sl_functions
     _thresh_color 10 40 65; assert_eq "ink2"  "$_COLOR" "below warn is the secondary ink" || return 1
@@ -3379,6 +3390,7 @@ run_test test_sgr_ink_tokens_truecolor_dark
 run_test test_sgr_amber_follows_surface_luminance_not_the_theme
 run_test test_sgr_ink_follows_surface_luminance
 run_test test_sgr_ink_tokens_256_and_basic
+run_test test_sgr_unknown_truecolor_name_uses_the_surface
 run_test test_thresh_color_emits_crit_and_defaults_to_ink2
 
 # ============================================================================
