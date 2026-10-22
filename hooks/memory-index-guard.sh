@@ -172,6 +172,7 @@ _reference_files() {
             done
         fi
         [ "$removed" -eq 0 ] || continue
+        [ -f "$path" ] || continue
         printf '%s\0' "$path"
     done < "$_refs_candidates" > "$_refs_universe"
     find .cs -path .cs/vault-mnt -prune -o -type f -print0 >> "$_refs_universe" \

@@ -1063,6 +1063,62 @@ dead: .cs/memory/feedback_alpha.md: hooks/outside.sh' "$out" \
         "exact paths resolve on disk inside the root without borrowing worktree copies" || return 1
 }
 
+test_refs_ignores_untracked_nested_repositories() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    git init -q "$SESSION/inner"
+    printf '%s\n' 'Nested repository.' > "$SESSION/inner/README.md"
+    printf '%s\n' 'Read `_cs_inner`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_inner' "$out" \
+        "a nested repository does not abort identifier lookup or print stderr" || return 1
+    assert_eq 0 "$rc" "a missing identifier beside a nested repository exits zero" || return 1
+}
+
+test_refs_does_not_search_inside_submodules() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/vendor"
+    printf '%s\n' '_cs_in_sub' > "$SESSION/vendor/helper.sh"
+    local tree commit out rc=0
+    tree=$(git -C "$SESSION" mktree < /dev/null) || return 1
+    commit=$(printf '%s\n' 'Fixture' | git -C "$SESSION" -c user.name=Example \
+        -c user.email=contributor@example.com commit-tree "$tree") || return 1
+    git -C "$SESSION" update-index --add --cacheinfo "160000,$commit,vendor"
+    printf '%s\n' 'Read `_cs_in_sub`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_in_sub' "$out" \
+        "submodule contents do not resolve identifiers or print stderr" || return 1
+    assert_eq 0 "$rc" "an identifier found only in a submodule exits zero" || return 1
+}
+
+test_refs_searches_regular_files_beside_directory_symlinks() {
+    _guard_session
+    git -C "$SESSION" init -q
+    printf '%s\n' '.cs/' > "$SESSION/.gitignore"
+    mkdir -p "$SESSION/real"
+    ln -s real "$SESSION/link"
+    printf '%s\n' '_cs_regular' > "$SESSION/helper.sh"
+    git -C "$SESSION" add link helper.sh
+    printf '%s\n' 'Read `_cs_regular`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    local out rc=0
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'ok: 1 references in 2 entries, none dead' "$out" \
+        "a tracked regular file resolves beside a directory symlink without stderr" || return 1
+    assert_eq 0 "$rc" "a live identifier beside a directory symlink exits zero" || return 1
+    printf '%s\n' 'Read `_cs_absent`.' > "$SESSION/.cs/memory/feedback_alpha.md"
+    out=$(_guard refs 2>&1) || rc=$?
+    assert_eq 'dead: .cs/memory/feedback_alpha.md: _cs_absent' "$out" \
+        "a directory symlink does not abort a missing identifier lookup" || return 1
+    assert_eq 0 "$rc" "a missing identifier beside a directory symlink exits zero" || return 1
+}
+
+run_test test_refs_ignores_untracked_nested_repositories
+run_test test_refs_does_not_search_inside_submodules
+run_test test_refs_searches_regular_files_beside_directory_symlinks
 run_test test_refs_resolves_exact_paths_on_disk_in_git_sessions
 run_test test_refs_excludes_deleted_tracked_files
 run_test test_refs_includes_untracked_files_outside_lib
