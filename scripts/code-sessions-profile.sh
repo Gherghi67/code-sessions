@@ -11,8 +11,16 @@ case "${1:-}" in
     .|-adopt|-checkpoint|-narrative)
         # These operations use the current directory. Keep the original cs's
         # projects out of the profile, including nested directories, except
-        # one the profile has itself (a link in its sessions root).
-        probe=$(pwd -P)
+        # one the profile has itself (a link in its sessions root). Above the
+        # current directory the nearest .cs decides, as it does for cs's hooks,
+        # and only while the original cs registers its folder: a .cs that a
+        # launch left in a parent such as ~/Documents without making it a
+        # session kept every new project below it out of the profile.
+        here=$(pwd -P)
+        probe=$here
+        stable_root=${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}
+        # A session of this profile exports the profile's root.
+        case "$stable_root/" in "$profile_home/"*) stable_root=$HOME/.claude-sessions ;; esac
         case "$probe/" in
             "$profile_home/"*) ;;
             *)
@@ -27,6 +35,17 @@ case "${1:-}" in
                             fi
                         done
                         [ -z "$ours" ] || break
+                        if [ "$probe" != "$here" ]; then
+                            theirs=
+                            for entry in "$stable_root"/* "$stable_root"/.[!.]* "$stable_root"/..?*; do
+                                [ -d "$entry" ] || continue
+                                if [ "$(CDPATH='' cd -P "$entry" 2>/dev/null && pwd)" = "$probe" ]; then
+                                    theirs=1
+                                    break
+                                fi
+                            done
+                            [ -n "$theirs" ] || break
+                        fi
                         printf 'This is a workspace of the original cs. Use cs here, or copy it into code-sessions with scripts/cs-to-code-sessions.py.\n' >&2
                         exit 1
                     fi
