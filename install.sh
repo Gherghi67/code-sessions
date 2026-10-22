@@ -1331,7 +1331,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "93e500fcfcdd99369cc0d0db20dc5e09cf0884de09a16cbb10d2ce7d0fc2d2ad  bin/cs"
+    "e70dbb440a2922f2074a017998d67f80b6b879e679318a89bc02810d148eb4e6  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "b4e9bae3e09b55cbd68703b894898794d2352902f1a1e8aec04d93cf1e2077eb  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -2300,6 +2300,7 @@ else
             ;;
     esac
     # Twin: _statusline_chains_to_cs in lib/60-doctor.sh.
+    # Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
     _statusline_chains_to_cs() {
         local file rest
         read -r file rest <<< "$1"

@@ -650,6 +650,7 @@ _doctor_check_claude_audit() {
 }
 
 # Twin: _statusline_chains_to_cs in install.sh.in.
+# Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
 _statusline_chains_to_cs() {
     local file rest
     read -r file rest <<< "$1"
