@@ -78,6 +78,31 @@ session's features where a key can act on it. No pane.
    with a press that runs `/finish`, or `behind 2`, `dirty`, `staged`,
    `finishing · gate 2m10s` (the second band line today) with no press.
    `ready` is `_feature_readiness`'s word, not the mod's judgment.
+
+   As built (2026-10-23, slice 3), after reading the code this decision
+   names:
+   - The source is `cs <base> -features --porcelain`, which already prints
+     the record (task, branch, ahead, merged, ff, wt_dirty, untracked,
+     base_dirty, lock, state) and is tested in `tests/test_worktrees.sh`; no
+     `--json` arm is added. It carries no `behind` count, so no `behind N`
+     word is drawn.
+   - Placement: Alex ruled the word sits on the left, after the rule, when
+     no rotate, wrap or queue word is due ("Left side", 2026-10-23); the gap
+     beside the rail names the prompt being read. While such a word is due,
+     or a `/finish` gate runs, the features word is not drawn.
+   - `/finish` integrates only from the base's conversation (the skill's
+     `role: feature` prints a handoff line and stops), so in a feature
+     session the word has no press: `ahead 3 · ready`, `dirty`, `staged`.
+   - In a base: one feature ready names it and a press runs `/finish
+     <task>`; two or more ready read `N features · K ready` and a press runs
+     bare `/finish`, which lists the features and asks which; none ready
+     reads `1 feature · <task> <state>` or `N features · none ready` with no
+     press. `ready` with nothing ahead of the base reads `no commits`.
+   - The base and the task come from the session's name, `base@task` for a
+     feature; `validate_session_name` never admits `@`.
+   - The record is read at an IO boundary: a line that is not ten fields,
+     a non-integer `ahead`, or a state outside the eight `_feature_readiness`
+     prints is logged once and draws no word.
 6. **No model involvement.** The band reads files and cs output; it
    registers no tool and injects no prompt text.
 7. **One module stays.** The band, the rail's transcript walk and the
