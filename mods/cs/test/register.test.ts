@@ -2264,7 +2264,7 @@ test('after a turn ends the band draws one tick per prompt, the newest thick whi
   expect(buttonsUnderText(tree)).toBe(0)
   expect(texts(tree).find((t: any) => textOf(t) === '\u2503').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
   // Below the threshold the rail still draws, with no key words, and the read prompt in the gap.
-  expect(restingWords(tree)).toEqual(['#4 say four'.padEnd(102), '\u2503'])
+  expect(restingWords(tree)).toEqual(['\u2503', '#4 say four'.padEnd(102)])
 })
 
 test('a conversation with one prompt draws no rail', async () => {
@@ -2496,7 +2496,7 @@ test('a line too narrow for any tick, with nothing else to say, draws nothing', 
   expect(await band({ bodyColumns: 4 })).toBe(DRAWN)
 })
 
-test('the rail stands at the far right of the band line, after the words, as upright bars', async () => {
+test('the rail follows the words on the band line, as upright bars, and the read prompt follows the rail', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   transcript(LINEAR)
   percent = 80
@@ -2504,11 +2504,12 @@ test('the rail stands at the far right of the band line, after the words, as upr
   const tree = await band()
   const line = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
   const kids = (line.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
-  expect(kids[kids.length - 1].props.key).toBe('cs-rail')
-  expect(kids[kids.length - 3]).toMatchObject({ type: 'Box', props: { flexGrow: 1 } })
+  expect(kids[kids.length - 2].props.key).toBe('cs-rail')
+  expect(texts(kids[kids.length - 1]).includes(gapLabel(tree))).toBe(true)
+  expect(boxes(tree).some((b: any) => b.props.flexGrow !== undefined)).toBe(false)
   expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
   // `ctrl+x  1 rotate  ·  2 wrap` (27) and its three-cell gap leave the label 110 - 2 - 30 - 4 - 2.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(72))
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(72))
 })
 
 test('the focus ring never lands on a rail tick: the keyboard route is /cs', async () => {
@@ -2517,11 +2518,11 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
   expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rotate'), async () => ({ moved: true }))).toEqual({ moved: true })
 })
 
-// The gap between the band's words and the rail names a prompt: the one being
-// read, dim italic, against the bars; a bar under the pointer swaps in its own.
+// After the rail the band names a prompt: the one being read, dim italic; a
+// bar under the pointer swaps in its own.
 const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
 
-test('the gap beside the bars names the prompt being read, dim italic: from the left while no word stands there, else flush against the rail', async () => {
+test('after the bars the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
@@ -2529,14 +2530,14 @@ test('the gap beside the bars names the prompt being read, dim italic: from the 
   expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(102))
   const line = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
   const kids = (line.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
-  expect(kids.slice(-3).map((k: any) => k.props.key ?? (k.props.flexGrow ? 'spacer' : 'label'))).toEqual(['spacer', 'label', 'cs-rail'])
-  expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual(['#4 say four'.padEnd(102)])
+  expect(kids.slice(-2).map((k: any) => k.props.key ?? 'label')).toEqual(['cs-rail', 'label'])
+  expect(texts(kids[kids.length - 1]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual(['#4 say four'.padEnd(102)])
   // A row reporting moves the label with the read bar.
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padEnd(102))
-  // A word on the left puts it back against the bars: `▤ queue 1 · start` (17) and its three-cell gap leave 82.
+  // A word on the left moves the bars and the prompt along: `▤ queue 1 · start` (17) and its three-cell gap leave 82.
   queueTasks(1)
-  expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padStart(82))
+  expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padEnd(82))
 })
 
 test('each bar under the pointer swaps its own prompt into the gap, italic, covering the read one', async () => {
@@ -2622,20 +2623,20 @@ test('the gap\'s prompt is measured and cut in cells: wide characters take two, 
   expect(gapLabel(await band()).props.wrap).toBe('truncate-end')
 })
 
-test('the gap and the rail keep their margins: three cells after the words, two before the bars', async () => {
+test('the rail and the prompt keep their margins: three cells after the words, two after the bars', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   transcript(LINEAR)
   await turnComplete()
   const margins = (tree: any) => {
     const railBox = boxes(tree).find((b: any) => b.props.key === 'cs-rail')
     const labelBox = boxes(tree).find((b: any) => b.props.width !== undefined && texts(b).includes(gapLabel(tree)))
-    return [labelBox?.props.marginLeft, railBox.props.marginLeft]
+    return [railBox.props.marginLeft, labelBox?.props.marginLeft]
   }
   expect(margins(await band())).toEqual([0, 2])
   percent = 80
   expect(margins(await band())).toEqual([3, 2])
-  // No room to name a prompt: the bars keep the words' three-cell gap.
-  expect(margins(await band({ bodyColumns: 42 }))).toEqual([undefined, 3])
+  // No room to name a prompt: the bars alone, three cells after the words.
+  expect(margins(await band({ bodyColumns: 42 }))).toEqual([3, undefined])
 })
 
 // ---------------------------------------------------------------------------
@@ -2711,7 +2712,7 @@ test('a feature session draws no features word and asks cs nothing: /finish land
   expect(rail(await band())).toHaveLength(4)
   expect(featureRuns()).toEqual([])
   expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
-  expect(restingWords(await band())[0]).toBe('#4 say four'.padEnd(102))
+  expect(restingWords(await band())).toEqual(['\u2503', '#4 say four'.padEnd(102)])
 })
 
 test('a cs that fails, cannot start, or prints a record the band cannot read draws no word and is logged once each', async () => {
@@ -2747,13 +2748,13 @@ test('the features word keeps the left beside the key words, yields to a running
   await featuresTurn()
   // `1 feature · fix-auth ready` (26) and its three-cell gap leave the label 110 - 2 - 29 - 4 - 2.
   let tree = await band()
-  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(73))
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(73))
   percent = 80
   tree = await band()
   const order = bandBody(tree).map((k: any) => k.type === 'Button' ? k.props.key : k.type === 'Text' ? textOf(k) : texts(k).map(textOf).join(''))
   expect(order.slice(0, 5)).toEqual(['cs-features', '  \u00b7  ', 'ctrl+x', '1', 'cs-rotate'])
   // The word, `  ·  ` (5) and `ctrl+x  1 rotate  ·  2 wrap` (27) and the gap's three leave the label 108 - 61 - 4 - 2.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(41))
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(41))
   percent = undefined
   queueTasks(1)
   tree = await band()
@@ -2965,10 +2966,10 @@ test('the queue and mail words take their cells from the gap beside the rail', a
   const tree = await band()
   expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
   // `▤ queue 2  ·  mail 1` (20) and its three-cell gap leave the label 110 - 2 - 23 - 4 - 2.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(79))
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(79))
   percent = 80
   // No chord bound: `rotate  ·  wrap  ·  ▤ queue 2  ·  mail 1` (40): 110 - 2 - 43 - 4 - 2.
-  expect(textOf(gapLabel(await band()))).toBe('#4 say four'.padStart(59))
+  expect(textOf(gapLabel(await band()))).toBe('#4 say four'.padEnd(59))
 })
 
 test('the mail word counts neither a stray file nor a directory in new/', async () => {
