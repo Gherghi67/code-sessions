@@ -133,6 +133,11 @@ const $ = {
   },
 }
 
+// The options the engine hands register: plugin.json's userConfig defaults.
+const OPTIONS = { bandPrompt: 'latest', bandBars: 10 }
+// The band following the reader's scroll, and drawing every bar that fits.
+const READING = { ...OPTIONS, bandPrompt: 'read' }
+const UNCAPPED = { ...OPTIONS, bandBars: 100 }
 const DRAWN = { type: 'Survey', props: {}, children: [] }
 const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean; bodyColumns: number }> = {}, surface = 'terminal') =>
   hooks['ui.render:AbovePrompt']($, { surface, props: { isWorking: false, hasSurvey: false, bodyColumns: 110, ...props } }, async () => DRAWN)
@@ -161,7 +166,7 @@ beforeEach(() => {
   cwdPath = '/work'
   realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
   files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
-  register(on as any)
+  register(on as any, OPTIONS)
 })
 
 test('the default threshold is the statusline warn band', () => {
@@ -1143,7 +1148,7 @@ test('a conversation met at load is forced whatever it started at; one born of a
   await turnComplete()
   expect(timers).toHaveLength(2)
   // a reload forgets: the conversation it meets next is adopted, whatever it reads
-  register(on as any)
+  register(on as any, OPTIONS)
   sessionId = 'uuid-reloaded'
   files['/work/.cs/local/state'] = 'claude_session_id: uuid-reloaded\n'
   percent = 95
@@ -1204,7 +1209,7 @@ test('a conversation after /clear reapplies the session color once', async () =>
 test('a /clear after a plugin reload reapplies the session color once', async () => {
   await band()
   // The harness captures hooks by matcher without the engine's On overloads.
-  register(on as any)
+  register(on as any, OPTIONS)
   await clearRun()
   sessionId = 'uuid-next'
   await band()
@@ -1607,7 +1612,7 @@ test('a count that ends before its timer fires, or a handoff with no next step, 
   await promptSubmit()
   await fireAfter()
   expect(toasts).toEqual([])
-  register(on as any)
+  register(on as any, OPTIONS)
   arm(); files[HANDOFF] = '---\nparent: uuid-lead\nstatus: unconsumed\n---\n\nNo heading here.\n'
   await band(); await turnComplete(); await fireAfter()
   expect(ticker()).toBeDefined()
@@ -1622,7 +1627,7 @@ test('no path of the mod opens, closes or lists a pane', async () => {
   await turnComplete(); await fireAfter()
   await findButton(await band()).props.onPress()
   await hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => ({ text: '' }))
-  register(on as any); arm()
+  register(on as any, OPTIONS); arm()
   await band(); await turnComplete(); await tick(GRACE_SECONDS)
   expect(ran.filter(r => r.command === 'clear')).toHaveLength(2)
   expect(panes).toEqual([])
@@ -2308,6 +2313,7 @@ test('CS_TRANSCRIPTS_DIR and a session\'s own claude-config move the transcript;
 })
 
 test('past the width budget the oldest prompts collapse into one dim …N run at the left', async () => {
+  register(on as any, UNCAPPED)
   envVars.HOME = '/home'
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   percent = 40
@@ -2328,6 +2334,7 @@ test('past the width budget the oldest prompts collapse into one dim …N run at
 })
 
 test('the prompt being read is the on-screen row drawn highest, the earliest on ties; a first null report leaves nothing, a later one removes the report; placeholder is ignored', async () => {
+  register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   await drawRow('placeholder', 'say four', { first: 0, last: 1, of: 2 })
@@ -2349,6 +2356,7 @@ test('the prompt being read is the on-screen row drawn highest, the earliest on 
 })
 
 test('a report that moves the read prompt redraws the band from a timer, never from the render itself', async () => {
+  register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   await band()
@@ -2360,6 +2368,7 @@ test('a report that moves the read prompt redraws the band from a timer, never f
 })
 
 test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal marks the tick dotted and is toasted once a session', async () => {
+  register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
@@ -2412,6 +2421,7 @@ test('/cs next, prev, first, last and N move along the rail from the prompt bein
 })
 
 test('rows drawn where the band is not the lead\'s, or under a survey, redraw once at most: the read tick settles even when the rail is not drawn', async () => {
+  register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   const pending = () => timers.filter(t => t.kind === 'after' && !t.cancelled).length
@@ -2435,6 +2445,7 @@ test('rows drawn where the band is not the lead\'s, or under a survey, redraw on
 })
 
 test('with no prompt row left in the viewport, the read tick stays on the prompt last read, not the newest', async () => {
+  register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
@@ -2448,6 +2459,7 @@ test('with no prompt row left in the viewport, the read tick stays on the prompt
 })
 
 test('a prompt whose row has not been drawn is matched by its text only when that text is its alone', async () => {
+  register(on as any, READING)
   transcript([
     prompt('u1', null, 'continue'), reply('a1', 'u1'),
     prompt('u2', 'a1', 'continue'), reply('a2', 'u2'),
@@ -2523,6 +2535,7 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
 const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
 
 test('after the bars the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
+  register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
@@ -2578,6 +2591,7 @@ test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cell
 })
 
 test('a rail past its budget takes the whole gap: no prompt is named beside a collapsed run', async () => {
+  register(on as any, UNCAPPED)
   const many = [prompt('u1', null, 'p1')]
   for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
   transcript(many)
@@ -2977,4 +2991,56 @@ test('the mail word counts neither a stray file nor a directory in new/', async 
   files[`${MAIL}/new/.DS_Store`] = ''
   files[`${MAIL}/new/sub.json/2-b.json`] = '{}'
   expect(restingWords(await band())).toEqual(['mail 1'])
+})
+
+// ---------------------------------------------------------------------------
+// The band's /config rows: cs.bandPrompt picks the prompt it names (the newest,
+// or the one being read), cs.bandBars the most bars before older prompts fold.
+
+test('by default the band names the newest prompt and draws its bar thick, wherever the reader is; a scroll redraws nothing', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await band()
+  invalidated = []
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  await fireAfter()
+  expect(invalidated).toEqual([])
+  const tree = await band()
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(102))
+  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
+})
+
+test('with cs.bandPrompt read the band names the prompt being read and draws its bar thick', async () => {
+  register(on as any, { ...OPTIONS, bandPrompt: 'read' })
+  transcript(LINEAR)
+  await turnComplete()
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  const tree = await band()
+  expect(textOf(gapLabel(tree))).toBe('#2 say two'.padEnd(102))
+  expect(rail(tree)).toEqual(['│', '┃', '│', '│'])
+})
+
+test('at most cs.bandBars bars draw; older prompts fold into …N and the prompt is still named', async () => {
+  const many = [prompt('u1', null, 'p1')]
+  for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
+  transcript(many)
+  await turnComplete()
+  let tree = await band()
+  expect(rail(tree)).toEqual(['…20', ...Array(9).fill('│'), '┃'])
+  // `…20` and ten bars are 13 cells: 108 - 13 - 2.
+  expect(textOf(gapLabel(tree))).toBe('#30 p30'.padEnd(93))
+  register(on as any, { ...OPTIONS, bandBars: 3 })
+  transcript(many, 2)
+  await turnComplete()
+  tree = await band()
+  expect(rail(tree)).toEqual(['…27', '│', '│', '┃'])
+  // A folded prompt has no bar to hover, so no card either.
+  expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toHaveLength(2)
+})
+
+test('a bandBars that is not a whole number of 1 or more, or a bandPrompt outside its choices, refuses the load', () => {
+  for (const bandBars of [0, -2, 2.5]) {
+    expect(() => register(on as any, { ...OPTIONS, bandBars })).toThrow(`cs: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${bandBars}`)
+  }
+  expect(() => register(on as any, { ...OPTIONS, bandPrompt: 'first' })).toThrow('cs: cs.bandPrompt is latest or read; got first')
 })

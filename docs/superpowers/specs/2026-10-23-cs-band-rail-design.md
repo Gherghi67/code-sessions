@@ -144,6 +144,13 @@ session's features where a key can act on it. No pane.
      "but the bars are still on the right"): "Bars first, then prompt";
      the bars never move when the prompt's length changes. Rejected: the
      prompt then the bars at the left, the bars kept at the right end.
+   - Two `/config` rows (plugin.json `userConfig`): `cs.bandPrompt`,
+     `latest` (default) or `read`, the prompt the band names and draws
+     thick; `cs.bandBars`, default 10, the most bars before older prompts
+     fold into `…N`, so the name keeps its room in a long conversation.
+     Alex: "this should be a configurable setting, in /config also how
+     many bar prompts do we show?", picked "Latest", then "10, not 20".
+     Rejected defaults: the prompt being read, 20 bars, all that fit.
    - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
      tasks but the start key is not drawn (queue armed or draining, a turn
      running, or an armed handoff's clear key standing alone). The start
