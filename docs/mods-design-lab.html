@@ -520,8 +520,8 @@ none|start fresh</textarea></label>
 <!-- ============================== ROTATE ============================== -->
 </section>
 <section class="panel" id="p-rotate">
-<h2 id="rotate">Rotate capsule presets <span class="src">the cs mod's rotate band, as shipped</span></h2>
-<p class="sub">The band the cs mod draws above the prompt. Move the knobs, pick a preset, read the JSX it maps to. Inks come from <code>bin/cs-statusline</code>; the shipped capsule is the "Inked" preset.</p>
+<h2 id="rotate">Rotate capsule presets <span class="src">design explorations for the cs mod's band</span></h2>
+<p class="sub">Capsule shapes explored for the band the cs mod draws above the prompt. Move the knobs, pick a preset, read the JSX it maps to. Inks come from <code>bin/cs-statusline</code>. None of these ships: the shipped band is one thin line (the countdown, rotate, wrap, queue and finishing words, no chip, caps or fill).</p>
 <div class="lab">
   <div class="controls">
     <label>Context <span id="ctxv" style="text-transform:none;letter-spacing:0"></span><input id="ctx" type="range" min="0" max="99" value="47"></label>
@@ -941,10 +941,10 @@ function clientRender(){
   $("cl-spec").textContent=`// hooks/register.tsx\n<Client key="${key}" module="${mod}" props={${pj||"{}"}} width="${W}" height={${H}}${grow?` flexGrow={${grow}}`:""} />\n\n// ${mod.replace("./","")} — a surface module: (props, surface) => tree, on the drawing thread\nexport default function Preview(props, surface) {\n  const { Box, Text } = surface.elements\n  surface.onKey?.((k) => { /* k.key, k.ctrl, k.shift, k.meta; Escape never arrives */ })\n  return <Box flexDirection="column"><Text bold>{props.handoff}</Text></Box>\n}`;
 }
 
-// ---------- ROTATE (the shipped capsule lab) ----------
+// ---------- ROTATE (capsule explorations; the shipped band is a thin line, not a capsule) ----------
 const PRESETS=[
  {name:"Today",why:"round box, theme keys, plain 1: label",cfg:{border:"round",fill:"none",inks:"theme",hk:"plain",gauge:"pie",mark:true,caps:false}},
- {name:"Inked",why:"same shape, gauge and border in the bar's own amber and crit (shipped)",cfg:{border:"round",fill:"none",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:false}},
+ {name:"Inked",why:"same shape, gauge and border in the bar's own amber and crit",cfg:{border:"round",fill:"none",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:false}},
  {name:"Bar capsule",why:"no border, the status bar's surface as fill: reads as a fourth capsule",cfg:{border:"none",fill:"surface",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:true}},
  {name:"Band fill",why:"the fill is the band itself: amber at warn, red at crit, coral when armed",cfg:{border:"none",fill:"band",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:true}},
  {name:"Meter",why:"ten cells instead of a pie, the number kept",cfg:{border:"round",fill:"none",inks:"bar",hk:"plain",gauge:"cells",mark:true,caps:false}},

@@ -3,7 +3,8 @@
 /* @jsxFrag Fragment */
 // ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
-// ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, draws a band with the elapsed time.
+// ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
+// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
 import type { On, EngineInterface } from 'claude-code'
 
 declare const h: any
@@ -16,34 +17,12 @@ declare const Fragment: any
 // the band alone. A value that is not a number is ignored.
 export const DEFAULT_PERCENT = 40
 
-// KEEP IN SYNC with _bg_shade and the `surface` arm of _sgr in
-// bin/cs-statusline: the band paints the bar's own capsule fill, a shade of the
-// terminal background nudged a tenth away from itself (darker on a light
-// terminal, lighter on a dark one), so the keys read as one more capsule of the
-// bar rather than as a row of the transcript. cs measures the background at
-// launch and exports it; without that measurement the band paints no fill, so a
-// guess can never leave the engine's own text on a surface it cannot read
-// against.
-export const SURFACE_SHIFT = 10
-
-export function surfaceColor(bg: string | undefined): string | undefined {
-  const parts = (bg ?? '').split(';')
-  if (parts.length !== 3) return undefined
-  const rgb = parts.map(part => (/^\s*\d{1,3}\s*$/.test(part) ? Number(part) : 256))
-  if (rgb.some(v => v > 255)) return undefined
-  const [r, g, b] = rgb
-  const shade = 2126 * r + 7152 * g + 722 * b >= 1275000
-    ? rgb.map(v => Math.floor(v * (100 - SURFACE_SHIFT) / 100))
-    : rgb.map(v => v + Math.floor((255 - v) * SURFACE_SHIFT / 100))
-  return `rgb(${shade.join(',')})`
-}
-
 // The count's colour ramp, in the status bar's inks. KEEP IN SYNC with _sgr in
 // bin/cs-statusline (tests/test_mod_rotate.sh pins every value here against
 // it): the session palette is Claude Code's /color, the tab colour cs sets;
 // amber and crit are the bar's warning and critical inks. Amber pivots on the
-// measured background's luminance (the ink pivot, not the surface one) and
-// falls back to the theme; crit follows the theme.
+// measured background's luminance and falls back to the theme; crit follows
+// the theme.
 export const SESSION_PALETTE: Record<string, string> = {
   red: '220,38,38', blue: '106,155,204', green: '22,163,74', yellow: '202,138,4',
   purple: '130,125,189', orange: '217,119,87', pink: '196,102,134', cyan: '8,145,178',
@@ -55,20 +34,6 @@ export const CRIT_DARK = '255,69,58'
 // Seconds left at which the count turns amber, and then crit (below CRIT_AT).
 export const AMBER_AT = 10
 export const CRIT_AT = 5
-// The pane's bar: one block per second of the grace.
-export const BAR_FULL = '\u2588'
-export const BAR_EMPTY = '\u2591'
-// The band's chip and caps, in the bar's inks. KEEP IN SYNC with _sgr in
-// bin/cs-statusline (tests/test_mod_rotate.sh pins them): brand is the Claude
-// coral the bar's mark wears, and white the chip's ink on a filled chip, softer
-// on a dark terminal as the bar's is. The coral is the session palette's
-// orange, so an orange session's chip keeps its colour once a handoff is armed.
-export const BRAND = SESSION_PALETTE.orange
-export const WHITE_LIGHT = '255,255,255'
-export const WHITE_DARK = '230,230,230'
-// The bar's rounded capsule ends, Powerline glyphs drawn in the fill they close.
-export const CAP_LEFT = '\ue0b6'
-export const CAP_RIGHT = '\ue0b4'
 
 // The colour the count wears with `left` seconds to go: the session's own
 // colour while there is time (none, so the surrounding ink, when the session
@@ -90,12 +55,6 @@ export function countdownColor(left: number, session: string | undefined, bg: st
 export function paletteColor(name: string | undefined): string | undefined {
   const rgb = name === undefined ? undefined : SESSION_PALETTE[name]
   return rgb === undefined ? undefined : `rgb(${rgb})`
-}
-
-// The pane's bar with `left` of GRACE_SECONDS still to run.
-export function countdownBar(left: number): string {
-  const full = Math.max(0, Math.min(GRACE_SECONDS, left))
-  return BAR_FULL.repeat(full) + BAR_EMPTY.repeat(GRACE_SECONDS - full)
 }
 
 // Doctor observes the mod RUNNING, not merely installed: under a managed
@@ -143,17 +102,6 @@ export const FORCE_DEFAULT = 80
 // (`cs -vet-session`, about 0.2 s measured) before the answer counts as a no.
 const VET_TIMEOUT_MS = 10000
 
-// The pane the first grace of a session opens beside the band: what the
-// handoff will do next, read while the count runs. It carries no keys, so
-// stopping the count stays on the band, and it closes whenever the count ends.
-// Shown once per load of the mod: later graces keep to the band. A pane the
-// mod opens on its own is not drawn below 144 columns (110 once the person has
-// opened it themselves), so on a narrow terminal the band is all there is.
-export const PREVIEW_PANE = 'cs-rotate-handoff'
-// The most text a Markdown element takes: a longer one refuses the whole tree,
-// and the pane would draw nothing (KEEP IN SYNC with MarkdownProps.text in
-// the mods type contract).
-export const MARKDOWN_LIMIT = 10000
 
 // The wrap key's question, and the answer that runs /wrap. `$.ui.ask` opens
 // the engine's own AskUserQuestion dialog and resolves to the label chosen, or
@@ -211,12 +159,12 @@ let bandIdle = false
 // Whether a turn was running when the band last drew: a queue started then
 // reaches its first stop without a prompt from the mod.
 let turnRunning = false
-// The preview's lines while its pane is open, and whether this load has shown it.
-let preview: Step | undefined
-let previewShown = false
-// Set while the mod's own /clear runs with the pane already closed, so the
-// /clear hook goes straight through (clearAndContinue).
-let paneChecked = false
+// The handoff whose next step the count has toasted, by its text: one toast
+// per armed handoff, so a count restarted for the same handoff (a prompt
+// stopped it, the next turn's end started it again) says nothing, and the
+// successor's own handoff, armed in the same process after the /clear, is
+// toasted in its turn.
+let stepToastedFor: string | undefined
 // Set while the mod's own /clear runs. The marker stays armed until the
 // successor's SessionStart consumes it, so the band still offers the button
 // meanwhile; a second /clear would end the conversation the handoff started,
@@ -255,16 +203,46 @@ let finishShown = new Set<string>()
 let finishGate: { task: string; since: number } | undefined
 let finishProblemShown = false
 
+// The rail. A prompt is a row of the transcript's live branch; its requestId
+// is the id the engine drew its UserMessage row under, once seen.
+export type Prompt = { uuid: string; text: string }
+// How much of a prompt's first line a tick carries as its text.
+export const RAIL_TEXT_CHARS = 80
+// `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
+const READ_CAP = 4 * 1024 * 1024
+// What the transcript last read held, and the file it was: the file is parsed
+// again only when its size or mtime moved.
+let railFile: { path: string; size: number; mtimeMs: number } | undefined
+let prompts: Prompt[] = []
+// Row key (a uuid's first four groups, or the id itself) -> the requestId the
+// engine last drew that row under and the row's first line, from the
+// UserMessage renders; requestId -> the latest non-null onScreen report.
+let drawnRows = new Map<string, { requestId: string; text: string }>()
+let shown = new Map<string, { first: number; last: number; of: number }>()
+// Prompts a jump was refused for, by uuid; whether that, a prompt no row has
+// drawn yet, and a transcript read from its tail have been said this session.
+let denied = new Set<string>()
+let denySaid = false
+let notYetSaid = false
+let tailSaid = false
+// The prompt the band last drew thick, and whether a redraw for a moved read
+// prompt is already scheduled.
+let drawnRead = -1
+let redrawPending = false
+
 export function register(on: On) {
   // A (re)load has no countdown: the engine cancelled the old one's timers.
-  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
+  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
+  railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); denySaid = false; notYetSaid = false; tailSaid = false; drawnRead = -1; redrawPending = false
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
+      await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
     }
+    await refreshRail($)
     // Only in a cs session; anywhere else the mod stays silent. Nor while git
     // tracks the session's control files: the heartbeat would change them.
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
@@ -307,6 +285,30 @@ export function register(on: On) {
     return { text: result.stdout.trimEnd() }
   })
 
+  // `/cs next|prev|first|last|<n>` scrolls the transcript to a prompt of the
+  // rail, counted from the one being read. Immediate: a typed command answers
+  // the person's own input, which is when the engine lets a plugin move a
+  // transcript row, mid-turn too. A move answers with no text: a transcript
+  // row of its own would grow the transcript under the view it just moved.
+  on('command.run', { command: 'cs' }, async ($, e) => {
+    const asked = e.args.trim()
+    const count = prompts.length
+    const current = readIndex()
+    let target: number
+    if (asked === 'next') target = current + 1
+    else if (asked === 'prev') target = current - 1
+    else if (asked === 'first') target = 0
+    else if (asked === 'last') target = count - 1
+    else if (/^\d+$/.test(asked)) target = Number(asked) - 1
+    else return { text: 'usage: /cs next|prev|first|last|<n>' }
+    if (count === 0) return { text: 'cs: the rail has no prompts' }
+    if (asked === 'next' && target >= count) return { text: 'cs: no prompt after this one' }
+    if (asked === 'prev' && target < 0) return { text: 'cs: no prompt before this one' }
+    if (target < 0 || target >= count) return { text: `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}` }
+    await jumpTo($, target)
+    return {}
+  })
+
   // The end of a turn is the one moment a rotation can be started for the
   // person: the answer is in, nothing runs. An aborted or errored turn is no
   // place to start one, and a subagent's turn ends in the same event. A
@@ -316,6 +318,7 @@ export function register(on: On) {
     if (e.agentId === undefined) {
       finishTurnOver = true
       await clearPressed($)
+      await refreshRail($)
     }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
@@ -348,15 +351,19 @@ export function register(on: On) {
   // next conversation a birth; a run the engine refuses makes nothing.
   on('command.run', { command: 'clear' }, async ($, e, next) => {
     clearSeen = true
-    if (ticker) stopCountdown($, false)
-    if (paneChecked) paneChecked = false
-    else await closeHandoffPane($)
+    if (ticker) stopCountdown($)
+    let result
     try {
-      return await next(e)
+      result = await next(e)
     } catch (err) {
       clearSeen = false
       throw err
     }
+    // The rail is the conversation's: the next one starts with none, and
+    // reads its own transcript as its first turn ends.
+    railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); drawnRead = -1
+    $.ui.invalidate('ui.render')
+    return result
   })
 
   // A turn that starts from a prompt is work after any wrap that finished: the
@@ -367,117 +374,333 @@ export function register(on: On) {
     return next(e)
   })
 
+  // Every prompt row the engine draws passes through untouched; what it is
+  // drawn under, and what of it is on screen, is kept for the rail. The
+  // composer's echo draws first under `placeholder`, the real id on the next
+  // render (measured), so that id binds nothing. A `null` report on a row's
+  // first render is the row not laid out yet (measured): nothing changes. A
+  // `null` after a report is the row drawn outside the viewport: its report
+  // goes, as the contract's own example does. A report that moves the read
+  // prompt redraws the band from a timer: an invalidate inside a render is a
+  // render loop.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (e.requestId !== 'placeholder') {
+      drawnRows.set(rowKey(e.requestId), { requestId: e.requestId, text: firstLine(e.props.text) })
+      if (e.props.onScreen) shown.set(e.requestId, e.props.onScreen)
+      else if (e.props.onScreen === null) shown.delete(e.requestId)
+      if (!redrawPending && prompts.length > 1 && readIndex() !== drawnRead) {
+        redrawPending = true
+        $.clock.after(0, () => { redrawPending = false; $.ui.invalidate('ui.render') })
+      }
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const drawn = await withGateBand($, e, await next(e))
+    const drawn = await next(e)
     // The band draws in a new conversation before any of its turns end, so
     // the birth is settled here: a later /resume is not mistaken for it.
     await noteConversation($, await $.session.id())
     // A survey owns the band; a running turn cannot be rotated out of.
     turnRunning = e.props.isWorking
     bandIdle = !e.props.hasSurvey && !e.props.isWorking
-    if (!bandIdle) return drawn
+    // The /finish gate's word draws mid-turn, since the gate runs inside one,
+    // whatever else the band has to say.
+    const gate = await gateWord($)
     // The band draws on every redraw and asks cs nothing: it shows the last
     // answer cs gave (sessionVetted), which every step that acts asks afresh.
-    const armed = lastRefusal === undefined && (await handoffArmed($))
+    const armed = bandIdle && lastRefusal === undefined && (await handoffArmed($))
     const { context } = await $.session.usage()
     const percent = context.percent
-    const rotating = armed || (percent !== undefined && percent >= (await threshold($)))
+    let rotating = bandIdle && (armed || (percent !== undefined && percent >= (await threshold($))))
     // Tasks queued and nothing running them, at any context. An armed
     // handoff draws its clear key alone, so the count is not asked for then.
-    const waiting = armed ? 0 : await idleQueueLength($)
-    if (!rotating && waiting === 0) return drawn
-    if (!(await ownsRotation($))) return drawn
+    let waiting = !bandIdle || armed ? 0 : await idleQueueLength($)
+    // The rail draws whenever the conversation has two prompts to move
+    // between, a turn running or not, under the same ownership as the keys.
+    let railing = !e.props.hasSurvey && prompts.length > 1
+    if ((rotating || waiting > 0 || railing) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false }
+    // The read tick is remembered on every path, drawn or not, so a row's
+    // report that moves nothing visible schedules no redraw.
+    const read = readIndex()
+    drawnRead = read
+    if (!rotating && waiting === 0 && gate === undefined && !railing) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
-    const fill = surfaceColor(await $.env.get("CS_TERM_BG_RGB"))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
-    // The chip is the band's identity, as the session name is the bar's: on
-    // the session colour, Claude coral once a handoff is armed so the /clear
-    // reads apart, and on the surface in the terminal's own ink for a session
-    // with no colour. The body keeps the surface either way, where the count's
-    // ramp keeps its contrast.
-    const chipFill = armed ? `rgb(${BRAND})` : own ?? fill
-    const chipInk = chipFill === fill
-      ? undefined
-      : `rgb(${(await $.env.get("CS_TERM_THEME")) === 'dark' ? WHITE_DARK : WHITE_LIGHT})`
-    // Caps close a fill on the terminal's own background, so they need both a
-    // fill and this machine's consent to the glyph.
-    const caps = fill !== undefined && chipFill !== undefined && (await capsWanted($))
     const { Box, Text, Button } = await $.ui.resolve(e)
+    const counting = armed && left !== undefined
+    const wrapping = rotating && !armed && !wrapped
     // The Buttons carry no hotkey: a bare digit pressed them from an empty
     // composer, where a digit typed as the answer to a numbered question
     // belongs. A chord bound to each Button's action presses it instead, and
     // the engine draws a Button with no hotkey as its label alone, so the key
-    // is spelled beside it, and only when keybindings.json binds one.
-    const key = (action: string) => chords[action] !== undefined &&
-      <Box marginRight={1}><Text bold color={own}>{chords[action]}</Text></Box>
-    // One capsule in the status bar's idiom: the cs chip, then the keys on the
-    // bar's own fill, a blank line above them so the band reads apart from the
-    // transcript. The context percentage is the bar's to carry; the band does
-    // not repeat it. The keyed box lights coral under the pointer; the engine
-    // restyles it without running the hook. It starts two columns in, where
-    // Claude Code draws the bar and the mode line under the prompt.
+    // is spelled beside it, and only when keybindings.json binds one. Chords
+    // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
+    // each Button its own key; chords that differ are spelled whole.
+    const actions = rotating ? (wrapping ? [ROTATE_ACTION, WRAP_ACTION] : [ROTATE_ACTION]) : []
+    const prefix = sharedPrefix(actions.map(action => chords[action]))
+    const spelled = (action: string) => {
+      const chord = chords[action]
+      return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
+    }
+    const key = (action: string) => {
+      const text = spelled(action)
+      return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
+    }
+    // What the words take, in cells, so the rail knows what the line leaves it.
+    const sep = '  \u00b7  '
+    const wordCells = [
+      counting ? `/clear in ${left}s${sep}` : '',
+      prefix !== undefined ? `${prefix}  ` : '',
+      rotating ? `${spelled(ROTATE_ACTION) === undefined ? '' : `${spelled(ROTATE_ACTION)} `}${armed ? '/clear now' : 'rotate'}` : '',
+      wrapping ? `${sep}${spelled(WRAP_ACTION) === undefined ? '' : `${spelled(WRAP_ACTION)} `}wrap` : '',
+      waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
+      gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
+    ].join('').length
+    // The rail: one tick per prompt, `━` for the one being read, `┄` for one a
+    // jump was refused, `─` otherwise, each a Button (the read one a Text: a
+    // Button takes no colour, and there is nowhere to jump). It takes what the
+    // line leaves after the rule, the gaps and the words; past that the oldest
+    // prompts collapse into one `…N` run. The read tick is remembered so a
+    // report that moves it can redraw the band.
+    const budget = e.props.bodyColumns - 2 - 1 - 2 - (wordCells > 0 ? 3 + wordCells : 0)
+    const ticks = railing ? railTicks(prompts.length, budget) : undefined
+    // A line too narrow for any tick draws no rule alone.
+    if (!rotating && waiting === 0 && gate === undefined && ticks === undefined) return drawn
+    // One thin line, a blank line above it so it reads apart from the
+    // transcript: a left rule in the session colour, as the launch banner's
+    // bar; then only the words that need a key now, the keys in the session
+    // colour and the rest dim. The context percentage is the bar's to carry;
+    // the band does not repeat it. It starts two columns in, where Claude Code
+    // draws the bar and the mode line under the prompt. A Button is a block:
+    // nested in a Text the engine refuses the whole tree (measured), so each
+    // separator stands beside its Button.
     return (
       <Box flexDirection="column">
         {drawn}
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
-            {caps && <Text color={chipFill}>{CAP_LEFT}</Text>}
-            <Box paddingX={1} backgroundColor={chipFill}><Text bold color={chipInk}>cs</Text></Box>
-            <Box key="cs-rotate-band-body" paddingX={1} backgroundColor={fill}>
+            <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
+            {ticks !== undefined && (
+              <Box key="cs-rail" marginRight={wordCells > 0 ? 3 : 0}>
+                {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
+                {prompts.slice(ticks.hidden).map((p, j) => {
+                  const i = ticks.hidden + j
+                  if (i === read) return own === undefined ? <Text bold>{'\u2501'}</Text> : <Text bold color={own}>{'\u2501'}</Text>
+                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2504' : '\u2500'} onPress={() => jumpTo($, i)} />
+                })}
+              </Box>
+            )}
+            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
+            {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
+            {counting && <Text dimColor>{'  \u00b7  '}</Text>}
+            {prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>}
             {rotating && key(ROTATE_ACTION)}
             {rotating && (armed
-              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear and continue from the handoff"
+              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear now"
                         onPress={() => pressClear($)} />
-              : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
+              : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate"
                         onPress={() => pressRotate($)} />)}
-            {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured), so the separator stands beside it */}
-            {rotating && !armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
-            {rotating && !armed && !wrapped && key(WRAP_ACTION)}
-            {rotating && !armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
+            {wrapping && <Text dimColor>{'  \u00b7  '}</Text>}
+            {wrapping && key(WRAP_ACTION)}
+            {wrapping && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap" onPress={() => askToWrap($)} />}
             {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
             {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
             {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
-            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
-            {armed && left !== undefined && <Text dimColor>{'  \u00b7  '}</Text>}
-            {armed && left !== undefined && <Text bold color={await rampColor($, left)}>{`/clear in ${left}s`}</Text>}
-            </Box>
-            {caps && <Text color={fill}>{CAP_RIGHT}</Text>}
+            {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
+            {gate !== undefined && <Text dimColor>{gate}</Text>}
           </Box>
         </Box>
       </Box>
     )
   })
+}
 
-  // The preview's body: the handoff's next step and the count. Any other pane,
-  // or this one once the count has ended, is not the mod's to draw.
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    if (e.requestId !== PREVIEW_PANE || preview === undefined) return next(e)
-    const { Box, Text, Markdown } = await $.ui.resolve(e)
-    // With one pane open the engine draws no title, so the pane carries its
-    // own, in the session's colour; the step is drawn as a reply's markdown is.
-    const own = paletteColor(await sessionColor($))
-    const color = left === undefined ? undefined : await rampColor($, left)
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Text key="header" bold color={own}>Handoff</Text>
-        <Box flexDirection="column" marginTop={1}>
-          <Markdown key="step" text={preview.text} />
-          {preview.cut && <Text key="cut" dimColor>… the rest of the step is in the handoff</Text>}
-        </Box>
-        {left !== undefined && (
-          <Box flexDirection="column" marginTop={1}>
-            <Box>
-              <Text key="bar" color={color}>{countdownBar(left)}</Text>
-              <Text>{'  '}</Text>
-              <Text key="count" bold color={color}>{`/clear in ${left}s`}</Text>
-            </Box>
-            <Text dimColor>press 1 to clear now, or send a prompt to stay</Text>
-          </Box>
-        )}
-      </Box>
-    )
+// The chord prefix every bound key shares, up to its last space (`ctrl+x` of
+// `ctrl+x 1` and `ctrl+x 2`); undefined when a key is unbound, the chords
+// differ before their last word, or a chord is one word.
+export function sharedPrefix(chords: (string | undefined)[]): string | undefined {
+  if (chords.length === 0) return undefined
+  const prefixes = chords.map(chord => {
+    const at = chord?.lastIndexOf(' ') ?? -1
+    return chord === undefined || at <= 0 ? undefined : chord.slice(0, at)
   })
+  const first = prefixes[0]
+  return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined
+}
+
+// How many of `count` ticks fit in `budget` cells: all of them, or the newest
+// after a `…N` run naming the rest; undefined when not even that fits.
+export function railTicks(count: number, budget: number): { hidden: number } | undefined {
+  if (count <= budget) return { hidden: 0 }
+  for (let hidden = 1; hidden < count; hidden++) {
+    if (count - hidden + `\u2026${hidden}`.length <= budget) return { hidden }
+  }
+  return undefined
+}
+
+// The prompt being read: of the prompts whose drawn row has reported what of
+// it is on screen, the one drawn highest (the row cut at the viewport's top
+// reports the rows scrolled away as `first`; every other visible row reports
+// 0, and of those the earliest prompt is the higher); when none has reported,
+// the prompt last read (the reader is inside a reply, its prompt scrolled
+// away), else the newest.
+function readIndex(): number {
+  let best = -1
+  let bestFirst = -1
+  prompts.forEach((p, i) => {
+    const id = requestIdOf(p)
+    const report = id === undefined ? undefined : shown.get(id)
+    if (report !== undefined && report.first > bestFirst) { best = i; bestFirst = report.first }
+  })
+  if (best >= 0) return best
+  return drawnRead >= 0 && drawnRead < prompts.length ? drawnRead : prompts.length - 1
+}
+
+// The id the engine drew a prompt's row under: by the row's uuid (the engine
+// keys a message row by its message id; a message split into rows keeps the
+// uuid's first four groups), else by the first line's text when no other
+// prompt carries it, as a row drawn before the transcript stored it is
+// matched (a repeated "continue" would bind every one to the same row);
+// undefined while no row has.
+function requestIdOf(p: Prompt): string | undefined {
+  const byKey = drawnRows.get(rowKey(p.uuid))
+  if (byKey !== undefined) return byKey.requestId
+  if (prompts.filter(q => q.text === p.text).length > 1) return undefined
+  for (const drawn of drawnRows.values()) if (drawn.text === p.text) return drawn.requestId
+  return undefined
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const rowKey = (id: string) => (UUID.test(id) ? id.slice(0, 24) : id)
+
+// A prompt's text as the rail carries it: the first non-blank line, trimmed,
+// cut to RAIL_TEXT_CHARS with an ellipsis.
+function firstLine(text: string): string {
+  const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+  return line.length > RAIL_TEXT_CHARS ? `${line.slice(0, RAIL_TEXT_CHARS - 1)}\u2026` : line
+}
+
+// Scrolls the transcript to prompt `i`'s row, from a press or a typed /cs,
+// which is when the engine lets a plugin move a transcript row. A refusal
+// marks the tick dotted and is toasted once a session; a prompt no row has
+// drawn since a resume is tried by its uuid, and a refusal for want of a
+// drawn row says so once instead.
+async function jumpTo($: EngineInterface, i: number) {
+  const p = prompts[i]
+  if (p === undefined) return
+  const id = requestIdOf(p)
+  const result = await $.ui.scroll({ to: { requestId: id ?? p.uuid }, block: 'start' })
+  if (result.deny === undefined) {
+    if (denied.delete(p.uuid)) $.ui.invalidate('ui.render')
+    return
+  }
+  if (id === undefined && /nothing drawn/.test(result.deny)) {
+    if (!notYetSaid) { notYetSaid = true; $.ui.toast('cs: that prompt is not on screen yet') }
+    return
+  }
+  if (!denied.has(p.uuid)) { denied.add(p.uuid); $.ui.invalidate('ui.render') }
+  if (!denySaid) { denySaid = true; $.ui.toast(`cs: ${result.deny}`) }
+}
+
+// Reads the transcript again when it moved and redraws the band when the
+// prompts changed. A file that cannot be read (none yet, or cs is not the
+// launcher) lists nothing.
+async function refreshRail($: EngineInterface) {
+  const path = await transcriptPath($)
+  let size: number
+  let mtimeMs: number
+  try {
+    ({ size, mtimeMs } = await $.fs.stat(path))
+  } catch {
+    if (prompts.length > 0) { prompts = []; $.ui.invalidate('ui.render') }
+    railFile = undefined
+    return
+  }
+  if (railFile !== undefined && railFile.path === path && railFile.size === size && railFile.mtimeMs === mtimeMs) return
+  let text: string
+  try {
+    if (size > READ_CAP) {
+      // Past what one read may copy, the newest READ_CAP bytes; the cut's
+      // partial first line is dropped by the parser.
+      text = (await $.process.run(['tail', '-c', String(READ_CAP), path])).stdout
+      if (!tailSaid) { tailSaid = true; $.ui.toast(`cs: the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`) }
+    } else {
+      text = await $.fs.read(path)
+    }
+  } catch (err) {
+    $.ui.log(`cs: the transcript could not be read: ${String(err instanceof Error ? err.message : err)}`)
+    return
+  }
+  railFile = { path, size, mtimeMs }
+  const next = parsePrompts(text)
+  const changed = next.length !== prompts.length || next.some((p, i) => p.uuid !== prompts[i].uuid || p.text !== prompts[i].text)
+  prompts = next
+  if (changed) $.ui.invalidate('ui.render')
+}
+
+// Where Claude Code writes this conversation's transcript, the way cs's own
+// _claude_project_dir finds it (lib/40-state.sh): CS_TRANSCRIPTS_DIR, else
+// ~/.claude/projects, or the session's own config dir's projects/ when it
+// has one (.cs/claude-config, an encrypted session); under that, the cwd as
+// resolved with every character outside [A-Za-z0-9] made `-`, then
+// <session id>.jsonl.
+async function transcriptPath($: EngineInterface): Promise<string> {
+  const cwd = await $.session.cwd()
+  let base = (await $.env.get("CS_TRANSCRIPTS_DIR")) || `${await $.env.get("HOME")}/.claude/projects`
+  if (await $.fs.exists(`${cwd}/.cs/claude-config`)) base = `${cwd}/.cs/claude-config/projects`
+  const resolved = (await resolvedPath($, cwd)) ?? cwd
+  return `${base}/${resolved.replace(/[^A-Za-z0-9]/g, '-')}/${await $.session.id()}.jsonl`
+}
+
+// The person's prompts on the live branch of a transcript's JSONL, in order.
+// The live branch is the chain of parents from the last row (a /rewind leaves
+// its abandoned rows in the file off that chain; a /compact boundary row
+// links on through logicalParentUuid). A prompt is a user row the person
+// sent: not a tool result, a slash command's echo, a meta row (hook feedback,
+// an image), a compact summary, a sidechain's, one the engine stamped another
+// origin, an interrupt the engine wrote for the person, or one framed by a
+// tag alone on its first line (a teammate's message, a command's output). A
+// line that is not a row (torn, or not JSON) is skipped.
+const FRAMED = /^<[A-Za-z][\w:-]*(\s[^>]*)?>(<\/[\w:-]+>)?$|^<[A-Za-z][\w:-]*>[^<]*<\/[\w:-]+>$/
+const INTERRUPT = /^\[Request interrupted by user/
+export function parsePrompts(jsonl: string): Prompt[] {
+  const rows: any[] = []
+  for (const line of jsonl.split('\n')) {
+    if (line.trim() === '') continue
+    try {
+      const row = JSON.parse(line)
+      if (typeof row?.uuid === 'string') rows.push(row)
+    } catch {
+      // a torn last line while the engine appends, or not a row
+    }
+  }
+  const byId = new Map(rows.map(row => [row.uuid, row]))
+  const live = new Set<string>()
+  let row = [...rows].reverse().find(r => !r.isSidechain)
+  while (row !== undefined && !live.has(row.uuid)) {
+    live.add(row.uuid)
+    const parent = row.parentUuid ?? row.logicalParentUuid
+    row = typeof parent === 'string' ? byId.get(parent) : undefined
+  }
+  const out: Prompt[] = []
+  for (const r of rows) {
+    if (!live.has(r.uuid) || r.type !== 'user' || r.isMeta || r.isCompactSummary || r.isSidechain) continue
+    if (r.origin?.kind !== undefined && r.origin.kind !== 'human') continue
+    const content = r.message?.content
+    let text: string | undefined
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) {
+      if (content.some((b: any) => b?.type === 'tool_result')) continue
+      text = content.filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n')
+    }
+    if (text === undefined) continue
+    const line = firstLine(text)
+    if (line === '' || FRAMED.test(line) || INTERRUPT.test(line)) continue
+    out.push({ uuid: r.uuid, text: line })
+  }
+  return out
 }
 
 function numberOr(raw: string | undefined, fallback: number): number {
@@ -565,11 +788,8 @@ async function forceRotation($: EngineInterface) {
 // the button stays for the person.
 function startCountdown($: EngineInterface) {
   left = GRACE_SECONDS
-  if (!previewShown) {
-    previewShown = true
-    // From a timer: the count starts inside the turn's own hook.
-    $.clock.after(0, () => openPreview($))
-  }
+  // From a timer: the count starts inside the turn's own hook.
+  $.clock.after(0, () => toastNextStep($))
   ticker = $.clock.every(1000, async () => {
     // Nothing to count once stopped, and nothing below zero: a period that
     // lands while the zero tick is still reading leaves the count where it is.
@@ -582,98 +802,57 @@ function startCountdown($: EngineInterface) {
     // then does nothing, so nothing clears twice or behind a new turn.
     const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($)) && (await sessionVetted($, await $.session.cwd()))
     if (left !== 0) return
-    // The pane closes while the count still holds at zero, for the same
-    // reason: a prompt landing during the close stops the /clear.
-    if (idle) await closeHandoffPane($)
-    if (left !== 0) return
-    stopCountdown($, !idle)
-    if (idle) await clearAndContinue($, true).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
+    stopCountdown($)
+    if (idle) await clearAndContinue($).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
   })
 }
 
-// closePane false leaves the pane to a /clear path, which closes it with
-// closeHandoffPane and waits for that close.
-function stopCountdown($: EngineInterface, closePane = true) {
+function stopCountdown($: EngineInterface) {
   ticker?.cancel()
   ticker = undefined
   left = undefined
-  if (closePane && preview !== undefined) {
-    preview = undefined
-    $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
-  }
   $.ui.invalidate('ui.render')
 }
 
-// Before a /clear: closes the handoff pane and waits for the close. /clear does
-// not close a plugin's pane, and the pane can outlive the module that opened
-// it (a reload, as every install rewrites the mod, leaves the engine holding
-// the pane while the module holds no count), so the engine's own list decides
-// as well as this module's state (#909).
-// A close resolves when a ui.close hook answers for the pane and keeps it, so
-// the engine's list says whether the pane went.
-async function closeHandoffPane($: EngineInterface) {
-  const open = preview !== undefined || (await handoffPaneListed($))
-  preview = undefined
-  if (!open) return
-  try {
-    await $.ui.close({ id: PREVIEW_PANE })
-  } catch (err) {
-    $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`)
-    return
-  }
-  if (await handoffPaneListed($)) $.ui.toast('cs: the handoff pane did not close: a hook kept it open')
-}
-
-async function handoffPaneListed($: EngineInterface) {
-  try {
-    return (await $.ui.panes()).some(p => p.id === PREVIEW_PANE)
-  } catch (err) {
-    $.ui.toast(`cs: could not list the open panes: ${String(err)}`)
-    return false
-  }
-}
-
-// Opens the preview for the count that scheduled it, if that count still runs.
-async function openPreview($: EngineInterface) {
+// Toasts the armed handoff's next step for the count that scheduled it, if
+// that count still runs and the handoff has not been toasted: what the next
+// conversation will do, read while the count runs. A handoff with no next step
+// toasts nothing.
+async function toastNextStep($: EngineInterface) {
   if (ticker === undefined) return
   const text = await armedHandoff($)
-  if (text === undefined || ticker === undefined) return
-  preview = nextStep(text)
-  await $.ui.open({ id: PREVIEW_PANE, title: 'Handoff' })
-  // The count can end while the open is in flight, and its close may reach the
-  // engine first: a pane that lands after its count is closed here, since
-  // nothing else will close it.
-  if (preview === undefined) {
-    await $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
-  }
+  if (text === undefined || text === stepToastedFor || ticker === undefined) return
+  stepToastedFor = text
+  const line = nextStepLine(text)
+  if (line !== undefined) $.ui.toast(`cs: next step: ${line}`)
 }
 
-// A handoff's next step as the pane shows it: the section's markdown, and
-// whether MARKDOWN_LIMIT cut it short.
-export type Step = { text: string; cut: boolean }
+// How much of the next step the toast carries: one line, cut past this.
+export const NEXT_STEP_CHARS = 160
 
-// The handoff's Next Step section (`# Next Step`, `## 1. Next Step`) as
-// written, blank lines and all, trimmed of the blank lines around it; empty
-// when it has none. Past MARKDOWN_LIMIT it keeps the whole lines that fit.
-export function nextStep(text: string): Step {
+// The first line of the handoff's Next Step section (`# Next Step`, `## 1.
+// Next Step`), trimmed, cut to NEXT_STEP_CHARS with an ellipsis; undefined
+// when the handoff has no such section or the section is empty. A `#` line
+// inside a fenced block (a shell comment in a command block) is the step's
+// text, not the next section, and a line that opens or closes a fence is not
+// the step's first line.
+export function nextStepLine(text: string): string | undefined {
   const lines = text.split('\n')
   const start = lines.findIndex(line => /^#+\s*(\d+\.\s*)?next step\s*$/i.test(line.trim()))
-  if (start < 0) return { text: '', cut: false }
-  const body: string[] = []
-  // A `#` line inside a fenced block (a shell comment in a command block) is
-  // the step's text, not the next section.
+  if (start < 0) return undefined
   let fence: string | undefined
   for (const line of lines.slice(start + 1)) {
     const marker = /^\s*(```|~~~)/.exec(line)?.[1]
-    if (marker !== undefined) fence = fence === undefined ? marker : fence === marker ? undefined : fence
-    else if (fence === undefined && /^#+\s/.test(line)) break
-    body.push(line.trimEnd())
+    if (marker !== undefined && (fence === undefined || fence === marker)) {
+      fence = fence === undefined ? marker : undefined
+      continue
+    }
+    if (fence === undefined && /^#+\s/.test(line)) return undefined
+    const first = line.trim()
+    if (first === '') continue
+    return first.length > NEXT_STEP_CHARS ? `${first.slice(0, NEXT_STEP_CHARS)}\u2026` : first
   }
-  const step = body.join('\n').replace(/^\n+/, '').trimEnd()
-  if (step.length <= MARKDOWN_LIMIT) return { text: step, cut: false }
-  // a line longer than the bound has no line end to stop at: cut at the bound
-  const end = step.lastIndexOf('\n', MARKDOWN_LIMIT)
-  return { text: end > 0 ? step.slice(0, end).trimEnd() : step.slice(0, MARKDOWN_LIMIT), cut: true }
+  return undefined
 }
 
 // The band's own threshold; without one it is the bar's warn band, read the way
@@ -788,22 +967,6 @@ async function rampColor($: EngineInterface, secs: number): Promise<string | und
 async function sessionColor($: EngineInterface): Promise<string | undefined> {
   const state = await readState($)
   return state?.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
-}
-
-// Whether this machine has said its font has the bar's cap glyphs: the
-// statusline's own rule (_caps_wanted in bin/cs-statusline, KEEP IN SYNC).
-// CS_STATUSLINE_CAPS=1 or 0 decides; otherwise the per-machine answer file
-// holding `on`. Unanswered, or unreadable, means square ends.
-async function capsWanted($: EngineInterface): Promise<boolean> {
-  const forced = await $.env.get("CS_STATUSLINE_CAPS")
-  if (forced === '1') return true
-  if (forced === '0') return false
-  const config = (await $.env.get("XDG_CONFIG_HOME")) || `${await $.env.get("HOME")}/.config`
-  try {
-    return (await $.fs.read(`${config}/cs/statusline-caps`)).split('\n')[0] === 'on'
-  } catch {
-    return false // no answer file: unanswered
-  }
 }
 
 // The engine actions the band's Buttons answer to. They carry no default
@@ -1105,33 +1268,26 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
 // The clear button's press: the /clear runs only once cs says it trusts the
 // session's control files, as at a countdown's zero. The press stops the count
 // before it asks, so the zero tick cannot clear while cs answers, and only the
-// latest press acts. It closes the pane before asking again whether a prompt
-// came, as the zero tick does: a prompt landing during the close is a new turn.
+// latest press acts.
 async function pressClear($: EngineInterface) {
   if (clearing) return
-  if (ticker) stopCountdown($, false)
+  if (ticker) stopCountdown($)
   const press = ++pressCount
   const vetted = await sessionVetted($, await $.session.cwd())
   if (press !== pressCount) return
   if (!vetted) return stopCountdown($)
-  await closeHandoffPane($)
-  if (press !== pressCount) return
-  await clearAndContinue($, true)
+  await clearAndContinue($)
 }
 
 // /clear ends this conversation, and cs's SessionStart hook then starts the
 // armed handoff's next step in the new one.
 // Measured: the run resolves once the screen has cleared and a new transcript
-// is open; the marker is the hook's to consume.
-// paneClosed: the caller has closed the pane already. From the count stopping
-// to the run nothing here waits, and paneChecked tells the /clear hook the
-// pane is done with, so it does not wait either: a prompt landing in such a
-// wait would find no count to stop, and the /clear would follow it.
-async function clearAndContinue($: EngineInterface, paneClosed = false) {
+// is open; the marker is the hook's to consume. From the count stopping to
+// the run nothing here waits: a prompt landing in such a wait would find no
+// count to stop, and the /clear would follow it.
+async function clearAndContinue($: EngineInterface) {
   clearSeen = true
-  if (ticker) stopCountdown($, false)
-  if (!paneClosed) await closeHandoffPane($)
-  paneChecked = true
+  if (ticker) stopCountdown($)
   clearing = true
   try {
     await $.command.run({ command: 'clear', args: '' })
@@ -1139,7 +1295,6 @@ async function clearAndContinue($: EngineInterface, paneClosed = false) {
     clearSeen = false
     throw err
   } finally {
-    paneChecked = false
     clearing = false
   }
 }
@@ -1260,22 +1415,10 @@ export function gateElapsed(secs: number): string {
   return `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`
 }
 
-// The gate band under what the engine drew, while a /finish gate runs; the
-// drawing itself, untouched, at any other time. It draws mid-turn, since the
-// gate runs inside one, on the status bar's capsule fill as the rotation band.
-async function withGateBand($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], drawn: unknown) {
-  if (finishGate === undefined) return drawn
-  const { Box, Text } = await $.ui.resolve(e)
-  const fill = surfaceColor(await $.env.get("CS_TERM_BG_RGB"))
+// The band's word while a /finish gate runs: the task and the time since
+// the gate started; undefined at any other time.
+async function gateWord($: EngineInterface): Promise<string | undefined> {
+  if (finishGate === undefined) return undefined
   const secs = Math.max(0, Math.floor((await $.clock.now()) / 1000) - finishGate.since)
-  return (
-    <Box flexDirection="column">
-      {drawn}
-      <Box marginTop={1}>
-        <Box paddingX={1} backgroundColor={fill}>
-          <Text>{`finishing ${cutTask(finishGate.task)} · gate ${gateElapsed(secs)}`}</Text>
-        </Box>
-      </Box>
-    </Box>
-  )
+  return `finishing ${cutTask(finishGate.task)} \u00b7 gate ${gateElapsed(secs)}`
 }
