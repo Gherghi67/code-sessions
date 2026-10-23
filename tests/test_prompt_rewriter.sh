@@ -702,8 +702,8 @@ test_a_rewrite_that_keeps_every_exact_string_lands_alone() {
 }
 
 test_the_sentence_keeps_its_closing_punctuation() {
-    assert_eq "$(printf 'Fix it.\n\nKept from the original: src/a.ts, --force')" \
-        "$(rewrite_with 'fix src/a.ts. use --force!' 'Fix it.')" \
+    assert_eq "$(printf 'Fix it.\n\nKept from the original: /etc/hosts, https://example.com/x, src/a.ts')" \
+        "$(rewrite_with 'fix /etc/hosts. see (https://example.com/x). then src/a.ts!' 'Fix it.')" \
         "a trailing full stop or bang is not part of the string"
 }
 
