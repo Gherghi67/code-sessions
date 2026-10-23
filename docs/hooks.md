@@ -490,22 +490,43 @@ Verb lookup uses the installed `cs` found on `PATH`, falls back to `bin/cs`, and
 inside Claude Code's own process rather than a shell script it spawns. It adds
 one key to conversation rotation. Once the context window reaches 40% (the
 status bar's warn band, where the Stop hook gives its headroom notice), the band
-directly above the prompt draws `rotate this conversation`, pressed by
-Ctrl+X 1.
+directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 `CS_ROTATE_BUTTON_CTX=<percent>` in the shell that launches cs moves it; unset
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it: no fill, no chip, no caps, only the words that need a
-key now, each with its chord beside it, separated by a dim `·`. In order, and
-each only when it applies: `/clear in Ns` (an armed handoff's count), the
-rotate key (or the `/clear` once a handoff is armed), the wrap key, the
-queue's start key, and `finishing <task> · gate <elapsed>` while a `/finish`
-gate runs. The chords wear the session's colour; everything else is dim or
-the terminal's own ink. The band paints nothing from the measured background
-(`CS_TERM_BG_RGB`) and reads no caps answer; only the count's amber pivot
-still reads the measurement. The percentage itself stays on the status bar:
-the band does not repeat it.
+blank line above it: a left rule `▌` in the session's colour (dim when the
+session has none), the rail of prompts, then only the words that need a key
+now, separated by a dim `·`. Where the keys' chords share a prefix (`ctrl+x 1`,
+`ctrl+x 2`) the prefix is spelled once, dim, and each key's own last word
+stands beside its label in the session's colour: `▌  ───━─────   ctrl+x  1
+rotate  ·  2 wrap`. Chords that differ are spelled whole. In order, and each
+only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
+`/clear now` once a handoff is armed), `wrap`, the queue's start key, and
+`finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
+paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
+caps answer; only the count's amber pivot still reads the measurement. The
+percentage itself stays on the status bar: the band does not repeat it.
+
+The rail is one tick per prompt the person sent in this conversation: `─`
+dim, `━` in the session's colour for the prompt being read (the prompt
+whose row stands highest on screen, from the engine's own on-screen reports
+of the transcript's rows), `┄` dim for a prompt the engine refused to scroll
+to. A press on a tick scrolls the transcript so that prompt's row is at the
+top; `/cs next`, `/cs prev`, `/cs first`, `/cs last` and `/cs N` move the
+same way from the prompt being read, mid-turn too, for keybindings. A
+refusal is toasted once a session; a prompt no row has drawn since a resume
+toasts `cs: that prompt is not on screen yet` once. The prompts come from the
+session's transcript (`~/.claude/projects/<slug>/<id>.jsonl`, or
+`CS_TRANSCRIPTS_DIR`, or an encrypted session's own `.cs/claude-config/projects`),
+read again after each turn and at session start only when its size or
+modification time moved, and only its live branch is listed: a `/rewind`
+drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
+results, slash-command echoes, hook feedback and task notifications are not
+prompts. The ticks take what the line leaves after the rule and the words;
+past that the oldest prompts collapse into one dim `…N` run at the left. A
+conversation with one prompt draws no rail, and the rail, like the keys,
+draws only in the lead conversation of a cs session.
 
 The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.
 
@@ -528,7 +549,7 @@ the conversation. Before it runs, the press writes the conversation id to
 the one-key rotation skips the task-archive question as a forced one does. The
 end of the main loop's next turn, whatever ended it, empties the file, and so
 does a run the engine refuses, so a `/rotate` typed later in the conversation
-asks as a manual one does. Beside it the band draws `wrap up this session`. That key
+asks as a manual one does. Beside it the band draws `wrap`. That key
 runs `/wrap`, which distills memory, replaces `.cs/summary.md` and rotates the
 narrative: two Opus passes and a shell helper, minutes and real tokens, so the
 press asks first. Ctrl+X 2 opens the engine's own AskUserQuestion dialog —
@@ -549,7 +570,7 @@ gate word below is the one word that draws then. It never submits a prompt of it
 
 The same button has a second state. Once the `rotate` skill has armed a
 handoff (`.cs/local/pending-handoff` names one), the band draws
-`/clear and continue from the handoff` whatever the context reads, alone
+`/clear now` whatever the context reads, alone
 (the wrap key hides: with a handoff armed the conversation has nothing left to
 do but the `/clear`), and
 Ctrl+X 1 runs `/clear` itself: the conversation ends, and cs's SessionStart
@@ -580,7 +601,7 @@ handoff already armed: an interrupted or errored turn, or a subagent's, starts
 nothing. The run is scheduled from a timer rather than from the turn's own
 hook, which the plugin contract refuses a command from. Once the rotate skill
 has armed its handoff, the next turn's end starts a 20-second grace: the
-band reads `/clear in 20s  ·  /clear and continue from the handoff`,
+band reads `▌  /clear in 20s  ·  ctrl+x  1 /clear now`,
 redrawn once a second. The count wears the session's own colour while there
 is time, the status bar's amber from ten seconds and its crit red under five
 (the bar's inks, pinned against `bin/cs-statusline` by `tests/test_mod_rotate.sh`).
