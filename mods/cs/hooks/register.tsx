@@ -487,11 +487,13 @@ export function register(on: On, options: PluginOptions) {
     const gate = await gateWord($)
     // The band draws on every redraw and asks cs nothing: it shows the last
     // answer cs gave (sessionVetted), which every step that acts asks afresh.
-    const armed = bandIdle && lastRefusal === undefined && (await handoffArmed($))
+    // A handoff armed is due mid-turn too; its clear key waits for the turn to end.
+    const handoff = lastRefusal === undefined && (await handoffArmed($))
+    const armed = bandIdle && handoff
     const { context } = await $.session.usage()
     const percent = context.percent
     // Due is said mid-turn too, while the keys wait for the turn to end.
-    let due = armed || (percent !== undefined && percent >= (await threshold($)))
+    let due = handoff || (percent !== undefined && percent >= (await threshold($)))
     let rotating = bandIdle && due
     // Tasks queued and nothing running them, at any context, draw the start
     // key; an armed handoff draws its clear key alone. Tasks queued that the

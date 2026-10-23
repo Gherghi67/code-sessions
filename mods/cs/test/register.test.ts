@@ -3142,6 +3142,9 @@ test('a rotation due draws the mark amber: past the threshold, or with a handoff
   percent = 3
   arm()
   expect(markOf(await band())).toEqual(marked(AMBER_ON_LIGHT))
+  // The armed handoff stays due while a turn runs; a mail word keeps the line up.
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  expect(markOf(await band({ isWorking: true }))).toEqual(marked(AMBER_ON_LIGHT))
 })
 
 test('the amber mark pivots as the count does: the measured background first, then the theme', async () => {
