@@ -2236,14 +2236,14 @@ test('after a turn ends the band draws one tick per prompt, the newest thick whi
   await turnComplete()
   expect(invalidated).toContain('ui.render')
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2500', '\u2500', '\u2500', '\u2501'])
+  expect(rail(tree)).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
   expect(tickButtons(tree).map((b: any) => b.props.key)).toEqual(['cs-rail-0', 'cs-rail-1', 'cs-rail-2'])
   for (const b of tickButtons(tree)) expect(b.props).toMatchObject({ plain: true, dimColor: true })
   expect(tickButtons(tree).some((b: any) => b.props.hotkey !== undefined)).toBe(false)
   expect(buttonsUnderText(tree)).toBe(0)
-  expect(texts(tree).find((t: any) => textOf(t) === '\u2501').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
+  expect(texts(tree).find((t: any) => textOf(t) === '\u2503').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
   // Below the threshold the rail still draws, with the rule and no words.
-  expect(words(tree)).toEqual(['\u258c', '\u2501'])
+  expect(words(tree)).toEqual(['\u258c', '\u2503'])
 })
 
 test('a conversation with one prompt draws no rail', async () => {
@@ -2297,7 +2297,7 @@ test('past the width budget the oldest prompts collapse into one dim …N run at
   // `  ▌  ` (5) + rail + `   ` (3) + `ctrl+x  1 rotate  ·  2 wrap` (27): 40 columns leave 5 cells
   // for 30 ticks, so 28 collapse into `…28` and two ticks follow.
   const glyphs = rail(await band({ bodyColumns: 40 }))
-  expect(glyphs).toEqual(['\u202628', '\u2500', '\u2501'])
+  expect(glyphs).toEqual(['\u202628', '\u2502', '\u2503'])
   expect(tickButtons(await band({ bodyColumns: 40 })).map((b: any) => b.props.key)).toEqual(['cs-rail-28'])
   expect(texts(await band({ bodyColumns: 40 })).find((t: any) => textOf(t) === '\u202628').props).toEqual({ dimColor: true })
   // Wide enough, every tick draws.
@@ -2314,17 +2314,17 @@ test('the prompt being read is the on-screen row drawn highest, the earliest on 
   await drawRow('u2', 'say two', { first: 3, last: 5, of: 6 })
   // A row's first render reports null before it is laid out: nothing changes.
   await drawRow('r3', 'say three\nwith a second line', null)
-  expect(rail(await band())).toEqual(['\u2500', '\u2501', '\u2500', '\u2500'])
+  expect(rail(await band())).toEqual(['\u2502', '\u2503', '\u2502', '\u2502'])
   // A null after a report is the row scrolled out of view: its report goes.
   await drawRow('u2', 'say two', null)
-  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
   // Everything visible reports 0: the topmost, the earliest of them, is being read.
   await drawRow('u2', 'say two', { first: 0, last: 5, of: 6 })
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
-  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
   // The person scrolled up: the first prompt's row is now the one cut at the top.
   await drawRow('u1', 'say one', { first: 2, last: 4, of: 6 })
-  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
 })
 
 test('a report that moves the read prompt redraws the band from a timer, never from the render itself', async () => {
@@ -2345,7 +2345,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
   // Both rows whole: the topmost, the first prompt, is being read, so its tick is no Button.
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  expect(rail(tree)).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
   await tickButtons(tree)[0].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }])
   scrollResult = { deny: 'the window moved meanwhile' }
@@ -2353,7 +2353,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'r3' }, block: 'start' }, { to: { requestId: 'r3' }, block: 'start' }])
   expect(toasts).toEqual(['cs: the window moved meanwhile'])
-  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2504', '\u2500'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2506', '\u2502'])
 })
 
 test('a prompt no row has drawn since a resume is dim, and its press says so once', async () => {
@@ -2365,7 +2365,7 @@ test('a prompt no row has drawn since a resume is dim, and its press says so onc
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }, { to: { requestId: 'u2' }, block: 'start' }])
   expect(toasts).toEqual(['cs: that prompt is not on screen yet'])
-  expect(rail(await band())).toEqual(['\u2500', '\u2500', '\u2500', '\u2501'])
+  expect(rail(await band())).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
 })
 
 test('/cs next, prev, first, last and N move along the rail from the prompt being read', async () => {
@@ -2418,10 +2418,10 @@ test('with no prompt row left in the viewport, the read tick stays on the prompt
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   await fireAfter()
-  expect(rail(await band())).toEqual(['─', '━', '─', '─'])
+  expect(rail(await band())).toEqual(['│', '┃', '│', '│'])
   await drawRow('u2', 'say two', null)
   await fireAfter()
-  expect(rail(await band())).toEqual(['─', '━', '─', '─'])
+  expect(rail(await band())).toEqual(['│', '┃', '│', '│'])
   expect(await cs('prev')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u1'])
 })
@@ -2437,7 +2437,7 @@ test('a prompt whose row has not been drawn is matched by its text only when tha
   await drawRow('u3', 'continue', { first: 0, last: 1, of: 2 })
   await drawRow('row-of-u4', 'say four', null)
   await fireAfter()
-  expect(rail(await band())).toEqual(['─', '─', '━', '─'])
+  expect(rail(await band())).toEqual(['│', '│', '┃', '│'])
   expect(await cs('1')).toEqual({})
   expect(await cs('4')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u1', 'row-of-u4'])
@@ -2466,11 +2466,30 @@ test('a /clear empties the rail: the next conversation draws none of the last on
   expect(rail(await band())).toEqual([])
   expect(await cs('next')).toEqual({ text: 'cs: the rail has no prompts' })
   await turnComplete()
-  expect(rail(await band())).toEqual(['─', '─', '─', '━'])
+  expect(rail(await band())).toEqual(['│', '│', '│', '┃'])
 })
 
 test('a line too narrow for any tick draws no rule alone', async () => {
   transcript(LINEAR)
   await turnComplete()
   expect(await band({ bodyColumns: 7 })).toBe(DRAWN)
+})
+
+test('the rail stands at the far right of the band line, after the words, as upright bars', async () => {
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  transcript(LINEAR)
+  percent = 80
+  await turnComplete()
+  const tree = await band()
+  const line = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
+  const kids = (line.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
+  expect(kids[kids.length - 1].props.key).toBe('cs-rail')
+  expect(kids[kids.length - 2]).toMatchObject({ type: 'Box', props: { flexGrow: 1 } })
+  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
+})
+
+test('the focus ring never lands on a rail tick: the keyboard route is /cs', async () => {
+  const e = (element: string) => ({ component: 'AbovePrompt', requestId: 'band', plugin: 'cs', element, origin: { kind: 'person' } })
+  expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rail-2'), async () => ({}))).toEqual({ deny: 'cs: the rail takes clicks and /cs, not the focus ring' })
+  expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rotate'), async () => ({ moved: true }))).toEqual({ moved: true })
 })

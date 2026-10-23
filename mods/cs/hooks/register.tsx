@@ -458,8 +458,10 @@ export function register(on: On) {
       waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
       gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
     ].join('').length
-    // The rail: one tick per prompt, `━` for the one being read, `┄` for one a
-    // jump was refused, `─` otherwise, each a Button (the read one a Text: a
+    // The rail: one upright bar per prompt at the line's right end, `┃` for
+    // the one being read, `┆` for one a jump was refused, `│` otherwise (side
+    // by side, flat ticks run together into one line), each a Button (the
+    // read one a Text: a
     // Button takes no colour, and there is nowhere to jump). It takes what the
     // line leaves after the rule, the gaps and the words; past that the oldest
     // prompts collapse into one `…N` run. The read tick is remembered so a
@@ -482,16 +484,6 @@ export function register(on: On) {
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
             <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
-            {ticks !== undefined && (
-              <Box key="cs-rail" marginRight={wordCells > 0 ? 3 : 0}>
-                {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
-                {prompts.slice(ticks.hidden).map((p, j) => {
-                  const i = ticks.hidden + j
-                  if (i === read) return own === undefined ? <Text bold>{'\u2501'}</Text> : <Text bold color={own}>{'\u2501'}</Text>
-                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2504' : '\u2500'} onPress={() => jumpTo($, i)} />
-                })}
-              </Box>
-            )}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
             {counting && <Text dimColor>{'  \u00b7  '}</Text>}
@@ -510,10 +502,29 @@ export function register(on: On) {
             {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
             {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
             {gate !== undefined && <Text dimColor>{gate}</Text>}
+            {ticks !== undefined && <Box flexGrow={1} />}
+            {ticks !== undefined && (
+              <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
+                {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
+                {prompts.slice(ticks.hidden).map((p, j) => {
+                  const i = ticks.hidden + j
+                  if (i === read) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
+                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'} onPress={() => jumpTo($, i)} />
+                })}
+              </Box>
+            )}
           </Box>
         </Box>
       </Box>
     )
+  })
+
+  // A rail tick never takes the band's focus ring: the ring draws as an
+  // inverted block that reads as part of the rail, and the band's keyboard
+  // route along the rail is /cs. The band's other buttons keep it.
+  on('ui.focus', { component: 'AbovePrompt', plugin: 'cs' }, async ($, e, next) => {
+    if (e.element?.startsWith('cs-rail-')) return { deny: 'cs: the rail takes clicks and /cs, not the focus ring' }
+    return next(e)
   })
 }
 
