@@ -621,15 +621,8 @@ function stateWord(record: FeatureRecord): string {
   return record.state === 'ready' && record.ahead === 0 ? 'no commits' : record.state
 }
 
-// The word for a base's records (`task` absent) or a feature's own record. A
-// feature's word has no press: /finish integrates only from the base.
-export function featuresWordOf(records: FeatureRecord[], task: string | undefined): FeaturesWord | undefined {
-  if (task !== undefined) {
-    const own = records.find(r => r.task === task)
-    if (own === undefined) return undefined
-    const word = stateWord(own)
-    return { label: own.ahead === 0 ? word : `ahead ${own.ahead} \u00b7 ${word}` }
-  }
+// The word for a base's records.
+export function featuresWordOf(records: FeatureRecord[]): FeaturesWord | undefined {
   if (records.length === 0) return undefined
   const count = `${records.length} ${records.length === 1 ? 'feature' : 'features'}`
   const ready = records.filter(r => stateWord(r) === 'ready')
@@ -648,9 +641,9 @@ function readFeaturesLater($: EngineInterface) {
 }
 
 // Asks cs for the session's features and redraws the band when the word
-// moved. Only the lead conversation of a cs session asks; a reading still
-// running is not doubled. A base is the session's own name, a feature
-// `base@task` (cs never admits `@` in a name it creates).
+// moved. Only the lead conversation of a base session asks (cs never admits
+// `@` in a name it creates, so `@` marks a feature); a reading still running
+// is not doubled.
 async function refreshFeatures($: EngineInterface) {
   if (featuresReading) return
   featuresReading = true
@@ -668,14 +661,14 @@ async function refreshFeatures($: EngineInterface) {
 async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefined> {
   const bin = await $.env.get("CS_BIN")
   if (!bin || !(await ownsRotation($))) return undefined
-  const name = await csSessionName($, await $.session.cwd())
-  if (name === undefined) return undefined
-  const at = name.indexOf('@')
-  const base = at < 0 ? name : name.slice(0, at)
+  const base = await csSessionName($, await $.session.cwd())
+  // A feature (`base@task`) draws no word: /finish lands it from its base,
+  // and asked from here cs reads the base conversation's own lock as `locked`.
+  if (base === undefined || base.includes('@')) return undefined
   // A base with no `<base>@<task>` directory beside it has no features: cs is
   // not asked, and no clock asks again. /feature runs in the base's own
   // conversation, so the turn it ends in reads the new feature.
-  if (at < 0 && !(await hasFeatureDirs($, base))) return undefined
+  if (!(await hasFeatureDirs($, base))) return undefined
   featuresClock ??= $.clock.every(FEATURES_POLL_MS, () => { if (bandIdle) return refreshFeatures($) })
   let complaint: string | undefined
   let word: FeaturesWord | undefined
@@ -687,7 +680,7 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
     } else if ('unreadable' in parsed) {
       complaint = `cs ${base} -features gave a record the band cannot read: ${parsed.unreadable}`
     } else {
-      word = featuresWordOf(parsed, at < 0 ? undefined : name.slice(at + 1))
+      word = featuresWordOf(parsed)
     }
   } catch (err) {
     complaint = `cs ${base} -features did not answer: ${String(err instanceof Error ? err.message : err)}`

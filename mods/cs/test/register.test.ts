@@ -2683,24 +2683,19 @@ test('one feature not ready says its own state; ready with nothing ahead of the 
   }
 })
 
-test('a feature session says its own record against the base, with no press: /finish lands it from the base', async () => {
+test('a feature session draws no features word and asks cs nothing: /finish lands a feature from its base', async () => {
   cwdPath = '/feat'
   realPaths['/feat'] = '/feat'; realPaths['/home/.claude-sessions/work@fix-auth'] = '/feat'
   existing.add('/feat/.cs/local')
   files['/feat/.cs/local/state'] = 'session_name: work@fix-auth\nclaude_session_id: uuid-lead\n'
-  porcelain(feature('docs', 1, 'ready'), feature('fix-auth', 3, 'ready'))
+  porcelain(feature('fix-auth', 3, 'ready'))
+  // The rail draws here, so the band is this conversation's to draw.
+  files['/home/.claude/projects/-feat/uuid-lead.jsonl'] = `${LINEAR.join('\n')}\n`
   await featuresTurn()
-  expect(featureRuns().map(r => r.argv)).toEqual([['/opt/cs/bin/cs', 'work', '-features', '--porcelain']])
-  let tree = await band()
-  expect(restingWords(tree)).toEqual(['▌', 'ahead 3 · ready'])
-  expect(featuresKey(tree)).toBeUndefined()
-  porcelain(feature('fix-auth', 0, 'ready'))
-  await featuresTurn()
-  expect(restingWords(await band())).toEqual(['▌', 'no commits'])
-  // Its record gone from the base's list (retired meanwhile): no word.
-  porcelain(feature('docs', 1, 'ready'))
-  await featuresTurn()
-  expect(await band()).toBe(DRAWN)
+  expect(rail(await band())).toHaveLength(4)
+  expect(featureRuns()).toEqual([])
+  expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
+  expect(restingWords(await band())[1]).toBe('#4 say four'.padStart(99))
 })
 
 test('a cs that fails, cannot start, or prints a record the band cannot read draws no word and is logged once each', async () => {

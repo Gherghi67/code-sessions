@@ -553,9 +553,9 @@ runs `/finish fix-auth`; two or more ready read `3 features · 2 ready` and a
 press runs `/finish`, which lists them and asks which; none ready reads
 `1 feature · fix-auth dirty` or `3 features · none ready`, dim, with no
 press. `ready` is `_feature_readiness`'s own word; ready with no commit ahead
-of the base reads `no commits`. In a feature session (`base@task`) the word
-is its own record, `ahead 3 · ready` or `ahead 2 · dirty`, with no press:
-`/finish` lands a feature only from its base. A cs that fails, cannot start,
+of the base reads `no commits`. A feature session (`base@task`) draws no
+features word and asks cs nothing: `/finish` lands a feature only from its
+base, whose word names it. A cs that fails, cannot start,
 or prints a record that is not ten fields with a whole `ahead` and a known
 state draws no word, and the mod logs it once.
 

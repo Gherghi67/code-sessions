@@ -90,16 +90,18 @@ session's features where a key can act on it. No pane.
      no rotate, wrap or queue word is due ("Left side", 2026-10-23); the gap
      beside the rail names the prompt being read. While such a word is due,
      or a `/finish` gate runs, the features word is not drawn.
-   - `/finish` integrates only from the base's conversation (the skill's
-     `role: feature` prints a handoff line and stops), so in a feature
-     session the word has no press: `ahead 3 · ready`, `dirty`, `staged`.
+   - A feature session draws no features word (Alex, "Feature word",
+     2026-10-23): `/finish` integrates only from the base's conversation
+     (the skill's `role: feature` prints a handoff line and stops), and
+     asked from a feature session cs reads the base conversation's own live
+     lock as `locked`, so the word would mostly say `ahead N · locked`.
    - In a base: one feature ready names it and a press runs `/finish
      <task>`; two or more ready read `N features · K ready` and a press runs
      bare `/finish`, which lists the features and asks which; none ready
      reads `1 feature · <task> <state>` or `N features · none ready` with no
      press. `ready` with nothing ahead of the base reads `no commits`.
-   - The base and the task come from the session's name, `base@task` for a
-     feature; `validate_session_name` never admits `@`.
+   - The base is the session's name; a name with `@` is a feature
+     (`base@task`), since `validate_session_name` never admits `@`.
    - The record is read at an IO boundary: a line that is not ten fields,
      a non-integer `ahead`, or a state outside the eight `_feature_readiness`
      prints is logged once and draws no word.
