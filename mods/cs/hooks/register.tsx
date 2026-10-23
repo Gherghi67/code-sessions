@@ -476,6 +476,10 @@ export function register(on: On) {
     const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
     const labelCells = ticks === undefined ? 0 : budget - railCells - 2
     const labeled = labelCells >= RAIL_LABEL_MIN
+    // A bar under the pointer swaps its prompt in over the read one, on the
+    // terminal only: the desktop app paints a card over a line without hiding
+    // what is under it, so both prompts would show at once.
+    const hovering = labeled && e.surface === 'terminal'
     const label = (i: number) => {
       const named = `#${i + 1} ${prompts[i].text}`
       return (named.length > labelCells ? `${named.slice(0, labelCells - 1)}\u2026` : named).padStart(labelCells)
@@ -519,7 +523,7 @@ export function register(on: On) {
               <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
                 <Text dimColor italic>{label(read)}</Text>
                 {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
-                {prompts.map((_, i) => i !== read && (
+                {hovering && prompts.map((_, i) => i !== read && (
                   <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
                     <Text italic>{label(i)}</Text>
                   </Box>
@@ -533,7 +537,7 @@ export function register(on: On) {
                   const i = ticks.hidden + j
                   if (i === read) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
                   return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'}
-                                 hover={labeled ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
+                                 hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
                 })}
               </Box>
             )}

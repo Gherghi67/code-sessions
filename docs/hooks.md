@@ -500,7 +500,7 @@ session has none), then only the words that need a key now, separated by a
 dim `·`, and the rail of prompts at the line's right end. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `▌  ctrl+x  1 rotate  ·  2 wrap        │││┃│││`. Chords that differ are spelled whole. In order, and each
+colour: `▌  ctrl+x  1 rotate  ·  2 wrap        #4 say four  │││┃│││`. Chords that differ are spelled whole. In order, and each
 only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
 `/clear now` once a handoff is armed), `wrap`, the queue's start key, and
 `finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
@@ -528,7 +528,15 @@ results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
 are not prompts. The ticks take what the line leaves after the rule and the
 words; past that the oldest prompts collapse into one dim `…N` run at the
-left, and a line too narrow for any tick draws no rail. A conversation with
+left, and a line too narrow for any tick draws no rail. The gap the words
+and the bars leave names the prompt being read, `#N` and its first line, dim
+italic and flush against the bars, cut with `…` to fit; a gap under ten cells
+names none. On the terminal a bar under the pointer swaps its own prompt into
+the gap, italic, until the pointer leaves; the swap follows the mouse, so it
+needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
+them off). Other
+surfaces name the prompt being read only, since the desktop app paints a card
+over a line without hiding what is under it. A conversation with
 one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
 

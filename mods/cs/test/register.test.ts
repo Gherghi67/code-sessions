@@ -130,8 +130,8 @@ const $ = {
 }
 
 const DRAWN = { type: 'Survey', props: {}, children: [] }
-const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean; bodyColumns: number }> = {}) =>
-  hooks['ui.render:AbovePrompt']($, { props: { isWorking: false, hasSurvey: false, bodyColumns: 110, ...props } }, async () => DRAWN)
+const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean; bodyColumns: number }> = {}, surface = 'terminal') =>
+  hooks['ui.render:AbovePrompt']($, { surface, props: { isWorking: false, hasSurvey: false, bodyColumns: 110, ...props } }, async () => DRAWN)
 
 function buttons(tree: any): any[] {
   if (!tree || typeof tree !== 'object') return []
@@ -2574,4 +2574,17 @@ test('a rail past its budget takes the whole gap: no prompt is named beside a co
   expect(gapLabel(await band({ bodyColumns: 41 }))).toBeUndefined()
   // 47 leave ten.
   expect(textOf(gapLabel(await band({ bodyColumns: 47 })))).toBe('   #30 p30')
+})
+
+// The desktop app paints a card over the line without hiding what is under it
+// (prompt-rail's CHANGELOG), so the two prompts would read as one.
+test('off the terminal the gap names the prompt being read and draws no hover cards over it', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  for (const surface of ['desktop', 'vscode', 'mobile']) {
+    const tree = await band({}, surface)
+    expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(99))
+    expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toEqual([])
+    expect(tickButtons(tree).map((b: any) => b.props.hover)).toEqual([undefined, undefined, undefined])
+  }
 })
