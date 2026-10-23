@@ -487,10 +487,10 @@ export function register(on: On) {
     // by side, flat ticks run together into one line), each a Button (the
     // read one a Text: a
     // Button takes no colour, and there is nowhere to jump). It takes what the
-    // line leaves after the rule, the gaps and the words; past that the oldest
+    // line leaves after the inset, the gaps and the words; past that the oldest
     // prompts collapse into one `…N` run. The read tick is remembered so a
     // report that moves it can redraw the band.
-    const budget = e.props.bodyColumns - 2 - 1 - 2 - (wordCells > 0 ? 3 + wordCells : 0)
+    const budget = e.props.bodyColumns - 2 - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing ? railTicks(prompts.length, budget) : undefined
     // The gap the words and the bars leave names a prompt, padded to the gap
     // so it stands against the bars: the one being read, or the one under the
@@ -507,12 +507,11 @@ export function register(on: On) {
       if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
       return fitRight(`#${i + 1} ${p.text}`, labelCells)
     }
-    // A line too narrow for any tick draws no rule alone.
+    // A line too narrow for any tick, with nothing else to say, draws nothing.
     if (!rotating && waiting === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
-    // transcript: a left rule in the session colour, as the launch banner's
-    // bar; then only the words that need a key now, the keys in the session
-    // colour and the rest dim. The context percentage is the bar's to carry;
+    // transcript: only the words that need a key now, the keys in the
+    // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
     // the band does not repeat it. It starts two columns in, where Claude Code
     // draws the bar and the mode line under the prompt. A Button is a block:
     // nested in a Text the engine refuses the whole tree (measured), so each
@@ -522,7 +521,6 @@ export function register(on: On) {
         {drawn}
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
-            <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
             {/* the session's features: a press finishes the one ready, or asks which */}
             {featured !== undefined && (featured.finish === undefined || !bandIdle
               ? <Text dimColor>{featured.label}</Text>

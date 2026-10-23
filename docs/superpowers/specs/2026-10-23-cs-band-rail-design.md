@@ -116,6 +116,12 @@ session's features where a key can act on it. No pane.
    the tests in `mods/cs/test/` cover the walk and the width budget with
    fixture transcripts.
 
+   As built after slice 3 (2026-10-23): the left rule `▌` is gone. Alex,
+   on the live band: "I don't like the left bar and the fact that is
+   empty", then "I don't like the left rail at all". The line starts with
+   its first word two columns in; the read prompt and the bars stay
+   right-aligned ("Empty left": "Keep it right-aligned").
+
 ## Where the complexity moves
 
 The pane's layout logic goes. What arrives: a transcript reader in the

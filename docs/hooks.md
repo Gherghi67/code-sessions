@@ -495,12 +495,11 @@ directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it: a left rule `▌` in the session's colour (dim when the
-session has none), then only the words that need a key now, separated by a
-dim `·`, and the rail of prompts at the line's right end. Where the keys'
+blank line above it: only the words that need a key now, separated by a dim
+`·`, and the rail of prompts at the line's right end. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `▌  ctrl+x  1 rotate  ·  2 wrap        #4 say four  │││┃│││`. Chords that differ are spelled whole. In order, and each
+colour: `ctrl+x  1 rotate  ·  2 wrap        #4 say four  │││┃│││`. Chords that differ are spelled whole. In order, and each
 only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
 `/clear now` once a handoff is armed), `wrap`, the queue's start key, and
 `finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
@@ -526,7 +525,7 @@ modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
-are not prompts. The ticks take what the line leaves after the rule and the
+are not prompts. The ticks take what the line leaves after the inset and the
 words; past that the oldest prompts collapse into one dim `…N` run at the
 left, and a line too narrow for any tick draws no rail. The gap the words
 and the bars leave names the prompt being read, `#N` and its first line (up
@@ -541,8 +540,8 @@ over a line without hiding what is under it. A conversation with
 one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
 
-Unless a `/finish` gate runs, the band's first word, right after the rule and
-before any key word (`·` between), is the state of the session's features,
+Unless a `/finish` gate runs, the band's first word, before any key word
+(`·` between), is the state of the session's features,
 read from
 `cs <base> -features --porcelain` after each turn and at session start,
 without holding either up, and every 30 s while the band is idle once cs has
@@ -633,7 +632,7 @@ handoff already armed: an interrupted or errored turn, or a subagent's, starts
 nothing. The run is scheduled from a timer rather than from the turn's own
 hook, which the plugin contract refuses a command from. Once the rotate skill
 has armed its handoff, the next turn's end starts a 20-second grace: the
-band reads `▌  /clear in 20s  ·  ctrl+x  1 /clear now`,
+band reads `/clear in 20s  ·  ctrl+x  1 /clear now`,
 redrawn once a second. The count wears the session's own colour while there
 is time, the status bar's amber from ten seconds and its crit red under five
 (the bar's inks, pinned against `bin/cs-statusline` by `tests/test_mod_rotate.sh`).
