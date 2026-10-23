@@ -312,10 +312,12 @@ run_suite() {  # index
     # foreground: wait returns the moment a signal arrives, so the INT/TERM
     # trap can stop the suite by the pid recorded here. Serial runs stream
     # straight through; only interleaved lanes capture to a log.
+    # CS_TEST_SKIP_LOG is where the suite's run_test records each skip, so the
+    # summary can count them whether or not the output was captured.
     if [ -n "$parallel" ]; then
-        nice -n 10 bash "${selected[$k]}" > "$logdir/$k.log" 2>&1 &
+        CS_TEST_SKIP_LOG="$logdir/$k.skips" nice -n 10 bash "${selected[$k]}" > "$logdir/$k.log" 2>&1 &
     else
-        nice -n 10 bash "${selected[$k]}" 2>&1 &
+        CS_TEST_SKIP_LOG="$logdir/$k.skips" nice -n 10 bash "${selected[$k]}" 2>&1 &
     fi
     pid=$!
     printf '%s\n' "$pid" > "$logdir/$k.pid"
@@ -435,13 +437,35 @@ done | sort -rn | head -10 | while read -r secs name; do
     printf '  %4ss  %s\n' "$secs" "$name"
 done
 
+# A skipped test passes its suite, so a run that judged nothing in a whole
+# class of tests (a tool missing on a runner) still reads OK. Name every skip
+# here, where CI's last lines show it: the suite, the test and, when
+# require_tool skipped it, the missing tool. Each suite's run_test wrote one
+# "name<TAB>reason" line per skip to its CS_TEST_SKIP_LOG.
+skipped=0
+k=0
+while [ "$k" -lt "$total" ]; do
+    if [ -f "$logdir/$k.skips" ]; then
+        while IFS= read -r line; do
+            [ "$skipped" -eq 0 ] && printf '\nskipped tests:\n'
+            skipped=$((skipped + 1))
+            reason=${line#*$'\t'}
+            printf '  %s: %s%s\n' "${selected[$k]##*/}" "${line%%$'\t'*}" "${reason:+ ($reason)}"
+        done < "$logdir/$k.skips"
+    fi
+    k=$((k + 1))
+done
+skip_note=""
+[ "$skipped" -eq 1 ] && skip_note=", 1 test skipped"
+[ "$skipped" -gt 1 ] && skip_note=", $skipped tests skipped"
+
 echo ""
 echo "================================================================"
 if [ ${#failed[@]} -gt 0 ]; then
-    echo "FAILED: ${#failed[@]}/$total suites"
+    echo "FAILED: ${#failed[@]}/$total suites$skip_note"
     for f in "${failed[@]}"; do
         echo "  - $f"
     done
     exit 1
 fi
-echo "OK: all $total suites passed"
+echo "OK: all $total suites passed$skip_note"

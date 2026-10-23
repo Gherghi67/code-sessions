@@ -45,18 +45,20 @@ jobs:
           git config --global user.email "ci@claude-sessions.test"
           git config --global user.name "cs CI"
 
-      # age backs cs-secrets sync; without it the age tests skip and judge nothing.
+      # age backs cs-secrets sync and jq is a cs requirement. Both are named
+      # in CS_TEST_REQUIRE_TOOLS below, so a test that needs one fails on a
+      # runner without it instead of skipping and judging nothing.
       - name: Install jq and age (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y jq age
 
-      - name: Install age (macOS)
+      - name: Install jq and age (macOS)
         if: runner.os == 'macOS'
-        run: brew install age
+        run: brew install jq age
 
       # The mod suites (test_mod_rotate, test_mod_update, test_mods_layout) run
-      # their unit tests under bun and return 77 when bun is missing, so on a
-      # runner without it they are counted as skipped and judge nothing. The
+      # their unit tests under bun, which CS_TEST_REQUIRE_TOOLS below declares,
+      # so a runner without it fails them rather than skipping them. The
       # action is pinned by commit and bun by version; unlike shellcheck, no
       # digest checks the bun binary, as setup-bun takes none. The mermaid mod's
       # tests run under claude plugin test and still skip here.
@@ -68,9 +70,14 @@ jobs:
       - name: Show bun version
         run: bun --version
 
+      # CS_TEST_REQUIRE_TOOLS lists what the steps above install (the age
+      # package ships age-keygen). tests/test_lib.sh's require_tool fails a
+      # test whose listed tool is missing; any other missing tool skips, and
+      # run_all.sh names every skip at the end of the log.
       - name: Run bash test suites
         env:
           CS_TEST_SHARD: ${{ matrix.shard }}/2
+          CS_TEST_REQUIRE_TOOLS: age age-keygen jq bun
         run: bash tests/run_all.sh
 
   build-sync:
@@ -112,9 +119,11 @@ jobs:
       - name: Lint shell scripts
         run: bash tests/lint_shell.sh
 
-      # The lint's own tests skip wherever shellcheck is missing; this job has
-      # the pinned one, so they always run here.
+      # The lint's own tests skip wherever shellcheck is missing; this job
+      # installs the pinned one and declares it, so here they fail instead.
       - name: Test the shell lint
+        env:
+          CS_TEST_REQUIRE_TOOLS: shellcheck
         run: bash tests/test_lint_shell.sh
 
   rust:

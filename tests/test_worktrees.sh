@@ -2560,7 +2560,7 @@ test_integrate_terminated_mid_gate_leaves_no_lock_or_temp() {
 # immutable flag) must not stop the cleanup: the mutex is still released, so
 # the next integrate runs.
 test_integrate_terminated_mid_gate_releases_the_lock_when_its_files_stay() {
-    command -v chflags >/dev/null 2>&1 || return 77
+    require_tool chflags || return $?
     local sha base_dir output status=0
     sha=$(integrate_fixture myproj fix-auth)
     base_dir="$CS_SESSIONS_ROOT/myproj"

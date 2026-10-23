@@ -40,8 +40,7 @@ _cs_shipped_content() {
 # ~/.config/cs is enough to trigger it — an earlier root-run install leaves
 # exactly that.
 test_install_survives_an_unwritable_declined_marker_dir() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the decline needs a tty)"; return 77; }
+    require_tool expect || return $?
     local fake_home="$TEST_TMPDIR/home-nowrite"
     mkdir -p "$fake_home/.claude" "$fake_home/.config/cs"
     printf '{"statusLine":{"command":"/opt/other/bar"}}\n' > "$fake_home/.claude/settings.json"
@@ -82,8 +81,7 @@ EXPECT
 # someone pressing enter to skip one release is making a decision they did not
 # know they were making.
 test_declining_says_permanence_on_its_own_line() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the decline needs a tty)"; return 77; }
+    require_tool expect || return $?
     local fake_home="$TEST_TMPDIR/home-declinemsg"
     mkdir -p "$fake_home/.claude"
     printf '{"statusLine":{"command":"/opt/other/bar"}}\n' > "$fake_home/.claude/settings.json"
@@ -120,8 +118,7 @@ EXPECT
 # session is live, which would put a stranger's branch name and unread count
 # into an installer preview.
 test_install_previews_the_status_line_before_asking() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the prompt needs a tty)"; return 77; }
+    require_tool expect || return $?
     local fake_home="$TEST_TMPDIR/home-preview"
     mkdir -p "$fake_home/.claude"
     local exp="$TEST_TMPDIR/preview.exp" out="$TEST_TMPDIR/preview.out"
@@ -207,8 +204,7 @@ EXPECT
 # re-prompt the very people the feature was written for. The decline states
 # plainly that it is remembered, and cs -statusline enable reverses it.
 test_enter_declines_the_same_as_an_explicit_n() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the prompt needs a tty)"; return 77; }
+    require_tool expect || return $?
     local ans
     for ans in "" "n"; do
         local fake_home="$TEST_TMPDIR/home-ans${ans:-enter}"
@@ -235,8 +231,7 @@ EXPECT
 }
 
 test_install_asks_caps_for_a_chaining_statusline() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the caps question needs a tty)"; return 77; }
+    require_tool expect || return $?
     local state home exp caps rc output
     for state in unrelated chains; do
         home="$TEST_TMPDIR/home-$state"
@@ -1815,8 +1810,7 @@ _seed_registered_retired_hook() {  # home
 # replaced while the install waited at a question is the user's file now, and
 # keeps its content and its registration.
 test_a_retired_hook_replaced_during_a_question_is_kept() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the question needs a tty)"; return 77; }
+    require_tool expect || return $?
     local home="$TEST_TMPDIR/retired-swap-home" s f rc=0
     s="$home/.claude/settings.json"
     f="$home/.claude/hooks/cs/bash-logger.sh"
@@ -1832,8 +1826,7 @@ test_a_retired_hook_replaced_during_a_question_is_kept() {
 # file (here a link to /dev/zero, which never ends) is the user's too, and is
 # kept without being read: the install finishes and keeps its registration.
 test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread() {
-    command -v expect >/dev/null 2>&1 \
-        || { echo "    SKIP (expect not installed; the question needs a tty)"; return 77; }
+    require_tool expect || return $?
     local home="$TEST_TMPDIR/retired-dev-home" s f rc=0
     s="$home/.claude/settings.json"
     f="$home/.claude/hooks/cs/bash-logger.sh"
@@ -3759,9 +3752,7 @@ test_rewake_labels_do_not_claim_the_wake_is_mail() {
 _OK_CS_BLOCK='{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}'
 
 _need_expect() {
-    command -v expect >/dev/null 2>&1 && return 0
-    echo "    SKIP (expect not installed; the question needs a tty)"
-    return 77
+    require_tool expect
 }
 
 # Run install.sh on a pty, declining the status line so the rotate/wrap keys
@@ -3790,7 +3781,7 @@ EXPECT
 # 1. No keybindings.json: a yes creates it holding exactly cs's block, and the
 # answer is recorded for the next install.
 test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-create"
     mkdir -p "$home"
     _install_answering_rotate_wrap_keys ok-create "$home" y \
@@ -3803,7 +3794,7 @@ test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block() {
 # 2. An existing Global block takes cs's keys beside the user's own; every
 # other block and key is kept, and no second Global block appears.
 test_rotate_wrap_keys_merge_into_the_existing_global_block() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-merge"
     mkdir -p "$home/.claude"
     printf '%s\n' '{"$schema":"https://example.com/kb.json","bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos"}}]}' \
@@ -3818,7 +3809,7 @@ test_rotate_wrap_keys_merge_into_the_existing_global_block() {
 # 3. A key the user already binds, in any context, is never overwritten: it is
 # left as it is and named in a warning, and the other keys are still added.
 test_rotate_wrap_keys_never_overwrite_a_user_binding() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-conflict"
     mkdir -p "$home/.claude"
     printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit"}}]}' \
@@ -3835,7 +3826,7 @@ test_rotate_wrap_keys_never_overwrite_a_user_binding() {
 # 4. A file cs cannot read as {"bindings":[...]} is refused and left byte for
 # byte as it was, with no temp file beside it, and the message names it.
 test_rotate_wrap_keys_refuse_an_unparseable_file() {
-    _need_expect || return 77
+    _need_expect || return $?
     local body i=0
     for body in '{"bindings": [' '{"bindings":{"alt+3":"command:x"}}'; do
         i=$((i + 1))
@@ -3858,7 +3849,7 @@ test_rotate_wrap_keys_refuse_an_unparseable_file() {
 # 5. A no leaves the file alone and is remembered: the next install, on a
 # terminal too, does not ask again.
 test_rotate_wrap_keys_decline_is_remembered() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-no" kb
     kb="$home/.claude/keybindings.json"
     mkdir -p "$home/.claude"
@@ -3897,7 +3888,7 @@ test_rotate_wrap_keys_non_interactive_writes_nothing_and_says_how() {
 
 # 7. Installing again after a yes, with or without a terminal, changes nothing.
 test_rotate_wrap_keys_reinstall_after_yes_is_idempotent() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-again" kb
     kb="$home/.claude/keybindings.json"
     mkdir -p "$home/.claude"
@@ -3957,7 +3948,7 @@ test_rotate_wrap_keys_uninstall_removes_only_cs_values() {
 
 # 9. CLAUDE_CONFIG_DIR moves Claude Code's config, keybindings.json included.
 test_rotate_wrap_keys_follow_claude_config_dir() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-cfg" cfg="$TEST_TMPDIR/claude-cfg"
     mkdir -p "$home" "$cfg"
     _install_answering_rotate_wrap_keys ok-cfg "$home" y "CLAUDE_CONFIG_DIR=$cfg" \
@@ -3970,7 +3961,7 @@ test_rotate_wrap_keys_follow_claude_config_dir() {
 # 10. A symlinked keybindings.json (a dotfiles manager's) is written through:
 # the link stays a link, and its target takes the keys and keeps its mode.
 test_rotate_wrap_keys_write_through_a_symlink() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-link" target="$TEST_TMPDIR/dotfiles/keybindings.json"
     mkdir -p "$home/.claude" "$(dirname "$target")"
     printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos"}}]}' > "$target"
@@ -3989,7 +3980,7 @@ test_rotate_wrap_keys_write_through_a_symlink() {
 # shell's config dir that cs recorded in CLAUDE_SECURESTORAGE_CONFIG_DIR:
 # empty selects ~/.claude, a path selects that dir.
 test_rotate_wrap_keys_skip_an_encrypted_sessions_config_dir() {
-    _need_expect || return 77
+    _need_expect || return $?
     local home="$TEST_TMPDIR/home-ok-enc" sess="$TEST_TMPDIR/enc-sess/.cs/claude-config"
     local cfg="$TEST_TMPDIR/claude-cfg-enc"
     mkdir -p "$home" "$sess" "$cfg"

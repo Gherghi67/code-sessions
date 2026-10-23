@@ -191,6 +191,7 @@ test_unknown_progress_mode_falls_back_to_a_display() {
 # essay must not scroll the header away, and the user has to be told it was
 # clipped rather than shown a fragment that reads like the whole thing.
 test_screen_mode_caps_a_long_prompt_and_marks_it() {
+    require_tool perl || return $?
     local long='' i=''
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         long="$long line $i of a very long prompt that keeps going and going;"
@@ -581,7 +582,8 @@ test_the_budget_is_read_as_data_and_bounds_the_rewriter() {
     unset CS_REWRITE_CMD
     local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" bound="$TEST_TMPDIR/bound"
     local real_perl real_timeout provider pair value want f out
-    real_perl=$(command -v perl) || { echo "  SKIP: no perl"; return 77; }
+    require_tool perl || return $?
+    real_perl=$(command -v perl)
     mkdir -p "$bin"
     cat > "$bin/agy" <<'EOF'
 #!/bin/bash

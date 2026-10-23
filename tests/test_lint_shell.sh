@@ -29,7 +29,7 @@ _lint() {
 }
 
 test_rising_warnings_fail() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     _lint_repo 0
     local out rc=0
     out=$(_lint 2>&1) || rc=$?
@@ -41,7 +41,7 @@ test_rising_warnings_fail() {
 # A lower count must lower the baseline in the same change, or the next
 # change could add warnings back up to the old number unnoticed.
 test_falling_warnings_fail_until_the_baseline_drops() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     _lint_repo 2
     local out rc=0
     out=$(_lint 2>&1) || rc=$?
@@ -51,7 +51,7 @@ test_falling_warnings_fail_until_the_baseline_drops() {
 }
 
 test_warnings_at_the_baseline_pass() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     _lint_repo 1
     local out rc=0
     out=$(_lint 2>&1) || rc=$?
@@ -63,7 +63,7 @@ test_warnings_at_the_baseline_pass() {
 # The error gate runs before the count: an error fails even when the
 # warning count matches.
 test_an_error_level_finding_fails() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     _lint_repo 1
     printf '#!/usr/bin/env bash\nif true; then\n' > "$REPO/broken.sh"
     git -C "$REPO" add broken.sh
@@ -77,7 +77,7 @@ test_an_error_level_finding_fails() {
 # Findings from every file count, whichever file they come from and however
 # the files are spread over the lint's runs.
 test_warnings_from_every_file_count() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     _lint_repo 3
     printf '#!/usr/bin/env bash\nunused_two=1\n' > "$REPO/two.sh"
     printf '#!/usr/bin/env bash\nunused_three=1\n' > "$REPO/three.sh"
@@ -92,7 +92,7 @@ test_warnings_from_every_file_count() {
 # A shellcheck that cannot run on a file (exit 2 or more) is a broken lint,
 # never a file with no findings.
 test_a_shellcheck_that_cannot_run_is_an_error() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     _lint_repo 1
     local fake="$TEST_TMPDIR/fakebin"
     mkdir -p "$fake"
@@ -108,7 +108,7 @@ test_a_shellcheck_that_cannot_run_is_an_error() {
 # A number past bash's integer range makes both comparisons error out and
 # fall through to the pass line, so it is refused like any other bad value.
 test_a_baseline_that_is_not_a_number_is_an_error() {
-    command -v shellcheck > /dev/null || return 77
+    require_tool shellcheck || return $?
     local bad out rc
     for bad in "about 110" "99999999999999999999"; do
         _lint_repo "$bad"

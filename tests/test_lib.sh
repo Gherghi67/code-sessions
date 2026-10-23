@@ -47,6 +47,15 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 FAILURES=()
 SKIPS=()
+# Why the running test skipped, when its guard knows: require_tool sets it,
+# run_test clears it before each test and records it with the skip.
+SKIP_REASON=""
+# The tools CI declares (CS_TEST_REQUIRE_TOOLS) and the file run_all.sh
+# collects skips in (CS_TEST_SKIP_LOG), read once here. Several suites unset
+# every exported CS_* variable in setup(), which runs before each test, so
+# require_tool and run_test read these unexported copies instead.
+_cs_test_require_tools="${CS_TEST_REQUIRE_TOOLS:-}"
+_cs_test_skip_log="${CS_TEST_SKIP_LOG:-}"
 
 # --- Paths ---
 # SCRIPT_DIR must be set by the sourcing test file before calling any helpers
@@ -128,6 +137,34 @@ _deny_file_write() {  # path
         return 2
     fi
     return 0
+}
+
+# The guard for a test that needs a command: `require_tool <tool>... || return $?`.
+# Every tool on PATH returns 0. A missing tool skips the test (77), unless
+# CS_TEST_REQUIRE_TOOLS, a space-separated list, names it: CI declares the
+# tools its job installs, and there a missing one is a broken runner, so the
+# test fails naming it instead of reading green having judged nothing. Every
+# tool is checked first, so a declared one fails even behind an undeclared one.
+# Call it directly, never inside $( ), and pass its status through unchanged:
+# a helper's caller that maps any failure to 77 turns the failure back into
+# a skip.
+require_tool() {  # tool...
+    local tool missing="" declared_missing=0
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null 2>&1 && continue
+        case " $_cs_test_require_tools " in
+            *" $tool "*)
+                echo "    FAIL: $tool is not on PATH, and CS_TEST_REQUIRE_TOOLS says this run has it"
+                declared_missing=1
+                ;;
+            *) missing="${missing:+$missing }$tool" ;;
+        esac
+    done
+    [ "$declared_missing" -eq 0 ] || return 1
+    [ -n "$missing" ] || return 0
+    echo "    SKIP: $missing not on PATH"
+    SKIP_REASON="$missing not on PATH"
+    return 77
 }
 
 _allow_writes() {  # dir
@@ -279,11 +316,14 @@ unset XDG_DATA_HOME XDG_CONFIG_HOME
 # for every suite that drives the hook: tests time nothing, and a loaded
 # runner must not turn a scan assertion into a skip. The deadline tests in
 # test_scope_prompt.sh set their own budgets per run.
-# Seven suites unset every CS_* variable in their own setup(), this one
-# included. The two that assert on the scope block (test_clarify.sh,
+# Eight suites unset every CS_* variable in their own setup(): clarify,
+# objective_capture, prompt_rewriter, prompt_rewriter_model,
+# prompt_rewriter_vendor, scope_prompt, statusline and subagent_statusline.
+# The two that assert on the scope block (test_clarify.sh,
 # test_scope_prompt.sh) set it again there. The same loop drops CS_PS_BIN,
-# CS_TITLE_TTY and CS_NO_UPDATE_CHECK, which costs nothing: none of the seven
-# runs cs, ps, curl or the SessionStart hook. Do not re-fix; a suite that
+# CS_TITLE_TTY and CS_NO_UPDATE_CHECK, which costs nothing: none of the eight
+# reaches the code that reads them (the lock walk, presence, launch, the
+# update check and the SessionStart hook). Do not re-fix; a suite that
 # starts to run one of those sets the variable again after its loop.
 export CS_SCOPE_BUDGET_MS="600000"
 # The SessionStart hook re-asserts the session's tab title: through the tmux
@@ -383,10 +423,14 @@ teardown() {
 # produce (a privilege it does not have, a kernel answer it cannot provoke) has
 # proven nothing, and counting it as OK is how missing coverage hides. The test
 # says why on its way out; the tally keeps skips in their own column so a run
-# that skips everything cannot read as a green one.
+# that skips everything cannot read as a green one. Under run_all.sh each skip
+# is also appended to CS_TEST_SKIP_LOG as the test's name, a tab and the
+# reason require_tool gave (empty for any other skip), which is where the
+# gate's summary counts them.
 run_test() {
     local test_name="$1" status=0
     TESTS_RUN=$((TESTS_RUN + 1))
+    SKIP_REASON=""
     echo "  $test_name..."
     setup
     "$test_name" 2>&1 || status=$?
@@ -396,6 +440,9 @@ run_test() {
     elif [ "$status" -eq 77 ]; then
         TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
         SKIPS+=("$test_name")
+        if [ -n "$_cs_test_skip_log" ]; then
+            printf '%s\t%s\n' "$test_name" "$SKIP_REASON" >> "$_cs_test_skip_log"
+        fi
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILURES+=("$test_name")
