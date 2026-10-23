@@ -260,7 +260,7 @@ export function register(on: On) {
       await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
     }
     await refreshRail($)
-    await refreshFeatures($)
+    readFeaturesLater($)
     // Only in a cs session; anywhere else the mod stays silent. Nor while git
     // tracks the session's control files: the heartbeat would change them.
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
@@ -337,7 +337,7 @@ export function register(on: On) {
       finishTurnOver = true
       await clearPressed($)
       await refreshRail($)
-      await refreshFeatures($)
+      readFeaturesLater($)
     }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
@@ -439,7 +439,7 @@ export function register(on: On) {
     // between, a turn running or not, under the same ownership as the keys.
     let railing = !e.props.hasSurvey && prompts.length > 1
     // The features word takes the left when no key word and no gate is due.
-    let featured = !rotating && waiting === 0 && gate === undefined ? featuresWord : undefined
+    let featured = !e.props.hasSurvey && !rotating && waiting === 0 && gate === undefined ? featuresWord : undefined
     if ((rotating || waiting > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false; featured = undefined }
     // The read tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
@@ -522,7 +522,7 @@ export function register(on: On) {
           <Box key="cs-rotate-band" marginLeft={2}>
             <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
             {/* the session's features: a press finishes the one ready, or asks which */}
-            {featured !== undefined && (featured.finish === undefined
+            {featured !== undefined && (featured.finish === undefined || !bandIdle
               ? <Text dimColor>{featured.label}</Text>
               : <Button key="cs-features" plain label={featured.label} onPress={() => pressFinish($, featured.finish as string)} />)}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
@@ -641,6 +641,12 @@ export function featuresWordOf(records: FeatureRecord[], task: string | undefine
   return { label: `${count} \u00b7 none ready` }
 }
 
+// The hooks do not wait on cs: a base's readiness walks git for every
+// feature (1.4 s measured for one), so the band redraws when it answers.
+function readFeaturesLater($: EngineInterface) {
+  refreshFeatures($).catch(err => $.ui.log(`cs: the features word could not be read: ${String(err instanceof Error ? err.message : err)}`))
+}
+
 // Asks cs for the session's features and redraws the band when the word
 // moved. Only the lead conversation of a cs session asks; a reading still
 // running is not doubled. A base is the session's own name, a feature
@@ -667,7 +673,8 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
   const at = name.indexOf('@')
   const base = at < 0 ? name : name.slice(0, at)
   // A base with no `<base>@<task>` directory beside it has no features: cs is
-  // not asked, and no clock asks again.
+  // not asked, and no clock asks again. /feature runs in the base's own
+  // conversation, so the turn it ends in reads the new feature.
   if (at < 0 && !(await hasFeatureDirs($, base))) return undefined
   featuresClock ??= $.clock.every(FEATURES_POLL_MS, () => { if (bandIdle) return refreshFeatures($) })
   let complaint: string | undefined
@@ -683,7 +690,7 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
       word = featuresWordOf(parsed, at < 0 ? undefined : name.slice(at + 1))
     }
   } catch (err) {
-    complaint = `cs ${base} -features did not run: ${String(err instanceof Error ? err.message : err)}`
+    complaint = `cs ${base} -features did not answer: ${String(err instanceof Error ? err.message : err)}`
   }
   if (complaint !== undefined && complaint !== featuresComplaint) $.ui.log(complaint)
   featuresComplaint = complaint
@@ -1296,8 +1303,13 @@ async function ownsRotation($: EngineInterface): Promise<boolean> {
 
 // The features word's press: /finish as if typed, on the one feature ready,
 // or bare ('') to list them and ask which.
+// The word keeps no press after one: the next answer from cs gives it back.
 async function pressFinish($: EngineInterface, task: string) {
-  await $.command.run({ command: 'finish', args: task })
+  if (featuresWord !== undefined) featuresWord = { label: featuresWord.label }
+  $.ui.invalidate('ui.render')
+  await $.command.run({ command: 'finish', args: task }).catch(err => {
+    $.ui.toast(`cs: /finish${task === '' ? '' : ` ${task}`} did not run: ${String(err instanceof Error ? err.message : err)}`)
+  })
 }
 
 // Runs the rotate skill as if the person had typed /rotate: the skill draws
