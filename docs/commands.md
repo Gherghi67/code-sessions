@@ -126,7 +126,7 @@ See [release verification](configuration.md#release-verification-and-notes).
 
 | Command | Result |
 |---|---|
-| `cs myproj@fix-auth` | Creates a feature on branch `cs/fix-auth`. |
+| `cs myproj@fix-auth` | Creates a feature on branch `cs/fix-auth`, from the base's current commit. An existing `cs/fix-auth` is reused from its own tip, and the launch says how far behind the base that is. A detached base is refused: the feature would have no branch to land on. |
 | `cs myproj@perf` | Opens another independent feature. |
 | `cs <base> -features` | Lists feature readiness. |
 | `cs <base> -finish <feature>` | Opens the base with `/finish <feature>`. |

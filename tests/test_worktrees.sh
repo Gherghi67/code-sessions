@@ -193,13 +193,35 @@ test_worktree_create_refuses_dirty_base() {
     assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "no worktree on refusal" || return 1
 }
 
+# An existing branch is reused from its own tip, which may sit behind the
+# base: the launch says so, naming the branch and how far behind it is.
 test_worktree_create_reuses_existing_branch() {
-    local base_dir
+    local base_dir output
     base_dir=$(create_test_session_with_git "myproj")
     git -C "$base_dir" branch cs/fix-auth
-    cs_launch "myproj@fix-auth"
+    echo "later" >> "$base_dir/CLAUDE.md"
+    git -C "$base_dir" commit -q -am "later work"
+    output=$("$CS_BIN" "myproj@fix-auth" < /dev/null 2>&1 || true)
     assert_eq "cs/fix-auth" "$(git -C "$CS_SESSIONS_ROOT/myproj@fix-auth" branch --show-current)" \
         "existing branch is reused, not errored on" || return 1
+    assert_output_contains "$output" "Branch cs/fix-auth already exists; the feature starts from its tip, 1 commit behind myproj" \
+        "the launch names the reused branch and its distance" || return 1
+}
+
+# A detached base has no branch for the feature to land on at /finish:
+# creation refuses before any worktree exists, so the user hears it first.
+test_worktree_create_refuses_a_detached_base() {
+    local base_dir output rc=0
+    base_dir=$(create_test_session_with_git "myproj")
+    git -C "$base_dir" checkout -q --detach
+    output=$("$CS_BIN" "myproj@fix-auth" < /dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a detached base refuses" || return 1
+    assert_eq "Error: Session 'myproj' is detached (no branch checked out), so a feature would have no branch to land on. Check out the branch the feature should land on, then try again." \
+        "$(printf '%s\n' "$output" | tail -n 1)" "names the state and the fix" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "no worktree on refusal" || return 1
+    git -C "$base_dir" rev-parse -q --verify refs/heads/cs/fix-auth >/dev/null 2>&1 \
+        && { echo "  FAIL: no branch created on refusal"; return 1; }
+    return 0
 }
 
 test_worktree_create_ignored_mode_bootstraps_cs() {
@@ -1935,6 +1957,7 @@ run_test test_worktree_create_refuses_an_encrypted_base
 run_test test_worktree_create_refuses_an_encrypted_base_with_untracked_links
 run_test test_worktree_open_refuses_once_its_base_is_encrypted
 run_test test_worktree_create_reuses_existing_branch
+run_test test_worktree_create_refuses_a_detached_base
 run_test test_worktree_create_ignored_mode_bootstraps_cs
 run_test test_ignored_mode_worktree_starts_with_nothing_untracked
 run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
