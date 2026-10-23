@@ -208,6 +208,8 @@ let finishProblemShown = false
 export type Prompt = { uuid: string; text: string }
 // How much of a prompt's first line a tick carries as its text.
 export const RAIL_TEXT_CHARS = 80
+// The fewest cells the gap beside the rail takes to name a prompt in.
+const RAIL_LABEL_MIN = 10
 // `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
 const READ_CAP = 4 * 1024 * 1024
 // What the transcript last read held, and the file it was: the file is parsed
@@ -468,6 +470,21 @@ export function register(on: On) {
     // report that moves it can redraw the band.
     const budget = e.props.bodyColumns - 2 - 1 - 2 - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing ? railTicks(prompts.length, budget) : undefined
+    // The gap the words and the bars leave names a prompt, padded to the gap
+    // so it stands against the bars: the one being read, or the one under the
+    // pointer. A gap too narrow to name one draws none.
+    const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
+    const labelCells = ticks === undefined ? 0 : budget - railCells - 2
+    const labeled = labelCells >= RAIL_LABEL_MIN
+    // A bar under the pointer swaps its prompt in over the read one, on the
+    // terminal only: the desktop app paints a card over a line without hiding
+    // what is under it, so both prompts would show at once.
+    const hovering = labeled && e.surface === 'terminal'
+    const label = (i: number) => {
+      const p = prompts[i]
+      if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
+      return fitRight(`#${i + 1} ${p.text}`, labelCells)
+    }
     // A line too narrow for any tick draws no rule alone.
     if (!rotating && waiting === 0 && gate === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
@@ -503,13 +520,25 @@ export function register(on: On) {
             {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
             {gate !== undefined && <Text dimColor>{gate}</Text>}
             {ticks !== undefined && <Box flexGrow={1} />}
+            {labeled && (
+              <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
+                <Text dimColor italic wrap="truncate-end">{label(read)}</Text>
+                {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
+                {hovering && prompts.map((_, i) => i !== read && (
+                  <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
+                    <Text italic wrap="truncate-end">{label(i)}</Text>
+                  </Box>
+                ))}
+              </Box>
+            )}
             {ticks !== undefined && (
-              <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
+              <Box key="cs-rail" marginLeft={labeled ? 2 : wordCells > 0 ? 3 : 0}>
                 {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
                 {prompts.slice(ticks.hidden).map((p, j) => {
                   const i = ticks.hidden + j
                   if (i === read) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
-                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'} onPress={() => jumpTo($, i)} />
+                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'}
+                                 hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
                 })}
               </Box>
             )}
@@ -588,6 +617,45 @@ const rowKey = (id: string) => (UUID.test(id) ? id.slice(0, 24) : id)
 
 // A prompt's text as the rail carries it: the first non-blank line, trimmed,
 // cut to RAIL_TEXT_CHARS with an ellipsis.
+// Terminal cells, not UTF-16 length: wide CJK and emoji take two, combining
+// marks none, and a cut keeps whole graphemes. The same measure as
+// mods/cs-mermaid/hooks/text.ts, for the band's named gap.
+const WIDE = /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\u{1F300}-\u{1F64F}]|[\u{1F900}-\u{1F9FF}]|[\u{20000}-\u{3FFFD}]/u
+const ZERO = /^[\p{M}\u200b-\u200f\ufe0f]+$/u
+
+function graphemes(text: string): string[] {
+  const Segmenter = (Intl as { Segmenter?: new (locale: string, options: { granularity: 'grapheme' }) => { segment(input: string): Iterable<{ segment: string }> } }).Segmenter
+  if (!Segmenter) return Array.from(text)
+  return Array.from(new Segmenter('en', { granularity: 'grapheme' }).segment(text), piece => piece.segment)
+}
+
+function cellsOf(grapheme: string): number {
+  if (ZERO.test(grapheme)) return 0
+  return WIDE.test(grapheme.replace(/[\p{M}\u200b-\u200f\ufe0f]/gu, '')) ? 2 : 1
+}
+
+function cellWidth(text: string): number {
+  return graphemes(text).reduce((sum, grapheme) => sum + cellsOf(grapheme), 0)
+}
+
+// `text` at most `width` cells wide, ending in `…` when anything was cut, and
+// spaces before it to fill `width`.
+function fitRight(text: string, width: number): string {
+  let fitted = text
+  if (cellWidth(text) > width) {
+    fitted = ''
+    let used = 0
+    for (const grapheme of graphemes(text)) {
+      const cells = cellsOf(grapheme)
+      if (used + cells > width - 1) break
+      fitted += grapheme
+      used += cells
+    }
+    fitted += '\u2026'
+  }
+  return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
+}
+
 function firstLine(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
   return line.length > RAIL_TEXT_CHARS ? `${line.slice(0, RAIL_TEXT_CHARS - 1)}\u2026` : line
