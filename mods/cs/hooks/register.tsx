@@ -246,13 +246,14 @@ let tailSaid = false
 let drawnRead = -1
 let redrawPending = false
 // The band's /config rows (plugin.json userConfig), as this activation got
-// them: the prompt it names, `latest` (the newest) or `read` (the one being
-// read), and the most bars it draws before older prompts fold into `…N`. A
+// them: whether it draws the prompt bars at all (off by default), the prompt
+// it names, `latest` (the newest) or `read` (the one being read), and the
+// most bars it draws before older prompts fold into `…N`. A
 // change reloads the plugin and register runs again. A stored value the band
 // cannot draw leaves it without bars (undefined), said once, and the rest of
 // the mod running: a throw from register would unload all of it.
 const CS_PLUGIN = 'cs'
-type BandOptions = { prompt: 'latest' | 'read'; bars: number }
+type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
 let bandOptions: BandOptions | undefined
 let bandProblem: string | undefined
 let bandProblemSaid = false
@@ -260,6 +261,7 @@ let bandProblemSaid = false
 // What is wrong with a value for one of the band's rows, by field name;
 // undefined when the band can draw it, or the field is not the band's.
 function bandOptionProblem(field: string, value: unknown): string | undefined {
+  if (field === 'bandPrompts') return typeof value === 'boolean' ? undefined : `cs.bandPrompts is on or off; got ${String(value)}`
   if (field === 'bandPrompt') return value === 'latest' || value === 'read' ? undefined : `cs.bandPrompt is latest or read; got ${String(value)}`
   if (field === 'bandBars') {
     return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${String(value)}`
@@ -268,8 +270,10 @@ function bandOptionProblem(field: string, value: unknown): string | undefined {
 }
 
 export function register(on: On, options: PluginOptions) {
-  bandProblem = bandOptionProblem('bandPrompt', options.bandPrompt) ?? bandOptionProblem('bandBars', options.bandBars)
-  bandOptions = bandProblem === undefined ? { prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number } : undefined
+  bandProblem = bandOptionProblem('bandPrompts', options.bandPrompts) ?? bandOptionProblem('bandPrompt', options.bandPrompt) ?? bandOptionProblem('bandBars', options.bandBars)
+  bandOptions = bandProblem === undefined
+    ? { prompts: options.bandPrompts as boolean, prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number }
+    : undefined
   bandProblemSaid = false
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
@@ -439,7 +443,7 @@ export function register(on: On, options: PluginOptions) {
       drawnRows.set(rowKey(e.requestId), { requestId: e.requestId, text: firstLine(e.props.text) })
       if (e.props.onScreen) shown.set(e.requestId, e.props.onScreen)
       else if (e.props.onScreen === null) shown.delete(e.requestId)
-      if (!redrawPending && prompts.length > 1 && namedIndex() !== drawnRead) {
+      if (!redrawPending && bandOptions?.prompts === true && prompts.length > 1 && namedIndex() !== drawnRead) {
         redrawPending = true
         $.clock.after(0, () => { redrawPending = false; $.ui.invalidate('ui.render') })
       }
@@ -474,12 +478,12 @@ export function register(on: On, options: PluginOptions) {
     let queued = waiting > 0 ? 0 : queue
     // Mail from other sessions that `cs -msg` has not read yet.
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
-    // The rail draws whenever the conversation has two prompts to move
-    // between, a turn running or not, under the same ownership as the keys;
-    // its bars draw not at all while a stored band row is bad, which the
-    // lead's band says once.
+    // The rail draws, once cs.bandPrompts turns it on, whenever the
+    // conversation has two prompts to move between, a turn running or not,
+    // under the same ownership as the keys; its bars draw not at all while a
+    // stored band row is bad, which the lead's band says once.
     const bars = bandOptions?.bars
-    let railing = !e.props.hasSurvey && prompts.length > 1
+    let railing = !e.props.hasSurvey && prompts.length > 1 && bandOptions?.prompts === true
     if (bandProblem !== undefined && !bandProblemSaid && (await ownsRotation($))) {
       bandProblemSaid = true
       $.ui.toast(`cs: the band draws no prompt bars: ${bandProblem}. Set it in /config.`)

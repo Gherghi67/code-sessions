@@ -507,8 +507,9 @@ paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
 caps answer; only the count's amber pivot still reads the measurement. The
 percentage itself stays on the status bar: the band does not repeat it.
 
-The rail is one upright bar per prompt the person sent in this
-conversation: `│` dim, `┃` in the session's colour for the prompt the band
+The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
+off by default; see [configuration.md](configuration.md#band-settings)).
+It is one upright bar per prompt the person sent in this conversation: `│` dim, `┃` in the session's colour for the prompt the band
 names, `┆` dim for a prompt the engine refused to scroll to. The band names
 the newest prompt; with the `/config` row `cs.bandPrompt` set to `read` it
 names the prompt being read instead (the prompt whose row stands highest on

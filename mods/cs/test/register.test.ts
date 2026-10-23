@@ -1,6 +1,7 @@
 // ABOUTME: Unit tests for the cs mod against a fake engine `$`.
 // ABOUTME: Covers the band's gate (crit, working, survey), the three presses and the wrap key's two-press guard, the armed handoff and its next-step toast, the heartbeat, /queue, and the /finish toasts and gate word.
 import { test, expect, beforeEach } from 'bun:test'
+import { readFileSync } from 'node:fs'
 
 // The plugin realm provides `h` and `Fragment` as globals; the test does the same.
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
@@ -133,8 +134,9 @@ const $ = {
   },
 }
 
-// The options the engine hands register: plugin.json's userConfig defaults.
-const OPTIONS = { bandPrompt: 'latest', bandBars: 10 }
+// The options the engine hands register, with the prompt bars turned on, as
+// most tests here are about them; plugin.json's defaults leave them off.
+const OPTIONS = { bandPrompts: true, bandPrompt: 'latest', bandBars: 10 }
 // The band following the reader's scroll, and drawing every bar that fits.
 const READING = { ...OPTIONS, bandPrompt: 'read' }
 const UNCAPPED = { ...OPTIONS, bandBars: 100 }
@@ -3067,4 +3069,20 @@ test('a bad band value already stored draws no bars and says so once; the rest o
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
   await band()
   expect(toasts).toEqual(['cs: the band draws no prompt bars: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
+})
+
+test('by plugin.json\'s defaults the band draws no prompt bars and names no prompt; its other words still draw', async () => {
+  const manifest = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'))
+  const defaults = Object.fromEntries(Object.entries(manifest.userConfig).map(([field, spec]: [string, any]) => [field, spec.default]))
+  expect(defaults).toEqual({ bandPrompts: false, bandPrompt: 'latest', bandBars: 10 })
+  register(on as any, defaults)
+  transcript(LINEAR)
+  await turnComplete()
+  expect(await band()).toBe(DRAWN)
+  percent = 80
+  const tree = await band()
+  expect(rail(tree)).toEqual([])
+  expect(gapLabel(tree)).toBeUndefined()
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
+  expect(toasts).toEqual([])
 })
