@@ -1,7 +1,7 @@
 /* @jsxRuntime classic */
 /* @jsx h */
 /* @jsxFrag Fragment */
-// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
+// ABOUTME: cs mod: keys above the prompt, after a mark whose colour says what is due: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
 // ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
@@ -39,16 +39,39 @@ export const CRIT_AT = 5
 // colour while there is time (none, so the surrounding ink, when the session
 // has no colour in the palette), amber from AMBER_AT, crit under CRIT_AT.
 export function countdownColor(left: number, session: string | undefined, bg: string | undefined, theme: string | undefined): string | undefined {
-  const dark = theme === 'dark'
-  if (left < CRIT_AT) return `rgb(${dark ? CRIT_DARK : CRIT_LIGHT})`
-  if (left <= AMBER_AT) {
-    const rgb = (bg ?? '').split(';').map(part => (/^\s*\d{1,3}\s*$/.test(part) ? Number(part) : NaN))
-    const measured = rgb.length === 3 && rgb.every(v => v <= 255)
-    const light = measured ? 2126 * rgb[0] + 7152 * rgb[1] + 722 * rgb[2] >= 1530000 : !dark
-    return `rgb(${light ? AMBER_LIGHT : AMBER_DARK})`
-  }
+  if (left < CRIT_AT) return `rgb(${theme === 'dark' ? CRIT_DARK : CRIT_LIGHT})`
+  if (left <= AMBER_AT) return amberColor(bg, theme)
   return paletteColor(session)
 }
+
+// The bar's amber for this terminal: pivoted on the measured background's
+// luminance, and on the theme when there is no measurement.
+export function amberColor(bg: string | undefined, theme: string | undefined): string {
+  const rgb = (bg ?? '').split(';').map(part => (/^\s*\d{1,3}\s*$/.test(part) ? Number(part) : NaN))
+  const measured = rgb.length === 3 && rgb.every(v => v <= 255)
+  const light = measured ? 2126 * rgb[0] + 7152 * rgb[1] + 722 * rgb[2] >= 1530000 : theme !== 'dark'
+  return `rgb(${light ? AMBER_LIGHT : AMBER_DARK})`
+}
+
+// What the band's mark says is due, highest precedence first: a /finish gate
+// or the cs queue is running, a rotation is due (context past the band's
+// threshold, or a handoff armed), or nothing is.
+export type BandState = 'running' | 'due' | 'clear'
+
+export function bandState(facts: { gate: boolean; queueRunning: boolean; rotationDue: boolean }): BandState {
+  if (facts.gate || facts.queueRunning) return 'running'
+  return facts.rotationDue ? 'due' : 'clear'
+}
+
+// The mark's colour for each state, by the terminal's background and theme:
+// the session palette's blue and green, which Claude Code paints on light and
+// dark alike, and the bar's amber, which pivots as the count's does.
+export const MARK_INK: Record<BandState, (bg: string | undefined, theme: string | undefined) => string> = {
+  running: () => `rgb(${SESSION_PALETTE.blue})`,
+  due: amberColor,
+  clear: () => `rgb(${SESSION_PALETTE.green})`,
+}
+const MARK = '\u25cf'
 
 // A session colour name as an rgb() the engine paints, or undefined for a name
 // outside the palette (state hand-edited, or from a newer Claude Code).
@@ -467,7 +490,9 @@ export function register(on: On, options: PluginOptions) {
     const armed = bandIdle && lastRefusal === undefined && (await handoffArmed($))
     const { context } = await $.session.usage()
     const percent = context.percent
-    let rotating = bandIdle && (armed || (percent !== undefined && percent >= (await threshold($))))
+    // Due is said mid-turn too, while the keys wait for the turn to end.
+    let due = armed || (percent !== undefined && percent >= (await threshold($)))
+    let rotating = bandIdle && due
     // Tasks queued and nothing running them, at any context, draw the start
     // key; an armed handoff draws its clear key alone. Tasks queued that the
     // start key does not offer (the queue runs them, a turn runs, or the
@@ -491,7 +516,7 @@ export function register(on: On, options: PluginOptions) {
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined }
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
@@ -539,6 +564,9 @@ export function register(on: On, options: PluginOptions) {
       mail > 0 ? `${wordsBeforeMail ? sep : ''}mail ${mail}` : '',
     ].join('')
     const wordCells = cellWidth(wordText)
+    // The mark and its space, first on every line the band draws but under a
+    // survey, which owns the band.
+    const markCells = e.props.hasSurvey ? 0 : cellWidth(MARK) + 1
     // The rail: one upright bar per prompt after the words, `┃` for
     // the one the band names, `┆` for one a jump was refused, `│` otherwise
     // (side by side, flat ticks run together into one line), each a Button
@@ -547,7 +575,7 @@ export function register(on: On, options: PluginOptions) {
     // cs.bandBars bars in what the line leaves after the inset, the gaps and
     // the words; the older prompts collapse into one `…N` run. The named tick
     // is remembered so a report that moves it can redraw the band.
-    const budget = e.props.bodyColumns - 2 - (wordCells > 0 ? 3 + wordCells : 0)
+    const budget = e.props.bodyColumns - 2 - markCells - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing && bars !== undefined ? railTicks(prompts.length, budget, bars) : undefined
     // After the bars the band names a prompt in what the line leaves: the
     // newest or the one being read (cs.bandPrompt), or the one under the
@@ -566,6 +594,8 @@ export function register(on: On, options: PluginOptions) {
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
     if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
+    const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
+    const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
     // One thin line, a blank line above it so it reads apart from the
     // transcript: only the words that need a key now, the keys in the
     // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
@@ -578,6 +608,8 @@ export function register(on: On, options: PluginOptions) {
         {drawn}
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
+            {/* the mark: its colour says what is due (bandState) */}
+            {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={markColor}>{MARK}</Text></Box>}
             {/* the session's features: a press finishes the one ready, or asks which */}
             {featured !== undefined && (featured.finish === undefined || !bandIdle
               ? <Text dimColor>{featured.label}</Text>
