@@ -47,7 +47,8 @@ unless something fails. It announces its plan first (`running 57 suites at 10
 jobs`); the lane count is what explains the wall time. While it runs, each
 suite prints one line to stderr as it finishes (`[12/57] test_queue.sh 4s`,
 with `FAIL` appended when it failed), so a slow gate and a hung one look
-different. The report ends with the ten slowest suites and their seconds.
+different. The report ends with the ten slowest suites and their seconds,
+then every skipped test (see below), then the verdict.
 `CS_TEST_JOBS=1` runs them one at a time and streams each suite's output as it
 happens, which is what you want when bisecting a failure inside a single suite.
 
@@ -68,6 +69,46 @@ The gate stops a suite that runs past 1200 seconds, along with its child
 processes, counts it as failed and names it in a `timed out after 1200s` line;
 the other suites still run. The slowest suite, `test_install.sh`, takes about 600 seconds on a loaded machine.
 `CS_TEST_SUITE_TIMEOUT` sets the cap in seconds.
+
+### Skipped tests and the tools a test needs
+
+A test that returns 77 skips: the suite counts it apart
+(`Results: 40/42 passed, 0 failed, 2 skipped`) and still passes. Return 77 when
+the machine cannot build the test's fixture, such as a privilege, a filesystem
+or a bash version it lacks. Never return 0 from a skip: `test_docs.sh` fails on
+that.
+
+A test that needs a command guards it with `require_tool`, never with its own
+`command -v` (`test_docs.sh` fails on a hand-written guard):
+
+```bash
+test_mod_unit_tests_pass_under_bun() {
+    require_tool bun || return $?
+    ...
+}
+```
+
+`require_tool <tool>...` returns 0 when every tool is on `PATH`. For the first
+missing one it skips the test with `SKIP: <tool> not on PATH`, unless
+`CS_TEST_REQUIRE_TOOLS`, a space-separated list, names that tool. Then the test
+fails with `FAIL: <tool> is not on PATH, and CS_TEST_REQUIRE_TOOLS says this
+run has it`. CI sets the list to the tools its job installs, so a runner that
+lost one goes red instead of skipping the tests that need it. Locally the list
+is unset and a missing tool only skips. Call `require_tool` directly, never
+inside `$( )`, and pass its status through unchanged: call a helper that wraps
+it as `_need_expect || return $?`, not `|| return 77`.
+
+`run_all.sh` lists every skipped test above the verdict, with its suite and,
+for a missing tool, the tool, and the verdict counts them:
+
+```text
+skipped tests:
+  test_mod_rotate.sh: test_mod_unit_tests_pass_under_bun (bun not on PATH)
+  test_queue.sh: test_queue_add_fails_when_the_task_cannot_be_written
+
+================================================================
+OK: all 63 suites passed, 2 tests skipped
+```
 
 ### Which tests to run, and when
 
