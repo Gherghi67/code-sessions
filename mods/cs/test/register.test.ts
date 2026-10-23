@@ -2723,3 +2723,71 @@ test('a cs that fails, cannot start, or prints a record the band cannot read dra
     `cs work -features gave a record the band cannot read: ${record.replace(/ready$/, 'landed')}`,
   ])
 })
+
+test('the features word yields the left to a key word or a running gate, and the gap beside the rail shrinks by its cells', async () => {
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  transcript(LINEAR)
+  await turnComplete()
+  // `1 feature · fix-auth ready` (26) and its three-cell gap leave the label 110 - 5 - 29 - 4 - 2.
+  let tree = await band()
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(70))
+  percent = 80
+  tree = await band()
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(buttons(tree).map((b: any) => b.props.key)).toContain('cs-rotate')
+  percent = undefined
+  queueTasks(1)
+  expect(featuresKey(await band())).toBeUndefined()
+  delete files[`${QDIR}/0000000001-seed`]
+  livePids.add('4242')
+  nowMs = NOW * 1000
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 3 }))
+  await watchTick()
+  tree = await band({ isWorking: true })
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(restingWords(tree).slice(0, 2)).toEqual(['▌', 'finishing fix-auth · gate 3s'])
+})
+
+test('an idle band asks cs again every 30 s, never while a turn runs, never twice at once, and not at all with no feature', async () => {
+  await turnComplete()
+  expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
+  expect(featureRuns()).toEqual([])
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'dirty'))
+  await turnComplete()
+  await turnComplete()
+  const clocks = timers.filter(t => t.kind === 'every' && t.ms === 30000)
+  expect(clocks).toHaveLength(1)
+  expect(featureRuns()).toHaveLength(2)
+  await band({ isWorking: true })
+  await clocks[0].fn()
+  expect(featureRuns()).toHaveLength(2)
+  await band()
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await clocks[0].fn()
+  expect(featureRuns()).toHaveLength(3)
+  expect(featuresKey(await band()).props.label).toBe('1 feature · fix-auth ready')
+  // A reading still running is not doubled by the next tick.
+  const run = $.process.run
+  let release: () => void = () => {}
+  $.process.run = async (argv: string[], init: any) => {
+    if (argv[2] !== '-features') return run(argv, init)
+    runs.push({ argv, init })
+    await new Promise<void>(r => { release = r })
+    return { exitCode: 0, stdout: `${feature('fix-auth', 3, 'ready')}\n`, stderr: '' }
+  }
+  try {
+    const first = clocks[0].fn()
+    for (let i = 0; i < 100 && featureRuns().length < 4; i++) await Promise.resolve()
+    expect(featureRuns()).toHaveLength(4)
+    await clocks[0].fn()
+    expect(featureRuns()).toHaveLength(4)
+    release()
+    await first
+  } finally {
+    $.process.run = run
+  }
+  expect(featureRuns().at(-1)?.init).toEqual({ timeoutMs: 20000 })
+})
