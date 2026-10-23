@@ -217,6 +217,13 @@ let featuresReading = false
 let featuresClock: { cancel: () => void } | undefined
 let featuresComplaint: string | undefined
 
+// The task word: `▸ <subject>` of the lowest-numbered task in progress on the
+// session's native task list, as last read; the last complaint logged.
+let taskWord: string | undefined
+let taskComplaint: string | undefined
+// How many cells of the band's left the task word takes at most.
+const TASK_WORD_CELLS = 48
+
 // The rail. A prompt is a row of the transcript's live branch; its requestId
 // is the id the engine drew its UserMessage row under, once seen.
 export type Prompt = { uuid: string; text: string }
@@ -252,6 +259,7 @@ export function register(on: On) {
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
   featuresWord = undefined; featuresReading = false; featuresClock = undefined; featuresComplaint = undefined
+  taskWord = undefined; taskComplaint = undefined
   railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); denySaid = false; notYetSaid = false; tailSaid = false; drawnRead = -1; redrawPending = false
   on('session.start', async ($, e, next) => {
     if (!registered) {
@@ -260,6 +268,7 @@ export function register(on: On) {
       await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
     }
     await refreshRail($)
+    await refreshTask($)
     readFeaturesLater($)
     // Only in a cs session; anywhere else the mod stays silent. Nor while git
     // tracks the session's control files: the heartbeat would change them.
@@ -337,6 +346,7 @@ export function register(on: On) {
       finishTurnOver = true
       await clearPressed($)
       await refreshRail($)
+      await refreshTask($)
       readFeaturesLater($)
     }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
@@ -351,6 +361,15 @@ export function register(on: On) {
     finishTurnOver = false
     if (!finishWatch) await watchFinish($)
     return next(e)
+  })
+
+  // The task word follows the list as Claude edits it: after a TaskCreate or a
+  // TaskUpdate the list is read again. Every other tool passes untouched.
+  on('tool.call', async ($, e, next) => {
+    if (e.tool !== 'TaskCreate' && e.tool !== 'TaskUpdate') return next(e)
+    const result = await next(e)
+    await refreshTask($)
+    return result
   })
 
   // A prompt entering the session, from anywhere, means the conversation is
@@ -441,12 +460,14 @@ export function register(on: On) {
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
-    if ((rotating || waiting > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false; featured = undefined }
+    // With nothing else on the left, the task in progress on the session's list.
+    let tasking = !e.props.hasSurvey && featured === undefined && !rotating && waiting === 0 && gate === undefined ? taskWord : undefined
+    if ((rotating || waiting > 0 || railing || featured || tasking) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false; featured = undefined; tasking = undefined }
     // The read tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const read = readIndex()
     drawnRead = read
-    if (!rotating && waiting === 0 && gate === undefined && !railing && featured === undefined) return drawn
+    if (!rotating && waiting === 0 && gate === undefined && !railing && featured === undefined && tasking === undefined) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
@@ -481,6 +502,7 @@ export function register(on: On) {
       wrapping ? `${sep}${spelled(WRAP_ACTION) === undefined ? '' : `${spelled(WRAP_ACTION)} `}wrap` : '',
       waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
       gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
+      tasking ?? '',
     ].join('').length
     // The rail: one upright bar per prompt at the line's right end, `┃` for
     // the one being read, `┆` for one a jump was refused, `│` otherwise (side
@@ -508,7 +530,7 @@ export function register(on: On) {
       return fitRight(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
-    if (!rotating && waiting === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
+    if (!rotating && waiting === 0 && gate === undefined && featured === undefined && tasking === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
     // transcript: only the words that need a key now, the keys in the
     // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
@@ -544,6 +566,7 @@ export function register(on: On) {
             {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
             {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
             {gate !== undefined && <Text dimColor>{gate}</Text>}
+            {tasking !== undefined && <Text dimColor>{tasking}</Text>}
             {ticks !== undefined && <Box flexGrow={1} />}
             {labeled && (
               <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
@@ -691,6 +714,51 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
   return word
 }
 
+// Reads the session's native task list and redraws the band when the task
+// word moved. Claude Code keeps it as <config>/tasks/<list id>/<n>.json, the
+// list id CLAUDE_CODE_TASK_LIST_ID (cs sets the session's name) else the
+// conversation's id, with every character outside [A-Za-z0-9_-] made `-`. A
+// file that does not parse (one being written) is skipped and said once.
+async function refreshTask($: EngineInterface) {
+  const word = (await ownsRotation($)) ? await readTask($) : undefined
+  if (word !== taskWord) {
+    taskWord = word
+    $.ui.invalidate('ui.render')
+  }
+}
+
+async function readTask($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME')
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : undefined)
+  if (config === undefined) return undefined
+  const list = ((await $.env.get('CLAUDE_CODE_TASK_LIST_ID')) || (await $.session.id())).replace(/[^a-zA-Z0-9_-]/g, '-')
+  const dir = `${config}/tasks/${list}`
+  let entries: { name: string; kind: string }[]
+  try {
+    entries = await $.fs.list(dir)
+  } catch {
+    return undefined // no task list yet: no task in progress
+  }
+  let lowest: { id: number; subject: string } | undefined
+  let complaint: string | undefined
+  for (const entry of entries) {
+    if (entry.kind !== 'file' || !/^\d+\.json$/.test(entry.name)) continue
+    let item: unknown
+    try {
+      item = JSON.parse(await $.fs.read(`${dir}/${entry.name}`))
+    } catch (err) {
+      complaint ??= `cs: the band skipped task ${entry.name}: ${String(err instanceof Error ? err.message : err)}`
+      continue
+    }
+    const { id, status, subject } = (item ?? {}) as { id?: unknown; status?: unknown; subject?: unknown }
+    if (status !== 'in_progress' || typeof subject !== 'string' || typeof id !== 'string' || !/^\d+$/.test(id)) continue
+    if (lowest === undefined || Number(id) < lowest.id) lowest = { id: Number(id), subject }
+  }
+  if (complaint !== undefined && complaint !== taskComplaint) $.ui.log(complaint)
+  taskComplaint = complaint
+  return lowest === undefined ? undefined : cutToCells(`\u25b8 ${lowest.subject}`, TASK_WORD_CELLS)
+}
+
 // Whether the sessions root holds a feature of `base`: cs names each one's
 // directory `<base>@<task>` there.
 async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean> {
@@ -771,21 +839,23 @@ function cellWidth(text: string): number {
   return graphemes(text).reduce((sum, grapheme) => sum + cellsOf(grapheme), 0)
 }
 
-// `text` at most `width` cells wide, ending in `…` when anything was cut, and
-// spaces before it to fill `width`.
-function fitRight(text: string, width: number): string {
-  let fitted = text
-  if (cellWidth(text) > width) {
-    fitted = ''
-    let used = 0
-    for (const grapheme of graphemes(text)) {
-      const cells = cellsOf(grapheme)
-      if (used + cells > width - 1) break
-      fitted += grapheme
-      used += cells
-    }
-    fitted += '\u2026'
+// `text` at most `width` cells wide, ending in `…` when anything was cut.
+function cutToCells(text: string, width: number): string {
+  if (cellWidth(text) <= width) return text
+  let fitted = ''
+  let used = 0
+  for (const grapheme of graphemes(text)) {
+    const cells = cellsOf(grapheme)
+    if (used + cells > width - 1) break
+    fitted += grapheme
+    used += cells
   }
+  return `${fitted}\u2026`
+}
+
+// `text` cut to `width` cells, with spaces before it to fill `width`.
+function fitRight(text: string, width: number): string {
+  const fitted = cutToCells(text, width)
   return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
 }
 

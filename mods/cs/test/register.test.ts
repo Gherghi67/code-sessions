@@ -2874,3 +2874,64 @@ test('the turn end does not wait on cs: it returns while the features reading st
   expect(invalidated).toEqual(['ui.render'])
   expect(featuresKey(await band()).props.label).toBe('1 feature · fix-auth ready')
 })
+
+// ---------------------------------------------------------------------------
+// The band's left when no features word and no key word is due: the task in
+// progress on the session's native task list, then the cs queue and unread
+// mail when there are any.
+
+const TASKS = '/home/.claude/tasks/work'
+const task = (id: number, status: string, subject: string) => { files[`${TASKS}/${id}.json`] = JSON.stringify({ id: String(id), subject, description: '', activeForm: subject, status, blocks: [], blockedBy: [] }) }
+
+test('with nothing else due the left names the task in progress, dim, the lowest id of several, cut to 48 cells', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(3, 'completed', 'ship the docs'); task(7, 'in_progress', 'land the parser'); task(5, 'in_progress', 'fix the login redirect'); task(9, 'pending', 'later')
+  await turnComplete()
+  let tree = await band()
+  expect(restingWords(tree)).toEqual(['▸ fix the login redirect'])
+  expect(texts(tree)[0].props).toEqual({ dimColor: true })
+  task(5, 'completed', 'fix the login redirect')
+  task(7, 'in_progress', `${'y'.repeat(60)}`)
+  await turnComplete()
+  expect(restingWords(await band())).toEqual([`▸ ${'y'.repeat(45)}…`])
+  task(7, 'completed', 'land the parser')
+  await turnComplete()
+  expect(await band()).toBe(DRAWN)
+})
+
+test('the task word yields to the features word and to a key word, and a TaskUpdate redraws it without waiting for the turn to end', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'fix the login redirect')
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await featuresTurn()
+  let tree = await band()
+  expect(featuresKey(tree).props.label).toBe('1 feature · fix-auth ready')
+  expect(restingWords(tree)).toEqual([])
+  runResult = { exitCode: 0, stdout: '', stderr: '' }
+  await featuresTurn()
+  percent = 80
+  expect(restingWords(await band())).not.toContain('▸ fix the login redirect')
+  percent = undefined
+  expect(restingWords(await band())).toEqual(['▸ fix the login redirect'])
+  // The tool runs first; the word reads the list it left.
+  invalidated = []
+  const result = await hooks['tool.call']($, { tool: 'TaskUpdate', taskId: '5', status: 'completed' }, async () => { task(5, 'completed', 'fix the login redirect'); return { result: 'ok' } })
+  expect(result).toEqual({ result: 'ok' })
+  expect(invalidated).toEqual(['ui.render'])
+  expect(await band()).toBe(DRAWN)
+  // Any other tool passes through and reads nothing.
+  const reads0 = reads.length
+  expect(await hooks['tool.call']($, { tool: 'Bash', command: 'true' }, async () => ({ result: 'done' }))).toEqual({ result: 'done' })
+  expect(reads.length).toBe(reads0)
+})
+
+test('a task file that does not parse is skipped and logged once; the rest of the list still names its task', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'fix the login redirect')
+  files[`${TASKS}/2.json`] = '{"id":"2","status":"in_pro'
+  await turnComplete()
+  await turnComplete()
+  expect(restingWords(await band())).toEqual(['▸ fix the login redirect'])
+  expect(logs.filter(l => l.startsWith('cs: the band skipped task 2.json'))).toHaveLength(1)
+})
