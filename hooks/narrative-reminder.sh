@@ -709,9 +709,9 @@ _retire_settle() {  # stage task run
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
     out=$(cat "$3.out" 2>/dev/null || true)
     rm -f "$3.run" "$3.out"
-    if printf '%s\n' "$out" | grep -q "^staged $2 "; then return 1; fi
+    if grep -q "^staged $2 " <<< "$out"; then return 1; fi
     rm -f "$1"
-    if printf '%s\n' "$out" | grep -q "^retired $2 "; then
+    if grep -q "^retired $2 " <<< "$out"; then
         _retire_report "cs: the '$wt_name' conversation closed, and the retire /finish staged ran: $out Tell the user in one line."
     fi
     _retire_report "cs: the '$wt_name' conversation closed, and the retire /finish staged did not go through: $out Tell the user, and run /finish $2 again once that is resolved."

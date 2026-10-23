@@ -190,7 +190,7 @@ _require_feature_brief() {  # file
     local section present
     present=$(_brief_sections "$1")
     while IFS= read -r section; do
-        printf '%s\n' "$present" | grep -q -x -F -- "$section" \
+        grep -q -x -F -- "$section" <<< "$present" \
             || error "cs -spawn --brief: $1 has no '## $section' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line"
     done <<EOF
 $FEATURE_BRIEF_SECTIONS
