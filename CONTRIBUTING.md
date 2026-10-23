@@ -75,8 +75,7 @@ the other suites still run. The slowest suite, `test_install.sh`, takes about 60
 A test that returns 77 skips: the suite counts it apart
 (`Results: 40/42 passed, 0 failed, 2 skipped`) and still passes. Return 77 when
 the machine cannot build the test's fixture, such as a privilege, a filesystem
-or a bash version it lacks. Never return 0 from a skip: `test_docs.sh` fails on
-that.
+or a bash version it lacks. Never return 0 from a skip: that counts as a pass.
 
 A test that needs a command guards it with `require_tool`, never with its own
 `command -v` (`test_docs.sh` fails on a hand-written guard):
