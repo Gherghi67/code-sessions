@@ -494,20 +494,18 @@ directly above the prompt draws `rotate this conversation`, pressed by
 Ctrl+X 1.
 `CS_ROTATE_BUTTON_CTX=<percent>` in the shell that launches cs moves it; unset
 or not a number, the band follows the bar's own warn band
-(`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one capsule in the
-status bar's idiom, with a blank line above it: a `cs` chip on the session's
-own colour (Claude coral once a handoff is armed; on the surface, in the
-terminal's ink, for a session with no colour), then the keys on the bar's own
-capsule fill, a shade of the terminal background nudged a tenth away from
-itself, darker on a light terminal and lighter on a dark one, so the band reads
-as one more capsule of the bar rather than as the last row of the transcript.
-cs measures that background at launch and exports it (`CS_TERM_BG_RGB`);
-without the measurement the band keeps the spacing and paints no fill behind
-the keys, since a guessed surface can leave the engine's own text unreadable on
-it. The bar's rounded caps close the capsule where this machine agreed to
-them, by the bar's own rule (`CS_STATUSLINE_CAPS`, else the answer in
-`~/.config/cs/statusline-caps`), and only over a measured background. The
-percentage itself stays on the status bar: the band does not repeat it.
+(`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
+the prompt, two columns in where Claude Code draws its own footer, with a
+blank line above it: no fill, no chip, no caps, only the words that need a
+key now, each with its chord beside it, separated by a dim `·`. In order, and
+each only when it applies: `/clear in Ns` (an armed handoff's count), the
+rotate key (or the `/clear` once a handoff is armed), the wrap key, the
+queue's start key, and `finishing <task> · gate <elapsed>` while a `/finish`
+gate runs. The chords wear the session's colour; everything else is dim or
+the terminal's own ink. The band paints nothing from the measured background
+(`CS_TERM_BG_RGB`) and reads no caps answer; only the count's amber pivot
+still reads the measurement. The percentage itself stays on the status bar:
+the band does not repeat it.
 
 The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.
 
@@ -545,9 +543,9 @@ a new request, or a second `/wrap` (which, if it fails a pass, leaves no marker
 of its own). A continuation turn, one started with no prompt as a Stop hook's
 feedback starts one, leaves it in place. A summary written any other way
 hides nothing, and a wrap that fails a pass
-skips the marker. Below the band the mod draws nothing, and it draws nothing while a
-turn runs or while a survey holds the band; the `/finish` gate band below is the
-one exception. It never submits a prompt of its own.
+skips the marker. Below the band the mod draws nothing, and it draws none of
+these keys while a turn runs or while a survey holds the band; the `/finish`
+gate word below is the one word that draws then. It never submits a prompt of its own.
 
 The same button has a second state. Once the `rotate` skill has armed a
 handoff (`.cs/local/pending-handoff` names one), the band draws
@@ -582,7 +580,7 @@ handoff already armed: an interrupted or errored turn, or a subagent's, starts
 nothing. The run is scheduled from a timer rather than from the turn's own
 hook, which the plugin contract refuses a command from. Once the rotate skill
 has armed its handoff, the next turn's end starts a 20-second grace: the
-band reads `/clear and continue from the handoff  ·  /clear in 20s`,
+band reads `/clear in 20s  ·  /clear and continue from the handoff`,
 redrawn once a second. The count wears the session's own colour while there
 is time, the status bar's amber from ten seconds and its crit red under five
 (the bar's inks, pinned against `bin/cs-statusline` by `tests/test_mod_rotate.sh`).
@@ -600,19 +598,15 @@ timer, because a timer started before a `/clear` keeps firing after one
 own rule (frontmatter opened and closed by `---`, `status: unconsumed`
 inside), so a truncated handoff is never cleared into.
 
-The first grace of a session (a load of the mod) also opens a pane, titled
-`Handoff`, beside the band: a `Handoff` header in the session colour, the
-handoff's `Next Step` section whole, drawn as an assistant reply's markdown
-is (lists, emphasis, code, links; a section past the engine's 10000-character
-bound for a Markdown element keeps the lines that fit and ends on a dim note
-that the rest is in the handoff), and beneath it a twenty-block bar that empties one block a second beside the same
-count, both in the count's colour, so the twenty seconds are spent reading
-what the next conversation will do. The pane carries no keys; stopping the
-count stays on the band. It closes wherever the count ends: a press, a prompt,
-a `/clear`, or zero. Later graces in the same session keep to the band. A pane
-a mod opens on its own is not drawn below 144 terminal columns (110 once you
-have opened it yourself), so on a narrower terminal the band's count is all
-there is.
+When the count starts, the mod toasts the handoff's next step once:
+`cs: next step: <line>`, the first non-empty line of the handoff's `Next Step`
+section (a `#` line inside a fenced block is the step's text, not a heading;
+a line that opens or closes a fence is skipped), cut to 160 characters with an
+ellipsis. One toast per armed handoff: a count the next turn's end restarts for
+the same handoff, and the band's redraws, say nothing more; a handoff armed
+after the `/clear` in the same process is toasted in its turn. A handoff with
+no `Next Step` section toasts nothing, and a count a prompt stops before the
+toast's timer fires toasts nothing. The mod opens no pane.
 
 Pick the percentage above a fresh conversation's own footprint. The wake turn
 after the `/clear` is an ordinary turn, and the once-per-conversation record
@@ -734,12 +728,12 @@ name past 60 characters, as `/queue`'s toast does. Each toasts once: the mod kee
 which steps of which run (the record's `id`) it has shown, and the record the
 watch finds when it starts belongs to an earlier run, so the mod never toasts it.
 While a real gate runs (not `-- true`, and not one `--ci-green` skipped), the
-band above the prompt draws `finishing <task> · gate <elapsed>`, redrawn each
-second, during the turn as well. The gate counts as running only while the
+band above the prompt carries `finishing <task> · gate <elapsed>` as its last
+word, dim, redrawn each second, during the turn as well. The gate counts as running only while the
 record's `pid` is alive (`kill -0` through `$.process.run`, once a second while
 a step runs), so a cs process that a signal ended leaves no band behind. The watch
 ends at the first read after the turn that ran `/finish` is over with nothing
-running. The rotation keys draw beneath the gate band when both show. An
+running. The rotation keys draw before the gate word on the same line when both show. An
 integrate or retire run from a shell, outside `/finish`, starts no watch and
 toasts nothing. The mod does not hook `command.run` for this: the contract scopes
 it to slash commands and registered ones, and says nothing of skills.
