@@ -126,13 +126,12 @@ session's features where a key can act on it. No pane.
    what to use on the left when wrap rotate and feature are not present",
    then picked "Task in progress" ("Left word"), added "+ unread mail and
    queue if present", and for the queue picked "Both" ("Which queue"):
-   - Task word: with no features word, no key word and no gate, the
-     lowest-numbered task in progress on the conversation's native task
-     list, `▸ <first line of the subject>`, dim, cut to 48 cells; read at
-     session start, turn end and after a TaskCreate or TaskUpdate tool
-     call. On a narrow line it is cut to what the queue and mail words
-     leave it, and dropped under 8 cells, so the band stays one line
-     (Fable review, 2026-10-23).
+   - No task word. A `▸ <subject>` word naming the task in progress was
+     built and merged (be8b4253), then dropped: on the live band Claude
+     Code's own task list draws the same subject just above it. Alex
+     ("Duplicated", 2026-10-23): "we already have the task display from
+     claude", picked "Drop the task word". Rejected: draw it only while
+     the list is collapsed.
    - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
      tasks but the start key is not drawn (queue armed or draining, a turn
      running, or an armed handoff's clear key standing alone). The start
@@ -140,7 +139,7 @@ session's features where a key can act on it. No pane.
    - Mail word: `mail N`, dim, no press, the `.json` files in the
      mailbox's `new/` that `cs -msg` has not read. A plain word, not `✉`:
      Dingbats are not proven to render in Alex's terminal font.
-   - Order: features · keys · gate · task · queue · mail, `  ·  ` between,
+   - Order: features · keys · gate · queue · mail, `  ·  ` between,
      all counted in terminal cells (a wide character takes two) in the
      width the gap label and the rail are left.
    - Queue and mail draw under a running `/finish` gate and mid-turn
