@@ -3048,6 +3048,8 @@ test('/config refuses a band value the band cannot draw, where it is typed, and 
     expect(await set('cs.bandBars', value)).toEqual({ deny: `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${value}` })
   }
   expect(await set('cs.bandPrompt', 'first')).toEqual({ deny: 'cs.bandPrompt is latest or read; got first' })
+  expect(await set('cs.bandPrompts', 'yes')).toEqual({ deny: 'cs.bandPrompts is on or off; got yes' })
+  expect(await set('cs.bandPrompts', true)).toEqual({ value: true })
   expect(await set('cs.bandBars', 4)).toEqual({ value: 4 })
   expect(await set('cs.bandPrompt', 'read')).toEqual({ value: 'read' })
   expect(await set('other.bandBars', 0, 'other')).toEqual({ value: 0 })
@@ -3085,4 +3087,15 @@ test('by plugin.json\'s defaults the band draws no prompt bars and names no prom
   expect(gapLabel(tree)).toBeUndefined()
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
   expect(toasts).toEqual([])
+})
+
+test('with the prompt bars off, a scroll redraws nothing, whichever prompt the band would name', async () => {
+  register(on as any, { ...READING, bandPrompts: false })
+  transcript(LINEAR)
+  await turnComplete()
+  await band()
+  invalidated = []
+  await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
+  await fireAfter()
+  expect(invalidated).toEqual([])
 })
