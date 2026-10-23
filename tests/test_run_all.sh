@@ -75,6 +75,22 @@ make_suite_hang() {  # n, [ignore-term]
     } > "$SUITE_DIR/$name"
 }
 
+# A suite built on the real test_lib.sh, so its skips reach the gate the way a
+# real suite's do. Each body line is bash source for the suite; its run_test
+# lines decide which tests run.
+make_lib_suite() {  # name, body
+    mkdir -p "$SUITE_DIR"
+    {
+        printf 'SCRIPT_DIR=%q\n' "$SCRIPT_DIR"
+        printf 'source %q\n' "$SCRIPT_DIR/test_lib.sh"
+        printf '%s\n' "$2"
+        printf 'report_results\n'
+    } > "$SUITE_DIR/$1"
+}
+
+# A tool no machine has, so "not on PATH" never depends on the host.
+ABSENT_TOOL=cs-run-all-absent-tool
+
 # ============================================================================
 # Tests
 # ============================================================================
@@ -132,6 +148,64 @@ test_run_all_keeps_each_suites_own_output() {
         grep -q "=== test_fake$i.sh ===" <<< "$out" \
             || { echo "lost header of test_fake$i.sh"; return 1; }
     done
+}
+
+# A skip passes the gate, so the gate has to say it happened: CI's last lines
+# name each skipped test, its suite and, for a missing tool, the tool, and the
+# verdict counts them. Serial runs keep no log, so this holds in both modes.
+test_run_all_names_every_skipped_test_and_counts_them() {
+    SUITE_DIR="$TEST_TMPDIR/suites"
+    make_lib_suite test_alpha.sh "test_needs_it() { require_tool $ABSENT_TOOL || return \$?; }
+test_odd_platform() { echo '    SKIP: not on this platform'; return 77; }
+test_ok() { return 0; }
+run_test test_needs_it
+run_test test_odd_platform
+run_test test_ok"
+    make_lib_suite test_beta.sh "test_ok() { return 0; }
+run_test test_ok"
+    local jobs out rc want
+    want="$(printf '%s\n' \
+        "skipped tests:" \
+        "  test_alpha.sh: test_needs_it ($ABSENT_TOOL not on PATH)" \
+        "  test_alpha.sh: test_odd_platform" \
+        "" \
+        "================================================================" \
+        "OK: all 2 suites passed, 2 tests skipped")"
+    for jobs in 2 1; do
+        rc=0
+        out=$(env -u CS_TEST_REQUIRE_TOOLS CS_TEST_JOBS=$jobs CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>/dev/null) || rc=$?
+        assert_eq "0" "$rc" "skips alone pass the gate at $jobs jobs: $out" || return 1
+        assert_eq "$want" "$(printf '%s\n' "$out" | tail -6)" "the summary at $jobs jobs" || return 1
+    done
+}
+
+test_run_all_verdict_line_is_bare_when_nothing_skipped() {
+    SUITE_DIR="$TEST_TMPDIR/suites"
+    make_lib_suite test_alpha.sh "test_ok() { return 0; }
+run_test test_ok"
+    local out
+    out=$(CS_TEST_JOBS=1 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>/dev/null) || return 1
+    assert_eq "OK: all 1 suites passed" "$(printf '%s\n' "$out" | tail -1)" "no skip count without a skip" || return 1
+    assert_output_not_contains "$out" "skipped tests:" "no skip list without a skip" || return 1
+}
+
+test_run_all_names_skips_beside_a_failure() {
+    SUITE_DIR="$TEST_TMPDIR/suites"
+    make_lib_suite test_alpha.sh "test_needs_it() { require_tool $ABSENT_TOOL || return \$?; }
+run_test test_needs_it"
+    make_lib_suite test_beta.sh "test_broken() { return 1; }
+run_test test_broken"
+    local out rc=0 want
+    out=$(env -u CS_TEST_REQUIRE_TOOLS CS_TEST_JOBS=2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "a failing suite still fails the gate" || return 1
+    want="$(printf '%s\n' \
+        "skipped tests:" \
+        "  test_alpha.sh: test_needs_it ($ABSENT_TOOL not on PATH)" \
+        "" \
+        "================================================================" \
+        "FAILED: 1/2 suites, 1 test skipped" \
+        "  - test_beta.sh")"
+    assert_eq "$want" "$(printf '%s\n' "$out" | tail -6)" "the summary of a failed run" || return 1
 }
 
 # A shard runs a disjoint slice, and the slices together cover every suite once.
@@ -743,5 +817,8 @@ run_test test_run_all_stops_a_suite_past_the_time_cap_in_serial_mode
 run_test test_run_all_leaves_no_watchdog_behind
 run_test test_run_all_kills_a_suite_that_ignores_term
 run_test test_run_all_rejects_a_malformed_time_cap
+run_test test_run_all_names_every_skipped_test_and_counts_them
+run_test test_run_all_verdict_line_is_bare_when_nothing_skipped
+run_test test_run_all_names_skips_beside_a_failure
 
 report_results
