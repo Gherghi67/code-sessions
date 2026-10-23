@@ -116,6 +116,38 @@ session's features where a key can act on it. No pane.
    the tests in `mods/cs/test/` cover the walk and the width budget with
    fixture transcripts.
 
+   As built after slice 3 (2026-10-23): the left rule `▌` is gone. Alex,
+   on the live band: "I don't like the left bar and the fact that is
+   empty", then "I don't like the left rail at all". The line starts with
+   its first word two columns in; the read prompt and the bars stay
+   right-aligned ("Empty left": "Keep it right-aligned").
+
+   As built, the left's other words (2026-10-23). Alex: "we need to find
+   what to use on the left when wrap rotate and feature are not present",
+   then picked "Task in progress" ("Left word"), added "+ unread mail and
+   queue if present", and for the queue picked "Both" ("Which queue"):
+   - Task word: with no features word, no key word and no gate, the
+     lowest-numbered task in progress on the conversation's native task
+     list, `▸ <first line of the subject>`, dim, cut to 48 cells; read at
+     session start, turn end and after a TaskCreate or TaskUpdate tool
+     call. On a narrow line it is cut to what the queue and mail words
+     leave it, and dropped under 8 cells, so the band stays one line
+     (Fable review, 2026-10-23).
+   - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
+     tasks but the start key is not drawn (queue armed or draining, a turn
+     running, or an armed handoff's clear key standing alone). The start
+     key and the queue word never draw together.
+   - Mail word: `mail N`, dim, no press, the `.json` files in the
+     mailbox's `new/` that `cs -msg` has not read. A plain word, not `✉`:
+     Dingbats are not proven to render in Alex's terminal font.
+   - Order: features · keys · gate · task · queue · mail, `  ·  ` between,
+     all counted in terminal cells (a wide character takes two) in the
+     width the gap label and the rail are left.
+   - Queue and mail draw under a running `/finish` gate and mid-turn
+     (counts, nothing to press), never under a survey, and only in the
+     lead conversation. Both are read when the band draws, as the start
+     key's count already was; no clock of their own.
+
 ## Where the complexity moves
 
 The pane's layout logic goes. What arrives: a transcript reader in the
