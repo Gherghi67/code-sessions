@@ -98,3 +98,20 @@ the shipped band and is updated or removed with the band.
    before anything else.
 2. The rail: transcript walk, ticks, press to jump, `/cs` moves.
 3. Features: `-features --json`, the band word, the press.
+
+## Measured before slice 2 (2026-10-23, Claude Code 2.1.309, terminal)
+
+A throwaway mod (scratchpad `scroll-probe/`, script `run.sh`) in an
+isolated tmux with three prompts, the middle one answered by 60 lines:
+`$.ui.scroll({ to: { requestId }, block: 'start' })` from a `command.run`
+hook answered `{}` and the screen moved from the reply's tail to the
+prompt's row at the top. Two facts the rail must honour:
+
+- The composer's echo draws first as a `UserMessage` with `requestId`
+  `placeholder`; the real id arrives on the next render. A jump to
+  `placeholder` is denied (`nothing drawn under that requestId`). The
+  rail keys rows by the transcript's uuid and ignores `placeholder`.
+- `onScreen` was `null` on every first render of a row; the terminal
+  reports it on later redraws (contract: `null` means the site is not
+  laid out yet). The "prompt being read" reads the latest report per
+  row and stays where it was while a report is `null`.
