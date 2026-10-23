@@ -2646,3 +2646,80 @@ test('a base with one feature ready names it on the left, and a press runs /fini
   await featuresKey(tree).props.onPress()
   expect(ran).toEqual([{ command: 'finish', args: 'fix-auth' }])
 })
+
+test('a base names its one ready feature among several, counts two or more ready with a bare /finish, and names none with no press', async () => {
+  featureDir('fix-auth'); featureDir('docs'); featureDir('perf')
+  porcelain(feature('fix-auth', 2, 'dirty'), feature('docs', 1, 'ready'), feature('perf', 4, 'merged'))
+  await turnComplete()
+  let tree = await band()
+  expect(featuresKey(tree).props.label).toBe('3 features · docs ready')
+  await featuresKey(tree).props.onPress()
+  porcelain(feature('fix-auth', 2, 'ready'), feature('docs', 1, 'ready'), feature('perf', 4, 'merged'))
+  await turnComplete()
+  tree = await band()
+  expect(featuresKey(tree).props.label).toBe('3 features · 2 ready')
+  await featuresKey(tree).props.onPress()
+  expect(ran).toEqual([{ command: 'finish', args: 'docs' }, { command: 'finish', args: '' }])
+  porcelain(feature('fix-auth', 2, 'dirty'), feature('docs', 0, 'ready'), feature('perf', 4, 'staged'))
+  await turnComplete()
+  tree = await band()
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(restingWords(tree)).toEqual(['▌', '3 features · none ready'])
+  expect(texts(tree).find((t: any) => textOf(t) === '3 features · none ready').props).toEqual({ dimColor: true })
+})
+
+test('one feature not ready says its own state; ready with nothing ahead of the base reads no commits', async () => {
+  featureDir('fix-auth')
+  for (const [ahead, state, word] of [[2, 'dirty', 'dirty'], [0, 'ready', 'no commits'], [5, 'base-dirty', 'base-dirty'], [1, 'vault-locked', 'vault-locked']] as const) {
+    porcelain(feature('fix-auth', ahead, state))
+    await turnComplete()
+    const tree = await band()
+    expect(restingWords(tree)).toEqual(['▌', `1 feature · fix-auth ${word}`])
+    expect(featuresKey(tree)).toBeUndefined()
+  }
+})
+
+test('a feature session says its own record against the base, with no press: /finish lands it from the base', async () => {
+  cwdPath = '/feat'
+  realPaths['/feat'] = '/feat'; realPaths['/home/.claude-sessions/work@fix-auth'] = '/feat'
+  existing.add('/feat/.cs/local')
+  files['/feat/.cs/local/state'] = 'session_name: work@fix-auth\nclaude_session_id: uuid-lead\n'
+  porcelain(feature('docs', 1, 'ready'), feature('fix-auth', 3, 'ready'))
+  await turnComplete()
+  expect(featureRuns().map(r => r.argv)).toEqual([['/opt/cs/bin/cs', 'work', '-features', '--porcelain']])
+  let tree = await band()
+  expect(restingWords(tree)).toEqual(['▌', 'ahead 3 · ready'])
+  expect(featuresKey(tree)).toBeUndefined()
+  porcelain(feature('fix-auth', 0, 'ready'))
+  await turnComplete()
+  expect(restingWords(await band())).toEqual(['▌', 'no commits'])
+  // Its record gone from the base's list (retired meanwhile): no word.
+  porcelain(feature('docs', 1, 'ready'))
+  await turnComplete()
+  expect(await band()).toBe(DRAWN)
+})
+
+test('a cs that fails, cannot start, or prints a record the band cannot read draws no word and is logged once each', async () => {
+  featureDir('fix-auth')
+  const record = feature('fix-auth', 3, 'ready')
+  const answers: any[] = [
+    { exitCode: 2, stdout: '', stderr: 'error: no such session\n' },
+    { exitCode: 2, stdout: '', stderr: 'error: no such session\n' },
+    new Error('spawn ENOENT'),
+    { exitCode: 0, stdout: `${record}\textra\n`, stderr: '' },
+    { exitCode: 0, stdout: record.replace('\t3\t', '\tthree\t') + '\n', stderr: '' },
+    { exitCode: 0, stdout: record.replace(/ready$/, 'landed') + '\n', stderr: '' },
+  ]
+  for (const answer of answers) {
+    runResult = answer
+    await turnComplete()
+    expect(await band()).toBe(DRAWN)
+  }
+  expect(logs).toEqual([
+    'cs work -features exited 2: error: no such session',
+    'cs work -features did not run: spawn ENOENT',
+    `cs work -features gave a record the band cannot read: ${record}\textra`,
+    `cs work -features gave a record the band cannot read: ${record.replace('\t3\t', '\tthree\t')}`,
+    `cs work -features gave a record the band cannot read: ${record.replace(/ready$/, 'landed')}`,
+  ])
+})
