@@ -2264,7 +2264,7 @@ test('after a turn ends the band draws one tick per prompt, the newest thick whi
   expect(buttonsUnderText(tree)).toBe(0)
   expect(texts(tree).find((t: any) => textOf(t) === '\u2503').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
   // Below the threshold the rail still draws, with no key words, and the read prompt in the gap.
-  expect(restingWords(tree)).toEqual(['#4 say four'.padStart(102), '\u2503'])
+  expect(restingWords(tree)).toEqual(['#4 say four'.padEnd(102), '\u2503'])
 })
 
 test('a conversation with one prompt draws no rail', async () => {
@@ -2521,19 +2521,22 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
 // read, dim italic, against the bars; a bar under the pointer swaps in its own.
 const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
 
-test('the gap beside the bars names the prompt being read, dim italic, flush against the rail', async () => {
+test('the gap beside the bars names the prompt being read, dim italic: from the left while no word stands there, else flush against the rail', async () => {
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
   // The two-column inset and 110 columns leave 108; four bars and a two-cell gap leave the label 102.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(102))
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(102))
   const line = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
   const kids = (line.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
   expect(kids.slice(-3).map((k: any) => k.props.key ?? (k.props.flexGrow ? 'spacer' : 'label'))).toEqual(['spacer', 'label', 'cs-rail'])
-  expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual(['#4 say four'.padStart(102)])
+  expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual(['#4 say four'.padEnd(102)])
   // A row reporting moves the label with the read bar.
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
-  expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padStart(102))
+  expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padEnd(102))
+  // A word on the left puts it back against the bars: `▤ queue 1 · start` (17) and its three-cell gap leave 82.
+  queueTasks(1)
+  expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padStart(82))
 })
 
 test('each bar under the pointer swaps its own prompt into the gap, italic, covering the read one', async () => {
@@ -2547,9 +2550,9 @@ test('each bar under the pointer swaps its own prompt into the gap, italic, cove
     position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
   })))
   expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
-    [['#1 say one'.padStart(102), { italic: true, wrap: 'truncate-end' }]],
-    [['#2 say two'.padStart(102), { italic: true, wrap: 'truncate-end' }]],
-    [['#3 say three'.padStart(102), { italic: true, wrap: 'truncate-end' }]],
+    [['#1 say one'.padEnd(102), { italic: true, wrap: 'truncate-end' }]],
+    [['#2 say two'.padEnd(102), { italic: true, wrap: 'truncate-end' }]],
+    [['#3 say three'.padEnd(102), { italic: true, wrap: 'truncate-end' }]],
   ])
   // The cards sit in the label's own Box, so a card covers the read prompt cell for cell.
   const labelBox = boxes(tree).find((b: any) => b.props.width === 102)
@@ -2562,7 +2565,7 @@ test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cell
   // 27 columns: 25 after the inset, five bars and the two-cell gap leave 18.
   const cut = await band({ bodyColumns: 27 })
   expect(textOf(gapLabel(cut))).toBe(`#5 ${'x'.repeat(14)}…`)
-  expect(texts(boxes(cut).find((b: any) => b.props.hover?.scope === 'cs-rail-0')).map(textOf)).toEqual(['#1 say one'.padStart(18)])
+  expect(texts(boxes(cut).find((b: any) => b.props.hover?.scope === 'cs-rail-0')).map(textOf)).toEqual(['#1 say one'.padEnd(18)])
   // 19 columns leave exactly ten.
   expect(textOf(gapLabel(await band({ bodyColumns: 19 })))).toBe(`#5 ${'x'.repeat(6)}…`)
   // 18 leave nine: the bars alone, no card, no hover group.
@@ -2586,7 +2589,7 @@ test('a rail past its budget takes the whole gap: no prompt is named beside a co
   // 38 leave 36: every bar, the two-cell gap and four cells, under ten, so none either.
   expect(gapLabel(await band({ bodyColumns: 38 }))).toBeUndefined()
   // 44 leave ten.
-  expect(textOf(gapLabel(await band({ bodyColumns: 44 })))).toBe('   #30 p30')
+  expect(textOf(gapLabel(await band({ bodyColumns: 44 })))).toBe('#30 p30   ')
 })
 
 // The desktop app paints a card over the line without hiding what is under it
@@ -2596,7 +2599,7 @@ test('off the terminal the gap names the prompt being read and draws no hover ca
   await turnComplete()
   for (const surface of ['desktop', 'vscode', 'mobile']) {
     const tree = await band({}, surface)
-    expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(102))
+    expect(textOf(gapLabel(tree))).toBe('#4 say four'.padEnd(102))
     expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toEqual([])
     expect(tickButtons(tree).map((b: any) => b.props.hover)).toEqual([undefined, undefined, undefined])
   }
@@ -2608,12 +2611,12 @@ test('the gap\'s prompt is measured and cut in cells: wide characters take two, 
   transcript([...LINEAR, prompt('u5', 'a4', '\u4e00'.repeat(60))])
   await turnComplete()
   // Five bars leave 101 cells: `#5 ` and 48 two-cell characters are 99, a 49th would pass the 100 left before `…`.
-  expect(textOf(gapLabel(await band()))).toBe(` #5 ${'\u4e00'.repeat(48)}\u2026`)
+  expect(textOf(gapLabel(await band()))).toBe(`#5 ${'\u4e00'.repeat(48)}\u2026 `)
   transcript([...LINEAR, prompt('u5', 'a4', `${'x'.repeat(13)}\u{1F600}tail`)], 2)
   await turnComplete()
   // 18 cells: `#5 ` and 13 x are 16, the emoji would pass the 17 left before `…`.
   const cut = textOf(gapLabel(await band({ bodyColumns: 27 })))
-  expect(cut).toBe(` #5 ${'x'.repeat(13)}\u2026`)
+  expect(cut).toBe(`#5 ${'x'.repeat(13)}\u2026 `)
   expect(cut.isWellFormed()).toBe(true)
   // A Text the engine measures wider than this count would wrap the band onto a second line.
   expect(gapLabel(await band()).props.wrap).toBe('truncate-end')
@@ -2708,7 +2711,7 @@ test('a feature session draws no features word and asks cs nothing: /finish land
   expect(rail(await band())).toHaveLength(4)
   expect(featureRuns()).toEqual([])
   expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
-  expect(restingWords(await band())[0]).toBe('#4 say four'.padStart(102))
+  expect(restingWords(await band())[0]).toBe('#4 say four'.padEnd(102))
 })
 
 test('a cs that fails, cannot start, or prints a record the band cannot read draws no word and is logged once each', async () => {
@@ -2882,65 +2885,8 @@ test('the turn end does not wait on cs: it returns while the features reading st
 })
 
 // ---------------------------------------------------------------------------
-// The band's left when no features word and no key word is due: the task in
-// progress on the session's native task list, then the cs queue and unread
-// mail when there are any.
-
-const TASKS = '/home/.claude/tasks/work'
-const task = (id: number, status: string, subject: string) => { files[`${TASKS}/${id}.json`] = JSON.stringify({ id: String(id), subject, description: '', activeForm: subject, status, blocks: [], blockedBy: [] }) }
-
-test('with nothing else due the left names the task in progress, dim, the lowest id of several, cut to 48 cells', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(3, 'completed', 'ship the docs'); task(7, 'in_progress', 'land the parser'); task(5, 'in_progress', 'fix the login redirect'); task(9, 'pending', 'later')
-  await turnComplete()
-  let tree = await band()
-  expect(restingWords(tree)).toEqual(['▸ fix the login redirect'])
-  expect(texts(tree)[0].props).toEqual({ dimColor: true })
-  task(5, 'completed', 'fix the login redirect')
-  task(7, 'in_progress', `${'y'.repeat(60)}`)
-  await turnComplete()
-  expect(restingWords(await band())).toEqual([`▸ ${'y'.repeat(45)}…`])
-  task(7, 'completed', 'land the parser')
-  await turnComplete()
-  expect(await band()).toBe(DRAWN)
-})
-
-test('the task word yields to the features word and to a key word, and a TaskUpdate redraws it without waiting for the turn to end', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'fix the login redirect')
-  featureDir('fix-auth')
-  porcelain(feature('fix-auth', 3, 'ready'))
-  await featuresTurn()
-  let tree = await band()
-  expect(featuresKey(tree).props.label).toBe('1 feature · fix-auth ready')
-  expect(restingWords(tree)).toEqual([])
-  runResult = { exitCode: 0, stdout: '', stderr: '' }
-  await featuresTurn()
-  percent = 80
-  expect(restingWords(await band())).not.toContain('▸ fix the login redirect')
-  percent = undefined
-  expect(restingWords(await band())).toEqual(['▸ fix the login redirect'])
-  // The tool runs first; the word reads the list it left.
-  invalidated = []
-  const result = await hooks['tool.call']($, { tool: 'TaskUpdate', taskId: '5', status: 'completed' }, async () => { task(5, 'completed', 'fix the login redirect'); return { result: 'ok' } })
-  expect(result).toEqual({ result: 'ok' })
-  expect(invalidated).toEqual(['ui.render'])
-  expect(await band()).toBe(DRAWN)
-  // Any other tool passes through and reads nothing.
-  const reads0 = reads.length
-  expect(await hooks['tool.call']($, { tool: 'Bash', command: 'true' }, async () => ({ result: 'done' }))).toEqual({ result: 'done' })
-  expect(reads.length).toBe(reads0)
-})
-
-test('a task file that does not parse is skipped and logged once; the rest of the list still names its task', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'fix the login redirect')
-  files[`${TASKS}/2.json`] = '{"id":"2","status":"in_pro'
-  await turnComplete()
-  await turnComplete()
-  expect(restingWords(await band())).toEqual(['▸ fix the login redirect'])
-  expect(logs.filter(l => l.startsWith('cs: the band skipped task 2.json'))).toHaveLength(1)
-})
+// The band's left after its other words: the cs queue's count while its start
+// key is not offered, then unread mail, when there are any.
 
 test('tasks queued while the queue runs, or while a turn runs, draw a dim queue word where the start key would be', async () => {
   queueTasks(3)
@@ -2961,13 +2907,10 @@ test('tasks queued while the queue runs, or while a turn runs, draw a dim queue 
   expect(await band()).toBe(DRAWN)
 })
 
-test('the queue word follows the task word and the key words, a separator before it', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'fix the login redirect')
-  await turnComplete()
+test('the queue word follows the key words, a separator before it', async () => {
   queueTasks(2)
   files['/work/.cs/local/queue.state'] = 'armed\n'
-  expect(restingWords(await band())).toEqual(['▸ fix the login redirect', '  ·  ', '▤ queue 2'])
+  expect(restingWords(await band())).toEqual(['▤ queue 2'])
   percent = 40
   const tree = await band()
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
@@ -2999,14 +2942,11 @@ test('an encrypted session counts its mail behind .cs/private', async () => {
   expect(restingWords(await band())).toEqual(['mail 1'])
 })
 
-test('the mail word comes last, after the task, queue and key words, and never under a survey or in a teammate', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'fix the login redirect')
-  await turnComplete()
+test('the mail word comes last, after the queue and key words, and never under a survey or in a teammate', async () => {
   queueTasks(2)
   files['/work/.cs/local/queue.state'] = 'armed\n'
   files[`${MAIL}/new/1-a.json`] = '{}'
-  expect(restingWords(await band())).toEqual(['▸ fix the login redirect', '  ·  ', '▤ queue 2', '  ·  ', 'mail 1'])
+  expect(restingWords(await band())).toEqual(['▤ queue 2', '  ·  ', 'mail 1'])
   files['/work/.cs/local/queue.state'] = 'idle\n'
   const keyed = await band()
   expect(buttons(keyed).map((b: any) => b.props.key)).toEqual(['cs-queue'])
@@ -3026,53 +2966,9 @@ test('the queue and mail words take their cells from the gap beside the rail', a
   expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
   // `▤ queue 2  ·  mail 1` (20) and its three-cell gap leave the label 110 - 2 - 23 - 4 - 2.
   expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(79))
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'fix the login redirect')
-  await turnComplete()
-  // `▸ fix the login redirect  ·  ▤ queue 2  ·  mail 1` (49): 110 - 2 - 52 - 4 - 2.
-  expect(textOf(gapLabel(await band()))).toBe('#4 say four'.padStart(50))
-})
-
-test('on a narrow line the task word is cut to what the other words leave, and dropped when that is too little', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'x'.repeat(60))
-  await turnComplete()
-  queueTasks(2)
-  files['/work/.cs/local/queue.state'] = 'armed\n'
-  files[`${MAIL}/new/1-a.json`] = '{}'
-  // `  ·  ▤ queue 2  ·  mail 1` (25) leaves a 60-column line 60 - 2 - 25 for the task word.
-  expect(restingWords(await band({ bodyColumns: 60 }))).toEqual([`▸ ${'x'.repeat(30)}…`, '  ·  ', '▤ queue 2', '  ·  ', 'mail 1'])
-  expect(restingWords(await band({ bodyColumns: 30 }))).toEqual(['▤ queue 2', '  ·  ', 'mail 1'])
-})
-
-test('a task word in wide characters takes its terminal cells from the gap, not its string length', async () => {
-  transcript(LINEAR)
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', '一'.repeat(40))
-  await turnComplete()
-  const tree = await band()
-  expect(restingWords(tree)[0]).toBe(`▸ ${'一'.repeat(22)}…`)
-  // The word is 47 cells: 110 - 2 - 50 - 4 - 2.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(52))
-})
-
-test('the task word names the first line of a subject that runs over several', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', '\nline one\nline two')
-  await turnComplete()
-  expect(restingWords(await band())).toEqual(['▸ line one'])
-})
-
-test('the task word yields to a running /finish gate', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  task(5, 'in_progress', 'fix the login redirect')
-  await turnComplete()
-  livePids.add('4242')
-  nowMs = NOW * 1000
-  await startFinish()
-  record(running('gate', { gate_started: NOW - 3 }))
-  await watchTick()
-  expect(restingWords(await band({ isWorking: true }))).toEqual(['finishing fix-auth · gate 3s'])
+  percent = 80
+  // No chord bound: `rotate  ·  wrap  ·  ▤ queue 2  ·  mail 1` (40): 110 - 2 - 43 - 4 - 2.
+  expect(textOf(gapLabel(await band()))).toBe('#4 say four'.padStart(59))
 })
 
 test('the mail word counts neither a stray file nor a directory in new/', async () => {
@@ -3080,15 +2976,4 @@ test('the mail word counts neither a stray file nor a directory in new/', async 
   files[`${MAIL}/new/.DS_Store`] = ''
   files[`${MAIL}/new/sub.json/2-b.json`] = '{}'
   expect(restingWords(await band())).toEqual(['mail 1'])
-})
-
-test('a task list that is there but cannot be listed is logged once; one not made yet is no task, silently', async () => {
-  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
-  await turnComplete()
-  expect(logs).toEqual([])
-  existing.add(TASKS)
-  await turnComplete()
-  await turnComplete()
-  expect(logs).toEqual([`cs: the band could not list the task list ${TASKS}: ENOENT ${TASKS}`])
-  expect(await band()).toBe(DRAWN)
 })
