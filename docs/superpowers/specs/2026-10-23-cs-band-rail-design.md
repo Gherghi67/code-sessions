@@ -27,15 +27,17 @@ session's features where a key can act on it. No pane.
 
 ## Decisions
 
-1. **One band line, no fill, no chip, no caps.** The line is the
-   rail's ticks on the left and, at the right end, only the words that
-   need a keypress now, in this order of precedence: `/clear in Ns`
-   (armed handoff) · `rotate` (context past the threshold) · `wrap` ·
-   `queue N · start` · features (see 5). Each word is a Button as today,
-   its chord beside it when keybindings.json binds one. Colour: the
-   session colour on the thick tick and on a word that is pressable;
-   the countdown keeps its amber/crit ramp; everything else dim. Two
-   accents at most on a healthy line.
+1. **One band line, no fill, no chip, no caps.** Alex picked the shape
+   from nine rendered variants (2026-10-23, "B with G"): a left rule `▌`
+   in the session colour anchors the line, as the launch banner's bar
+   does; then the rail's ticks; then the words. Keys show their shared
+   chord prefix once, dim (`ctrl+x`), and each Button its own key in the
+   session colour with a short label: `1 rotate`, `2 wrap`, `queue N ·
+   start`, armed `/clear in Ns` (amber/crit ramp) then `1 /clear now`,
+   `finishing <task> · 2m10s`, features (see 5). With no chord bound the
+   labels stand alone. Separator `  ·  ` dim. Two accents at most on a
+   healthy line: the rule and the keys share the session colour. The
+   measured line: `▌  ───━─────   ctrl+x  1 rotate  ·  2 wrap`.
 2. **The Handoff pane is removed.** Its countdown moves to the band. Its
    next-step preview becomes one toast when the countdown starts (Alex,
    AskUserQuestion 2026-10-23: "Yes, as a toast when the countdown
