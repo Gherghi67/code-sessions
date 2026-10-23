@@ -454,6 +454,10 @@ rm -f "$out" 2>/dev/null
 # did not set a status. Writing it would silently erase what the user typed.
 [ -n "${rewritten//[[:space:]]/}" ] || { _trace 'exit empty-rewrite'; exit 0; }
 
+# `=` alone is the rewriter's "already precise": the buffer stays as typed, and
+# a clean prompt costs no wait for the model to repeat it.
+[ "${rewritten//[[:space:]]/}" = "=" ] && { _trace 'exit unchanged'; exit 0; }
+
 # tmp+rename so a crash mid-write cannot leave a truncated buffer. The fixed
 # temp name is safe: the target is the one-off file Claude Code made for this
 # editor run, and nothing else writes beside it.

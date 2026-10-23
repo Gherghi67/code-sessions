@@ -652,6 +652,29 @@ test_the_trace_records_which_path_was_taken() {
         "a completed rewrite records that it landed"
 }
 
+# A rewriter that finds the prompt already precise answers `=` alone, so a
+# clean prompt costs no wait for its echo; the buffer stays as typed.
+test_an_equals_reply_leaves_the_buffer_as_typed() {
+    local dir="$TEST_TMPDIR/session/.cs"
+    mkdir -p "$dir"
+    local f; f=$(composer_file "make the login thing better")
+    printf '#!/bin/bash\ncat >/dev/null; printf "  =\\n"\n' > "$TEST_TMPDIR/stub-rewrite.sh"
+    CLAUDE_SESSION_META_DIR="$dir" "$SHIM" "$f" >/dev/null 2>&1
+    assert_eq "make the login thing better" "$(cat "$f")" \
+        "an = reply keeps the prompt as typed" || return 1
+    assert_file_contains "$dir/local/rewrite.trace" 'exit unchanged' \
+        "an = reply records that nothing changed"
+}
+
+# Only `=` alone means no change: a rewrite that holds one is a rewrite.
+test_a_rewrite_holding_an_equals_sign_lands() {
+    local f; f=$(composer_file "set the limit")
+    printf '#!/bin/bash\ncat >/dev/null; printf "Set limit = 5 in config.sh"\n' > "$TEST_TMPDIR/stub-rewrite.sh"
+    "$SHIM" "$f" >/dev/null 2>&1
+    assert_eq "Set limit = 5 in config.sh" "$(cat "$f")" \
+        "a rewrite containing = is written"
+}
+
 run_test test_every_progress_mode_paints_something
 run_test test_unknown_progress_mode_falls_back_to_a_display
 run_test test_screen_mode_caps_a_long_prompt_and_marks_it
@@ -732,5 +755,8 @@ run_test test_an_explicit_rewrite_cmd_outranks_the_provider_knob
 run_test test_an_unknown_provider_falls_back_to_the_default_rewriter
 run_test test_claude_api_routes_to_the_vendor_rewriter
 run_test test_grok_routes_to_the_vendor_rewriter
+
+run_test test_an_equals_reply_leaves_the_buffer_as_typed
+run_test test_a_rewrite_holding_an_equals_sign_lands
 
 report_results

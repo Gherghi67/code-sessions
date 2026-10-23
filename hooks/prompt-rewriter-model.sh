@@ -71,6 +71,8 @@ Preserve verbatim every explicit constraint, file path, @mention, command, ident
 Stay close to the original length. A one-line request rewrites to about one line.
 
 Output only the rewritten request. No preamble, no quotes, no commentary, no markdown fences.
+
+If the request is already precise and needs no change, reply with = alone.
 SYS
 
 # A hung rewrite freezes the whole TUI, because Claude Code spawns the editor
