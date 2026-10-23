@@ -5,7 +5,7 @@
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
 // ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
-import type { On, EngineInterface } from 'claude-code'
+import type { On, EngineInterface, PluginOptions } from 'claude-code'
 
 declare const h: any
 declare const Fragment: any
@@ -245,8 +245,36 @@ let tailSaid = false
 // prompt is already scheduled.
 let drawnRead = -1
 let redrawPending = false
+// The band's /config rows (plugin.json userConfig), as this activation got
+// them: whether it draws the prompt bars at all (off by default), the prompt
+// it names, `latest` (the newest) or `read` (the one being read), and the
+// most bars it draws before older prompts fold into `…N`. A
+// change reloads the plugin and register runs again. A stored value the band
+// cannot draw leaves it without bars (undefined), said once, and the rest of
+// the mod running: a throw from register would unload all of it.
+const CS_PLUGIN = 'cs'
+type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
+let bandOptions: BandOptions | undefined
+let bandProblem: string | undefined
+let bandProblemSaid = false
 
-export function register(on: On) {
+// What is wrong with a value for one of the band's rows, by field name;
+// undefined when the band can draw it, or the field is not the band's.
+function bandOptionProblem(field: string, value: unknown): string | undefined {
+  if (field === 'bandPrompts') return typeof value === 'boolean' ? undefined : `cs.bandPrompts is on or off; got ${String(value)}`
+  if (field === 'bandPrompt') return value === 'latest' || value === 'read' ? undefined : `cs.bandPrompt is latest or read; got ${String(value)}`
+  if (field === 'bandBars') {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${String(value)}`
+  }
+  return undefined
+}
+
+export function register(on: On, options: PluginOptions) {
+  bandProblem = bandOptionProblem('bandPrompts', options.bandPrompts) ?? bandOptionProblem('bandPrompt', options.bandPrompt) ?? bandOptionProblem('bandBars', options.bandBars)
+  bandOptions = bandProblem === undefined
+    ? { prompts: options.bandPrompts as boolean, prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number }
+    : undefined
+  bandProblemSaid = false
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
@@ -325,6 +353,14 @@ export function register(on: On) {
     if (target < 0 || target >= count) return { text: `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}` }
     await jumpTo($, target)
     return {}
+  })
+
+  // A /config row of the band's takes only a value the band can draw: a bad
+  // one is refused at the menu, where it is typed, not met at the next load.
+  on('config.set', async ($, e, next) => {
+    if (e.provider.plugin !== CS_PLUGIN) return next(e)
+    const problem = bandOptionProblem(e.key.slice(e.key.lastIndexOf('.') + 1), e.value)
+    return problem === undefined ? next(e) : { deny: problem }
   })
 
   // The end of a turn is the one moment a rotation can be started for the
@@ -407,7 +443,7 @@ export function register(on: On) {
       drawnRows.set(rowKey(e.requestId), { requestId: e.requestId, text: firstLine(e.props.text) })
       if (e.props.onScreen) shown.set(e.requestId, e.props.onScreen)
       else if (e.props.onScreen === null) shown.delete(e.requestId)
-      if (!redrawPending && prompts.length > 1 && readIndex() !== drawnRead) {
+      if (!redrawPending && bandOptions?.prompts === true && prompts.length > 1 && namedIndex() !== drawnRead) {
         redrawPending = true
         $.clock.after(0, () => { redrawPending = false; $.ui.invalidate('ui.render') })
       }
@@ -442,17 +478,24 @@ export function register(on: On) {
     let queued = waiting > 0 ? 0 : queue
     // Mail from other sessions that `cs -msg` has not read yet.
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
-    // The rail draws whenever the conversation has two prompts to move
-    // between, a turn running or not, under the same ownership as the keys.
-    let railing = !e.props.hasSurvey && prompts.length > 1
+    // The rail draws, once cs.bandPrompts turns it on, whenever the
+    // conversation has two prompts to move between, a turn running or not,
+    // under the same ownership as the keys; its bars draw not at all while a
+    // stored band row is bad, which the lead's band says once.
+    const bars = bandOptions?.bars
+    let railing = !e.props.hasSurvey && prompts.length > 1 && bandOptions?.prompts === true
+    if (bandProblem !== undefined && !bandProblemSaid && (await ownsRotation($))) {
+      bandProblemSaid = true
+      $.ui.toast(`cs: the band draws no prompt bars: ${bandProblem}. Set it in /config.`)
+    }
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
     if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined }
-    // The read tick is remembered on every path, drawn or not, so a row's
+    // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
-    const read = readIndex()
-    drawnRead = read
+    const named = namedIndex()
+    drawnRead = named
     if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && !railing && featured === undefined) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
@@ -497,22 +540,22 @@ export function register(on: On) {
     ].join('')
     const wordCells = cellWidth(wordText)
     // The rail: one upright bar per prompt after the words, `┃` for
-    // the one being read, `┆` for one a jump was refused, `│` otherwise (side
-    // by side, flat ticks run together into one line), each a Button (the
-    // read one a Text: a
-    // Button takes no colour, and there is nowhere to jump). It takes what the
-    // line leaves after the inset, the gaps and the words; past that the oldest
-    // prompts collapse into one `…N` run. The read tick is remembered so a
-    // report that moves it can redraw the band.
+    // the one the band names, `┆` for one a jump was refused, `│` otherwise
+    // (side by side, flat ticks run together into one line), each a Button
+    // (the named one a Text: a
+    // Button takes no colour, and there is nowhere to jump). It draws at most
+    // cs.bandBars bars in what the line leaves after the inset, the gaps and
+    // the words; the older prompts collapse into one `…N` run. The named tick
+    // is remembered so a report that moves it can redraw the band.
     const budget = e.props.bodyColumns - 2 - (wordCells > 0 ? 3 + wordCells : 0)
-    const ticks = railing ? railTicks(prompts.length, budget) : undefined
-    // After the bars the band names a prompt in what the line leaves: the one
-    // being read, or the one under the pointer. Too little left to name one
-    // names none.
+    const ticks = railing && bars !== undefined ? railTicks(prompts.length, budget, bars) : undefined
+    // After the bars the band names a prompt in what the line leaves: the
+    // newest or the one being read (cs.bandPrompt), or the one under the
+    // pointer. Too little left to name one names none.
     const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
     const labelCells = ticks === undefined ? 0 : budget - railCells - 2
     const labeled = labelCells >= RAIL_LABEL_MIN
-    // A bar under the pointer swaps its prompt in over the read one, on the
+    // A bar under the pointer swaps its prompt in over the named one, on the
     // terminal only: the desktop app paints a card over a line without hiding
     // what is under it, so both prompts would show at once.
     const hovering = labeled && e.surface === 'terminal'
@@ -569,7 +612,7 @@ export function register(on: On) {
                 {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
                 {prompts.slice(ticks.hidden).map((p, j) => {
                   const i = ticks.hidden + j
-                  if (i === read) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
+                  if (i === named) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
                   return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'}
                                  hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
                 })}
@@ -577,9 +620,9 @@ export function register(on: On) {
             )}
             {labeled && (
               <Box width={labelCells} marginLeft={2}>
-                <Text dimColor italic wrap="truncate-end">{label(read)}</Text>
-                {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
-                {hovering && prompts.map((_, i) => i !== read && (
+                <Text dimColor italic wrap="truncate-end">{label(named)}</Text>
+                {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
+                {hovering && prompts.map((_, i) => i >= (ticks as { hidden: number }).hidden && i !== named && (
                   <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
                     <Text italic wrap="truncate-end">{label(i)}</Text>
                   </Box>
@@ -724,12 +767,18 @@ async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean
   return entries.some(entry => entry.name.startsWith(`${base}@`))
 }
 
-export function railTicks(count: number, budget: number): { hidden: number } | undefined {
-  if (count <= budget) return { hidden: 0 }
-  for (let hidden = 1; hidden < count; hidden++) {
-    if (count - hidden + `\u2026${hidden}`.length <= budget) return { hidden }
+// How many of `count` prompts fold into the rail's `…N` run so that at most
+// `most` bars draw and the rail fits `budget` cells; undefined when no bar fits.
+export function railTicks(count: number, budget: number, most: number): { hidden: number } | undefined {
+  for (let hidden = Math.max(0, count - most); hidden < count; hidden++) {
+    if (count - hidden + (hidden > 0 ? `\u2026${hidden}`.length : 0) <= budget) return { hidden }
   }
   return undefined
+}
+
+// The prompt the band names: the newest, or the one being read (cs.bandPrompt).
+function namedIndex(): number {
+  return bandOptions?.prompt === 'read' ? readIndex() : prompts.length - 1
 }
 
 // The prompt being read: of the prompts whose drawn row has reported what of

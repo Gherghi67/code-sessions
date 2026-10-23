@@ -387,6 +387,23 @@ release that mounts one takes the chord from the band without a warning.
   `ctrl+x  r` with two spaces are the same keys as `ctrl+x` and `ctrl+x r`,
   and `Option+1` is `alt+1`.
 
+## Band settings
+
+Three rows of Claude Code's `/config` menu shape the cs mod's band above the
+prompt (the cs plugin's `userConfig`, stored by Claude Code in
+`settings.json`). A change reloads the mod.
+
+| Row | Values | Default | What it does |
+|-----|--------|---------|--------------|
+| `cs.bandPrompts` | on, off | off | Draws the rail: a bar per prompt and the name of one prompt after the bars; a press on a bar scrolls to its prompt. The band's other words draw either way. |
+| `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its bar thick. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
+| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt bars the band draws; older prompts fold into one `…N` run. |
+
+`/config` refuses a value the band cannot draw (a bar count under 1 or not
+whole), naming the row beside it. A bad value stored some other way, such
+as by editing `settings.json`, leaves the band without bars and says so in
+one toast; the rest of the mod runs.
+
 ## In-session switches
 
 The release-notes pane is a Claude Code `/config` row, `cs-update.showReleaseNotes`

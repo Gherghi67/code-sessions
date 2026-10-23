@@ -144,6 +144,24 @@ session's features where a key can act on it. No pane.
      "but the bars are still on the right"): "Bars first, then prompt";
      the bars never move when the prompt's length changes. Rejected: the
      prompt then the bars at the left, the bars kept at the right end.
+   - Two `/config` rows (plugin.json `userConfig`): `cs.bandPrompt`,
+     `latest` (default) or `read`, the prompt the band names and draws
+     thick; `cs.bandBars`, default 10, the most bars before older prompts
+     fold into `…N`, so the name keeps its room in a long conversation.
+     Alex: "this should be a configurable setting, in /config also how
+     many bar prompts do we show?", picked "Latest", then "10, not 20".
+     Rejected defaults: the prompt being read, 20 bars, all that fit.
+     A bad value is refused by a `config.set` hook at the menu; one stored
+     some other way leaves the band without bars and toasts once. Measured:
+     a throw from `register` unloads the whole mod (`cs: hooks module did
+     not load`), keys and all (side agent's warning, 2026-10-23).
+   - The rail is off by default: a third row, `cs.bandPrompts`, turns the
+     bars and the named prompt on; the band's other words draw either way.
+     Alex: "the prompt band shhould be configurable, by default off, but
+     it should show in tips how to turn it on", picked "Prompt bars +
+     name" (rejected: the whole band). The tip comes from a cs tips file
+     that install.sh points settings.json `spinnerTipsOverride.tipsFile`
+     at (Alex picked it over merging one string into `tips`).
    - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
      tasks but the start key is not drawn (queue armed or draining, a turn
      running, or an armed handoff's clear key standing alone). The start

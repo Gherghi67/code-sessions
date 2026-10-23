@@ -496,10 +496,10 @@ or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
 blank line above it, read from the left: its words, separated by a dim `·`,
-then the rail of prompts, then the prompt being read. Where the keys'
+then the rail of prompts, then the prompt it names. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `ctrl+x  1 rotate  ·  2 wrap   │││┃│││  #4 say four`. Chords that differ are spelled whole. In order, and each
+colour: `ctrl+x  1 rotate  ·  2 wrap   │││┃  #4 say four`. Chords that differ are spelled whole. In order, and each
 only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
 `/clear now` once a handoff is armed), `wrap`, the queue's start key, and
 `finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
@@ -507,11 +507,15 @@ paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
 caps answer; only the count's amber pivot still reads the measurement. The
 percentage itself stays on the status bar: the band does not repeat it.
 
-The rail is one upright bar per prompt the person sent in this
-conversation: `│` dim, `┃` in the session's colour for the prompt being read
-(the prompt whose row stands highest on screen, from the engine's own
-on-screen reports of the transcript's rows), `┆` dim for a prompt the engine
-refused to scroll to. A press on a bar scrolls the transcript so that
+The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
+off by default; see [configuration.md](configuration.md#band-settings)).
+It is one upright bar per prompt the person sent in this conversation: `│` dim, `┃` in the session's colour for the prompt the band
+names, `┆` dim for a prompt the engine refused to scroll to. The band names
+the newest prompt; with the `/config` row `cs.bandPrompt` set to `read` it
+names the prompt being read instead (the prompt whose row stands highest on
+screen, from the engine's own on-screen reports of the transcript's rows)
+and follows the scroll (see
+[configuration.md](configuration.md#band-settings)). A press on a bar scrolls the transcript so that
 prompt's row is at the top. The band's focus ring never lands on a bar:
 the keyboard route is `/cs next`, `/cs prev`, `/cs first`, `/cs last` and
 `/cs N`, which move the same way from the prompt being read, mid-turn too,
@@ -526,18 +530,19 @@ drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
 are not prompts. The bars start the line when no word stands before them,
-else three cells after the words, so they move only when the words do. The
-ticks take what the line leaves after the inset and the words; past that the
-oldest prompts collapse into one dim `…N` run at the rail's start, and a line
-too narrow for any tick draws no rail. Two cells after the bars the band
-names the prompt being read, `#N` and its first line (up to 80 characters),
+else three cells after the words, so they move only when the words do. At
+most `cs.bandBars` bars draw (10 by default), in what the line leaves after
+the inset and the words; the older prompts collapse into one dim `…N` run at
+the rail's start, and a line too narrow for any tick draws no rail. Two cells
+after the bars the band names its prompt, `#N` and its first line (up to 80
+characters),
 dim italic, cut with `…` when the line is narrower, counted in terminal cells
 so a wide character takes two; under ten cells left it names none. On the
 terminal a bar under the pointer swaps its own prompt into that place,
 italic, until the pointer leaves; the swap follows the mouse, so it
 needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
 them off). Other
-surfaces name the prompt being read only, since the desktop app paints a card
+surfaces name the band's own prompt only, since the desktop app paints a card
 over a line without hiding what is under it. A conversation with
 one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
