@@ -177,6 +177,28 @@ session's features where a key can act on it. No pane.
      lead conversation. Both are read when the band draws, as the start
      key's count already was; no clock of their own.
 
+   As built, the mark (2026-10-23). Alex: the band "starts with one colored
+   `●`, whose color says what is due. Everything else on the band stays
+   exactly as it is": `● 1 feature · worktree merged  ·  ctrl+x  1 rotate  ·
+   2 wrap`.
+   - One closed state, decided in one place (`bandState`), highest first:
+     `running` (blue) while a `/finish` gate runs or the queue holds tasks
+     and is armed or draining; `due` (amber) while the context is at or
+     past the band's threshold or a handoff is armed; `clear` (green)
+     otherwise. No new read: each fact is one the band already drew from.
+   - Due is keyed on the threshold, not on the rotate key being drawn: the
+     key waits for a turn to end, and keyed on it the mark would turn green
+     at every turn's start while the queue, mail or features words keep the
+     line up.
+   - Colours: the session palette's blue `106,155,204` and green
+     `22,163,74`, and the status bar's amber (`180,83,9` on a light
+     background, `253,230,138` on a dark one, the count's own pivot). A
+     session whose colour is blue or green shares that hue with its keys.
+   - The mark and its space take two cells from the rail's budget. It
+     draws only on a line that already has a word or a bar, never alone
+     (the rejected `▌` rule was an anchor on an empty line), and not under
+     a survey, where the gate word alone may still draw.
+
 ## Where the complexity moves
 
 The pane's layout logic goes. What arrives: a transcript reader in the
