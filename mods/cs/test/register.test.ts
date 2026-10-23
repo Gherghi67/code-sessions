@@ -6,7 +6,7 @@ import { test, expect, beforeEach } from 'bun:test'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
+import { register, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -51,6 +51,11 @@ let submitted: any[]
 let compactedAt: number[]
 let compactResult: any
 let commands: any[]
+// What `$.ui.scroll` was asked, and what it answers; the paths `$.fs.read` was given; each file's mtime.
+let scrolls: any[]
+let scrollResult: any
+let reads: string[]
+let mtimes: Record<string, number>
 // The clock `$.clock.now` reads, and the pids `kill -0` finds alive.
 let nowMs: number
 let livePids: Set<string>
@@ -92,6 +97,7 @@ const $ = {
     resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }),
     invalidate: (event: string) => { invalidated.push(event) },
     toast: (text: string) => { toasts.push(text) },
+    scroll: async (args: any) => { scrolls.push(args); return scrollResult },
     log: (text: string) => { logs.push(text) },
     open: async (args: any) => { panes.push({ op: 'open', args }) },
     close: async (args: any) => { panes.push({ op: 'close', args }) },
@@ -107,7 +113,7 @@ const $ = {
   fs: {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
-    read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+    read: async (path: string) => { reads.push(path); if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
     // A directory is listed from the files under it; one with none is absent.
     list: async (path: string) => {
       const prefix = `${path.replace(/\/+$/, '')}/`
@@ -116,6 +122,7 @@ const $ = {
       return names.map(k => ({ name: k.slice(prefix.length), kind: 'file', size: files[k].length, isLink: false }))
     },
     stat: async (path: string, options?: { resolve?: boolean }) => {
+      if (path in files) return { kind: 'file', size: files[path].length, mtimeMs: mtimes[path] ?? 0, isLink: false }
       if (!(path in realPaths)) throw new Error(`ENOENT ${path}`)
       return { kind: 'directory', size: 0, mtimeMs: 0, isLink: false, ...(options?.resolve ? { realPath: realPaths[path] } : {}) }
     },
@@ -128,6 +135,7 @@ const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean; bodyColum
 
 function buttons(tree: any): any[] {
   if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(buttons)
   if (tree.type === 'Button') return [tree]
   return (tree.children ?? []).flatMap(buttons)
 }
@@ -139,6 +147,7 @@ beforeEach(() => {
   timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
+  scrolls = []; scrollResult = {}; reads = []; mtimes = {}
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
   sessionId = 'uuid-lead'
@@ -286,6 +295,7 @@ test('the band draws no context gauge: the status bar already carries it', async
 // column so the twins line up.
 const boxes = (tree: any): any[] => {
   if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(boxes)
   const own = tree.type === 'Box' ? [tree] : []
   return [...own, ...(tree.children ?? []).flatMap(boxes)]
 }
@@ -1626,8 +1636,9 @@ const queue = (args: string) => hooks['command.run:queue']($, { command: 'queue'
 
 test('the mod registers /queue at load, to run at once even mid-turn', async () => {
   await startSession()
-  expect(commands).toHaveLength(1)
+  expect(commands).toHaveLength(2)
   expect(commands[0]).toMatchObject({ name: 'queue', immediate: true, argumentHint: '[task]' })
+  expect(commands[1]).toMatchObject({ name: 'cs', immediate: true, argumentHint: 'next|prev|first|last|<n>' })
 })
 
 test('/queue with a task runs cs -queue add with the task as one argument and says it is queued', async () => {
@@ -2149,4 +2160,227 @@ test('the watch ends once the turn is over and nothing runs, and not while a ste
   // the next /finish watches afresh
   await startFinish()
   expect(watches().filter(t => !t.cancelled)).toHaveLength(1)
+})
+
+// ---------------------------------------------------------------------------
+// The rail: one tick per prompt on the transcript's live branch.
+
+// The session's transcript: Claude Code keeps it under ~/.claude/projects/<slug>/<id>.jsonl,
+// the slug the cwd with every character outside [A-Za-z0-9] made `-`.
+const TRANSCRIPT = '/home/.claude/projects/-work/uuid-lead.jsonl'
+const row = (o: Record<string, unknown>) => JSON.stringify(o)
+const prompt = (uuid: string, parent: string | null, text: unknown, extra: Record<string, unknown> = {}) =>
+  row({ uuid, parentUuid: parent, type: 'user', message: { role: 'user', content: text }, ...extra })
+const reply = (uuid: string, parent: string) =>
+  row({ uuid, parentUuid: parent, type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
+const LINEAR = [
+  prompt('u1', null, 'say one'), reply('a1', 'u1'),
+  prompt('u2', 'a1', 'say two'), reply('a2', 'u2'),
+  prompt('u3', 'a2', 'say three\nwith a second line'), reply('a3', 'u3'),
+  prompt('u4', 'a3', '  say four  '), reply('a4', 'u4'),
+]
+const transcript = (lines: string[], mtime = 1) => { files[TRANSCRIPT] = `${lines.join('\n')}\n`; mtimes[TRANSCRIPT] = mtime }
+const sessionStart = () => hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e: any) => ({ cwd: e.cwd }))
+// A UserMessage row as the engine draws it, reporting what of it is on screen.
+const drawRow = (requestId: string, text: string, onScreen: any) =>
+  hooks['ui.render:UserMessage']($, { requestId, component: 'UserMessage', surface: 'terminal', props: { text, origin: { kind: 'composer' }, isExpanded: false, onScreen } }, async (e: any) => e)
+const cs = (args: string) => hooks['command.run:cs']($, { command: 'cs', args }, async () => ({ text: 'unhandled' }))
+// The rail's glyphs in order: each tick's label (a Button, or the Text the read prompt's tick is) and the `…N` run.
+const rail = (tree: any): string[] => {
+  const box = boxes(tree).find((b: any) => b.props.key === 'cs-rail')
+  if (box === undefined) return []
+  return (box.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
+    .map((c: any) => (c.type === 'Button' ? c.props.label : textOf(c)))
+}
+const tickButtons = (tree: any) => buttons(tree).filter((b: any) => /^cs-rail-\d+$/.test(b.props.key))
+
+test('the live branch of a linear transcript lists every prompt, first line trimmed and cut to 80 characters', () => {
+  const long = prompt('u5', 'a4', 'x'.repeat(100))
+  expect(parsePrompts(`${[...LINEAR, long].join('\n')}\n`)).toEqual([
+    { uuid: 'u1', text: 'say one' }, { uuid: 'u2', text: 'say two' }, { uuid: 'u3', text: 'say three' }, { uuid: 'u4', text: 'say four' },
+    { uuid: 'u5', text: `${'x'.repeat(RAIL_TEXT_CHARS - 1)}\u2026` },
+  ])
+})
+
+test('a /rewind leaves its abandoned prompts off the branch: the walk follows parentUuid back from the last row', () => {
+  const forked = [...LINEAR, prompt('u5', 'a2', 'say five instead'), reply('a5', 'u5')]
+  expect(parsePrompts(forked.join('\n')).map(p => p.text)).toEqual(['say one', 'say two', 'say five instead'])
+})
+
+test('a /compact boundary row links the branch on through logicalParentUuid', () => {
+  const compacted = [
+    ...LINEAR,
+    row({ uuid: 'b1', parentUuid: null, logicalParentUuid: 'a4', type: 'system', subtype: 'compact_boundary' }),
+    prompt('s1', 'b1', 'This session is being continued from a previous conversation', { isCompactSummary: true }),
+    prompt('u5', 's1', 'say five'), reply('a5', 'u5'),
+  ]
+  expect(parsePrompts(compacted.join('\n')).map(p => p.text)).toEqual(['say one', 'say two', 'say three', 'say four', 'say five'])
+})
+
+test('tool results, command echoes, meta rows, sidechains, system-origin rows and a torn line are not prompts', () => {
+  const noisy = [
+    prompt('u1', null, 'say one'), reply('a1', 'u1'),
+    prompt('t1', 'a1', [{ type: 'tool_result', tool_use_id: 'x', content: 'done' }]), reply('a2', 't1'),
+    prompt('c1', 'a2', '<command-message>rotate</command-message>\n<command-name>/rotate</command-name>'), reply('a3', 'c1'),
+    prompt('m1', 'a3', 'Stop hook feedback: narrative check', { isMeta: true }), reply('a4', 'm1'),
+    prompt('n1', 'a4', '<task-notification>\n<task-id>b1</task-id>\n</task-notification>', { origin: { kind: 'task-notification' } }), reply('a5', 'n1'),
+    prompt('side', 'a5', 'a subagent prompt', { isSidechain: true }),
+    prompt('u2', 'a5', [{ type: 'text', text: 'say two' }]), reply('a6', 'u2'),
+    '{"uuid":"torn","parentUuid":"a6","type":"us',
+  ]
+  expect(parsePrompts(noisy.join('\n')).map(p => p.text)).toEqual(['say one', 'say two'])
+})
+
+test('after a turn ends the band draws one tick per prompt, the newest thick while no row has reported', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  expect(invalidated).toContain('ui.render')
+  const tree = await band()
+  expect(rail(tree)).toEqual(['\u2500', '\u2500', '\u2500', '\u2501'])
+  expect(tickButtons(tree).map((b: any) => b.props.key)).toEqual(['cs-rail-0', 'cs-rail-1', 'cs-rail-2'])
+  for (const b of tickButtons(tree)) expect(b.props).toMatchObject({ plain: true, dimColor: true })
+  expect(tickButtons(tree).some((b: any) => b.props.hotkey !== undefined)).toBe(false)
+  expect(buttonsUnderText(tree)).toBe(0)
+  expect(texts(tree).find((t: any) => textOf(t) === '\u2501').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
+  // Below the threshold the rail still draws, with the rule and no words.
+  expect(words(tree)).toEqual(['\u258c', '\u2501'])
+})
+
+test('a conversation with one prompt draws no rail', async () => {
+  transcript(LINEAR.slice(0, 2))
+  percent = 40
+  await turnComplete()
+  const tree = await band()
+  expect(rail(tree)).toEqual([])
+  expect(words(tree)).toEqual(['\u258c', '1', '  \u00b7  ', '2'].filter(w => w !== '1' && w !== '2'))
+})
+
+test('the transcript is read again only when its size or mtime changed', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await turnComplete()
+  expect(reads.filter(p => p === TRANSCRIPT)).toHaveLength(1)
+  transcript(LINEAR, 2)
+  await turnComplete()
+  expect(reads.filter(p => p === TRANSCRIPT)).toHaveLength(2)
+  files[TRANSCRIPT] += prompt('u5', 'a4', 'say five')
+  await turnComplete()
+  expect(reads.filter(p => p === TRANSCRIPT)).toHaveLength(3)
+  expect(rail(await band())).toHaveLength(5)
+})
+
+test('CS_TRANSCRIPTS_DIR and a session\'s own claude-config move the transcript; the slug follows the resolved cwd', async () => {
+  envVars.CS_TRANSCRIPTS_DIR = '/elsewhere'
+  files['/elsewhere/-work/uuid-lead.jsonl'] = `${LINEAR.join('\n')}\n`
+  await turnComplete()
+  expect(rail(await band())).toHaveLength(4)
+  delete envVars.CS_TRANSCRIPTS_DIR
+  existing.add('/work/.cs/claude-config')
+  files['/work/.cs/claude-config/projects/-work/uuid-lead.jsonl'] = `${LINEAR.slice(0, 6).join('\n')}\n`
+  await turnComplete()
+  expect(rail(await band())).toHaveLength(3)
+  existing.delete('/work/.cs/claude-config')
+  realPaths['/work'] = '/Volumes/data/work.dir'; realPaths['/home/.claude-sessions/work'] = '/Volumes/data/work.dir'
+  files['/home/.claude/projects/-Volumes-data-work-dir/uuid-lead.jsonl'] = `${LINEAR.slice(0, 4).join('\n')}\n`
+  await turnComplete()
+  expect(rail(await band())).toHaveLength(2)
+})
+
+test('past the width budget the oldest prompts collapse into one dim …N run at the left', async () => {
+  envVars.HOME = '/home'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  percent = 40
+  const many = [prompt('u1', null, 'p1')]
+  for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
+  transcript(many)
+  await turnComplete()
+  // `  ▌  ` (5) + rail + `   ` (3) + `ctrl+x  1 rotate  ·  2 wrap` (27): 40 columns leave 5 cells
+  // for 30 ticks, so 28 collapse into `…28` and two ticks follow.
+  const glyphs = rail(await band({ bodyColumns: 40 }))
+  expect(glyphs).toEqual(['\u202628', '\u2500', '\u2501'])
+  expect(tickButtons(await band({ bodyColumns: 40 })).map((b: any) => b.props.key)).toEqual(['cs-rail-28'])
+  expect(texts(await band({ bodyColumns: 40 })).find((t: any) => textOf(t) === '\u202628').props).toEqual({ dimColor: true })
+  // Wide enough, every tick draws.
+  expect(rail(await band({ bodyColumns: 110 }))).toHaveLength(30)
+  // No room at all: no rail.
+  expect(rail(await band({ bodyColumns: 36 }))).toEqual([])
+})
+
+test('the prompt being read is the on-screen row drawn highest; a null report leaves the last standing; placeholder is ignored', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await drawRow('placeholder', 'say four', { first: 0, last: 1, of: 2 })
+  await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
+  await drawRow('u2', 'say two', { first: 3, last: 5, of: 6 })
+  await drawRow('r3', 'say three\nwith a second line', null)
+  expect(rail(await band())).toEqual(['\u2500', '\u2501', '\u2500', '\u2500'])
+  await drawRow('u2', 'say two', null)
+  expect(rail(await band())).toEqual(['\u2500', '\u2501', '\u2500', '\u2500'])
+  // The person scrolled up: the first prompt's row is now the one cut at the top, the second whole.
+  await drawRow('u2', 'say two', { first: 0, last: 5, of: 6 })
+  await drawRow('u1', 'say one', { first: 2, last: 4, of: 6 })
+  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+})
+
+test('a report that moves the read prompt redraws the band from a timer, never from the render itself', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await band()
+  invalidated = []
+  await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
+  expect(invalidated).toEqual([])
+  await fireAfter()
+  expect(invalidated).toEqual(['ui.render'])
+})
+
+test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal marks the tick dotted and is toasted once a session', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
+  await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
+  // The first prompt is being read (its row is the higher), so its tick is no Button.
+  const tree = await band()
+  expect(rail(tree)).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  await tickButtons(tree)[0].props.onPress()
+  expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }])
+  scrollResult = { deny: 'the window moved meanwhile' }
+  await tickButtons(tree)[1].props.onPress()
+  await tickButtons(tree)[1].props.onPress()
+  expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'r3' }, block: 'start' }, { to: { requestId: 'r3' }, block: 'start' }])
+  expect(toasts).toEqual(['cs: the window moved meanwhile'])
+  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2504', '\u2500'])
+})
+
+test('a prompt no row has drawn since a resume is dim, and its press says so once', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  scrollResult = { deny: 'nothing drawn under that requestId' }
+  const tree = await band()
+  await tickButtons(tree)[1].props.onPress()
+  await tickButtons(tree)[1].props.onPress()
+  expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }, { to: { requestId: 'u2' }, block: 'start' }])
+  expect(toasts).toEqual(['cs: that prompt is not on screen yet'])
+  expect(rail(await band())).toEqual(['\u2500', '\u2500', '\u2500', '\u2501'])
+})
+
+test('/cs next, prev, first, last and N move along the rail from the prompt being read', async () => {
+  await sessionStart()
+  expect(commands.find(c => c.name === 'cs')).toMatchObject({ immediate: true })
+  expect(await cs('next')).toEqual({ text: 'cs: the rail has no prompts' })
+  transcript(LINEAR)
+  await turnComplete()
+  for (const [id, text] of [['u1', 'say one'], ['u2', 'say two'], ['u3', 'say three\nwith a second line'], ['u4', '  say four  ']]) await drawRow(id, text, null)
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  expect(await cs('next')).toEqual({})
+  expect(await cs('prev')).toEqual({})
+  expect(await cs('first')).toEqual({})
+  expect(await cs('last')).toEqual({})
+  expect(await cs('3')).toEqual({})
+  expect(scrolls.map(s => s.to.requestId)).toEqual(['u3', 'u1', 'u1', 'u4', 'u3'])
+  expect(await cs('9')).toEqual({ text: 'cs: the rail has 4 prompts' })
+  expect(await cs('sideways')).toEqual({ text: 'usage: /cs next|prev|first|last|<n>' })
+  await drawRow('u4', '  say four  ', { first: 0, last: 1, of: 2 })
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
+  expect(await cs('prev')).toEqual({ text: 'cs: no prompt before this one' })
 })

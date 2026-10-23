@@ -4,6 +4,7 @@
 // ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
+// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
 import type { On, EngineInterface } from 'claude-code'
 
 declare const h: any
@@ -202,16 +203,46 @@ let finishShown = new Set<string>()
 let finishGate: { task: string; since: number } | undefined
 let finishProblemShown = false
 
+// The rail. A prompt is a row of the transcript's live branch; its requestId
+// is the id the engine drew its UserMessage row under, once seen.
+export type Prompt = { uuid: string; text: string }
+// How much of a prompt's first line a tick carries as its text.
+export const RAIL_TEXT_CHARS = 80
+// `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
+const READ_CAP = 4 * 1024 * 1024
+// What the transcript last read held, and the file it was: the file is parsed
+// again only when its size or mtime moved.
+let railFile: { path: string; size: number; mtimeMs: number } | undefined
+let prompts: Prompt[] = []
+// Row key (a uuid's first four groups, or the id itself) -> the requestId the
+// engine last drew that row under and the row's first line, from the
+// UserMessage renders; requestId -> the latest non-null onScreen report.
+let drawnRows = new Map<string, { requestId: string; text: string }>()
+let shown = new Map<string, { first: number; last: number; of: number }>()
+// Prompts a jump was refused for, by uuid; whether that, a prompt no row has
+// drawn yet, and a transcript read from its tail have been said this session.
+let denied = new Set<string>()
+let denySaid = false
+let notYetSaid = false
+let tailSaid = false
+// The prompt the band last drew thick, and whether a redraw for a moved read
+// prompt is already scheduled.
+let drawnRead = -1
+let redrawPending = false
+
 export function register(on: On) {
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
+  railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); denySaid = false; notYetSaid = false; tailSaid = false; drawnRead = -1; redrawPending = false
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
+      await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
     }
+    await refreshRail($)
     // Only in a cs session; anywhere else the mod stays silent. Nor while git
     // tracks the session's control files: the heartbeat would change them.
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
@@ -254,6 +285,30 @@ export function register(on: On) {
     return { text: result.stdout.trimEnd() }
   })
 
+  // `/cs next|prev|first|last|<n>` scrolls the transcript to a prompt of the
+  // rail, counted from the one being read. Immediate: a typed command answers
+  // the person's own input, which is when the engine lets a plugin move a
+  // transcript row, mid-turn too. A move answers with no text: a transcript
+  // row of its own would grow the transcript under the view it just moved.
+  on('command.run', { command: 'cs' }, async ($, e) => {
+    const asked = e.args.trim()
+    const count = prompts.length
+    const current = readIndex()
+    let target: number
+    if (asked === 'next') target = current + 1
+    else if (asked === 'prev') target = current - 1
+    else if (asked === 'first') target = 0
+    else if (asked === 'last') target = count - 1
+    else if (/^\d+$/.test(asked)) target = Number(asked) - 1
+    else return { text: 'usage: /cs next|prev|first|last|<n>' }
+    if (count === 0) return { text: 'cs: the rail has no prompts' }
+    if (asked === 'next' && target >= count) return { text: 'cs: no prompt after this one' }
+    if (asked === 'prev' && target < 0) return { text: 'cs: no prompt before this one' }
+    if (target < 0 || target >= count) return { text: `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}` }
+    await jumpTo($, target)
+    return {}
+  })
+
   // The end of a turn is the one moment a rotation can be started for the
   // person: the answer is in, nothing runs. An aborted or errored turn is no
   // place to start one, and a subagent's turn ends in the same event. A
@@ -263,6 +318,7 @@ export function register(on: On) {
     if (e.agentId === undefined) {
       finishTurnOver = true
       await clearPressed($)
+      await refreshRail($)
     }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
@@ -312,6 +368,25 @@ export function register(on: On) {
     return next(e)
   })
 
+  // Every prompt row the engine draws passes through untouched; what it is
+  // drawn under, and what of it is on screen, is kept for the rail. The
+  // composer's echo draws first under `placeholder`, the real id on the next
+  // render (measured), so that id binds nothing. A `null` report is the row
+  // not laid out yet (measured on every first render): the last report
+  // stands. A report that moves the read prompt redraws the band from a
+  // timer: an invalidate inside a render is a render loop.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (e.requestId !== 'placeholder') {
+      drawnRows.set(rowKey(e.requestId), { requestId: e.requestId, text: firstLine(e.props.text) })
+      if (e.props.onScreen) shown.set(e.requestId, e.props.onScreen)
+      if (!redrawPending && prompts.length > 1 && readIndex() !== drawnRead) {
+        redrawPending = true
+        $.clock.after(0, () => { redrawPending = false; $.ui.invalidate('ui.render') })
+      }
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const drawn = await next(e)
     // The band draws in a new conversation before any of its turns end, so
@@ -332,8 +407,11 @@ export function register(on: On) {
     // Tasks queued and nothing running them, at any context. An armed
     // handoff draws its clear key alone, so the count is not asked for then.
     let waiting = !bandIdle || armed ? 0 : await idleQueueLength($)
-    if ((rotating || waiting > 0) && !(await ownsRotation($))) { rotating = false; waiting = 0 }
-    if (!rotating && waiting === 0 && gate === undefined) return drawn
+    // The rail draws whenever the conversation has two prompts to move
+    // between, a turn running or not, under the same ownership as the keys.
+    let railing = !e.props.hasSurvey && prompts.length > 1
+    if ((rotating || waiting > 0 || railing) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false }
+    if (!rotating && waiting === 0 && gate === undefined && !railing) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
@@ -349,12 +427,34 @@ export function register(on: On) {
     // each Button its own key; chords that differ are spelled whole.
     const actions = rotating ? (wrapping ? [ROTATE_ACTION, WRAP_ACTION] : [ROTATE_ACTION]) : []
     const prefix = sharedPrefix(actions.map(action => chords[action]))
-    const key = (action: string) => {
+    const spelled = (action: string) => {
       const chord = chords[action]
-      if (chord === undefined) return false
-      const spelled = prefix === undefined ? chord : chord.slice(prefix.length + 1)
-      return <Box marginRight={1}><Text bold color={own}>{spelled}</Text></Box>
+      return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
     }
+    const key = (action: string) => {
+      const text = spelled(action)
+      return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
+    }
+    // What the words take, in cells, so the rail knows what the line leaves it.
+    const sep = '  \u00b7  '
+    const wordCells = [
+      counting ? `/clear in ${left}s${sep}` : '',
+      prefix !== undefined ? `${prefix}  ` : '',
+      rotating ? `${spelled(ROTATE_ACTION) === undefined ? '' : `${spelled(ROTATE_ACTION)} `}${armed ? '/clear now' : 'rotate'}` : '',
+      wrapping ? `${sep}${spelled(WRAP_ACTION) === undefined ? '' : `${spelled(WRAP_ACTION)} `}wrap` : '',
+      waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
+      gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
+    ].join('').length
+    // The rail: one tick per prompt, `━` for the one being read, `┄` for one a
+    // jump was refused, `─` otherwise, each a Button (the read one a Text: a
+    // Button takes no colour, and there is nowhere to jump). It takes what the
+    // line leaves after the rule, the gaps and the words; past that the oldest
+    // prompts collapse into one `…N` run. The read tick is remembered so a
+    // report that moves it can redraw the band.
+    const read = readIndex()
+    drawnRead = read
+    const budget = e.props.bodyColumns - 2 - 1 - 2 - (wordCells > 0 ? 3 + wordCells : 0)
+    const ticks = railing ? railTicks(prompts.length, budget) : undefined
     // One thin line, a blank line above it so it reads apart from the
     // transcript: a left rule in the session colour, as the launch banner's
     // bar; then only the words that need a key now, the keys in the session
@@ -369,6 +469,16 @@ export function register(on: On) {
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
             <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
+            {ticks !== undefined && (
+              <Box key="cs-rail" marginRight={wordCells > 0 ? 3 : 0}>
+                {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
+                {prompts.slice(ticks.hidden).map((p, j) => {
+                  const i = ticks.hidden + j
+                  if (i === read) return own === undefined ? <Text bold>{'\u2501'}</Text> : <Text bold color={own}>{'\u2501'}</Text>
+                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2504' : '\u2500'} onPress={() => jumpTo($, i)} />
+                })}
+              </Box>
+            )}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
             {counting && <Text dimColor>{'  \u00b7  '}</Text>}
@@ -405,6 +515,170 @@ export function sharedPrefix(chords: (string | undefined)[]): string | undefined
   })
   const first = prefixes[0]
   return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined
+}
+
+// How many of `count` ticks fit in `budget` cells: all of them, or the newest
+// after a `…N` run naming the rest; undefined when not even that fits.
+export function railTicks(count: number, budget: number): { hidden: number } | undefined {
+  if (count <= budget) return { hidden: 0 }
+  for (let hidden = 1; hidden < count; hidden++) {
+    if (count - hidden + `\u2026${hidden}`.length <= budget) return { hidden }
+  }
+  return undefined
+}
+
+// The prompt being read: of the prompts whose drawn row has reported what of
+// it is on screen, the one drawn highest (the row cut at the viewport's top
+// reports the rows scrolled away as `first`; every other visible row reports
+// 0, and of those the earliest prompt is the higher); the newest prompt when
+// none has reported.
+function readIndex(): number {
+  let best = -1
+  let bestFirst = -1
+  prompts.forEach((p, i) => {
+    const id = requestIdOf(p)
+    const report = id === undefined ? undefined : shown.get(id)
+    if (report !== undefined && report.first > bestFirst) { best = i; bestFirst = report.first }
+  })
+  return best >= 0 ? best : prompts.length - 1
+}
+
+// The id the engine drew a prompt's row under: by the row's uuid (the engine
+// keys a message row by its message id; a message split into rows keeps the
+// uuid's first four groups), else by the first line's text, as a row drawn
+// before the transcript stored it is matched; undefined while no row has.
+function requestIdOf(p: Prompt): string | undefined {
+  const byKey = drawnRows.get(rowKey(p.uuid))
+  if (byKey !== undefined) return byKey.requestId
+  for (const drawn of drawnRows.values()) if (drawn.text === p.text) return drawn.requestId
+  return undefined
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const rowKey = (id: string) => (UUID.test(id) ? id.slice(0, 24) : id)
+
+// A prompt's text as the rail carries it: the first non-blank line, trimmed,
+// cut to RAIL_TEXT_CHARS with an ellipsis.
+function firstLine(text: string): string {
+  const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+  return line.length > RAIL_TEXT_CHARS ? `${line.slice(0, RAIL_TEXT_CHARS - 1)}\u2026` : line
+}
+
+// Scrolls the transcript to prompt `i`'s row, from a press or a typed /cs,
+// which is when the engine lets a plugin move a transcript row. A refusal
+// marks the tick dotted and is toasted once a session; a prompt no row has
+// drawn since a resume is tried by its uuid, and a refusal for want of a
+// drawn row says so once instead.
+async function jumpTo($: EngineInterface, i: number) {
+  const p = prompts[i]
+  if (p === undefined) return
+  const id = requestIdOf(p)
+  const result = await $.ui.scroll({ to: { requestId: id ?? p.uuid }, block: 'start' })
+  if (result.deny === undefined) {
+    if (denied.delete(p.uuid)) $.ui.invalidate('ui.render')
+    return
+  }
+  if (id === undefined && /nothing drawn/.test(result.deny)) {
+    if (!notYetSaid) { notYetSaid = true; $.ui.toast('cs: that prompt is not on screen yet') }
+    return
+  }
+  if (!denied.has(p.uuid)) { denied.add(p.uuid); $.ui.invalidate('ui.render') }
+  if (!denySaid) { denySaid = true; $.ui.toast(`cs: ${result.deny}`) }
+}
+
+// Reads the transcript again when it moved and redraws the band when the
+// prompts changed. A file that cannot be read (none yet, or cs is not the
+// launcher) lists nothing.
+async function refreshRail($: EngineInterface) {
+  const path = await transcriptPath($)
+  let size: number
+  let mtimeMs: number
+  try {
+    ({ size, mtimeMs } = await $.fs.stat(path))
+  } catch {
+    if (prompts.length > 0) { prompts = []; $.ui.invalidate('ui.render') }
+    railFile = undefined
+    return
+  }
+  if (railFile !== undefined && railFile.path === path && railFile.size === size && railFile.mtimeMs === mtimeMs) return
+  let text: string
+  try {
+    if (size > READ_CAP) {
+      // Past what one read may copy, the newest READ_CAP bytes; the cut's
+      // partial first line is dropped by the parser.
+      text = (await $.process.run(['tail', '-c', String(READ_CAP), path])).stdout
+      if (!tailSaid) { tailSaid = true; $.ui.toast(`cs: the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`) }
+    } else {
+      text = await $.fs.read(path)
+    }
+  } catch (err) {
+    $.ui.log(`cs: the transcript could not be read: ${String(err instanceof Error ? err.message : err)}`)
+    return
+  }
+  railFile = { path, size, mtimeMs }
+  const next = parsePrompts(text)
+  const changed = next.length !== prompts.length || next.some((p, i) => p.uuid !== prompts[i].uuid || p.text !== prompts[i].text)
+  prompts = next
+  if (changed) $.ui.invalidate('ui.render')
+}
+
+// Where Claude Code writes this conversation's transcript, the way cs's own
+// _claude_project_dir finds it (lib/40-state.sh): CS_TRANSCRIPTS_DIR, else
+// ~/.claude/projects, or the session's own config dir's projects/ when it
+// has one (.cs/claude-config, an encrypted session); under that, the cwd as
+// resolved with every character outside [A-Za-z0-9] made `-`, then
+// <session id>.jsonl.
+async function transcriptPath($: EngineInterface): Promise<string> {
+  const cwd = await $.session.cwd()
+  let base = (await $.env.get("CS_TRANSCRIPTS_DIR")) || `${await $.env.get("HOME")}/.claude/projects`
+  if (await $.fs.exists(`${cwd}/.cs/claude-config`)) base = `${cwd}/.cs/claude-config/projects`
+  const resolved = (await resolvedPath($, cwd)) ?? cwd
+  return `${base}/${resolved.replace(/[^A-Za-z0-9]/g, '-')}/${await $.session.id()}.jsonl`
+}
+
+// The person's prompts on the live branch of a transcript's JSONL, in order.
+// The live branch is the chain of parents from the last row (a /rewind leaves
+// its abandoned rows in the file off that chain; a /compact boundary row
+// links on through logicalParentUuid). A prompt is a user row the person
+// sent: not a tool result, a slash command's echo, a meta row (hook feedback,
+// an image), a compact summary, a sidechain's, or one the engine stamped
+// another origin. A line that is not a row (torn, or not JSON) is skipped.
+export function parsePrompts(jsonl: string): Prompt[] {
+  const rows: any[] = []
+  for (const line of jsonl.split('\n')) {
+    if (line.trim() === '') continue
+    try {
+      const row = JSON.parse(line)
+      if (typeof row?.uuid === 'string') rows.push(row)
+    } catch {
+      // a torn last line while the engine appends, or not a row
+    }
+  }
+  const byId = new Map(rows.map(row => [row.uuid, row]))
+  const live = new Set<string>()
+  let row = [...rows].reverse().find(r => !r.isSidechain)
+  while (row !== undefined && !live.has(row.uuid)) {
+    live.add(row.uuid)
+    const parent = row.parentUuid ?? row.logicalParentUuid
+    row = typeof parent === 'string' ? byId.get(parent) : undefined
+  }
+  const out: Prompt[] = []
+  for (const r of rows) {
+    if (!live.has(r.uuid) || r.type !== 'user' || r.isMeta || r.isCompactSummary || r.isSidechain) continue
+    if (r.origin?.kind !== undefined && r.origin.kind !== 'human') continue
+    const content = r.message?.content
+    let text: string | undefined
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) {
+      if (content.some((b: any) => b?.type === 'tool_result')) continue
+      text = content.filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n')
+    }
+    if (text === undefined) continue
+    const line = firstLine(text)
+    if (line === '' || line.startsWith('<')) continue
+    out.push({ uuid: r.uuid, text: line })
+  }
+  return out
 }
 
 function numberOr(raw: string | undefined, fallback: number): number {
