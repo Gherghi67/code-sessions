@@ -495,11 +495,11 @@ directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it: its words, separated by a dim `·`, and the rail of
-prompts at the line's right end. Where the keys'
+blank line above it, read from the left: its words, separated by a dim `·`,
+then the rail of prompts, then the prompt being read. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `ctrl+x  1 rotate  ·  2 wrap        #4 say four  │││┃│││`. Chords that differ are spelled whole. In order, and each
+colour: `ctrl+x  1 rotate  ·  2 wrap   │││┃│││  #4 say four`. Chords that differ are spelled whole. In order, and each
 only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
 `/clear now` once a handoff is armed), `wrap`, the queue's start key, and
 `finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
@@ -525,15 +525,16 @@ modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
-are not prompts. The ticks take what the line leaves after the inset and the
-words; past that the oldest prompts collapse into one dim `…N` run at the
-left, and a line too narrow for any tick draws no rail. The gap the words
-and the bars leave names the prompt being read, `#N` and its first line (up
-to 80 characters), dim italic, from the line's start when no word stands on
-the left and flush against the bars after one, cut with `…` when
-the gap is narrower, counted in terminal cells so a wide character takes two;
-a gap under ten cells names none. On the terminal a bar under the pointer swaps its own prompt into
-the gap, italic, until the pointer leaves; the swap follows the mouse, so it
+are not prompts. The bars start the line when no word stands before them,
+else three cells after the words, so they move only when the words do. The
+ticks take what the line leaves after the inset and the words; past that the
+oldest prompts collapse into one dim `…N` run at the rail's start, and a line
+too narrow for any tick draws no rail. Two cells after the bars the band
+names the prompt being read, `#N` and its first line (up to 80 characters),
+dim italic, cut with `…` when the line is narrower, counted in terminal cells
+so a wide character takes two; under ten cells left it names none. On the
+terminal a bar under the pointer swaps its own prompt into that place,
+italic, until the pointer leaves; the swap follows the mouse, so it
 needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
 them off). Other
 surfaces name the prompt being read only, since the desktop app paints a card
@@ -567,8 +568,8 @@ it has something to count:
 stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
-draws. Every word takes its terminal cells from the gap beside the rail:
-`▤ queue 2  ·  mail 1        #4 say four  │││┃`. The task in progress is
+draws. Every word takes its terminal cells from what the prompt's name is
+left: `▤ queue 2  ·  mail 1   │││┃  #4 say four`. The task in progress is
 Claude Code's own task list's to show, above the band; the band does not
 repeat it.
 

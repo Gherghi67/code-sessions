@@ -138,6 +138,12 @@ session's features where a key can act on it. No pane.
      to the left". Supersedes "Keep it right-aligned" for the wordless
      line. Rejected: leave the left empty, a git-state word, the session
      objective.
+   - Superseded the same day: the bars come first, then the read prompt,
+     from the left, words or not: `│││┃  #4 say four`, and
+     `▤ queue 2  ·  mail 1   │││┃  #4 say four`. Alex ("Bars", after
+     "but the bars are still on the right"): "Bars first, then prompt";
+     the bars never move when the prompt's length changes. Rejected: the
+     prompt then the bars at the left, the bars kept at the right end.
    - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
      tasks but the start key is not drawn (queue armed or draining, a turn
      running, or an armed handoff's clear key standing alone). The start

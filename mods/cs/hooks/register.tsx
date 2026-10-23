@@ -222,7 +222,7 @@ let featuresComplaint: string | undefined
 export type Prompt = { uuid: string; text: string }
 // How much of a prompt's first line a tick carries as its text.
 export const RAIL_TEXT_CHARS = 80
-// The fewest cells the gap beside the rail takes to name a prompt in.
+// The fewest cells after the rail that name a prompt.
 const RAIL_LABEL_MIN = 10
 // `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
 const READ_CAP = 4 * 1024 * 1024
@@ -496,7 +496,7 @@ export function register(on: On) {
       mail > 0 ? `${wordsBeforeMail ? sep : ''}mail ${mail}` : '',
     ].join('')
     const wordCells = cellWidth(wordText)
-    // The rail: one upright bar per prompt at the line's right end, `┃` for
+    // The rail: one upright bar per prompt after the words, `┃` for
     // the one being read, `┆` for one a jump was refused, `│` otherwise (side
     // by side, flat ticks run together into one line), each a Button (the
     // read one a Text: a
@@ -506,10 +506,9 @@ export function register(on: On) {
     // report that moves it can redraw the band.
     const budget = e.props.bodyColumns - 2 - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing ? railTicks(prompts.length, budget) : undefined
-    // The gap the words and the bars leave names a prompt, padded to the gap:
-    // the one being read, or the one under the pointer. With no word on the
-    // left it starts the line; after a word it stands against the bars. A gap
-    // too narrow to name one draws none.
+    // After the bars the band names a prompt in what the line leaves: the one
+    // being read, or the one under the pointer. Too little left to name one
+    // names none.
     const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
     const labelCells = ticks === undefined ? 0 : budget - railCells - 2
     const labeled = labelCells >= RAIL_LABEL_MIN
@@ -520,8 +519,7 @@ export function register(on: On) {
     const label = (i: number) => {
       const p = prompts[i]
       if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
-      const text = `#${i + 1} ${p.text}`
-      return wordCells > 0 ? fitRight(text, labelCells) : fitLeft(text, labelCells)
+      return fitLeft(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
     if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
@@ -566,20 +564,8 @@ export function register(on: On) {
             {/* unread mail, last: a count, no press */}
             {mail > 0 && wordsBeforeMail && <Text dimColor>{'  \u00b7  '}</Text>}
             {mail > 0 && <Text dimColor>{`mail ${mail}`}</Text>}
-            {ticks !== undefined && <Box flexGrow={1} />}
-            {labeled && (
-              <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
-                <Text dimColor italic wrap="truncate-end">{label(read)}</Text>
-                {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
-                {hovering && prompts.map((_, i) => i !== read && (
-                  <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                    <Text italic wrap="truncate-end">{label(i)}</Text>
-                  </Box>
-                ))}
-              </Box>
-            )}
             {ticks !== undefined && (
-              <Box key="cs-rail" marginLeft={labeled ? 2 : wordCells > 0 ? 3 : 0}>
+              <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
                 {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
                 {prompts.slice(ticks.hidden).map((p, j) => {
                   const i = ticks.hidden + j
@@ -587,6 +573,17 @@ export function register(on: On) {
                   return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'}
                                  hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
                 })}
+              </Box>
+            )}
+            {labeled && (
+              <Box width={labelCells} marginLeft={2}>
+                <Text dimColor italic wrap="truncate-end">{label(read)}</Text>
+                {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
+                {hovering && prompts.map((_, i) => i !== read && (
+                  <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
+                    <Text italic wrap="truncate-end">{label(i)}</Text>
+                  </Box>
+                ))}
               </Box>
             )}
           </Box>
@@ -811,12 +808,6 @@ function cutToCells(text: string, width: number): string {
 function fitLeft(text: string, width: number): string {
   const fitted = cutToCells(text, width)
   return fitted + ' '.repeat(Math.max(0, width - cellWidth(fitted)))
-}
-
-// `text` cut to `width` cells, with spaces before it to fill `width`.
-function fitRight(text: string, width: number): string {
-  const fitted = cutToCells(text, width)
-  return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
 }
 
 function firstLine(text: string): string {
