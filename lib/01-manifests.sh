@@ -142,6 +142,7 @@ CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
     cs/hooks/register.tsx
+    cs/tips.json
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
@@ -153,6 +154,13 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
 )
+
+# The cs tips file as install.sh names it in settings.json's
+# spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
+# tips, and cs's says how to turn on the band's prompt bars. Deployed with the
+# cs mod as cs/tips.json under ~/.claude/skills.
+# shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
+CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
 
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install

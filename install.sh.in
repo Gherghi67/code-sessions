@@ -1077,6 +1077,47 @@ else
             info "Capsule caps: square ends until you answer once with: cs -statusline caps ask"
         fi
     fi
+    # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
+    # on the band's prompt bars. It is named in settings.json only while no
+    # file is named there and the deployed tips file is a regular file (Claude
+    # Code refuses a link): a file the user named stays, and cs's tip is left
+    # out. The user's own tips, label and excludeDefault are never touched.
+    # Read here, as the filter prints nothing; the filter checks again under
+    # the lock.
+    _cs_tips_deployed=""
+    if [ -f "$SKILLS_DIR/cs/tips.json" ] && [ ! -L "$SKILLS_DIR/cs/tips.json" ]; then
+        _cs_tips_deployed=1
+    fi
+    _tips_state=unset _current_tips_file=""
+    if [ -s "$CLAUDE_SETTINGS" ]; then
+        _tips_state=$(jq -r '.spinnerTipsOverride
+            | if . == null then "unset"
+              elif type != "object" then "not-object"
+              elif (.tipsFile // "") == "" then "unset"
+              else "named" end' "$CLAUDE_SETTINGS")
+        _current_tips_file=$(jq -r '.spinnerTipsOverride.tipsFile? // "" | tostring' "$CLAUDE_SETTINGS")
+    fi
+    case "$_tips_state:$_current_tips_file" in
+        unset:*)
+            if [ -n "$_cs_tips_deployed" ]; then
+                info "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)"
+            else
+                warn "Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+            fi
+            ;;
+        "named:$CS_TIPS_FILE"|"named:$HOME/.claude/skills/cs/tips.json")
+            if [ -z "$_cs_tips_deployed" ]; then
+                warn "Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+            fi
+            ;;
+        not-object:*)
+            warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
+            ;;
+        *)
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
+            ;;
+    esac
+
     # settings.json on stdin, with cs's hooks and the status line the answers
     # above chose, on stdout. cs_settings_update runs it under the lock, so it
     # prints nothing else and asks nothing.
@@ -1092,6 +1133,13 @@ else
                 --arg subcmd "$INSTALL_DIR/cs-subagent-statusline" \
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}')
+        fi
+        if [ -n "$_cs_tips_deployed" ]; then
+            SETTINGS=$(echo "$SETTINGS" | jq --arg tips "$CS_TIPS_FILE" '
+                if .spinnerTipsOverride == null then .spinnerTipsOverride = {tipsFile: $tips}
+                elif (.spinnerTipsOverride | type) == "object" and (.spinnerTipsOverride.tipsFile // "") == ""
+                then .spinnerTipsOverride.tipsFile = $tips
+                else . end')
         fi
         printf '%s\n' "$SETTINGS"
     }

@@ -1061,6 +1061,125 @@ test_install_deploys_the_rotate_mod_and_uninstall_removes_it() {
         || { echo "  FAIL: uninstall left ~/.claude/skills/cs behind"; return 1; }
 }
 
+# The tips file the cs mod ships has the shape Claude Code 2.1.309 reads from a
+# spinnerTipsOverride.tipsFile: {"tips": [...]} of at most 200 tips, each an
+# object with an id of 1-64 letters, digits, ".", "_" or "-" and a text of at
+# most 500 characters, under 262144 bytes; a tip outside it is dropped there.
+test_the_cs_tips_file_has_the_shape_claude_code_reads() {
+    local f="$SCRIPT_DIR/../mods/cs/tips.json" bad
+    [ "$(wc -c < "$f")" -le 262144 ] || { echo "  FAIL: $f is over 262144 bytes"; return 1; }
+    bad=$(jq -r '.tips | if type != "array" or length == 0 or length > 200 then "tips is not a list of 1-200"
+        else .[] | select((.id | type) != "string" or (.id | test("^[A-Za-z0-9._-]{1,64}$") | not)
+            or (.text | type) != "string" or (.text | length) > 500 or (.text | length) == 0)
+            | "tip \(.id // "without an id")" end' "$f") \
+        || { echo "  FAIL: jq could not read $f"; return 1; }
+    assert_eq "" "$bad" "the cs tips file holds a tip Claude Code drops" || return 1
+}
+
+# With no tips file named, install names cs's in settings.json beside the
+# user's own tips and excludeDefault, which it never touches, and says so.
+test_install_names_the_cs_tips_file_beside_the_users_tips() {
+    local home="$TEST_TMPDIR/tips-home" out
+    mkdir -p "$home/.claude"
+    printf '{"spinnerTipsOverride":{"tips":["mine"],"excludeDefault":false}}\n' > "$home/.claude/settings.json"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq '{"tips":["mine"],"excludeDefault":false,"tipsFile":"~/.claude/skills/cs/tips.json"}' \
+        "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)" \
+        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+}
+
+# A second install finds cs's tips file named and leaves settings.json and its
+# output as they were: no change, no tips line.
+test_install_twice_names_the_cs_tips_file_once() {
+    local home="$TEST_TMPDIR/tips-twice-home" out backups
+    mkdir -p "$home/.claude"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install.sh exited non-zero"; return 1; }
+    assert_eq '{"tipsFile":"~/.claude/skills/cs/tips.json"}' \
+        "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after the first install" || return 1
+    backups=$(_settings_backups "$home/.claude/settings.json")
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: second install.sh exited non-zero"; return 1; }
+    assert_eq "$backups" "$(_settings_backups "$home/.claude/settings.json")" "the second install wrote settings.json (a new backup)" || return 1
+    assert_eq '{"tipsFile":"~/.claude/skills/cs/tips.json"}' \
+        "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after the second install" || return 1
+    assert_eq "" "$(printf '%s\n' "$out" | grep 'Spinner tips')" "the second install's tips line" || return 1
+}
+
+# Claude Code reads one tips file: one the user named stays, and install says
+# cs's tip is left out.
+test_install_keeps_a_tips_file_the_user_named() {
+    local home="$TEST_TMPDIR/tips-own-home" out
+    mkdir -p "$home/.claude"
+    printf '{"spinnerTipsOverride":{"tipsFile":"~/my-tips.json"}}\n' > "$home/.claude/settings.json"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq '{"tipsFile":"~/my-tips.json"}' \
+        "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "Spinner tips: ~/.claude/settings.json names its own tipsFile (~/my-tips.json), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out" \
+        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+}
+
+# A spinnerTipsOverride that is not an object is the user's to fix: install
+# completes, leaves it as it is and warns.
+test_install_leaves_a_spinner_tips_override_that_is_not_an_object() {
+    local home="$TEST_TMPDIR/tips-odd-home" out
+    mkdir -p "$home/.claude"
+    printf '{"spinnerTipsOverride":"tips please"}\n' > "$home/.claude/settings.json"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq '"tips please"' \
+        "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips" \
+        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+}
+
+# Uninstall takes back only cs's tips file: the user's tips stay, and a
+# spinnerTipsOverride that held nothing else goes; one naming another file stays.
+test_uninstall_removes_only_the_cs_tips_file() {
+    local mixed="$TEST_TMPDIR/tips-un-mixed" alone="$TEST_TMPDIR/tips-un-alone" own="$TEST_TMPDIR/tips-un-own" home
+    local spelled="$TEST_TMPDIR/tips-un-spelled"
+    for home in "$mixed" "$alone" "$own" "$spelled"; do mkdir -p "$home/.claude"; done
+    printf '{"spinnerTipsOverride":{"tips":["mine"]}}\n' > "$mixed/.claude/settings.json"
+    printf '{"spinnerTipsOverride":{"tipsFile":"~/my-tips.json"}}\n' > "$own/.claude/settings.json"
+    printf '{"spinnerTipsOverride":{"tipsFile":"%s/.claude/skills/cs/tips.json"}}\n' "$spelled" > "$spelled/.claude/settings.json"
+    for home in "$mixed" "$alone" "$own" "$spelled"; do
+        HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero in $home"; return 1; }
+        printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > /dev/null 2>&1 || { echo "  FAIL: cs -uninstall exited non-zero in $home"; return 1; }
+    done
+    assert_eq '{"tips":["mine"]}' "$(jq -c .spinnerTipsOverride "$mixed/.claude/settings.json")" \
+        "spinnerTipsOverride with the user's tips after uninstall" || return 1
+    assert_eq 'false' "$(jq -c 'has("spinnerTipsOverride")' "$alone/.claude/settings.json")" \
+        "spinnerTipsOverride that held only cs's file is gone" || return 1
+    assert_eq '{"tipsFile":"~/my-tips.json"}' "$(jq -c .spinnerTipsOverride "$own/.claude/settings.json")" \
+        "spinnerTipsOverride naming the user's file after uninstall" || return 1
+    assert_eq 'false' "$(jq -c 'has("spinnerTipsOverride")' "$spelled/.claude/settings.json")" \
+        "cs's tips file spelled from \$HOME is cs's too" || return 1
+}
+
+# A cs mod directory the user linked at their own files is kept, so no cs
+# tips file lands in it: install names none and says why.
+test_install_names_no_tips_file_it_did_not_deploy() {
+    local home="$TEST_TMPDIR/tips-nodeploy-home" target="$TEST_TMPDIR/tips-nodeploy-target" out
+    mkdir -p "$home/.claude/skills" "$target/hooks"
+    echo 'my register' > "$target/hooks/register.tsx"
+    ln -s "$target" "$home/.claude/skills/cs"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq 'null' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "Spinner tips: $home/.claude/skills/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips" \
+        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+}
+
+# A tips file the user changed is kept by uninstall as theirs, and so is the
+# setting that names it.
+test_uninstall_keeps_a_changed_cs_tips_file_and_its_setting() {
+    local home="$TEST_TMPDIR/tips-changed-home"
+    mkdir -p "$home/.claude"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    printf '["my own tip"]\n' > "$home/.claude/skills/cs/tips.json"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > /dev/null 2>&1 || { echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_eq '["my own tip"]' "$(cat "$home/.claude/skills/cs/tips.json")" "the changed tips file" || return 1
+    assert_eq '{"tipsFile":"~/.claude/skills/cs/tips.json"}' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" \
+        "spinnerTipsOverride naming the kept file" || return 1
+}
+
 # A launch under tmux in iTerm2 hard-links claude into
 # ~/.local/share/cs/claude/<version>/; each link holds a whole claude binary,
 # so uninstall removes the directory and leaves the rest of ~/.local/share/cs.
@@ -1204,6 +1323,7 @@ test_install_replaces_a_symlinked_mod_directory() {
     _cs_shipped_content > "$elsewhere/hooks/register.tsx"
     _cs_shipped_content > "$elsewhere/hooks/hooks.json"
     _cs_shipped_content > "$elsewhere/.claude-plugin/plugin.json"
+    _cs_shipped_content > "$elsewhere/tips.json"
     ln -s "$elsewhere" "$fake_home/.claude/skills/cs"
     HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     [ ! -L "$fake_home/.claude/skills/cs" ] && [ -d "$fake_home/.claude/skills/cs" ] \
@@ -3331,6 +3451,14 @@ run_test test_manifest_arrays_match_repo_files
 run_test test_skill_files_exist_in_repo
 run_test test_mod_files_manifest_matches_the_repo
 run_test test_install_deploys_the_rotate_mod_and_uninstall_removes_it
+run_test test_the_cs_tips_file_has_the_shape_claude_code_reads
+run_test test_install_names_the_cs_tips_file_beside_the_users_tips
+run_test test_install_twice_names_the_cs_tips_file_once
+run_test test_install_keeps_a_tips_file_the_user_named
+run_test test_install_leaves_a_spinner_tips_override_that_is_not_an_object
+run_test test_uninstall_removes_only_the_cs_tips_file
+run_test test_install_names_no_tips_file_it_did_not_deploy
+run_test test_uninstall_keeps_a_changed_cs_tips_file_and_its_setting
 run_test test_uninstall_removes_the_claude_links
 run_test test_uninstall_keeps_session_data_while_a_volume_is_mounted_inside
 run_test test_uninstall_keeps_session_data_when_the_mount_table_cannot_be_read
