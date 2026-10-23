@@ -234,6 +234,7 @@ CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
     cs/hooks/register.tsx
+    cs/tips.json
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
@@ -245,6 +246,13 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
 )
+
+# The cs tips file as install.sh names it in settings.json's
+# spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
+# tips, and cs's says how to turn on the band's prompt bars. Deployed with the
+# cs mod as cs/tips.json under ~/.claude/skills.
+# shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
+CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
 
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install
@@ -1331,12 +1339,12 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "10577cf56d9f96779b9cdd843547b27589330292e025542e14df777657f6bdf3  bin/cs"
+    "e7a5b5c039c59c1439b79148afd7561c86f68d050c822258b57ce829fe734a7c  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
-    "e064a3f323ea96b2b47cf1e5b7ee1810d374b9807b8f04923a32af42a80fe352  hooks/cs-shared.sh"
+    "1fb7092492a6944d3261ee4684572321f38c71e9515630dae4f7c02bff20e0c4  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "21988bf58bb6fea15c6435445f4abc3a38f4c4a9a7db78c4ff4797650709ba3f  hooks/memory-index-guard.sh"
     "130983fa75e1843db59007cc01bc02edd94ce873155ea0d410db02993f780351  hooks/prompt-rewriter.sh"
@@ -1365,6 +1373,7 @@ CS_PAYLOAD_SHA256=(
     "09daf172d79a503a4d02884aa002af2e5cba82010d476f4f7744e8d865c1e632  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "a37adbaabef43416a6e566a6c0bdfc4485bb29fb8e0b9077f704bd5b80f9a2fa  mods/cs/hooks/register.tsx"
+    "f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e  mods/cs/tips.json"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "ff76dabaad83772255b22e29262b0b35fb5db2d3dc56d22d89656ad7363961ce  mods/cs-update/hooks/register.tsx"
@@ -2355,6 +2364,47 @@ else
             info "Capsule caps: square ends until you answer once with: cs -statusline caps ask"
         fi
     fi
+    # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
+    # on the band's prompt bars. It is named in settings.json only while no
+    # file is named there and the deployed tips file is a regular file (Claude
+    # Code refuses a link): a file the user named stays, and cs's tip is left
+    # out. The user's own tips, label and excludeDefault are never touched.
+    # Read here, as the filter prints nothing; the filter checks again under
+    # the lock.
+    _cs_tips_deployed=""
+    if [ -f "$SKILLS_DIR/cs/tips.json" ] && [ ! -L "$SKILLS_DIR/cs/tips.json" ]; then
+        _cs_tips_deployed=1
+    fi
+    _tips_state=unset _current_tips_file=""
+    if [ -s "$CLAUDE_SETTINGS" ]; then
+        _tips_state=$(jq -r '.spinnerTipsOverride
+            | if . == null then "unset"
+              elif type != "object" then "not-object"
+              elif (.tipsFile // "") == "" then "unset"
+              else "named" end' "$CLAUDE_SETTINGS")
+        _current_tips_file=$(jq -r '.spinnerTipsOverride.tipsFile? // "" | tostring' "$CLAUDE_SETTINGS")
+    fi
+    case "$_tips_state:$_current_tips_file" in
+        unset:*)
+            if [ -n "$_cs_tips_deployed" ]; then
+                info "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)"
+            else
+                warn "Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+            fi
+            ;;
+        "named:$CS_TIPS_FILE"|"named:$HOME/.claude/skills/cs/tips.json")
+            if [ -z "$_cs_tips_deployed" ]; then
+                warn "Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+            fi
+            ;;
+        not-object:*)
+            warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
+            ;;
+        *)
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
+            ;;
+    esac
+
     # settings.json on stdin, with cs's hooks and the status line the answers
     # above chose, on stdout. cs_settings_update runs it under the lock, so it
     # prints nothing else and asks nothing.
@@ -2370,6 +2420,13 @@ else
                 --arg subcmd "$INSTALL_DIR/cs-subagent-statusline" \
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}')
+        fi
+        if [ -n "$_cs_tips_deployed" ]; then
+            SETTINGS=$(echo "$SETTINGS" | jq --arg tips "$CS_TIPS_FILE" '
+                if .spinnerTipsOverride == null then .spinnerTipsOverride = {tipsFile: $tips}
+                elif (.spinnerTipsOverride | type) == "object" and (.spinnerTipsOverride.tipsFile // "") == ""
+                then .spinnerTipsOverride.tipsFile = $tips
+                else . end')
         fi
         printf '%s\n' "$SETTINGS"
     }

@@ -696,6 +696,28 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
     '
 }
 
+# Removes spinnerTipsOverride.tipsFile from settings file $1 when it names
+# cs's tips file and that file is gone from skills directory $2: uninstall
+# removes only the files cs wrote, so a tips file still there was kept as the
+# user's, and its pointer is theirs too. The user's own tips, label and
+# excludeDefault stay; spinnerTipsOverride goes only when nothing else is in
+# it. Returns 0 stripped, 1 not cs's or absent, 2 write failure.
+_strip_cs_tips_file() {  # settings_file, skills_dir
+    local filter
+    [ -f "$1" ] || return 1
+    if [ -e "$2/cs/tips.json" ] || [ -L "$2/cs/tips.json" ]; then return 1; fi
+    # shellcheck disable=SC2016  # $tilde and $abs are jq variables
+    filter='(.spinnerTipsOverride | type) == "object"
+        and (.spinnerTipsOverride.tipsFile == $tilde or .spinnerTipsOverride.tipsFile == $abs)'
+    jq -e --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" \
+        "$filter" "$1" >/dev/null 2>&1 || return 1
+    cs_settings_update "$1" jq --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" "
+        if $filter then
+            del(.spinnerTipsOverride.tipsFile)
+            | if .spinnerTipsOverride == {} then del(.spinnerTipsOverride) else . end
+        else . end" || return 2
+}
+
 # Refuse the uninstall while a session under the sessions root is live (a
 # running lock pid, or a fresh statusline heartbeat for one opened outside
 # cs): the data step would delete its files from under it. The refusal says
@@ -900,8 +922,8 @@ run_uninstall() {
     fi
 
     # Clean up settings.json (remove cs hooks, preserve others). A file jq
-    # cannot parse, or one that is not a regular file (cs_settings_check never
-    # opens it), is left as it is with a warning: the binaries are already
+    # cannot parse, one that holds no JSON object, or one that is not a regular
+    # file (cs_settings_check never opens it), is left as it is with a warning: the binaries are already
     # gone, so the rest of the uninstall still runs.
     if [ -e "$settings_file" ] && command -v jq >/dev/null 2>&1; then
         if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
@@ -909,6 +931,12 @@ run_uninstall() {
         else
             warn "$CS_SETTINGS_ERROR"
         fi
+        local tips_rc=0
+        _strip_cs_tips_file "$settings_file" "$skills_dir" || tips_rc=$?
+        case "$tips_rc" in
+            0) info "Removed cs's tips file from spinnerTipsOverride in $settings_file" ;;
+            2) warn "$CS_SETTINGS_ERROR" ;;
+        esac
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"

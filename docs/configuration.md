@@ -22,6 +22,7 @@ The installer deploys these components:
 | Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
 | Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
 | Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
+| Spinner tip | `~/.claude/skills/cs/tips.json`, named in `settings.json` as `spinnerTipsOverride.tipsFile`. See [band settings](#band-settings). |
 
 See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
 
@@ -403,6 +404,27 @@ prompt (the cs plugin's `userConfig`, stored by Claude Code in
 whole), naming the row beside it. A bad value stored some other way, such
 as by editing `settings.json`, leaves the band without bars and says so in
 one toast; the rest of the mod runs.
+
+### Spinner tip
+
+Claude Code's spinner tips say how to turn on the prompt bars. The installer
+names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
+
+```json
+{"spinnerTipsOverride": {"tipsFile": "~/.claude/skills/cs/tips.json"}}
+```
+
+- The installer writes `tipsFile` only when `settings.json` names no tips
+  file. Claude Code reads one tips file, so a file you named stays, and the
+  installer says that Claude Code does not show cs's tip.
+- The installer never changes `tips`, `label`, `excludeDefault`, or
+  `spinnerTipsEnabled`. With `spinnerTipsEnabled` set to `false`, Claude Code
+  shows no tips, cs's included.
+- Claude Code picks a tip during one turn and shows it under the spinner of
+  the next turn. It reads the tips file once per session, so a session
+  started before an edit to the file shows the old tips.
+- `cs -uninstall` removes `tipsFile` when it names cs's file and the file is
+  gone. If you changed the file, uninstall keeps the file and the setting.
 
 ## In-session switches
 
