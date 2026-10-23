@@ -94,6 +94,51 @@ _check_revocation_carry_forward() {
     done <<< "$installed"
 }
 
+# Offers a pending release once, on a terminal, before the session opens:
+# y runs the update and starts this same launch again on the new cs; any
+# other key records the version as declined, so the launch does not ask
+# again and the cs-update mod says the release is there in one line instead
+# of opening its pane, until a newer one is pending. No terminal, no
+# question: the banner's line and the pane carry the release.
+# Takes the launch's own arguments, which the relaunch repeats; the relaunch
+# carries CS_UPDATE_PROMPTED so the new cs, should it still see the same
+# version pending (a checkout launch, which no update replaces), does not
+# ask in its turn.
+offer_update_at_launch() {  # "$@": this launch's arguments
+    [ -n "$UPDATE_AVAILABLE" ] || return 0
+    if [ "${CS_UPDATE_PROMPTED:-}" = "$UPDATE_AVAILABLE" ]; then
+        unset CS_UPDATE_PROMPTED
+        return 0
+    fi
+    unset CS_UPDATE_PROMPTED
+    local declined=""
+    if [ -f "$UPDATE_DECLINED" ]; then
+        IFS= read -r declined < "$UPDATE_DECLINED" || true
+    fi
+    if [ "$declined" = "$UPDATE_AVAILABLE" ]; then
+        UPDATE_DECLINED_PENDING=1
+        return 0
+    fi
+    cs_interactive || return 0
+    local answer=""
+    printf '\n  %bcs %s is available%b %b(you have %s)%b. Update now? %b[y/N]%b %b›%b ' \
+        "$BOLD$GREEN" "$UPDATE_AVAILABLE" "$NC" "$DIM" "$VERSION" "$NC" "$DIM" "$NC" "$GOLD" "$NC"
+    IFS= read -rsn1 answer || answer=""
+    echo
+    case "$answer" in
+        [yY])
+            if "$0" -update; then
+                CS_UPDATE_PROMPTED="$UPDATE_AVAILABLE" exec "$0" "$@"
+            fi
+            warn "cs -update did not finish; continuing with cs $VERSION (run cs -update later)"
+            ;;
+        *)
+            cs_write_atomic "$UPDATE_DECLINED" printf '%s\n' "$UPDATE_AVAILABLE" || true
+            UPDATE_DECLINED_PENDING=1
+            ;;
+    esac
+}
+
 # --- Update mechanism ---
 
 # Fetch latest version from GitHub Releases
@@ -434,6 +479,14 @@ do_update() {
 UPDATE_CACHE="$HOME/.cache/cs/update-check"
 UPDATE_CHECK_INTERVAL=3600  # 1 hour in seconds
 UPDATE_AVAILABLE=""  # Set by check_update_notify if update available
+# The one pending version the person answered "no" to at launch: that version
+# is not offered again, at launch or by the cs-update pane.
+UPDATE_DECLINED="$HOME/.cache/cs/update-declined"
+# Set when the pending release is the one declined at launch: the cs-update
+# mod then says so in one line instead of opening its pane. Read by the
+# launch's exports in lib/75-launch.sh.
+# shellcheck disable=SC2034
+UPDATE_DECLINED_PENDING=""
 
 check_update_notify() {
     # Opt out of the network check + cache write (tests set this so a session

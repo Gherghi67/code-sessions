@@ -264,6 +264,25 @@ test('no pending version, no pane, no toast', async () => {
   expect(toasts).toEqual([])
 })
 
+// A version declined at the launch's own question is not offered again:
+// no pane, one toast saying it is there and how to install it; /cs-update
+// still opens the notes on request.
+test('a version declined at launch toasts once instead of opening the pane', async () => {
+  envVars.CS_UPDATE_DECLINED = '2026.99.3'
+  await start()
+  expect(opens()).toHaveLength(0)
+  expect(toasts).toEqual(['cs 2026.99.3 is available · run cs -update to install it, or /cs-update for the notes'])
+  await start()
+  expect(toasts).toHaveLength(1)
+})
+
+test('a declined version older than the pending one does not hold the pane back', async () => {
+  envVars.CS_UPDATE_DECLINED = '2026.99.2'
+  await start()
+  expect(opens()).toHaveLength(1)
+  expect(toasts).toEqual([])
+})
+
 test('the option off skips the launch pane', async () => {
   load({ [OPTION]: false })
   await start()

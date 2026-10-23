@@ -456,10 +456,12 @@ launch_claude_code() {
     # the version check_update_notify found newer than this cs. Absent when
     # nothing is pending, so the mod is silent by absence rather than by a
     # value it has to read; cleared first, since a nested launch inherits its
-    # parent's verdict.
-    unset CS_UPDATE_AVAILABLE
+    # parent's verdict. A version declined at the launch's question is named
+    # beside it, so the mod says it is there instead of opening its pane.
+    unset CS_UPDATE_AVAILABLE CS_UPDATE_DECLINED
     if [ -n "$UPDATE_AVAILABLE" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
+        [ -z "$UPDATE_DECLINED_PENDING" ] || export CS_UPDATE_DECLINED="$UPDATE_AVAILABLE"
     fi
 
     # The session is open and every export above is in place: `--remote`

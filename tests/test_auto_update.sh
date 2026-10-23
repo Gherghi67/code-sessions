@@ -811,7 +811,123 @@ run_test test_launch_with_a_time_only_cache_asks_again
 run_test test_launch_banner_shows_notes_card
 run_test test_launch_banner_quiet_on_empty_notes_cache
 run_test test_launch_banner_card_yields_to_the_mod
+
+# A pending release is offered once at launch, on a terminal, before the
+# session opens. An answered n is kept per version: that version is not asked
+# about again, and the session is told it was declined so the update mod
+# names the release in one line instead of opening its pane.
+_launch_update_home() {  # label -> HOME with a fresh cache naming 2026.99.3 pending
+    local home="$TEST_TMPDIR/$1-home"
+    mkdir -p "$home/.cache/cs"
+    printf '%s 2026.99.3\n' "$(date +%s)" > "$home/.cache/cs/update-check"
+    : > "$home/.cache/cs/update-notes-2026.99.3"
+    : > "$home/.cache/cs/update-notes-full-2026.99.3"
+    printf '%s' "$home"
+}
+_env_stub() {  # path -> a claude stub that prints the update verdict it was given
+    cat > "$1" << 'SCRIPT'
+#!/bin/bash
+echo "UPDATE_AVAILABLE=${CS_UPDATE_AVAILABLE-unset}"
+echo "UPDATE_DECLINED=${CS_UPDATE_DECLINED-unset}"
+exit 0
+SCRIPT
+    chmod +x "$1"
+}
+test_launch_offers_the_update_once_per_version_on_a_terminal() {
+    local home stub out
+    home=$(_launch_update_home offer)
+    stub="$TEST_TMPDIR/offer-claude"; _env_stub "$stub"
+    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-session <<< "n" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" 'cs 2026.99.3 is available (you have [0-9.]*). Update now? \[y/N\]' 'the launch asks before the session opens' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the session still learns the release' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=2026.99.3" 'and that it was declined' || return 1
+    assert_eq "2026.99.3" "$(cat "$home/.cache/cs/update-declined")" 'the declined version is recorded' || return 1
+    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-again <<< "" 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'a declined version is not asked about again' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=2026.99.3" 'and the session is told it was declined' || return 1
+    assert_output_contains "$out" "2026.99.3.*available" "the banner still names the release" || return 1
+    # A newer release than the declined one is asked about afresh.
+    printf '%s 2026.99.4\n' "$(date +%s)" > "$home/.cache/cs/update-check"
+    : > "$home/.cache/cs/update-notes-2026.99.4"; : > "$home/.cache/cs/update-notes-full-2026.99.4"
+    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-newer <<< "n" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "cs 2026.99.4 is available" 'a newer release is offered again' || return 1
+}
+
+# No terminal, no question: the banner line and the in-session pane carry it.
+test_launch_does_not_ask_without_a_terminal() {
+    local home stub out
+    home=$(_launch_update_home notty)
+    stub="$TEST_TMPDIR/notty-claude"; _env_stub "$stub"
+    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CLAUDE_CODE_BIN="$stub" "$CS_BIN" notty-session < /dev/null 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'no question off a terminal' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the pane still gets the verdict' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=unset" 'and nothing is declined on the person'"'"'s behalf' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'no declined record off a terminal' || return 1
+}
+
+# y runs the update; one that does not finish is a warning and the launch
+# goes on with this cs, the pane still able to offer it.
+test_launch_update_that_fails_continues_with_this_cs() {
+    local home stub bin out
+    home=$(_launch_update_home fails)
+    bin="$TEST_TMPDIR/fails-bin"; mkdir -p "$bin"
+    printf '#!/bin/sh\nexit 22\n' > "$bin/curl"; chmod +x "$bin/curl"
+    stub="$TEST_TMPDIR/fails-claude"; _env_stub "$stub"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" fails-session <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Failed to fetch update" 'the update'"'"'s own refusal is shown' || return 1
+    assert_output_contains "$out" "cs -update did not finish; continuing with cs [0-9.]*" 'the launch says it goes on' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the pane can still offer it' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'a failed yes is not a no' || return 1
+}
+
+# y, and the update lands: the same launch runs again on the new cs, with
+# the arguments it was given, and the new cs is not asked in its turn.
+test_launch_update_relaunches_the_same_command_on_the_new_cs() {
+    local home stub out bin key digest
+    home=$(_launch_update_home relaunch)
+    bin="$TEST_TMPDIR/relaunch-bin"; mkdir -p "$bin"
+    stub="$TEST_TMPDIR/relaunch-claude"; _env_stub "$stub"
+    ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$bin/key"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$bin/key.pub")" > "$bin/signers"
+    # The release's installer replaces the cs under test (the path this
+    # launch runs as) with one that says how it was started, and installs
+    # the same at the place cs -update reads the new version from.
+    cat > "$bin/install.sh" << INSTALLER
+#!/usr/bin/env bash
+CS_DEFAULT_REF=v2026.99.3
+CS_RELEASE_REVOKED=''
+printf '#!/bin/bash\\nVERSION="2026.99.3"\\necho "relaunched as 2026.99.3 with: \$*"\\necho "asked about=\${CS_UPDATE_PROMPTED-nothing}"\\n' > "$bin/cs"
+mkdir -p "\$HOME/.local/bin" && cp "$bin/cs" "\$HOME/.local/bin/cs"
+INSTALLER
+    digest=$(shasum -a 256 "$bin/install.sh" | awk '{print $1}')
+    printf '%s  install.sh\n' "$digest" > "$bin/SHA256SUMS"
+    ssh-keygen -Y sign -f "$bin/key" -n cs-release-v2026.99.3 "$bin/SHA256SUMS" > "$bin/sign.log" 2>&1
+    cat > "$bin/curl" << STUB
+#!/usr/bin/env bash
+case "\$*" in *" -w "*) printf '%s' "https://example.com/releases/tag/v2026.99.3"; exit 0 ;; esac
+out=""; prev=""
+for a in "\$@"; do [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"; done
+case "\$*" in
+    *"/v2026.99.3/install.sh -o "*) cp "$bin/install.sh" "\$out"; exit 0 ;;
+    *"/v2026.99.3/SHA256SUMS -o "*) cp "$bin/SHA256SUMS" "\$out"; exit 0 ;;
+    *"/v2026.99.3/SHA256SUMS.sig -o "*) cp "$bin/SHA256SUMS.sig" "\$out"; exit 0 ;;
+esac
+exit 22
+STUB
+    chmod +x "$bin/curl"
+    sed -e "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$bin/signers")'|" "$CS_BIN" > "$bin/cs"
+    chmod +x "$bin/cs"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$bin/cs" relaunch-session --force <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "relaunched as 2026.99.3 with: relaunch-session --force" 'the same command runs on the new cs' || return 1
+    assert_output_contains "$out" "asked about=2026.99.3" 'the relaunch tells the new cs which version was already offered' || return 1
+    assert_output_not_contains "$out" "UPDATE_AVAILABLE=" 'the old cs never started claude' || return 1
+}
+
 run_test test_launch_exports_update_verdict_to_the_mod
+run_test test_launch_offers_the_update_once_per_version_on_a_terminal
+run_test test_launch_does_not_ask_without_a_terminal
+run_test test_launch_update_that_fails_continues_with_this_cs
+run_test test_launch_update_relaunches_the_same_command_on_the_new_cs
 run_test test_notify_writes_notes_cache
 run_test test_notify_writes_notes_cache_past_stale_tmp_files
 run_test test_notify_writes_empty_full_cache_when_fetch_fails

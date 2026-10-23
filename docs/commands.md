@@ -36,6 +36,17 @@ Updates require `ssh-keygen -Y verify` and refuse missing signatures, missing
 manifest entries, digest mismatches, and releases that drop revoked keys.
 See [release verification](configuration.md#release-verification-and-notes).
 
+A launch on a terminal that finds a newer release asks once, before the
+session opens: `cs X.Y.Z is available (you have A.B.C). Update now? [y/N]`.
+`y` runs `cs -update` and then starts the same launch again on the new cs; an
+update that does not finish is a warning and the launch goes on. Any other key
+records that version in `~/.cache/cs/update-declined`: the launch does not ask
+about it again, and in the session the
+[update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) says in
+one line that it is available and to run `cs -update`, instead of opening its
+pane (`/cs-update` still opens the notes). The launch banner still names it. A
+newer release is asked about afresh. Off a terminal nothing is asked.
+
 ## Sessions, locks, and safety
 
 ### Open and resume
