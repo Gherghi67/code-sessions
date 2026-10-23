@@ -2966,3 +2966,57 @@ test('the queue word follows the task word and the key words, a separator before
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
   expect(restingWords(tree).slice(-2)).toEqual(['  ·  ', '▤ queue 2'])
 })
+
+// cs delivers each mail as one file in the mailbox's new/, where it stays
+// until `cs -mail read`, behind .cs/private in an encrypted session.
+const MAIL = '/work/.cs/local/mail'
+
+test('unread mail draws a dim mail word, counting only the .json files directly in new/', async () => {
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  files[`${MAIL}/new/2-b.json`] = '{}'
+  files[`${MAIL}/new/3-c.tmp`] = '{}'
+  files[`${MAIL}/cur/0-z.json`] = '{}'
+  const tree = await band()
+  expect(restingWords(tree)).toEqual(['mail 2'])
+  expect(texts(tree)[0].props).toEqual({ dimColor: true })
+  expect(buttons(tree)).toEqual([])
+  delete files[`${MAIL}/new/1-a.json`]; delete files[`${MAIL}/new/2-b.json`]
+  expect(await band()).toBe(DRAWN)
+})
+
+test('an encrypted session counts its mail behind .cs/private', async () => {
+  existing.add('/work/.cs/private')
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  files[`${MAIL}/new/2-b.json`] = '{}'
+  files['/work/.cs/private/mail/new/3-c.json'] = '{}'
+  expect(restingWords(await band())).toEqual(['mail 1'])
+})
+
+test('the mail word comes last, after the task, queue and key words, and never under a survey or in a teammate', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'fix the login redirect')
+  await turnComplete()
+  queueTasks(2)
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  expect(restingWords(await band())).toEqual(['▸ fix the login redirect', '  ·  ', '▤ queue 2', '  ·  ', 'mail 1'])
+  files['/work/.cs/local/queue.state'] = 'idle\n'
+  const keyed = await band()
+  expect(buttons(keyed).map((b: any) => b.props.key)).toEqual(['cs-queue'])
+  expect(restingWords(keyed)).toEqual(['  ·  ', 'mail 1'])
+  expect(await band({ hasSurvey: true })).toBe(DRAWN)
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('the queue and mail words take their cells from the gap beside the rail', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  queueTasks(2)
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  const tree = await band()
+  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
+  // `▤ queue 2  ·  mail 1` (20) and its three-cell gap leave the label 110 - 2 - 23 - 4 - 2.
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(79))
+})
