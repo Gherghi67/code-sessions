@@ -1176,7 +1176,9 @@ test_drain_keeps_a_failure_report_it_could_not_park_on() {
     qseed "task a" "task b"
     printf 'armed\n' > "$(QDIR)/queue.state"
     drain >/dev/null || true
-    chflags uchg "$(QDIR)/queue.state" 2>/dev/null || return 77
+    require_tool chflags || return $?
+    chflags uchg "$(QDIR)/queue.state" 2>/dev/null \
+        || { echo "    SKIP (this filesystem does not support the immutable flag)"; return 77; }
     printf 'probe\n' > "$TEST_TMPDIR/rename-probe"
     if mv "$TEST_TMPDIR/rename-probe" "$(QDIR)/queue.state" 2>/dev/null; then
         chflags nouchg "$(QDIR)/queue.state" 2>/dev/null || true
@@ -1249,7 +1251,9 @@ test_drain_pops_nothing_when_a_trip_cannot_record_idle() {
     printf 'armed\n' > "$(QDIR)/queue.state"
     drain >/dev/null || true
     printf '91\n' > "$(QDIR)/context-pct"
-    chflags uchg "$(QDIR)/queue.state" 2>/dev/null || return 77
+    require_tool chflags || return $?
+    chflags uchg "$(QDIR)/queue.state" 2>/dev/null \
+        || { echo "    SKIP (this filesystem does not support the immutable flag)"; return 77; }
     printf 'probe\n' > "$TEST_TMPDIR/rename-probe"
     if mv "$TEST_TMPDIR/rename-probe" "$(QDIR)/queue.state" 2>/dev/null; then
         chflags nouchg "$(QDIR)/queue.state" 2>/dev/null || true
