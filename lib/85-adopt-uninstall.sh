@@ -828,7 +828,7 @@ run_uninstall() {
         info "Removed cs-subagent-statusline registration from settings.json"
     fi
 
-    rm -f "$(_statusline_declined_marker)"
+    rm -f "$(_statusline_declined_marker)" "$(_cs_tips_record_file)"
 
     # The .exe name is only ever a leftover from an install that predates
     # dropping Windows; remove it too so an upgrade leaves nothing behind.
