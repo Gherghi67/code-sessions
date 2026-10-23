@@ -114,12 +114,16 @@ const $ = {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
     read: async (path: string) => { reads.push(path); if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
-    // A directory is listed from the files under it; one with none is absent.
+    // A directory is listed from the files under it, a deeper file standing
+    // for the directory that holds it; one with none is absent.
     list: async (path: string) => {
       const prefix = `${path.replace(/\/+$/, '')}/`
-      const names = Object.keys(files).filter(k => k.startsWith(prefix) && !k.slice(prefix.length).includes('/'))
-      if (names.length === 0) throw new Error(`ENOENT ${path}`)
-      return names.map(k => ({ name: k.slice(prefix.length), kind: 'file', size: files[k].length, isLink: false }))
+      const under = Object.keys(files).filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length))
+      if (under.length === 0) throw new Error(`ENOENT ${path}`)
+      const names = [...new Set(under.map(rest => rest.split('/')[0]))]
+      return names.map(name => under.includes(name)
+        ? { name, kind: 'file', size: files[prefix + name].length, isLink: false }
+        : { name, kind: 'directory', size: 0, isLink: false })
     },
     stat: async (path: string, options?: { resolve?: boolean }) => {
       if (path in files) return { kind: 'file', size: files[path].length, mtimeMs: mtimes[path] ?? 0, isLink: false }
@@ -3027,4 +3031,64 @@ test('the queue and mail words take their cells from the gap beside the rail', a
   await turnComplete()
   // `▸ fix the login redirect  ·  ▤ queue 2  ·  mail 1` (49): 110 - 2 - 52 - 4 - 2.
   expect(textOf(gapLabel(await band()))).toBe('#4 say four'.padStart(50))
+})
+
+test('on a narrow line the task word is cut to what the other words leave, and dropped when that is too little', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'x'.repeat(60))
+  await turnComplete()
+  queueTasks(2)
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  // `  ·  ▤ queue 2  ·  mail 1` (25) leaves a 60-column line 60 - 2 - 25 for the task word.
+  expect(restingWords(await band({ bodyColumns: 60 }))).toEqual([`▸ ${'x'.repeat(30)}…`, '  ·  ', '▤ queue 2', '  ·  ', 'mail 1'])
+  expect(restingWords(await band({ bodyColumns: 30 }))).toEqual(['▤ queue 2', '  ·  ', 'mail 1'])
+})
+
+test('a task word in wide characters takes its terminal cells from the gap, not its string length', async () => {
+  transcript(LINEAR)
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', '一'.repeat(40))
+  await turnComplete()
+  const tree = await band()
+  expect(restingWords(tree)[0]).toBe(`▸ ${'一'.repeat(22)}…`)
+  // The word is 47 cells: 110 - 2 - 50 - 4 - 2.
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(52))
+})
+
+test('the task word names the first line of a subject that runs over several', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', '\nline one\nline two')
+  await turnComplete()
+  expect(restingWords(await band())).toEqual(['▸ line one'])
+})
+
+test('the task word yields to a running /finish gate', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'fix the login redirect')
+  await turnComplete()
+  livePids.add('4242')
+  nowMs = NOW * 1000
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 3 }))
+  await watchTick()
+  expect(restingWords(await band({ isWorking: true }))).toEqual(['finishing fix-auth · gate 3s'])
+})
+
+test('the mail word counts neither a stray file nor a directory in new/', async () => {
+  files[`${MAIL}/new/1-a.json`] = '{}'
+  files[`${MAIL}/new/.DS_Store`] = ''
+  files[`${MAIL}/new/sub.json/2-b.json`] = '{}'
+  expect(restingWords(await band())).toEqual(['mail 1'])
+})
+
+test('a task list that is there but cannot be listed is logged once; one not made yet is no task, silently', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  await turnComplete()
+  expect(logs).toEqual([])
+  existing.add(TASKS)
+  await turnComplete()
+  await turnComplete()
+  expect(logs).toEqual([`cs: the band could not list the task list ${TASKS}: ENOENT ${TASKS}`])
+  expect(await band()).toBe(DRAWN)
 })

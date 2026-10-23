@@ -564,16 +564,18 @@ task in progress on the conversation's native task list, dim:
 `▸ fix the login redirect`, the lowest-numbered task in progress, cut to 48
 cells. The list is Claude Code's `<config>/tasks/<list id>/<n>.json` (config
 `CLAUDE_CONFIG_DIR`, else `~/.claude`; list id `CLAUDE_CODE_TASK_LIST_ID`,
-which cs sets to the session's name, else the conversation's id), read at
-session start, after each turn and after each TaskCreate or TaskUpdate; a file
-that does not parse is skipped and logged once. After every other word come
+which cs's launch sets to the session's name), read at session start, after
+each turn and after each TaskCreate or TaskUpdate; a file that does not parse
+is skipped and logged once, as is a list that is there but cannot be listed.
+The word is cut to what the line leaves the queue and mail counts, and drawn
+not at all in under eight cells. After every other word come
 two counts, dim, with no press, each only when it has something to count:
 `▤ queue N` while the cs queue holds tasks but its start key is not offered
 (the queue is armed or draining, a turn runs, or an armed handoff's clear key
 stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
-draws. Every word takes its cells from the gap beside the rail:
+draws. Every word takes its terminal cells from the gap beside the rail:
 `▸ fix the login redirect  ·  ▤ queue 2  ·  mail 1        #4 say four  │││┃`.
 
 The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.

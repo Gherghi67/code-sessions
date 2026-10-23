@@ -221,8 +221,10 @@ let featuresComplaint: string | undefined
 // session's native task list, as last read; the last complaint logged.
 let taskWord: string | undefined
 let taskComplaint: string | undefined
-// How many cells of the band's left the task word takes at most.
+// How many cells of the band's left the task word takes at most, and the
+// fewest it is drawn in.
 const TASK_WORD_CELLS = 48
+const TASK_WORD_MIN_CELLS = 8
 
 // The rail. A prompt is a row of the transcript's live branch; its requestId
 // is the id the engine drew its UserMessage row under, once seen.
@@ -451,12 +453,14 @@ export function register(on: On) {
     const { context } = await $.session.usage()
     const percent = context.percent
     let rotating = bandIdle && (armed || (percent !== undefined && percent >= (await threshold($))))
-    // Tasks queued and nothing running them, at any context. An armed
-    // handoff draws its clear key alone, so the count is not asked for then.
-    let waiting = !bandIdle || armed ? 0 : await idleQueueLength($)
-    // Tasks queued that the start key does not offer: the queue runs them, a
-    // turn runs, or the clear key stands alone. Said, not pressed.
-    let queued = e.props.hasSurvey || waiting > 0 ? 0 : await queueLength($)
+    // Tasks queued and nothing running them, at any context, draw the start
+    // key; an armed handoff draws its clear key alone. Tasks queued that the
+    // start key does not offer (the queue runs them, a turn runs, or the
+    // clear key stands alone) are said, not pressed.
+    const queue = e.props.hasSurvey ? 0 : await queueLength($)
+    const queueStarted = queue > 0 && (await queueRunning($))
+    let waiting = !bandIdle || armed || queueStarted ? 0 : queue
+    let queued = waiting > 0 ? 0 : queue
     // Mail from other sessions that `cs -msg` has not read yet.
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
     // The rail draws whenever the conversation has two prompts to move
@@ -499,10 +503,18 @@ export function register(on: On) {
     // What the words take, in cells, so the rail knows what the line leaves it.
     const sep = '  \u00b7  '
     const keyed = counting || rotating || waiting > 0
-    // Whether a word stands before the queue word, which a separator then parts.
-    const ahead = featured !== undefined || keyed || gate !== undefined || tasking !== undefined
-    const aheadOfMail = ahead || queued > 0
-    const wordCells = [
+    // The task word takes what the line leaves the other words, cut to it,
+    // and draws not at all when that is under TASK_WORD_MIN_CELLS.
+    if (tasking !== undefined) {
+      const rest = `${queued > 0 ? `${sep}\u25a4 queue ${queued}` : ''}${mail > 0 ? `${sep}mail ${mail}` : ''}`
+      const room = e.props.bodyColumns - 2 - cellWidth(rest)
+      tasking = room < TASK_WORD_MIN_CELLS ? undefined : cutToCells(tasking, room)
+    }
+    // Whether a word stands before the queue word, or the mail word, which a
+    // separator then parts from it.
+    const wordsBeforeQueue = featured !== undefined || keyed || gate !== undefined || tasking !== undefined
+    const wordsBeforeMail = wordsBeforeQueue || queued > 0
+    const wordText = [
       featured === undefined ? '' : `${featured.label}${keyed ? sep : ''}`,
       counting ? `/clear in ${left}s${sep}` : '',
       prefix !== undefined ? `${prefix}  ` : '',
@@ -511,9 +523,10 @@ export function register(on: On) {
       waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
       gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
       tasking ?? '',
-      queued > 0 ? `${ahead ? sep : ''}\u25a4 queue ${queued}` : '',
-      mail > 0 ? `${aheadOfMail ? sep : ''}mail ${mail}` : '',
-    ].join('').length
+      queued > 0 ? `${wordsBeforeQueue ? sep : ''}\u25a4 queue ${queued}` : '',
+      mail > 0 ? `${wordsBeforeMail ? sep : ''}mail ${mail}` : '',
+    ].join('')
+    const wordCells = cellWidth(wordText)
     // The rail: one upright bar per prompt at the line's right end, `┃` for
     // the one being read, `┆` for one a jump was refused, `│` otherwise (side
     // by side, flat ticks run together into one line), each a Button (the
@@ -578,10 +591,10 @@ export function register(on: On) {
             {gate !== undefined && <Text dimColor>{gate}</Text>}
             {tasking !== undefined && <Text dimColor>{tasking}</Text>}
             {/* the queue while its start key is not offered: a count, no press */}
-            {queued > 0 && ahead && <Text dimColor>{'  \u00b7  '}</Text>}
+            {queued > 0 && wordsBeforeQueue && <Text dimColor>{'  \u00b7  '}</Text>}
             {queued > 0 && <Text dimColor>{`\u25a4 queue ${queued}`}</Text>}
             {/* unread mail, last: a count, no press */}
-            {mail > 0 && aheadOfMail && <Text dimColor>{'  \u00b7  '}</Text>}
+            {mail > 0 && wordsBeforeMail && <Text dimColor>{'  \u00b7  '}</Text>}
             {mail > 0 && <Text dimColor>{`mail ${mail}`}</Text>}
             {ticks !== undefined && <Box flexGrow={1} />}
             {labeled && (
@@ -734,7 +747,8 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
 // word moved. Claude Code keeps it as <config>/tasks/<list id>/<n>.json, the
 // list id CLAUDE_CODE_TASK_LIST_ID (cs sets the session's name) else the
 // conversation's id, with every character outside [A-Za-z0-9_-] made `-`. A
-// file that does not parse (one being written) is skipped and said once.
+// file that does not parse (one being written) is skipped and said once while
+// it stays so.
 async function refreshTask($: EngineInterface) {
   const word = (await ownsRotation($)) ? await readTask($) : undefined
   if (word !== taskWord) {
@@ -752,8 +766,13 @@ async function readTask($: EngineInterface): Promise<string | undefined> {
   let entries: { name: string; kind: string }[]
   try {
     entries = await $.fs.list(dir)
-  } catch {
-    return undefined // no task list yet: no task in progress
+  } catch (err) {
+    // No task list yet is no task in progress; one there that cannot be
+    // listed is said.
+    const complaint = (await $.fs.exists(dir)) ? `cs: the band could not list the task list ${dir}: ${String(err instanceof Error ? err.message : err)}` : undefined
+    if (complaint !== undefined && complaint !== taskComplaint) $.ui.log(complaint)
+    taskComplaint = complaint
+    return undefined
   }
   let lowest: { id: number; subject: string } | undefined
   let complaint: string | undefined
@@ -772,7 +791,7 @@ async function readTask($: EngineInterface): Promise<string | undefined> {
   }
   if (complaint !== undefined && complaint !== taskComplaint) $.ui.log(complaint)
   taskComplaint = complaint
-  return lowest === undefined ? undefined : cutToCells(`\u25b8 ${lowest.subject}`, TASK_WORD_CELLS)
+  return lowest === undefined ? undefined : cutToCells(`\u25b8 ${firstLine(lowest.subject)}`, TASK_WORD_CELLS)
 }
 
 // Whether the sessions root holds a feature of `base`: cs names each one's
@@ -1515,6 +1534,8 @@ async function queueLength($: EngineInterface): Promise<number> {
 // session's mailbox new/, where it stays until `cs -msg` reads it. The
 // mailbox sits behind .cs/private in an encrypted session (where a locked
 // vault lists nothing) and in .cs/local otherwise; 0 when it cannot be read.
+// Should the engine call a locked vault's dangling link absent, .cs/local is
+// listed instead, where cs writes no mail beside that link: 0 again.
 async function unreadMail($: EngineInterface): Promise<number> {
   const cwd = await $.session.cwd()
   const dir = (await $.fs.exists(`${cwd}/.cs/private`)) ? 'private' : 'local'
