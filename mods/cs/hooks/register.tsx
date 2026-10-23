@@ -438,8 +438,9 @@ export function register(on: On) {
     // The rail draws whenever the conversation has two prompts to move
     // between, a turn running or not, under the same ownership as the keys.
     let railing = !e.props.hasSurvey && prompts.length > 1
-    // The features word takes the left when no key word and no gate is due.
-    let featured = !e.props.hasSurvey && !rotating && waiting === 0 && gate === undefined ? featuresWord : undefined
+    // The features word takes the left, before any key word; a running gate
+    // already names the feature it lands.
+    let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
     if ((rotating || waiting > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false; featured = undefined }
     // The read tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
@@ -471,8 +472,9 @@ export function register(on: On) {
     }
     // What the words take, in cells, so the rail knows what the line leaves it.
     const sep = '  \u00b7  '
+    const keyed = counting || rotating || waiting > 0
     const wordCells = [
-      featured?.label ?? '',
+      featured === undefined ? '' : `${featured.label}${keyed ? sep : ''}`,
       counting ? `/clear in ${left}s${sep}` : '',
       prefix !== undefined ? `${prefix}  ` : '',
       rotating ? `${spelled(ROTATE_ACTION) === undefined ? '' : `${spelled(ROTATE_ACTION)} `}${armed ? '/clear now' : 'rotate'}` : '',
@@ -525,6 +527,7 @@ export function register(on: On) {
             {featured !== undefined && (featured.finish === undefined || !bandIdle
               ? <Text dimColor>{featured.label}</Text>
               : <Button key="cs-features" plain label={featured.label} onPress={() => pressFinish($, featured.finish as string)} />)}
+            {featured !== undefined && keyed && <Text dimColor>{'  \u00b7  '}</Text>}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
             {counting && <Text dimColor>{'  \u00b7  '}</Text>}
