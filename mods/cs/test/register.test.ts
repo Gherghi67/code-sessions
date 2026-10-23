@@ -2534,9 +2534,9 @@ test('each bar under the pointer swaps its own prompt into the gap, italic, cove
     position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
   })))
   expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
-    [['#1 say one'.padStart(99), { italic: true }]],
-    [['#2 say two'.padStart(99), { italic: true }]],
-    [['#3 say three'.padStart(99), { italic: true }]],
+    [['#1 say one'.padStart(99), { italic: true, wrap: 'truncate-end' }]],
+    [['#2 say two'.padStart(99), { italic: true, wrap: 'truncate-end' }]],
+    [['#3 say three'.padStart(99), { italic: true, wrap: 'truncate-end' }]],
   ])
   // The cards sit in the label's own Box, so a card covers the read prompt cell for cell.
   const labelBox = boxes(tree).find((b: any) => b.props.width === 99)
@@ -2587,4 +2587,37 @@ test('off the terminal the gap names the prompt being read and draws no hover ca
     expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toEqual([])
     expect(tickButtons(tree).map((b: any) => b.props.hover)).toEqual([undefined, undefined, undefined])
   }
+})
+
+// The gap is counted in terminal cells: a wide character takes two, and a cut
+// never splits one.
+test('the gap\'s prompt is measured and cut in cells: wide characters take two, an emoji is never split', async () => {
+  transcript([...LINEAR, prompt('u5', 'a4', '\u4e00'.repeat(60))])
+  await turnComplete()
+  // Five bars leave 98 cells: `#5 ` and 47 two-cell characters are 97, a 48th would pass the 97 left before `…`.
+  expect(textOf(gapLabel(await band()))).toBe(`#5 ${'\u4e00'.repeat(47)}\u2026`)
+  transcript([...LINEAR, prompt('u5', 'a4', `${'x'.repeat(13)}\u{1F600}tail`)], 2)
+  await turnComplete()
+  // 18 cells: `#5 ` and 13 x are 16, the emoji would pass the 17 left before `…`.
+  const cut = textOf(gapLabel(await band({ bodyColumns: 30 })))
+  expect(cut).toBe(` #5 ${'x'.repeat(13)}\u2026`)
+  expect(cut.isWellFormed()).toBe(true)
+  // A Text the engine measures wider than this count would wrap the band onto a second line.
+  expect(gapLabel(await band()).props.wrap).toBe('truncate-end')
+})
+
+test('the gap and the rail keep their margins: three cells after the words, two before the bars', async () => {
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  transcript(LINEAR)
+  await turnComplete()
+  const margins = (tree: any) => {
+    const railBox = boxes(tree).find((b: any) => b.props.key === 'cs-rail')
+    const labelBox = boxes(tree).find((b: any) => b.props.width !== undefined && texts(b).includes(gapLabel(tree)))
+    return [labelBox?.props.marginLeft, railBox.props.marginLeft]
+  }
+  expect(margins(await band())).toEqual([0, 2])
+  percent = 80
+  expect(margins(await band())).toEqual([3, 2])
+  // No room to name a prompt: the bars keep the words' three-cell gap.
+  expect(margins(await band({ bodyColumns: 45 }))).toEqual([undefined, 3])
 })

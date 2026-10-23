@@ -483,8 +483,7 @@ export function register(on: On) {
     const label = (i: number) => {
       const p = prompts[i]
       if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
-      const named = `#${i + 1} ${p.text}`
-      return (named.length > labelCells ? `${named.slice(0, labelCells - 1)}\u2026` : named).padStart(labelCells)
+      return fitRight(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick draws no rule alone.
     if (!rotating && waiting === 0 && gate === undefined && ticks === undefined) return drawn
@@ -523,11 +522,11 @@ export function register(on: On) {
             {ticks !== undefined && <Box flexGrow={1} />}
             {labeled && (
               <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
-                <Text dimColor italic>{label(read)}</Text>
+                <Text dimColor italic wrap="truncate-end">{label(read)}</Text>
                 {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
                 {hovering && prompts.map((_, i) => i !== read && (
                   <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                    <Text italic>{label(i)}</Text>
+                    <Text italic wrap="truncate-end">{label(i)}</Text>
                   </Box>
                 ))}
               </Box>
@@ -618,6 +617,45 @@ const rowKey = (id: string) => (UUID.test(id) ? id.slice(0, 24) : id)
 
 // A prompt's text as the rail carries it: the first non-blank line, trimmed,
 // cut to RAIL_TEXT_CHARS with an ellipsis.
+// Terminal cells, not UTF-16 length: wide CJK and emoji take two, combining
+// marks none, and a cut keeps whole graphemes. The same measure as
+// mods/cs-mermaid/hooks/text.ts, for the band's named gap.
+const WIDE = /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\u{1F300}-\u{1F64F}]|[\u{1F900}-\u{1F9FF}]|[\u{20000}-\u{3FFFD}]/u
+const ZERO = /^[\p{M}\u200b-\u200f\ufe0f]+$/u
+
+function graphemes(text: string): string[] {
+  const Segmenter = (Intl as { Segmenter?: new (locale: string, options: { granularity: 'grapheme' }) => { segment(input: string): Iterable<{ segment: string }> } }).Segmenter
+  if (!Segmenter) return Array.from(text)
+  return Array.from(new Segmenter('en', { granularity: 'grapheme' }).segment(text), piece => piece.segment)
+}
+
+function cellsOf(grapheme: string): number {
+  if (ZERO.test(grapheme)) return 0
+  return WIDE.test(grapheme.replace(/[\p{M}\u200b-\u200f\ufe0f]/gu, '')) ? 2 : 1
+}
+
+function cellWidth(text: string): number {
+  return graphemes(text).reduce((sum, grapheme) => sum + cellsOf(grapheme), 0)
+}
+
+// `text` at most `width` cells wide, ending in `…` when anything was cut, and
+// spaces before it to fill `width`.
+function fitRight(text: string, width: number): string {
+  let fitted = text
+  if (cellWidth(text) > width) {
+    fitted = ''
+    let used = 0
+    for (const grapheme of graphemes(text)) {
+      const cells = cellsOf(grapheme)
+      if (used + cells > width - 1) break
+      fitted += grapheme
+      used += cells
+    }
+    fitted += '\u2026'
+  }
+  return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
+}
+
 function firstLine(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
   return line.length > RAIL_TEXT_CHARS ? `${line.slice(0, RAIL_TEXT_CHARS - 1)}\u2026` : line
