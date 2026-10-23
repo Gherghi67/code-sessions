@@ -1098,7 +1098,8 @@ test_the_cs_tips_file_has_the_shape_claude_code_reads() {
 }
 
 # With no tips file named, install names cs's in settings.json beside the
-# user's own tips and excludeDefault, which it never touches, and says so.
+# user's own tips and excludeDefault, which it never touches, says so, and
+# records that it named it.
 test_install_names_the_cs_tips_file_beside_the_users_tips() {
     local home="$TEST_TMPDIR/tips-home" out
     mkdir -p "$home/.claude"
@@ -1106,6 +1107,7 @@ test_install_names_the_cs_tips_file_beside_the_users_tips() {
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     assert_eq '{"tips":["mine"],"excludeDefault":false,"tipsFile":"~/.claude/skills/cs/tips.json"}' \
         "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "named" "$(cat "$home/.config/cs/tips-file" 2>/dev/null)" "the tips-file record after install" || return 1
     assert_eq "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)" \
         "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
 }

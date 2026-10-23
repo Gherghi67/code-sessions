@@ -254,6 +254,12 @@ CS_MOD_FILES=(
 # shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
 CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
 
+# Whether cs named its tips file, as install.sh records it: "named", or
+# "declined" once the person took the pointer out, so cs -update leaves it out.
+_cs_tips_record_file() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/cs/tips-file"
+}
+
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install
 # downloads exactly these.
@@ -1339,7 +1345,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "e7a5b5c039c59c1439b79148afd7561c86f68d050c822258b57ce829fe734a7c  bin/cs"
+    "585e6b7ba9df87f080f129e93ad8d892d79b00b16f6be5e468a3ba0f4b66ca97  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -2366,42 +2372,89 @@ else
     fi
     # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
     # on the band's prompt bars. It is named in settings.json only while no
-    # file is named there and the deployed tips file is a regular file (Claude
-    # Code refuses a link): a file the user named stays, and cs's tip is left
-    # out. The user's own tips, label and excludeDefault are never touched.
-    # Read here, as the filter prints nothing; the filter checks again under
-    # the lock.
+    # file is named there, the deployed tips file is a regular file (Claude
+    # Code refuses a link), and the record allows it: "named" once cs named
+    # it, "declined" once the person took it out, so cs -update never puts it
+    # back. A record cs cannot read as either counts as declined. A file the
+    # user named stays, and cs's tip is left out. The user's own tips, label
+    # and excludeDefault are never touched. Read here, as the filter prints
+    # nothing; the filter checks again under the lock.
     _cs_tips_deployed=""
     if [ -f "$SKILLS_DIR/cs/tips.json" ] && [ ! -L "$SKILLS_DIR/cs/tips.json" ]; then
         _cs_tips_deployed=1
     fi
     _tips_state=unset _current_tips_file=""
     if [ -s "$CLAUDE_SETTINGS" ]; then
-        _tips_state=$(jq -r '.spinnerTipsOverride
+        _tips_state=$(jq -r --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" '.spinnerTipsOverride
             | if . == null then "unset"
               elif type != "object" then "not-object"
               elif (.tipsFile // "") == "" then "unset"
-              else "named" end' "$CLAUDE_SETTINGS")
+              elif .tipsFile == $tilde or .tipsFile == $abs then "cs"
+              else "foreign" end' "$CLAUDE_SETTINGS")
         _current_tips_file=$(jq -r '.spinnerTipsOverride.tipsFile? // "" | tostring' "$CLAUDE_SETTINGS")
     fi
-    case "$_tips_state:$_current_tips_file" in
-        unset:*)
-            if [ -n "$_cs_tips_deployed" ]; then
-                info "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)"
-            else
-                warn "Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
-            fi
+    _tips_record_file=$(_cs_tips_record_file)
+    _tips_record=none
+    if [ -e "$_tips_record_file" ] || [ -L "$_tips_record_file" ]; then
+        _tips_record=$(cat "$_tips_record_file" 2>/dev/null || true)
+        case "$_tips_record" in
+            named|declined) ;;
+            *)
+                warn "Spinner tips: $_tips_record_file holds neither named nor declined, so cs's tip is kept out as declined"
+                _tips_record=declined
+                ;;
+        esac
+    fi
+    # Like the status line's memo, a record write must never take the install
+    # down: report and continue.
+    _write_tips_record() {  # named | declined
+        mkdir -p "$(dirname "$_tips_record_file")" 2>/dev/null \
+            && { printf '%s\n' "$1" > "$_tips_record_file"; } 2>/dev/null
+    }
+    _tips_not_deployed="Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+    _tips_kept_out="Spinner tips: cs's tip stays out of Claude Code's tips, as recorded in $_tips_record_file; to have it back, delete that file and run cs -update"
+    _tips_name=""
+    case "$_tips_record:$_tips_state" in
+        *:foreign)
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
             ;;
-        "named:$CS_TIPS_FILE"|"named:$HOME/.claude/skills/cs/tips.json")
-            if [ -z "$_cs_tips_deployed" ]; then
-                warn "Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
-            fi
-            ;;
-        not-object:*)
+        *:not-object)
             warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
             ;;
-        *)
-            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
+        none:unset)
+            # No record of consent, no pointer: the record is written first.
+            if [ -z "$_cs_tips_deployed" ]; then
+                warn "$_tips_not_deployed"
+            elif _write_tips_record named; then
+                _tips_name=1
+                info "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)"
+            else
+                warn "Spinner tips: could not write $_tips_record_file, so cs's tips file is not named in ~/.claude/settings.json"
+            fi
+            ;;
+        none:cs)
+            # Named by an install from before the record.
+            _write_tips_record named \
+                || warn "Spinner tips: could not write $_tips_record_file, so if you take cs's tipsFile out, cs -update puts it back"
+            [ -n "$_cs_tips_deployed" ] || warn "$_tips_not_deployed"
+            ;;
+        named:cs)
+            [ -n "$_cs_tips_deployed" ] || warn "$_tips_not_deployed"
+            ;;
+        named:unset)
+            # cs named it and it is gone: the person took it out.
+            if _write_tips_record declined; then
+                info "$_tips_kept_out"
+            else
+                warn "Spinner tips: cs's tip stays out of Claude Code's tips, but could not write $_tips_record_file"
+            fi
+            ;;
+        declined:unset)
+            info "$_tips_kept_out"
+            ;;
+        declined:cs)
+            # Put back by hand after a decline: left as it is, and saying it
+            # stays out would be false.
             ;;
     esac
 
@@ -2421,7 +2474,7 @@ else
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}')
         fi
-        if [ -n "$_cs_tips_deployed" ]; then
+        if [ -n "$_tips_name" ]; then
             SETTINGS=$(echo "$SETTINGS" | jq --arg tips "$CS_TIPS_FILE" '
                 if .spinnerTipsOverride == null then .spinnerTipsOverride = {tipsFile: $tips}
                 elif (.spinnerTipsOverride | type) == "object" and (.spinnerTipsOverride.tipsFile // "") == ""
@@ -2430,7 +2483,12 @@ else
         fi
         printf '%s\n' "$SETTINGS"
     }
-    cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    if ! cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter; then
+        # The record says cs named its tips file, and it did not: a "named"
+        # record with no pointer would read as a decline on the next install.
+        [ -z "$_tips_name" ] || rm -f "$_tips_record_file"
+        error "$CS_SETTINGS_ERROR"
+    fi
     # settings.json no longer registers them, so the retired files can go,
     # each one that still holds what cs wrote; the filter kept the
     # registration of any other
