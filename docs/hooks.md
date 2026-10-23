@@ -508,12 +508,11 @@ caps answer; only the amber of the count and of the mark still reads the
 measurement. The percentage itself stays on the status bar: the band does not
 repeat it.
 
-The mark is one `●` whose colour says what is due. It is blue while a
-`/finish` gate runs or the cs queue holds tasks and is armed or draining. It
-is amber while a rotation is due: the context is at or past the band's
-threshold, even while a turn runs and the keys wait for it to end, or a
-handoff is armed. It is green otherwise. A running gate or queue outranks a
-due rotation. Blue and green are the session palette's (Claude Code's
+The mark is one `●` whose colour says what is due. Blue says a `/finish`
+gate runs, or the cs queue holds tasks and is armed or draining. Amber says a
+rotation is due: the context is at or past the band's threshold, even while a
+turn runs and the keys wait for it to end, or a handoff is armed. Green says
+neither. A running gate or queue outranks a due rotation. Blue and green are the session palette's (Claude Code's
 `/color` values, drawn on light and dark alike); the amber is the status
 bar's, pivoted on the measured background and then on `CS_TERM_THEME` as the
 count's is. The mark and its space take two cells from what the rail and the
