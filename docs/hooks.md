@@ -522,10 +522,12 @@ session's transcript (`~/.claude/projects/<slug>/<id>.jsonl`, or
 read again after each turn and at session start only when its size or
 modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
-results, slash-command echoes, hook feedback and task notifications are not
-prompts. The ticks take what the line leaves after the rule and the words;
-past that the oldest prompts collapse into one dim `…N` run at the left. A
-conversation with one prompt draws no rail, and the rail, like the keys,
+results, slash-command echoes, hook feedback, task notifications, a
+teammate's message and the interrupt the engine writes when you stop a turn
+are not prompts. The ticks take what the line leaves after the rule and the
+words; past that the oldest prompts collapse into one dim `…N` run at the
+left, and a line too narrow for any tick draws no rail. A conversation with
+one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
 
 The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.
@@ -566,7 +568,7 @@ feedback starts one, leaves it in place. A summary written any other way
 hides nothing, and a wrap that fails a pass
 skips the marker. Below the band the mod draws nothing, and it draws none of
 these keys while a turn runs or while a survey holds the band; the `/finish`
-gate word below is the one word that draws then. It never submits a prompt of its own.
+gate word is the one word that draws then. It never submits a prompt of its own.
 
 The same button has a second state. Once the `rotate` skill has armed a
 handoff (`.cs/local/pending-handoff` names one), the band draws

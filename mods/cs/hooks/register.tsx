@@ -352,12 +352,18 @@ export function register(on: On) {
   on('command.run', { command: 'clear' }, async ($, e, next) => {
     clearSeen = true
     if (ticker) stopCountdown($)
+    let result
     try {
-      return await next(e)
+      result = await next(e)
     } catch (err) {
       clearSeen = false
       throw err
     }
+    // The rail is the conversation's: the next one starts with none, and
+    // reads its own transcript as its first turn ends.
+    railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); drawnRead = -1
+    $.ui.invalidate('ui.render')
+    return result
   })
 
   // A turn that starts from a prompt is work after any wrap that finished: the
@@ -414,6 +420,10 @@ export function register(on: On) {
     // between, a turn running or not, under the same ownership as the keys.
     let railing = !e.props.hasSurvey && prompts.length > 1
     if ((rotating || waiting > 0 || railing) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false }
+    // The read tick is remembered on every path, drawn or not, so a row's
+    // report that moves nothing visible schedules no redraw.
+    const read = readIndex()
+    drawnRead = read
     if (!rotating && waiting === 0 && gate === undefined && !railing) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
@@ -454,10 +464,10 @@ export function register(on: On) {
     // line leaves after the rule, the gaps and the words; past that the oldest
     // prompts collapse into one `…N` run. The read tick is remembered so a
     // report that moves it can redraw the band.
-    const read = readIndex()
-    drawnRead = read
     const budget = e.props.bodyColumns - 2 - 1 - 2 - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing ? railTicks(prompts.length, budget) : undefined
+    // A line too narrow for any tick draws no rule alone.
+    if (!rotating && waiting === 0 && gate === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
     // transcript: a left rule in the session colour, as the launch banner's
     // bar; then only the words that need a key now, the keys in the session
@@ -533,8 +543,9 @@ export function railTicks(count: number, budget: number): { hidden: number } | u
 // The prompt being read: of the prompts whose drawn row has reported what of
 // it is on screen, the one drawn highest (the row cut at the viewport's top
 // reports the rows scrolled away as `first`; every other visible row reports
-// 0, and of those the earliest prompt is the higher); the newest prompt when
-// none has reported.
+// 0, and of those the earliest prompt is the higher); when none has reported,
+// the prompt last read (the reader is inside a reply, its prompt scrolled
+// away), else the newest.
 function readIndex(): number {
   let best = -1
   let bestFirst = -1
@@ -543,16 +554,20 @@ function readIndex(): number {
     const report = id === undefined ? undefined : shown.get(id)
     if (report !== undefined && report.first > bestFirst) { best = i; bestFirst = report.first }
   })
-  return best >= 0 ? best : prompts.length - 1
+  if (best >= 0) return best
+  return drawnRead >= 0 && drawnRead < prompts.length ? drawnRead : prompts.length - 1
 }
 
 // The id the engine drew a prompt's row under: by the row's uuid (the engine
 // keys a message row by its message id; a message split into rows keeps the
-// uuid's first four groups), else by the first line's text, as a row drawn
-// before the transcript stored it is matched; undefined while no row has.
+// uuid's first four groups), else by the first line's text when no other
+// prompt carries it, as a row drawn before the transcript stored it is
+// matched (a repeated "continue" would bind every one to the same row);
+// undefined while no row has.
 function requestIdOf(p: Prompt): string | undefined {
   const byKey = drawnRows.get(rowKey(p.uuid))
   if (byKey !== undefined) return byKey.requestId
+  if (prompts.filter(q => q.text === p.text).length > 1) return undefined
   for (const drawn of drawnRows.values()) if (drawn.text === p.text) return drawn.requestId
   return undefined
 }
@@ -644,8 +659,12 @@ async function transcriptPath($: EngineInterface): Promise<string> {
 // its abandoned rows in the file off that chain; a /compact boundary row
 // links on through logicalParentUuid). A prompt is a user row the person
 // sent: not a tool result, a slash command's echo, a meta row (hook feedback,
-// an image), a compact summary, a sidechain's, or one the engine stamped
-// another origin. A line that is not a row (torn, or not JSON) is skipped.
+// an image), a compact summary, a sidechain's, one the engine stamped another
+// origin, an interrupt the engine wrote for the person, or one framed by a
+// tag alone on its first line (a teammate's message, a command's output). A
+// line that is not a row (torn, or not JSON) is skipped.
+const FRAMED = /^<[A-Za-z][\w:-]*(\s[^>]*)?>(<\/[\w:-]+>)?$|^<[A-Za-z][\w:-]*>[^<]*<\/[\w:-]+>$/
+const INTERRUPT = /^\[Request interrupted by user/
 export function parsePrompts(jsonl: string): Prompt[] {
   const rows: any[] = []
   for (const line of jsonl.split('\n')) {
@@ -678,7 +697,7 @@ export function parsePrompts(jsonl: string): Prompt[] {
     }
     if (text === undefined) continue
     const line = firstLine(text)
-    if (line === '' || line.startsWith('<')) continue
+    if (line === '' || FRAMED.test(line) || INTERRUPT.test(line)) continue
     out.push({ uuid: r.uuid, text: line })
   }
   return out

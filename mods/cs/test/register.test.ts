@@ -2389,3 +2389,88 @@ test('/cs next, prev, first, last and N move along the rail from the prompt bein
   await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
   expect(await cs('prev')).toEqual({ text: 'cs: no prompt before this one' })
 })
+
+test('rows drawn where the band is not the lead\'s, or under a survey, redraw once at most: the read tick settles even when the rail is not drawn', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  const pending = () => timers.filter(t => t.kind === 'after' && !t.cancelled).length
+  sessionId = 'uuid-teammate'
+  await band()
+  const before = pending()
+  for (let i = 0; i < 3; i++) await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  expect(pending()).toBe(before + 1)
+  await fireAfter()
+  await band()
+  for (let i = 0; i < 3; i++) await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  expect(pending()).toBe(0)
+  sessionId = 'uuid-lead'
+  await band({ hasSurvey: true })
+  for (let i = 0; i < 3; i++) await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
+  expect(pending()).toBe(1)
+  await fireAfter()
+  await band({ hasSurvey: true })
+  for (let i = 0; i < 3; i++) await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
+  expect(pending()).toBe(0)
+})
+
+test('with no prompt row left in the viewport, the read tick stays on the prompt last read, not the newest', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  await fireAfter()
+  expect(rail(await band())).toEqual(['─', '━', '─', '─'])
+  await drawRow('u2', 'say two', null)
+  await fireAfter()
+  expect(rail(await band())).toEqual(['─', '━', '─', '─'])
+  expect(await cs('prev')).toEqual({})
+  expect(scrolls.map(s => s.to.requestId)).toEqual(['u1'])
+})
+
+test('a prompt whose row has not been drawn is matched by its text only when that text is its alone', async () => {
+  transcript([
+    prompt('u1', null, 'continue'), reply('a1', 'u1'),
+    prompt('u2', 'a1', 'continue'), reply('a2', 'u2'),
+    prompt('u3', 'a2', 'continue'), reply('a3', 'u3'),
+    prompt('u4', 'a3', 'say four'), reply('a4', 'u4'),
+  ])
+  await turnComplete()
+  await drawRow('u3', 'continue', { first: 0, last: 1, of: 2 })
+  await drawRow('row-of-u4', 'say four', null)
+  await fireAfter()
+  expect(rail(await band())).toEqual(['─', '─', '━', '─'])
+  expect(await cs('1')).toEqual({})
+  expect(await cs('4')).toEqual({})
+  expect(scrolls.map(s => s.to.requestId)).toEqual(['u1', 'row-of-u4'])
+})
+
+test('an interrupt row is not a prompt, and a prompt that opens with a tag on a line of its own words is', () => {
+  const rows = [
+    prompt('u1', null, 'say one'), reply('a1', 'u1'),
+    prompt('i1', 'a1', [{ type: 'text', text: '[Request interrupted by user for tool use]' }]), reply('a2', 'i1'),
+    prompt('i2', 'a2', '[Request interrupted by user]'), reply('a3', 'i2'),
+    prompt('u2', 'a3', '<div class="x"> renders empty'), reply('a4', 'u2'),
+    prompt('f1', 'a4', '<teammate-message teammate_id="x">\nhello\n</teammate-message>'), reply('a5', 'f1'),
+    prompt('f2', 'a5', '<local-command-stdout>ok</local-command-stdout>'), reply('a6', 'f2'),
+  ]
+  expect(parsePrompts(rows.join('\n')).map(p => p.text)).toEqual(['say one', '<div class="x"> renders empty'])
+})
+
+test('a /clear empties the rail: the next conversation draws none of the last one\'s prompts', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  const e = { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }
+  invalidated = []
+  expect(await hooks['command.run:clear']($, e, async () => ({ text: '' }))).toEqual({ text: '' })
+  expect(invalidated).toEqual(['ui.render'])
+  expect(rail(await band())).toEqual([])
+  expect(await cs('next')).toEqual({ text: 'cs: the rail has no prompts' })
+  await turnComplete()
+  expect(rail(await band())).toEqual(['─', '─', '─', '━'])
+})
+
+test('a line too narrow for any tick draws no rule alone', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  expect(await band({ bodyColumns: 7 })).toBe(DRAWN)
+})
