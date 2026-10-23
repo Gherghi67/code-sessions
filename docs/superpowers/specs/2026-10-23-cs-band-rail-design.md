@@ -132,6 +132,12 @@ session's features where a key can act on it. No pane.
      ("Duplicated", 2026-10-23): "we already have the task display from
      claude", picked "Drop the task word". Rejected: draw it only while
      the list is collapsed.
+   - With no word on the left, the read prompt starts the line instead of
+     standing against the bars; after a word it stands against them. Alex
+     ("Empty left", 2026-10-23, after the task word went): "let's move it
+     to the left". Supersedes "Keep it right-aligned" for the wordless
+     line. Rejected: leave the left empty, a git-state word, the session
+     objective.
    - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
      tasks but the start key is not drawn (queue armed or draining, a turn
      running, or an armed handoff's clear key standing alone). The start

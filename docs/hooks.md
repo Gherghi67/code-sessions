@@ -529,7 +529,8 @@ are not prompts. The ticks take what the line leaves after the inset and the
 words; past that the oldest prompts collapse into one dim `…N` run at the
 left, and a line too narrow for any tick draws no rail. The gap the words
 and the bars leave names the prompt being read, `#N` and its first line (up
-to 80 characters), dim italic and flush against the bars, cut with `…` when
+to 80 characters), dim italic, from the line's start when no word stands on
+the left and flush against the bars after one, cut with `…` when
 the gap is narrower, counted in terminal cells so a wide character takes two;
 a gap under ten cells names none. On the terminal a bar under the pointer swaps its own prompt into
 the gap, italic, until the pointer leaves; the swap follows the mouse, so it

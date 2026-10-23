@@ -506,9 +506,10 @@ export function register(on: On) {
     // report that moves it can redraw the band.
     const budget = e.props.bodyColumns - 2 - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing ? railTicks(prompts.length, budget) : undefined
-    // The gap the words and the bars leave names a prompt, padded to the gap
-    // so it stands against the bars: the one being read, or the one under the
-    // pointer. A gap too narrow to name one draws none.
+    // The gap the words and the bars leave names a prompt, padded to the gap:
+    // the one being read, or the one under the pointer. With no word on the
+    // left it starts the line; after a word it stands against the bars. A gap
+    // too narrow to name one draws none.
     const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
     const labelCells = ticks === undefined ? 0 : budget - railCells - 2
     const labeled = labelCells >= RAIL_LABEL_MIN
@@ -519,7 +520,8 @@ export function register(on: On) {
     const label = (i: number) => {
       const p = prompts[i]
       if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
-      return fitRight(`#${i + 1} ${p.text}`, labelCells)
+      const text = `#${i + 1} ${p.text}`
+      return wordCells > 0 ? fitRight(text, labelCells) : fitLeft(text, labelCells)
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
     if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
@@ -803,6 +805,12 @@ function cutToCells(text: string, width: number): string {
     used += cells
   }
   return `${fitted}\u2026`
+}
+
+// `text` cut to `width` cells, with spaces after it to fill `width`.
+function fitLeft(text: string, width: number): string {
+  const fitted = cutToCells(text, width)
+  return fitted + ' '.repeat(Math.max(0, width - cellWidth(fitted)))
 }
 
 // `text` cut to `width` cells, with spaces before it to fill `width`.
