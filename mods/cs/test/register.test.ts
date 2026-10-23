@@ -2952,6 +2952,9 @@ test('tasks queued while the queue runs, or while a turn runs, draw a dim queue 
   const idle = await band()
   expect(queueKey(idle).props.label).toBe('▤ queue 3 · start')
   expect(restingWords(idle)).toEqual([])
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
 })
 
 test('the queue word follows the task word and the key words, a separator before it', async () => {
