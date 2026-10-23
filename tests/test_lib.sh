@@ -47,6 +47,9 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 FAILURES=()
 SKIPS=()
+# Why the running test skipped, when its guard knows: require_tool sets it,
+# run_test clears it before each test and records it with the skip.
+SKIP_REASON=""
 
 # --- Paths ---
 # SCRIPT_DIR must be set by the sourcing test file before calling any helpers
@@ -128,6 +131,30 @@ _deny_file_write() {  # path
         return 2
     fi
     return 0
+}
+
+# The guard for a test that needs a command: `require_tool <tool>... || return $?`.
+# Every tool on PATH returns 0. The first one missing skips the test (77),
+# unless CS_TEST_REQUIRE_TOOLS, a space-separated list, names it: CI declares
+# the tools its job installs, and there a missing one is a broken runner, so
+# the test fails naming it instead of reading green having judged nothing.
+# Call it directly, never inside $( ), and pass its status through unchanged:
+# a helper's caller that maps any failure to 77 turns the failure back into
+# a skip.
+require_tool() {  # tool...
+    local tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null 2>&1 && continue
+        case " ${CS_TEST_REQUIRE_TOOLS:-} " in
+            *" $tool "*)
+                echo "    FAIL: $tool is not on PATH, and CS_TEST_REQUIRE_TOOLS says this run has it"
+                return 1
+                ;;
+        esac
+        echo "    SKIP: $tool not on PATH"
+        SKIP_REASON="$tool not on PATH"
+        return 77
+    done
 }
 
 _allow_writes() {  # dir
@@ -383,10 +410,14 @@ teardown() {
 # produce (a privilege it does not have, a kernel answer it cannot provoke) has
 # proven nothing, and counting it as OK is how missing coverage hides. The test
 # says why on its way out; the tally keeps skips in their own column so a run
-# that skips everything cannot read as a green one.
+# that skips everything cannot read as a green one. Under run_all.sh each skip
+# is also appended to CS_TEST_SKIP_LOG as the test's name, a tab and the
+# reason require_tool gave (empty for any other skip), which is where the
+# gate's summary counts them.
 run_test() {
     local test_name="$1" status=0
     TESTS_RUN=$((TESTS_RUN + 1))
+    SKIP_REASON=""
     echo "  $test_name..."
     setup
     "$test_name" 2>&1 || status=$?
@@ -396,6 +427,9 @@ run_test() {
     elif [ "$status" -eq 77 ]; then
         TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
         SKIPS+=("$test_name")
+        if [ -n "${CS_TEST_SKIP_LOG:-}" ]; then
+            printf '%s\t%s\n' "$test_name" "$SKIP_REASON" >> "$CS_TEST_SKIP_LOG"
+        fi
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILURES+=("$test_name")

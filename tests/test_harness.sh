@@ -244,17 +244,20 @@ echo ""
 
 # The skip column names a count only when a test was skipped: a suite with none
 # reports passed and failed, and a returned 77 adds "N skipped" and the name.
-run_throwaway_suite() {  # body of the suite's tests, as bash source
-    local dir suite
+# The suite runs with neither of the variables the gate and CI hand a suite, so
+# a test sets exactly the ones it is about and the outer run's cannot leak in.
+run_throwaway_suite() {  # body of the suite's tests, as bash source; [VAR=value...]
+    local dir suite body="$1"
+    shift
     dir="$(mktemp -d "${TMPDIR:-/tmp}/harness-suite.XXXXXX")"
     suite="$dir/test_throwaway.sh"
     {
         printf 'SCRIPT_DIR=%q\n' "$SCRIPT_DIR"
         printf 'source %q\n' "$SCRIPT_DIR/test_lib.sh"
-        printf '%s\n' "$1"
+        printf '%s\n' "$body"
         printf 'report_results\n'
     } > "$suite"
-    bash "$suite" 2>&1
+    env -u CS_TEST_REQUIRE_TOOLS -u CS_TEST_SKIP_LOG "$@" bash "$suite" 2>&1
     rm -rf "$dir"
 }
 
@@ -276,6 +279,66 @@ run_test test_needs_a_tool')"
     assert_output_contains "$out" "test_needs_a_tool" "a skipped test must be named" || return 1
 }
 
+# A tool no machine has, so "not on PATH" never depends on the host.
+ABSENT_TOOL=cs-harness-absent-tool
+
+# CI declares the tools it installs. A test whose tool is declared and missing
+# is a broken runner, not a missing optional tool: it fails, naming the tool,
+# where a skip would read green having judged nothing.
+test_require_tool_fails_when_a_declared_tool_is_missing() {
+    local out
+    out="$(run_throwaway_suite "test_needs_it() { require_tool $ABSENT_TOOL || return \$?; echo BODY-RAN; }
+run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=age $ABSENT_TOOL")"
+    assert_output_contains "$out" "    FAIL: $ABSENT_TOOL is not on PATH, and CS_TEST_REQUIRE_TOOLS says this run has it" \
+        "the failure names the missing tool" || return 1
+    assert_output_contains "$out" "Results: 0/1 passed, 1 failed" "a declared missing tool is a failure, not a skip" || return 1
+    assert_output_not_contains "$out" "BODY-RAN" "the test stops at the guard" || return 1
+}
+
+# Undeclared, a missing tool is what it always was on a developer's machine.
+test_require_tool_skips_when_an_undeclared_tool_is_missing() {
+    local out
+    out="$(run_throwaway_suite "test_needs_it() { require_tool $ABSENT_TOOL || return \$?; echo BODY-RAN; }
+run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=age")"
+    assert_output_contains "$out" "    SKIP: $ABSENT_TOOL not on PATH" "the skip names the missing tool" || return 1
+    assert_output_contains "$out" "Results: 0/1 passed, 0 failed, 1 skipped" "an undeclared missing tool skips" || return 1
+    assert_output_not_contains "$out" "BODY-RAN" "the test stops at the guard" || return 1
+}
+
+test_require_tool_runs_the_test_when_every_tool_is_present() {
+    local out
+    out="$(run_throwaway_suite "test_needs_it() { require_tool sh bash || return \$?; echo BODY-RAN; }
+run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=sh")"
+    assert_output_contains "$out" "BODY-RAN" "the body runs once the tools are found" || return 1
+    assert_output_contains "$out" "Results: 1/1 passed, 0 failed" "a test with its tools passes" || return 1
+}
+
+# Suites wrap the guard in a helper. The helper's status is the verdict, so a
+# caller that maps any non-zero to 77 turns the declared tool's failure back
+# into a skip.
+test_a_helper_around_require_tool_passes_the_failure_through() {
+    local out
+    out="$(run_throwaway_suite "_need_it() { require_tool sh $ABSENT_TOOL; }
+test_needs_it() { _need_it || return \$?; echo BODY-RAN; }
+run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=$ABSENT_TOOL")"
+    assert_output_contains "$out" "    FAIL: $ABSENT_TOOL is not on PATH" "the helper's guard names the tool" || return 1
+    assert_output_contains "$out" "Results: 0/1 passed, 1 failed" "the helper's failure reaches the tally" || return 1
+}
+
+# run_all.sh hands each suite a file to record its skips in, one line per
+# skipped test: its name, a tab, and the reason when the guard knows it.
+test_a_skip_is_recorded_with_its_reason() {
+    local out record="$TEST_TMPDIR/skips"
+    out="$(run_throwaway_suite "test_needs_it() { require_tool $ABSENT_TOOL || return \$?; }
+test_odd_platform() { return 77; }
+test_ok() { return 0; }
+run_test test_needs_it
+run_test test_odd_platform
+run_test test_ok" "CS_TEST_SKIP_LOG=$record")"
+    assert_eq "$(printf 'test_needs_it\t%s not on PATH\ntest_odd_platform\t' "$ABSENT_TOOL")" "$(cat "$record" 2>/dev/null)" \
+        "each skip is recorded once, a tool's reason not leaking onto the next skip: $out" || return 1
+}
+
 run_test test_output_contains_survives_an_early_match_in_a_large_output
 run_test test_output_not_contains_survives_a_large_output
 run_test test_output_contains_still_fails_on_a_real_miss
@@ -290,4 +353,9 @@ run_test test_claude_dir_does_not_reach_a_suite_from_its_caller
 run_test test_env_file_does_not_reach_a_suite_from_its_caller
 run_test test_results_line_omits_the_skip_column_when_nothing_skipped
 run_test test_results_line_counts_a_skip_when_a_test_returns_77
+run_test test_require_tool_fails_when_a_declared_tool_is_missing
+run_test test_require_tool_skips_when_an_undeclared_tool_is_missing
+run_test test_require_tool_runs_the_test_when_every_tool_is_present
+run_test test_a_helper_around_require_tool_passes_the_failure_through
+run_test test_a_skip_is_recorded_with_its_reason
 report_results
