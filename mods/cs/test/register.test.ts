@@ -123,8 +123,8 @@ const $ = {
 }
 
 const DRAWN = { type: 'Survey', props: {}, children: [] }
-const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean }> = {}) =>
-  hooks['ui.render:AbovePrompt']($, { props: { isWorking: false, hasSurvey: false, ...props } }, async () => DRAWN)
+const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean; bodyColumns: number }> = {}) =>
+  hooks['ui.render:AbovePrompt']($, { props: { isWorking: false, hasSurvey: false, bodyColumns: 110, ...props } }, async () => DRAWN)
 
 function buttons(tree: any): any[] {
   if (!tree || typeof tree !== 'object') return []
@@ -204,7 +204,7 @@ test('at the threshold the band adds the rotate key on the strip:jump1 action, f
   // as an answer to a numbered question belongs (measured live).
   expect(button.props.hotkey).toBeUndefined()
   expect(button.props.plain).toBe(true)
-  expect(button.props.label).toBe('rotate this conversation')
+  expect(button.props.label).toBe('rotate')
   const json1 = JSON.stringify(tree)
   expect(json1).toContain('"Survey"')
   expect(json1).not.toContain('borderStyle')
@@ -219,14 +219,22 @@ const bindKeys = (bindings: Record<string, string | null>, context = 'Global') =
 }
 const words = (tree: any): string[] => texts(tree).map(textOf)
 
-test('the band spells the chord keybindings.json binds to each Button\'s action', async () => {
+// Chords that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell the prefix once,
+// dim, and each Button's own key beside its label: `ctrl+x  1 rotate  ·  2 wrap`.
+test('the band spells a shared chord prefix once and each Button\'s own key beside it', async () => {
   envVars.HOME = '/home'
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2', 'ctrl+x r': 'command:rotate' })
   percent = 40
-  expect(words(await band())).toEqual(expect.arrayContaining(['ctrl+x 1', 'ctrl+x 2']))
+  expect(words(await band())).toEqual(['\u258c', 'ctrl+x', '1', '  \u00b7  ', '2'])
   arm()
-  expect(words(await band())).toEqual(expect.arrayContaining(['ctrl+x 1']))
-  expect(words(await band())).not.toContain('ctrl+x 2')
+  expect(words(await band())).toEqual(['\u258c', 'ctrl+x', '1'])
+})
+
+test('chords with different prefixes are spelled whole, as slice 1 drew them', async () => {
+  envVars.HOME = '/home'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+w 2': 'strip:jump2' })
+  percent = 40
+  expect(words(await band())).toEqual(['\u258c', 'ctrl+x 1', '  \u00b7  ', 'ctrl+w 2'])
 })
 
 test('a chord bound elsewhere is spelled as the person wrote it', async () => {
@@ -291,32 +299,43 @@ test('the band starts in the status bar\'s column, two in from the prompt\'s rul
 // The chord is the one pressable thing a word has, so it alone wears the
 // session colour; the labels are the engine's plain Buttons and the
 // separators dim.
-test('the chords are bold in the session colour, the separators dim, and nothing else is coloured', async () => {
+test('the rule and the keys are in the session colour, the prefix and the separators dim, and nothing else is coloured', async () => {
   envVars.HOME = '/home'
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   percent = 40
   const tree = await band()
-  for (const chord of ['ctrl+x 1', 'ctrl+x 2']) {
-    expect(texts(tree).find((t: any) => textOf(t) === chord).props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
+  expect(texts(tree).find((t: any) => textOf(t) === '\u258c').props).toMatchObject({ color: 'rgb(220,38,38)' })
+  for (const key of ['1', '2']) {
+    expect(texts(tree).find((t: any) => textOf(t) === key).props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
   }
+  expect(texts(tree).find((t: any) => textOf(t) === 'ctrl+x').props).toEqual({ dimColor: true })
   const separators = texts(tree).filter((t: any) => textOf(t) === '  \u00b7  ')
   expect(separators).toHaveLength(1)
   expect(separators[0].props).toEqual({ dimColor: true })
-  expect(texts(tree).filter((t: any) => t.props.color !== undefined).map(textOf)).toEqual(['ctrl+x 1', 'ctrl+x 2'])
+  expect(texts(tree).filter((t: any) => t.props.color !== undefined).map(textOf)).toEqual(['\u258c', '1', '2'])
+})
+
+test('with no palette colour the rule is dim and the keys bold in the terminal\'s ink', async () => {
+  envVars.HOME = '/home'
+  files['/work/.cs/local/state'] = 'claude_session_color: teal\nclaude_session_id: uuid-lead\n'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  percent = 40
+  const tree = await band()
+  expect(texts(tree).find((t: any) => textOf(t) === '\u258c').props).toEqual({ dimColor: true })
+  expect(texts(tree).filter((t: any) => t.props.color !== undefined)).toHaveLength(0)
 })
 
 // With a handoff armed and its count running, the line reads
-// `/clear in 20s  ·  ctrl+x 1 /clear and continue from the handoff`: the
-// count first, then the key.
+// `▌  /clear in 20s  ·  ctrl+x  1 /clear now`: the count first, then the key.
 test('armed and counting, the countdown is the first word, a separator between it and the key', async () => {
   envVars.HOME = '/home'
   bindKeys({ 'ctrl+x 1': 'strip:jump1' })
   await startGrace()
   const tree = await band()
-  expect(words(tree)).toEqual([`/clear in ${GRACE_SECONDS}s`, '  \u00b7  ', 'ctrl+x 1'])
+  expect(words(tree)).toEqual(['\u258c', `/clear in ${GRACE_SECONDS}s`, '  \u00b7  ', 'ctrl+x', '1'])
   const json = JSON.stringify(tree)
-  expect(json.indexOf(`/clear in ${GRACE_SECONDS}s`)).toBeLessThan(json.indexOf('/clear and continue from the handoff'))
-  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['/clear and continue from the handoff'])
+  expect(json.indexOf(`/clear in ${GRACE_SECONDS}s`)).toBeLessThan(json.indexOf('/clear now'))
+  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['/clear now'])
 })
 
 // One thin line, a blank line above it: no fill, whatever the terminal
@@ -414,7 +433,7 @@ test('an armed handoff turns the button into the clear button, whatever the cont
     expect(button.props.action).toBe('strip:jump1')
     expect(button.props.hotkey).toBeUndefined()
     expect(button.props.plain).toBe(true)
-    expect(findButton(tree).props.label).toBe('/clear and continue from the handoff')
+    expect(findButton(tree).props.label).toBe('/clear now')
     const json = JSON.stringify(tree)
     expect(json).not.toContain('borderStyle')
     expect(json).not.toContain('borderColor')
@@ -455,7 +474,7 @@ test('a marker naming a handoff that is gone, consumed, or outside the store doe
   arm(); files[MARKER] = '../local/state\n'
   expect(await band()).toBe(DRAWN)
   percent = 40
-  expect(findButton(await band()).props.label).toBe('rotate this conversation')
+  expect(findButton(await band()).props.label).toBe('rotate')
 })
 
 // cs loads only a handoff whose file name is plain (letters, digits and ._@-,
@@ -469,7 +488,7 @@ test('a marker naming a handoff whose name is not plain does not arm', async () 
   }
   const longest = 'a'.repeat(157) + '.md'
   files = { ...files, [`/work/.cs/handoffs/${longest}`]: UNCONSUMED, [MARKER]: `${longest}\n` }
-  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(findButton(await band()).props.label).toBe('/clear now')
 })
 
 // The marker is read as the SessionStart hook reads it (tr -d '[:space:]' in
@@ -483,7 +502,7 @@ test('a marker is read as the hook reads it: only ASCII whitespace is dropped', 
     expect(await band()).toBe(DRAWN)
   }
   arm(); files[MARKER] = '\t 2026-09-15-next-step.md\r\n'
-  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(findButton(await band()).props.label).toBe('/clear now')
 })
 
 // An encrypted session keeps the marker and its handoffs behind .cs/private.
@@ -493,7 +512,7 @@ const PRIVATE_HANDOFF = '/work/.cs/private/handoffs/2026-09-15-next-step.md'
 test('an encrypted session arms from the marker and handoff behind .cs/private', async () => {
   files[PRIVATE_HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
   percent = 3
-  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(findButton(await band()).props.label).toBe('/clear now')
 })
 
 test('a private marker never arms from the plaintext handoff store', async () => {
@@ -511,7 +530,7 @@ const tracked = { exitCode: 1, stdout: '', stderr: `${TRACKED}\n` }
 
 test('the band asks cs nothing as it draws, however often it redraws', async () => {
   arm(); percent = 3
-  for (let i = 0; i < 5; i++) expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  for (let i = 0; i < 5; i++) expect(findButton(await band()).props.label).toBe('/clear now')
   expect(runs).toEqual([])
 })
 
@@ -538,7 +557,7 @@ test('once cs trusts the session again, the next press clears', async () => {
   runResult = VETTED
   envVars.CS_ROTATE_FORCE_CTX = '70'; percent = 80
   await turnComplete()
-  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(findButton(await band()).props.label).toBe('/clear now')
   await findButton(await band()).props.onPress()
   expect(ran).toEqual([{ command: 'clear', args: '' }])
 })
@@ -607,7 +626,7 @@ test('with the forcing off, a prompt after a refusal asks cs afresh at the next 
   expect(await band()).toBe(DRAWN)
   runResult = VETTED
   await promptSubmit()
-  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(findButton(await band()).props.label).toBe('/clear now')
   await findButton(await band()).props.onPress()
   expect(ran).toEqual([{ command: 'clear', args: '' }])
 })
@@ -633,7 +652,7 @@ test('an empty marker names no handoff, so the band behaves as unarmed', async (
   percent = 39
   expect(await band()).toBe(DRAWN)
   percent = 40
-  expect(findButton(await band()).props.label).toBe('rotate this conversation')
+  expect(findButton(await band()).props.label).toBe('rotate')
 })
 
 test('session.start writes a heartbeat under the session meta dir', async () => {
@@ -1345,7 +1364,7 @@ test('at the threshold the band adds a second button on strip:jump2 that reads a
   const button = wrapButton(tree)
   expect(button.props.hotkey).toBeUndefined()
   expect(button.props.plain).toBe(true)
-  expect(wrapButton(tree).props.label).toBe('wrap up this session')
+  expect(wrapButton(tree).props.label).toBe('wrap')
 })
 
 // One key, then the engine's own dialog. /wrap replaces .cs/summary.md and
@@ -2111,7 +2130,7 @@ test('alone, the gate word draws on the thin line with no separator', async () =
   await watchTick()
   const tree = await band({ isWorking: true })
   expect(buttons(tree)).toEqual([])
-  expect(words(tree)).toEqual(['finishing fix-auth · gate 3s'])
+  expect(words(tree)).toEqual(['\u258c', 'finishing fix-auth · gate 3s'])
   expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band').props.marginLeft).toBe(2)
 })
 

@@ -338,49 +338,73 @@ export function register(on: On) {
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
     const { Box, Text, Button } = await $.ui.resolve(e)
+    const counting = armed && left !== undefined
+    const wrapping = rotating && !armed && !wrapped
     // The Buttons carry no hotkey: a bare digit pressed them from an empty
     // composer, where a digit typed as the answer to a numbered question
     // belongs. A chord bound to each Button's action presses it instead, and
     // the engine draws a Button with no hotkey as its label alone, so the key
-    // is spelled beside it, and only when keybindings.json binds one.
-    const key = (action: string) => chords[action] !== undefined &&
-      <Box marginRight={1}><Text bold color={own}>{chords[action]}</Text></Box>
+    // is spelled beside it, and only when keybindings.json binds one. Chords
+    // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
+    // each Button its own key; chords that differ are spelled whole.
+    const actions = rotating ? (wrapping ? [ROTATE_ACTION, WRAP_ACTION] : [ROTATE_ACTION]) : []
+    const prefix = sharedPrefix(actions.map(action => chords[action]))
+    const key = (action: string) => {
+      const chord = chords[action]
+      if (chord === undefined) return false
+      const spelled = prefix === undefined ? chord : chord.slice(prefix.length + 1)
+      return <Box marginRight={1}><Text bold color={own}>{spelled}</Text></Box>
+    }
     // One thin line, a blank line above it so it reads apart from the
-    // transcript: no fill, no chip, only the words that need a key now, the
-    // chords in the session colour and the rest dim. The context percentage is
-    // the bar's to carry; the band does not repeat it. It starts two columns
-    // in, where Claude Code draws the bar and the mode line under the prompt.
-    // A Button is a block: nested in a Text the engine refuses the whole tree
-    // (measured), so each separator stands beside its Button.
-    const counting = armed && left !== undefined
-    const wrapping = rotating && !armed && !wrapped
+    // transcript: a left rule in the session colour, as the launch banner's
+    // bar; then only the words that need a key now, the keys in the session
+    // colour and the rest dim. The context percentage is the bar's to carry;
+    // the band does not repeat it. It starts two columns in, where Claude Code
+    // draws the bar and the mode line under the prompt. A Button is a block:
+    // nested in a Text the engine refuses the whole tree (measured), so each
+    // separator stands beside its Button.
     return (
       <Box flexDirection="column">
         {drawn}
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
+            <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
-            {counting && <Text dimColor>{'  ·  '}</Text>}
+            {counting && <Text dimColor>{'  \u00b7  '}</Text>}
+            {prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>}
             {rotating && key(ROTATE_ACTION)}
             {rotating && (armed
-              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear and continue from the handoff"
+              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear now"
                         onPress={() => pressClear($)} />
-              : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
+              : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate"
                         onPress={() => pressRotate($)} />)}
-            {wrapping && <Text dimColor>{'  ·  '}</Text>}
+            {wrapping && <Text dimColor>{'  \u00b7  '}</Text>}
             {wrapping && key(WRAP_ACTION)}
-            {wrapping && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
+            {wrapping && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap" onPress={() => askToWrap($)} />}
             {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
-            {waiting > 0 && rotating && <Text dimColor>{'  ·  '}</Text>}
-            {waiting > 0 && <Button key="cs-queue" plain label={`▤ queue ${waiting} · start`} onPress={() => pressQueueStart($)} />}
-            {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  ·  '}</Text>}
+            {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
+            {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
+            {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
             {gate !== undefined && <Text dimColor>{gate}</Text>}
           </Box>
         </Box>
       </Box>
     )
   })
+}
+
+// The chord prefix every bound key shares, up to its last space (`ctrl+x` of
+// `ctrl+x 1` and `ctrl+x 2`); undefined when a key is unbound, the chords
+// differ before their last word, or a chord is one word.
+export function sharedPrefix(chords: (string | undefined)[]): string | undefined {
+  if (chords.length === 0) return undefined
+  const prefixes = chords.map(chord => {
+    const at = chord?.lastIndexOf(' ') ?? -1
+    return chord === undefined || at <= 0 ? undefined : chord.slice(0, at)
+  })
+  const first = prefixes[0]
+  return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined
 }
 
 function numberOr(raw: string | undefined, fallback: number): number {
