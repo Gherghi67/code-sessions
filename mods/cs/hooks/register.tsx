@@ -481,7 +481,9 @@ export function register(on: On) {
     // what is under it, so both prompts would show at once.
     const hovering = labeled && e.surface === 'terminal'
     const label = (i: number) => {
-      const named = `#${i + 1} ${prompts[i].text}`
+      const p = prompts[i]
+      if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
+      const named = `#${i + 1} ${p.text}`
       return (named.length > labelCells ? `${named.slice(0, labelCells - 1)}\u2026` : named).padStart(labelCells)
     }
     // A line too narrow for any tick draws no rule alone.
