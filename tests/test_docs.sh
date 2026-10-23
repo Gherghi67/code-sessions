@@ -184,17 +184,22 @@ test_no_skip_counts_as_a_pass() {
 # A test that needs a command guards it with require_tool, the one place that
 # knows CI's declared tools: there a missing tool fails instead of skipping. A
 # guard written by hand skips (or, returning 0, passes) on a CI runner that
-# lost the tool, and the lane stays green having judged nothing. Flags
-# `command -v` with a return on the same line, and an `if ! command -v` whose
-# body returns within three lines.
+# lost the tool, and the lane stays green having judged nothing. Lines joined
+# by a trailing backslash are read as one. Flags `command -v` with a return on
+# the same line, and a `command -v` whose status is tested (`if !` or `||`, as
+# in `bin=$(command -v age) || bin=""`) followed within six lines by a return.
+# A lookup nothing tests, such as `gnu=$(command -v stat)` once a GNU stat has
+# been found, is not a guard: the skip after it is about a capability.
 _tool_guards_outside_require_tool() {  # files...
     awk '
-        FNR == 1 { guard = 0 }
+        FNR == 1 { guard = 0; joined = "" }
         /^[[:space:]]*#/ { next }
-        /command -v/ && /return (0|77)/ { print FILENAME ":" FNR ": " $0; guard = 0; next }
-        /if ! command -v/ { guard = FNR; text = $0; next }
-        guard && FNR - guard > 3 { guard = 0 }
-        guard && /return (0|77)/ { print FILENAME ":" guard ": " text; guard = 0 }
+        /\\$/ { if (joined == "") start = FNR; sub(/\\$/, ""); joined = joined $0; next }
+        { at = (joined == "") ? FNR : start; $0 = joined $0; joined = "" }
+        /command -v/ && /return (0|77)([^0-9]|$)/ { print FILENAME ":" at ": " $0; guard = 0; next }
+        /if ! command -v/ || /command -v[^|]*\|\|/ { guard = FNR; guard_at = at; text = $0; next }
+        guard && FNR - guard > 6 { guard = 0 }
+        guard && /return (0|77)([^0-9]|$)/ { print FILENAME ":" guard_at ": " text; guard = 0 }
     ' "$@"
 }
 
@@ -202,7 +207,9 @@ test_every_tool_guard_goes_through_require_tool() {
     local hits suite
     local -a suites=()
     for suite in "$REPO"/tests/test_*.sh; do
-        case "$suite" in */test_docs.sh|*/test_harness.sh) continue ;; esac
+        # test_lib.sh defines require_tool and the helpers that stage tools on
+        # a test PATH, which look tools up without guarding a test.
+        case "$suite" in */test_docs.sh|*/test_harness.sh|*/test_lib.sh) continue ;; esac
         suites+=("$suite")
     done
     hits=$(_tool_guards_outside_require_tool "${suites[@]}")
@@ -218,11 +225,14 @@ test_every_tool_guard_goes_through_require_tool() {
         printf '    %s bun >/dev/null 2>&1 || return 77\n' "$cv"
         printf '    age_bin=$(%s age) || { echo "    SKIP"; return 77; }\n' "$cv"
         printf '    if ! %s zsh >/dev/null 2>&1; then\n        echo skipping\n        return 0\n    fi\n' "$cv"
+        printf '    %s expect >/dev/null 2>&1 \\\n        || { echo "    SKIP"; return 77; }\n' "$cv"
+        printf '    age_bin=$(%s age 2>/dev/null) || age_bin=""\n    keygen_bin=$(%s age-keygen 2>/dev/null) || keygen_bin=""\n' "$cv" "$cv"
+        printf '    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then\n        echo "    SKIP"\n        return 77\n    fi\n'
         printf '    require_tool jq || return $?\n'
         printf '    gnu=$(%s stat)\n    :\n    :\n    :\n    return 77\n' "$cv"
     } > "$canary"
-    [ "$(_tool_guards_outside_require_tool "$canary" | wc -l | tr -d ' ')" = "3" ] || {
-        echo "  FAIL: the search no longer finds exactly the three known-bad shapes"
+    [ "$(_tool_guards_outside_require_tool "$canary" | wc -l | tr -d ' ')" = "5" ] || {
+        echo "  FAIL: the search no longer finds exactly the five known-bad shapes"
         _tool_guards_outside_require_tool "$canary"
         return 1
     }
