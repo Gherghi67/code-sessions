@@ -36,9 +36,11 @@ session's features where a key can act on it. No pane.
    session colour on the thick tick and on a word that is pressable;
    the countdown keeps its amber/crit ramp; everything else dim. Two
    accents at most on a healthy line.
-2. **The Handoff pane is removed.** Its countdown moves to the band; its
-   next-step preview is not redrawn anywhere (the handoff file holds
-   it, and the rotate band's press already reads it). `closeHandoffPane`,
+2. **The Handoff pane is removed.** Its countdown moves to the band. Its
+   next-step preview becomes one toast when the countdown starts (Alex,
+   AskUserQuestion 2026-10-23: "Yes, as a toast when the countdown
+   starts"): the handoff's next step, cut to the toast's length, shown
+   once per arming; nothing persistent. `closeHandoffPane`,
    `PREVIEW_PANE`, the pane render hook and the `Pane` component go.
 3. **The rail lists the live branch of the transcript.** The mod reads
    the session's `.jsonl` (path from `$.session.cwd()` and
