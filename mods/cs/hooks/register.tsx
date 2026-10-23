@@ -533,15 +533,15 @@ export function railTicks(count: number, budget: number): { hidden: number } | u
 // The prompt being read: of the prompts whose drawn row has reported what of
 // it is on screen, the one drawn highest (the row cut at the viewport's top
 // reports the rows scrolled away as `first`; every other visible row reports
-// 0, and of those the newest is taken, as the one the person just sent); the
-// newest prompt when none has reported.
+// 0, and of those the earliest prompt is the higher); the newest prompt when
+// none has reported.
 function readIndex(): number {
   let best = -1
   let bestFirst = -1
   prompts.forEach((p, i) => {
     const id = requestIdOf(p)
     const report = id === undefined ? undefined : shown.get(id)
-    if (report !== undefined && report.first >= bestFirst) { best = i; bestFirst = report.first }
+    if (report !== undefined && report.first > bestFirst) { best = i; bestFirst = report.first }
   })
   return best >= 0 ? best : prompts.length - 1
 }

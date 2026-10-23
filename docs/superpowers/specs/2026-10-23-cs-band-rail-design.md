@@ -53,10 +53,9 @@ session's features where a key can act on it. No pane.
    prompts and a resume keeps the earlier ones. The file is read again
    only when `$.fs.stat` says its size or mtime changed, after
    `turn.complete` and on `session.start`. One tick per prompt: `─`
-   (`━` for the prompt being read: of the rows the `onScreen` reports of
-   `ui.render` UserMessage rows place in the viewport, the one drawn
-   highest, the newest of them when every visible row reports from its
-   top), `┄` for a prompt the engine refused to
+   (`━` for the prompt being read: the topmost prompt still on screen by
+   the `onScreen` reports of `ui.render` UserMessage rows, ties to the
+   earliest), `┄` for a prompt the engine refused to
    scroll to. A press on a tick calls `$.ui.scroll({ to: { requestId },
    block: 'start' })`; a `{ deny }` is toasted once a session and marks
    the tick dotted. `/cs next`, `/cs prev`, `/cs first`, `/cs last`,
