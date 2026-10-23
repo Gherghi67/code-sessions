@@ -454,6 +454,71 @@ rm -f "$out" 2>/dev/null
 # did not set a status. Writing it would silently erase what the user typed.
 [ -n "${rewritten//[[:space:]]/}" ] || { _trace 'exit empty-rewrite'; exit 0; }
 
+# `=` alone is the rewriter's "already precise": the buffer stays as typed, and
+# a clean prompt costs no wait for the model to repeat it.
+[ "${rewritten//[[:space:]]/}" = "=" ] && { _trace 'exit unchanged'; exit 0; }
+
+# The strings of the prompt the agent must find or run exactly as written, one
+# per line in the order the prompt gives them: code spans, URLs, paths,
+# --flags and -verbs, snake_case and SCREAMING_CASE names, @mentions, file
+# names and "quoted text". A string must start the prompt or follow a space or
+# an opening bracket, so "and/or" is no path and "well-known" no flag; a
+# trailing .,;:!?) is the sentence's, not the string's. BSD grep has no
+# lookbehind, so the boundary is matched and then dropped.
+_exact_strings() {  # text
+    local text="$1" tok pos
+    {
+        grep -oE '`[^`]+`' <<<"$text"
+        grep -oE 'https?://[^[:space:]<>"`]+' <<<"$text"
+        grep -oE '(^|[[:space:](])(~|\.{1,2})?/[A-Za-z0-9_.@-]+(/[A-Za-z0-9_.@-]+)*' <<<"$text"
+        grep -oE '(^|[[:space:](])[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.[A-Za-z][A-Za-z0-9]{0,5}' <<<"$text"
+        grep -oE '(^|[[:space:]])--?[A-Za-z][A-Za-z0-9-]*' <<<"$text"
+        grep -oE '[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Za-z0-9]' <<<"$text"
+        grep -oE '(^|[[:space:]])@[A-Za-z0-9_./-]+' <<<"$text"
+        grep -oE '(^|[[:space:](])[A-Za-z0-9_-]{2,}\.[A-Za-z][A-Za-z0-9]{0,5}' <<<"$text"
+        grep -oE '"[^"]+"' <<<"$text"
+    } | while IFS= read -r tok; do
+        tok="${tok#[[:space:](]}"
+        case "$tok" in \`*|\"*) ;; *) while case "$tok" in *[.,\;:!?\)]) true ;; *) false ;; esac; do tok="${tok%?}"; done ;; esac
+        [ "${#tok}" -gt 1 ] || continue
+        pos="${text%%"$tok"*}"
+        printf '%s\t%s\n' "${#pos}" "$tok"
+    done | sort -n -s -k1,1 | cut -f2- | awk '!seen[$0]++'
+}
+
+# The prompt's exact strings the rewrite does not carry, joined by ", ". A
+# quoted string counts as carried when its words are, whatever the quotes; a
+# string inside a longer one that is missing is named once, by the longer.
+_lost_strings() {  # original, rewrite
+    local rewrite="$2" tok inner lost=''
+    while IFS= read -r tok; do
+        inner="$tok"
+        case "$tok" in \"*\") inner="${tok#\"}"; inner="${inner%\"}" ;; esac
+        case "$rewrite" in *"$inner"*) continue ;; esac
+        lost="${lost}${tok}"$'\n'
+    done < <(_exact_strings "$1")
+    [ -n "$lost" ] || return 0
+    local out='' other kept
+    while IFS= read -r tok; do
+        [ -n "$tok" ] || continue
+        kept=1
+        while IFS= read -r other; do
+            [ -n "$other" ] && [ "$other" != "$tok" ] || continue
+            case "$other" in *"$tok"*) kept=''; break ;; esac
+        done <<<"$lost"
+        [ -n "$kept" ] && out="${out:+$out, }$tok"
+    done <<<"$lost"
+    printf '%s' "$out"
+}
+
+# What the rewrite dropped is named after it, so the review before sending
+# sees it; nothing is lost and nothing waits on a second call.
+_lost=$(_lost_strings "$prompt" "$rewritten")
+if [ -n "$_lost" ]; then
+    rewritten="${rewritten}"$'\n\n'"Kept from the original: ${_lost}"
+    _trace 'kept-from-original'
+fi
+
 # tmp+rename so a crash mid-write cannot leave a truncated buffer. The fixed
 # temp name is safe: the target is the one-off file Claude Code made for this
 # editor run, and nothing else writes beside it.
