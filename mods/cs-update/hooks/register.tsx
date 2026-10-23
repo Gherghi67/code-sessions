@@ -2,7 +2,7 @@
 /* @jsx h */
 /* @jsxFrag Fragment */
 // ABOUTME: cs-update mod: when a cs launch found a newer release, one pane per load with its release notes, `1` to install it in place, Esc for later.
-// ABOUTME: Reads the launch's verdict from CS_UPDATE_AVAILABLE, the cs path from CS_BIN, and the span cs cached; /cs-update reopens the pane; session.start writes a heartbeat for doctor.
+// ABOUTME: Reads the launch's verdict from CS_UPDATE_AVAILABLE (a toast, not the pane, when CS_UPDATE_DECLINED names it), the cs path from CS_BIN, and the span cs cached; /cs-update reopens the pane; session.start writes a heartbeat for doctor.
 import type { On, EngineInterface, PluginOptions } from 'claude-code'
 
 declare const h: any
@@ -93,7 +93,13 @@ export function register(on: On, options: PluginOptions) {
     if (!shown && await isLead($, e.cwd)) {
       if (!(await restoreDone($, e.cwd)) && wanted) {
         const pending = await $.env.get('CS_UPDATE_AVAILABLE')
-        if (pending) { shown = true; await openPane($, e.cwd, pending) }
+        // The launch's own question was answered no for this version: one
+        // line says it is still there, and the pane waits for /cs-update.
+        const declined = await $.env.get('CS_UPDATE_DECLINED')
+        if (pending && declined === pending) {
+          shown = true
+          $.ui.toast(`cs ${pending} is available · run cs -update to install it, or /cs-update for the notes`)
+        } else if (pending) { shown = true; await openPane($, e.cwd, pending) }
       }
     }
     return next(e)

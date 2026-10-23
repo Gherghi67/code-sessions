@@ -62,6 +62,7 @@ Preserved files have these rules:
 - The verifier requires SSH signature support, the `release` identity, and the release's own `cs-release-vX.Y.Z` namespace, so a signature made for one tag never verifies another. `cs -update` refuses a release older than the installed cs. Embedded allowed signers and revoked public keys define which keys it trusts.
 - An update refuses an installer that drops any revoked key from the installed list. Minisign is not used.
 - `cs -update --check` prints the full pending release notes.
+- A terminal launch offers a pending release once (`Update now? [y/N]`); a declined version is kept in `~/.cache/cs/update-declined` and not asked about again until a newer one is pending. In the session the update mod then names it in one line instead of opening its pane.
 - The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).
 
 ## Environment variables you set

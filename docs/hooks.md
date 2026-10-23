@@ -761,7 +761,11 @@ The mod reads two variables the launch exports, and `HOME` and `CS_SESSIONS_ROOT
 the notes cache and the sessions root:
 `CS_UPDATE_AVAILABLE`, the pending version, exported only when a launch finds
 a newer cs, and `CS_BIN`, the path of the running cs, exported on every
-launch. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
+launch. A third, `CS_UPDATE_DECLINED`, names the pending version when the
+person answered no to the launch's own question (`~/.cache/cs/update-declined`
+keeps that answer): the mod then toasts one line, `cs X.Y.Z is available · run
+cs -update to install it, or /cs-update for the notes`, and opens no pane
+until `/cs-update` asks for it. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
 nothing.
 Present, the mod reads the changelog span the launch's check cached at
 `~/.cache/cs/update-notes-full-<version>` (KEEP IN SYNC with
