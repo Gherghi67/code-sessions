@@ -2621,3 +2621,28 @@ test('the gap and the rail keep their margins: three cells after the words, two 
   // No room to name a prompt: the bars keep the words' three-cell gap.
   expect(margins(await band({ bodyColumns: 45 }))).toEqual([undefined, 3])
 })
+
+// ---------------------------------------------------------------------------
+// The features word: the state of the session's feature worktrees, from
+// `cs <base> -features --porcelain` (task branch ahead merged ff wt_dirty
+// untracked base_dirty lock state), on the band's left after the rule.
+
+const feature = (task: string, ahead: number, state: string) =>
+  [task, `cs/${task}`, String(ahead), '0', '1', '0', '0', '0', 'none', state].join('\t')
+const porcelain = (...records: string[]) => { runResult = { exitCode: 0, stdout: records.map(r => `${r}\n`).join(''), stderr: '' } }
+const featureRuns = () => runs.filter(r => r.argv[2] === '-features')
+const featuresKey = (tree: any) => buttons(tree).find((b: any) => b.props.key === 'cs-features')
+// A feature's directory at the sessions root, as cs names it: `<base>@<task>`.
+const featureDir = (task: string, base = 'work') => { files[`/home/.claude-sessions/${base}@${task}`] = '' }
+
+test('a base with one feature ready names it on the left, and a press runs /finish on it', async () => {
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await turnComplete()
+  expect(featureRuns().map(r => r.argv)).toEqual([['/opt/cs/bin/cs', 'work', '-features', '--porcelain']])
+  const tree = await band()
+  expect(featuresKey(tree).props).toMatchObject({ key: 'cs-features', plain: true, label: '1 feature · fix-auth ready' })
+  expect(bandBody(tree).slice(0, 2).map((k: any) => k.type === 'Button' ? k.props.key : textOf(texts(k)[0]))).toEqual(['▌', 'cs-features'])
+  await featuresKey(tree).props.onPress()
+  expect(ran).toEqual([{ command: 'finish', args: 'fix-auth' }])
+})
