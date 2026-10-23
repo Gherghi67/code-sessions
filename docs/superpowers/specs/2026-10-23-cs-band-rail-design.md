@@ -86,10 +86,13 @@ session's features where a key can act on it. No pane.
      base_dirty, lock, state) and is tested in `tests/test_worktrees.sh`; no
      `--json` arm is added. It carries no `behind` count, so no `behind N`
      word is drawn.
-   - Placement: Alex ruled the word sits on the left, after the rule, when
-     no rotate, wrap or queue word is due ("Left side", 2026-10-23); the gap
-     beside the rail names the prompt being read. While such a word is due,
-     or a `/finish` gate runs, the features word is not drawn.
+   - Placement: the word sits on the left, right after the rule ("Left
+     side", 2026-10-23), and before the key words when they are due too
+     ("Both due", 2026-10-23: the rotate word shows from 40% context, so
+     yielding to it hid the features word for most of a long
+     conversation); the gap beside the rail names the prompt being read.
+     While a `/finish` gate runs, or a survey holds the band, the features
+     word is not drawn.
    - A feature session draws no features word (Alex, "Feature word",
      2026-10-23): `/finish` integrates only from the base's conversation
      (the skill's `role: feature` prints a handoff line and stops), and

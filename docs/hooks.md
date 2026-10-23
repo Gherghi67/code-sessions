@@ -541,8 +541,9 @@ over a line without hiding what is under it. A conversation with
 one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
 
-When no key word is due and no `/finish` gate runs, the band's first word,
-right after the rule, is the state of the session's features, read from
+Unless a `/finish` gate runs, the band's first word, right after the rule and
+before any key word (`·` between), is the state of the session's features,
+read from
 `cs <base> -features --porcelain` after each turn and at session start,
 without holding either up, and every 30 s while the band is idle once cs has
 been asked. Only the lead conversation asks cs, and a base asks only while

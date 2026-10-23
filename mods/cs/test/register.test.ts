@@ -2723,7 +2723,8 @@ test('a cs that fails, cannot start, or prints a record the band cannot read dra
   ])
 })
 
-test('the features word yields the left to a key word or a running gate, and the gap beside the rail shrinks by its cells', async () => {
+test('the features word keeps the left beside the key words, yields to a running gate, and the gap shrinks by its cells', async () => {
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   featureDir('fix-auth')
   porcelain(feature('fix-auth', 3, 'ready'))
   transcript(LINEAR)
@@ -2733,11 +2734,14 @@ test('the features word yields the left to a key word or a running gate, and the
   expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(70))
   percent = 80
   tree = await band()
-  expect(featuresKey(tree)).toBeUndefined()
-  expect(buttons(tree).map((b: any) => b.props.key)).toContain('cs-rotate')
+  const order = bandBody(tree).map((k: any) => k.type === 'Button' ? k.props.key : k.type === 'Text' ? textOf(k) : texts(k).map(textOf).join(''))
+  expect(order.slice(0, 6)).toEqual(['\u258c', 'cs-features', '  \u00b7  ', 'ctrl+x', '1', 'cs-rotate'])
+  // The word, `  ·  ` (5) and `ctrl+x  1 rotate  ·  2 wrap` (27) and the gap's three leave the label 105 - 61 - 4 - 2.
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(38))
   percent = undefined
   queueTasks(1)
-  expect(featuresKey(await band())).toBeUndefined()
+  tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-features', 'cs-queue', 'cs-rail-0', 'cs-rail-1', 'cs-rail-2'])
   delete files[`${QDIR}/0000000001-seed`]
   livePids.add('4242')
   nowMs = NOW * 1000
@@ -2746,7 +2750,7 @@ test('the features word yields the left to a key word or a running gate, and the
   await watchTick()
   tree = await band({ isWorking: true })
   expect(featuresKey(tree)).toBeUndefined()
-  expect(restingWords(tree).slice(0, 2)).toEqual(['▌', 'finishing fix-auth · gate 3s'])
+  expect(restingWords(tree).slice(0, 2)).toEqual(['\u258c', 'finishing fix-auth \u00b7 gate 3s'])
 })
 
 test('an idle band asks cs again every 30 s, never while a turn runs, never twice at once, and not at all with no feature', async () => {
