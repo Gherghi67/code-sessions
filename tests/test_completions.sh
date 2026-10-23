@@ -137,10 +137,7 @@ zsh_candidates_for_first_word() {  # word
 }
 
 test_zsh_completion_offers_a_symlinked_session() {
-    if ! command -v zsh >/dev/null 2>&1; then
-        echo "    (zsh not installed, skipping)"
-        return 0
-    fi
+    require_tool zsh || return $?
     create_test_session "real-session" >/dev/null
     link_test_session "linked-session"
     put_built_cs_on_path
@@ -210,20 +207,14 @@ test_bash_completion_does_not_enumerate_when_completing_a_flag() {
 }
 
 test_zsh_completion_does_not_enumerate_when_completing_a_flag() {
-    if ! command -v zsh >/dev/null 2>&1; then
-        echo "    (zsh not installed, skipping)"
-        return 0
-    fi
+    require_tool zsh || return $?
     local marker; marker=$(recording_cs_on_path)
     zsh_candidates_for_first_word "-" >/dev/null
     assert_file_not_exists "$marker" "zsh must not call cs to complete a flag" || return 1
 }
 
 test_zsh_completion_offers_sessions_and_flags_on_an_empty_word() {
-    if ! command -v zsh >/dev/null 2>&1; then
-        echo "    (zsh not installed, skipping)"
-        return 0
-    fi
+    require_tool zsh || return $?
     create_test_session "real-session" >/dev/null
     put_built_cs_on_path
 
@@ -446,7 +437,7 @@ test_bash_archive_completes_beyond_first_name() {
 }
 
 test_zsh_msg_completes_target_session() {
-    command -v zsh >/dev/null 2>&1 || { echo "    (zsh not installed, skipping)"; return 0; }
+    require_tool zsh || return $?
     create_test_session "ztarget" >/dev/null
     put_built_cs_on_path
     local out; out=$(zsh_candidates_words cs -msg "")
@@ -454,7 +445,7 @@ test_zsh_msg_completes_target_session() {
 }
 
 test_zsh_rm_completes_beyond_first_name() {
-    command -v zsh >/dev/null 2>&1 || { echo "    (zsh not installed, skipping)"; return 0; }
+    require_tool zsh || return $?
     create_test_session "zkeep-one" >/dev/null
     create_test_session "zkeep-two" >/dev/null
     put_built_cs_on_path
@@ -463,7 +454,7 @@ test_zsh_rm_completes_beyond_first_name() {
 }
 
 test_zsh_rm_completes_its_flags() {
-    command -v zsh >/dev/null 2>&1 || { echo "    (zsh not installed, skipping)"; return 0; }
+    require_tool zsh || return $?
     create_test_session "zflag-one" >/dev/null
     put_built_cs_on_path
     local out; out=$(zsh_candidates_words cs -rm zflag-one --)
@@ -488,7 +479,7 @@ test_bash_adopt_completes_its_flags() {
 }
 
 test_zsh_adopt_completes_its_flags() {
-    command -v zsh >/dev/null 2>&1 || { echo "    (zsh not installed, skipping)"; return 0; }
+    require_tool zsh || return $?
     put_built_cs_on_path
     local out; out=$(zsh_candidates_words cs -adopt --)
     assert_candidate "$out" "--worktrees" "zsh cs -adopt --<TAB> must offer --worktrees" || return 1
@@ -695,7 +686,7 @@ test_bash_completion_offers_rotate_after_narrative() {
 }
 
 test_zsh_completion_offers_rotate_after_narrative() {
-    command -v zsh >/dev/null 2>&1 || { echo "    (zsh not installed, skipping)"; return 0; }
+    require_tool zsh || return $?
     put_built_cs_on_path
     local out
     out=$(zsh_candidates_words cs some-session -narrative "")
@@ -710,7 +701,7 @@ test_bash_completion_offers_rotate_after_the_global_narrative() {
 }
 
 test_zsh_completion_offers_rotate_after_the_global_narrative() {
-    command -v zsh >/dev/null 2>&1 || { echo "    (zsh not installed, skipping)"; return 0; }
+    require_tool zsh || return $?
     put_built_cs_on_path
     local out
     out=$(zsh_candidates_words cs -narrative "")

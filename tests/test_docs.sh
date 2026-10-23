@@ -181,11 +181,59 @@ test_no_skip_counts_as_a_pass() {
     }
 }
 
+# A test that needs a command guards it with require_tool, the one place that
+# knows CI's declared tools: there a missing tool fails instead of skipping. A
+# guard written by hand skips (or, returning 0, passes) on a CI runner that
+# lost the tool, and the lane stays green having judged nothing. Flags
+# `command -v` with a return on the same line, and an `if ! command -v` whose
+# body returns within three lines.
+_tool_guards_outside_require_tool() {  # files...
+    awk '
+        FNR == 1 { guard = 0 }
+        /^[[:space:]]*#/ { next }
+        /command -v/ && /return (0|77)/ { print FILENAME ":" FNR ": " $0; guard = 0; next }
+        /if ! command -v/ { guard = FNR; text = $0; next }
+        guard && FNR - guard > 3 { guard = 0 }
+        guard && /return (0|77)/ { print FILENAME ":" guard ": " text; guard = 0 }
+    ' "$@"
+}
+
+test_every_tool_guard_goes_through_require_tool() {
+    local hits suite
+    local -a suites=()
+    for suite in "$REPO"/tests/test_*.sh; do
+        case "$suite" in */test_docs.sh|*/test_harness.sh) continue ;; esac
+        suites+=("$suite")
+    done
+    hits=$(_tool_guards_outside_require_tool "${suites[@]}")
+    if [ -n "$hits" ]; then
+        echo "  FAIL: these guards bypass require_tool; write \`require_tool <tool> || return \$?\`:"
+        printf '    %s\n' "$hits" | head -30
+        return 1
+    fi
+    # Reachability: the search must still find each known-bad shape, and pass
+    # the good one, assembled at runtime so a sweep cannot rewrite the canary.
+    local canary="$TEST_TMPDIR/canary.sh" cv="command -v"
+    {
+        printf '    %s bun >/dev/null 2>&1 || return 77\n' "$cv"
+        printf '    age_bin=$(%s age) || { echo "    SKIP"; return 77; }\n' "$cv"
+        printf '    if ! %s zsh >/dev/null 2>&1; then\n        echo skipping\n        return 0\n    fi\n' "$cv"
+        printf '    require_tool jq || return $?\n'
+        printf '    gnu=$(%s stat)\n    :\n    :\n    :\n    return 77\n' "$cv"
+    } > "$canary"
+    [ "$(_tool_guards_outside_require_tool "$canary" | wc -l | tr -d ' ')" = "3" ] || {
+        echo "  FAIL: the search no longer finds exactly the three known-bad shapes"
+        _tool_guards_outside_require_tool "$canary"
+        return 1
+    }
+}
+
 run_test test_configuration_documents_every_env_var_the_readme_names
 run_test test_every_backend_the_code_accepts_is_documented
 run_test test_hooks_doc_states_both_resolution_arms
 run_test test_no_surface_tells_a_resume_to_read_every_narrative
 run_test test_no_writer_pipes_into_grep_q
 run_test test_no_skip_counts_as_a_pass
+run_test test_every_tool_guard_goes_through_require_tool
 
 report_results
