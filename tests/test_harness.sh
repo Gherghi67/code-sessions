@@ -339,6 +339,35 @@ run_test test_ok" "CS_TEST_SKIP_LOG=$record")"
         "each skip is recorded once, a tool's reason not leaking onto the next skip: $out" || return 1
 }
 
+# Several suites unset every exported CS_* variable in their own setup(), which
+# runs before each test body. Both variables must still reach require_tool and
+# run_test there. This setup scrubs exactly as those suites do.
+SCRUBBING_SETUP="setup() {
+    TEST_TMPDIR=\"\$(mktemp -d)\"
+    local _v
+    while IFS='=' read -r _v _; do
+        case \"\$_v\" in CS_*|CLAUDE_*) unset \"\$_v\" 2>/dev/null || true ;; esac
+    done < <(env)
+}"
+
+test_a_suite_that_scrubs_cs_variables_still_fails_a_declared_missing_tool() {
+    local out
+    out="$(run_throwaway_suite "$SCRUBBING_SETUP
+test_needs_it() { require_tool $ABSENT_TOOL || return \$?; }
+run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=$ABSENT_TOOL")"
+    assert_output_contains "$out" "    FAIL: $ABSENT_TOOL is not on PATH" "the scrub must not hide the declared tool" || return 1
+    assert_output_contains "$out" "Results: 0/1 passed, 1 failed" "the declared missing tool fails" || return 1
+}
+
+test_a_suite_that_scrubs_cs_variables_still_records_its_skips() {
+    local out record="$TEST_TMPDIR/skips"
+    out="$(run_throwaway_suite "$SCRUBBING_SETUP
+test_needs_it() { require_tool $ABSENT_TOOL || return \$?; }
+run_test test_needs_it" "CS_TEST_SKIP_LOG=$record")"
+    assert_eq "$(printf 'test_needs_it\t%s not on PATH' "$ABSENT_TOOL")" "$(cat "$record" 2>/dev/null)" \
+        "the scrub must not hide the skip log: $out" || return 1
+}
+
 run_test test_output_contains_survives_an_early_match_in_a_large_output
 run_test test_output_not_contains_survives_a_large_output
 run_test test_output_contains_still_fails_on_a_real_miss
@@ -358,4 +387,6 @@ run_test test_require_tool_skips_when_an_undeclared_tool_is_missing
 run_test test_require_tool_runs_the_test_when_every_tool_is_present
 run_test test_a_helper_around_require_tool_passes_the_failure_through
 run_test test_a_skip_is_recorded_with_its_reason
+run_test test_a_suite_that_scrubs_cs_variables_still_fails_a_declared_missing_tool
+run_test test_a_suite_that_scrubs_cs_variables_still_records_its_skips
 report_results

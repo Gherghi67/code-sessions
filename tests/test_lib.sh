@@ -50,6 +50,12 @@ SKIPS=()
 # Why the running test skipped, when its guard knows: require_tool sets it,
 # run_test clears it before each test and records it with the skip.
 SKIP_REASON=""
+# The tools CI declares (CS_TEST_REQUIRE_TOOLS) and the file run_all.sh
+# collects skips in (CS_TEST_SKIP_LOG), read once here. Several suites unset
+# every exported CS_* variable in setup(), which runs before each test, so
+# require_tool and run_test read these unexported copies instead.
+_cs_test_require_tools="${CS_TEST_REQUIRE_TOOLS:-}"
+_cs_test_skip_log="${CS_TEST_SKIP_LOG:-}"
 
 # --- Paths ---
 # SCRIPT_DIR must be set by the sourcing test file before calling any helpers
@@ -145,7 +151,7 @@ require_tool() {  # tool...
     local tool
     for tool in "$@"; do
         command -v "$tool" >/dev/null 2>&1 && continue
-        case " ${CS_TEST_REQUIRE_TOOLS:-} " in
+        case " $_cs_test_require_tools " in
             *" $tool "*)
                 echo "    FAIL: $tool is not on PATH, and CS_TEST_REQUIRE_TOOLS says this run has it"
                 return 1
@@ -427,8 +433,8 @@ run_test() {
     elif [ "$status" -eq 77 ]; then
         TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
         SKIPS+=("$test_name")
-        if [ -n "${CS_TEST_SKIP_LOG:-}" ]; then
-            printf '%s\t%s\n' "$test_name" "$SKIP_REASON" >> "$CS_TEST_SKIP_LOG"
+        if [ -n "$_cs_test_skip_log" ]; then
+            printf '%s\t%s\n' "$test_name" "$SKIP_REASON" >> "$_cs_test_skip_log"
         fi
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
