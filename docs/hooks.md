@@ -495,17 +495,29 @@ directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it, read from the left: its words, separated by a dim `·`,
-then the rail of prompts, then the prompt it names. Where the keys'
+blank line above it, read from the left: a mark, its words, separated by a
+dim `·`, then the rail of prompts, then the prompt it names. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `ctrl+x  1 rotate  ·  2 wrap   │││┃  #4 say four`. Chords that differ are spelled whole. In order, and each
+colour: `● ctrl+x  1 rotate  ·  2 wrap   │││┃  #4 say four`. Chords that differ are spelled whole. In order, and each
 only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
 `/clear now` once a handoff is armed), `wrap`, the queue's start key, and
 `finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
 paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
-caps answer; only the count's amber pivot still reads the measurement. The
-percentage itself stays on the status bar: the band does not repeat it.
+caps answer; only the amber of the count and of the mark still reads the
+measurement. The percentage itself stays on the status bar: the band does not
+repeat it.
+
+The mark is one `●` whose colour says what is due. Blue says a `/finish`
+gate runs, or the cs queue holds tasks and is armed or draining. Amber says a
+rotation is due: the context is at or past the band's threshold, even while a
+turn runs and the keys wait for it to end, or a handoff is armed. Green says
+neither. A running gate or queue outranks a due rotation. Blue and green are the session palette's (Claude Code's
+`/color` values, drawn on light and dark alike); the amber is the status
+bar's, pivoted on the measured background and then on `CS_TERM_THEME` as the
+count's is. The mark and its space take two cells from what the rail and the
+named prompt are left. It draws on every line the band draws, never on a line
+of its own, and not while a survey holds the band.
 
 The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
 off by default; see [configuration.md](configuration.md#band-settings)).
@@ -574,7 +586,7 @@ stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
 draws. Every word takes its terminal cells from what the prompt's name is
-left: `▤ queue 2  ·  mail 1   │││┃  #4 say four`. The task in progress is
+left: `● ▤ queue 2  ·  mail 1   │││┃  #4 say four`. The task in progress is
 Claude Code's own task list's to show, above the band; the band does not
 repeat it.
 
