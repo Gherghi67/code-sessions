@@ -675,6 +675,72 @@ test_a_rewrite_holding_an_equals_sign_lands() {
         "a rewrite containing = is written"
 }
 
+# The buffer after one shim run whose rewriter replies with $2 to the prompt $1.
+rewrite_with() {  # original, rewrite
+    local f; f=$(composer_file "$1")
+    printf '%s' "$2" > "$TEST_TMPDIR/reply.txt"
+    printf '#!/bin/bash\ncat >/dev/null; cat "%s"\n' "$TEST_TMPDIR/reply.txt" > "$TEST_TMPDIR/stub-rewrite.sh"
+    "$SHIM" "$f" >/dev/null 2>&1
+    cat "$f"
+}
+
+# A rewrite that drops a string the agent must find or run as written still
+# lands, with one line after it naming each dropped string, in the order the
+# prompt gave them, so the review before sending sees what went missing.
+test_a_rewrite_that_drops_exact_strings_names_them_after_it() {
+    local original='in src/auth.ts run `make test` with --force, see https://example.com/x and @docs/a.md, keep MAX_RETRIES and "no new deps", then cs -rm'
+    local expected
+    expected=$(printf 'Fix the login flow.\n\nKept from the original: src/auth.ts, `make test`, --force, https://example.com/x, @docs/a.md, MAX_RETRIES, "no new deps", -rm')
+    assert_eq "$expected" "$(rewrite_with "$original" 'Fix the login flow.')" \
+        "every dropped exact string is named after the rewrite"
+}
+
+test_a_rewrite_that_keeps_every_exact_string_lands_alone() {
+    assert_eq 'Run `make test` with --force in src/auth.ts.' \
+        "$(rewrite_with 'run `make test` --force src/auth.ts' 'Run `make test` with --force in src/auth.ts.')" \
+        "nothing is appended when every exact string is carried"
+}
+
+test_the_sentence_keeps_its_closing_punctuation() {
+    assert_eq "$(printf 'Fix it.\n\nKept from the original: src/a.ts, --force')" \
+        "$(rewrite_with 'fix src/a.ts. use --force!' 'Fix it.')" \
+        "a trailing full stop or bang is not part of the string"
+}
+
+test_prose_slashes_abbreviations_and_hyphens_are_not_exact_strings() {
+    assert_eq 'Tidy the list.' \
+        "$(rewrite_with 'tidy and/or trim, e.g. the well-known list, i.e. version 3.5:
+- first item' 'Tidy the list.')" \
+        "words around a slash, abbreviations, hyphenated words and bullets are prose"
+}
+
+test_a_string_inside_a_longer_dropped_one_is_named_once() {
+    assert_eq "$(printf 'Edit it.\n\nKept from the original: hooks/prompt_rewriter.sh, --force')" \
+        "$(rewrite_with 'edit hooks/prompt_rewriter.sh with --force, then --force again' 'Edit it.')" \
+        "the longer string names it, and a repeated one is named once"
+}
+
+test_a_quoted_phrase_is_carried_whatever_its_quotes() {
+    assert_eq "Keep 'no new deps' in mind." \
+        "$(rewrite_with 'keep "no new deps"' "Keep 'no new deps' in mind.")" \
+        "the phrase's words are what must survive"
+}
+
+test_a_string_must_survive_exactly_case_included() {
+    assert_eq "$(printf 'Raise max_retries.\n\nKept from the original: MAX_RETRIES')" \
+        "$(rewrite_with 'raise MAX_RETRIES' 'Raise max_retries.')" \
+        "a name whose case changed is a different name"
+}
+
+test_a_dropped_string_is_text_never_run() {
+    local marker="$TEST_TMPDIR/ran"
+    assert_eq "$(printf 'Check it.\n\nKept from the original: `$(touch %s)`' "$marker")" \
+        "$(rewrite_with "check \`\$(touch $marker)\`" 'Check it.')" \
+        "a command in the prompt is named literally" || return 1
+    assert_eq "absent" "$([ -e "$marker" ] && echo present || echo absent)" \
+        "and never executed"
+}
+
 run_test test_every_progress_mode_paints_something
 run_test test_unknown_progress_mode_falls_back_to_a_display
 run_test test_screen_mode_caps_a_long_prompt_and_marks_it
@@ -758,5 +824,13 @@ run_test test_grok_routes_to_the_vendor_rewriter
 
 run_test test_an_equals_reply_leaves_the_buffer_as_typed
 run_test test_a_rewrite_holding_an_equals_sign_lands
+run_test test_a_rewrite_that_drops_exact_strings_names_them_after_it
+run_test test_a_rewrite_that_keeps_every_exact_string_lands_alone
+run_test test_the_sentence_keeps_its_closing_punctuation
+run_test test_prose_slashes_abbreviations_and_hyphens_are_not_exact_strings
+run_test test_a_string_inside_a_longer_dropped_one_is_named_once
+run_test test_a_quoted_phrase_is_carried_whatever_its_quotes
+run_test test_a_string_must_survive_exactly_case_included
+run_test test_a_dropped_string_is_text_never_run
 
 report_results
