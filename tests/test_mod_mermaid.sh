@@ -41,10 +41,7 @@ test_show_me_skill_names_itself_and_its_triggers() {
 # The tests import claude-code/testing, the engine's own kit, so they run under
 # `claude plugin test`, not bare bun; the kit runs only with function hooks on.
 test_mod_unit_tests_pass_under_the_engine_test_kit() {
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "    SKIP: claude not on PATH"
-        return 77
-    fi
+    require_tool claude || return $?
     local out raw="${TMPDIR:-/tmp}/cs-mod-mermaid-test.$$"
     env -u ANTHROPIC_API_KEY CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$MOD" > "$raw" 2>&1
     local status=$?
@@ -59,10 +56,7 @@ test_mod_unit_tests_pass_under_the_engine_test_kit() {
 }
 
 test_mod_validate_inventories_the_hooks_and_calls() {
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "    SKIP: claude not on PATH"
-        return 77
-    fi
+    require_tool claude || return $?
     local out raw="${TMPDIR:-/tmp}/cs-mod-mermaid-validate.$$"
     env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" > "$raw" 2>&1
     local status=$?

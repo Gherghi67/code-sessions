@@ -1723,7 +1723,7 @@ test_session_start_reasserts_tab_title_through_tmux() {
 # session it runs; the window is named after all of them, in pane order. Real
 # tmux on a private socket, so the developer's server is never touched.
 _real_tmux_window() {
-    command -v tmux >/dev/null 2>&1 || return 77
+    require_tool tmux || return $?
     TT_SOCK="$TEST_TMPDIR/tt.sock"
     TT_PANE_A=$(tmux -S "$TT_SOCK" -f /dev/null new-session -d -P -F '#{pane_id}' -x 120 -y 30 'sleep 600') || return 1
     TT_PANE_B=$(tmux -S "$TT_SOCK" split-window -d -h -P -F '#{pane_id}' -t "$TT_PANE_A" 'sleep 600') || return 1
@@ -1838,7 +1838,7 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
 # FAKE_ITERM_LOG and renames the tmux window, as iTerm does (measured);
 # FAKE_ITERM_ON_SET runs once, after the first set, to land a claim mid-run.
 _fake_iterm_module() {
-    command -v python3 >/dev/null 2>&1 || return 77
+    require_tool python3 || return $?
     FAKE_ITERM_DIR="$TEST_TMPDIR/fake-iterm"
     FAKE_ITERM_LOG="$TEST_TMPDIR/iterm-titles"
     mkdir -p "$FAKE_ITERM_DIR/iterm2"

@@ -494,12 +494,9 @@ test_migrate_delete_source_tolerates_concurrently_deleted_key() {
 # (CS_AGE_BIN); the removal and export B run the real binary.
 test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend() {
     local age_bin keygen_bin
-    age_bin=$(command -v age 2>/dev/null) || age_bin=""
-    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
-    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
-        echo "    SKIP (age and age-keygen are not installed)"
-        return 77
-    fi
+    require_tool age age-keygen || return $?
+    age_bin=$(command -v age)
+    keygen_bin=$(command -v age-keygen)
     local bindir; bindir=$(_make_fake_security)
     local kcstore="$TEST_TMPDIR/kc-store-age"
     local sess="export-revoke-race"
@@ -565,12 +562,9 @@ SHIM
 # either lands and the first has reported its key before the second places.
 test_two_first_runs_keep_one_machine_key() {
     local age_bin real_keygen
-    age_bin=$(command -v age 2>/dev/null) || age_bin=""
-    real_keygen=$(command -v ssh-keygen 2>/dev/null) || real_keygen=""
-    if [ -z "$age_bin" ] || [ -z "$real_keygen" ]; then
-        echo "    SKIP (age and ssh-keygen are not installed)"
-        return 77
-    fi
+    require_tool age ssh-keygen || return $?
+    age_bin=$(command -v age)
+    real_keygen=$(command -v ssh-keygen)
     local shim="$TEST_TMPDIR/keygen-shim" log="$TEST_TMPDIR/keygen.log"
     mkdir -p "$shim"
     cat > "$shim/ssh-keygen" <<SHIM
@@ -931,7 +925,8 @@ test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_direct
     local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc expected age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
     # age add needs age; the export runs without it, so it takes the password path.
-    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    require_tool age || return $?
+    age_bin=$(command -v age)
     real_sleep=$(command -v sleep)
     mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$shim"
     cat > "$shim/sleep" <<SHIM
@@ -987,7 +982,8 @@ test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name() {
     local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
     # age add needs age; remove and the export run without it.
-    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    require_tool age || return $?
+    age_bin=$(command -v age)
     real_sleep=$(command -v sleep)
     mkdir -p "$shim" "$HOME/.cs-secrets"
     cat > "$shim/sleep" <<SHIM
@@ -1055,7 +1051,8 @@ test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_th
     local shim="$TEST_TMPDIR/race-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep real_chmod cmd rc age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
     # age add needs age; remove and the export run without it.
-    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    require_tool age || return $?
+    age_bin=$(command -v age)
     real_sleep=$(command -v sleep)
     real_chmod=$(command -v chmod)
     mkdir -p "$shim" "$HOME/.cs-secrets"
@@ -1197,12 +1194,9 @@ _waiting_or_gone() {  # pid
 test_age_add_and_remove_wait_while_an_export_holds_the_age_lock() {
     local age_bin keygen_bin real_sleep cmd pid xpid rc expected key
     local shim="$TEST_TMPDIR/sleep-shim" slow="$TEST_TMPDIR/held-age"
-    age_bin=$(command -v age 2>/dev/null) || age_bin=""
-    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
-    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
-        echo "    SKIP (age and age-keygen are not installed)"
-        return 77
-    fi
+    require_tool age age-keygen || return $?
+    age_bin=$(command -v age)
+    keygen_bin=$(command -v age-keygen)
     real_sleep=$(command -v sleep)
     mkdir -p "$shim"
     cat > "$shim/sleep" <<SHIM

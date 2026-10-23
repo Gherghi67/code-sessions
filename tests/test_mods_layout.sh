@@ -26,10 +26,7 @@ test_engine_exports_for_bun_and_for_the_browser() {
 }
 
 test_engine_unit_tests_pass_under_bun() {
-    if ! command -v bun >/dev/null 2>&1; then
-        echo "    SKIP: bun not on PATH"
-        return 77
-    fi
+    require_tool bun || return $?
     local out
     out="$(cd "$DOCS" && bun test 2>&1)" || { echo "$out"; return 1; }
     out="$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g')"

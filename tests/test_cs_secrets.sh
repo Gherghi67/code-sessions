@@ -1318,16 +1318,11 @@ test_export_file_rewrites_when_changed() {
 # --- age recipient tests (real age; skipped where age is not installed) ---
 
 # Point cs-secrets at the real age binary, overriding the "no age" seam setup
-# exports. Returns 77 (skipped) where age or age-keygen is not installed.
+# exports. Skips where age or age-keygen is not installed (require_tool).
 _use_real_age() {
-    local age_bin keygen_bin
-    age_bin=$(command -v age 2>/dev/null) || age_bin=""
-    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
-    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
-        echo "    SKIP (age and age-keygen are not installed)"
-        return 77
-    fi
-    export CS_AGE_BIN="$age_bin"
+    require_tool age age-keygen || return $?
+    CS_AGE_BIN=$(command -v age)
+    export CS_AGE_BIN
 }
 
 # Generate a throwaway age identity in the test dir: <name>.key and <name>.pub.
@@ -1693,10 +1688,7 @@ test_age_remove_drops_the_pin() {
 }
 
 _use_real_ssh_keygen() {
-    if ! command -v ssh-keygen >/dev/null 2>&1; then
-        echo "    SKIP (ssh-keygen is not installed)"
-        return 77
-    fi
+    require_tool ssh-keygen
 }
 _make_ssh_identity() {  # name -> $TEST_TMPDIR/<name>.ssh (+ .pub)
     ssh-keygen -q -t ed25519 -N '' -C "$1@example.com" -f "$TEST_TMPDIR/$1.ssh" </dev/null || return 1

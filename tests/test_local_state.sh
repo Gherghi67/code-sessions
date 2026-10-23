@@ -908,7 +908,7 @@ EOF
 # Homebrew's gnubin puts GNU stat first on a Mac's PATH; the mode read must
 # work with either stat, so the dispatch is by behaviour, not by OSTYPE.
 test_atomic_write_keeps_the_mode_with_gnu_stat_on_a_mac() {
-    command -v gstat >/dev/null 2>&1 || { echo "  SKIP: no gstat on this machine"; return 77; }
+    require_tool gstat || return $?
     local shim="$TEST_TMPDIR/gnubin"
     mkdir -p "$shim"
     printf '#!/bin/sh\nexec gstat "$@"\n' > "$shim/stat"; chmod +x "$shim/stat"

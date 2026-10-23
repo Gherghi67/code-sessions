@@ -581,7 +581,8 @@ test_the_budget_is_read_as_data_and_bounds_the_rewriter() {
     unset CS_REWRITE_CMD
     local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" bound="$TEST_TMPDIR/bound"
     local real_perl real_timeout provider pair value want f out
-    real_perl=$(command -v perl) || { echo "  SKIP: no perl"; return 77; }
+    require_tool perl || return $?
+    real_perl=$(command -v perl)
     mkdir -p "$bin"
     cat > "$bin/agy" <<'EOF'
 #!/bin/bash
