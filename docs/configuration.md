@@ -426,6 +426,14 @@ names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
 - `cs -uninstall` removes `tipsFile` when it names cs's file and the file is
   gone. If you changed the file, uninstall keeps the file and the setting.
 
+To turn cs's tip off, delete the `tipsFile` line or set it to `""`. The
+installer records each choice in `~/.config/cs/tips-file` (under
+`$XDG_CONFIG_HOME` when you set it): `named` after it names cs's file, and
+`declined` after you take the file out. `cs -update` then leaves the setting
+alone. To get cs's tip back, delete `~/.config/cs/tips-file` and run
+`cs -update`. The installer reads a record that holds any other value as
+`declined` and warns. `cs -uninstall` deletes the record.
+
 ## In-session switches
 
 The release-notes pane is a Claude Code `/config` row, `cs-update.showReleaseNotes`

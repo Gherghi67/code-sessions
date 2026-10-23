@@ -1082,6 +1082,11 @@ test_install_deploys_the_rotate_mod_and_uninstall_removes_it() {
         || { echo "  FAIL: uninstall left ~/.claude/skills/cs behind"; return 1; }
 }
 
+# The Spinner tips lines in install's output, each without its leading marker.
+_tips_lines() {  # install output
+    printf '%s\n' "$1" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/'
+}
+
 # The tips file the cs mod ships has the shape Claude Code 2.1.309 reads from a
 # spinnerTipsOverride.tipsFile: {"tips": [...]} of at most 200 tips, each an
 # object with an id of 1-64 letters, digits, ".", "_" or "-" and a text of at
@@ -1098,7 +1103,8 @@ test_the_cs_tips_file_has_the_shape_claude_code_reads() {
 }
 
 # With no tips file named, install names cs's in settings.json beside the
-# user's own tips and excludeDefault, which it never touches, and says so.
+# user's own tips and excludeDefault, which it never touches, says so, and
+# records that it named it.
 test_install_names_the_cs_tips_file_beside_the_users_tips() {
     local home="$TEST_TMPDIR/tips-home" out
     mkdir -p "$home/.claude"
@@ -1106,8 +1112,9 @@ test_install_names_the_cs_tips_file_beside_the_users_tips() {
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     assert_eq '{"tips":["mine"],"excludeDefault":false,"tipsFile":"~/.claude/skills/cs/tips.json"}' \
         "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "named" "$(cat "$home/.config/cs/tips-file" 2>/dev/null)" "the tips-file record after install" || return 1
     assert_eq "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)" \
-        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+        "$(_tips_lines "$out")" "install's tips line" || return 1
 }
 
 # A second install finds cs's tips file named and leaves settings.json and its
@@ -1123,7 +1130,7 @@ test_install_twice_names_the_cs_tips_file_once() {
     assert_eq "$backups" "$(_settings_backups "$home/.claude/settings.json")" "the second install wrote settings.json (a new backup)" || return 1
     assert_eq '{"tipsFile":"~/.claude/skills/cs/tips.json"}' \
         "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after the second install" || return 1
-    assert_eq "" "$(printf '%s\n' "$out" | grep 'Spinner tips')" "the second install's tips line" || return 1
+    assert_eq "" "$(_tips_lines "$out")" "the second install's tips line" || return 1
 }
 
 # Claude Code reads one tips file: one the user named stays, and install says
@@ -1136,7 +1143,7 @@ test_install_keeps_a_tips_file_the_user_named() {
     assert_eq '{"tipsFile":"~/my-tips.json"}' \
         "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
     assert_eq "Spinner tips: ~/.claude/settings.json names its own tipsFile (~/my-tips.json), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out" \
-        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+        "$(_tips_lines "$out")" "install's tips line" || return 1
 }
 
 # A spinnerTipsOverride that is not an object is the user's to fix: install
@@ -1149,7 +1156,7 @@ test_install_leaves_a_spinner_tips_override_that_is_not_an_object() {
     assert_eq '"tips please"' \
         "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
     assert_eq "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips" \
-        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+        "$(_tips_lines "$out")" "install's tips line" || return 1
 }
 
 # Uninstall takes back only cs's tips file: the user's tips stay, and a
@@ -1175,6 +1182,120 @@ test_uninstall_removes_only_the_cs_tips_file() {
         "cs's tips file spelled from \$HOME is cs's too" || return 1
 }
 
+# Taking cs's tipsFile out of settings.json is a decline: the next install
+# records it, leaves the pointer out, and says how to have it back. So does
+# every install after it.
+test_install_leaves_out_a_cs_tips_file_the_user_took_out() {
+    local home="$TEST_TMPDIR/tips-out-home" f out run
+    f="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install.sh exited non-zero"; return 1; }
+    jq 'del(.spinnerTipsOverride.tipsFile)' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    for run in second third; do
+        out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: $run install.sh exited non-zero"; return 1; }
+        assert_eq '{}' "$(jq -c .spinnerTipsOverride "$f")" "spinnerTipsOverride after the $run install" || return 1
+        assert_eq "declined" "$(cat "$home/.config/cs/tips-file")" "the tips-file record after the $run install" || return 1
+        assert_eq "Spinner tips: cs's tip stays out of Claude Code's tips, as recorded in $home/.config/cs/tips-file; to have it back, delete that file and run cs -update" \
+            "$(_tips_lines "$out")" "the $run install's tips line" || return 1
+    done
+}
+
+# An empty tipsFile names no file, so emptying cs's is taking it out.
+test_install_treats_an_emptied_cs_tips_file_as_taken_out() {
+    local home="$TEST_TMPDIR/tips-empty-home" f
+    f="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install.sh exited non-zero"; return 1; }
+    jq '.spinnerTipsOverride.tipsFile = ""' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: second install.sh exited non-zero"; return 1; }
+    assert_eq '{"tipsFile":""}' "$(jq -c .spinnerTipsOverride "$f")" "spinnerTipsOverride after the second install" || return 1
+    assert_eq "declined" "$(cat "$home/.config/cs/tips-file")" "the tips-file record after the second install" || return 1
+}
+
+# A declined record keeps cs's tips file out of a settings.json that names
+# none, and stays as it is.
+test_install_names_no_tips_file_after_a_decline() {
+    local home="$TEST_TMPDIR/tips-declined-home" out
+    mkdir -p "$home/.claude" "$home/.config/cs"
+    printf 'declined\n' > "$home/.config/cs/tips-file"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq 'null' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "declined" "$(cat "$home/.config/cs/tips-file")" "the tips-file record after install" || return 1
+    assert_eq "Spinner tips: cs's tip stays out of Claude Code's tips, as recorded in $home/.config/cs/tips-file; to have it back, delete that file and run cs -update" \
+        "$(_tips_lines "$out")" "install's tips line" || return 1
+}
+
+# An install from before the record named cs's tips file and wrote none: the
+# next install records that cs named it and changes nothing in settings.json.
+test_install_records_a_cs_tips_file_named_before_the_record() {
+    local home="$TEST_TMPDIR/tips-legacy-home" f out backups
+    f="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install.sh exited non-zero"; return 1; }
+    rm "$home/.config/cs/tips-file"
+    backups=$(_settings_backups "$f")
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: second install.sh exited non-zero"; return 1; }
+    assert_eq "named" "$(cat "$home/.config/cs/tips-file")" "the tips-file record after the second install" || return 1
+    assert_eq "$backups" "$(_settings_backups "$f")" "the second install wrote settings.json (a new backup)" || return 1
+    assert_eq '{"tipsFile":"~/.claude/skills/cs/tips.json"}' "$(jq -c .spinnerTipsOverride "$f")" \
+        "spinnerTipsOverride after the second install" || return 1
+    assert_eq "" "$(_tips_lines "$out")" "the second install's tips line" || return 1
+}
+
+# A tips file the user named says nothing about cs's, so the record stays as
+# it was.
+test_install_keeps_the_tips_record_beside_a_tips_file_the_user_named() {
+    local home="$TEST_TMPDIR/tips-own-record-home"
+    mkdir -p "$home/.claude" "$home/.config/cs"
+    printf 'named\n' > "$home/.config/cs/tips-file"
+    printf '{"spinnerTipsOverride":{"tipsFile":"~/my-tips.json"}}\n' > "$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq '{"tipsFile":"~/my-tips.json"}' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" \
+        "spinnerTipsOverride after install" || return 1
+    assert_eq "named" "$(cat "$home/.config/cs/tips-file")" "the tips-file record after install" || return 1
+}
+
+# With no record of consent there is no pointer: a record install cannot
+# write leaves cs's tips file unnamed, and the install still finishes.
+test_install_names_no_tips_file_when_its_record_cannot_be_written() {
+    local home="$TEST_TMPDIR/tips-nowrite-home" out rc=0
+    mkdir -p "$home/.claude" "$home/.config/cs"
+    chmod 500 "$home/.config/cs"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    chmod 700 "$home/.config/cs"
+    assert_eq "0" "$rc" "install.sh exit status with an unwritable ~/.config/cs" || return 1
+    jq -e '.hooks.SessionStart' "$home/.claude/settings.json" >/dev/null 2>&1 \
+        || { echo "  FAIL: hooks were not registered; the install aborted before finishing"; return 1; }
+    assert_eq 'null' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_not_exists "$home/.config/cs/tips-file" "no tips-file record" || return 1
+    assert_eq "Spinner tips: could not write $home/.config/cs/tips-file, so cs's tips file is not named in ~/.claude/settings.json" \
+        "$(_tips_lines "$out")" "install's tips line" || return 1
+}
+
+# A record that says neither named nor declined is never read as consent:
+# install keeps cs's tips file out, names the record, and leaves it as it is.
+test_install_reads_a_tips_record_it_cannot_parse_as_declined() {
+    local home="$TEST_TMPDIR/tips-garbage-home" out
+    mkdir -p "$home/.claude" "$home/.config/cs"
+    printf 'maybe\n' > "$home/.config/cs/tips-file"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq 'null' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
+    assert_eq "maybe" "$(cat "$home/.config/cs/tips-file")" "the tips-file record after install" || return 1
+    assert_eq "Spinner tips: $home/.config/cs/tips-file holds neither named nor declined, so cs's tip is kept out as declined
+Spinner tips: cs's tip stays out of Claude Code's tips, as recorded in $home/.config/cs/tips-file; to have it back, delete that file and run cs -update" \
+        "$(_tips_lines "$out")" "install's tips lines" || return 1
+}
+
+# Uninstall forgets the decline with the rest of cs's state.
+test_uninstall_removes_the_tips_record() {
+    local home="$TEST_TMPDIR/tips-un-record"
+    mkdir -p "$home/.claude" "$home/.config/cs"
+    printf 'declined\n' > "$home/.config/cs/tips-file"
+    echo '{}' > "$home/.claude/settings.json"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > /dev/null 2>&1 || { echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_not_exists "$home/.config/cs/tips-file" "the tips-file record after uninstall" || return 1
+}
+
 # A cs mod directory the user linked at their own files is kept, so no cs
 # tips file lands in it: install names none and says why.
 test_install_names_no_tips_file_it_did_not_deploy() {
@@ -1185,7 +1306,7 @@ test_install_names_no_tips_file_it_did_not_deploy() {
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     assert_eq 'null' "$(jq -c .spinnerTipsOverride "$home/.claude/settings.json")" "spinnerTipsOverride after install" || return 1
     assert_eq "Spinner tips: $home/.claude/skills/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips" \
-        "$(printf '%s\n' "$out" | grep 'Spinner tips' | sed 's/^.*Spinner tips/Spinner tips/')" "install's tips line" || return 1
+        "$(_tips_lines "$out")" "install's tips line" || return 1
 }
 
 # A tips file the user changed is kept by uninstall as theirs, and so is the
@@ -3478,6 +3599,14 @@ run_test test_install_twice_names_the_cs_tips_file_once
 run_test test_install_keeps_a_tips_file_the_user_named
 run_test test_install_leaves_a_spinner_tips_override_that_is_not_an_object
 run_test test_uninstall_removes_only_the_cs_tips_file
+run_test test_install_leaves_out_a_cs_tips_file_the_user_took_out
+run_test test_install_treats_an_emptied_cs_tips_file_as_taken_out
+run_test test_install_names_no_tips_file_after_a_decline
+run_test test_install_records_a_cs_tips_file_named_before_the_record
+run_test test_install_keeps_the_tips_record_beside_a_tips_file_the_user_named
+run_test test_install_names_no_tips_file_when_its_record_cannot_be_written
+run_test test_install_reads_a_tips_record_it_cannot_parse_as_declined
+run_test test_uninstall_removes_the_tips_record
 run_test test_install_names_no_tips_file_it_did_not_deploy
 run_test test_uninstall_keeps_a_changed_cs_tips_file_and_its_setting
 run_test test_uninstall_removes_the_claude_links

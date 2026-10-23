@@ -162,6 +162,12 @@ CS_MOD_FILES=(
 # shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
 CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
 
+# Whether cs named its tips file, as install.sh records it: "named", or
+# "declined" once the person took the pointer out, so cs -update leaves it out.
+_cs_tips_record_file() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/cs/tips-file"
+}
+
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install
 # downloads exactly these.
