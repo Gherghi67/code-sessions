@@ -248,21 +248,29 @@ let redrawPending = false
 // The band's /config rows (plugin.json userConfig), as this activation got
 // them: the prompt it names, `latest` (the newest) or `read` (the one being
 // read), and the most bars it draws before older prompts fold into `…N`. A
-// change reloads the plugin and register runs again.
+// change reloads the plugin and register runs again. A stored value the band
+// cannot draw leaves it without bars (undefined), said once, and the rest of
+// the mod running: a throw from register would unload all of it.
+const CS_PLUGIN = 'cs'
 type BandOptions = { prompt: 'latest' | 'read'; bars: number }
-let bandOptions: BandOptions = { prompt: 'latest', bars: 10 }
+let bandOptions: BandOptions | undefined
+let bandProblem: string | undefined
+let bandProblemSaid = false
 
-function parseBandOptions(options: PluginOptions): BandOptions {
-  const { bandPrompt, bandBars } = options
-  if (bandPrompt !== 'latest' && bandPrompt !== 'read') throw new Error(`cs: cs.bandPrompt is latest or read; got ${String(bandPrompt)}`)
-  if (typeof bandBars !== 'number' || !Number.isInteger(bandBars) || bandBars < 1) {
-    throw new Error(`cs: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${String(bandBars)}`)
+// What is wrong with a value for one of the band's rows, by field name;
+// undefined when the band can draw it, or the field is not the band's.
+function bandOptionProblem(field: string, value: unknown): string | undefined {
+  if (field === 'bandPrompt') return value === 'latest' || value === 'read' ? undefined : `cs.bandPrompt is latest or read; got ${String(value)}`
+  if (field === 'bandBars') {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${String(value)}`
   }
-  return { prompt: bandPrompt, bars: bandBars }
+  return undefined
 }
 
 export function register(on: On, options: PluginOptions) {
-  bandOptions = parseBandOptions(options)
+  bandProblem = bandOptionProblem('bandPrompt', options.bandPrompt) ?? bandOptionProblem('bandBars', options.bandBars)
+  bandOptions = bandProblem === undefined ? { prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number } : undefined
+  bandProblemSaid = false
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
@@ -341,6 +349,14 @@ export function register(on: On, options: PluginOptions) {
     if (target < 0 || target >= count) return { text: `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}` }
     await jumpTo($, target)
     return {}
+  })
+
+  // A /config row of the band's takes only a value the band can draw: a bad
+  // one is refused at the menu, where it is typed, not met at the next load.
+  on('config.set', async ($, e, next) => {
+    if (e.provider.plugin !== CS_PLUGIN) return next(e)
+    const problem = bandOptionProblem(e.key.slice(e.key.lastIndexOf('.') + 1), e.value)
+    return problem === undefined ? next(e) : { deny: problem }
   })
 
   // The end of a turn is the one moment a rotation can be started for the
@@ -459,8 +475,15 @@ export function register(on: On, options: PluginOptions) {
     // Mail from other sessions that `cs -msg` has not read yet.
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
     // The rail draws whenever the conversation has two prompts to move
-    // between, a turn running or not, under the same ownership as the keys.
-    let railing = !e.props.hasSurvey && prompts.length > 1
+    // between, a turn running or not, under the same ownership as the keys;
+    // not at all while a stored band row is bad, which the lead's band says
+    // once.
+    const bars = bandOptions?.bars
+    let railing = !e.props.hasSurvey && prompts.length > 1 && bars !== undefined
+    if (bandProblem !== undefined && !bandProblemSaid && (await ownsRotation($))) {
+      bandProblemSaid = true
+      $.ui.toast(`cs: the band draws no prompt bars: ${bandProblem}. Set it in /config.`)
+    }
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
@@ -521,7 +544,7 @@ export function register(on: On, options: PluginOptions) {
     // the words; the older prompts collapse into one `…N` run. The named tick
     // is remembered so a report that moves it can redraw the band.
     const budget = e.props.bodyColumns - 2 - (wordCells > 0 ? 3 + wordCells : 0)
-    const ticks = railing ? railTicks(prompts.length, budget, bandOptions.bars) : undefined
+    const ticks = railing && bars !== undefined ? railTicks(prompts.length, budget, bars) : undefined
     // After the bars the band names a prompt in what the line leaves: the
     // newest or the one being read (cs.bandPrompt), or the one under the
     // pointer. Too little left to name one names none.
@@ -751,7 +774,7 @@ export function railTicks(count: number, budget: number, most: number): { hidden
 
 // The prompt the band names: the newest, or the one being read (cs.bandPrompt).
 function namedIndex(): number {
-  return bandOptions.prompt === 'latest' ? prompts.length - 1 : readIndex()
+  return bandOptions?.prompt === 'read' ? readIndex() : prompts.length - 1
 }
 
 // The prompt being read: of the prompts whose drawn row has reported what of

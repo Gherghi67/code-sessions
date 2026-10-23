@@ -151,6 +151,10 @@ session's features where a key can act on it. No pane.
      Alex: "this should be a configurable setting, in /config also how
      many bar prompts do we show?", picked "Latest", then "10, not 20".
      Rejected defaults: the prompt being read, 20 bars, all that fit.
+     A bad value is refused by a `config.set` hook at the menu; one stored
+     some other way leaves the band without bars and toasts once. Measured:
+     a throw from `register` unloads the whole mod (`cs: hooks module did
+     not load`), keys and all (side agent's warning, 2026-10-23).
    - Queue word: `▤ queue N`, dim, no press, while the cs queue holds
      tasks but the start key is not drawn (queue armed or draining, a turn
      running, or an armed handoff's clear key standing alone). The start

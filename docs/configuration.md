@@ -396,7 +396,12 @@ prompt (the cs plugin's `userConfig`, stored by Claude Code in
 | Row | Values | Default | What it does |
 |-----|--------|---------|--------------|
 | `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its bar thick. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
-| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt bars the band draws; older prompts fold into one `…N` run. A value under 1, or not whole, stops the mod loading and names the row. |
+| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt bars the band draws; older prompts fold into one `…N` run. |
+
+`/config` refuses a value the band cannot draw (a bar count under 1 or not
+whole), naming the row beside it. A bad value stored some other way, such
+as by editing `settings.json`, leaves the band without bars and says so in
+one toast; the rest of the mod runs.
 
 ## In-session switches
 

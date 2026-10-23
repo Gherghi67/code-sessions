@@ -3038,9 +3038,33 @@ test('at most cs.bandBars bars draw; older prompts fold into …N and the prompt
   expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toHaveLength(2)
 })
 
-test('a bandBars that is not a whole number of 1 or more, or a bandPrompt outside its choices, refuses the load', () => {
-  for (const bandBars of [0, -2, 2.5]) {
-    expect(() => register(on as any, { ...OPTIONS, bandBars })).toThrow(`cs: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${bandBars}`)
+test('/config refuses a band value the band cannot draw, where it is typed, and passes every other row', async () => {
+  const set = (key: string, value: unknown, plugin = 'cs') => hooks['config.set']($,
+    { key, value, previous: 10, provider: { plugin, tier: 'user' }, origin: { kind: 'composer' } },
+    async (e: any) => ({ value: e.value }))
+  for (const value of [0, -2, 2.5]) {
+    expect(await set('cs.bandBars', value)).toEqual({ deny: `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${value}` })
   }
-  expect(() => register(on as any, { ...OPTIONS, bandPrompt: 'first' })).toThrow('cs: cs.bandPrompt is latest or read; got first')
+  expect(await set('cs.bandPrompt', 'first')).toEqual({ deny: 'cs.bandPrompt is latest or read; got first' })
+  expect(await set('cs.bandBars', 4)).toEqual({ value: 4 })
+  expect(await set('cs.bandPrompt', 'read')).toEqual({ value: 'read' })
+  expect(await set('other.bandBars', 0, 'other')).toEqual({ value: 0 })
+  expect(await set('theme', 'dark', 'engine')).toEqual({ value: 'dark' })
+})
+
+test('a bad band value already stored draws no bars and says so once; the rest of the mod still runs', async () => {
+  expect(() => register(on as any, { ...OPTIONS, bandBars: 0 })).not.toThrow()
+  transcript(LINEAR)
+  await turnComplete()
+  percent = 80
+  // A teammate's band, like any the mod stays silent in, says nothing.
+  sessionId = 'uuid-teammate'
+  await band()
+  expect(toasts).toEqual([])
+  sessionId = 'uuid-lead'
+  const tree = await band()
+  expect(rail(tree)).toEqual([])
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
+  await band()
+  expect(toasts).toEqual(['cs: the band draws no prompt bars: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
 })
