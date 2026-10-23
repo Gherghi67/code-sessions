@@ -21,6 +21,7 @@ All notable changes to cs are documented here. Release notes are also available 
 - `cs -doctor` treats a status line command whose file runs `cs-statusline` (the agents-sidebar bridge) as cs's own: an OK row and the `Statusline caps` row instead of the hedged warning. The installer asks the one-time capsule caps question for such a command and never offers to replace it with `cs-statusline`.
 
 ### Fixes
+- Creating a feature from a detached base is refused up front, naming the fix, instead of succeeding and failing at `/finish`. Reusing an existing `cs/<task>` branch says so, with how many commits behind the base its tip sits.
 - The feature retire's record walk is sorted, so the record it names when it refuses an unreadable inherited copy is the same on every filesystem.
 
 ### Docs

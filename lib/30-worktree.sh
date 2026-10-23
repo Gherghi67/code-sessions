@@ -798,6 +798,10 @@ create_worktree_session() {
         error "Session '$base_name' is itself a worktree; create features from the main checkout"
     fi
     _require_base_commit "$base_dir" "$base_name"
+    # The feature lands on the base's branch at /finish; a detached base has
+    # none, so refuse now rather than after the work is done.
+    git -C "$base_dir" symbolic-ref -q HEAD >/dev/null 2>&1 \
+        || error "Session '$base_name' is detached (no branch checked out), so a feature would have no branch to land on. Check out the branch the feature should land on, then try again."
     # Who carries .cs from the feature back to the base: git (tracked) or the
     # record fuse (ignored). Git's answer wins once it tracks .cs. Otherwise a
     # mode the base records decides (adopt and the flat-layout migration
@@ -825,6 +829,11 @@ create_worktree_session() {
     fi
 
     if git -C "$base_dir" rev-parse -q --verify "refs/heads/$branch" >/dev/null 2>&1; then
+        # The branch's own tip, not the base's HEAD, is where the feature
+        # starts; say so, with how far behind the base that tip sits.
+        local behind
+        behind=$(git -C "$base_dir" rev-list --count "$branch..HEAD" 2>/dev/null) || behind="?"
+        warn "Branch $branch already exists; the feature starts from its tip, $behind commit$([ "$behind" = 1 ] || printf s) behind $base_name" >&2
         git -C "$base_dir" worktree add "$wt_dir" "$branch" >/dev/null \
             || error "git worktree add failed (is branch '$branch' checked out in another worktree?)"
     else
