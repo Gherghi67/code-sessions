@@ -2306,18 +2306,23 @@ test('past the width budget the oldest prompts collapse into one dim …N run at
   expect(rail(await band({ bodyColumns: 36 }))).toEqual([])
 })
 
-test('the prompt being read is the on-screen row drawn highest; a null report leaves the last standing; placeholder is ignored', async () => {
+test('the prompt being read is the on-screen row drawn highest, the newest on ties; a first null report leaves nothing, a later one removes the report; placeholder is ignored', async () => {
   transcript(LINEAR)
   await turnComplete()
   await drawRow('placeholder', 'say four', { first: 0, last: 1, of: 2 })
   await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
   await drawRow('u2', 'say two', { first: 3, last: 5, of: 6 })
+  // A row's first render reports null before it is laid out: nothing changes.
   await drawRow('r3', 'say three\nwith a second line', null)
   expect(rail(await band())).toEqual(['\u2500', '\u2501', '\u2500', '\u2500'])
+  // A null after a report is the row scrolled out of view: its report goes.
   await drawRow('u2', 'say two', null)
-  expect(rail(await band())).toEqual(['\u2500', '\u2501', '\u2500', '\u2500'])
-  // The person scrolled up: the first prompt's row is now the one cut at the top, the second whole.
+  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  // Everything visible reports 0: the newest of them is being read.
   await drawRow('u2', 'say two', { first: 0, last: 5, of: 6 })
+  await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
+  expect(rail(await band())).toEqual(['\u2500', '\u2500', '\u2501', '\u2500'])
+  // The person scrolled up: the first prompt's row is now the one cut at the top.
   await drawRow('u1', 'say one', { first: 2, last: 4, of: 6 })
   expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
 })
@@ -2338,17 +2343,17 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await turnComplete()
   await drawRow('u1', 'say one', { first: 0, last: 1, of: 2 })
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
-  // The first prompt is being read (its row is the higher), so its tick is no Button.
+  // Both rows whole: the newer, the third prompt, is being read, so its tick is no Button.
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2501', '\u2500', '\u2500', '\u2500'])
+  expect(rail(tree)).toEqual(['\u2500', '\u2500', '\u2501', '\u2500'])
   await tickButtons(tree)[0].props.onPress()
-  expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }])
+  expect(scrolls).toEqual([{ to: { requestId: 'u1' }, block: 'start' }])
   scrollResult = { deny: 'the window moved meanwhile' }
   await tickButtons(tree)[1].props.onPress()
   await tickButtons(tree)[1].props.onPress()
-  expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'r3' }, block: 'start' }, { to: { requestId: 'r3' }, block: 'start' }])
+  expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'u2' }, block: 'start' }, { to: { requestId: 'u2' }, block: 'start' }])
   expect(toasts).toEqual(['cs: the window moved meanwhile'])
-  expect(rail(await band())).toEqual(['\u2501', '\u2500', '\u2504', '\u2500'])
+  expect(rail(await band())).toEqual(['\u2500', '\u2504', '\u2501', '\u2500'])
 })
 
 test('a prompt no row has drawn since a resume is dim, and its press says so once', async () => {

@@ -371,14 +371,17 @@ export function register(on: On) {
   // Every prompt row the engine draws passes through untouched; what it is
   // drawn under, and what of it is on screen, is kept for the rail. The
   // composer's echo draws first under `placeholder`, the real id on the next
-  // render (measured), so that id binds nothing. A `null` report is the row
-  // not laid out yet (measured on every first render): the last report
-  // stands. A report that moves the read prompt redraws the band from a
-  // timer: an invalidate inside a render is a render loop.
+  // render (measured), so that id binds nothing. A `null` report on a row's
+  // first render is the row not laid out yet (measured): nothing changes. A
+  // `null` after a report is the row drawn outside the viewport: its report
+  // goes, as the contract's own example does. A report that moves the read
+  // prompt redraws the band from a timer: an invalidate inside a render is a
+  // render loop.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (e.requestId !== 'placeholder') {
       drawnRows.set(rowKey(e.requestId), { requestId: e.requestId, text: firstLine(e.props.text) })
       if (e.props.onScreen) shown.set(e.requestId, e.props.onScreen)
+      else if (e.props.onScreen === null) shown.delete(e.requestId)
       if (!redrawPending && prompts.length > 1 && readIndex() !== drawnRead) {
         redrawPending = true
         $.clock.after(0, () => { redrawPending = false; $.ui.invalidate('ui.render') })
@@ -530,15 +533,15 @@ export function railTicks(count: number, budget: number): { hidden: number } | u
 // The prompt being read: of the prompts whose drawn row has reported what of
 // it is on screen, the one drawn highest (the row cut at the viewport's top
 // reports the rows scrolled away as `first`; every other visible row reports
-// 0, and of those the earliest prompt is the higher); the newest prompt when
-// none has reported.
+// 0, and of those the newest is taken, as the one the person just sent); the
+// newest prompt when none has reported.
 function readIndex(): number {
   let best = -1
   let bestFirst = -1
   prompts.forEach((p, i) => {
     const id = requestIdOf(p)
     const report = id === undefined ? undefined : shown.get(id)
-    if (report !== undefined && report.first > bestFirst) { best = i; bestFirst = report.first }
+    if (report !== undefined && report.first >= bestFirst) { best = i; bestFirst = report.first }
   })
   return best >= 0 ? best : prompts.length - 1
 }

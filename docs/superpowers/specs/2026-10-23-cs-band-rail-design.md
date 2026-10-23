@@ -53,8 +53,10 @@ session's features where a key can act on it. No pane.
    prompts and a resume keeps the earlier ones. The file is read again
    only when `$.fs.stat` says its size or mtime changed, after
    `turn.complete` and on `session.start`. One tick per prompt: `─`
-   (`━` for the prompt being read, from the `onScreen` reports of
-   `ui.render` UserMessage rows), `┄` for a prompt the engine refused to
+   (`━` for the prompt being read: of the rows the `onScreen` reports of
+   `ui.render` UserMessage rows place in the viewport, the one drawn
+   highest, the newest of them when every visible row reports from its
+   top), `┄` for a prompt the engine refused to
    scroll to. A press on a tick calls `$.ui.scroll({ to: { requestId },
    block: 'start' })`; a `{ deny }` is toasted once a session and marks
    the tick dotted. `/cs next`, `/cs prev`, `/cs first`, `/cs last`,
@@ -116,4 +118,7 @@ prompt's row at the top. Two facts the rail must honour:
 - `onScreen` was `null` on every first render of a row; the terminal
   reports it on later redraws (contract: `null` means the site is not
   laid out yet). The "prompt being read" reads the latest report per
-  row and stays where it was while a report is `null`.
+  row: a `null` before any report leaves nothing, and a `null` after a
+  report removes it, since that is the row drawn outside the viewport
+  (measured in slice 2: under "a `null` leaves the last report
+  standing", a prompt scrolled off kept `first: 0` and stayed thick).
