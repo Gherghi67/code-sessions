@@ -316,10 +316,12 @@ unset XDG_DATA_HOME XDG_CONFIG_HOME
 # for every suite that drives the hook: tests time nothing, and a loaded
 # runner must not turn a scan assertion into a skip. The deadline tests in
 # test_scope_prompt.sh set their own budgets per run.
-# Seven suites unset every CS_* variable in their own setup(), this one
-# included. The two that assert on the scope block (test_clarify.sh,
+# Eight suites unset every CS_* variable in their own setup(): clarify,
+# objective_capture, prompt_rewriter, prompt_rewriter_model,
+# prompt_rewriter_vendor, scope_prompt, statusline and subagent_statusline.
+# The two that assert on the scope block (test_clarify.sh,
 # test_scope_prompt.sh) set it again there. The same loop drops CS_PS_BIN,
-# CS_TITLE_TTY and CS_NO_UPDATE_CHECK, which costs nothing: none of the seven
+# CS_TITLE_TTY and CS_NO_UPDATE_CHECK, which costs nothing: none of the eight
 # runs cs, ps, curl or the SessionStart hook. Do not re-fix; a suite that
 # starts to run one of those sets the variable again after its loop.
 export CS_SCOPE_BUDGET_MS="600000"
