@@ -431,6 +431,27 @@ test_install_refuses_invalid_settings_json() {
     _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
 }
 
+# Claude Code reads settings.json as one JSON object. A file holding valid
+# JSON of another type (a list, a string, a number) is refused the same way,
+# before anything is placed, rather than failing midway on a key read.
+test_install_refuses_settings_json_that_is_not_an_object() {
+    local fake_home="$TEST_TMPDIR/home-listjson" f rc=0 out before
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    printf '[{"permissions":{}}]\n' > "$f"
+    cp "$f" "$TEST_TMPDIR/listjson.orig"
+    before=$(_tree_listing "$fake_home")
+    HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/listjson.out" 2>&1 < /dev/null || rc=$?
+    out=$(cat "$TEST_TMPDIR/listjson.out")
+    assert_eq "1" "$rc" "install must stop on a settings.json that is not an object" || return 1
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") holds a JSON array, not an object; left it unchanged; nothing was installed$" \
+        "the error names the file and what it holds, and says nothing was installed" || { echo "$out"; return 1; }
+    cmp -s "$TEST_TMPDIR/listjson.orig" "$f" \
+        || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
+    assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
+    _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
+}
+
 # A settings.json that is not a regular file, here a FIFO, is never read:
 # reading one waits for a writer that never comes. The install refuses it as
 # it refuses one jq cannot parse, before it places anything, and leaves it as
@@ -3994,6 +4015,7 @@ run_test test_uninstall_removes_zsh_completion_from_detected_dir
 run_test test_uninstall_removes_zsh_completion_from_default_dir
 run_test test_uninstall_removes_update_cache
 run_test test_install_refuses_invalid_settings_json
+run_test test_install_refuses_settings_json_that_is_not_an_object
 run_test test_install_refuses_a_settings_json_that_is_not_a_regular_file
 run_test test_install_fills_an_empty_settings_json
 run_test test_install_backs_up_settings_json_before_changing_it

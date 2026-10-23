@@ -922,8 +922,8 @@ run_uninstall() {
     fi
 
     # Clean up settings.json (remove cs hooks, preserve others). A file jq
-    # cannot parse, or one that is not a regular file (cs_settings_check never
-    # opens it), is left as it is with a warning: the binaries are already
+    # cannot parse, one that holds no JSON object, or one that is not a regular
+    # file (cs_settings_check never opens it), is left as it is with a warning: the binaries are already
     # gone, so the rest of the uninstall still runs.
     if [ -e "$settings_file" ] && command -v jq >/dev/null 2>&1; then
         if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
