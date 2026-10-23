@@ -541,6 +541,25 @@ over a line without hiding what is under it. A conversation with
 one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
 
+Unless a `/finish` gate runs, the band's first word, right after the rule and
+before any key word (`·` between), is the state of the session's features,
+read from
+`cs <base> -features --porcelain` after each turn and at session start,
+without holding either up, and every 30 s while the band is idle once cs has
+been asked. Only the lead conversation asks cs, and a base asks only while
+the sessions root holds a `<base>@<task>` directory: a feature `/feature`
+makes shows when that turn ends. In a base, one feature ready reads
+`1 feature · fix-auth ready` (or `3 features · fix-auth ready`) and a press
+runs `/finish fix-auth`; two or more ready read `3 features · 2 ready` and a
+press runs `/finish`, which lists them and asks which; none ready reads
+`1 feature · fix-auth dirty` or `3 features · none ready`, dim, with no
+press. `ready` is `_feature_readiness`'s own word; ready with no commit ahead
+of the base reads `no commits`. A feature session (`base@task`) draws no
+features word and asks cs nothing: `/finish` lands a feature only from its
+base, whose word names it. A cs that fails, cannot start,
+or prints a record that is not ten fields with a whole `ahead` and a known
+state draws no word, and the mod logs it once.
+
 The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.
 
 The band's keys are chords, never a bare digit: a digit typed to answer a

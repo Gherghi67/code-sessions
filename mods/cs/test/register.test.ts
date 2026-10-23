@@ -2621,3 +2621,249 @@ test('the gap and the rail keep their margins: three cells after the words, two 
   // No room to name a prompt: the bars keep the words' three-cell gap.
   expect(margins(await band({ bodyColumns: 45 }))).toEqual([undefined, 3])
 })
+
+// ---------------------------------------------------------------------------
+// The features word: the state of the session's feature worktrees, from
+// `cs <base> -features --porcelain` (task branch ahead merged ff wt_dirty
+// untracked base_dirty lock state), on the band's left after the rule.
+
+const feature = (task: string, ahead: number, state: string) =>
+  [task, `cs/${task}`, String(ahead), '0', '1', '0', '0', '0', 'none', state].join('\t')
+const porcelain = (...records: string[]) => { runResult = { exitCode: 0, stdout: records.map(r => `${r}\n`).join(''), stderr: '' } }
+const featureRuns = () => runs.filter(r => r.argv[2] === '-features')
+const featuresKey = (tree: any) => buttons(tree).find((b: any) => b.props.key === 'cs-features')
+// The turn end reads cs without waiting on it; every fake answers at once, so
+// one macrotask lets that reading finish.
+const settled = () => new Promise(resolve => setTimeout(resolve, 0))
+const featuresTurn = async () => { await turnComplete(); await settled() }
+// A feature's directory at the sessions root, as cs names it: `<base>@<task>`.
+const featureDir = (task: string, base = 'work') => { files[`/home/.claude-sessions/${base}@${task}`] = '' }
+
+test('a base with one feature ready names it on the left, and a press runs /finish on it', async () => {
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await featuresTurn()
+  expect(featureRuns().map(r => r.argv)).toEqual([['/opt/cs/bin/cs', 'work', '-features', '--porcelain']])
+  const tree = await band()
+  expect(featuresKey(tree).props).toMatchObject({ key: 'cs-features', plain: true, label: '1 feature · fix-auth ready' })
+  expect(bandBody(tree).slice(0, 2).map((k: any) => k.type === 'Button' ? k.props.key : textOf(texts(k)[0]))).toEqual(['▌', 'cs-features'])
+  await featuresKey(tree).props.onPress()
+  expect(ran).toEqual([{ command: 'finish', args: 'fix-auth' }])
+})
+
+test('a base names its one ready feature among several, counts two or more ready with a bare /finish, and names none with no press', async () => {
+  featureDir('fix-auth'); featureDir('docs'); featureDir('perf')
+  porcelain(feature('fix-auth', 2, 'dirty'), feature('docs', 1, 'ready'), feature('perf', 4, 'merged'))
+  await featuresTurn()
+  let tree = await band()
+  expect(featuresKey(tree).props.label).toBe('3 features · docs ready')
+  await featuresKey(tree).props.onPress()
+  porcelain(feature('fix-auth', 2, 'ready'), feature('docs', 1, 'ready'), feature('perf', 4, 'merged'))
+  await featuresTurn()
+  tree = await band()
+  expect(featuresKey(tree).props.label).toBe('3 features · 2 ready')
+  await featuresKey(tree).props.onPress()
+  expect(ran).toEqual([{ command: 'finish', args: 'docs' }, { command: 'finish', args: '' }])
+  porcelain(feature('fix-auth', 2, 'dirty'), feature('docs', 0, 'ready'), feature('perf', 4, 'staged'))
+  await featuresTurn()
+  tree = await band()
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(restingWords(tree)).toEqual(['▌', '3 features · none ready'])
+  expect(texts(tree).find((t: any) => textOf(t) === '3 features · none ready').props).toEqual({ dimColor: true })
+})
+
+test('one feature not ready says its own state; ready with nothing ahead of the base reads no commits', async () => {
+  featureDir('fix-auth')
+  for (const [ahead, state, word] of [[2, 'dirty', 'dirty'], [0, 'ready', 'no commits'], [5, 'base-dirty', 'base-dirty'], [1, 'vault-locked', 'vault-locked']] as const) {
+    porcelain(feature('fix-auth', ahead, state))
+    await featuresTurn()
+    const tree = await band()
+    expect(restingWords(tree)).toEqual(['▌', `1 feature · fix-auth ${word}`])
+    expect(featuresKey(tree)).toBeUndefined()
+  }
+})
+
+test('a feature session draws no features word and asks cs nothing: /finish lands a feature from its base', async () => {
+  cwdPath = '/feat'
+  realPaths['/feat'] = '/feat'; realPaths['/home/.claude-sessions/work@fix-auth'] = '/feat'
+  existing.add('/feat/.cs/local')
+  files['/feat/.cs/local/state'] = 'session_name: work@fix-auth\nclaude_session_id: uuid-lead\n'
+  porcelain(feature('fix-auth', 3, 'ready'))
+  // The rail draws here, so the band is this conversation's to draw.
+  files['/home/.claude/projects/-feat/uuid-lead.jsonl'] = `${LINEAR.join('\n')}\n`
+  await featuresTurn()
+  expect(rail(await band())).toHaveLength(4)
+  expect(featureRuns()).toEqual([])
+  expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
+  expect(restingWords(await band())[1]).toBe('#4 say four'.padStart(99))
+})
+
+test('a cs that fails, cannot start, or prints a record the band cannot read draws no word and is logged once each', async () => {
+  featureDir('fix-auth')
+  const record = feature('fix-auth', 3, 'ready')
+  const answers: any[] = [
+    { exitCode: 2, stdout: '', stderr: 'error: no such session\n' },
+    { exitCode: 2, stdout: '', stderr: 'error: no such session\n' },
+    new Error('spawn ENOENT'),
+    { exitCode: 0, stdout: `${record}\textra\n`, stderr: '' },
+    { exitCode: 0, stdout: record.replace('\t3\t', '\tthree\t') + '\n', stderr: '' },
+    { exitCode: 0, stdout: record.replace(/ready$/, 'landed') + '\n', stderr: '' },
+  ]
+  for (const answer of answers) {
+    runResult = answer
+    await featuresTurn()
+    expect(await band()).toBe(DRAWN)
+  }
+  expect(logs).toEqual([
+    'cs work -features exited 2: error: no such session',
+    'cs work -features did not answer: spawn ENOENT',
+    `cs work -features gave a record the band cannot read: ${record}\textra`,
+    `cs work -features gave a record the band cannot read: ${record.replace('\t3\t', '\tthree\t')}`,
+    `cs work -features gave a record the band cannot read: ${record.replace(/ready$/, 'landed')}`,
+  ])
+})
+
+test('the features word keeps the left beside the key words, yields to a running gate, and the gap shrinks by its cells', async () => {
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  transcript(LINEAR)
+  await featuresTurn()
+  // `1 feature · fix-auth ready` (26) and its three-cell gap leave the label 110 - 5 - 29 - 4 - 2.
+  let tree = await band()
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(70))
+  percent = 80
+  tree = await band()
+  const order = bandBody(tree).map((k: any) => k.type === 'Button' ? k.props.key : k.type === 'Text' ? textOf(k) : texts(k).map(textOf).join(''))
+  expect(order.slice(0, 6)).toEqual(['\u258c', 'cs-features', '  \u00b7  ', 'ctrl+x', '1', 'cs-rotate'])
+  // The word, `  ·  ` (5) and `ctrl+x  1 rotate  ·  2 wrap` (27) and the gap's three leave the label 105 - 61 - 4 - 2.
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(38))
+  percent = undefined
+  queueTasks(1)
+  tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-features', 'cs-queue', 'cs-rail-0', 'cs-rail-1', 'cs-rail-2'])
+  delete files[`${QDIR}/0000000001-seed`]
+  livePids.add('4242')
+  nowMs = NOW * 1000
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 3 }))
+  await watchTick()
+  tree = await band({ isWorking: true })
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(restingWords(tree).slice(0, 2)).toEqual(['\u258c', 'finishing fix-auth \u00b7 gate 3s'])
+})
+
+test('an idle band asks cs again every 30 s, never while a turn runs, never twice at once, and not at all with no feature', async () => {
+  await featuresTurn()
+  expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
+  expect(featureRuns()).toEqual([])
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'dirty'))
+  await featuresTurn()
+  await featuresTurn()
+  const clocks = timers.filter(t => t.kind === 'every' && t.ms === 30000)
+  expect(clocks).toHaveLength(1)
+  expect(featureRuns()).toHaveLength(2)
+  await band({ isWorking: true })
+  await clocks[0].fn()
+  expect(featureRuns()).toHaveLength(2)
+  await band()
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await clocks[0].fn()
+  expect(featureRuns()).toHaveLength(3)
+  expect(featuresKey(await band()).props.label).toBe('1 feature · fix-auth ready')
+  // A reading still running is not doubled by the next tick.
+  const run = $.process.run
+  let release: () => void = () => {}
+  $.process.run = async (argv: string[], init: any) => {
+    if (argv[2] !== '-features') return run(argv, init)
+    runs.push({ argv, init })
+    await new Promise<void>(r => { release = r })
+    return { exitCode: 0, stdout: `${feature('fix-auth', 3, 'ready')}\n`, stderr: '' }
+  }
+  try {
+    const first = clocks[0].fn()
+    for (let i = 0; i < 100 && featureRuns().length < 4; i++) await Promise.resolve()
+    expect(featureRuns()).toHaveLength(4)
+    await clocks[0].fn()
+    expect(featureRuns()).toHaveLength(4)
+    release()
+    await first
+  } finally {
+    $.process.run = run
+  }
+  expect(featureRuns().at(-1)?.init).toEqual({ timeoutMs: 20000 })
+})
+
+test('a survey owns the band: no features word under one', async () => {
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await featuresTurn()
+  expect(await band({ hasSurvey: true })).toBe(DRAWN)
+})
+
+test('while a turn runs the features word draws dim with no press; one press is all a word takes until cs answers again', async () => {
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await featuresTurn()
+  let tree = await band({ isWorking: true })
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(texts(tree).find((t: any) => textOf(t) === '1 feature · fix-auth ready').props).toEqual({ dimColor: true })
+  tree = await band()
+  await featuresKey(tree).props.onPress()
+  tree = await band()
+  expect(featuresKey(tree)).toBeUndefined()
+  expect(restingWords(tree)).toEqual(['▌', '1 feature · fix-auth ready'])
+  expect(ran).toEqual([{ command: 'finish', args: 'fix-auth' }])
+  await featuresTurn()
+  expect(featuresKey(await band())).toBeDefined()
+})
+
+test('a /finish the engine refuses is toasted, not thrown', async () => {
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 3, 'ready'))
+  await featuresTurn()
+  $.command.run = async (args: any) => { ran.push(args); throw new Error('a turn is running') }
+  try {
+    await featuresKey(await band()).props.onPress()
+  } finally {
+    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  }
+  expect(toasts).toEqual(['cs: /finish fix-auth did not run: a turn is running'])
+})
+
+test('a base with no feature asks cs nothing and runs no clock; the turn a feature is made in reads it', async () => {
+  await featuresTurn()
+  expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
+  expect(featureRuns()).toEqual([])
+  featureDir('fix-auth')
+  porcelain(feature('fix-auth', 0, 'ready'))
+  await featuresTurn()
+  expect(restingWords(await band())).toEqual(['\u258c', '1 feature \u00b7 fix-auth no commits'])
+  expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toHaveLength(1)
+})
+
+test('the turn end does not wait on cs: it returns while the features reading still runs, and the band redraws when cs answers', async () => {
+  featureDir('fix-auth')
+  const run = $.process.run
+  let answer: () => void = () => {}
+  $.process.run = async (argv: string[], init: any) => {
+    if (argv[2] !== '-features') return run(argv, init)
+    runs.push({ argv, init })
+    await new Promise<void>(r => { answer = r })
+    return { exitCode: 0, stdout: `${feature('fix-auth', 3, 'ready')}\n`, stderr: '' }
+  }
+  try {
+    expect(await turnComplete()).toEqual({ text: 'ok' })
+    await settled()
+    expect(featureRuns()).toHaveLength(1)
+    expect(featuresKey(await band())).toBeUndefined()
+    invalidated = []
+    answer()
+    await settled()
+  } finally {
+    $.process.run = run
+  }
+  expect(invalidated).toEqual(['ui.render'])
+  expect(featuresKey(await band()).props.label).toBe('1 feature · fix-auth ready')
+})

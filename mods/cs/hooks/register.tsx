@@ -101,6 +101,10 @@ export const FORCE_DEFAULT = 80
 // How long cs may take to say whether it trusts the session's control files
 // (`cs -vet-session`, about 0.2 s measured) before the answer counts as a no.
 const VET_TIMEOUT_MS = 10000
+// How often an idle band asks cs for its features again, and how long one
+// answer may take: the readiness walks git and the tree for every feature.
+const FEATURES_POLL_MS = 30000
+const FEATURES_TIMEOUT_MS = 20000
 
 
 // The wrap key's question, and the answer that runs /wrap. `$.ui.ask` opens
@@ -203,6 +207,16 @@ let finishShown = new Set<string>()
 let finishGate: { task: string; since: number } | undefined
 let finishProblemShown = false
 
+// The features word: what the band's left says of the session's feature
+// worktrees, as cs last answered, and the task a press finishes ('' for bare
+// /finish, which lists them and asks; absent, no press). One reading at a
+// time; the idle clock that reads again; the last complaint logged.
+export type FeaturesWord = { label: string; finish?: string }
+let featuresWord: FeaturesWord | undefined
+let featuresReading = false
+let featuresClock: { cancel: () => void } | undefined
+let featuresComplaint: string | undefined
+
 // The rail. A prompt is a row of the transcript's live branch; its requestId
 // is the id the engine drew its UserMessage row under, once seen.
 export type Prompt = { uuid: string; text: string }
@@ -237,6 +251,7 @@ export function register(on: On) {
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
+  featuresWord = undefined; featuresReading = false; featuresClock = undefined; featuresComplaint = undefined
   railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); denySaid = false; notYetSaid = false; tailSaid = false; drawnRead = -1; redrawPending = false
   on('session.start', async ($, e, next) => {
     if (!registered) {
@@ -245,6 +260,7 @@ export function register(on: On) {
       await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
     }
     await refreshRail($)
+    readFeaturesLater($)
     // Only in a cs session; anywhere else the mod stays silent. Nor while git
     // tracks the session's control files: the heartbeat would change them.
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
@@ -321,6 +337,7 @@ export function register(on: On) {
       finishTurnOver = true
       await clearPressed($)
       await refreshRail($)
+      readFeaturesLater($)
     }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
@@ -421,12 +438,15 @@ export function register(on: On) {
     // The rail draws whenever the conversation has two prompts to move
     // between, a turn running or not, under the same ownership as the keys.
     let railing = !e.props.hasSurvey && prompts.length > 1
-    if ((rotating || waiting > 0 || railing) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false }
+    // The features word takes the left, before any key word; a running gate
+    // already names the feature it lands.
+    let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
+    if ((rotating || waiting > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false; featured = undefined }
     // The read tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const read = readIndex()
     drawnRead = read
-    if (!rotating && waiting === 0 && gate === undefined && !railing) return drawn
+    if (!rotating && waiting === 0 && gate === undefined && !railing && featured === undefined) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
@@ -452,7 +472,9 @@ export function register(on: On) {
     }
     // What the words take, in cells, so the rail knows what the line leaves it.
     const sep = '  \u00b7  '
+    const keyed = counting || rotating || waiting > 0
     const wordCells = [
+      featured === undefined ? '' : `${featured.label}${keyed ? sep : ''}`,
       counting ? `/clear in ${left}s${sep}` : '',
       prefix !== undefined ? `${prefix}  ` : '',
       rotating ? `${spelled(ROTATE_ACTION) === undefined ? '' : `${spelled(ROTATE_ACTION)} `}${armed ? '/clear now' : 'rotate'}` : '',
@@ -486,7 +508,7 @@ export function register(on: On) {
       return fitRight(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick draws no rule alone.
-    if (!rotating && waiting === 0 && gate === undefined && ticks === undefined) return drawn
+    if (!rotating && waiting === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
     // transcript: a left rule in the session colour, as the launch banner's
     // bar; then only the words that need a key now, the keys in the session
@@ -501,6 +523,11 @@ export function register(on: On) {
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
             <Box marginRight={2}>{own === undefined ? <Text dimColor>{'\u258c'}</Text> : <Text color={own}>{'\u258c'}</Text>}</Box>
+            {/* the session's features: a press finishes the one ready, or asks which */}
+            {featured !== undefined && (featured.finish === undefined || !bandIdle
+              ? <Text dimColor>{featured.label}</Text>
+              : <Button key="cs-features" plain label={featured.label} onPress={() => pressFinish($, featured.finish as string)} />)}
+            {featured !== undefined && keyed && <Text dimColor>{'  \u00b7  '}</Text>}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
             {counting && <Text dimColor>{'  \u00b7  '}</Text>}
@@ -572,6 +599,114 @@ export function sharedPrefix(chords: (string | undefined)[]): string | undefined
 
 // How many of `count` ticks fit in `budget` cells: all of them, or the newest
 // after a `…N` run naming the rest; undefined when not even that fits.
+// One `-features --porcelain` record, as _feature_readiness prints it.
+export type FeatureRecord = { task: string; ahead: number; state: string }
+// Every state _feature_readiness prints (lib/30-worktree.sh).
+const FEATURE_STATES = new Set(['ready', 'staged', 'locked', 'dirty', 'untracked', 'vault-locked', 'base-dirty', 'merged'])
+
+// The records of `-features --porcelain`, or what is wrong with the first line
+// that is not one: ten tab-separated fields, a whole `ahead`, a known state.
+export function parseFeatures(stdout: string): FeatureRecord[] | { unreadable: string } {
+  const records: FeatureRecord[] = []
+  for (const line of stdout.split('\n')) {
+    if (line === '') continue
+    const fields = line.split('\t')
+    const [task, , ahead, , , , , , , state] = fields
+    if (fields.length !== 10 || task === undefined || task === '' || !/^\d+$/.test(ahead ?? '') || !FEATURE_STATES.has(state ?? '')) return { unreadable: line }
+    records.push({ task, ahead: Number(ahead), state: state as string })
+  }
+  return records
+}
+
+// A record's state as the band says it: `ready` only with work ahead of the
+// base to land.
+function stateWord(record: FeatureRecord): string {
+  return record.state === 'ready' && record.ahead === 0 ? 'no commits' : record.state
+}
+
+// The word for a base's records.
+export function featuresWordOf(records: FeatureRecord[]): FeaturesWord | undefined {
+  if (records.length === 0) return undefined
+  const count = `${records.length} ${records.length === 1 ? 'feature' : 'features'}`
+  const ready = records.filter(r => stateWord(r) === 'ready')
+  const only = ready[0]
+  if (ready.length === 1 && only !== undefined) return { label: `${count} \u00b7 ${cutTask(only.task)} ready`, finish: only.task }
+  if (ready.length > 1) return { label: `${count} \u00b7 ${ready.length} ready`, finish: '' }
+  const one = records[0]
+  if (records.length === 1 && one !== undefined) return { label: `${count} \u00b7 ${cutTask(one.task)} ${stateWord(one)}` }
+  return { label: `${count} \u00b7 none ready` }
+}
+
+// The hooks do not wait on cs: a base's readiness walks git for every
+// feature (1.4 s measured for one), so the band redraws when it answers.
+function readFeaturesLater($: EngineInterface) {
+  refreshFeatures($).catch(err => $.ui.log(`cs: the features word could not be read: ${String(err instanceof Error ? err.message : err)}`))
+}
+
+// Asks cs for the session's features and redraws the band when the word
+// moved. Only the lead conversation of a base session asks (cs never admits
+// `@` in a name it creates, so `@` marks a feature); a reading still running
+// is not doubled.
+async function refreshFeatures($: EngineInterface) {
+  if (featuresReading) return
+  featuresReading = true
+  try {
+    const word = await readFeatures($)
+    if (word?.label !== featuresWord?.label || word?.finish !== featuresWord?.finish) {
+      featuresWord = word
+      $.ui.invalidate('ui.render')
+    }
+  } finally {
+    featuresReading = false
+  }
+}
+
+async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefined> {
+  const bin = await $.env.get("CS_BIN")
+  if (!bin || !(await ownsRotation($))) return undefined
+  const base = await csSessionName($, await $.session.cwd())
+  // A feature (`base@task`) draws no word: /finish lands it from its base,
+  // and asked from here cs reads the base conversation's own lock as `locked`.
+  if (base === undefined || base.includes('@')) return undefined
+  // A base with no `<base>@<task>` directory beside it has no features: cs is
+  // not asked, and no clock asks again. /feature runs in the base's own
+  // conversation, so the turn it ends in reads the new feature.
+  if (!(await hasFeatureDirs($, base))) return undefined
+  featuresClock ??= $.clock.every(FEATURES_POLL_MS, () => { if (bandIdle) return refreshFeatures($) })
+  let complaint: string | undefined
+  let word: FeaturesWord | undefined
+  try {
+    const result = await $.process.run([bin, base, '-features', '--porcelain'], { timeoutMs: FEATURES_TIMEOUT_MS })
+    const parsed = result.exitCode === 0 ? parseFeatures(result.stdout) : undefined
+    if (parsed === undefined) {
+      complaint = `cs ${base} -features exited ${result.exitCode}: ${result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? ''}`
+    } else if ('unreadable' in parsed) {
+      complaint = `cs ${base} -features gave a record the band cannot read: ${parsed.unreadable}`
+    } else {
+      word = featuresWordOf(parsed)
+    }
+  } catch (err) {
+    complaint = `cs ${base} -features did not answer: ${String(err instanceof Error ? err.message : err)}`
+  }
+  if (complaint !== undefined && complaint !== featuresComplaint) $.ui.log(complaint)
+  featuresComplaint = complaint
+  return word
+}
+
+// Whether the sessions root holds a feature of `base`: cs names each one's
+// directory `<base>@<task>` there.
+async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean> {
+  const root = await sessionsRoot($)
+  if (root === undefined) return false
+  let entries: { name: string }[]
+  try {
+    entries = await $.fs.list(root)
+  } catch {
+    return false // no sessions root to list: no features
+  }
+  return entries.some(entry => entry.name.startsWith(`${base}@`))
+}
+
 export function railTicks(count: number, budget: number): { hidden: number } | undefined {
   if (count <= budget) return { hidden: 0 }
   for (let hidden = 1; hidden < count; hidden++) {
@@ -1100,11 +1235,16 @@ async function readState($: EngineInterface): Promise<string | undefined> {
 // path, as the hooks compare by inode: a link at the root and a home reached
 // through a symlink each spell the same directory another way.
 async function isCsSession($: EngineInterface, cwd: string): Promise<boolean> {
-  const home = await $.env.get('HOME')
-  const root = (await $.env.get('CS_SESSIONS_ROOT')) || (home ? `${home}/.claude-sessions` : undefined)
-  if (root === undefined) return false
+  return (await csSessionName($, cwd)) !== undefined
+}
+
+// The name under which the sessions root holds directory `cwd`, by the rule
+// isCsSession states; undefined when it holds it under none.
+async function csSessionName($: EngineInterface, cwd: string): Promise<string | undefined> {
+  const root = await sessionsRoot($)
+  if (root === undefined) return undefined
   const here = await resolvedPath($, cwd)
-  if (here === undefined) return false
+  if (here === undefined) return undefined
   const dir = cwd.replace(/\/+$/, '')
   const names = [dir.slice(dir.lastIndexOf('/') + 1)]
   let state = ''
@@ -1116,9 +1256,15 @@ async function isCsSession($: EngineInterface, cwd: string): Promise<boolean> {
   const recorded = state.match(/^session_name: *"?([^"\s/]+)"?[ \t]*$/m)?.[1]
   if (recorded !== undefined && recorded !== '.' && recorded !== '..') names.push(recorded)
   for (const name of names) {
-    if ((await resolvedPath($, `${root}/${name}`)) === here) return true
+    if ((await resolvedPath($, `${root}/${name}`)) === here) return name
   }
-  return false
+  return undefined
+}
+
+// $CS_SESSIONS_ROOT, else ~/.claude-sessions; undefined with neither set.
+async function sessionsRoot($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME')
+  return (await $.env.get('CS_SESSIONS_ROOT')) || (home ? `${home}/.claude-sessions` : undefined)
 }
 
 // Where `path` lands once every link is followed; undefined when it leads
@@ -1149,6 +1295,17 @@ async function ownsRotation($: EngineInterface): Promise<boolean> {
   if (state === undefined) return false
   const lead = state.match(/^claude_session_id: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
   return lead !== undefined && lead === (await $.session.id())
+}
+
+// The features word's press: /finish as if typed, on the one feature ready,
+// or bare ('') to list them and ask which.
+// The word keeps no press after one: the next answer from cs gives it back.
+async function pressFinish($: EngineInterface, task: string) {
+  if (featuresWord !== undefined) featuresWord = { label: featuresWord.label }
+  $.ui.invalidate('ui.render')
+  await $.command.run({ command: 'finish', args: task }).catch(err => {
+    $.ui.toast(`cs: /finish${task === '' ? '' : ` ${task}`} did not run: ${String(err instanceof Error ? err.message : err)}`)
+  })
 }
 
 // Runs the rotate skill as if the person had typed /rotate: the skill draws
