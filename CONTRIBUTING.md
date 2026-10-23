@@ -78,7 +78,8 @@ the machine cannot build the test's fixture, such as a privilege, a filesystem
 or a bash version it lacks. Never return 0 from a skip: that counts as a pass.
 
 A test that needs a command guards it with `require_tool`, never with its own
-`command -v` (`test_docs.sh` fails on a hand-written guard):
+`command -v` (`test_docs.sh` fails on the common hand-written `command -v`
+guards, though not on every shape a guard can take):
 
 ```bash
 test_mod_unit_tests_pass_under_bun() {

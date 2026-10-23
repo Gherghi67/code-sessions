@@ -322,7 +322,8 @@ unset XDG_DATA_HOME XDG_CONFIG_HOME
 # The two that assert on the scope block (test_clarify.sh,
 # test_scope_prompt.sh) set it again there. The same loop drops CS_PS_BIN,
 # CS_TITLE_TTY and CS_NO_UPDATE_CHECK, which costs nothing: none of the eight
-# runs cs, ps, curl or the SessionStart hook. Do not re-fix; a suite that
+# reaches the code that reads them (the lock walk, presence, launch, the
+# update check and the SessionStart hook). Do not re-fix; a suite that
 # starts to run one of those sets the variable again after its loop.
 export CS_SCOPE_BUDGET_MS="600000"
 # The SessionStart hook re-asserts the session's tab title: through the tmux
