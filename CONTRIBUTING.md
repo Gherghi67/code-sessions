@@ -87,15 +87,16 @@ test_mod_unit_tests_pass_under_bun() {
 }
 ```
 
-`require_tool <tool>...` returns 0 when every tool is on `PATH`. For the first
-missing one it skips the test with `SKIP: <tool> not on PATH`, unless
-`CS_TEST_REQUIRE_TOOLS`, a space-separated list, names that tool. Then the test
-fails with `FAIL: <tool> is not on PATH, and CS_TEST_REQUIRE_TOOLS says this
-run has it`. CI sets the list to the tools its job installs, so a runner that
-lost one goes red instead of skipping the tests that need it. Locally the list
-is unset and a missing tool only skips. Call `require_tool` directly, never
-inside `$( )`, and pass its status through unchanged: call a helper that wraps
-it as `_need_expect || return $?`, not `|| return 77`.
+`require_tool <tool>...` returns 0 when every tool is on `PATH`. It checks
+every tool before it answers. A missing tool that `CS_TEST_REQUIRE_TOOLS`, a
+space-separated list, names fails the test with `FAIL: <tool> is not on PATH,
+and CS_TEST_REQUIRE_TOOLS says this run has it`. Otherwise the missing tools
+skip the test with `SKIP: <tools> not on PATH`. CI sets the list to the tools
+its job installs, so a runner that lost one goes red instead of skipping the
+tests that need it. Locally the list is unset and a missing tool only skips.
+Call `require_tool` directly, never inside `$( )`, and pass its status through
+unchanged: call a helper that wraps it as `_need_expect || return $?`, not
+`|| return 77`.
 
 `run_all.sh` lists every skipped test above the verdict, with its suite and,
 for a missing tool, the tool, and the verdict counts them:

@@ -140,27 +140,31 @@ _deny_file_write() {  # path
 }
 
 # The guard for a test that needs a command: `require_tool <tool>... || return $?`.
-# Every tool on PATH returns 0. The first one missing skips the test (77),
-# unless CS_TEST_REQUIRE_TOOLS, a space-separated list, names it: CI declares
-# the tools its job installs, and there a missing one is a broken runner, so
-# the test fails naming it instead of reading green having judged nothing.
+# Every tool on PATH returns 0. A missing tool skips the test (77), unless
+# CS_TEST_REQUIRE_TOOLS, a space-separated list, names it: CI declares the
+# tools its job installs, and there a missing one is a broken runner, so the
+# test fails naming it instead of reading green having judged nothing. Every
+# tool is checked first, so a declared one fails even behind an undeclared one.
 # Call it directly, never inside $( ), and pass its status through unchanged:
 # a helper's caller that maps any failure to 77 turns the failure back into
 # a skip.
 require_tool() {  # tool...
-    local tool
+    local tool missing="" declared_missing=0
     for tool in "$@"; do
         command -v "$tool" >/dev/null 2>&1 && continue
         case " $_cs_test_require_tools " in
             *" $tool "*)
                 echo "    FAIL: $tool is not on PATH, and CS_TEST_REQUIRE_TOOLS says this run has it"
-                return 1
+                declared_missing=1
                 ;;
+            *) missing="${missing:+$missing }$tool" ;;
         esac
-        echo "    SKIP: $tool not on PATH"
-        SKIP_REASON="$tool not on PATH"
-        return 77
     done
+    [ "$declared_missing" -eq 0 ] || return 1
+    [ -n "$missing" ] || return 0
+    echo "    SKIP: $missing not on PATH"
+    SKIP_REASON="$missing not on PATH"
+    return 77
 }
 
 _allow_writes() {  # dir

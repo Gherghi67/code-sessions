@@ -305,6 +305,26 @@ run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=age")"
     assert_output_not_contains "$out" "BODY-RAN" "the test stops at the guard" || return 1
 }
 
+# Every tool is checked before the verdict: a declared missing tool fails the
+# test even when an undeclared one ahead of it is missing too.
+test_require_tool_fails_on_a_declared_tool_after_an_undeclared_one() {
+    local out
+    out="$(run_throwaway_suite "test_needs_it() { require_tool $ABSENT_TOOL-a $ABSENT_TOOL-b || return \$?; }
+run_test test_needs_it" "CS_TEST_REQUIRE_TOOLS=$ABSENT_TOOL-b")"
+    assert_output_contains "$out" "    FAIL: $ABSENT_TOOL-b is not on PATH, and CS_TEST_REQUIRE_TOOLS says this run has it" \
+        "the declared tool is named" || return 1
+    assert_output_contains "$out" "Results: 0/1 passed, 1 failed" "the declared tool decides the verdict" || return 1
+}
+
+test_require_tool_names_every_missing_tool_when_it_skips() {
+    local out record="$TEST_TMPDIR/skips"
+    out="$(run_throwaway_suite "test_needs_it() { require_tool $ABSENT_TOOL-a sh $ABSENT_TOOL-b || return \$?; }
+run_test test_needs_it" "CS_TEST_SKIP_LOG=$record")"
+    assert_output_contains "$out" "    SKIP: $ABSENT_TOOL-a $ABSENT_TOOL-b not on PATH" "the skip names both tools" || return 1
+    assert_eq "$(printf 'test_needs_it\t%s-a %s-b not on PATH' "$ABSENT_TOOL" "$ABSENT_TOOL")" "$(cat "$record" 2>/dev/null)" \
+        "the recorded reason names both tools: $out" || return 1
+}
+
 test_require_tool_runs_the_test_when_every_tool_is_present() {
     local out
     out="$(run_throwaway_suite "test_needs_it() { require_tool sh bash || return \$?; echo BODY-RAN; }
@@ -384,6 +404,8 @@ run_test test_results_line_omits_the_skip_column_when_nothing_skipped
 run_test test_results_line_counts_a_skip_when_a_test_returns_77
 run_test test_require_tool_fails_when_a_declared_tool_is_missing
 run_test test_require_tool_skips_when_an_undeclared_tool_is_missing
+run_test test_require_tool_fails_on_a_declared_tool_after_an_undeclared_one
+run_test test_require_tool_names_every_missing_tool_when_it_skips
 run_test test_require_tool_runs_the_test_when_every_tool_is_present
 run_test test_a_helper_around_require_tool_passes_the_failure_through
 run_test test_a_skip_is_recorded_with_its_reason
