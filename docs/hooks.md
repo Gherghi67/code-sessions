@@ -543,9 +543,11 @@ draws only in the lead conversation of a cs session.
 
 When no key word is due and no `/finish` gate runs, the band's first word,
 right after the rule, is the state of the session's features, read from
-`cs <base> -features --porcelain` after each turn, at session start, and
-every 30 s while the band is idle. Only the lead conversation asks cs, and
-a base asks only while the sessions root holds a `<base>@<task>` directory. In a base, one feature ready reads
+`cs <base> -features --porcelain` after each turn and at session start,
+without holding either up, and every 30 s while the band is idle once cs has
+been asked. Only the lead conversation asks cs, and a base asks only while
+the sessions root holds a `<base>@<task>` directory: a feature `/feature`
+makes shows when that turn ends. In a base, one feature ready reads
 `1 feature · fix-auth ready` (or `3 features · fix-auth ready`) and a press
 runs `/finish fix-auth`; two or more ready read `3 features · 2 ready` and a
 press runs `/finish`, which lists them and asks which; none ready reads

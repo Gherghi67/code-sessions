@@ -2843,3 +2843,28 @@ test('a base with no feature asks cs nothing and runs no clock; the turn a featu
   expect(restingWords(await band())).toEqual(['\u258c', '1 feature \u00b7 fix-auth no commits'])
   expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toHaveLength(1)
 })
+
+test('the turn end does not wait on cs: it returns while the features reading still runs, and the band redraws when cs answers', async () => {
+  featureDir('fix-auth')
+  const run = $.process.run
+  let answer: () => void = () => {}
+  $.process.run = async (argv: string[], init: any) => {
+    if (argv[2] !== '-features') return run(argv, init)
+    runs.push({ argv, init })
+    await new Promise<void>(r => { answer = r })
+    return { exitCode: 0, stdout: `${feature('fix-auth', 3, 'ready')}\n`, stderr: '' }
+  }
+  try {
+    expect(await turnComplete()).toEqual({ text: 'ok' })
+    await settled()
+    expect(featureRuns()).toHaveLength(1)
+    expect(featuresKey(await band())).toBeUndefined()
+    invalidated = []
+    answer()
+    await settled()
+  } finally {
+    $.process.run = run
+  }
+  expect(invalidated).toEqual(['ui.render'])
+  expect(featuresKey(await band()).props.label).toBe('1 feature · fix-auth ready')
+})
