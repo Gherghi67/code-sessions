@@ -227,6 +227,14 @@ const bindKeys = (bindings: Record<string, string | null>, context = 'Global') =
   files[KEYS] = JSON.stringify({ bindings: [{ context, bindings }] })
 }
 const words = (tree: any): string[] => texts(tree).map(textOf)
+// The words drawn while no pointer rests on the band: a hover card's stay hidden.
+const restingWords = (tree: any): string[] => {
+  if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(restingWords)
+  if (tree.props?.display === 'none') return []
+  if (tree.type === 'Text') return [textOf(tree)]
+  return (tree.children ?? []).flatMap(restingWords)
+}
 
 // Chords that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell the prefix once,
 // dim, and each Button's own key beside its label: `ctrl+x  1 rotate  ·  2 wrap`.
@@ -2242,8 +2250,8 @@ test('after a turn ends the band draws one tick per prompt, the newest thick whi
   expect(tickButtons(tree).some((b: any) => b.props.hotkey !== undefined)).toBe(false)
   expect(buttonsUnderText(tree)).toBe(0)
   expect(texts(tree).find((t: any) => textOf(t) === '\u2503').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
-  // Below the threshold the rail still draws, with the rule and no words.
-  expect(words(tree)).toEqual(['\u258c', '\u2503'])
+  // Below the threshold the rail still draws, with the rule, no key words, and the read prompt in the gap.
+  expect(restingWords(tree)).toEqual(['\u258c', '#4 say four'.padStart(99), '\u2503'])
 })
 
 test('a conversation with one prompt draws no rail', async () => {
@@ -2484,12 +2492,86 @@ test('the rail stands at the far right of the band line, after the words, as upr
   const line = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
   const kids = (line.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
   expect(kids[kids.length - 1].props.key).toBe('cs-rail')
-  expect(kids[kids.length - 2]).toMatchObject({ type: 'Box', props: { flexGrow: 1 } })
+  expect(kids[kids.length - 3]).toMatchObject({ type: 'Box', props: { flexGrow: 1 } })
   expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
+  // `ctrl+x  1 rotate  ·  2 wrap` (27) and its three-cell gap leave the label 110 - 5 - 30 - 4 - 2.
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(69))
 })
 
 test('the focus ring never lands on a rail tick: the keyboard route is /cs', async () => {
   const e = (element: string) => ({ component: 'AbovePrompt', requestId: 'band', plugin: 'cs', element, origin: { kind: 'person' } })
   expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rail-2'), async () => ({}))).toEqual({ deny: 'cs: the rail takes clicks and /cs, not the focus ring' })
   expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rotate'), async () => ({ moved: true }))).toEqual({ moved: true })
+})
+
+// The gap between the band's words and the rail names a prompt: the one being
+// read, dim italic, against the bars; a bar under the pointer swaps in its own.
+const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
+
+test('the gap beside the bars names the prompt being read, dim italic, flush against the rail', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  const tree = await band()
+  // `  ▌  ` (5) and 110 columns leave 105; four bars and a two-cell gap leave the label 99.
+  expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(99))
+  const line = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
+  const kids = (line.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
+  expect(kids.slice(-3).map((k: any) => k.props.key ?? (k.props.flexGrow ? 'spacer' : 'label'))).toEqual(['spacer', 'label', 'cs-rail'])
+  expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual(['#4 say four'.padStart(99)])
+  // A row reporting moves the label with the read bar.
+  await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
+  expect(textOf(gapLabel(await band()))).toBe('#2 say two'.padStart(99))
+})
+
+test('each bar under the pointer swaps its own prompt into the gap, italic, covering the read one', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  const tree = await band()
+  // Bar i heats group cs-rail-<i>; the read bar is a Text the label already names.
+  expect(tickButtons(tree).map((b: any) => b.props.hover)).toEqual([0, 1, 2].map(i => ({ scope: `cs-rail-${i}`, dimColor: false })))
+  const cards = boxes(tree).filter((b: any) => b.props.display === 'none')
+  expect(cards.map((c: any) => c.props)).toEqual([0, 1, 2].map(i => ({
+    position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
+  })))
+  expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
+    [['#1 say one'.padStart(99), { italic: true }]],
+    [['#2 say two'.padStart(99), { italic: true }]],
+    [['#3 say three'.padStart(99), { italic: true }]],
+  ])
+  // The cards sit in the label's own Box, so a card covers the read prompt cell for cell.
+  const labelBox = boxes(tree).find((b: any) => b.props.width === 99)
+  expect(boxes(labelBox).filter((b: any) => b.props.display === 'none')).toHaveLength(3)
+})
+
+test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cells names none and the bars heat nothing', async () => {
+  transcript([...LINEAR, prompt('u5', 'a4', 'x'.repeat(40))])
+  await turnComplete()
+  // 30 columns: 25 after the rule, five bars and the two-cell gap leave 18.
+  const cut = await band({ bodyColumns: 30 })
+  expect(textOf(gapLabel(cut))).toBe(`#5 ${'x'.repeat(14)}…`)
+  expect(texts(boxes(cut).find((b: any) => b.props.hover?.scope === 'cs-rail-0')).map(textOf)).toEqual(['#1 say one'.padStart(18)])
+  // 22 columns leave exactly ten.
+  expect(textOf(gapLabel(await band({ bodyColumns: 22 })))).toBe(`#5 ${'x'.repeat(6)}…`)
+  // 21 leave nine: the bars alone, no card, no hover group.
+  const bare = await band({ bodyColumns: 21 })
+  expect(gapLabel(bare)).toBeUndefined()
+  expect(boxes(bare).filter((b: any) => b.props.display === 'none')).toEqual([])
+  expect(tickButtons(bare).map((b: any) => b.props.hover)).toEqual([undefined, undefined, undefined, undefined])
+  expect(rail(bare)).toEqual(['│', '│', '│', '│', '┃'])
+})
+
+test('a rail past its budget takes the whole gap: no prompt is named beside a collapsed run', async () => {
+  const many = [prompt('u1', null, 'p1')]
+  for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
+  transcript(many)
+  await turnComplete()
+  // 30 columns leave 25 cells for 30 bars: `…7` and 23 bars, no gap.
+  const tree = await band({ bodyColumns: 30 })
+  expect(rail(tree)[0]).toBe('…7')
+  expect(gapLabel(tree)).toBeUndefined()
+  expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toEqual([])
+  // 41 leave 36: every bar, the two-cell gap and four cells, under ten, so none either.
+  expect(gapLabel(await band({ bodyColumns: 41 }))).toBeUndefined()
+  // 47 leave ten.
+  expect(textOf(gapLabel(await band({ bodyColumns: 47 })))).toBe('   #30 p30')
 })

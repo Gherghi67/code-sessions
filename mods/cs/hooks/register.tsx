@@ -208,6 +208,8 @@ let finishProblemShown = false
 export type Prompt = { uuid: string; text: string }
 // How much of a prompt's first line a tick carries as its text.
 export const RAIL_TEXT_CHARS = 80
+// The fewest cells the gap beside the rail takes to name a prompt in.
+const RAIL_LABEL_MIN = 10
 // `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
 const READ_CAP = 4 * 1024 * 1024
 // What the transcript last read held, and the file it was: the file is parsed
@@ -468,6 +470,16 @@ export function register(on: On) {
     // report that moves it can redraw the band.
     const budget = e.props.bodyColumns - 2 - 1 - 2 - (wordCells > 0 ? 3 + wordCells : 0)
     const ticks = railing ? railTicks(prompts.length, budget) : undefined
+    // The gap the words and the bars leave names a prompt, padded to the gap
+    // so it stands against the bars: the one being read, or the one under the
+    // pointer. A gap too narrow to name one draws none.
+    const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
+    const labelCells = ticks === undefined ? 0 : budget - railCells - 2
+    const labeled = labelCells >= RAIL_LABEL_MIN
+    const label = (i: number) => {
+      const named = `#${i + 1} ${prompts[i].text}`
+      return (named.length > labelCells ? `${named.slice(0, labelCells - 1)}\u2026` : named).padStart(labelCells)
+    }
     // A line too narrow for any tick draws no rule alone.
     if (!rotating && waiting === 0 && gate === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
@@ -503,13 +515,25 @@ export function register(on: On) {
             {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
             {gate !== undefined && <Text dimColor>{gate}</Text>}
             {ticks !== undefined && <Box flexGrow={1} />}
+            {labeled && (
+              <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
+                <Text dimColor italic>{label(read)}</Text>
+                {/* a named gap is room every prompt's bar left: none is collapsed into `…N` */}
+                {prompts.map((_, i) => i !== read && (
+                  <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
+                    <Text italic>{label(i)}</Text>
+                  </Box>
+                ))}
+              </Box>
+            )}
             {ticks !== undefined && (
-              <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
+              <Box key="cs-rail" marginLeft={labeled ? 2 : wordCells > 0 ? 3 : 0}>
                 {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
                 {prompts.slice(ticks.hidden).map((p, j) => {
                   const i = ticks.hidden + j
                   if (i === read) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
-                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'} onPress={() => jumpTo($, i)} />
+                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'}
+                                 hover={labeled ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
                 })}
               </Box>
             )}
