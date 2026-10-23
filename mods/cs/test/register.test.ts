@@ -1946,7 +1946,7 @@ test('the start key is gone while the queue is armed or draining, and while it i
   queueTasks(1)
   for (const state of ['armed\n', 'draining\n']) {
     files['/work/.cs/local/queue.state'] = state
-    expect(await band()).toBe(DRAWN)
+    expect(queueKey(await band())).toBeUndefined()
   }
   files['/work/.cs/local/queue.state'] = 'idle\n'
   expect(queueKey(await band()).props.label).toBe('\u25a4 queue 1 \u00b7 start')
@@ -1984,7 +1984,9 @@ test('an encrypted session counts its tasks, and reads its state, behind .cs/pri
   queueTasks(2, '/work/.cs/private/queue')
   expect(queueKey(await band()).props.label).toBe('\u25a4 queue 2 \u00b7 start')
   files['/work/.cs/private/queue.state'] = 'draining\n'
-  expect(await band()).toBe(DRAWN)
+  const tree = await band()
+  expect(queueKey(tree)).toBeUndefined()
+  expect(restingWords(tree)).toEqual(['\u25a4 queue 2'])
 })
 
 test('pressing the start key asks to start and how, then starts the queue and its first turn', async () => {
@@ -2934,4 +2936,33 @@ test('a task file that does not parse is skipped and logged once; the rest of th
   await turnComplete()
   expect(restingWords(await band())).toEqual(['▸ fix the login redirect'])
   expect(logs.filter(l => l.startsWith('cs: the band skipped task 2.json'))).toHaveLength(1)
+})
+
+test('tasks queued while the queue runs, or while a turn runs, draw a dim queue word where the start key would be', async () => {
+  queueTasks(3)
+  for (const state of ['armed\n', 'draining\n']) {
+    files['/work/.cs/local/queue.state'] = state
+    const tree = await band()
+    expect(restingWords(tree)).toEqual(['▤ queue 3'])
+    expect(texts(tree)[0].props).toEqual({ dimColor: true })
+    expect(buttons(tree)).toEqual([])
+  }
+  files['/work/.cs/local/queue.state'] = 'idle\n'
+  expect(restingWords(await band({ isWorking: true }))).toEqual(['▤ queue 3'])
+  const idle = await band()
+  expect(queueKey(idle).props.label).toBe('▤ queue 3 · start')
+  expect(restingWords(idle)).toEqual([])
+})
+
+test('the queue word follows the task word and the key words, a separator before it', async () => {
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'fix the login redirect')
+  await turnComplete()
+  queueTasks(2)
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  expect(restingWords(await band())).toEqual(['▸ fix the login redirect', '  ·  ', '▤ queue 2'])
+  percent = 40
+  const tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
+  expect(restingWords(tree).slice(-2)).toEqual(['  ·  ', '▤ queue 2'])
 })

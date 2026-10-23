@@ -454,6 +454,9 @@ export function register(on: On) {
     // Tasks queued and nothing running them, at any context. An armed
     // handoff draws its clear key alone, so the count is not asked for then.
     let waiting = !bandIdle || armed ? 0 : await idleQueueLength($)
+    // Tasks queued that the start key does not offer: the queue runs them, a
+    // turn runs, or the clear key stands alone. Said, not pressed.
+    let queued = e.props.hasSurvey || waiting > 0 ? 0 : await queueLength($)
     // The rail draws whenever the conversation has two prompts to move
     // between, a turn running or not, under the same ownership as the keys.
     let railing = !e.props.hasSurvey && prompts.length > 1
@@ -462,12 +465,12 @@ export function register(on: On) {
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
     // With nothing else on the left, the task in progress on the session's list.
     let tasking = !e.props.hasSurvey && featured === undefined && !rotating && waiting === 0 && gate === undefined ? taskWord : undefined
-    if ((rotating || waiting > 0 || railing || featured || tasking) && !(await ownsRotation($))) { rotating = false; waiting = 0; railing = false; featured = undefined; tasking = undefined }
+    if ((rotating || waiting > 0 || queued > 0 || railing || featured || tasking) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; railing = false; featured = undefined; tasking = undefined }
     // The read tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const read = readIndex()
     drawnRead = read
-    if (!rotating && waiting === 0 && gate === undefined && !railing && featured === undefined && tasking === undefined) return drawn
+    if (!rotating && waiting === 0 && queued === 0 && gate === undefined && !railing && featured === undefined && tasking === undefined) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
@@ -494,6 +497,8 @@ export function register(on: On) {
     // What the words take, in cells, so the rail knows what the line leaves it.
     const sep = '  \u00b7  '
     const keyed = counting || rotating || waiting > 0
+    // Whether a word stands before the queue word, which a separator then parts.
+    const ahead = featured !== undefined || keyed || gate !== undefined || tasking !== undefined
     const wordCells = [
       featured === undefined ? '' : `${featured.label}${keyed ? sep : ''}`,
       counting ? `/clear in ${left}s${sep}` : '',
@@ -503,6 +508,7 @@ export function register(on: On) {
       waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
       gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
       tasking ?? '',
+      queued > 0 ? `${ahead ? sep : ''}\u25a4 queue ${queued}` : '',
     ].join('').length
     // The rail: one upright bar per prompt at the line's right end, `┃` for
     // the one being read, `┆` for one a jump was refused, `│` otherwise (side
@@ -530,7 +536,7 @@ export function register(on: On) {
       return fitRight(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
-    if (!rotating && waiting === 0 && gate === undefined && featured === undefined && tasking === undefined && ticks === undefined) return drawn
+    if (!rotating && waiting === 0 && queued === 0 && gate === undefined && featured === undefined && tasking === undefined && ticks === undefined) return drawn
     // One thin line, a blank line above it so it reads apart from the
     // transcript: only the words that need a key now, the keys in the
     // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
@@ -567,6 +573,9 @@ export function register(on: On) {
             {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
             {gate !== undefined && <Text dimColor>{gate}</Text>}
             {tasking !== undefined && <Text dimColor>{tasking}</Text>}
+            {/* the queue while its start key is not offered: a count, no press */}
+            {queued > 0 && ahead && <Text dimColor>{'  \u00b7  '}</Text>}
+            {queued > 0 && <Text dimColor>{`\u25a4 queue ${queued}`}</Text>}
             {ticks !== undefined && <Box flexGrow={1} />}
             {labeled && (
               <Box width={labelCells} marginLeft={wordCells > 0 ? 3 : 0}>
@@ -1479,11 +1488,11 @@ async function queueRunning($: EngineInterface): Promise<boolean> {
   return false
 }
 
-// How many tasks are queued while nothing runs them; 0 when the queue is
-// armed or draining, empty, or cannot be read. The queue is one file per task,
-// behind .cs/private in an encrypted session (where a locked vault lists
-// nothing) and in .cs/local otherwise.
-async function idleQueueLength($: EngineInterface): Promise<number> {
+// How many tasks are queued, whether or not the queue runs them; 0 when it is
+// empty or cannot be read. The queue is one file per task, behind .cs/private
+// in an encrypted session (where a locked vault lists nothing) and in
+// .cs/local otherwise.
+async function queueLength($: EngineInterface): Promise<number> {
   const cwd = await $.session.cwd()
   const dir = (await $.fs.exists(`${cwd}/.cs/private`)) ? 'private' : 'local'
   let entries: { kind: string }[]
@@ -1492,7 +1501,13 @@ async function idleQueueLength($: EngineInterface): Promise<number> {
   } catch {
     return 0 // no queue directory: nothing queued
   }
-  const count = entries.filter(entry => entry.kind === 'file').length
+  return entries.filter(entry => entry.kind === 'file').length
+}
+
+// How many tasks are queued while nothing runs them; 0 when the queue is
+// armed or draining, empty, or cannot be read.
+async function idleQueueLength($: EngineInterface): Promise<number> {
+  const count = await queueLength($)
   if (count === 0 || (await queueRunning($))) return 0
   return count
 }
