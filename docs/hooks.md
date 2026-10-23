@@ -496,11 +496,11 @@ or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
 blank line above it: a left rule `▌` in the session's colour (dim when the
-session has none), the rail of prompts, then only the words that need a key
-now, separated by a dim `·`. Where the keys' chords share a prefix (`ctrl+x 1`,
-`ctrl+x 2`) the prefix is spelled once, dim, and each key's own last word
-stands beside its label in the session's colour: `▌  ───━─────   ctrl+x  1
-rotate  ·  2 wrap`. Chords that differ are spelled whole. In order, and each
+session has none), then only the words that need a key now, separated by a
+dim `·`, and the rail of prompts at the line's right end. Where the keys'
+chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
+dim, and each key's own last word stands beside its label in the session's
+colour: `▌  ctrl+x  1 rotate  ·  2 wrap        │││┃│││`. Chords that differ are spelled whole. In order, and each
 only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
 `/clear now` once a handoff is armed), `wrap`, the queue's start key, and
 `finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
@@ -508,13 +508,15 @@ paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
 caps answer; only the count's amber pivot still reads the measurement. The
 percentage itself stays on the status bar: the band does not repeat it.
 
-The rail is one tick per prompt the person sent in this conversation: `─`
-dim, `━` in the session's colour for the prompt being read (the prompt
-whose row stands highest on screen, from the engine's own on-screen reports
-of the transcript's rows), `┄` dim for a prompt the engine refused to scroll
-to. A press on a tick scrolls the transcript so that prompt's row is at the
-top; `/cs next`, `/cs prev`, `/cs first`, `/cs last` and `/cs N` move the
-same way from the prompt being read, mid-turn too, for keybindings. A
+The rail is one upright bar per prompt the person sent in this
+conversation: `│` dim, `┃` in the session's colour for the prompt being read
+(the prompt whose row stands highest on screen, from the engine's own
+on-screen reports of the transcript's rows), `┆` dim for a prompt the engine
+refused to scroll to. A press on a bar scrolls the transcript so that
+prompt's row is at the top. The band's focus ring never lands on a bar:
+the keyboard route is `/cs next`, `/cs prev`, `/cs first`, `/cs last` and
+`/cs N`, which move the same way from the prompt being read, mid-turn too,
+for keybindings. A
 refusal is toasted once a session; a prompt no row has drawn since a resume
 toasts `cs: that prompt is not on screen yet` once. The prompts come from the
 session's transcript (`~/.claude/projects/<slug>/<id>.jsonl`, or
