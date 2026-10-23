@@ -3022,4 +3022,9 @@ test('the queue and mail words take their cells from the gap beside the rail', a
   expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
   // `▤ queue 2  ·  mail 1` (20) and its three-cell gap leave the label 110 - 2 - 23 - 4 - 2.
   expect(textOf(gapLabel(tree))).toBe('#4 say four'.padStart(79))
+  envVars.CLAUDE_CODE_TASK_LIST_ID = 'work'
+  task(5, 'in_progress', 'fix the login redirect')
+  await turnComplete()
+  // `▸ fix the login redirect  ·  ▤ queue 2  ·  mail 1` (49): 110 - 2 - 52 - 4 - 2.
+  expect(textOf(gapLabel(await band()))).toBe('#4 say four'.padStart(50))
 })
