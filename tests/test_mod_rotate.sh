@@ -139,7 +139,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     assert_eq "0" "$(grep -c '\$\.ui\.open' "$src")" "the mod opens no pane" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.close' "$src")" "and closes none" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.panes' "$src")" "and lists none" || return 1
-    assert_output_contains "$out" '$.fs.list (via hasFeatureDirs, idleQueueLength, readTask)' "the band counts the queue's tasks by listing its directory, looks for a base's feature directories at the sessions root before asking cs, and lists the native task list for the task in progress; nothing else lists one" || return 1
+    assert_output_contains "$out" '$.fs.list (via hasFeatureDirs, queueLength, readTask, unreadMail)' "the band counts the queue's tasks and the mailbox's unread mail by listing their directories, looks for a base's feature directories at the sessions root before asking cs, and lists the native task list for the task in progress; nothing else lists one" || return 1
     assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, clearPressed, csSessionName, forceRotation, queueRunning, readFinish, readState, readTask, readWrapped, refreshRail)' "the wrap marker, the press marker, the state (for the session's recorded name too), the queue's state, the /finish record, keybindings.json, the native task list and the transcript are read" || return 1
     assert_output_contains "$out" '$.fs.stat (via refreshRail, resolvedPath)' "stat resolves where a path lands, to prove the cwd is the sessions root's entry, and gates the transcript's re-read on its size and mtime; no other rule hangs on a modification time" || return 1
 }

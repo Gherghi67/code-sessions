@@ -495,8 +495,8 @@ directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it: only the words that need a key now, separated by a dim
-`·`, and the rail of prompts at the line's right end. Where the keys'
+blank line above it: its words, separated by a dim `·`, and the rail of
+prompts at the line's right end. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
 colour: `ctrl+x  1 rotate  ·  2 wrap        #4 say four  │││┃│││`. Chords that differ are spelled whole. In order, and each
@@ -559,6 +559,23 @@ base, whose word names it. A cs that fails, cannot start,
 or prints a record that is not ten fields with a whole `ahead` and a known
 state draws no word, and the mod logs it once.
 
+With no features word, no key word and no `/finish` gate, the left names the
+task in progress on the conversation's native task list, dim:
+`▸ fix the login redirect`, the lowest-numbered task in progress, cut to 48
+cells. The list is Claude Code's `<config>/tasks/<list id>/<n>.json` (config
+`CLAUDE_CONFIG_DIR`, else `~/.claude`; list id `CLAUDE_CODE_TASK_LIST_ID`,
+which cs sets to the session's name, else the conversation's id), read at
+session start, after each turn and after each TaskCreate or TaskUpdate; a file
+that does not parse is skipped and logged once. After every other word come
+two counts, dim, with no press, each only when it has something to count:
+`▤ queue N` while the cs queue holds tasks but its start key is not offered
+(the queue is armed or draining, a turn runs, or an armed handoff's clear key
+stands alone), and `mail N`, the `.json` files in the session's mailbox
+`mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
+in an encrypted session and in `.cs/local` otherwise, each time the band
+draws. Every word takes its cells from the gap beside the rail:
+`▸ fix the login redirect  ·  ▤ queue 2  ·  mail 1        #4 say four  │││┃`.
+
 The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.
 
 The band's keys are chords, never a bare digit: a digit typed to answer a
@@ -596,8 +613,10 @@ of its own). A continuation turn, one started with no prompt as a Stop hook's
 feedback starts one, leaves it in place. A summary written any other way
 hides nothing, and a wrap that fails a pass
 skips the marker. Below the band the mod draws nothing, and it draws none of
-these keys while a turn runs or while a survey holds the band; the `/finish`
-gate word is the one word that draws then. It never submits a prompt of its own.
+these keys while a turn runs or while a survey holds the band. While a turn
+runs, the `/finish` gate word, the features word (with no press), the task word
+and the queue and mail counts still draw; under a survey only the gate word
+does. It never submits a prompt of its own.
 
 The same button has a second state. Once the `rotate` skill has armed a
 handoff (`.cs/local/pending-handoff` names one), the band draws

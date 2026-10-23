@@ -457,7 +457,7 @@ export function register(on: On) {
     // Tasks queued that the start key does not offer: the queue runs them, a
     // turn runs, or the clear key stands alone. Said, not pressed.
     let queued = e.props.hasSurvey || waiting > 0 ? 0 : await queueLength($)
-    // Mail from other sessions that `cs -mail read` has not read yet.
+    // Mail from other sessions that `cs -msg` has not read yet.
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
     // The rail draws whenever the conversation has two prompts to move
     // between, a turn running or not, under the same ownership as the keys.
@@ -1512,7 +1512,7 @@ async function queueLength($: EngineInterface): Promise<number> {
 }
 
 // How many mails wait unread: cs delivers each as one .json file in the
-// session's mailbox new/, where it stays until `cs -mail read` moves it. The
+// session's mailbox new/, where it stays until `cs -msg` reads it. The
 // mailbox sits behind .cs/private in an encrypted session (where a locked
 // vault lists nothing) and in .cs/local otherwise; 0 when it cannot be read.
 async function unreadMail($: EngineInterface): Promise<number> {

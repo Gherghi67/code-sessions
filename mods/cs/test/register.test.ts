@@ -2971,7 +2971,7 @@ test('the queue word follows the task word and the key words, a separator before
 })
 
 // cs delivers each mail as one file in the mailbox's new/, where it stays
-// until `cs -mail read`, behind .cs/private in an encrypted session.
+// until `cs -msg` reads it, behind .cs/private in an encrypted session.
 const MAIL = '/work/.cs/local/mail'
 
 test('unread mail draws a dim mail word, counting only the .json files directly in new/', async () => {
