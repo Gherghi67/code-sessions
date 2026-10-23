@@ -476,10 +476,10 @@ export function register(on: On, options: PluginOptions) {
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
     // The rail draws whenever the conversation has two prompts to move
     // between, a turn running or not, under the same ownership as the keys;
-    // not at all while a stored band row is bad, which the lead's band says
-    // once.
+    // its bars draw not at all while a stored band row is bad, which the
+    // lead's band says once.
     const bars = bandOptions?.bars
-    let railing = !e.props.hasSurvey && prompts.length > 1 && bars !== undefined
+    let railing = !e.props.hasSurvey && prompts.length > 1
     if (bandProblem !== undefined && !bandProblemSaid && (await ownsRotation($))) {
       bandProblemSaid = true
       $.ui.toast(`cs: the band draws no prompt bars: ${bandProblem}. Set it in /config.`)
