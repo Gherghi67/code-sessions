@@ -3,7 +3,7 @@
 /* @jsxFrag Fragment */
 // ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
-// ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, draws a band with the elapsed time.
+// ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
 import type { On, EngineInterface } from 'claude-code'
 
 declare const h: any
@@ -16,34 +16,12 @@ declare const Fragment: any
 // the band alone. A value that is not a number is ignored.
 export const DEFAULT_PERCENT = 40
 
-// KEEP IN SYNC with _bg_shade and the `surface` arm of _sgr in
-// bin/cs-statusline: the band paints the bar's own capsule fill, a shade of the
-// terminal background nudged a tenth away from itself (darker on a light
-// terminal, lighter on a dark one), so the keys read as one more capsule of the
-// bar rather than as a row of the transcript. cs measures the background at
-// launch and exports it; without that measurement the band paints no fill, so a
-// guess can never leave the engine's own text on a surface it cannot read
-// against.
-export const SURFACE_SHIFT = 10
-
-export function surfaceColor(bg: string | undefined): string | undefined {
-  const parts = (bg ?? '').split(';')
-  if (parts.length !== 3) return undefined
-  const rgb = parts.map(part => (/^\s*\d{1,3}\s*$/.test(part) ? Number(part) : 256))
-  if (rgb.some(v => v > 255)) return undefined
-  const [r, g, b] = rgb
-  const shade = 2126 * r + 7152 * g + 722 * b >= 1275000
-    ? rgb.map(v => Math.floor(v * (100 - SURFACE_SHIFT) / 100))
-    : rgb.map(v => v + Math.floor((255 - v) * SURFACE_SHIFT / 100))
-  return `rgb(${shade.join(',')})`
-}
-
 // The count's colour ramp, in the status bar's inks. KEEP IN SYNC with _sgr in
 // bin/cs-statusline (tests/test_mod_rotate.sh pins every value here against
 // it): the session palette is Claude Code's /color, the tab colour cs sets;
 // amber and crit are the bar's warning and critical inks. Amber pivots on the
-// measured background's luminance (the ink pivot, not the surface one) and
-// falls back to the theme; crit follows the theme.
+// measured background's luminance and falls back to the theme; crit follows
+// the theme.
 export const SESSION_PALETTE: Record<string, string> = {
   red: '220,38,38', blue: '106,155,204', green: '22,163,74', yellow: '202,138,4',
   purple: '130,125,189', orange: '217,119,87', pink: '196,102,134', cyan: '8,145,178',
@@ -55,20 +33,6 @@ export const CRIT_DARK = '255,69,58'
 // Seconds left at which the count turns amber, and then crit (below CRIT_AT).
 export const AMBER_AT = 10
 export const CRIT_AT = 5
-// The pane's bar: one block per second of the grace.
-export const BAR_FULL = '\u2588'
-export const BAR_EMPTY = '\u2591'
-// The band's chip and caps, in the bar's inks. KEEP IN SYNC with _sgr in
-// bin/cs-statusline (tests/test_mod_rotate.sh pins them): brand is the Claude
-// coral the bar's mark wears, and white the chip's ink on a filled chip, softer
-// on a dark terminal as the bar's is. The coral is the session palette's
-// orange, so an orange session's chip keeps its colour once a handoff is armed.
-export const BRAND = SESSION_PALETTE.orange
-export const WHITE_LIGHT = '255,255,255'
-export const WHITE_DARK = '230,230,230'
-// The bar's rounded capsule ends, Powerline glyphs drawn in the fill they close.
-export const CAP_LEFT = '\ue0b6'
-export const CAP_RIGHT = '\ue0b4'
 
 // The colour the count wears with `left` seconds to go: the session's own
 // colour while there is time (none, so the surrounding ink, when the session
@@ -90,12 +54,6 @@ export function countdownColor(left: number, session: string | undefined, bg: st
 export function paletteColor(name: string | undefined): string | undefined {
   const rgb = name === undefined ? undefined : SESSION_PALETTE[name]
   return rgb === undefined ? undefined : `rgb(${rgb})`
-}
-
-// The pane's bar with `left` of GRACE_SECONDS still to run.
-export function countdownBar(left: number): string {
-  const full = Math.max(0, Math.min(GRACE_SECONDS, left))
-  return BAR_FULL.repeat(full) + BAR_EMPTY.repeat(GRACE_SECONDS - full)
 }
 
 // Doctor observes the mod RUNNING, not merely installed: under a managed
@@ -143,17 +101,6 @@ export const FORCE_DEFAULT = 80
 // (`cs -vet-session`, about 0.2 s measured) before the answer counts as a no.
 const VET_TIMEOUT_MS = 10000
 
-// The pane the first grace of a session opens beside the band: what the
-// handoff will do next, read while the count runs. It carries no keys, so
-// stopping the count stays on the band, and it closes whenever the count ends.
-// Shown once per load of the mod: later graces keep to the band. A pane the
-// mod opens on its own is not drawn below 144 columns (110 once the person has
-// opened it themselves), so on a narrow terminal the band is all there is.
-export const PREVIEW_PANE = 'cs-rotate-handoff'
-// The most text a Markdown element takes: a longer one refuses the whole tree,
-// and the pane would draw nothing (KEEP IN SYNC with MarkdownProps.text in
-// the mods type contract).
-export const MARKDOWN_LIMIT = 10000
 
 // The wrap key's question, and the answer that runs /wrap. `$.ui.ask` opens
 // the engine's own AskUserQuestion dialog and resolves to the label chosen, or
@@ -211,12 +158,12 @@ let bandIdle = false
 // Whether a turn was running when the band last drew: a queue started then
 // reaches its first stop without a prompt from the mod.
 let turnRunning = false
-// The preview's lines while its pane is open, and whether this load has shown it.
-let preview: Step | undefined
-let previewShown = false
-// Set while the mod's own /clear runs with the pane already closed, so the
-// /clear hook goes straight through (clearAndContinue).
-let paneChecked = false
+// The handoff whose next step the count has toasted, by its text: one toast
+// per armed handoff, so a count restarted for the same handoff (a prompt
+// stopped it, the next turn's end started it again) says nothing, and the
+// successor's own handoff, armed in the same process after the /clear, is
+// toasted in its turn.
+let stepToastedFor: string | undefined
 // Set while the mod's own /clear runs. The marker stays armed until the
 // successor's SessionStart consumes it, so the band still offers the button
 // meanwhile; a second /clear would end the conversation the handoff started,
@@ -257,7 +204,7 @@ let finishProblemShown = false
 
 export function register(on: On) {
   // A (re)load has no countdown: the engine cancelled the old one's timers.
-  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
+  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
   on('session.start', async ($, e, next) => {
@@ -348,9 +295,7 @@ export function register(on: On) {
   // next conversation a birth; a run the engine refuses makes nothing.
   on('command.run', { command: 'clear' }, async ($, e, next) => {
     clearSeen = true
-    if (ticker) stopCountdown($, false)
-    if (paneChecked) paneChecked = false
-    else await closeHandoffPane($)
+    if (ticker) stopCountdown($)
     try {
       return await next(e)
     } catch (err) {
@@ -368,41 +313,30 @@ export function register(on: On) {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const drawn = await withGateBand($, e, await next(e))
+    const drawn = await next(e)
     // The band draws in a new conversation before any of its turns end, so
     // the birth is settled here: a later /resume is not mistaken for it.
     await noteConversation($, await $.session.id())
     // A survey owns the band; a running turn cannot be rotated out of.
     turnRunning = e.props.isWorking
     bandIdle = !e.props.hasSurvey && !e.props.isWorking
-    if (!bandIdle) return drawn
+    // The /finish gate's word draws mid-turn, since the gate runs inside one,
+    // whatever else the band has to say.
+    const gate = await gateWord($)
     // The band draws on every redraw and asks cs nothing: it shows the last
     // answer cs gave (sessionVetted), which every step that acts asks afresh.
-    const armed = lastRefusal === undefined && (await handoffArmed($))
+    const armed = bandIdle && lastRefusal === undefined && (await handoffArmed($))
     const { context } = await $.session.usage()
     const percent = context.percent
-    const rotating = armed || (percent !== undefined && percent >= (await threshold($)))
+    let rotating = bandIdle && (armed || (percent !== undefined && percent >= (await threshold($))))
     // Tasks queued and nothing running them, at any context. An armed
     // handoff draws its clear key alone, so the count is not asked for then.
-    const waiting = armed ? 0 : await idleQueueLength($)
-    if (!rotating && waiting === 0) return drawn
-    if (!(await ownsRotation($))) return drawn
+    let waiting = !bandIdle || armed ? 0 : await idleQueueLength($)
+    if ((rotating || waiting > 0) && !(await ownsRotation($))) { rotating = false; waiting = 0 }
+    if (!rotating && waiting === 0 && gate === undefined) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
-    const fill = surfaceColor(await $.env.get("CS_TERM_BG_RGB"))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
-    // The chip is the band's identity, as the session name is the bar's: on
-    // the session colour, Claude coral once a handoff is armed so the /clear
-    // reads apart, and on the surface in the terminal's own ink for a session
-    // with no colour. The body keeps the surface either way, where the count's
-    // ramp keeps its contrast.
-    const chipFill = armed ? `rgb(${BRAND})` : own ?? fill
-    const chipInk = chipFill === fill
-      ? undefined
-      : `rgb(${(await $.env.get("CS_TERM_THEME")) === 'dark' ? WHITE_DARK : WHITE_LIGHT})`
-    // Caps close a fill on the terminal's own background, so they need both a
-    // fill and this machine's consent to the glyph.
-    const caps = fill !== undefined && chipFill !== undefined && (await capsWanted($))
     const { Box, Text, Button } = await $.ui.resolve(e)
     // The Buttons carry no hotkey: a bare digit pressed them from an empty
     // composer, where a digit typed as the answer to a numbered question
@@ -411,70 +345,39 @@ export function register(on: On) {
     // is spelled beside it, and only when keybindings.json binds one.
     const key = (action: string) => chords[action] !== undefined &&
       <Box marginRight={1}><Text bold color={own}>{chords[action]}</Text></Box>
-    // One capsule in the status bar's idiom: the cs chip, then the keys on the
-    // bar's own fill, a blank line above them so the band reads apart from the
-    // transcript. The context percentage is the bar's to carry; the band does
-    // not repeat it. The keyed box lights coral under the pointer; the engine
-    // restyles it without running the hook. It starts two columns in, where
-    // Claude Code draws the bar and the mode line under the prompt.
+    // One thin line, a blank line above it so it reads apart from the
+    // transcript: no fill, no chip, only the words that need a key now, the
+    // chords in the session colour and the rest dim. The context percentage is
+    // the bar's to carry; the band does not repeat it. It starts two columns
+    // in, where Claude Code draws the bar and the mode line under the prompt.
+    // A Button is a block: nested in a Text the engine refuses the whole tree
+    // (measured), so each separator stands beside its Button.
+    const counting = armed && left !== undefined
+    const wrapping = rotating && !armed && !wrapped
     return (
       <Box flexDirection="column">
         {drawn}
         <Box marginTop={1}>
           <Box key="cs-rotate-band" marginLeft={2}>
-            {caps && <Text color={chipFill}>{CAP_LEFT}</Text>}
-            <Box paddingX={1} backgroundColor={chipFill}><Text bold color={chipInk}>cs</Text></Box>
-            <Box key="cs-rotate-band-body" paddingX={1} backgroundColor={fill}>
+            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
+            {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
+            {counting && <Text dimColor>{'  ·  '}</Text>}
             {rotating && key(ROTATE_ACTION)}
             {rotating && (armed
               ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear and continue from the handoff"
                         onPress={() => pressClear($)} />
               : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
                         onPress={() => pressRotate($)} />)}
-            {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured), so the separator stands beside it */}
-            {rotating && !armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
-            {rotating && !armed && !wrapped && key(WRAP_ACTION)}
-            {rotating && !armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
+            {wrapping && <Text dimColor>{'  ·  '}</Text>}
+            {wrapping && key(WRAP_ACTION)}
+            {wrapping && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
             {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
-            {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
-            {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
-            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
-            {armed && left !== undefined && <Text dimColor>{'  \u00b7  '}</Text>}
-            {armed && left !== undefined && <Text bold color={await rampColor($, left)}>{`/clear in ${left}s`}</Text>}
-            </Box>
-            {caps && <Text color={fill}>{CAP_RIGHT}</Text>}
+            {waiting > 0 && rotating && <Text dimColor>{'  ·  '}</Text>}
+            {waiting > 0 && <Button key="cs-queue" plain label={`▤ queue ${waiting} · start`} onPress={() => pressQueueStart($)} />}
+            {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  ·  '}</Text>}
+            {gate !== undefined && <Text dimColor>{gate}</Text>}
           </Box>
         </Box>
-      </Box>
-    )
-  })
-
-  // The preview's body: the handoff's next step and the count. Any other pane,
-  // or this one once the count has ended, is not the mod's to draw.
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    if (e.requestId !== PREVIEW_PANE || preview === undefined) return next(e)
-    const { Box, Text, Markdown } = await $.ui.resolve(e)
-    // With one pane open the engine draws no title, so the pane carries its
-    // own, in the session's colour; the step is drawn as a reply's markdown is.
-    const own = paletteColor(await sessionColor($))
-    const color = left === undefined ? undefined : await rampColor($, left)
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Text key="header" bold color={own}>Handoff</Text>
-        <Box flexDirection="column" marginTop={1}>
-          <Markdown key="step" text={preview.text} />
-          {preview.cut && <Text key="cut" dimColor>… the rest of the step is in the handoff</Text>}
-        </Box>
-        {left !== undefined && (
-          <Box flexDirection="column" marginTop={1}>
-            <Box>
-              <Text key="bar" color={color}>{countdownBar(left)}</Text>
-              <Text>{'  '}</Text>
-              <Text key="count" bold color={color}>{`/clear in ${left}s`}</Text>
-            </Box>
-            <Text dimColor>press 1 to clear now, or send a prompt to stay</Text>
-          </Box>
-        )}
       </Box>
     )
   })
@@ -565,11 +468,8 @@ async function forceRotation($: EngineInterface) {
 // the button stays for the person.
 function startCountdown($: EngineInterface) {
   left = GRACE_SECONDS
-  if (!previewShown) {
-    previewShown = true
-    // From a timer: the count starts inside the turn's own hook.
-    $.clock.after(0, () => openPreview($))
-  }
+  // From a timer: the count starts inside the turn's own hook.
+  $.clock.after(0, () => toastNextStep($))
   ticker = $.clock.every(1000, async () => {
     // Nothing to count once stopped, and nothing below zero: a period that
     // lands while the zero tick is still reading leaves the count where it is.
@@ -582,98 +482,57 @@ function startCountdown($: EngineInterface) {
     // then does nothing, so nothing clears twice or behind a new turn.
     const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($)) && (await sessionVetted($, await $.session.cwd()))
     if (left !== 0) return
-    // The pane closes while the count still holds at zero, for the same
-    // reason: a prompt landing during the close stops the /clear.
-    if (idle) await closeHandoffPane($)
-    if (left !== 0) return
-    stopCountdown($, !idle)
-    if (idle) await clearAndContinue($, true).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
+    stopCountdown($)
+    if (idle) await clearAndContinue($).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
   })
 }
 
-// closePane false leaves the pane to a /clear path, which closes it with
-// closeHandoffPane and waits for that close.
-function stopCountdown($: EngineInterface, closePane = true) {
+function stopCountdown($: EngineInterface) {
   ticker?.cancel()
   ticker = undefined
   left = undefined
-  if (closePane && preview !== undefined) {
-    preview = undefined
-    $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
-  }
   $.ui.invalidate('ui.render')
 }
 
-// Before a /clear: closes the handoff pane and waits for the close. /clear does
-// not close a plugin's pane, and the pane can outlive the module that opened
-// it (a reload, as every install rewrites the mod, leaves the engine holding
-// the pane while the module holds no count), so the engine's own list decides
-// as well as this module's state (#909).
-// A close resolves when a ui.close hook answers for the pane and keeps it, so
-// the engine's list says whether the pane went.
-async function closeHandoffPane($: EngineInterface) {
-  const open = preview !== undefined || (await handoffPaneListed($))
-  preview = undefined
-  if (!open) return
-  try {
-    await $.ui.close({ id: PREVIEW_PANE })
-  } catch (err) {
-    $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`)
-    return
-  }
-  if (await handoffPaneListed($)) $.ui.toast('cs: the handoff pane did not close: a hook kept it open')
-}
-
-async function handoffPaneListed($: EngineInterface) {
-  try {
-    return (await $.ui.panes()).some(p => p.id === PREVIEW_PANE)
-  } catch (err) {
-    $.ui.toast(`cs: could not list the open panes: ${String(err)}`)
-    return false
-  }
-}
-
-// Opens the preview for the count that scheduled it, if that count still runs.
-async function openPreview($: EngineInterface) {
+// Toasts the armed handoff's next step for the count that scheduled it, if
+// that count still runs and the handoff has not been toasted: what the next
+// conversation will do, read while the count runs. A handoff with no next step
+// toasts nothing.
+async function toastNextStep($: EngineInterface) {
   if (ticker === undefined) return
   const text = await armedHandoff($)
-  if (text === undefined || ticker === undefined) return
-  preview = nextStep(text)
-  await $.ui.open({ id: PREVIEW_PANE, title: 'Handoff' })
-  // The count can end while the open is in flight, and its close may reach the
-  // engine first: a pane that lands after its count is closed here, since
-  // nothing else will close it.
-  if (preview === undefined) {
-    await $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
-  }
+  if (text === undefined || text === stepToastedFor || ticker === undefined) return
+  stepToastedFor = text
+  const line = nextStepLine(text)
+  if (line !== undefined) $.ui.toast(`cs: next step: ${line}`)
 }
 
-// A handoff's next step as the pane shows it: the section's markdown, and
-// whether MARKDOWN_LIMIT cut it short.
-export type Step = { text: string; cut: boolean }
+// How much of the next step the toast carries: one line, cut past this.
+export const NEXT_STEP_CHARS = 160
 
-// The handoff's Next Step section (`# Next Step`, `## 1. Next Step`) as
-// written, blank lines and all, trimmed of the blank lines around it; empty
-// when it has none. Past MARKDOWN_LIMIT it keeps the whole lines that fit.
-export function nextStep(text: string): Step {
+// The first line of the handoff's Next Step section (`# Next Step`, `## 1.
+// Next Step`), trimmed, cut to NEXT_STEP_CHARS with an ellipsis; undefined
+// when the handoff has no such section or the section is empty. A `#` line
+// inside a fenced block (a shell comment in a command block) is the step's
+// text, not the next section, and a line that opens or closes a fence is not
+// the step's first line.
+export function nextStepLine(text: string): string | undefined {
   const lines = text.split('\n')
   const start = lines.findIndex(line => /^#+\s*(\d+\.\s*)?next step\s*$/i.test(line.trim()))
-  if (start < 0) return { text: '', cut: false }
-  const body: string[] = []
-  // A `#` line inside a fenced block (a shell comment in a command block) is
-  // the step's text, not the next section.
+  if (start < 0) return undefined
   let fence: string | undefined
   for (const line of lines.slice(start + 1)) {
     const marker = /^\s*(```|~~~)/.exec(line)?.[1]
-    if (marker !== undefined) fence = fence === undefined ? marker : fence === marker ? undefined : fence
-    else if (fence === undefined && /^#+\s/.test(line)) break
-    body.push(line.trimEnd())
+    if (marker !== undefined && (fence === undefined || fence === marker)) {
+      fence = fence === undefined ? marker : undefined
+      continue
+    }
+    if (fence === undefined && /^#+\s/.test(line)) return undefined
+    const first = line.trim()
+    if (first === '') continue
+    return first.length > NEXT_STEP_CHARS ? `${first.slice(0, NEXT_STEP_CHARS)}\u2026` : first
   }
-  const step = body.join('\n').replace(/^\n+/, '').trimEnd()
-  if (step.length <= MARKDOWN_LIMIT) return { text: step, cut: false }
-  // a line longer than the bound has no line end to stop at: cut at the bound
-  const end = step.lastIndexOf('\n', MARKDOWN_LIMIT)
-  return { text: end > 0 ? step.slice(0, end).trimEnd() : step.slice(0, MARKDOWN_LIMIT), cut: true }
+  return undefined
 }
 
 // The band's own threshold; without one it is the bar's warn band, read the way
@@ -788,22 +647,6 @@ async function rampColor($: EngineInterface, secs: number): Promise<string | und
 async function sessionColor($: EngineInterface): Promise<string | undefined> {
   const state = await readState($)
   return state?.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
-}
-
-// Whether this machine has said its font has the bar's cap glyphs: the
-// statusline's own rule (_caps_wanted in bin/cs-statusline, KEEP IN SYNC).
-// CS_STATUSLINE_CAPS=1 or 0 decides; otherwise the per-machine answer file
-// holding `on`. Unanswered, or unreadable, means square ends.
-async function capsWanted($: EngineInterface): Promise<boolean> {
-  const forced = await $.env.get("CS_STATUSLINE_CAPS")
-  if (forced === '1') return true
-  if (forced === '0') return false
-  const config = (await $.env.get("XDG_CONFIG_HOME")) || `${await $.env.get("HOME")}/.config`
-  try {
-    return (await $.fs.read(`${config}/cs/statusline-caps`)).split('\n')[0] === 'on'
-  } catch {
-    return false // no answer file: unanswered
-  }
 }
 
 // The engine actions the band's Buttons answer to. They carry no default
@@ -1105,33 +948,26 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
 // The clear button's press: the /clear runs only once cs says it trusts the
 // session's control files, as at a countdown's zero. The press stops the count
 // before it asks, so the zero tick cannot clear while cs answers, and only the
-// latest press acts. It closes the pane before asking again whether a prompt
-// came, as the zero tick does: a prompt landing during the close is a new turn.
+// latest press acts.
 async function pressClear($: EngineInterface) {
   if (clearing) return
-  if (ticker) stopCountdown($, false)
+  if (ticker) stopCountdown($)
   const press = ++pressCount
   const vetted = await sessionVetted($, await $.session.cwd())
   if (press !== pressCount) return
   if (!vetted) return stopCountdown($)
-  await closeHandoffPane($)
-  if (press !== pressCount) return
-  await clearAndContinue($, true)
+  await clearAndContinue($)
 }
 
 // /clear ends this conversation, and cs's SessionStart hook then starts the
 // armed handoff's next step in the new one.
 // Measured: the run resolves once the screen has cleared and a new transcript
-// is open; the marker is the hook's to consume.
-// paneClosed: the caller has closed the pane already. From the count stopping
-// to the run nothing here waits, and paneChecked tells the /clear hook the
-// pane is done with, so it does not wait either: a prompt landing in such a
-// wait would find no count to stop, and the /clear would follow it.
-async function clearAndContinue($: EngineInterface, paneClosed = false) {
+// is open; the marker is the hook's to consume. From the count stopping to
+// the run nothing here waits: a prompt landing in such a wait would find no
+// count to stop, and the /clear would follow it.
+async function clearAndContinue($: EngineInterface) {
   clearSeen = true
-  if (ticker) stopCountdown($, false)
-  if (!paneClosed) await closeHandoffPane($)
-  paneChecked = true
+  if (ticker) stopCountdown($)
   clearing = true
   try {
     await $.command.run({ command: 'clear', args: '' })
@@ -1139,7 +975,6 @@ async function clearAndContinue($: EngineInterface, paneClosed = false) {
     clearSeen = false
     throw err
   } finally {
-    paneChecked = false
     clearing = false
   }
 }
@@ -1260,22 +1095,10 @@ export function gateElapsed(secs: number): string {
   return `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`
 }
 
-// The gate band under what the engine drew, while a /finish gate runs; the
-// drawing itself, untouched, at any other time. It draws mid-turn, since the
-// gate runs inside one, on the status bar's capsule fill as the rotation band.
-async function withGateBand($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], drawn: unknown) {
-  if (finishGate === undefined) return drawn
-  const { Box, Text } = await $.ui.resolve(e)
-  const fill = surfaceColor(await $.env.get("CS_TERM_BG_RGB"))
+// The band's word while a /finish gate runs: the task and the time since
+// the gate started; undefined at any other time.
+async function gateWord($: EngineInterface): Promise<string | undefined> {
+  if (finishGate === undefined) return undefined
   const secs = Math.max(0, Math.floor((await $.clock.now()) / 1000) - finishGate.since)
-  return (
-    <Box flexDirection="column">
-      {drawn}
-      <Box marginTop={1}>
-        <Box paddingX={1} backgroundColor={fill}>
-          <Text>{`finishing ${cutTask(finishGate.task)} · gate ${gateElapsed(secs)}`}</Text>
-        </Box>
-      </Box>
-    </Box>
-  )
+  return `finishing ${cutTask(finishGate.task)} \u00b7 gate ${gateElapsed(secs)}`
 }

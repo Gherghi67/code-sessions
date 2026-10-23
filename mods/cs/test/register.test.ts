@@ -1,12 +1,12 @@
 // ABOUTME: Unit tests for the cs mod against a fake engine `$`.
-// ABOUTME: Covers the band's gate (crit, working, survey), the three presses and the wrap key's two-press guard, the armed handoff, the heartbeat, /queue, and the /finish toasts and gate band.
+// ABOUTME: Covers the band's gate (crit, working, survey), the three presses and the wrap key's two-press guard, the armed handoff and its next-step toast, the heartbeat, /queue, and the /finish toasts and gate word.
 import { test, expect, beforeEach } from 'bun:test'
 
 // The plugin realm provides `h` and `Fragment` as globals; the test does the same.
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, DEFAULT_PERCENT, GRACE_SECONDS, PREVIEW_PANE, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, MARKDOWN_LIMIT, nextStep, surfaceColor, isUnconsumed } from '../hooks/register.tsx'
+import { register, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -34,9 +34,8 @@ let invalidated: string[]
 let toasts: string[]
 let logs: string[]
 let asks: { question: string; options: any }[]
-let panes: { op: 'open' | 'close'; args: any }[]
-// The engine's own record of this plugin's open panes, as `$.ui.panes()` answers.
-let enginePanes: { id: string; title: string }[]
+// Every pane call the mod makes: it opens, closes and lists none.
+let panes: { op: 'open' | 'close' | 'panes'; args?: any }[]
 // What the person does with the next dialog: a label, or a rejection (dismissed, or a `-p` run).
 let answer: string | Error
 // What the person answers to the queue's "how should the tasks run" question.
@@ -90,13 +89,13 @@ const $ = {
     },
   },
   ui: {
-    resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
+    resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }),
     invalidate: (event: string) => { invalidated.push(event) },
     toast: (text: string) => { toasts.push(text) },
     log: (text: string) => { logs.push(text) },
     open: async (args: any) => { panes.push({ op: 'open', args }) },
-    close: async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) },
-    panes: async () => enginePanes,
+    close: async (args: any) => { panes.push({ op: 'close', args }) },
+    panes: async () => { panes.push({ op: 'panes' }); return [] },
     ask: async (question: string, options: any) => {
       asks.push({ question, options })
       const reply = question === QUEUE_MODE_QUESTION ? modeAnswer : answer
@@ -137,7 +136,7 @@ const findButton = (tree: any) => buttons(tree)[0]
 beforeEach(() => {
   for (const k of Object.keys(hooks)) delete hooks[k]
   percent = undefined; filled = []; ran = []; written = {}; existing = new Set(['/work/.cs/local'])
-  timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []; enginePanes = []
+  timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
   nowMs = 1_800_000_000_000; livePids = new Set()
@@ -274,53 +273,66 @@ test('the band draws no context gauge: the status bar already carries it', async
   expect(tree).not.toContain('71%')
 })
 
-// One blank line above it, and the status bar's own capsule surface under it,
-// so the keys read as a band of their own rather than as the last row of
-// whatever the transcript ended with.
-test('the band sits a line clear of what is above it, on the bar\'s capsule surface', async () => {
-  envVars.CS_TERM_BG_RGB = '252;247;229'
-  percent = 40
-  const tree = JSON.stringify(await band())
-  expect(tree).toContain('"marginTop":1')
-  expect(tree).toContain('"backgroundColor":"rgb(226,222,206)"')
-})
-
 // Claude Code draws its footer (the status bar and the mode line) two columns
 // in from the prompt's rule (measured on 2.1.292); the band starts in the same
 // column so the twins line up.
+const boxes = (tree: any): any[] => {
+  if (!tree || typeof tree !== 'object') return []
+  const own = tree.type === 'Box' ? [tree] : []
+  return [...own, ...(tree.children ?? []).flatMap(boxes)]
+}
+
 test('the band starts in the status bar\'s column, two in from the prompt\'s rule', async () => {
   percent = 40
   const tree = await band()
   expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band').props.marginLeft).toBe(2)
 })
 
-test('without a measured terminal background the band keeps the spacing and paints no surface', async () => {
+// The chord is the one pressable thing a word has, so it alone wears the
+// session colour; the labels are the engine's plain Buttons and the
+// separators dim.
+test('the chords are bold in the session colour, the separators dim, and nothing else is coloured', async () => {
+  envVars.HOME = '/home'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   percent = 40
   const tree = await band()
-  expect(JSON.stringify(tree)).toContain('"marginTop":1')
-  // the body has no surface to paint; the chip's session colour needs no measurement
-  expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band-body').props.backgroundColor).toBeUndefined()
-  expect(chip(tree).props.backgroundColor).toBe('rgb(220,38,38)')
+  for (const chord of ['ctrl+x 1', 'ctrl+x 2']) {
+    expect(texts(tree).find((t: any) => textOf(t) === chord).props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
+  }
+  const separators = texts(tree).filter((t: any) => textOf(t) === '  \u00b7  ')
+  expect(separators).toHaveLength(1)
+  expect(separators[0].props).toEqual({ dimColor: true })
+  expect(texts(tree).filter((t: any) => t.props.color !== undefined).map(textOf)).toEqual(['ctrl+x 1', 'ctrl+x 2'])
 })
 
-// KEEP IN SYNC with _bg_shade in bin/cs-statusline (tests/test_mod_rotate.sh
-// pins the shift against that file): a tenth away from the background's own
-// luminance, darker on a light terminal and lighter on a dark one.
-test('the surface is the shade the status bar shades the terminal background to', () => {
-  expect(surfaceColor('252;247;229')).toBe('rgb(226,222,206)')
-  expect(surfaceColor('30;30;30')).toBe('rgb(52,52,52)')
-  expect(surfaceColor(undefined)).toBeUndefined()
-  expect(surfaceColor('not a colour')).toBeUndefined()
-  expect(surfaceColor('252;247')).toBeUndefined()
-  expect(surfaceColor('252;247;300')).toBeUndefined()
+// With a handoff armed and its count running, the line reads
+// `/clear in 20s  ·  ctrl+x 1 /clear and continue from the handoff`: the
+// count first, then the key.
+test('armed and counting, the countdown is the first word, a separator between it and the key', async () => {
+  envVars.HOME = '/home'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1' })
+  await startGrace()
+  const tree = await band()
+  expect(words(tree)).toEqual([`/clear in ${GRACE_SECONDS}s`, '  \u00b7  ', 'ctrl+x 1'])
+  const json = JSON.stringify(tree)
+  expect(json.indexOf(`/clear in ${GRACE_SECONDS}s`)).toBeLessThan(json.indexOf('/clear and continue from the handoff'))
+  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['/clear and continue from the handoff'])
 })
 
-// A bare line: no box to draw, so no border to light up under the pointer and
-// no Claude mark in front of the keys. The key stays: it is the band's identity.
-test('the capsule is a keyed box with no border, no hover and no Claude mark', async () => {
+// One thin line, a blank line above it: no fill, whatever the terminal
+// background measures, no chip, no caps, no border, no Claude mark. The key
+// stays: it is the band's identity.
+test('the band is one thin line: a keyed box with no fill, chip, caps, border, hover or Claude mark', async () => {
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  envVars.CS_STATUSLINE_CAPS = '1'
   percent = 40
   const tree = JSON.stringify(await band())
+  expect(tree).toContain('"marginTop":1')
   expect(tree).toContain('"key":"cs-rotate-band"')
+  expect(tree).not.toContain('backgroundColor')
+  expect(tree).not.toContain('"cs"')
+  expect(tree).not.toContain('\ue0b6')
+  expect(tree).not.toContain('\ue0b4')
   expect(tree).not.toContain('borderStyle')
   expect(tree).not.toContain('borderColor')
   expect(tree).not.toContain('hover')
@@ -328,102 +340,6 @@ test('the capsule is a keyed box with no border, no hover and no Claude mark', a
   expect(tree).not.toContain('"claude"')
 })
 
-// The band is the status bar's twin: a `cs` chip on the session's own colour
-// leads the capsule, as the session name leads the bar, and the keys are
-// spelled bold in that colour on the bar's surface. Armed, the chip turns
-// Claude coral, the bar's brand ink, so the armed /clear reads apart; the body
-// keeps the surface so the count's ramp keeps its contrast.
-const boxes = (tree: any): any[] => {
-  if (!tree || typeof tree !== 'object') return []
-  const own = tree.type === 'Box' ? [tree] : []
-  return [...own, ...(tree.children ?? []).flatMap(boxes)]
-}
-const chip = (tree: any) => boxes(tree).find((b: any) => (b.children ?? []).some((c: any) => c?.type === 'Text' && textOf(c) === 'cs'))
-const chipText = (tree: any) => texts(chip(tree)).find((t: any) => textOf(t) === 'cs')
-
-test('a cs chip on the session colour leads the band, the keys bold in that colour', async () => {
-  envVars.HOME = '/home'
-  envVars.CS_TERM_BG_RGB = '252;247;229'
-  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
-  percent = 40
-  const tree = await band()
-  expect(chip(tree).props.backgroundColor).toBe('rgb(220,38,38)')
-  expect(chipText(tree).props.bold).toBe(true)
-  expect(chipText(tree).props.color).toBe('rgb(255,255,255)')
-  const key = texts(tree).find((t: any) => textOf(t) === 'ctrl+x 1')
-  expect(key.props.bold).toBe(true)
-  expect(key.props.color).toBe('rgb(220,38,38)')
-  // the chip comes before every key and Button
-  const order = JSON.stringify(tree)
-  expect(order.indexOf('"cs"')).toBeLessThan(order.indexOf('strip:jump1'))
-  expect(order.indexOf('"cs"')).toBeLessThan(order.indexOf('ctrl+x 1'))
-})
-
-test('the chip\'s white softens on a dark terminal, as the bar\'s does', async () => {
-  envVars.CS_TERM_THEME = 'dark'
-  percent = 40
-  expect(chipText(await band()).props.color).toBe('rgb(230,230,230)')
-})
-
-test('a session with no colour in the palette gets the chip on the surface, in the terminal\'s own ink', async () => {
-  envVars.CS_TERM_BG_RGB = '252;247;229'
-  files['/work/.cs/local/state'] = 'claude_session_id: uuid-lead\n'
-  percent = 40
-  const tree = await band()
-  expect(chip(tree).props.backgroundColor).toBe('rgb(226,222,206)')
-  expect(chipText(tree).props.color).toBeUndefined()
-  expect(chipText(tree).props.bold).toBe(true)
-})
-
-test('an armed handoff turns the chip Claude coral and keeps the body on the surface', async () => {
-  envVars.CS_TERM_BG_RGB = '252;247;229'
-  arm(); percent = 90
-  const tree = await band()
-  expect(chip(tree).props.backgroundColor).toBe('rgb(217,119,87)')
-  expect(chipText(tree).props.color).toBe('rgb(255,255,255)')
-  expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band-body').props.backgroundColor).toBe('rgb(226,222,206)')
-})
-
-// The rounded ends are the bar's Powerline caps, U+E0B6 and U+E0B4, drawn in
-// the fill they close on the terminal's own background. They wait on the
-// same consent the bar's do: CS_STATUSLINE_CAPS=1/0, else the per-machine
-// answer file holding `on`. Without a measured background there is no fill
-// to close, so no caps either.
-const CAP_L = ''
-const CAP_R = ''
-const CAPS_FILE = '/home/.config/cs/statusline-caps'
-const caps = async () => {
-  const drawn = texts(await band())
-  return [drawn.find((t: any) => textOf(t) === CAP_L)?.props.color, drawn.find((t: any) => textOf(t) === CAP_R)?.props.color]
-}
-
-test('the band draws the bar\'s rounded caps in the fills they close, where the bar would', async () => {
-  envVars.HOME = '/home'
-  envVars.CS_TERM_BG_RGB = '252;247;229'
-  percent = 40
-  envVars.CS_STATUSLINE_CAPS = '1'
-  expect(await caps()).toEqual(['rgb(220,38,38)', 'rgb(226,222,206)'])
-  envVars.CS_STATUSLINE_CAPS = '0'
-  files[CAPS_FILE] = 'on\n'
-  expect(await caps()).toEqual([undefined, undefined])
-  delete envVars.CS_STATUSLINE_CAPS
-  expect(await caps()).toEqual(['rgb(220,38,38)', 'rgb(226,222,206)'])
-  envVars.XDG_CONFIG_HOME = '/xdg'
-  expect(await caps()).toEqual([undefined, undefined])
-  files['/xdg/cs/statusline-caps'] = 'on\n'
-  expect(await caps()).toEqual(['rgb(220,38,38)', 'rgb(226,222,206)'])
-  files['/xdg/cs/statusline-caps'] = 'off\n'
-  expect(await caps()).toEqual([undefined, undefined])
-  arm()
-  files['/xdg/cs/statusline-caps'] = 'on\n'
-  expect(await caps()).toEqual(['rgb(217,119,87)', 'rgb(226,222,206)'])
-})
-
-test('without a measured background the band draws no caps, whatever the consent', async () => {
-  envVars.CS_STATUSLINE_CAPS = '1'
-  percent = 40
-  expect(await caps()).toEqual([undefined, undefined])
-})
 
 test('while a turn runs the button is hidden', async () => {
   percent = 90
@@ -1550,295 +1466,8 @@ test('no button is ever nested in a Text, armed or not', async () => {
 // while armed: each press only re-arms, the window restarts, nothing is typed,
 // and the confirmation sits on `3`.
 
-// The first grace of a session opens a pane beside the band that shows what
-// the handoff will do next, so the twenty seconds are spent reading it. The
-// pane carries no keys: stopping the count stays on the band. Later graces in
-// the same session keep to the band alone.
-const pane = (requestId = PREVIEW_PANE) =>
-  hooks['ui.render:Pane']($, { requestId, props: { title: 'Handoff', isFocused: false, bodyColumns: 60, placement: 'dock' } }, async () => DRAWN)
-const HANDOFF_WITH_STEP = '---\nparent: uuid-lead\nstatus: unconsumed\n---\n\n# Next Step\n\nRun the secrets suites solo.\nTriage the store file.\n\n# Settled\n\nNothing.\n'
-
-test('the first grace in a session opens the handoff pane from a timer, and it shows the next step and the count', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); files[HANDOFF] = HANDOFF_WITH_STEP; percent = 80
-  await band()
-  await turnComplete()
-  expect(panes).toEqual([])
-  await fireAfter()
-  expect(panes).toEqual([{ op: 'open', args: { id: PREVIEW_PANE, title: 'Handoff' } }])
-  const body = JSON.stringify(await pane())
-  expect(body).toContain('Run the secrets suites solo.')
-  expect(body).toContain('Triage the store file.')
-  expect(body).not.toContain('Settled')
-  expect(body).toContain(`/clear in ${GRACE_SECONDS}s`)
-  expect(buttons(await pane())).toEqual([])
-  await tick(2)
-  expect(JSON.stringify(await pane())).toContain(`/clear in ${GRACE_SECONDS - 2}s`)
-})
-
-test('any end of the count closes the pane: a prompt, a press, zero', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  await band(); await turnComplete(); await fireAfter()
-  await promptSubmit()
-  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
-
-  register(on as any); panes = []
-  arm()
-  await band(); await turnComplete(); await fireAfter()
-  await findButton(await band()).props.onPress()
-  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
-
-  register(on as any); panes = []; ran = []
-  arm()
-  await band(); await turnComplete(); await fireAfter()
-  await tick(GRACE_SECONDS)
-  expect(ran).toEqual([{ command: 'clear', args: '' }])
-  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
-})
-
-// A pane outlives the module that opened it: a reload (every install rewrites
-// the mod) leaves the engine holding the pane while the module holds no count.
-// /clear does not close a plugin's pane by itself, so every /clear path asks
-// the engine what is open and closes the handoff pane, and waits for that close
-// before the /clear runs.
-test('a /clear closes a handoff pane the engine still holds, before the /clear runs', async () => {
-  const order: string[] = []
-  $.ui.close = async (args: any) => { order.push(`close:${args.id}`); panes.push({ op: 'close', args }) }
-  $.command.run = async (args: any) => { order.push(`run:${args.command}`); ran.push(args); return { text: '' } }
-  try {
-    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
-    await findButton(await band()).props.onPress()
-    expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
-
-    order.length = 0
-    await hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => { order.push('run:clear'); return { text: '' } })
-    expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
-  } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
-    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
-  }
-})
-
-test('the /clear waits for the pane close to land', async () => {
-  let land!: () => void
-  const order: string[] = []
-  $.ui.close = (args: any) => new Promise<void>(resolve => { land = () => { order.push(`close:${args.id}`); resolve() } })
-  $.command.run = async (args: any) => { order.push(`run:${args.command}`); ran.push(args); return { text: '' } }
-  try {
-    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
-    const press = findButton(await band()).props.onPress()
-    await new Promise(r => setTimeout(r, 0))
-    expect(order).toEqual([])
-    land()
-    await press
-    expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
-  } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
-    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
-  }
-})
-
-// The zero tick holds the count at zero while it closes the pane: a prompt
-// landing during that close stops the count, and no /clear follows it.
-test('a prompt landing while the zero tick closes the pane stops the /clear', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  let land!: () => void
-  $.ui.close = (args: any) => new Promise<void>(resolve => { land = () => { panes.push({ op: 'close', args }); resolve() } })
-  try {
-    await band(); await turnComplete(); await fireAfter()
-    await tick(GRACE_SECONDS - 1)
-    const zero = ticker()!.fn()
-    await new Promise(r => setTimeout(r, 0))
-    await promptSubmit()
-    land()
-    await zero
-  } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
-  }
-  expect(ran).toEqual([])
-  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
-})
-
-// A press closes the pane before its /clear as the zero tick does: a prompt
-// landing during that close is a new turn, and no /clear follows it.
-test('a prompt landing while a press closes the pane stops the /clear', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  let land!: () => void
-  let closing!: () => void
-  const closeAsked = new Promise<void>(r => { closing = r })
-  $.ui.close = (args: any) => new Promise<void>(resolve => { closing(); land = () => { panes.push({ op: 'close', args }); resolve() } })
-  try {
-    await band(); await turnComplete(); await fireAfter()
-    await tick(2)
-    const press = findButton(await band()).props.onPress()
-    await closeAsked
-    await promptSubmit()
-    land()
-    await press
-  } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
-  }
-  expect(ran).toEqual([])
-})
-
-// A /clear in flight is the mod's last word on this conversation: the marker
-// stays armed until the successor's SessionStart consumes it, so the band still
-// offers the button, and a second /clear would wipe the successor the handoff
-// just started.
-test('a press while the zero tick\'s /clear is in flight runs no second /clear', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  await band(); await turnComplete()
-  await tick(GRACE_SECONDS - 1)
-  let started!: () => void
-  const clearStarted = new Promise<void>(r => { started = r })
-  let finish!: () => void
-  const held = new Promise<void>(r => { finish = r })
-  const run = $.command.run
-  $.command.run = async (args: any) => { ran.push(args); started(); await held; return { text: '' } }
-  try {
-    const zero = ticker()!.fn()
-    await clearStarted
-    const press = findButton(await band())?.props.onPress()
-    finish()
-    await zero; await press
-  } finally { $.command.run = run }
-  expect(ran).toEqual([{ command: 'clear', args: '' }])
-})
-
-test('a second press while the first press\'s /clear is in flight runs no second /clear', async () => {
-  arm(); percent = 3
-  let started!: () => void
-  const clearStarted = new Promise<void>(r => { started = r })
-  let finish!: () => void
-  const held = new Promise<void>(r => { finish = r })
-  const run = $.command.run
-  $.command.run = async (args: any) => { ran.push(args); started(); await held; return { text: '' } }
-  try {
-    const first = findButton(await band()).props.onPress()
-    await clearStarted
-    const second = findButton(await band())?.props.onPress()
-    finish()
-    await first; await second
-  } finally { $.command.run = run }
-  expect(ran).toEqual([{ command: 'clear', args: '' }])
-})
-
-// Once the zero tick has closed the pane and stopped the count, nothing of the
-// mod's waits before the /clear runs, its own /clear hook included: a prompt
-// landing in such a wait would find no count to stop.
-test('after the zero tick closes the pane, the /clear runs before a later prompt', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  const order: string[] = []
-  let queries = 0
-  $.ui.panes = () => (++queries === 1 ? Promise.resolve(enginePanes) : new Promise<any>(() => {}))
-  $.command.run = async (args: any) =>
-    hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'plugin' }, presentation: { layout: 'main', columns: 80 } }, async () => { order.push('clear'); ran.push(args); return { text: '' } })
-  try {
-    await band(); await turnComplete(); await fireAfter()
-    await tick(GRACE_SECONDS - 1)
-    const zero = ticker()!.fn()
-    await new Promise(r => setTimeout(r, 0))
-    order.push('prompt'); await promptSubmit()
-    await Promise.race([zero, new Promise(r => setTimeout(r, 10))])
-  } finally {
-    $.ui.panes = async () => enginePanes
-    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
-  }
-  expect(order).toEqual(['clear', 'prompt'])
-})
-
-// A ui.close hook that answers without next keeps the pane open, and the close
-// still resolves: the engine's list says whether the pane went.
-test('a close that leaves the pane listed says so, and the /clear still runs', async () => {
-  $.ui.close = async (args: any) => { panes.push({ op: 'close', args }) }
-  try {
-    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
-    await findButton(await band()).props.onPress()
-  } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
-  }
-  expect(toasts).toEqual(['cs: the handoff pane did not close: a hook kept it open'])
-  expect(ran).toEqual([{ command: 'clear', args: '' }])
-})
-
-// The open is a round trip: a prompt landing while it is in flight stops the
-// count and asks for a close that the engine may apply before the open lands.
-// A pane opened after its count ended must still be closed, or nothing ever
-// closes it.
-test('a count that ends while the pane is still opening closes the pane once it lands', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  let land!: () => void
-  $.ui.open = (args: any) => new Promise<void>(resolve => { land = () => { panes.push({ op: 'open', args }); resolve() } })
-  try {
-    await band(); await turnComplete()
-    const opening = fireAfter()
-    await new Promise(r => setTimeout(r, 0))
-    await promptSubmit()
-    land()
-    await opening
-  } finally {
-    $.ui.open = async (args: any) => { panes.push({ op: 'open', args }) }
-  }
-  expect(panes.map(p => p.op)).toContain('open')
-  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
-})
-
-test('a later grace in the same session keeps to the band: the pane opens once', async () => {
-  envVars.CS_ROTATE_FORCE_CTX = '70'
-  arm(); percent = 80
-  await band(); await turnComplete(); await fireAfter()
-  await promptSubmit()
-  await turnComplete(); await fireAfter()
-  expect(ticker()).toBeDefined()
-  expect(panes.filter(p => p.op === 'open')).toHaveLength(1)
-})
-
-test('a pane drawn for any other id passes through, and a closed preview draws nothing of its own', async () => {
-  expect(await pane('someone-else')).toBe(DRAWN)
-  expect(await pane()).toBe(DRAWN)
-})
-
-test('nextStep reads the handoff\'s Next Step section as written, however it is numbered', () => {
-  expect(nextStep(HANDOFF_WITH_STEP)).toEqual({ text: 'Run the secrets suites solo.\nTriage the store file.', cut: false })
-  expect(nextStep('---\nstatus: unconsumed\n---\n\n## 1. Next Step\n\nOne thing.\n\n- a\n- b\n')).toEqual({ text: 'One thing.\n\n- a\n- b', cut: false })
-  expect(nextStep('---\nstatus: unconsumed\n---\n\nNo heading here.\n')).toEqual({ text: '', cut: false })
-  // no line cap: 300 lines come through whole
-  const long = '# Next Step\n\n' + Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n') + '\n\n# Settled\n\nNothing.\n'
-  expect(nextStep(long).text.split('\n')).toHaveLength(300)
-  expect(nextStep(long).cut).toBe(false)
-})
-
-test('a step past the engine\'s markdown bound is cut at a line and says so', () => {
-  const line = 'x'.repeat(99)
-  const huge = '# Next Step\n\n' + Array.from({ length: 200 }, () => line).join('\n') + '\n'
-  const step = nextStep(huge)
-  expect(step.cut).toBe(true)
-  expect(step.text.length).toBeLessThanOrEqual(MARKDOWN_LIMIT)
-  expect(step.text.split('\n').every(l => l === line)).toBe(true)
-  expect(step.text.split('\n')).toHaveLength(100)
-  // one line past the bound has no line to stop at: it is cut at the bound
-  const wide = nextStep('# Next Step\n\n' + 'y'.repeat(MARKDOWN_LIMIT + 50) + '\n')
-  expect(wide).toEqual({ text: 'y'.repeat(MARKDOWN_LIMIT), cut: true })
-})
-
-test('a # line inside a fenced block belongs to the step, not to a new section', () => {
-  const step = '## Next Step\n\nRun:\n\n```bash\n# build first\n./build.sh\n```\n\n~~~\n## not a heading\n~~~\nThen merge.\n\n## Settled\n\nNothing.\n'
-  expect(nextStep(step)).toEqual({ text: 'Run:\n\n```bash\n# build first\n./build.sh\n```\n\n~~~\n## not a heading\n~~~\nThen merge.', cut: false })
-})
-
-test('nextStep keeps an indented first line\'s indent', () => {
-  expect(nextStep('# Next Step\n\n    make test\n\nThen merge.\n').text).toBe('    make test\n\nThen merge.')
-})
-
 // The count's colour ramp: the session's own colour while there is time, the
-// bar's amber from ten seconds, its crit red under five. The band's
-// `/clear in Ns` and the pane's bar and count wear it alike. Inks KEEP IN SYNC
+// bar's amber from ten seconds, its crit red under five. Inks KEEP IN SYNC
 // with _sgr in bin/cs-statusline (tests/test_mod_rotate.sh pins them).
 function texts(tree: any): any[] {
   if (!tree || typeof tree !== 'object') return []
@@ -1847,11 +1476,7 @@ function texts(tree: any): any[] {
   return [...own, ...(tree.children ?? []).flatMap(texts)]
 }
 const textOf = (node: any): string => (node.children ?? []).map((c: any) => typeof c === 'string' ? c : '').join('')
-function markdowns(tree: any): any[] {
-  if (!tree || typeof tree !== 'object') return []
-  if (Array.isArray(tree)) return tree.flatMap(markdowns)
-  return [...(tree.type === 'Markdown' ? [tree] : []), ...(tree.children ?? []).flatMap(markdowns)]
-}
+const HANDOFF_WITH_STEP = '---\nparent: uuid-lead\nstatus: unconsumed\n---\n\n# Next Step\n\nRun the secrets suites solo.\nTriage the store file.\n\n# Settled\n\nNothing.\n'
 const countText = (tree: any) => texts(tree).find(t => /^\/clear in \d+s$/.test(textOf(t)))
 const startGrace = async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
@@ -1900,37 +1525,79 @@ test('a session with no colour, or one outside the palette, keeps the band\'s ow
   expect(countText(await band()).props.color).toBe('rgb(180,83,9)')
 })
 
-test('the pane opens on a header in the session colour and draws the step as markdown', async () => {
-  await startGrace(); await fireAfter()
-  const tree = await pane()
-  const all = texts(tree)
-  expect(textOf(all[0])).toBe('Handoff')
-  expect(all[0].props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
-  expect(markdowns(tree)).toEqual([{ type: 'Markdown', props: { key: 'step', text: 'Run the secrets suites solo.\nTriage the store file.' }, children: [] }])
-  expect(JSON.stringify(tree)).not.toContain('rest of the step')
-})
 
-test('a step cut at the markdown bound ends on a dim note', async () => {
-  const huge = Array.from({ length: 200 }, () => 'x'.repeat(99)).join('\n')
-  await startGrace(); files[HANDOFF] = `---\nparent: uuid-lead\nstatus: unconsumed\n---\n\n# Next Step\n\n${huge}\n`
+// The count's start toasts the handoff's next step, from a timer (the count
+// starts inside the turn's own hook), so the twenty seconds are spent knowing
+// what the next conversation will do. One toast per armed handoff: the band's
+// redraws, and a count restarted for the same handoff, say nothing more.
+test('the first count on an armed handoff toasts its next step once, from a timer', async () => {
+  await startGrace()
+  expect(toasts).toEqual([])
   await fireAfter()
-  const note = texts(await pane()).find(t => textOf(t) === '… the rest of the step is in the handoff')
-  expect(note.props.dimColor).toBe(true)
+  expect(toasts).toEqual(['cs: next step: Run the secrets suites solo.'])
+  await band(); await tick(2); await band()
+  expect(toasts).toHaveLength(1)
+  await promptSubmit()
+  await turnComplete(); await fireAfter()
+  expect(ticker()).toBeDefined()
+  expect(toasts).toHaveLength(1)
 })
 
-test('the pane counts down on a twenty-block bar in the ramp\'s colour, beside the same count', async () => {
-  envVars.CS_TERM_BG_RGB = '252;247;229'
+test('a handoff armed after the /clear, in the same process, is toasted in its turn', async () => {
   await startGrace(); await fireAfter()
-  const bar = (tree: any) => texts(tree).find(t => /^[█░]+$/.test(textOf(t)))
-  let b = bar(await pane())
-  expect(textOf(b)).toBe('█'.repeat(20))
-  expect(b.props.color).toBe('rgb(220,38,38)')
-  expect(countText(await pane()).props.color).toBe('rgb(220,38,38)')
-  await tick(15) // 5 left
-  b = bar(await pane())
-  expect(textOf(b)).toBe('█'.repeat(5) + '░'.repeat(15))
-  expect(b.props.color).toBe('rgb(180,83,9)')
-  expect(JSON.stringify(await pane())).toContain('press 1 to clear now, or send a prompt to stay')
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+  files[HANDOFF] = '---\nparent: uuid-two\nstatus: unconsumed\n---\n\n## 1. Next Step\n\nShip it.\n'
+  sessionId = 'uuid-two'; percent = 10
+  files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-two\n'
+  await band(); await turnComplete(); await fireAfter()
+  expect(toasts).toEqual(['cs: next step: Run the secrets suites solo.', 'cs: next step: Ship it.'])
+})
+
+test('a count that ends before its timer fires, or a handoff with no next step, toasts nothing', async () => {
+  await startGrace()
+  await promptSubmit()
+  await fireAfter()
+  expect(toasts).toEqual([])
+  register(on as any)
+  arm(); files[HANDOFF] = '---\nparent: uuid-lead\nstatus: unconsumed\n---\n\nNo heading here.\n'
+  await band(); await turnComplete(); await fireAfter()
+  expect(ticker()).toBeDefined()
+  expect(toasts).toEqual([])
+})
+
+// The count opens no pane and the /clear paths wait on none: nothing of the
+// mod's opens, closes or lists a pane.
+test('no path of the mod opens, closes or lists a pane', async () => {
+  await startGrace(); await fireAfter()
+  await promptSubmit()
+  await turnComplete(); await fireAfter()
+  await findButton(await band()).props.onPress()
+  await hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => ({ text: '' }))
+  register(on as any); arm()
+  await band(); await turnComplete(); await tick(GRACE_SECONDS)
+  expect(ran.filter(r => r.command === 'clear')).toHaveLength(2)
+  expect(panes).toEqual([])
+  expect(hooks['ui.render:Pane']).toBeUndefined()
+})
+
+test('nextStepLine is the first line of the Next Step section, however the heading is numbered', () => {
+  expect(nextStepLine(HANDOFF_WITH_STEP)).toBe('Run the secrets suites solo.')
+  expect(nextStepLine('---\nstatus: unconsumed\n---\n\n## 1. Next Step\n\n  One thing.  \n\n- a\n')).toBe('One thing.')
+  expect(nextStepLine('---\nstatus: unconsumed\n---\n\nNo heading here.\n')).toBeUndefined()
+  expect(nextStepLine('# Next Step\n\n\n# Settled\n\nNothing.\n')).toBeUndefined()
+})
+
+test('a first line past the toast\'s length is cut there with an ellipsis', () => {
+  const long = 'x'.repeat(NEXT_STEP_CHARS) + 'y'.repeat(10)
+  expect(nextStepLine(`# Next Step\n\n${long}\nnext line\n`)).toBe('x'.repeat(NEXT_STEP_CHARS) + '\u2026')
+  expect(nextStepLine(`# Next Step\n\n${'x'.repeat(NEXT_STEP_CHARS)}\n`)).toBe('x'.repeat(NEXT_STEP_CHARS))
+})
+
+test('a # line inside a fenced block belongs to the step, and a fence line is not the step\'s first line', () => {
+  expect(nextStepLine('## Next Step\n\n```bash\n# build first\n./build.sh\n```\n\n## Settled\n')).toBe('# build first')
+  expect(nextStepLine('## Next Step\n\n~~~\n```\n## not a heading\n~~~\nThen merge.\n')).toBe('```')
+  expect(nextStepLine('## Next Step\n\n~~~\n\n## not a heading\n~~~\n')).toBe('## not a heading')
 })
 
 // /queue hands the task to `cs -queue add` by the path the launch exported,
@@ -2216,7 +1883,7 @@ const queueKey = (tree: any) => buttons(tree).find((b: any) => b.props.key === '
 // The band body's elements in order, with the conditional gaps left out.
 const bandBody = (tree: any): any[] => {
   if (!tree || typeof tree !== 'object') return []
-  if (tree.props?.key === 'cs-rotate-band-body') return (tree.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
+  if (tree.props?.key === 'cs-rotate-band') return (tree.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
   return (tree.children ?? []).flatMap(bandBody)
 }
 
@@ -2420,7 +2087,7 @@ test('a gate whose pid is dead, or a record past its gate, draws no band', async
   expect(await band({ isWorking: true })).toBe(DRAWN)
 })
 
-test('with the rotation keys up, the gate band draws above them and both keys stay', async () => {
+test('with the rotation keys up, the gate word is the band\'s last word, dim, after a separator, and both keys stay', async () => {
   livePids.add('4242')
   nowMs = NOW * 1000
   percent = 40
@@ -2429,9 +2096,23 @@ test('with the rotation keys up, the gate band draws above them and both keys st
   await watchTick()
   const tree = await band()
   expect(buttons(tree)).toHaveLength(2)
-  const json = JSON.stringify(tree)
-  expect(json.indexOf('finishing fix-auth · gate 3s')).toBeGreaterThan(json.indexOf('"Survey"'))
-  expect(json.indexOf('finishing fix-auth · gate 3s')).toBeLessThan(json.indexOf('rotate this conversation'))
+  const body = bandBody(tree)
+  expect(body.at(-1)).toMatchObject({ type: 'Text', props: { dimColor: true }, children: ['finishing fix-auth · gate 3s'] })
+  expect(body.at(-2)).toMatchObject({ type: 'Text', children: ['  \u00b7  '] })
+  expect(boxes(tree).filter((b: any) => b.props.key === 'cs-rotate-band')).toHaveLength(1)
+  expect(JSON.stringify(tree)).not.toContain('backgroundColor')
+})
+
+test('alone, the gate word draws on the thin line with no separator', async () => {
+  livePids.add('4242')
+  nowMs = NOW * 1000
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 3 }))
+  await watchTick()
+  const tree = await band({ isWorking: true })
+  expect(buttons(tree)).toEqual([])
+  expect(words(tree)).toEqual(['finishing fix-auth · gate 3s'])
+  expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band').props.marginLeft).toBe(2)
 })
 
 test('the watch ends once the turn is over and nothing runs, and not while a step still runs', async () => {
