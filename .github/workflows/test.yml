@@ -56,12 +56,17 @@ jobs:
 
       # The mod suites (test_mod_rotate, test_mod_update, test_mods_layout) run
       # their unit tests under bun and return 77 when bun is missing, so on a
-      # runner without it they are counted as skipped and judge nothing. Pinned
-      # like shellcheck: the action by commit, bun by version.
+      # runner without it they are counted as skipped and judge nothing. The
+      # action is pinned by commit and bun by version; unlike shellcheck, no
+      # digest checks the bun binary, as setup-bun takes none. The mermaid mod's
+      # tests run under claude plugin test and still skip here.
       - name: Install bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
+
+      - name: Show bun version
+        run: bun --version
 
       - name: Run bash test suites
         env:
