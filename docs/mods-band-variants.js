@@ -123,8 +123,8 @@
 
   // One entry as the shipped band draws it: a word dim (a ramp ink bold), a
   // chord or a press a plain Button, the feed's check in the session colour.
-  function entryNode(e, theme) {
-    if (e.kind === "word") return e.ink === undefined ? T({ dimColor: true }, e.label) : T({ bold: true, color: rampInk(e.ink, theme) }, e.label);
+  function entryNode(e, theme, wordStyle) {
+    if (e.kind === "word") return e.ink === undefined ? T(wordStyle || { dimColor: true }, e.label) : T({ bold: true, color: rampInk(e.ink, theme) }, e.label);
     if (e.kind === "press") return Btn({ key: e.key, plain: true, label: e.label });
     var props = { key: e.key, action: ACTIONS[e.role], plain: true, label: e.label };
     return e.check ? Btn(props, [e.label.slice(0, -1), T({ color: inks(theme).own }, "✓")]) : Btn(props);
@@ -193,8 +193,41 @@
     ]);
   }
 
+  // Words alone in the default ink, three cells apart: no mark, no key beside
+  // its word; the bound chords trail as one dim hint (`ctrl+x 1 2`), in the
+  // order of their words. A line too long drops the hint, then folds its last
+  // words into `…N`, the rail's own fold; the rail is a word, `prompt N of M`.
+  function drawQuiet(f, cols, theme) {
+    var entries = entriesOf(f);
+    var items = entries.map(function (e) { return { node: entryNode(e, theme, {}), cells: cells(e.label) }; });
+    if (hasRail(f)) {
+      var where = "prompt " + (f.rail.named + 1) + " of " + f.rail.prompts.length;
+      items.push({ node: T({ dimColor: true, italic: true }, where), cells: cells(where) });
+    }
+    if (items.length === 0) return null;
+    var bound = entries.map(function (e) { return e.kind === "chord" ? f.chords[e.role] : undefined; }).filter(function (c) { return c !== undefined; });
+    var prefix = sharedPrefix(bound);
+    var hint = bound.length === 0 ? "" : prefix === undefined ? bound.join(" ") : prefix + " " + bound.map(function (c) { return c.slice(prefix.length + 1); }).join(" ");
+    var gap = "   ";
+    var room = cols - 2;
+    var span = function (n) { return items.slice(0, n).reduce(function (sum, it) { return sum + it.cells; }, 0) + gap.length * Math.max(0, n - 1); };
+    var kept = items.length;
+    var withHint = hint !== "" && span(kept) + 4 + cells(hint) <= room;
+    var fold = function (n) { return n === items.length ? 0 : gap.length + cells("\u2026" + (items.length - n)); };
+    while (kept > 1 && span(kept) + fold(kept) > room) kept--;
+    var nodes = [];
+    items.slice(0, kept).forEach(function (it, i) {
+      if (i > 0) nodes.push(T({}, gap));
+      nodes.push(it.node);
+    });
+    if (kept < items.length) nodes.push(T({ dimColor: true }, gap + "\u2026" + (items.length - kept)));
+    if (withHint) nodes.push(Bx({ marginLeft: 4 }, [T({ dimColor: true }, hint)]));
+    return Bx({ flexDirection: "column" }, [Bx({ marginTop: 1 }, [Bx({ key: "cs-rotate-band", marginLeft: 2 }, nodes)])]);
+  }
+
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
+    { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };

@@ -35,8 +35,20 @@ const variant = (id: string) => {
 const lines = (variantId: string, stateId: string, cols: number) => toText(layout(variant(variantId).draw(state(stateId), cols, 'light'), cols))
 
 test('the gallery draws the shipped band first, then the sketches', () => {
-  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped'])
+  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped', 'quiet'])
 })
+
+// Each sketch in the state that shows what it tries, worked by hand from its
+// note before it was drawn.
+const SKETCHES: [string, string, number, string[]][] = [
+  ['quiet', 'rotate-due', 80, [' '.repeat(29), '  rotate   wrap    ctrl+x 1 2']],
+  ['quiet', 'everything', 60, [' '.repeat(59), '  3 features \u00b7 fix-auth ready   rotate   wrap   feed \u2713   \u20263']],
+]
+for (const [v, s, cols, want] of SKETCHES) {
+  test(`${v} draws ${s} at ${cols} cols as its note describes`, () => {
+    expect(lines(v, s, cols)).toEqual(want)
+  })
+}
 
 // Read off the draw site in mods/cs/hooks/register.tsx, by hand: a blank row
 // (marginTop 1), the 2-cell inset, the mark and its gap, the shared prefix and
@@ -72,6 +84,12 @@ test('the engine accepts every variant in every state', () => {
   for (const { v, s } of cells()) {
     for (const theme of ['light', 'dark']) expect({ cell: `${v.id} / ${s.id} / ${theme}`, refused: validate(v.draw(s.facts, 80, theme)) }).toEqual({ cell: `${v.id} / ${s.id} / ${theme}`, refused: [] })
   }
+})
+
+// The cells that overrun 60 cols, each declared in its variant's note.
+test('the cells that clip at 60 cols are the ones the notes name', () => {
+  const clipped = cells().filter(({ v, s }: any) => layout(v.draw(s.facts, 60, 'light'), 60).w > 60).map(({ v, s }: any) => `${v.id} / ${s.id}`)
+  expect(clipped).toEqual(['shipped / everything'])
 })
 
 test('every variant fits 60 cols in every state, or its note says it clips', () => {
