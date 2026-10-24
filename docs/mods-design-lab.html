@@ -1249,6 +1249,12 @@ function composeUI(){
   });
 }
 
+// A panel that rebuilds its markup on every input would close each fold it
+// holds; a fold carries an id, and the ids open stay open across renders.
+const openFolds=new Set();
+document.addEventListener("toggle",e=>{ const id=e.target.dataset?.fold; if(id) e.target.open?openFolds.add(id):openFolds.delete(id); },true);
+const fold=(id,summary,body)=>`<details data-fold="${id}"${openFolds.has(id)?" open":""}><summary>${summary}</summary>${body}</details>`;
+
 // ---------- BAND VARIANTS ----------
 // One row per drawing in docs/mods-band-variants.js: the picked state, or a
 // grid of every state. The strip, the clip line and the refusals are the
@@ -1275,7 +1281,7 @@ function variantsRender(){
     const strips=(all?STATES:[picked]).map(s=>vaCell(v,s,c,th,all)).join("");
     return `<div class="vrow"><h3>${esc(v.name)}</h3><p class="why">${esc(v.note)}</p>`
       +`<div class="${all?"vgrid":""}">${strips}</div>`
-      +`<details><summary>JSX for ${esc(picked.id)}</summary><pre class="spec">${esc(tree?ModLayout.toJsx(tree):"return drawn  // nothing of the mod's own")}</pre></details></div>`;
+      +fold(`va-${v.id}`,`JSX for ${esc(picked.id)}`,`<pre class="spec">${esc(tree?ModLayout.toJsx(tree):"return drawn  // nothing of the mod's own")}</pre>`)+`</div>`;
   }).join("");
   copyButtons();
 }
