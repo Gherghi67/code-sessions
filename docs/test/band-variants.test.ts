@@ -35,7 +35,7 @@ const variant = (id: string) => {
 const lines = (variantId: string, stateId: string, cols: number) => toText(layout(variant(variantId).draw(state(stateId), cols, 'light'), cols))
 
 test('the gallery draws the shipped band first, then the sketches', () => {
-  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped', 'quiet', 'keys-first', 'status-first', 'two-zone'])
+  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped', 'quiet', 'keys-first', 'status-first', 'two-zone', 'rail-first'])
 })
 
 // Each sketch in the state that shows what it tries, worked by hand from its
@@ -49,6 +49,8 @@ const SKETCHES: [string, string, number, string[]][] = [
   ['status-first', 'gate-running', 80, [' '.repeat(48), '  running gate  finishing fix-auth \u00b7 gate 1m 12s']],
   ['two-zone', 'rail-many', 80, [' '.repeat(80), '  \u25cf ' + ' '.repeat(21) + '#14 run the full suite and fix what fails  \u20264\u2502\u2506\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2503']],
   ['two-zone', 'everything', 120, [' '.repeat(120), '  \u25cf 3 features \u00b7 fix-auth ready  \u00b7  ctrl+x  1 rotate  \u00b7  2 wrap  \u00b7  3 feed \u2713  \u00b7  \u25a4 queue 2 \u00b7 start  \u00b7  mail 1' + ' '.repeat(5) + '\u2502\u2502\u2502\u2502\u2502\u2503']],
+  ['rail-first', 'rotate-due', 80, [' '.repeat(80), '  ' + ' '.repeat(53) + 'ctrl+x 1 rotate  2 wrap \u25cf']],
+  ['rail-first', 'rail-many', 80, [' '.repeat(80), '  \u20264\u2502\u2506\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2503  #14 run the full suite and fix what fails' + ' '.repeat(21) + ' \u25cf']],
 ]
 for (const [v, s, cols, want] of SKETCHES) {
   test(`${v} draws ${s} at ${cols} cols as its note describes`, () => {
@@ -80,7 +82,7 @@ test('shipped folds the oldest four of fourteen prompts and names the newest', (
 
 test('every variant that draws a rail folds fourteen prompts into \u20264 at 80 cols', () => {
   const railed = VARIANTS.filter((v: any) => lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u2503')))
-  expect(railed.map((v: any) => v.id)).toEqual(['shipped', 'keys-first', 'status-first', 'two-zone'])
+  expect(railed.map((v: any) => v.id)).toEqual(['shipped', 'keys-first', 'status-first', 'two-zone', 'rail-first'])
   for (const v of railed) expect({ variant: v.id, folded: lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u20264')) }).toEqual({ variant: v.id, folded: true })
 })
 
@@ -95,7 +97,7 @@ test('the engine accepts every variant in every state', () => {
 // The cells that overrun 60 cols, each declared in its variant's note.
 test('the cells that clip at 60 cols are the ones the notes name', () => {
   const clipped = cells().filter(({ v, s }: any) => layout(v.draw(s.facts, 60, 'light'), 60).w > 60).map(({ v, s }: any) => `${v.id} / ${s.id}`)
-  expect(clipped).toEqual(['shipped / everything', 'keys-first / everything', 'status-first / everything', 'two-zone / everything'])
+  expect(clipped).toEqual(['shipped / everything', 'keys-first / everything', 'status-first / everything', 'two-zone / everything', 'rail-first / everything'])
 })
 
 test('every variant fits 60 cols in every state, or its note says it clips', () => {

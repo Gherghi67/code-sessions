@@ -135,9 +135,11 @@
   }
 
   // The shipped band's words: a shared chord prefix spelled once, dim, before
-  // the first bound key; each key bold in the session colour; `sep` between
-  // entries. Returns the nodes and the cells they take.
-  function actions(f, entries, theme, sep) {
+  // the first bound key and `prefixGap` cells before it (2 on the shipped
+  // band); each key bold in the session colour; `sep` between entries.
+  // Returns the nodes and the cells they take.
+  function actions(f, entries, theme, sep, prefixGap) {
+    var gap = prefixGap === undefined ? 2 : prefixGap;
     var chordOf = function (e) { return e.kind === "chord" ? f.chords[e.role] : undefined; };
     var prefix = sharedPrefix(entries.map(chordOf));
     var first = entries.findIndex(function (e) { return chordOf(e) !== undefined; });
@@ -149,11 +151,11 @@
     entries.forEach(function (e, i) {
       if (i > 0) nodes.push(T({ dimColor: true }, sep));
       var lead = i === first && prefix !== undefined;
-      if (lead) nodes.push(Bx({ marginRight: 2 }, [T({ dimColor: true }, prefix)]));
+      if (lead) nodes.push(Bx({ marginRight: gap }, [T({ dimColor: true }, prefix)]));
       var k = spelled(e);
       if (k !== undefined) nodes.push(Bx({ marginRight: 1 }, [T({ bold: true, color: inks(theme).own }, k)]));
       nodes.push(entryNode(e, theme));
-      text.push((lead ? prefix + "  " : "") + (k === undefined ? "" : k + " ") + e.label);
+      text.push((lead ? prefix + " ".repeat(gap) : "") + (k === undefined ? "" : k + " ") + e.label);
     });
     return { nodes: nodes, cells: cells(text.join(sep)) };
   }
@@ -310,12 +312,41 @@
     ])]);
   }
 
+  // The rail leads and takes the line: its bars at the inset, the named
+  // prompt growing into whatever the words leave. The words fold to the right
+  // edge, compact (the prefix one cell from its key, two cells between
+  // words), and the mark ends the line.
+  function drawRailFirst(f, cols, theme) {
+    var entries = entriesOf(f);
+    var words = actions(f, entries, theme, "  ", 1);
+    var rightCells = words.cells + 2;
+    var budget = cols - 2 - rightCells - 3;
+    var ticks = hasRail(f) ? railTicks(f.rail.prompts.length, budget, BAND_BARS) : undefined;
+    if (entries.length === 0 && ticks === undefined) return null;
+    var left = [], leftCells = 0;
+    if (ticks !== undefined) {
+      left.push(Bx({ key: "cs-rail" }, railNodes(f.rail, ticks.hidden, inks(theme).own)));
+      leftCells += railCells(f.rail, ticks.hidden);
+      var room = budget - leftCells - 2;
+      var name = cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room);
+      if (room >= RAIL_LABEL_MIN) {
+        left.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, name)]));
+        leftCells += 2 + cells(name);
+      }
+    }
+    return band([Bx({ width: Math.max(cols - 2, leftCells + (leftCells > 0 ? 3 : 0) + rightCells), justifyContent: "flex-end" }, [
+      left.length > 0 && Bx({ key: "cs-where", flexGrow: 1 }, left),
+      Bx({ key: "cs-actions" }, words.nodes.concat([Bx({ key: "cs-mark", marginLeft: 1 }, [T({ color: markInk(f, theme) }, MARK)])])),
+    ])]);
+  }
+
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
     { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
     { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once clips at 60 and at 80.", draw: drawStatusFirst },
     { id: "two-zone", name: "Two zones", note: "Actions on the left, the named prompt and the rail pushed to the right edge with space-between, so the rail always ends where the line does. Every word at once clips at 60 and at 80.", draw: drawTwoZone },
+    { id: "rail-first", name: "Rail first", note: "The rail leads at the inset and its named prompt grows into the room; the words fold compact to the right edge and the mark ends the line. Every word at once clips at 60 and at 80.", draw: drawRailFirst },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };
