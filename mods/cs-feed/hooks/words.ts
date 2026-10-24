@@ -108,16 +108,39 @@ export function frameHead(frame: Frame & { from: string }): string {
   return `${marks.peer} ${joined([frame.from, frame.state, frame.at === undefined ? undefined : hhmm(frame.at), frame.summary, frame.relays ? 'relays content written by others' : undefined])}`
 }
 
-export function frameBody(frame: Frame): readonly string[] {
+/** One line under a report frame's header (§8.3 (a)): a verdict card's parts, the lead or its sentence as Markdown, and the dim hints. */
+export type FrameLine =
+  | { readonly kind: 'markdown'; readonly text: string }
+  | { readonly kind: 'status'; readonly tone: Card['tone']; readonly glyph: string; readonly status: string; readonly sub?: string }
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'score'; readonly label: string; readonly dots: readonly Card['tone'][]; readonly tally: string }
+  | { readonly kind: 'list'; readonly label: string; readonly count: string; readonly first: string }
+  | { readonly kind: 'hint'; readonly text: string }
+
+/**
+ * §8.3 (a): a verdict card (status chip "✓"/"✕"/"●" by tone, "target …", a
+ * score line per judged list with up to 24 dots and "{P} of {M} pass", a line
+ * per plain list, "report {file}", the dim footer), with the sentence before
+ * its JSON drawn as Markdown above it; or the lead drawn as Markdown, then
+ * "+N more line(s) · ctrl+o shows all" when lines were left out.
+ */
+export function frameBody(frame: Frame): readonly FrameLine[] {
   const lead = frame.lead
   if (!lead) return []
   const card = lead.card
-  const lines = card ? [
-    joined([card.status, card.sub]), card.target,
-    ...card.scores.map(score => `${score.label} ${score.dots.map(dot => dot === 'ok' ? '●' : dot === 'bad' ? '✕' : '○').join('')} ${score.pass}/${score.of}`),
-    ...card.lists.map(list => joined([`${list.count} ${list.label}`, list.first])), card.report,
-  ] : [lead.sentence, lead.text]
-  return [...lines.filter((line): line is string => line !== undefined && line !== ''), ...(lead.more ? [`+${lead.more} more ${lead.more === 1 ? 'line' : 'lines'} · ctrl+o shows all`] : []), labels.reportHint]
+  if (!card) return [
+    ...(lead.text ? [{ kind: 'markdown' as const, text: lead.text }] : []),
+    ...(lead.more ? [{ kind: 'hint' as const, text: `+${lead.more} more ${lead.more === 1 ? 'line' : 'lines'} · ctrl+o shows all` }] : []),
+  ]
+  const lines: FrameLine[] = []
+  if (lead.sentence) lines.push({ kind: 'markdown', text: lead.sentence })
+  if (card.status || card.sub) lines.push({ kind: 'status', tone: card.tone, glyph: card.tone === 'ok' ? '✓' : card.tone === 'bad' ? marks.failed : marks.live, status: card.status, sub: card.sub })
+  if (card.target) lines.push({ kind: 'text', text: `target ${card.target}` })
+  for (const score of card.scores) lines.push({ kind: 'score', label: score.label, dots: score.dots, tally: `${score.pass} of ${score.of} pass` })
+  for (const list of card.lists) lines.push({ kind: 'list', label: list.label, count: String(list.count), first: `${marks.dot} ${list.first}` })
+  if (card.report) lines.push({ kind: 'text', text: `report ${card.report}` })
+  lines.push({ kind: 'hint', text: labels.reportHint })
+  return lines
 }
 
 /** §4.6 call words: a cleaned description of 3+ characters, else by tool ("Reading app.py", "Opened example.com"). */

@@ -143,6 +143,36 @@ test('an opened burst shows each of its messages as its own indented line, once'
   await tail.unmount()
 })
 
+test('a helper report frame draws its verdict card, and a plain report its Markdown lead with the lines left out', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine report' }))
+  const card = '<teammate-message teammate_id="reviewer" summary="Review">Looks good.\n\n{"status":"passed","target":{"name":"app","model":"small"},"checks":[{"status":"passed"},{"status":"failed"}],"notes":["one","two"],"report_file":"/tmp/out/report.md"}</teammate-message>'
+  const lead = '<teammate-message teammate_id="docs" summary="Docs built">Built.\n\n- a\n- b</teammate-message>'
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'card', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: card }] } })
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'lead', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: lead }] } })
+  const shown = async (uuid: string) => {
+    const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: uuid, props: { text: 'stripped', origin: { kind: 'peer' }, isExpanded: false } })
+    const all = (await row.findAll({})).filter(element => element.type === 'Text' || element.type === 'Markdown').map(element => `${element.type}:${element.text}`)
+    await row.unmount()
+    return all
+  }
+  expect(await shown('card')).toEqual([
+    'Text:⇄ reviewer · Review',
+    'Markdown:Looks good.',
+    'Text:✓', 'Text:passed',
+    'Text:target app · small',
+    'Text:checks', 'Text:●', 'Text:●', 'Text:1 of 2 pass',
+    'Text:notes', 'Text:2', 'Text:· one',
+    'Text:report report.md',
+    'Text:ctrl+o shows the whole report',
+  ])
+  expect(await shown('lead')).toEqual([
+    'Text:⇄ docs · Docs built',
+    'Markdown:Built.',
+    'Text:+2 more lines · ctrl+o shows all',
+  ])
+})
+
 test('SessionMode appends the feed mode while preserving the engine modes', async ($, on) => {
   session(on)
   on('ui.render', { component: 'SessionMode' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.modes.join(' | ') }))

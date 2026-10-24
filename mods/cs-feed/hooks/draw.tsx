@@ -5,6 +5,7 @@ import type { EngineInterface, RenderElement } from 'claude-code'
 import type { BandVerdict, CallVerdict, Context, GroupVerdict, HelperBlock, ReplyVerdict, UserVerdict } from './verdict'
 import type { FeedCommand, FieldSpec, Session, View } from './settings'
 import { FIELDS, KINDS, parseFeedArgs } from './settings'
+import type { FrameLine } from './words'
 import { helperNowLine, helperPaneHead, helpersPaneWords, kindChip, settingCommand, settingValue, settingsWords, slashCommand } from './words'
 import { backgroundLine, backgroundTail, braille, breathing, burstLine, callChips, callWords, fit, frameBody, frameHead, helperCounts, helperFraction, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, moreKinds, outputLines, peerLine, pillLabel, questionLines, runChips, runWords, stepsLine, usageLabel, usagePeriods } from './words'
 
@@ -99,7 +100,20 @@ export function drawUser(v: Exclude<UserVerdict, { draw: 'engine' }>, pen: Pen):
       if (!head) return NOTHING(pen)
       return <Box flexDirection="column" paddingLeft={pen.pad}><Box flexDirection="row"><Text color={pen.ink.peer}>{burstLine(v.members)}</Text>{chevron(`burst-${head.uuid}`, v.opened, pen)}</Box>{v.own ? <Box paddingLeft={2}><Text color={pen.ink.peer}>{peerLine(v.own.sender, v.own.headline)}</Text></Box> : null}</Box>
     }
-    case 'frames': return <Box flexDirection="column" paddingLeft={pen.pad}>{v.frames.map(frame => <Box flexDirection="column"><Text color={pen.ink.peer}>{frameHead(frame)}</Text><Box flexDirection="column" paddingLeft={2}>{frameBody(frame).map(line => <Text dimColor>{line}</Text>)}</Box></Box>)}</Box>
+    case 'frames': return <Box flexDirection="column" paddingLeft={pen.pad}>{v.frames.map(frame => <Box flexDirection="column"><Text color={pen.ink.peer}>{frameHead(frame)}</Text><Box flexDirection="column" paddingLeft={2}>{frameBody(frame).map(line => drawFrameLine(line, pen))}</Box></Box>)}</Box>
+  }
+}
+
+function drawFrameLine(line: FrameLine, pen: Pen): RenderElement {
+  const { Box, Markdown, Text } = pen.el
+  const tone = (value: 'ok' | 'bad' | 'mid') => value === 'ok' ? pen.ink.green : value === 'bad' ? pen.ink.red : pen.ink.amber
+  switch (line.kind) {
+    case 'markdown': return <Markdown text={line.text} />
+    case 'status': return <Box flexDirection="row" gap={1}><Text color={tone(line.tone)}>{line.glyph}</Text>{line.status ? <Text>{line.status}</Text> : null}{line.sub ? <Text dimColor>{line.sub}</Text> : null}</Box>
+    case 'text': return <Text>{line.text}</Text>
+    case 'score': return <Box flexDirection="row" gap={1}><Text>{line.label}</Text><Box flexDirection="row">{line.dots.map(dot => <Text color={tone(dot)}>{marks.live}</Text>)}</Box><Text dimColor>{line.tally}</Text></Box>
+    case 'list': return <Box flexDirection="row" gap={1}><Text>{line.label}</Text><Text bold>{line.count}</Text><Text dimColor>{line.first}</Text></Box>
+    case 'hint': return <Text dimColor>{line.text}</Text>
   }
 }
 
