@@ -322,6 +322,7 @@ let bandOptions: BandOptions | undefined
 let bandProblem: string | undefined
 let bandProblemSaid = false
 let feedPressPending: object | undefined
+let feedComplaint: string | undefined
 
 // What is wrong with a value for one of the band's rows, by field name;
 // undefined when the band can draw it, or the field is not the band's.
@@ -341,6 +342,7 @@ export function register(on: On, options: PluginOptions) {
     : undefined
   bandProblemSaid = false
   feedPressPending = undefined
+  feedComplaint = undefined
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
@@ -1327,14 +1329,20 @@ export const WRAP_ACTION = 'strip:jump2'
 export const FEED_ACTION = 'strip:jump3'
 
 async function readFeed($: EngineInterface): Promise<boolean> {
+  let complaint: string | undefined
   try {
     // Writes are non-atomic: only the whole on line counts. Trimming would
     // accept a torn write without its newline; every other value is off.
-    return (await $.fs.read(`${await $.session.cwd()}/.cs/local/feed`)) === 'on\n'
+    const text = await $.fs.read(`${await $.session.cwd()}/.cs/local/feed`)
+    feedComplaint = undefined
+    return text === 'on\n'
   } catch (err) {
-    if (err instanceof Error && err.message.endsWith(' failed: ENOENT')) return false
-    throw err
+    const message = String(err instanceof Error ? err.message : err)
+    if (!message.endsWith(' failed: ENOENT')) complaint = `cs: the feed setting could not be read: ${message}`
   }
+  if (complaint !== undefined && complaint !== feedComplaint) $.ui.log(complaint)
+  feedComplaint = complaint
+  return false
 }
 
 async function pressFeed($: EngineInterface) {

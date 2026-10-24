@@ -3464,23 +3464,33 @@ test('a companion feed file change appears on the next redraw without reloading'
   expect(ran).toEqual([])
 })
 
-test('an unreadable feed file reports its error without writing or redrawing', async () => {
+test('an unreadable feed file leaves the band visible and reports each read error once', async () => {
   enableFeed()
+  percent = 40
   cwdPath = '/ENOENT'
   existing.add('/ENOENT/.cs/local')
   realPaths['/ENOENT'] = '/ENOENT'
   realPaths['/home/.claude-sessions/ENOENT'] = '/ENOENT'
   files['/ENOENT/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-lead\n'
-  const key = feedKey(await band())
   const read = $.fs.read
+  let error = 'cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'
   $.fs.read = async path => {
-    if (path === '/ENOENT/.cs/local/feed') throw new Error('cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES')
+    if (path === '/ENOENT/.cs/local/feed') throw new Error(error)
     return read(path)
   }
   try {
-    await expect(band()).rejects.toThrow('cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES')
-    await key.props.onPress()
-    expect(toasts).toEqual(['cs: feed update failed: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'])
+    for (let redraw = 0; redraw < 2; redraw++) {
+      expect(buttons(await band()).map(button => button.props.label)).toEqual(['rotate', 'wrap', 'feed'])
+    }
+    expect(logs).toEqual(['cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'])
+    error = 'cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR'
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(logs).toEqual([
+      'cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES',
+      'cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR',
+    ])
+    expect(toasts).toEqual([])
     expect(written).toEqual({})
     expect(invalidated).toEqual([])
     expect(ran).toEqual([])

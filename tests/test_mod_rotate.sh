@@ -122,7 +122,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. $.ui.log and
     # selected later calls are checked on the source instead.
-    assert_eq "4" "$(grep -c '\$\.ui\.log' "$src")" "four calls log a features word read failure, a features complaint, a transcript read failure and a /color that did not run" || return 1
+    assert_eq "5" "$(grep -c '\$\.ui\.log' "$src")" "five calls log a features word read failure, a features complaint, a transcript read failure, a /color that did not run and a feed read failure" || return 1
     assert_output_contains "$out" '$.session.id, $.session.usage, $.ui.ask (via askToWrap, offerToStart), $.ui.invalidate' "the visible inventory includes the session, dialogs and redraw calls" || return 1
     scroll_lines=$(grep -n '\$\.ui\.scroll' "$src" | cut -d: -f1 | tr '\n' ' ')
     jump_range=$(awk '/^async function jumpTo\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
