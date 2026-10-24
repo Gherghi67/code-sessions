@@ -3,6 +3,10 @@
     {
       "id": "cs.band-prompts",
       "text": "cs can draw a bar per prompt on its band, to scroll back to any prompt: run /config and turn on Band: prompt bars"
+    },
+    {
+      "id": "cs.feed",
+      "text": "cs can fold each turn's tool calls into one line, leaving your messages and Claude's replies: press ctrl+x 3 on the band or run /feed clean, and /feed raw to go back"
     }
   ]
 }
