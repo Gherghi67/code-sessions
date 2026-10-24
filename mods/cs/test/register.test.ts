@@ -3366,7 +3366,7 @@ test('a refused feed write allows another press', async () => {
   expect(invalidated).toEqual(['ui.render'])
 })
 
-test('a feed press already writing ignores another press until the file is ready', async () => {
+test('duplicate feed presses both wait until the one write is ready', async () => {
   enableFeed()
   const write = $.fs.write
   let finish = () => {}
@@ -3377,15 +3377,20 @@ test('a feed press already writing ignores another press until the file is ready
     await write(path, text)
   }
   try {
-    const press = feedKey(await band()).props.onPress()
+    const key = feedKey(await band())
+    let duplicateFinished = false
+    const press = key.props.onPress().then(() => files['/work/.cs/local/feed'])
+    const duplicate = key.props.onPress().then(() => {
+      duplicateFinished = true
+      return files['/work/.cs/local/feed']
+    })
     await settle()
-    const duplicate = feedKey(await band()).props.onPress()
-    await settle()
+    expect(duplicateFinished).toBe(false)
     expect(writes).toEqual([['/work/.cs/local/feed', 'on\n']])
     expect(feedKey(await band()).props.label).toBe('feed')
     expect(invalidated).toEqual([])
     finish()
-    await Promise.all([press, duplicate])
+    expect(await Promise.all([press, duplicate])).toEqual(['on\n', 'on\n'])
     expect(feedKey(await band()).props.label).toBe('feed ✓')
     expect(invalidated).toEqual(['ui.render'])
     expect(ran).toEqual([])

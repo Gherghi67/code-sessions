@@ -321,7 +321,7 @@ type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
 let bandOptions: BandOptions | undefined
 let bandProblem: string | undefined
 let bandProblemSaid = false
-let feedPressPending: object | undefined
+let feedPressPending: Promise<void> | undefined
 let feedComplaint: string | undefined
 
 // What is wrong with a value for one of the band's rows, by field name;
@@ -1346,17 +1346,21 @@ async function readFeed($: EngineInterface): Promise<boolean> {
 }
 
 async function pressFeed($: EngineInterface) {
-  if (feedPressPending !== undefined) return
-  const pending = {}
+  if (feedPressPending !== undefined) return feedPressPending
+  const pending = (async () => {
+    try {
+      const cwd = await $.session.cwd()
+      if (!(await sessionVetted($, cwd))) return
+      const on = !(await readFeed($))
+      await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
+      $.ui.invalidate('ui.render')
+    } catch (err) {
+      $.ui.toast(`cs: feed update failed: ${String(err instanceof Error ? err.message : err)}`)
+    }
+  })()
   feedPressPending = pending
   try {
-    const cwd = await $.session.cwd()
-    if (!(await sessionVetted($, cwd))) return
-    const on = !(await readFeed($))
-    await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
-    $.ui.invalidate('ui.render')
-  } catch (err) {
-    $.ui.toast(`cs: feed update failed: ${String(err instanceof Error ? err.message : err)}`)
+    await pending
   } finally {
     if (feedPressPending === pending) feedPressPending = undefined
   }
