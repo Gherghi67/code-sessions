@@ -170,8 +170,7 @@ _theme_from_colorfgbg() {
 # terminal instead of being answered by tmux itself: bracket with `\ePtmux;` …
 # `\e\\` and double every ESC in the payload. Requires `allow-passthrough on`
 # in the user's tmux; without it tmux drops the sequence and the query times out.
-# Handles arbitrary multi-ESC payloads (e.g. an ST-terminated OSC query);
-# _send_escape covers the single-ESC, BEL-terminated tab-color case separately.
+# Handles arbitrary multi-ESC payloads (e.g. an ST-terminated OSC query).
 _tmux_passthrough() {
     local seq="$1"
     local escaped=${seq//$'\033'/$'\033\033'}

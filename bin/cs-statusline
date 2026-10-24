@@ -833,9 +833,9 @@ _sgr() {
             local rgb
             case "$name" in
                 # Session-color palette: Claude Code's own /color values (the
-                # shared dark/light theme `*_FOR_SUBAGENTS_ONLY` tokens): the tab
-                # color and Claude Code's own session accent share this palette.
-                # KEEP IN SYNC with _session_color_rgb in bin/cs (tab color).
+                # shared dark/light theme `*_FOR_SUBAGENTS_ONLY` tokens): the
+                # session pill and Claude Code's own session accent share this
+                # palette. KEEP IN SYNC with _session_color_rgb in bin/cs (the pill).
                 red)    rgb="220;38;38" ;;
                 blue)   rgb="106;155;204" ;;
                 green)  rgb="22;163;74" ;;
@@ -898,7 +898,7 @@ _sgr() {
                         rgb="$((_R + (255 - _R) * 55 / 100));$((_G + (255 - _G) * 55 / 100));$((_B + (255 - _B) * 55 / 100))"
                     fi ;;
                 # The inverted capsule at crit. Its own token, never the session
-                # palette's red: that palette is the tab colour and may change.
+                # palette's red: that palette is the session pill's and may change.
                 crit)
                     [ "$SL_THEME" = "dark" ] && rgb="255;69;58" || rgb="215;0;21" ;;
                 # White on the red fill whatever the theme: the fill is the

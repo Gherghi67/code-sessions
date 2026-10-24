@@ -316,15 +316,15 @@ test_segment_icons_are_unicode() {
     assert_output_contains "$out" "$clock_glyph" "5h segment should carry the clock icon" || return 1
 }
 
-test_tab_color_palette_matches_statusline() {
-    # The tab color (bin/cs _session_color_rgb, comma form) must equal the
+test_session_pill_palette_matches_statusline() {
+    # The session pill (bin/cs _session_color_rgb, comma form) must equal the
     # statusline session palette (cs-statusline truecolor rgb, semicolon form)
-    # for all 8 names, or the tab and the session block drift apart.
+    # for all 8 names, or the pill and the session block drift apart.
     local c sl cs
     for c in red blue green yellow purple orange pink cyan; do
         sl=$(grep -E "^[[:space:]]*$c\)[[:space:]]*rgb=" "$SL" | grep -oE '[0-9]+;[0-9]+;[0-9]+' | tr ';' ',')
         cs=$(grep -E "$c\).*echo \"[0-9]+,[0-9]+,[0-9]+\"" "$CS_BIN" | grep -oE '[0-9]+,[0-9]+,[0-9]+')
-        assert_eq "$sl" "$cs" "tab color RGB for '$c' must match the statusline palette" || return 1
+        assert_eq "$sl" "$cs" "session pill RGB for '$c' must match the statusline palette" || return 1
     done
 }
 
@@ -1668,7 +1668,7 @@ run_test test_gauge_uses_bg_derived_surface
 run_test test_gauge_shades_the_assumed_light_background_without_bg
 run_test test_logo_mark_is_brand_ink
 run_test test_segment_icons_are_unicode
-run_test test_tab_color_palette_matches_statusline
+run_test test_session_pill_palette_matches_statusline
 run_test test_no_powerline_arrow
 run_test test_detect_theme_colorfgbg_dark
 run_test test_detect_theme_colorfgbg_light
