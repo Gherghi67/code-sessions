@@ -159,7 +159,16 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .compose .insp{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 14px;margin-bottom:14px}
 .compose .insp label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--fg2)}
 .compose .insp label.inline{flex-direction:row;align-items:center;gap:6px}
-.compose .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
+.compose .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
+/* ---- band variants ---- */
+.vrow{margin:0 0 26px}
+.vrow > .why{color:var(--fg2);font-size:12.5px;margin:0 0 8px;max-width:90ch}
+.vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,560px),1fr));gap:10px}
+.vgrid .vcell .term{font-size:11px}
+.vcell .name{font:11.5px "JetBrains Mono",monospace;color:var(--fg2);margin:0 0 3px}
+.vcell .term{font-size:12.5px;padding:8px 12px}
+.vcell .why{color:var(--fg2);font-size:12px;margin:4px 0 0}
+.vrow details{margin-top:6px}
 
 </style>
 
@@ -517,6 +526,20 @@ none|start fresh</textarea></label>
   </div>
 </div>
 
+<!-- ============================== VARIANTS ============================== -->
+</section>
+<section class="panel" id="p-variants">
+<h2 id="variants">Band variants <span class="src">docs/mods-band-variants.js</span></h2>
+<p class="sub">The cs band in each of its states, as it ships and as seven sketches would draw it. Each strip is the engine tree the sketch returns, laid out at the page's columns and painted in the page's theme (the header's Theme and Columns; the slider here moves Columns). A strip wider than the band is clipped and says by how much; a tree the engine would refuse prints the refusal in red. The first row is the band that ships.</p>
+<div class="lab">
+  <div class="controls">
+    <label>State <select id="va-state"></select></label>
+    <label>Width <span id="va-colsv" style="text-transform:none;letter-spacing:0"></span><input id="va-cols" type="range" min="40" max="120" value="80"></label>
+    <label class="inline"><input id="va-all" type="checkbox"> show every state</label>
+  </div>
+  <div id="va-rows"></div>
+</div>
+
 <!-- ============================== ROTATE ============================== -->
 </section>
 <section class="panel" id="p-rotate">
@@ -562,6 +585,7 @@ none|start fresh</textarea></label>
 </div>
 </div>
 <script src="mods-layout.js"></script>
+<script src="mods-band-variants.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
@@ -1166,6 +1190,8 @@ function cpPaint(g){
     return html;
   }).join("\n");
 }
+// A grid wider than the band, cut at the band's edge as the terminal cuts it.
+function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
 function composeRender(){
   if(!cpTree) cpTree=cpLoad()||cpRotatePreset();
   $("cp-tree").innerHTML=`<ul>${cpOutline(cpTree,0)}</ul>`;
@@ -1178,7 +1204,7 @@ function composeRender(){
   // Yoga would shrink a Text to fit; the canvas does not, so it says so rather
   // than drawing a band that could never look like this.
   const over=g.w>cols();
-  const shown=over?{w:cols(),h:g.h,rows:g.rows.map(r=>r.slice(0,cols()))}:g;
+  const shown=clipTo(g,cols());
   $("cp-term").innerHTML=cpPaint(shown)+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
   $("cp-over").innerHTML=over?`<p class="why">The tree measures ${g.w} cells and the band has ${cols()}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"";
   $("cp-spec").textContent=ModLayout.toJsx(tree);
@@ -1223,13 +1249,46 @@ function composeUI(){
   });
 }
 
+// ---------- BAND VARIANTS ----------
+// One row per drawing in docs/mods-band-variants.js: the picked state, or a
+// grid of every state. The strip, the clip line and the refusals are the
+// canvas's own, so a sketch reads here as it would on the compose panel.
+function vaCell(v,s,c,th,named){
+  const tree=v.draw(s.facts,c,th);
+  const refused=tree?ModLayout.validate(tree):[];
+  const g=ModLayout.layout(tree,c);
+  const body=g.h?cpPaint(clipTo(g,c)):`<span class="dim">draws nothing: the hook returns the engine's own rows</span>`;
+  return `<div class="vcell">${named?`<div class="name">${esc(s.id)}</div>`:""}`
+    +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
+    +`<div class="term">${body}</div>`
+    +(g.w>c?`<p class="why">The tree measures ${g.w} cells and the band has ${c}: clipped above.</p>`:"")+`</div>`;
+}
+function variantsRender(){
+  const {STATES,VARIANTS}=BandVariants, c=cols(), th=theme();
+  const pick=$("va-state");
+  if(!pick.options.length) pick.innerHTML=STATES.map(s=>`<option value="${s.id}">${esc(s.id)}: ${esc(s.name)}</option>`).join("");
+  $("va-cols").value=Math.min(120,c); $("va-colsv").textContent=c+" cols";
+  const all=$("va-all").checked;
+  const picked=STATES.find(s=>s.id===pick.value);
+  $("va-rows").innerHTML=VARIANTS.map(v=>{
+    const tree=v.draw(picked.facts,c,th);
+    const strips=(all?STATES:[picked]).map(s=>vaCell(v,s,c,th,all)).join("");
+    return `<div class="vrow"><h3>${esc(v.name)}</h3><p class="why">${esc(v.note)}</p>`
+      +`<div class="${all?"vgrid":""}">${strips}</div>`
+      +`<details><summary>JSX for ${esc(picked.id)}</summary><pre class="spec">${esc(tree?ModLayout.toJsx(tree):"return drawn  // nothing of the mod's own")}</pre></details></div>`;
+  }).join("");
+  copyButtons();
+}
+// The slider is a second hand on the header's Columns, which every panel reads.
+function variantsUI(){ $("va-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; }); }
+
 // ---------- shell: rail, hotkeys, finder, copy ----------
 const NAV=[
   {grp:"Compose"},{id:"compose",hk:"d",label:"Band designer",cnt:"canvas"},
   {grp:"Where"},{id:"sites",hk:"1",label:"Render sites",cnt:"14"},
   {grp:"Elements"},{id:"box",hk:"2",label:"Box",cnt:"36 props"},{id:"text",hk:"3",label:"Text",cnt:"10"},{id:"button",hk:"4",label:"Button",cnt:"9"},{id:"input",hk:"5",label:"Input",cnt:"8"},{id:"select",hk:"6",label:"Select",cnt:"6"},{id:"link",hk:"7",label:"Link",cnt:"2"},{id:"code",hk:"8",label:"Code",cnt:"6"},{id:"raster",hk:"9",label:"Raster",cnt:"4"},{id:"client",hk:"0",label:"Client",cnt:"6"},
   {grp:"Reference"},{id:"borders",hk:"b",label:"Border styles",cnt:"8"},{id:"palette",hk:"p",label:"Palette",cnt:"17"},{id:"rules",hk:"u",label:"Rules"},
-  {grp:"cs mod"},{id:"rotate",hk:"r",label:"Rotate capsule",cnt:"9 presets"},{id:"coverage",hk:"c",label:"Coverage check"},
+  {grp:"cs mod"},{id:"variants",hk:"v",label:"Band variants",cnt:`${BandVariants.VARIANTS.length} × ${BandVariants.STATES.length}`},{id:"rotate",hk:"r",label:"Rotate capsule",cnt:"9 presets"},{id:"coverage",hk:"c",label:"Coverage check"},
 ];
 const PANELS=NAV.filter(n=>n.id);
 function buildRail(){
@@ -1303,9 +1362,9 @@ function finderUI(){
 // ---------- wire ----------
 function renderAll(){
   document.documentElement.setAttribute("data-theme",theme());
-  drawScreens(); composeRender(); boxRender(); textRender(); buttonRender(); inputRender(); selectRender(); linkRender(); codeRender(); rasterRender(); clientRender(); bordersGallery(); swatches(); rotateRender(); coverage();
+  drawScreens(); composeRender(); boxRender(); textRender(); buttonRender(); inputRender(); selectRender(); linkRender(); codeRender(); rasterRender(); clientRender(); bordersGallery(); swatches(); variantsRender(); rotateRender(); coverage();
 }
-sitesUI(); composeUI(); buildRail(); buildIndex(); finderUI();
+sitesUI(); composeUI(); variantsUI(); buildRail(); buildIndex(); finderUI();
 const headH=()=>document.documentElement.style.setProperty("--head-h",document.querySelector(".head").offsetHeight+"px"); new ResizeObserver(headH).observe(document.querySelector(".head")); headH();
 document.querySelectorAll("input,select,textarea").forEach(el=>el.addEventListener("input",()=>{ renderAll(); tick(el.closest(".lab")?.querySelector(".term")); }));
 renderAll(); copyButtons();
