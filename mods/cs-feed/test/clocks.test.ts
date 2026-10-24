@@ -120,3 +120,59 @@ test('the working line redraws with the clock while it counts helpers', async ($
   expect(draws).toBeGreaterThanOrEqual(before + 3)
   await row.unmount()
 })
+
+test('the desktop band draws the usage windows, and a failed appearance probe keeps the theme and the tick', async ($, on) => {
+  const ticks: unknown[] = []
+  const probes: unknown[] = []
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : { deny: 'ENOENT: no such file or directory' })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', ($, e) => {
+    if (e.argv[0] === '/bin/cs') return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    probes.push(e.argv)
+    throw new Error('no defaults here')
+  })
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 20 }, { kind: 'seven_day', percentUsed: 49 }] } }))
+  const clock = mock.clock(on)
+  on('state.set', async ($, e, next) => { if (e.key === 'tick') ticks.push(e.value); return next(e) })
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine band' }))
+  const band = await $.ui.mount({ plugin: 'cs-feed', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 90, scroll: { offset: 0, bodyRows: 6 }, view: {} } })
+  expect((await band.find({ type: 'Text', text: '20%' }))?.text).toBe('20% · 5h')
+  expect((await band.find({ type: 'Text', text: '49%' }))?.text).toBe('49% · week')
+  expect(await band.find({ type: 'Text', text: 'Test' })).toBeUndefined()
+  await clock.advance(3000)
+  expect(probes).toEqual([['/usr/bin/defaults', 'read', '-g', 'AppleInterfaceStyle']])
+  expect(ticks).toEqual([1, 2, 3])
+  expect(logs).toEqual([])
+  await band.unmount()
+})
+
+test('a pulse write that fails stops the pulse with one log line, and the next painted draw starts it again', async ($, on) => {
+  const clock = feedOn(on, [], () => [{ id: 'reader', type: 'Explore', description: 'Read the notes', status: 'running' }])
+  const pulses: unknown[] = []
+  const logs: string[] = []
+  let refuse = true
+  on('state.set', async ($, e, next) => {
+    if (e.key !== 'pulse') return next(e)
+    if (refuse) { refuse = false; return { deny: 'pulse refused' } }
+    pulses.push(e.value)
+    return next(e)
+  })
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.hint }))
+  const props = { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } as const
+  const first = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'first', props })
+  await clock.advance(700)
+  expect(logs).toEqual(['cs-feed: pulse stopped: cs-feed: $.state.set: pulse refused'])
+  expect(pulses).toEqual([])
+  const second = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'second', props })
+  await clock.advance(70)
+  expect(pulses).toEqual([1])
+  await first.unmount()
+  await second.unmount()
+})

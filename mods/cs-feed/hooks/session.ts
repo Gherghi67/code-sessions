@@ -883,9 +883,9 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
           const theme = rows.find(row => row.key === 'theme')?.value
           load.light = typeof theme === 'string' && theme.startsWith('light')
           if (load.desktopBand) {
-            const appearance = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 1000 })
+            const appearance = await osAppearance($)
             if (!active(load)) { load.clocks.tick = false; return }
-            load.light = appearance.exitCode !== 0 || appearance.stdout.trim() !== 'Dark'
+            if (appearance !== undefined) load.light = appearance === 'light'
           }
           load.themeAt = Date.now()
         }
@@ -904,6 +904,21 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
   startPulse(load, $)
 }
 
+/**
+ * The desktop band follows the operating system's appearance (§13 (a), ruling
+ * §20.7: probed from the desktop band's path only). "Dark" is dark; a run that
+ * answers without it (the key is absent) is light; a probe that does not run
+ * is unknown, and the /config theme stands (§13 (b)).
+ */
+async function osAppearance($: $): Promise<'dark' | 'light' | undefined> {
+  try {
+    const probe = await $.process.run(['/usr/bin/defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 1000 })
+    return probe.exitCode === 0 && probe.stdout.trim() === 'Dark' ? 'dark' : 'light'
+  } catch {
+    return undefined
+  }
+}
+
 function animating(load: Load): boolean {
   return load.agents.some(agent => helperBusy(agent.status)) || load.snap.cached.background.some(run => !load.obs.bgEnded.has(run.id))
 }
@@ -913,11 +928,17 @@ function startPulse(load: Load, $: $): void {
   load.clocks.pulse = true
   $.clock.after(70, async function pulse() {
     if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
-    const value = await read($, PULSE)
-    if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
-    await $.state.set({ plugin: 'cs-feed', key: 'pulse' }, value + 1)
-    if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
-    $.clock.after(70, pulse)
+    try {
+      const value = await read($, PULSE)
+      if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
+      await $.state.set({ plugin: 'cs-feed', key: 'pulse' }, value + 1)
+      if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
+      $.clock.after(70, pulse)
+    } catch (error) {
+      // Stopped, not stuck: the flag clears so the next painted draw starts the pulse again.
+      load.clocks.pulse = false
+      await $.ui.log(`cs-feed: pulse stopped: ${error instanceof Error ? error.message : String(error)}`)
+    }
   })
 }
 
