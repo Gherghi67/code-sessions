@@ -156,3 +156,15 @@ test('duplicateNode puts a copy right after the node and selects the copy', () =
     .toEqual(edited(box({}, text('a'), col(text('b'), button('go')), col(text('b'), button('go')), text('c')), sel([2]), 'duplicate Box'))
   expect(() => E.apply(doc(sel([])), { type: 'duplicateNode', path: [] })).toThrow('the root cannot be duplicated')
 })
+
+test('setText rewrites a Text\'s words, and only a Text\'s', () => {
+  expect(E.apply(doc(sel([1, 0])), { type: 'setText', path: [1, 0], text: 'beta' }))
+    .toEqual(edited(box({}, text('a'), col(text('beta'), button('go')), text('c')), sel([1, 0]), 'edit the words of a Text'))
+  expect(() => E.apply(doc(sel([1, 1])), { type: 'setText', path: [1, 1], text: 'x' })).toThrow('setText needs a Text; [1,1] is a Button')
+})
+
+// Tab walks the words on the strip in the order the tree holds them.
+test('wordPaths lists every Text and Button in document order', () => {
+  expect(E.wordPaths(tree())).toEqual([[0], [1, 0], [1, 1], [2]])
+  expect(E.wordPaths(box({}, { ...button('feed'), kids: [text('feed '), text('✓')] }))).toEqual([[0], [0, 0], [0, 1]])
+})

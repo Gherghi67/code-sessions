@@ -159,6 +159,7 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .frame .strip{position:relative}
 .frame .term{cursor:default;user-select:none}
 .frame .sel{position:absolute;outline:1px solid var(--accent);pointer-events:none}
+.frame .inline-edit{position:absolute;margin:0;padding:0 1px;border:0;outline:1px solid var(--accent);background:var(--term);color:var(--term-fg);font:inherit;font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:15px;line-height:1.35}
 .frame .drop{position:absolute;background:var(--accent);pointer-events:none}
 .frame .sel .tag{position:absolute;bottom:100%;left:-1px;margin-bottom:2px;font:10.5px/1.4 "IBM Plex Sans",sans-serif;background:var(--accent);color:#fff;padding:0 5px;white-space:nowrap}
 .frame .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
@@ -194,7 +195,7 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
 <h2 id="compose">Band designer <span class="src">Box · Text · Button</span></h2>
-<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it. The JSX underneath is what you paste into the mod.</p>
+<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it. Double-click words to retype them; <kbd>Tab</kbd> moves to the next. The JSX underneath is what you paste into the mod.</p>
 <div class="designer">
   <div class="canvas" id="bd-canvas"></div>
   <aside class="props" id="bd-props"></aside>
@@ -1312,6 +1313,47 @@ function bdDragEnd(){
   bdEdit({type:"move",from,to:{parentPath:target.parentPath,index:target.index}});
 }
 
+// ---- inline edit ----
+// A double-click on a Text's or a Button's cells lays a monospace field over
+// them, prefilled with the words. Enter or leaving the field commits, Esc
+// drops it, Tab and Shift+Tab commit and move to the next or previous words.
+function bdInline(frame,path){
+  const tree=bdFrame(frame).tree, node=BandEditor.nodeAt(tree,path);
+  if(node.type!=="Text"&&node.type!=="Button") return;
+  bdDispatch({type:"select",frame,path});
+  const strip=$("bd-canvas").querySelector(`[data-frame="${frame}"] .strip`), span=BandEditor.spanOf(bdGrids[frame],path);
+  if(!span) return;
+  const rect=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
+  const base=strip.getBoundingClientRect(), a=rect(span.top,span.left), b=rect(span.bottom,span.right);
+  const words=node.type==="Text"?node.props.text||"":node.props.label||"";
+  strip.insertAdjacentHTML("beforeend",`<input class="inline-edit" name="inline-edit" aria-label="${node.type} words" style="left:${a.left-base.left}px;top:${a.top-base.top}px;width:calc(${b.right-a.left}px + 2ch);height:${b.bottom-a.top}px">`);
+  const input=strip.querySelector(".inline-edit");
+  input.value=words; input.focus(); input.select();
+  let done=false;
+  const finish=keep=>{
+    if(done) return; done=true;
+    if(!keep||input.value===words) return composeRender();
+    bdEdit(node.type==="Text"?{type:"setText",path,text:input.value}:{type:"setProp",path,name:"label",value:input.value});
+  };
+  input.addEventListener("keydown",e=>{
+    e.stopPropagation();
+    if(e.key==="Enter"){ e.preventDefault(); finish(true); }
+    else if(e.key==="Escape"){ e.preventDefault(); finish(false); }
+    else if(e.key==="Tab"){
+      e.preventDefault(); finish(true);
+      const all=BandEditor.wordPaths(bdFrame(frame).tree), at=all.findIndex(p=>samePath(p,path));
+      const next=all[(at+(e.shiftKey?-1:1)+all.length)%all.length];
+      bdInline(frame,next);
+    }
+  });
+  input.addEventListener("blur",()=>finish(true));
+}
+function bdDoubleClick(e){
+  const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
+  if(!cell||!frame) return;
+  bdInline(frame.dataset.frame,BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c));
+}
+
 // Keys that act on the selection while the designer is on screen and no
 // field has focus; the page's own keys see everything else.
 function bdKeys(e){
@@ -1337,6 +1379,7 @@ function bdKeys(e){
 function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
   $("bd-canvas").addEventListener("mousedown",bdDragStart);
+  $("bd-canvas").addEventListener("dblclick",bdDoubleClick);
   document.addEventListener("mousemove",bdDragMove);
   document.addEventListener("mouseup",bdDragEnd);
   document.addEventListener("keydown",bdKeys,true);

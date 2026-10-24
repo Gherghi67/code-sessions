@@ -27,6 +27,17 @@
     return path.length === 0 ? null : { path: path.slice(0, -1), index: path[path.length - 1] };
   }
 
+  // The paths of every Text and Button, in the order the tree holds them:
+  // the words a person can edit on the strip.
+  function wordPaths(tree) {
+    var out = [];
+    (function walk(n, path) {
+      if (n.type === "Text" || n.type === "Button") out.push(path);
+      n.kids.forEach(function (k, i) { walk(k, path.concat([i])); });
+    })(tree, []);
+    return out;
+  }
+
   // The path of the node that drew the cell, or null off the grid.
   function pathOfCell(grid, row, col) {
     var r = grid.rows[row];
@@ -174,6 +185,16 @@
         return { tree: removeAt(tree, a.path), edit: "remove " + nodeAt(tree, a.path).type, select: a.path.slice(0, -1) };
       });
     },
+    setText: function (doc, a) {
+      return editTree(doc, "setText", function (tree) {
+        var type = nodeAt(tree, a.path).type;
+        if (type !== "Text") throw new Error("setText needs a Text; " + show(a.path) + " is a " + type);
+        return {
+          tree: updateAt(tree, a.path, function (n) { return Object.assign({}, n, { props: Object.assign({}, n.props, { text: a.text }) }); }),
+          edit: "edit the words of a Text",
+        };
+      });
+    },
     duplicateNode: function (doc, a) {
       return editTree(doc, "duplicateNode", function (tree) {
         if (a.path.length === 0) throw new Error("the root cannot be duplicated");
@@ -200,7 +221,7 @@
   // Not an edit (a selection): the present moves and no step is taken.
   function replace(h, doc) { return { past: h.past, present: clone(doc), future: h.future }; }
 
-  var api = { history: history, commit: commit, replace: replace, apply: apply, canDrop: canDrop, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
+  var api = { history: history, commit: commit, replace: replace, apply: apply, canDrop: canDrop, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
