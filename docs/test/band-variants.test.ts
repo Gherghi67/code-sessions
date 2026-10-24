@@ -114,6 +114,23 @@ test('shipped names the prompt when ten cells are left after the rail, and not a
   expect(lines('shipped', 'rail-few', 18)).toEqual([' '.repeat(7), '  \u25cf \u2502\u2502\u2503'])
 })
 
+// A wide glyph takes two cells, as register.tsx's cellWidth counts it. The
+// prompt `#3 translate the \u8a2d\u5b9a page` is 24 code points and 26 cells: at 80 cols
+// its 71-cell label pads with 45 spaces; at 29 cols the 20-cell label keeps
+// 17 cells, the first wide glyph (19) and the ellipsis. Read off the label's
+// Text, since the engine here pads its Box by code points.
+test('shipped measures and cuts a prompt with wide glyphs by cells, not code points', () => {
+  const wide = { ...state('rail-few'), rail: { prompts: ['fix the login redirect', 'add a retry to the upload client', 'translate the \u8a2d\u5b9a page'], named: 2, refused: [] } }
+  const label = (cols: number) => {
+    const found: string[] = []
+    const walk = (n: any) => { if (n.type === 'Text' && n.props.italic) found.push(n.children[0]); (n.children || []).forEach((k: any) => k && typeof k === 'object' && walk(k)) }
+    walk(variant('shipped').draw(wide, cols, 'light'))
+    return found
+  }
+  expect(label(80)).toEqual(['#3 translate the \u8a2d\u5b9a page' + ' '.repeat(45)])
+  expect(label(29)).toEqual(['#3 translate the \u8a2d\u2026'])
+})
+
 test('every variant that draws a rail folds fourteen prompts into \u20264 at 80 cols', () => {
   const railed = VARIANTS.filter((v: any) => lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u2503')))
   expect(railed.map((v: any) => v.id)).toEqual(['shipped', 'keys-first', 'status-first', 'two-zone', 'rail-first', 'capsule', 'stacked'])

@@ -58,8 +58,21 @@
   function T(props, text) { return { type: "Text", props: props, children: [text] }; }
   function Bx(props, kids) { return { type: "Box", props: props, children: kids.filter(Boolean) }; }
   function Btn(props, kids) { return { type: "Button", props: props, children: kids || [] }; }
-  // Every glyph the band draws takes one cell, so a code point is a cell.
-  function cells(text) { return Array.from(text).length; }
+  // register.tsx's cellWidth: a grapheme is two cells when it is wide (CJK,
+  // Hangul, fullwidth forms, most emoji), none when it only marks another.
+  // The engine below still counts a code point as a cell, so a wide glyph
+  // lays out one cell narrower than the terminal draws it.
+  var WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\u{1F300}-\u{1F64F}]|[\u{1F900}-\u{1F9FF}]|[\u{20000}-\u{3FFFD}]/u;
+  var ZERO = /^[\p{M}​-‏️]+$/u;
+  function graphemes(text) {
+    if (typeof Intl === "undefined" || !Intl.Segmenter) return Array.from(text);
+    return Array.from(new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text), function (piece) { return piece.segment; });
+  }
+  function cellsOf(grapheme) {
+    if (ZERO.test(grapheme)) return 0;
+    return WIDE.test(grapheme.replace(/[\p{M}​-‏️]/gu, "")) ? 2 : 1;
+  }
+  function cells(text) { return graphemes(text).reduce(function (sum, g) { return sum + cellsOf(g); }, 0); }
 
   // The inks, by the lab painter's names. The session colour stands as
   // `claude` (the session palette's orange is the same rgb); amber and crit
@@ -118,7 +131,14 @@
 
   // `text` at most `width` cells, ending in `…` when anything was cut.
   function cut(text, width) {
-    return cells(text) <= width ? text : Array.from(text).slice(0, Math.max(0, width - 1)).join("") + "…";
+    if (cells(text) <= width) return text;
+    var fitted = "", used = 0;
+    for (var g of graphemes(text)) {
+      if (used + cellsOf(g) > width - 1) break;
+      fitted += g;
+      used += cellsOf(g);
+    }
+    return fitted + "…";
   }
   function fitLeft(text, width) {
     var fitted = cut(text, width);
