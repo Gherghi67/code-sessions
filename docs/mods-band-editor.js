@@ -131,6 +131,32 @@
     return refusal(nodeAt(tree, from).type, nodeAt(tree, parentPath));
   }
 
+  // Where the node at `from` lands when dropped on the grid's cell, or null
+  // when nowhere, or where it already is. A pointer inside a sibling, at any
+  // depth, reorders among the siblings. Anywhere else the node under the
+  // pointer takes it when it may hold it, else the nearest container above
+  // that may. The gap is the first drawn child whose midpoint along the
+  // parent's direction is not before the pointer.
+  function dropTarget(tree, grid, from, cell) {
+    var at = pathOfCell(grid, cell.r, cell.c);
+    if (from.length === 0 || !at || within(at, from)) return null;
+    var parent = from.slice(0, -1), i = from[from.length - 1];
+    var p = at.length > parent.length && within(at, parent) ? parent : at;
+    while (p && (nodeAt(tree, p).type === "Text" || canDrop(tree, from, p) !== null)) p = p.length ? p.slice(0, -1) : null;
+    if (!p) return null;
+    var dir = String(nodeAt(tree, p).props.flexDirection || "row");
+    var column = /^column/.test(dir), reverse = /-reverse$/.test(dir), pos = column ? cell.r : cell.c;
+    var kids = nodeAt(tree, p).kids, index = kids.length;
+    for (var k = 0; k < kids.length; k++) {
+      var s = spanOf(grid, p.concat([k]));
+      if (!s) continue;
+      var mid = column ? (s.top + s.bottom) / 2 : (s.left + s.right) / 2;
+      if (reverse ? mid <= pos : mid >= pos) { index = k; break; }
+    }
+    if (show(p) === show(parent) && (index === i || index === i + 1)) return null;
+    return { parentPath: p, index: index };
+  }
+
   // Where a new node goes for the node at `path`: a Box takes it as its
   // last child, anything else has it placed right after.
   function insertPoint(tree, path) {
@@ -366,7 +392,7 @@
     return doc;
   }
 
-  var api = { history: history, commit: commit, commitDraft: commitDraft, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, refusal: refusal, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
+  var api = { history: history, commit: commit, commitDraft: commitDraft, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, dropTarget: dropTarget, refusal: refusal, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

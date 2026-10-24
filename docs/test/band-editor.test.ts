@@ -60,6 +60,37 @@ test('moving a chord group carries its key with its word', () => {
   expect(row(E.apply(swapped, { type: 'move', from: [0, 0, 4], to: { parentPath: [0, 0], index: 3 } }))).toBe('  \u25cf ctrl+x  2 wrap  \u00b7  1 rotate')
 })
 
+// Where a drag lands, on the shipped rotate-due band
+// `  ● ctrl+x  1 rotate  ·  2 wrap`: the rotate group [0,0,2] spans cols
+// 12-19 (midpoint 15.5), the separator [0,0,3] cols 20-24 (22), the wrap
+// group [0,0,4] cols 25-30. A pointer anywhere inside a sibling reorders
+// among the siblings, before that sibling up to its midpoint and after it
+// past; a gap that would leave the node where it is gives no target.
+test('dropTarget reorders a node among its siblings when the pointer is inside one', () => {
+  const t = E.fromEngine(VARIANTS[0].draw(facts('rotate-due'), 80, 'light'))
+  const g = layout(E.toEngine(t), 80)
+  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 14 })).toEqual({ parentPath: [0, 0], index: 2 })
+  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 18 })).toEqual({ parentPath: [0, 0], index: 3 })
+  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 20 })).toEqual({ parentPath: [0, 0], index: 3 })
+  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 24 })).toBeNull()
+  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 28 })).toBeNull()
+  expect(E.dropTarget(t, g, [0, 0, 2], { r: 1, c: 28 })).toEqual({ parentPath: [0, 0], index: 5 })
+})
+
+// Outside the siblings the pointer's node takes the drop when it may hold
+// the dragged node, else the nearest container above it that may. Here `y`
+// [0,1] is dragged over the padded Box [1]: `xy` draws at cols 0-1, then
+// [1]'s padding at 2-3, `ab` at 4-5 (midpoint 4.5), padding at 6-7.
+test('dropTarget puts a node into an unrelated Box under the pointer', () => {
+  const t = box({}, box({}, text('x'), text('y')), box({ paddingX: 2 }, text('ab')))
+  const g = layout(E.toEngine(t), 40)
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 2 })).toEqual({ parentPath: [1], index: 0 })
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 7 })).toEqual({ parentPath: [1], index: 1 })
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 4 })).toEqual({ parentPath: [1], index: 0 })
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 9 })).toBeNull()
+  expect(E.dropTarget(t, g, [], { r: 0, c: 2 })).toBeNull()
+})
+
 const box = (props: any, ...kids: any[]) => ({ type: 'Box', props, kids })
 const text = (t: string, props: any = {}) => ({ type: 'Text', props: { text: t, ...props }, kids: [] })
 const button = (label: string, props: any = {}) => ({ type: 'Button', props: { label, ...props }, kids: [] })

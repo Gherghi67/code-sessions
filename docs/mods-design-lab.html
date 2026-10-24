@@ -1369,9 +1369,8 @@ function bdClick(e){
 }
 
 // ---- drag to reorder ----
-// The node the pointer took hold of, and where it would land: the deepest
-// Box (or, for a Text, Button) under the pointer that may hold it, at the gap
-// the pointer is nearest along that parent's direction.
+// The node the pointer took hold of, and where it would land
+// (BandEditor.dropTarget), with what the drop bar needs to draw the gap.
 let bdDrag=null;
 const bdWithin=(path,top)=>top.every((v,i)=>path[i]===v)&&path.length>=top.length;
 function bdCellAt(x,y,frame){
@@ -1379,15 +1378,11 @@ function bdCellAt(x,y,frame){
   return el&&el.closest("[data-frame]")?.dataset.frame===frame?{r:+el.dataset.r,c:+el.dataset.c}:null;
 }
 function bdDropTarget(frame,from,cell){
-  const tree=bdFrame(frame).tree, g=bdGrids[frame];
-  let p=BandEditor.pathOfCell(g,cell.r,cell.c);
-  while(p&&(BandEditor.nodeAt(tree,p).type==="Text"||BandEditor.canDrop(tree,from,p)!==null)) p=p.length?p.slice(0,-1):null;
-  if(!p) return null;
-  const dir=String(BandEditor.nodeAt(tree,p).props.flexDirection||"row");
-  const column=/^column/.test(dir), reverse=/-reverse$/.test(dir), at=column?cell.r:cell.c;
+  const tree=bdFrame(frame).tree, g=bdGrids[frame], t=BandEditor.dropTarget(tree,g,from,cell);
+  if(!t) return null;
+  const p=t.parentPath, dir=String(BandEditor.nodeAt(tree,p).props.flexDirection||"row");
   const spans=BandEditor.nodeAt(tree,p).kids.map((k,i)=>BandEditor.spanOf(g,p.concat([i])));
-  const before=spans.filter(s=>{ if(!s) return false; const mid=column?(s.top+s.bottom)/2:(s.left+s.right)/2; return reverse?mid>at:mid<at; });
-  return {parentPath:p,index:before.length,column,reverse,spans,box:BandEditor.spanOf(g,p)};
+  return {...t,column:/^column/.test(dir),reverse:/-reverse$/.test(dir),spans,box:BandEditor.spanOf(g,p)};
 }
 // The 2px bar at the target's gap: before the child at the index, else
 // after the one before it, else at the start of an empty parent.
@@ -1431,8 +1426,7 @@ function bdDragEnd(){
   const {from,target,moved,strip}=bdDrag; bdDrag=null; bdDragged=moved; setTimeout(()=>{ bdDragged=false; });
   // Anything short of a move leaves the strip's cells in place: the browser
   // sends the click and the double-click to them after this mouseup.
-  const i=from[from.length-1], here=target&&samePath(target.parentPath,from.slice(0,-1));
-  if(!target||here&&(target.index===i||target.index===i+1)) return strip.querySelector(".drop")?.remove();
+  if(!target) return strip.querySelector(".drop")?.remove();
   bdEdit({type:"move",from,to:{parentPath:target.parentPath,index:target.index}});
 }
 
