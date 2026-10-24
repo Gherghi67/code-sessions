@@ -4,6 +4,7 @@ import type { EngineInterface } from 'claude-code'
 import { atom, read } from 'claude-code'
 
 import type { Session } from './settings'
+import { FEED_FILE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
 import { callId, EMPTY } from './transcript'
 
@@ -208,6 +209,7 @@ export type Load = {
    * except through feedRecord's one per-load promise.
    */
   feed?: Session
+  record?: Promise<Session>
   /**
    * cs's answer on this session's control files for the `on\n` the mirror
    * last read (§20.22: the writes and the on-read are vetted).
@@ -363,7 +365,26 @@ export function active(load: Load): boolean {
  * it first, through applyFeed, and vets a flip to on), or load (Tradeoffs).
  */
 export function feedRecord(load: Load, $: $): Promise<Session> {
-  throw new Error('not implemented')
+  return load.record ??= (async () => {
+    const cwd = await $.session.cwd()
+    const feed = await readLocal($, `${cwd}/${FEED_FILE}`)
+    const stored = await readLocal($, `${cwd}/${VIEW_FILE}`)
+    const view = parseStoredView(stored.text)
+    load.vet = isOn(feed.text) ? await vetOnRead(load, $, cwd) : undefined
+    load.feed = { on: !feed.failed && !stored.failed && isOn(feed.text) && load.vet === 'passed', view }
+    return load.feed
+  })()
+}
+
+async function readLocal($: $, path: string): Promise<{ text?: string; failed: boolean }> {
+  try {
+    return { text: await $.fs.read(path), failed: false }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/\bENOENT\b/.test(message)) return { failed: false }
+    await $.ui.log(`cs-feed: could not read ${path}: ${message}`)
+    return { failed: true }
+  }
 }
 
 /**
@@ -475,8 +496,16 @@ export function writeFeed(load: Load, $: $, next: Session): Promise<WriteOutcome
  * cs's module memory; this shares nothing with it, and cs's band asks again
  * at its next acting step, so the two answer the same rule, not the same call.
  */
-export function vetRefusal($: $, cwd: string): Promise<string | undefined> {
-  throw new Error('not implemented')
+export async function vetRefusal($: $, cwd: string): Promise<string | undefined> {
+  const bin = await $.env.get('CS_BIN')
+  if (!bin) return 'the launch did not say where cs is (CS_BIN)'
+  try {
+    const result = await $.process.run([bin, '-vet-session', cwd], { timeoutMs: VET_TIMEOUT_MS })
+    if (result.exitCode === 0) return undefined
+    return result.stderr.split(/\r?\n/).filter(line => line.trim() !== '').at(-1) ?? `cs -vet-session exited ${result.exitCode}`
+  } catch (error) {
+    return `cs -vet-session did not run: ${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 /** cs's answer on this session's control files: trusted, or refused with cs's own text (vetRefusal's). */
@@ -502,8 +531,17 @@ export type Vetted = 'passed' | { readonly refused: string }
  * its read still wins its ticket). Cost: one cs process (0.15-0.44 s), in
  * on-sessions only.
  */
-export function vetOnRead(load: Load, $: $, cwd: string): Promise<Vetted> {
-  throw new Error('not implemented')
+export async function vetOnRead(load: Load, $: $, cwd: string): Promise<Vetted> {
+  const refused = await vetRefusal($, cwd)
+  if (refused === undefined) {
+    load.vetLogged = undefined
+    return 'passed'
+  }
+  if (refused !== load.vetLogged) {
+    load.vetLogged = refused
+    await $.ui.log(`cs-feed: the feed is off in this session: ${refused}`)
+  }
+  return { refused }
 }
 
 /**

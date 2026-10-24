@@ -4,6 +4,80 @@ import { expect, test } from 'claude-code/testing'
 import { newLoad, observePrompt, observeTurnStart, observeResponse, openTurn, replaceResponseText } from '../hooks/session'
 import { buildTranscript } from '../hooks/transcript'
 
+for (const file of ['off\n', undefined]) test(`${file === undefined ? 'an absent' : 'an off'} feed reads once per load without asking cs to vet it`, async ($, on) => {
+  const reads: string[] = []
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => {
+    reads.push(e.path)
+    if (e.path === '/session/.cs/local/feed' && file !== undefined) return { value: file }
+    return { deny: 'ENOENT: no such file or directory' }
+  })
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'AssistantMessage' }, ($, e) => {
+    return $.ui.resolve(e).Text({ children: 'engine reply' })
+  })
+  const one = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AssistantMessage', requestId: 'one', props: { text: 'answer', isFirstOfReply: true } })
+  const two = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AssistantMessage', requestId: 'two', props: { text: 'answer', isFirstOfReply: true } })
+  expect((await one.find({ type: 'Text' }))?.text).toBe('engine reply')
+  expect((await two.find({ type: 'Text' }))?.text).toBe('engine reply')
+  expect(reads).toEqual(['/session/.cs/local/feed', '/session/.cs/local/feed-view'])
+  expect(logs).toEqual([])
+  await one.unmount()
+  await two.unmount()
+})
+
+test('two renders share an on-read vet and a refusal keeps both on the engine with one log', {
+  plugins: [{ name: 'render-entry', tier: 'prepend', register(on) {
+    on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+      await $.ui.log('render-entry')
+      return next(e)
+    })
+  } }],
+}, async ($, on) => {
+  const calls: unknown[] = []
+  const logs: string[] = []
+  let release: (() => void) | undefined
+  let entered: (() => void) | undefined
+  let overlap: (() => void) | undefined
+  let entries = 0
+  const held = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const bothEntered = new Promise<void>(resolve => { overlap = resolve })
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => {
+    if (e.path === '/session/.cs/local/feed') return { value: 'on\n' }
+    return { deny: 'ENOENT: no such file or directory' }
+  })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', async ($, e) => {
+    calls.push({ argv: e.argv, timeoutMs: e.init?.timeoutMs })
+    entered?.()
+    await held
+    return { value: { exitCode: 1, stdout: '', stderr: 'first line\nnot a trusted session\n\n', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.log', ($, e) => {
+    if (e.text === 'render-entry') {
+      entries++
+      if (entries === 2) overlap?.()
+    } else logs.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.render', { component: 'AssistantMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine reply' }))
+  const one = $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AssistantMessage', requestId: 'one', props: { text: 'answer', isFirstOfReply: true } })
+  await started
+  const two = $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AssistantMessage', requestId: 'two', props: { text: 'answer', isFirstOfReply: true } })
+  await bothEntered
+  release?.()
+  const mounted = await Promise.all([one, two])
+  for (const row of mounted) {
+    expect((await row.find({ type: 'Text' }))?.text).toBe('engine reply')
+    await row.unmount()
+  }
+  expect(calls).toEqual([{ argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 }])
+  expect(logs).toEqual(['cs-feed: the feed is off in this session: not a trusted session'])
+})
+
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {
   const load = newLoad()
   const t = buildTranscript([{ role: 'user', text: 'work', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'live', tool: 'Read', input: {} }] }])
