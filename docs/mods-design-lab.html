@@ -148,6 +148,10 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .designer{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
 @media (max-width:1100px){.designer{grid-template-columns:1fr}}
 .designer .props{background:var(--panel);border:1px solid var(--line);padding:12px;position:sticky;top:calc(var(--head-h,96px) + 12px);max-height:calc(100vh - var(--head-h,96px) - 24px);overflow-y:auto}
+.props .phead{font-size:13px;margin:0 0 8px}
+.props .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
+.props fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:8px 0 10px}
+.props legend{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);padding:0 6px 0 0}
 .props .insp{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px 14px}
 .props .insp label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--fg2)}
 .props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
@@ -1062,35 +1066,46 @@ function coverage(){
 
 
 // ---------- COMPOSE ----------
-// The fields a node's props panel draws, per element.
+// The fields a node's props panel draws, per element and per group: the one
+// table the panel is drawn from. A row is [prop, kind, options or hint].
 const CP_SCHEMA={
-  Box:[
-    ["key","text","a key scopes hover and keeps the node's identity across redraws"],
-    ["flexDirection","select",["row","column","row-reverse","column-reverse"]],
-    ["justifyContent","select",["flex-start","center","flex-end","space-between","space-around","space-evenly"]],
-    ["alignItems","select",["flex-start","center","flex-end"]],
-    ["gap","num"],["flexGrow","num"],["width","num"],["height","num"],
-    ["borderStyle","select",["","single","double","round","bold","singleDouble","doubleSingle","classic","arrow"]],
-    ["borderColor","color"],["borderDimColor","bool"],
-    ["paddingX","num"],["paddingY","num"],["marginX","num"],["marginY","num"],
-    ["backgroundColor","color"],
-    ["overflow","select",["visible","hidden"]],["display","select",["flex","none"]],
-    ["hoverBorderColor","color","hover={{ borderColor }} — needs a key"],
-    ["hoverBackgroundColor","color","hover={{ backgroundColor }} — needs a key"],
-  ],
-  Text:[
-    ["text","text","what it says"],
-    ["color","color"],["backgroundColor","color"],
-    ["bold","bool"],["dimColor","bool"],["italic","bool"],["underline","bool"],["strikethrough","bool"],["inverse","bool"],
-    ["wrap","select",["wrap","end","middle","truncate","truncate-start","truncate-middle","truncate-end"]],
-    ["flexGrow","num"],
-  ],
-  Button:[
-    ["label","text"],["key","text"],["hotkey","text","a digit or a letter the band arms"],
-    ["action","text","a keybinding to run instead of onPress"],
-    ["plain","bool"],["dimColor","bool"],["autoFocus","bool"],["flexGrow","num"],
-  ],
+  Box:{
+    Layout:[
+      ["flexDirection","select",["row","column","row-reverse","column-reverse"]],
+      ["justifyContent","select",["flex-start","center","flex-end","space-between","space-around","space-evenly"]],
+      ["alignItems","select",["flex-start","center","flex-end"]],
+      ["gap","num"],["paddingX","num"],["paddingY","num"],["marginX","num"],["marginY","num"],
+      ["marginTop","num"],["marginRight","num"],["marginBottom","num"],["marginLeft","num"],
+      ["width","num"],["height","num"],["flexGrow","num"],
+      ["overflow","select",["visible","hidden"]],["display","select",["flex","none"]],
+    ],
+    Appearance:[
+      ["key","text","a key scopes hover and keeps the node's identity across redraws"],
+      ["borderStyle","select",["","single","double","round","bold","singleDouble","doubleSingle","classic","arrow"]],
+      ["borderColor","color"],["borderDimColor","bool"],["backgroundColor","color"],
+      ["hoverBorderColor","color","hover={{ borderColor }} — needs a key"],
+      ["hoverBackgroundColor","color","hover={{ backgroundColor }} — needs a key"],
+    ],
+  },
+  Text:{
+    Layout:[["flexGrow","num"]],
+    Appearance:[
+      ["color","color"],["backgroundColor","color"],
+      ["bold","bool"],["dimColor","bool"],["italic","bool"],["underline","bool"],["strikethrough","bool"],["inverse","bool"],
+    ],
+    Text:[["text","text","what it says"],["wrap","select",["","wrap","end","middle","truncate","truncate-start","truncate-middle","truncate-end"]]],
+  },
+  Button:{
+    Layout:[["flexGrow","num"]],
+    Appearance:[["dimColor","bool"]],
+    Button:[
+      ["label","text"],["key","text"],["hotkey","text","a digit or a letter the band arms"],
+      ["action","text","a keybinding to run instead of onPress"],
+      ["plain","bool"],["autoFocus","bool"],
+    ],
+  },
 };
+const CP_GROUPS=["Layout","Appearance","Button","Text"];
 const ed=(type,props,kids)=>({type,props:props||{},kids:kids||[]});
 function cpRotatePreset(){
   const band=ed("Box",{key:"cs-rotate-band",borderStyle:"round",borderColor:"CORAL",paddingX:1,hoverBorderColor:"CORAL"},[
@@ -1108,24 +1123,31 @@ function cpRotatePreset(){
 
 // The designer's document (docs/mods-band-editor.js) and, per frame, the
 // grid its strip was last painted from, which a click is looked up in.
-let bdDoc=null;
+// A text field types into a draft, drawn live, and commits it as one step
+// on blur or Enter; the history's present stays the state before the edit.
+let bdHist=null, bdDraft=null;
+const bdDocNow=()=>bdDraft||bdHist.present;
 const bdGrids={};
 const samePath=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
-const bdFrame=id=>bdDoc.frames.find(f=>f.id===id);
-const bdSelected=()=>bdDoc.selection&&BandEditor.nodeAt(bdFrame(bdDoc.selection.frame).tree,bdDoc.selection.path);
-function bdDispatch(action){ bdDoc=BandEditor.apply(bdDoc,action); composeRender(); }
+const bdFrame=id=>bdDocNow().frames.find(f=>f.id===id);
+const bdSelected=()=>{ const sel=bdDocNow().selection; return sel&&BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path); };
+// A selection moves the present; an edit commits a step.
+function bdDispatch(action){ bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
+function bdEdit(action){ bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdDraft=null; bdPanelStale=true; composeRender(); }
 
-function cpInspector(n){
+function cpField([name,kind,extra],v){
+  const hint=typeof extra==="string"?` title="${esc(extra)}"`:"";
+  if(kind==="bool") return `<label class="inline"${hint}><input type="checkbox" name="${name}" data-prop="${name}" data-kind="bool"${v?" checked":""}> ${name}</label>`;
+  if(kind==="num") return `<label${hint}>${name} <input type="number" name="${name}" data-prop="${name}" data-kind="num" value="${v===undefined?"":v}"></label>`;
+  if(kind==="color") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${cpColorOptions(v)}</select></label>`;
+  if(kind==="select") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${extra.map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select></label>`;
+  return `<label${hint}>${name} <input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}"></label>`;
+}
+function cpInspector(n,path){
   if(!n) return `<p class="why">Click a cell on the strip to select the node that drew it.</p>`;
-  const rows=CP_SCHEMA[n.type]||[];
-  return `<div class="insp">`+rows.map(([name,kind,extra])=>{
-    const v=n.props[name], hint=typeof extra==="string"?` title="${esc(extra)}"`:"";
-    if(kind==="bool") return `<label class="inline"${hint}><input type="checkbox" name="${name}" data-prop="${name}" data-kind="bool"${v?" checked":""}> ${name}</label>`;
-    if(kind==="num") return `<label${hint}>${name} <input type="number" name="${name}" data-prop="${name}" data-kind="num" value="${v===undefined?"":v}" style="width:80px"></label>`;
-    if(kind==="color") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text" class="cpcolor">${cpColorOptions(v)}</select></label>`;
-    if(kind==="select") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${(extra||[]).map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select></label>`;
-    return `<label${hint}>${name} <input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}"></label>`;
-  }).join("")+`</div>`;
+  const groups=CP_SCHEMA[n.type];
+  return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
+    +CP_GROUPS.filter(g=>groups[g]).map(g=>`<fieldset><legend>${g}</legend><div class="insp">${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></fieldset>`).join("");
 }
 function cpColorOptions(v){
   const raw=Object.keys(RAW);
@@ -1191,17 +1213,22 @@ function bdFrameCard(f){
     +(measured>c?`<p class="why">The tree measures ${measured} cells and the band has ${c}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"")
     +`</div>`;
 }
+// The props panel is rebuilt only when the present changes from outside it
+// (a selection, an edit on the canvas), so a field keeps its focus while it
+// is typed in.
+let bdPanelStale=true;
 function composeRender(){
-  if(!bdDoc) bdDoc={frames:[{id:"f1",name:"Band",tree:cpLoad()||cpRotatePreset()}],selection:null,exportFrame:"f1"};
-  $("bd-canvas").innerHTML=bdDoc.frames.map(bdFrameCard).join("");
-  const sel=bdDoc.selection;
+  if(!bdHist) bdHist=BandEditor.history({frames:[{id:"f1",name:"Band",tree:cpLoad()||cpRotatePreset()}],selection:null,exportFrame:"f1",edit:"open"});
+  const doc=bdDocNow();
+  $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
+  const sel=doc.selection;
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
-  $("bd-props").innerHTML=cpInspector(bdSelected());
-  $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(bdDoc.exportFrame).tree));
+  if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
+  $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   cpSave();
 }
 const bareTree=n=>({type:n.type,props:n.props,kids:(n.kids||[]).map(bareTree)});
-function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(bdFrame(bdDoc.exportFrame).tree)); }catch{} }
+function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(bdFrame(bdHist.present.exportFrame).tree)); }catch{} }
 function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); return raw?bareTree(JSON.parse(raw)):null; }catch{ return null; } }
 
 // A click selects the node that drew the cell; a second click on the node
@@ -1210,18 +1237,18 @@ function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); return 
 function bdClick(e){
   if(e.detail>1) return;
   const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
-  if(!cell||!frame){ if(bdDoc.selection) bdDispatch({type:"deselect"}); return; }
+  if(!cell||!frame){ if(bdDocNow().selection) bdDispatch({type:"deselect"}); return; }
   const id=frame.dataset.frame, path=BandEditor.pathOfCell(bdGrids[id],+cell.dataset.r,+cell.dataset.c);
-  const sel=bdDoc.selection;
+  const sel=bdDocNow().selection;
   const again=sel&&sel.frame===id&&samePath(sel.path,path)&&path.length>0;
   bdDispatch({type:"select",frame:id,path:again?path.slice(0,-1):path});
 }
 // Keys that act on the selection while the designer is on screen and no
 // field has focus; the page's own keys see everything else.
 function bdKeys(e){
-  if(!$("p-compose").classList.contains("on")||!bdDoc.selection) return;
+  if(!$("p-compose").classList.contains("on")||!bdDocNow().selection) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")) return;
-  const sel=bdDoc.selection, node=bdSelected();
+  const sel=bdDocNow().selection, node=bdSelected();
   let act=null;
   if(e.key==="Escape") act={type:"deselect"};
   else if(e.key==="Enter"&&e.shiftKey&&sel.path.length) act={type:"select",frame:sel.frame,path:sel.path.slice(0,-1)};
@@ -1232,16 +1259,18 @@ function bdKeys(e){
 function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
   document.addEventListener("keydown",bdKeys,true);
+  // Every keystroke redraws the strip from a draft; the field's change
+  // (blur or Enter for text, at once for a select or a checkbox) commits it.
+  const fieldValue=el=>el.dataset.kind==="bool"?el.checked:el.dataset.kind==="num"?(el.value===""?undefined:+el.value):el.value;
   $("bd-props").addEventListener("input",e=>{
-    const el=e.target, name=el.dataset.prop; if(!name) return;
-    const n=bdSelected();
-    if(el.dataset.kind==="bool") n.props[name]=el.checked;
-    else if(el.dataset.kind==="num") n.props[name]=el.value===""?undefined:+el.value;
-    else n.props[name]=el.value;
-    if(n.props[name]===undefined||n.props[name]===""||n.props[name]===false) delete n.props[name];
-    const keep=document.activeElement===el?[name,el.selectionStart]:null;
+    const el=e.target; if(!el.dataset.prop) return;
+    bdDraft=BandEditor.apply(bdDocNow(),{type:"setProp",path:bdDocNow().selection.path,name:el.dataset.prop,value:fieldValue(el)});
     composeRender();
-    if(keep){ const again=$("bd-props").querySelector(`[data-prop="${keep[0]}"]`); if(again){ again.focus(); if(again.setSelectionRange&&keep[1]!=null) try{ again.setSelectionRange(keep[1],keep[1]); }catch{} } }
+  });
+  $("bd-props").addEventListener("change",e=>{
+    if(!e.target.dataset.prop||!bdDraft) return;
+    bdHist=BandEditor.commit(bdHist,bdDraft); bdDraft=null;
+    composeRender();
   });
 }
 

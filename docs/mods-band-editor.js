@@ -74,12 +74,47 @@
     return { type: "Box", props: p, children: n.kids.map(toEngine) };
   }
 
+  // A copy of `tree` with the node at `path` replaced by change(node).
+  function updateAt(tree, path, change) {
+    if (path.length === 0) return change(tree);
+    var kids = tree.kids.slice();
+    kids[path[0]] = updateAt(kids[path[0]], path.slice(1), change);
+    return Object.assign({}, tree, { kids: kids });
+  }
+
+  // A copy of `doc` with the selected frame's tree changed. `change(tree)`
+  // returns the new tree and `edit`, the words the history lists it by.
+  function editTree(doc, verb, change) {
+    if (!doc.selection) throw new Error(verb + " needs a selected frame");
+    var id = doc.selection.frame;
+    var out = change(frameOf(doc, id).tree);
+    return Object.assign({}, doc, {
+      frames: doc.frames.map(function (f) { return f.id === id ? Object.assign({}, f, { tree: out.tree }) : f; }),
+      edit: out.edit,
+    });
+  }
+
   var ACTIONS = {
     select: function (doc, a) {
       nodeAt(frameOf(doc, a.frame).tree, a.path);
       return Object.assign({}, doc, { selection: { frame: a.frame, path: a.path.slice() } });
     },
     deselect: function (doc) { return Object.assign({}, doc, { selection: null }); },
+    // An empty value ("", false, undefined) removes the prop, as the JSX
+    // printer would drop it.
+    setProp: function (doc, a) {
+      return editTree(doc, "setProp", function (tree) {
+        return {
+          tree: updateAt(tree, a.path, function (n) {
+            var props = Object.assign({}, n.props);
+            if (a.value === "" || a.value === false || a.value === undefined) delete props[a.name];
+            else props[a.name] = a.value;
+            return Object.assign({}, n, { props: props });
+          }),
+          edit: "set " + a.name + " on " + nodeAt(tree, a.path).type,
+        };
+      });
+    },
   };
 
   function apply(doc, action) {
@@ -88,7 +123,19 @@
     return step(doc, action);
   }
 
-  var api = { apply: apply, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
+  // History = { past: Doc[], present: Doc, future: Doc[] }. Each Doc is a
+  // structural clone, so no later edit can reach into a step.
+  var HISTORY_CAP = 200;
+  var clone = function (doc) { return JSON.parse(JSON.stringify(doc)); };
+  function history(doc) { return { past: [], present: clone(doc), future: [] }; }
+  // An edit: the present becomes a step back, and the steps ahead are gone.
+  function commit(h, doc) {
+    return { past: h.past.concat([h.present]).slice(-HISTORY_CAP), present: clone(doc), future: [] };
+  }
+  // Not an edit (a selection): the present moves and no step is taken.
+  function replace(h, doc) { return { past: h.past, present: clone(doc), future: h.future }; }
+
+  var api = { history: history, commit: commit, replace: replace, apply: apply, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

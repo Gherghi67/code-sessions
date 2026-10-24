@@ -68,3 +68,49 @@ test('select and deselect move the selection and nothing else', () => {
 test('an action the reducer does not know throws naming it', () => {
   expect(() => E.apply(doc(), { type: 'zap' })).toThrow('unknown action "zap"')
 })
+
+const sel = (path: number[]) => ({ frame: 'f1', path })
+const edited = (t: any, selection: any, edit: string) => ({ frames: [{ id: 'f1', name: 'Band', tree: t }], selection, exportFrame: 'f1', edit })
+
+test('setProp sets a prop on the node at the path, and an empty value removes it', () => {
+  expect(E.apply(doc(sel([1, 1])), { type: 'setProp', path: [1, 1], name: 'plain', value: true }))
+    .toEqual(edited(box({}, text('a'), box({ flexDirection: 'column' }, text('b'), button('go', { plain: true })), text('c')), sel([1, 1]), 'set plain on Button'))
+  expect(E.apply(doc(sel([1])), { type: 'setProp', path: [1], name: 'flexDirection', value: '' }))
+    .toEqual(edited(box({}, text('a'), box({}, text('b'), button('go')), text('c')), sel([1]), 'set flexDirection on Box'))
+  expect(E.apply(doc(sel([0])), { type: 'setProp', path: [0], name: 'bold', value: false })).toEqual(edited(tree(), sel([0]), 'set bold on Text'))
+  expect(() => E.apply(doc(), { type: 'setProp', path: [0], name: 'bold', value: true })).toThrow('setProp needs a selected frame')
+})
+
+test('setProp leaves the document it was given untouched', () => {
+  const before = doc(sel([0]))
+  E.apply(before, { type: 'setProp', path: [0], name: 'color', value: 'claude' })
+  expect(before).toEqual(doc(sel([0])))
+})
+
+// A text field is typed into a draft and committed once on blur or Enter:
+// three keystrokes are one step back.
+test('commit takes one undo step for a field however many keystrokes drafted it', () => {
+  const h = E.history(doc(sel([0])))
+  let draft = h.present
+  for (const t of ['x', 'xy', 'xyz']) draft = E.apply(draft, { type: 'setProp', path: [0], name: 'text', value: t })
+  const next = E.commit(h, draft)
+  expect(next.past).toEqual([doc(sel([0]))])
+  expect(next.present).toEqual(edited(box({}, text('xyz'), box({ flexDirection: 'column' }, text('b'), button('go')), text('c')), sel([0]), 'set text on Text'))
+  expect(next.future).toEqual([])
+})
+
+// Selecting is not an edit: it moves the present without a step to undo.
+test('replace swaps the present and keeps both stacks', () => {
+  const h = E.commit(E.history(doc()), doc(sel([0])))
+  expect(E.replace(h, doc(sel([2])))).toEqual({ past: [doc()], present: doc(sel([2])), future: [] })
+})
+
+// The 201st commit drops the oldest step: 200 are kept, the first is gone.
+test('history keeps the last 200 steps', () => {
+  let h = E.history(doc())
+  for (let i = 1; i <= 201; i++) h = E.commit(h, { ...doc(), edit: `step ${i}` })
+  expect(h.past.length).toBe(200)
+  expect(h.past[0].edit).toBe('step 1')
+  expect(h.past[199].edit).toBe('step 200')
+  expect(h.present.edit).toBe('step 201')
+})
