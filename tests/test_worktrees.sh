@@ -1061,10 +1061,19 @@ _staged_feature() {  # base_dir
     printf '%s\n%s\n' "$1/.cs/local/retire-staged/fix-auth" "$sha"
 }
 
+# The stage path alone. Not `_staged_feature | head -n 1`: head exits after
+# the first line and on Linux the fixture's second write then dies of EPIPE,
+# which read as a fixture failure on the ubuntu runner.
+_staged_path() {  # base_dir
+    local lines
+    lines=$(_staged_feature "$1") || return 1
+    printf '%s\n' "${lines%%$'\n'*}"
+}
+
 test_stop_hook_leaves_a_staged_retire_while_the_feature_conversation_is_open() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     out=$(_base_stop "$base_dir")
     case "$out" in *retire*) echo "  the hook spoke of the retire while the conversation is open: $out"; return 1 ;; esac
     assert_file_exists "$stage" "stage kept" || return 1
@@ -1088,7 +1097,7 @@ test_stop_hook_retires_a_staged_feature_once_its_conversation_closed() {
 test_stop_hook_reports_a_staged_retire_the_entry_refuses_and_drops_the_stage() {
     local base_dir stage out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -f "$wt/.cs/session.lock"
     echo "wip" > "$wt/auth.txt"
     out=$(_base_stop "$base_dir")
@@ -1102,7 +1111,7 @@ test_stop_hook_reports_a_staged_retire_the_entry_refuses_and_drops_the_stage() {
 test_stop_hook_of_a_teammate_leaves_a_staged_retire_alone() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
     out=$(printf '{}\n' | env -u CS_LEAD_PID -u CLAUDE_PID CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$base_dir" \
         CLAUDE_SESSION_META_DIR="$base_dir/.cs" PATH="$(cd "$(dirname "$CS_BIN")" && pwd):$PATH" \
@@ -1115,7 +1124,7 @@ test_stop_hook_of_a_teammate_leaves_a_staged_retire_alone() {
 test_stop_hook_drops_a_stage_whose_worktree_is_already_gone() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -rf "$CS_SESSIONS_ROOT/myproj@fix-auth"
     out=$(_base_stop "$base_dir")
     assert_output_contains "$out" "cs: the feature worktree $CS_SESSIONS_ROOT/myproj@fix-auth is already gone, so the retire /finish staged for fix-auth has nothing to do; its stage was dropped." \
@@ -1126,7 +1135,7 @@ test_stop_hook_drops_a_stage_whose_worktree_is_already_gone() {
 test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
     out=$(printf '{}\n' | CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$base_dir" \
         CLAUDE_SESSION_META_DIR="$base_dir/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
@@ -1158,7 +1167,7 @@ test_stop_hook_keeps_a_stage_whose_run_restaged_behind_a_warning() {
 test_stop_hook_leaves_a_run_still_going() {
     local base_dir stage out sleeper
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     local run="$base_dir/.cs/local/retire-runs/fix-auth"
     mkdir -p "${run%/*}"
     sleep 60 &
@@ -1201,7 +1210,7 @@ test_stop_hook_reports_a_staged_success_that_outran_the_settle() {
 test_stop_hook_drops_an_unreadable_stage_and_says_so() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
     printf 'sha: not-a-commit\nforce: maybe\n' > "$stage"
     out=$(_base_stop "$base_dir")
@@ -1294,10 +1303,12 @@ test_retire_restages_when_the_feature_reopened_under_the_mutex() {
     # The mount-table read sits between the two lock reads; a mount shim that
     # also writes the feature lock is the reopen.
     mkdir -p "$stub"
+    # The real mount is resolved before the shim shadows it: /sbin/mount on
+    # macOS, /usr/bin/mount on the ubuntu runner.
     cat > "$stub/mount" <<STUB
 #!/bin/sh
 echo "$$" > "$wt/.cs/session.lock"
-exec /sbin/mount "\$@"
+exec "$(command -v mount)" "\$@"
 STUB
     chmod +x "$stub/mount"
     output=$(PATH="$stub:$PATH" "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
@@ -1321,7 +1332,7 @@ _feature_end() {  # base_dir reason
 test_feature_end_mails_the_base_when_a_retire_is_staged() {
     local base_dir stage mail
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     _feature_end "$base_dir" other
     mail=$(cat "$base_dir"/.cs/local/mail/new/*.json 2>/dev/null | jq -r '[.from, .kind, .body] | join("|")')
     assert_eq "myproj@fix-auth|notify|Feature fix-auth closed; the retire /finish staged for it runs when your current turn ends." \
@@ -1332,7 +1343,7 @@ test_feature_end_mails_the_base_when_a_retire_is_staged() {
 test_feature_end_sends_nothing_on_clear_or_without_a_stage() {
     local base_dir stage
     base_dir=$(create_test_session_with_git "myproj")
-    stage=$(_staged_feature "$base_dir" | head -n 1) || { echo "  FAIL: stage fixture"; return 1; }
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     _feature_end "$base_dir" clear
     assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "a /clear keeps the lock and sends nothing" || return 1
     rm -f "$stage"
