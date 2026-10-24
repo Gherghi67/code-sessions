@@ -76,7 +76,19 @@ export function register(on: On) {
  * once (spike3 M12: immediate lets a typed command run mid-turn).
  */
 async function perform($: $, cmd: FeedCommand): Promise<string> {
-  throw new Error('not implemented')
+  await feedRecord(load, $)
+  if (cmd.kind === 'status') await applyFeed(load, $, 'status')
+  const current = load.feed
+  if (!current) throw new Error('feed record did not settle')
+  const changed = transition(cmd, current)
+  if (changed.session) {
+    const result = await writeFeed(load, $, changed.session)
+    if (result === 'no-session') return 'cs-feed: this directory is not a cs session (no .cs/local), so nothing changed.'
+    if (result !== 'written') return `cs-feed: no feed change in this session: ${result.refused}`
+  }
+  if (changed.pane === 'open') await $.ui.open({ id: PANE, title: 'Chat view', focus: true })
+  if (changed.pane === 'close') await $.ui.close({ id: PANE })
+  return changed.reply
 }
 
 /**

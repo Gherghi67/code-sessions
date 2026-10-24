@@ -4,6 +4,8 @@ import { expect, test } from 'claude-code/testing'
 import { newLoad, observePrompt, observeTurnStart, observeResponse, openTurn, replaceResponseText } from '../hooks/session'
 import { buildTranscript } from '../hooks/transcript'
 
+const STATUS = { command: 'feed', args: 'status', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as const
+
 for (const file of ['off\n', undefined]) test(`${file === undefined ? 'an absent' : 'an off'} feed reads once per load without asking cs to vet it`, async ($, on) => {
   const reads: string[] = []
   const logs: string[] = []
@@ -76,6 +78,25 @@ test('two renders share an on-read vet and a refusal keeps both on the engine wi
   }
   expect(calls).toEqual([{ argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 }])
   expect(logs).toEqual(['cs-feed: the feed is off in this session: not a trusted session'])
+})
+
+test('feed status reads a hand edit and vets an outside flip on only once', async ($, on) => {
+  let file = 'off\n'
+  let vets = 0
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: file } : { deny: 'ENOENT: no such file or directory' })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => { vets++; return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
+  file = 'on\n'
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(vets).toBe(1)
+  file = 'off\n'
+  expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
+  expect(logs).toEqual([])
 })
 
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {

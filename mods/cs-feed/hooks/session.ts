@@ -444,8 +444,26 @@ export type FeedRead = 'press' | 'write' | 'status'
  * labels, spike3 M14 debug and spike4 3b; not measured for this pair).
  * Never called from a render, never from a session.append hook.
  */
-export function applyFeed(load: Load, $: $, after: FeedRead): Promise<void> {
-  throw new Error('not implemented')
+export async function applyFeed(load: Load, $: $, after: FeedRead): Promise<void> {
+  await feedRecord(load, $)
+  const ticket = ++load.reads.started
+  const cwd = await $.session.cwd()
+  const file = await readLocal($, `${cwd}/${FEED_FILE}`)
+  if (ticket < load.reads.applied) return
+  const fileOn = isOn(file.text)
+  let vet = load.vet
+  if (!fileOn) vet = undefined
+  else if (vet === undefined) vet = after === 'status' ? await vetOnRead(load, $, cwd) : 'passed'
+  if (ticket < load.reads.applied) return
+  load.reads.applied = ticket
+  load.vet = vet
+  const current = load.feed
+  if (!current) throw new Error('feed record did not settle')
+  const on = fileOn && vet === 'passed'
+  if (current.on === on) return
+  load.feed = { on, view: current.view }
+  if (on) dirty(load, $)
+  await $.ui.invalidate('ui.render')
 }
 
 /** What a /feed write did: written, nothing (no .cs/local), or nothing because cs refused this session's control files (the reason, for the reply). */
@@ -592,7 +610,15 @@ export function transcript(load: Load, $: $): Promise<Transcript> {
  * reply in spike5 M18).
  */
 export function dirty(load: Load, $: $): void {
-  throw new Error('not implemented')
+  if (load.snap.state === 'refreshing') {
+    load.snap.again = true
+    return
+  }
+  if (load.snap.state === 'scheduled') return
+  load.snap.state = 'scheduled'
+  if (active(load)) $.clock.after(0, async () => {
+    if (active(load) && load.snap.state === 'scheduled') await transcript(load, $)
+  })
 }
 
 /**
