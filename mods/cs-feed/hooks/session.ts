@@ -1,7 +1,7 @@
 // ABOUTME: cs-feed's per-load core: this session's record (mirror of .cs/local/feed and feed-view), the transcript snapshot and its refresh, the observations and the clocks.
 // ABOUTME: A new Load is made by every register(); $.state holds only three redraw tokens, written only from $.clock callbacks; the record is written only from event hooks.
 import type { EngineInterface } from 'claude-code'
-import { atom } from 'claude-code'
+import { atom, read } from 'claude-code'
 
 import type { Session } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
@@ -28,6 +28,11 @@ type $ = EngineInterface
 export const LIVE = atom({ plugin: 'cs-feed', key: 'live' } as const, 0)
 export const TICK = atom({ plugin: 'cs-feed', key: 'tick' } as const, 0)
 export const PULSE = atom({ plugin: 'cs-feed', key: 'pulse' } as const, 0)
+
+/** Keeps the state source beside its literal declaration for the engine's scan. */
+export function readLive($: $): Promise<number> {
+  return read($, LIVE)
+}
 
 /**
  * Where the main loop stands, from main-loop turn.start / turn.complete (observed,

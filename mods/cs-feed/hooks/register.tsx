@@ -1,15 +1,14 @@
 // ABOUTME: cs-feed mod: restyles the chat transcript ("the feed"). Always loaded, every hook always registered; a session whose .cs/local/feed is not exactly "on\n", or that cs -vet-session refuses, gets Claude Code's own drawing.
 // ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
 import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
-import { read } from 'claude-code'
 
-import { LIVE, active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, toggle, transcript, writeFeed } from './session'
+import { active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, readLive, toggle, transcript, writeFeed } from './session'
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
 import { decideGroup, decideSpinner } from './verdict'
 import type { CallView, Context } from './verdict'
-import { NOTHING, drawGroup } from './draw'
+import { NOTHING, drawGroup, inks } from './draw'
 import type { Pen } from './draw'
 
 type $ = EngineInterface
@@ -372,17 +371,10 @@ const PAINTERS = {
 
 /**
  * The only way this mod hooks a render site, so the composition rules hold by
- * construction rather than by each painter remembering them. It registers
- * `on('ui.render', { component }, async ($, e, next) => { … })`: the event a
- * literal and the hook an inline function, as the host's static scan requires
- * (spike5 M20), `on` passed unchanged from register() (M20 (a), (f) loaded).
- * A matcher built from a variable inside a helper the table loop calls is not
- * among M20's twelve shapes: open-measurements M21, with its fallback (one
- * literal on() line per site, each delegating to this function). The scan runs
- * before load, so a refusal fails the whole module at its first load, in every
- * session, not one site. The cost oracle's probe inserts its counting statement
- * here as tally(`ui.render ${e.component}`, e): the matcher text is the same
- * `{ component }` for every site, so the tally keys on e.component.
+ * construction rather than by each painter remembering them. sites() declares
+ * literal matchers for the host's static scan and delegates every evaluation
+ * here. The engine's matcher union does not accept a generic component value;
+ * literal declarations also give validate an exact component inventory.
  *
  *   - next(e) runs exactly once per draw, whatever the decision. `engine(p?)`
  *     calls it (with props rewritten when given) and memoises; the `finally`
@@ -431,13 +423,47 @@ const PAINTERS = {
  *     }
  *   })
  */
-function site<C extends Hooked>(on: On, component: C, paint: Painter<C>): void {
-  throw new Error('not implemented')
+async function site<C extends Hooked>($: $, e: RenderInput<C>, next: (e: RenderInput<C>) => Promise<RenderElement>, paint: Painter<C>): Promise<RenderElement> {
+    let drawn: Promise<RenderElement> | undefined
+    const engine = (props?: Props<C>) => drawn ??= next(props ? { ...e, props: { ...e.props, ...props } } : e)
+    try {
+      if ('isWorking' in e.props) noteWorking(load, $, e.props.isWorking)
+      if ('isExpanded' in e.props && e.props.isExpanded) return await engine()
+      const session = load.feed ?? await feedRecord(load, $)
+      if (!session.on) return await engine()
+      const cx = await context($, e, session)
+      const pen: Pen = {
+        el: $.ui.resolve(e), ink: inks(load.light), room: cx.room,
+        pad: e.surface === 'terminal' ? 7 : 0, clickable: cx.clickable,
+        press: key => toggle(load, $, key),
+      }
+      const decision = await paint(e as RenderInput<C>, cx, pen)
+      if (decision.live) await readLive($)
+      switch (decision.drawn.kind) {
+        case 'engine': return await engine()
+        case 'rewrite': return await engine(decision.drawn.props)
+        case 'frame': return decision.drawn.frame(await engine(decision.drawn.props))
+        case 'tree': await engine(); return decision.drawn.tree
+        case 'nothing': await engine(); return NOTHING(pen)
+      }
+    } finally {
+      await engine()
+    }
 }
 
-/** Installs every entry of the table through site(). The completeness check lives on the table's type; this loop needs one cast. */
+/** Installs every typed table entry through site(), with literal matchers for the engine's scan. */
 function sites(on: On, table: PainterTable): void {
-  for (const component of Object.keys(table) as Hooked[]) site(on, component, table[component] as Painter<typeof component>)
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => { return site<'UserMessage'>($, e, next, table.UserMessage) })
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => { return site<'AssistantMessage'>($, e, next, table.AssistantMessage) })
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => { return site<'ToolUse'>($, e, next, table.ToolUse) })
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => { return site<'ToolGroup'>($, e, next, table.ToolGroup) })
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => { return site<'ToolResult'>($, e, next, table.ToolResult) })
+  on('ui.render', { component: 'ToolProgress' }, async ($, e, next) => { return site<'ToolProgress'>($, e, next, table.ToolProgress) })
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => { return site<'TurnDuration'>($, e, next, table.TurnDuration) })
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => { return site<'CommandOutput'>($, e, next, table.CommandOutput) })
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => { return site<'Spinner'>($, e, next, table.Spinner) })
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => { return site<'SessionMode'>($, e, next, table.SessionMode) })
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => { return site<'AbovePrompt'>($, e, next, table.AbovePrompt) })
 }
 
 /**
