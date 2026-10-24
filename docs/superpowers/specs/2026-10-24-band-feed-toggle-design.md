@@ -8,7 +8,7 @@ The mark comes first, the shared chord prefix is dim and appears once, and
 rotation keys appear only when due. The feed control adds one entry after
 wrap. An armed handoff still offers the clear key alone.
 
-## The control and its state
+## Chosen control and channel
 
 An ordered `BandEntry[]` carries words, chords, and presses. One pure builder
 chooses the entries from the facts the hook gathers. Rendering and rail width
@@ -29,25 +29,46 @@ install switch is on. Command presence alone cannot establish an
 unrelated configuration boolean. The companion mod is outside this job, so
 that registration rule still needs verification with it.
 
-`cs.feedOn` is one host-owned session boolean, false when unset. Every render
-and press reads that value. Registration never resets it. Host state survives
-hot reloads and redraws subscribers after a write, per line 3466[^state].
-A failed send rolls back only the optimistic write's version; a later reverse
-report keeps its value, using the conditional write at line 3491[^state-set].
-`/cs feed on|off` writes the same value without sending `/feed` again.
+The file `${session.cwd}/.cs/local/feed` stores the setting. It holds one line,
+`on\n` or `off\n`, and stays in `.cs/local` even when private storage exists.
+Every draw of the control and every press reads it through `$.fs.read`,
+using the working directory as `readState` does. Only the whole value
+`on\n` means on. Absent, empty, torn and other content means off. Readers
+must not trim it. Other read errors propagate. The contract defines paths
+and read errors at line 3305[^file-read].
 
-All outgoing communication stays in `tellFeed($, on)`. It runs `/feed on` or
-`/feed off`. The contract queues programmatic commands until idle, even
-though a registered immediate command can handle typed input during a turn.
-See line 3152[^command-run] and line 1936[^immediate]. Mid-turn delivery
-remains unverified. A shared-store channel would need a session address and
-coordination with cs-feed, while session state would still own the value.
+A press writes the opposite value through the existing, non-atomic
+`$.fs.write` helper, then invalidates the band. The write contract at
+line 3333[^file-write] promises file creation, not atomic replacement.
+The strict reader makes a partial write read as off. A failed update toasts
+once; another press can retry. A press while a write is in progress does
+nothing.
+
+The file survives `/clear`, reload and resume. Host state survives a hot
+reload, per line 3466[^state], but the supplied spike 3[^file-channel]
+measured its loss on `/clear`, `--resume`, `--continue` and relaunch. The same
+probe found that `$.store` belongs to each plugin, so it cannot hold a shared
+value. The band no longer declares a host state key.
+
+cs-feed must observe `ui.press` with `{ plugin: 'cs', element: 'cs-feed' }`.
+The Button keeps the stable key `cs-feed` and action `strip:jump3`.
+The contract defines that matcher at line 15141[^press-hook] and runs the
+owner's handler beneath the hooks at line 15183[^press-order]. cs-feed must
+await `next(e)`, then read the file; it must not flip the value a second time.
+When cs-feed writes the file directly, the band reads it on its next redraw.
+Invalidation applies to the caller's own sites, so cs-feed invalidating its
+rows alone does not promise a band redraw.
+
+Spike 3[^file-channel] measured cross-plugin press hooks 20 to 30 ms after the
+chord, idle and mid-turn, with no transcript rows. Programmatic commands
+waited 15.9 to 17.7 seconds mid-turn and stored three message rows that reached
+the model. This confirms the queueing contract at line 3152[^command-run].
+The band sends no feed command and has no reverse `/cs feed on|off` branch.
 
 The check in `feed ✓` uses a coloured Text inside the Button. The engine
 allows that child shape at line 1108[^button-text]. Separators remain beside
-Buttons. The `press` testing API at line 16079[^test-press] is not a declared
-runtime `$.ui.press` operation, so that transport needs engine support or a
-separate measurement before use.
+Buttons. The channel uses a `ui.press` event hook; it needs no runtime
+`$.ui.press` method.
 
 ## Alternatives to the global install switch
 
@@ -58,13 +79,13 @@ reloads when they change, at line 9770[^activation]. The ranking below favors
 the current per-session, live-toggle design.
 
 1. **Keep hooks registered and return early while the session is off.**
-   This is the smallest implementation and keeps live toggling. It depends
-   on session state at line 3466[^state], with a local copy refreshed by
-   state changes if avoiding a read on every render matters. It still enters
-   the worker for matching renders, so it breaks the strict zero-render-cost
-   constraint. A worker-side early return keyed on `$.state` is this same
-   option, not a way to remove the dispatch. Registration offers no removal
-   operation at line 9790[^registration].
+   This is the smallest implementation and keeps live toggling. It reads
+   the session file before drawing feed content, using line 3305[^file-read].
+   It still enters the worker for matching renders, so it breaks the strict
+   zero-render-cost constraint. A worker-side early return from a cached
+   value has the same dispatch cost, and that cache must refresh from the
+   file after `/clear` or resume. Registration offers no removal operation
+   at line 9790[^registration].
 
 2. **Choose whether to load cs-feed when cs launches the session.**
    An unused session can have no feed render hooks. This moves complexity
@@ -143,33 +164,33 @@ describe possible follow-up work.
 
 ## Integration and verification
 
-`mods/cs/types.d.ts` declares the session value, and the plugin manifest names
-that contract in `types`. An augmentation inside the hooks module alone does
-not declare the key to the engine. The contract describes state declarations
-at line 7978[^state-contract] and manifest types at line 91[^types-contract].
+`lib/01-manifests.sh` maps `ctrl+x 3` to `strip:jump3`. File persistence removes
+the need for a types file and its manifest and install entries.
+`bash build.sh` generates `install.sh` and `bin/cs`. The validator
+expectations in `tests/test_mod_rotate.sh` name command discovery and the
+new file reader, with no feed command sender or state operations.
 
-`lib/01-manifests.sh` includes the types file in the install payload and maps
-`ctrl+x 3` to `strip:jump3`. `bash build.sh` generates `install.sh` and `bin/cs`
-from that source. The validator expectations in `tests/test_mod_rotate.sh`
-include command discovery, `tellFeed`, and the declared state reads and writes.
-
-The requested checks pass with 249 Bun tests, 19 snapshots, and 7 shell
-checks. A second build leaves the generated files unchanged. The delayed
-failure test also fails when a write omits the rollback version guard, then
-passes with the guard restored. The companion integration and actual terminal
-painting remain untested. Installer and doctor fixtures outside this job's
-scope still describe the earlier two-key band and need a separate update.
+The requested checks pass with 250 Bun tests, 19 unchanged snapshots, and
+7 shell checks. A second build leaves the generated files unchanged. The
+persistence test first failed with expected `feed ✓`, received `feed`, after
+a simulated clear and reload. It now covers empty, torn and malformed values
+as well as the exact on line. Other tests cover direct companion writes,
+private storage, separate working directories, duplicate presses and refused
+reads and writes. The companion integration and actual terminal painting
+remain untested. Installer and doctor fixtures outside this job's scope still
+describe the earlier two-key band and need a separate update.
 
 [^commands]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3144`.
 [^provider]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:1781`.
 [^identity]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:2355`.
 [^plugin-list]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:4041`.
 [^state]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3466`.
-[^state-set]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3491`.
+[^file-read]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3305`.
+[^file-write]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3333`.
+[^press-hook]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:15141`.
+[^press-order]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:15183`.
 [^command-run]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3152`.
-[^immediate]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:1936`.
 [^button-text]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:1108`.
-[^test-press]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:16079`.
 [^activation]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:9770`.
 [^registration]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:9790`.
 [^load-settings]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3673`.
@@ -180,8 +201,7 @@ scope still describe the earlier two-key band and need a separate update.
 [^box]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:983`.
 [^hover]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:939`.
 [^card]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:948`.
-[^state-contract]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:7978`.
-[^types-contract]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:91`.
 [^first-probe]: Supplied `feed-arch/spike.md`, section Q3, cost with zero hooks versus one pass-through render hook.
 [^cross-session]: Supplied `feed-arch/spike-xsession.md`, sections 1, 2, and 5, cross-session reloads and session state.
 [^memory-probe]: Supplied `feed-arch/spike-mem.md`, the dispatch-count comparison with a fourth mod.
+[^file-channel]: Supplied `feed-arch/spike3.md`, M12 (press hooks, command delivery, per-plugin stores and invalidation) and M13 (state loss across clear and resume).

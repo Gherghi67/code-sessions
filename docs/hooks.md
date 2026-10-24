@@ -613,12 +613,19 @@ a status command. The shared prefix still draws once:
 `● ctrl+x  1 rotate  ·  2 wrap  ·  3 feed`.
 
 The key reads `feed` while off and `feed ✓` while on, the check in the
-session's colour. A press flips this session's `cs.feedOn` value, then sends
-`/feed on` or `/feed off`. The value starts false and survives a hot reload;
-it never writes a global `/config` row. A refused command restores the
-previous value and toasts once, unless a later change already owns the value.
-`/cs feed on|off` reports a change without running `/feed` again, so cs-feed
-can report a directly typed `/feed clean|raw` without a command loop.
+session's colour. A press flips `.cs/local/feed` under the session's working
+directory, then invalidates the band. The file holds `on\n` or `off\n` and
+survives `/clear`, reload and resume. The existing writer is non-atomic, so
+only the whole value `on\n` means on. Absent, empty, torn and other content
+means off; readers must not trim it. A failed update toasts once.
+
+The Button's stable element key is `cs-feed`, its action `strip:jump3`.
+cs-feed must hook `ui.press` with `{ plugin: 'cs', element: 'cs-feed' }`, await
+`next(e)`, then read the file the band's handler wrote. The band sends no
+command. When cs-feed writes the file directly, the band reads the new value
+on its next redraw. Spike 3 measured immediate cross-plugin press hooks with
+no transcript rows, while command delivery queued until idle and host state
+reset on `/clear` and resume (`feed-arch/spike3.md`, M12 and M13).
 
 The [feed design and alternatives](superpowers/specs/2026-10-24-band-feed-toggle-design.md)
 compares session activation options and layouts for more toggles.
