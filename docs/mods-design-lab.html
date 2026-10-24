@@ -1425,10 +1425,11 @@ function bdDragEnd(){
   if(!bdDrag) return;
   // The click that ends a drag comes in this turn, if at all (none when the
   // drag ends off the canvas), so the flag that swallows it lasts no longer.
-  const {from,target,moved}=bdDrag; bdDrag=null; bdDragged=moved; setTimeout(()=>{ bdDragged=false; });
-  if(!target) return composeRender();
-  const i=from[from.length-1], here=samePath(target.parentPath,from.slice(0,-1));
-  if(here&&(target.index===i||target.index===i+1)) return composeRender();
+  const {from,target,moved,strip}=bdDrag; bdDrag=null; bdDragged=moved; setTimeout(()=>{ bdDragged=false; });
+  // Anything short of a move leaves the strip's cells in place: the browser
+  // sends the click and the double-click to them after this mouseup.
+  const i=from[from.length-1], here=target&&samePath(target.parentPath,from.slice(0,-1));
+  if(!target||here&&(target.index===i||target.index===i+1)) return strip.querySelector(".drop")?.remove();
   bdEdit({type:"move",from,to:{parentPath:target.parentPath,index:target.index}});
 }
 
