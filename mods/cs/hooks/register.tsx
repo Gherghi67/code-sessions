@@ -1328,10 +1328,6 @@ export const ROTATE_ACTION = 'strip:jump1'
 export const WRAP_ACTION = 'strip:jump2'
 export const FEED_ACTION = 'strip:jump3'
 
-function tellFeed($: EngineInterface, on: boolean) {
-  return $.command.run({ command: 'feed', args: on ? 'on' : 'off' })
-}
-
 async function readFeed($: EngineInterface): Promise<boolean> {
   try {
     // Writes are non-atomic: only the whole on line counts. Trimming would
@@ -1351,11 +1347,6 @@ async function pressFeed($: EngineInterface) {
     const on = !(await readFeed($))
     await $.fs.write(`${await $.session.cwd()}/.cs/local/feed`, on ? 'on\n' : 'off\n')
     $.ui.invalidate('ui.render')
-    try {
-      await tellFeed($, on)
-    } catch (err) {
-      $.ui.toast(`cs: feed request failed: ${String(err instanceof Error ? err.message : err)}`)
-    }
   } catch (err) {
     $.ui.toast(`cs: feed did not change: ${String(err instanceof Error ? err.message : err)}`)
   } finally {

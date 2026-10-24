@@ -3290,11 +3290,13 @@ test('the feed chord toggles this session and colours its check with the keys', 
   expect(feedKey(on).props.label).toBe('feed ✓')
   expect(files['/work/.cs/local/feed']).toBe('on\n')
   expect(texts(feedKey(on)).map(text => [textOf(text), text.props.color])).toEqual([['✓', 'rgb(220,38,38)']])
-  expect(ran).toEqual([{ command: 'feed', args: 'on' }])
+  expect(ran).toEqual([])
+  expect(invalidated).toEqual(['ui.render'])
   await feedKey(on).props.onPress()
   expect(feedKey(await band()).props.label).toBe('feed')
   expect(files['/work/.cs/local/feed']).toBe('off\n')
-  expect(ran).toEqual([{ command: 'feed', args: 'on' }, { command: 'feed', args: 'off' }])
+  expect(ran).toEqual([])
+  expect(invalidated).toEqual(['ui.render', 'ui.render'])
 })
 
 test('a feed press survives clearing the conversation and loading the band again', async () => {
@@ -3315,39 +3317,50 @@ test('a feed press survives clearing the conversation and loading the band again
   expect(feedKey(await band()).props.label).toBe('feed ✓')
 })
 
-test('a refused feed command leaves the stored setting and toasts once', async () => {
+test('a failed feed write leaves the label unchanged and allows another press', async () => {
   enableFeed()
-  const run = $.command.run
-  $.command.run = async () => { throw new Error('Unknown command: feed') }
+  const write = $.fs.write
+  $.fs.write = async () => { throw new Error('EACCES /work/.cs/local/feed') }
   try {
     await feedKey(await band()).props.onPress()
-    expect(feedKey(await band()).props.label).toBe('feed ✓')
-    expect(toasts).toEqual(['cs: feed request failed: Unknown command: feed'])
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(files['/work/.cs/local/feed']).toBeUndefined()
+    expect(invalidated).toEqual([])
+    expect(toasts).toEqual(['cs: feed did not change: EACCES /work/.cs/local/feed'])
   } finally {
-    $.command.run = run
+    $.fs.write = write
   }
+  await feedKey(await band()).props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  expect(invalidated).toEqual(['ui.render'])
 })
 
-test('a feed press already awaiting delivery ignores another press', async () => {
+test('a feed press already writing ignores another press until the file is ready', async () => {
   enableFeed()
-  const run = $.command.run
-  let deliver = () => {}
-  $.command.run = async args => {
-    ran.push(args)
-    await new Promise<void>(resolve => { deliver = resolve })
-    return { text: '' }
+  const write = $.fs.write
+  let finish = () => {}
+  const writes: [string, string][] = []
+  $.fs.write = async (path, text) => {
+    writes.push([path, text])
+    await new Promise<void>(resolve => { finish = resolve })
+    await write(path, text)
   }
   try {
     const press = feedKey(await band()).props.onPress()
     await settle()
     const duplicate = feedKey(await band()).props.onPress()
     await settle()
-    expect(ran).toEqual([{ command: 'feed', args: 'on' }])
-    deliver()
+    expect(writes).toEqual([['/work/.cs/local/feed', 'on\n']])
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(invalidated).toEqual([])
+    finish()
     await Promise.all([press, duplicate])
+    expect(feedKey(await band()).props.label).toBe('feed ✓')
+    expect(invalidated).toEqual(['ui.render'])
+    expect(ran).toEqual([])
   } finally {
-    deliver()
-    $.command.run = run
+    finish()
+    $.fs.write = write
   }
 })
 
@@ -3377,7 +3390,7 @@ test('feed state stays with its session across registration and stale button pre
   expect(feedKey(await band()).props.label).toBe('feed ✓')
   await stale.props.onPress()
   expect(feedKey(await band()).props.label).toBe('feed')
-  expect(ran).toEqual([{ command: 'feed', args: 'on' }, { command: 'feed', args: 'off' }])
+  expect(ran).toEqual([])
   await feedKey(await band()).props.onPress()
   sessionId = 'uuid-next'
   cwdPath = '/other'
@@ -3396,14 +3409,14 @@ test('/cs feed agrees with presses without echoing /feed and survives reload', a
   expect(feedKey(await band()).props.label).toBe('feed ✓')
   expect(ran).toEqual([])
   await feedKey(await band()).props.onPress()
-  expect(ran).toEqual([{ command: 'feed', args: 'off' }])
+  expect(ran).toEqual([])
   expect(await cs('feed on')).toEqual({})
   register(on as any, OPTIONS)
   expect(feedKey(await band()).props.label).toBe('feed ✓')
   expect(await cs('feed off')).toEqual({})
   register(on as any, OPTIONS)
   expect(feedKey(await band()).props.label).toBe('feed')
-  expect(ran).toEqual([{ command: 'feed', args: 'off' }])
+  expect(ran).toEqual([])
 })
 
 test('/cs feed refuses unknown settings without changing the session', async () => {
@@ -3415,24 +3428,15 @@ test('/cs feed refuses unknown settings without changing the session', async () 
   expect(ran).toEqual([])
 })
 
-test('a failed feed send cannot undo a reverse report across reload', async () => {
+test('feed presses use the local directory even when private storage exists', async () => {
   enableFeed()
-  const run = $.command.run
-  let refuse = (_error: Error) => {}
-  $.command.run = async () => {
-    await new Promise<void>((_resolve, reject) => { refuse = reject })
-    return { text: '' }
-  }
-  try {
-    const press = feedKey(await band()).props.onPress()
-    await settle()
-    await cs('feed on')
-    register(on as any, OPTIONS)
-    refuse(new Error('feed unavailable'))
-    await press
-    expect(feedKey(await band()).props.label).toBe('feed ✓')
-    expect(toasts).toEqual(['cs: feed request failed: feed unavailable'])
-  } finally {
-    $.command.run = run
-  }
+  existing.add('/work/.cs/private')
+  files['/work/.cs/private/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed')
+  await feedKey(await band()).props.onPress()
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  expect(files['/work/.cs/private/feed']).toBe('on\n')
+  expect(written).toEqual({ '/work/.cs/local/feed': 'off\n' })
+  expect(ran).toEqual([])
 })
