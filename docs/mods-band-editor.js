@@ -283,7 +283,45 @@
   // Not an edit (a selection): the present moves and no step is taken.
   function replace(h, doc) { return { past: h.past, present: clone(doc), future: h.future }; }
 
-  var api = { history: history, commit: commit, replace: replace, apply: apply, canDrop: canDrop, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
+  function undo(h) {
+    if (h.past.length === 0) return h;
+    return { past: h.past.slice(0, -1), present: h.past[h.past.length - 1], future: [h.present].concat(h.future) };
+  }
+  function redo(h) {
+    if (h.future.length === 0) return h;
+    return { past: h.past.concat([h.present]), present: h.future[0], future: h.future.slice(1) };
+  }
+  // `by` steps from the present: back when negative, ahead when positive.
+  function jump(h, by) {
+    for (var i = 0; i < Math.abs(by); i++) h = by < 0 ? undo(h) : redo(h);
+    return h;
+  }
+
+  // ---- reading what was saved ----
+  // localStorage is outside the page's control: a saved document is checked
+  // field by field and refused with the reason, never patched up.
+  var TYPES = { Box: true, Text: true, Button: true };
+  function readTree(n) {
+    if (!n || typeof n !== "object") throw new Error("a saved node is not an object");
+    if (!TYPES[n.type]) throw new Error("a saved node is a " + n.type + ", not a Box, Text or Button");
+    if (!n.props || typeof n.props !== "object") throw new Error("a saved " + n.type + " has no props");
+    if (!Array.isArray(n.kids)) throw new Error("a saved " + n.type + " has no kids list");
+    return { type: n.type, props: n.props, kids: n.kids.map(readTree) };
+  }
+  function readDoc(d) {
+    if (!d || !Array.isArray(d.frames) || d.frames.length === 0) throw new Error("a saved document has no frames");
+    var frames = d.frames.map(function (f) {
+      if (typeof f.id !== "string" || typeof f.name !== "string") throw new Error("a saved frame has no id or no name");
+      return { id: f.id, name: f.name, tree: readTree(f.tree) };
+    });
+    if (!frames.some(function (f) { return f.id === d.exportFrame; })) throw new Error("a saved document exports " + d.exportFrame + ", which is not one of its frames");
+    var doc = { frames: frames, selection: null, exportFrame: d.exportFrame };
+    if (d.selection) doc = apply(doc, { type: "select", frame: d.selection.frame, path: d.selection.path });
+    if (typeof d.edit === "string") doc.edit = d.edit;
+    return doc;
+  }
+
+  var api = { history: history, commit: commit, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

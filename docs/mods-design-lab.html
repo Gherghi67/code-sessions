@@ -157,6 +157,17 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
 .frame{margin:0 0 16px}
 .frame .strip{position:relative}
+.toolbar .tools{display:flex;gap:6px;margin-left:auto}
+.toolbar button,.hist button{font:inherit;font-size:12px;background:var(--page);color:var(--fg);border:1px solid var(--line);padding:3px 9px;cursor:pointer}
+.toolbar button:disabled{opacity:.45;cursor:default}
+.toolbar button b{font-weight:600;color:var(--fg2);margin-left:2px}
+.hist{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+.hist .legend{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);margin:0 0 6px}
+#bd-hist{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto}
+.hist button{text-align:left;border-color:transparent;background:none;padding:2px 6px}
+.hist button:hover{border-color:var(--line)}
+.hist button.now{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
+.hist button.ahead{opacity:.5}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:0 0 12px;font-size:12px;color:var(--fg2)}
 .toolbar label{display:flex;gap:6px;align-items:center;text-transform:uppercase;letter-spacing:.06em}
 .toolbar select,.toolbar input{text-transform:none;letter-spacing:0}
@@ -174,7 +185,7 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .frame .inline-edit{position:absolute;margin:0;padding:0 1px;border:0;outline:1px solid var(--accent);background:var(--term);color:var(--term-fg);font:inherit;font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:15px;line-height:1.35}
 .frame .drop{position:absolute;background:var(--accent);pointer-events:none}
 .frame .sel .tag{position:absolute;bottom:100%;left:-1px;margin-bottom:2px;font:10.5px/1.4 "IBM Plex Sans",sans-serif;background:var(--accent);color:#fff;padding:0 5px;white-space:nowrap}
-.frame .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
+#bd-note,.frame .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
 /* ---- band variants ---- */
 .vrow{margin:0 0 26px}
 .vrow > .why{color:var(--fg2);font-size:12.5px;margin:0 0 8px;max-width:90ch}
@@ -212,10 +223,12 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
   <label>State <select id="bd-state"></select></label>
   <label>Width <span id="bd-colsv"></span><input id="bd-cols" type="range" min="40" max="120" value="80"></label>
   <label>New frame from <select id="bd-seed"></select></label>
+  <span class="tools"><button type="button" id="bd-undo" title="⌘/Ctrl+Z">undo <b></b></button><button type="button" id="bd-redo" title="Shift+⌘/Ctrl+Z">redo <b></b></button></span>
 </div>
+<p class="refuse" id="bd-note" hidden></p>
 <div class="designer">
   <div class="canvas" id="bd-canvas"></div>
-  <aside class="props" id="bd-props"></aside>
+  <aside class="props"><div id="bd-props"></div><div class="hist"><div class="legend">History</div><div id="bd-hist"></div></div></aside>
 </div>
 <pre class="spec" id="cp-spec"></pre>
 
@@ -1125,21 +1138,6 @@ const CP_SCHEMA={
   },
 };
 const CP_GROUPS=["Layout","Appearance","Button","Text"];
-const ed=(type,props,kids)=>({type,props:props||{},kids:kids||[]});
-function cpRotatePreset(){
-  const band=ed("Box",{key:"cs-rotate-band",borderStyle:"round",borderColor:"CORAL",paddingX:1,hoverBorderColor:"CORAL"},[
-    ed("Text",{text:"✳ ",color:"CORAL",bold:true}),
-    ed("Button",{key:"cs-rotate",hotkey:"1",plain:true,label:"rotate this conversation"}),
-    ed("Text",{text:"  ·  ",dimColor:true}),
-    ed("Button",{key:"cs-wrap",hotkey:"2",plain:true,label:"wrap up this session"}),
-    ed("Text",{text:"  ·  ",dimColor:true}),
-    ed("Text",{text:"█████",color:"warning"}),
-    ed("Text",{text:"░░░░░",dimColor:true}),
-    ed("Text",{text:" 47%",color:"warning",bold:true}),
-  ]);
-  return ed("Box",{flexDirection:"column"},[band]);
-}
-
 // The designer's document (docs/mods-band-editor.js) and, per frame, the
 // grid its strip was last painted from, which a click is looked up in.
 // A text field types into a draft, drawn live, and commits it as one step
@@ -1241,7 +1239,7 @@ function bdFrameCard(f){
 // is typed in.
 let bdPanelStale=true;
 function composeRender(){
-  if(!bdHist) bdHist=BandEditor.history({frames:[{id:"f1",name:"Band",tree:cpLoad()||cpRotatePreset()}],selection:null,exportFrame:"f1",edit:"open"});
+  if(!bdHist) bdHist=BandEditor.history(bdOpen());
   const doc=bdDocNow();
   bdStates($("va-state")); bdStates($("bd-state")); $("bd-state").value=$("va-state").value;
   $("bd-cols").value=Math.min(120,cols()); $("bd-colsv").textContent=cols()+" cols";
@@ -1251,11 +1249,51 @@ function composeRender(){
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
   if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
-  cpSave();
+  $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
+  $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
+  $("bd-hist").innerHTML=bdHistory();
+  $("bd-note").hidden=!bdNote; $("bd-note").textContent=bdNote;
+  bdSave();
 }
-const bareTree=n=>({type:n.type,props:n.props,kids:(n.kids||[]).map(bareTree)});
-function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(bdFrame(bdHist.present.exportFrame).tree)); }catch{} }
-function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); return raw?bareTree(JSON.parse(raw)):null; }catch{ return null; } }
+// One line per step, newest first: the undone steps ahead (dim), the
+// present, then the steps back. A line jumps by its offset from the present.
+function bdHistory(){
+  const line=(doc,by,cls)=>`<button type="button" class="${cls}" data-jump="${by}">${esc(doc.edit||"open")}</button>`;
+  return bdHist.future.map((d,j)=>line(d,j+1,"ahead")).reverse().join("")
+    +line(bdHist.present,0,"now")
+    +bdHist.past.map((d,i)=>line(d,i-bdHist.past.length,"back")).reverse().join("");
+}
+function bdTravel(by){ bdDraft=null; bdHist=BandEditor.jump(bdHist,by); bdPanelStale=true; composeRender(); }
+// The designer's present document is kept under BD_KEY. The compose
+// panel's single tree, under OLD_KEY, becomes frame 0 once and is removed.
+// What storage hands back is read by BandEditor.readDoc; one it cannot read
+// is set aside under BD_KEY.unreadable and named on the page.
+const BD_KEY="mods-lab-band-designer", OLD_KEY="mods-lab-band";
+let bdNote="";
+function bdStore(){ try{ return window.localStorage; }catch{ return null; } }
+function bdShipped(){
+  const drawn=BandVariants.VARIANTS[0].draw(BandVariants.STATES.find(x=>x.id==="rotate-due").facts,cols(),theme());
+  return {frames:[{id:"f1",name:"Shipped · rotate-due",tree:BandEditor.fromEngine(drawn)}],selection:null,exportFrame:"f1",edit:"open the shipped band"};
+}
+function bdOpen(){
+  const store=bdStore();
+  if(!store) return bdShipped();
+  const unreadable=(key,raw,err)=>{ store.setItem(BD_KEY+".unreadable",raw); bdNote=`The saved designer under ${key} could not be read (${err.message}); it is kept under ${BD_KEY}.unreadable and the designer starts from the shipped band.`; return bdShipped(); };
+  const raw=store.getItem(BD_KEY);
+  if(raw!==null){ try{ return BandEditor.readDoc(JSON.parse(raw)); }catch(err){ return unreadable(BD_KEY,raw,err); } }
+  const old=store.getItem(OLD_KEY);
+  if(old===null) return bdShipped();
+  let doc;
+  try{ doc={frames:[{id:"f1",name:"Band",tree:BandEditor.readTree(JSON.parse(old))}],selection:null,exportFrame:"f1",edit:"open the compose panel's band"}; }
+  catch(err){ return unreadable(OLD_KEY,old,err); }
+  store.setItem(BD_KEY,JSON.stringify(doc)); store.removeItem(OLD_KEY);
+  return doc;
+}
+function bdSave(){
+  const store=bdStore(); if(!store) return;
+  try{ store.setItem(BD_KEY,JSON.stringify(bdHist.present)); }
+  catch(err){ bdNote=`The designer could not be saved (${err.message}): it lasts until the page closes.`; }
+}
 
 // The state picker the designer and the variants panel share.
 function bdStates(pick){ if(!pick.options.length) pick.innerHTML=BandVariants.STATES.map(s=>`<option value="${s.id}">${esc(s.id)}: ${esc(s.name)}</option>`).join(""); }
@@ -1416,8 +1454,10 @@ function bdDoubleClick(e){
 // field has focus; the page's own keys see everything else.
 function bdKeys(e){
   const doc=bdDocNow(), sel=doc.selection;
-  if(!$("p-compose").classList.contains("on")||!sel) return;
+  if(!$("p-compose").classList.contains("on")) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")) return;
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
+  if(!sel) return;
   const node=bdSelected(), parent=sel.path.length?BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path.slice(0,-1)):null;
   const i=sel.path[sel.path.length-1];
   const nudge=d=>parent&&i+d>=0&&i+d<parent.kids.length?{edit:{type:"move",from:sel.path,to:{parentPath:sel.path.slice(0,-1),index:d<0?i-1:i+2}}}:{};
@@ -1438,6 +1478,8 @@ function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
   $("bd-state").addEventListener("input",e=>{ $("va-state").value=e.target.value; });
   $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
+  $("bd-undo").onclick=()=>bdTravel(-1); $("bd-redo").onclick=()=>bdTravel(1);
+  $("bd-hist").addEventListener("click",e=>{ const b=e.target.closest("[data-jump]"); if(b) bdTravel(+b.dataset.jump); });
   $("bd-seed").addEventListener("change",e=>{ const id=e.target.value; e.target.value=""; if(id) bdSeed(id); });
   $("bd-canvas").addEventListener("mousedown",bdDragStart);
   $("bd-canvas").addEventListener("dblclick",bdDoubleClick);

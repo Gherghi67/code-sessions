@@ -229,3 +229,46 @@ test('removeFrame drops a frame, its selection and its export mark; the last fra
   expect(E.apply(two, { type: 'removeFrame', frame: 'f2' })).toEqual({ frames: [frame('f1', 'A', blank())], selection: null, exportFrame: 'f1', edit: 'remove frame B' })
   expect(() => E.apply(frames(frame('f1', 'A', blank())), { type: 'removeFrame', frame: 'f1' })).toThrow('the last frame cannot be removed')
 })
+
+const step = (n: number) => ({ ...doc(), edit: `step ${n}` })
+const stepped = (n: number) => { let h = E.history(step(0)); for (let i = 1; i <= n; i++) h = E.commit(h, step(i)); return h }
+
+test('undo and redo walk the steps both ways and stop at the ends', () => {
+  const h = stepped(2)
+  const once = E.undo(h)
+  expect(once).toEqual({ past: [step(0)], present: step(1), future: [step(2)] })
+  const twice = E.undo(once)
+  expect(twice).toEqual({ past: [], present: step(0), future: [step(1), step(2)] })
+  expect(E.undo(twice)).toEqual(twice)
+  expect(E.redo(E.redo(twice))).toEqual(h)
+  expect(E.redo(h)).toEqual(h)
+})
+
+test('an edit after an undo drops the steps ahead', () => {
+  expect(E.commit(E.undo(stepped(2)), step(9))).toEqual({ past: [step(0), step(1)], present: step(9), future: [] })
+})
+
+// The history list jumps by an offset from the present: back is negative.
+test('jump moves straight to any step in the list', () => {
+  expect(E.jump(stepped(3), -3)).toEqual({ past: [], present: step(0), future: [step(1), step(2), step(3)] })
+  expect(E.jump(E.jump(stepped(3), -3), 2)).toEqual({ past: [step(0), step(1)], present: step(2), future: [step(3)] })
+  expect(E.jump(stepped(3), 0)).toEqual(stepped(3))
+})
+
+// What localStorage hands back is read, not trusted: a document must name its
+// frames and its export, a node its type, props and kids.
+test('readDoc takes a saved document and names what is wrong with a bad one', () => {
+  const saved = JSON.parse(JSON.stringify({ ...doc(sel([1, 1])), edit: 'set plain on Button' }))
+  expect(E.readDoc(saved)).toEqual(saved)
+  expect(() => E.readDoc({ frames: [], selection: null, exportFrame: 'f1' })).toThrow('a saved document has no frames')
+  expect(() => E.readDoc({ ...doc(), exportFrame: 'f4' })).toThrow('a saved document exports f4, which is not one of its frames')
+  expect(() => E.readDoc(doc(sel([5])))).toThrow('no node at [5]: [] has 3 children')
+  expect(() => E.readDoc({ ...doc(), frames: [{ id: 'f1', name: 'Band', tree: { type: 'Link', props: {}, kids: [] } }] })).toThrow('a saved node is a Link, not a Box, Text or Button')
+})
+
+// The compose panel's saved tree carried an id on every node.
+test('readTree reads the compose panel\'s saved tree, ids dropped', () => {
+  expect(E.readTree({ id: 1, type: 'Box', props: { gap: 1 }, kids: [{ id: 2, type: 'Text', props: { text: 'hi' }, kids: [] }] }))
+    .toEqual(box({ gap: 1 }, text('hi')))
+  expect(() => E.readTree({ type: 'Box', props: {} })).toThrow('a saved Box has no kids list')
+})
