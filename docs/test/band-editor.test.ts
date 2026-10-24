@@ -216,6 +216,19 @@ test('fromEngine spells a Text\'s words as text, the hover colours as fields, an
     .toThrow('the editor holds a Text\'s words as one string; this Text has a Text inside it')
 })
 
+// A Button's children draw in its label's place and are strings and Text
+// only. The editor holds a bare string as a Text with no props but its
+// words, and prints such a Text back as the bare string; a Text with any
+// other prop stays a Text.
+test('a bare string in a Button is a Text in the editor and a bare string again in the engine', () => {
+  const feed = { type: 'Button', props: { key: 'cs-feed', plain: true, label: 'feed \u2713' }, children: ['feed ', { type: 'Text', props: { color: 'claude' }, children: ['\u2713'] }] }
+  const held = { ...button('feed \u2713', { key: 'cs-feed', plain: true }), kids: [text('feed '), text('\u2713', { color: 'claude' })] }
+  expect(E.fromEngine(feed)).toEqual(held)
+  expect(E.toEngine(held)).toEqual(feed)
+  expect(() => E.fromEngine({ type: 'Box', props: {}, children: ['loose'] })).toThrow('a Box holds no bare string; "loose" needs a Text')
+  expect(() => E.fromEngine({ type: 'Button', props: {}, children: [3] })).toThrow('a Button holds strings and Text; 3 is neither')
+})
+
 const frames = (...fs: any[]) => ({ frames: fs, selection: null, exportFrame: fs[0].id })
 const frame = (id: string, name: string, t: any) => ({ id, name, tree: t })
 const blank = () => box({})

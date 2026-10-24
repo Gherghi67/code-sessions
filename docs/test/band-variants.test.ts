@@ -90,7 +90,7 @@ test('shipped paints the mark, the keys, the feed check and the countdown in the
 
 test('shipped prints the feed chord with its coloured check as the Button children register.tsx writes', () => {
   const tree = variant('shipped').draw(state('feed-on'), 80, 'light')
-  expect(toJsx(tree)).toContain("<Button key=\"cs-feed\" action=\"strip:jump3\" plain label={'feed \\u2713'} onPress={press}><Text>feed </Text><Text color=\"claude\">{'\\u2713'}</Text></Button>")
+  expect(toJsx(tree)).toContain("<Button key=\"cs-feed\" action=\"strip:jump3\" plain label={'feed \\u2713'} onPress={press}>feed <Text color=\"claude\">{'\\u2713'}</Text></Button>")
 })
 
 test('shipped draws nothing when the band has nothing to say', () => {

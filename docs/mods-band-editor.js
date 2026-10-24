@@ -83,8 +83,15 @@
     if (hb || hg) { p.hover = Object.assign({}, p.hover); if (hb) p.hover.borderColor = hb; if (hg) p.hover.backgroundColor = hg; }
     Object.keys(p).forEach(function (k) { if (p[k] === "" || p[k] === false || p[k] === undefined) delete p[k]; });
     if (n.type === "Text") return { type: "Text", props: p, children: [text] };
-    if (n.type === "Button") return { type: "Button", props: p, children: n.kids.map(toEngine) };
+    if (n.type === "Button") return { type: "Button", props: p, children: n.kids.map(buttonChild) };
     return { type: "Box", props: p, children: n.kids.map(toEngine) };
+  }
+
+  // A Button's child as register.tsx writes it: a Text with nothing but its
+  // words is the bare string, which the engine draws the same.
+  function buttonChild(k) {
+    var bare = k.type === "Text" && Object.keys(k.props).every(function (name) { return name === "text"; });
+    return bare ? k.props.text || "" : toEngine(k);
   }
 
   // A copy of `tree` with the node at `path` replaced by change(node).
@@ -176,7 +183,15 @@
       if (words !== "") props.text = words;
       return { type: "Text", props: props, kids: [] };
     }
-    return { type: e.type, props: props, kids: kids.map(fromEngine) };
+    return { type: e.type, props: props, kids: kids.map(function (k) { return engineChild(k, e.type); }) };
+  }
+  // A Box's children are elements; a Button's are strings and Text, and the
+  // editor holds a string as a Text carrying those words.
+  function engineChild(k, parent) {
+    if (typeof k === "object") return fromEngine(k);
+    if (parent !== "Button") throw new Error("a " + parent + " holds no bare string; " + JSON.stringify(k) + " needs a Text");
+    if (typeof k !== "string") throw new Error("a Button holds strings and Text; " + JSON.stringify(k) + " is neither");
+    return { type: "Text", props: k === "" ? {} : { text: k }, kids: [] };
   }
 
   function frameNumber(id) { return +String(id).replace(/^f/, "") || 0; }
