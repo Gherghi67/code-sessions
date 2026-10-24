@@ -176,3 +176,42 @@ test('a pulse write that fails stops the pulse with one log line, and the next p
   await first.unmount()
   await second.unmount()
 })
+
+for (const key of ['live', 'tick'] as const) test(`a ${key} bump whose token read is in flight when the feed goes off writes nothing`, async ($, on) => {
+  let file = 'on\n'
+  let hold: string | undefined
+  let release: (() => void) | undefined
+  let entered: (() => void) | undefined
+  const held = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const writes: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: file } : { deny: 'ENOENT: no such file or directory' })
+  on('fs.exists', () => ({ value: true }))
+  on('fs.write', ($, e) => { if (e.path.endsWith('/feed')) file = e.text; return { value: undefined } })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  let rows: SessionMessage[] = []
+  on('session.messages', ($, e) => ({ value: e.as === 'api' ? [] : rows }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('state.get', async ($, e, next) => { if (e.key === hold) { hold = undefined; entered?.(); await held } return next(e) })
+  on('state.set', async ($, e, next) => { writes.push(e.key); return next(e) })
+  const clock = mock.clock(on)
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: `hint:${e.props.hint}` }))
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
+  await clock.settle()
+  hold = key
+  rows = [{ role: 'user', text: 'Start', toolUses: [] }, { role: 'assistant', text: 'Working on it', toolUses: [] }]
+  const moving = key === 'live'
+    ? $.session.append({ door: 'response', origin: { kind: 'model', model: 'model' }, uuid: 'reply', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Working on it' }] } }).then(() => clock.settle())
+    : clock.advance(1000)
+  await started
+  expect(await $.command.run({ command: 'feed', args: 'off', origin: { kind: 'composer' }, presentation: { columns: 80, isFullscreen: false } })).toEqual({ text: 'Chat view: off.' })
+  writes.length = 0
+  release?.()
+  await moving
+  await clock.advance(3000)
+  expect(writes).toEqual([])
+  await row.unmount()
+})
