@@ -131,7 +131,7 @@
     if (e.kind === "word") return e.ink === undefined ? T(wordStyle || { dimColor: true }, e.label) : T({ bold: true, color: rampInk(e.ink, theme) }, e.label);
     if (e.kind === "press") return Btn({ key: e.key, plain: true, label: e.label });
     var props = { key: e.key, action: ACTIONS[e.role], plain: true, label: e.label };
-    return e.check ? Btn(props, [e.label.slice(0, -1), T({ color: inks(theme).own }, "✓")]) : Btn(props);
+    return e.check ? Btn(props, [T({}, e.label.slice(0, -1)), T({ color: inks(theme).own }, "✓")]) : Btn(props);
   }
 
   // The shipped band's words: a shared chord prefix spelled once, dim,

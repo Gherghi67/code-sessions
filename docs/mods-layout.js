@@ -122,15 +122,18 @@
   }
 
   // A Button draws its label; `plain` drops the engine's brackets. The hotkey
-  // is the engine's own prefix, not part of the label.
+  // is the engine's own prefix, not part of the label. Children, when there
+  // are any, draw in the label's place as inline runs (strings and Text), and
+  // the label only names the control.
   function layoutButton(node, width) {
     var p = node.props || {};
     var st = styleOf({ color: p.color, dimColor: p.dimColor, bold: p.bold });
-    var label = p.label == null ? "" : String(p.label);
-    var body = p.plain ? label : "[ " + label + " ]";
+    var kids = (node.children || []).filter(function (k) { return k != null && k !== false && k !== ""; });
+    var body = kids.length ? textCells({ props: {}, children: kids }, st) : run(p.label == null ? "" : String(p.label), st);
+    if (!p.plain) body = run("[ ", st).concat(body, run(" ]", st));
     var cells = [];
     if (p.hotkey) cells = cells.concat(run(String(p.hotkey) + ": ", { color: "suggestion", bold: true, bg: "", dim: false, italic: false, underline: false, strikethrough: false, inverse: false }));
-    cells = cells.concat(run(body, st));
+    cells = cells.concat(body);
     return grid([cells.slice(0, Math.max(0, width))]);
   }
 
@@ -345,17 +348,22 @@
     return name + "={" + jsString(s) + "}";
   }
 
+  // A Text's or a Button's children on one line: strings as literals, Text as tags.
+  function inline(node) {
+    var kids = (node.children || []).filter(function (k) { return k !== null && k !== undefined && k !== false; });
+    return kids.map(function (k) {
+      return typeof k === "string" || typeof k === "number" ? textLiteral(String(k)) : toJsx(k, "");
+    }).join("");
+  }
+
   function toJsx(node, indent) {
     var pad = indent || "";
     if (!node) return "";
-    if (node.type === "Button") return pad + "<Button" + attrs(node.props) + " onPress={press} />";
-    if (node.type === "Text") {
-      var kids = (node.children || []).filter(function (k) { return k !== null && k !== undefined && k !== false; });
-      var inner = kids.map(function (k) {
-        return typeof k === "string" || typeof k === "number" ? textLiteral(String(k)) : toJsx(k, "");
-      }).join("");
-      return pad + "<Text" + attrs(node.props) + ">" + inner + "</Text>";
+    if (node.type === "Button") {
+      var drawn = inline(node);
+      return pad + "<Button" + attrs(node.props) + " onPress={press}" + (drawn ? ">" + drawn + "</Button>" : " />");
     }
+    if (node.type === "Text") return pad + "<Text" + attrs(node.props) + ">" + inline(node) + "</Text>";
     if (node.type === "Box") {
       var kidsB = (node.children || []).filter(Boolean);
       var open = pad + "<Box" + attrs(node.props) + ">";

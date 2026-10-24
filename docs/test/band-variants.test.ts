@@ -2,7 +2,7 @@
 // ABOUTME: Pins the state catalogue, the shipped band's port against register.tsx, and every sketch against the engine.
 import { test, expect } from 'bun:test'
 const { STATES, VARIANTS } = require('../mods-band-variants.js')
-const { layout, toText, validate } = require('../mods-layout.js')
+const { layout, toText, validate, toJsx } = require('../mods-layout.js')
 
 const state = (id: string) => {
   const found = STATES.find((s: any) => s.id === id)
@@ -74,6 +74,23 @@ test('shipped draws the rotate-due band register.tsx draws', () => {
     ' '.repeat(31),
     '  \u25cf ctrl+x  1 rotate  \u00b7  2 wrap',
   ])
+})
+
+// The inks the shipped band carries, cell by cell, on the light theme. The
+// columns are counted off the oracle lines: `  ● ctrl+x  1 rotate  ·  2 wrap`
+// puts the mark at 2 and the first key at 12; `  ● ctrl+x  3 feed ✓` puts the
+// check at 19; `  ● /clear in 7s  ·  ...` starts the countdown word at 4.
+const bandRow = (variantId: string, stateId: string) => layout(variant(variantId).draw(state(stateId), 80, 'light'), 80).rows[1]
+test('shipped paints the mark, the keys, the feed check and the countdown in their inks', () => {
+  expect(bandRow('shipped', 'rotate-due')[2]).toMatchObject({ ch: '\u25cf', st: { color: 'AMBER_L', dim: false } })
+  expect(bandRow('shipped', 'rotate-due')[12]).toMatchObject({ ch: '1', st: { color: 'claude', bold: true, dim: false } })
+  expect(bandRow('shipped', 'feed-on')[19]).toMatchObject({ ch: '\u2713', st: { color: 'claude', dim: false } })
+  expect(bandRow('shipped', 'countdown')[4]).toMatchObject({ ch: '/', st: { color: 'AMBER_L', bold: true, dim: false } })
+})
+
+test('shipped prints the feed chord with its coloured check as the Button children register.tsx writes', () => {
+  const tree = variant('shipped').draw(state('feed-on'), 80, 'light')
+  expect(toJsx(tree)).toContain("<Button key=\"cs-feed\" action=\"strip:jump3\" plain label={'feed \\u2713'} onPress={press}><Text>feed </Text><Text color=\"claude\">{'\\u2713'}</Text></Button>")
 })
 
 test('shipped draws nothing when the band has nothing to say', () => {
