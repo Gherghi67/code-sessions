@@ -37,3 +37,15 @@ test('UserMessage keeps hook feedback as a quiet circle line', async ($, on) => 
   expect((await row.find({ type: 'Text' }))?.text).toBe('○ Tests need another pass')
   await row.unmount()
 })
+
+test('AssistantMessage frames the engine markdown once with the terminal claude margin', async ($, on) => {
+  session(on)
+  const flags: boolean[] = []
+  on('ui.render', { component: 'AssistantMessage' }, ($, e) => { flags.push(e.props.isFirstOfReply); return $.ui.resolve(e).Text({ children: 'engine markdown' }) })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AssistantMessage', props: { text: 'Here is the answer.', isFirstOfReply: true } })
+  expect((await row.find({ type: 'Text', text: 'claude' }))?.text).toBe('claude')
+  expect((await row.find({ type: 'Text', text: 'claude' }))?.props.color).toBe('#e3c4a2')
+  expect((await row.find({ type: 'Text', text: 'engine markdown' }))?.text).toBe('engine markdown')
+  expect(flags).toEqual([false])
+  await row.unmount()
+})

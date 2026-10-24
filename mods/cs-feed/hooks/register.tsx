@@ -2,13 +2,13 @@
 // ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
 import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
 
-import { active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, readLive, startClocks, toggle, transcript, writeFeed } from './session'
+import { active, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWorking, openTurn, readLive, startClocks, toggle, transcript, writeFeed } from './session'
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
-import { decideGroup, decideSpinner, decideUser } from './verdict'
+import { decideGroup, decideReply, decideSpinner, decideUser } from './verdict'
 import type { CallView, Context } from './verdict'
-import { NOTHING, drawGroup, drawUser, inks } from './draw'
+import { NOTHING, drawGroup, drawReply, drawUser, inks } from './draw'
 import type { Pen } from './draw'
 
 type $ = EngineInterface
@@ -315,7 +315,7 @@ export type Drawn<C extends RenderComponent> =
   | { readonly kind: 'nothing' }
 
 /** A decision and whether it was taken from the open turn's state (site() then reads LIVE). */
-export type Decided<D> = { readonly drawn: D; readonly live: boolean }
+export type Decided<D> = { readonly drawn: D; readonly live: boolean; readonly claim?: import('./verdict').StepsClaim }
 
 /** A painter sees its row, the context and a pen. It has no `$` and no `next`: it cannot write, and it cannot skip the engine. */
 export type Painter<C extends RenderComponent, D extends Drawn<C> = Drawn<C>> = (e: RenderInput<C>, cx: Context, pen: Pen) => Promise<Decided<D>>
@@ -351,7 +351,8 @@ export const PAINTERS = {
     // entry hands site() the claim with its Decided (the sketch leaves that
     // one field untyped on the table); site() records a settled claim
     // (session.noteStepsDrawn) and later evaluations reuse it (verdict.stepsOwner).
-    throw new Error('not implemented')
+    const { verdict, live, claim } = decideReply({ ...e.props, uuid: e.requestId }, cx)
+    return { drawn: { kind: 'frame', props: { isFirstOfReply: false }, frame: drawn => drawReply(verdict, drawn, pen) }, live, claim }
   },
   ToolUse: async (e, cx, pen) => {
     // decideCall(toCallView(e.props), cx) -> nothing | tree(drawCall). Under the default renderer a lone call
@@ -458,6 +459,7 @@ async function site<C extends Hooked>($: $, e: RenderInput<C>, next: (e: RenderI
         press: key => toggle(load, $, key),
       }
       const decision = await paint(e as RenderInput<C>, cx, pen)
+      if (e.component === 'AssistantMessage' && decision.claim !== undefined && decision.claim !== 'pending') noteStepsDrawn(load, $, e.requestId, decision.claim === 'drawn')
       if (decision.live) await readLive($)
       switch (decision.drawn.kind) {
         case 'engine': return await engine()

@@ -793,7 +793,13 @@ function startPulse(load: Load, $: $): void {
  * site(), the one place a render feeds the load besides noteWorking.
  */
 export function noteStepsDrawn(load: Load, $: $, reply: string, drew: boolean): void {
-  throw new Error('not implemented')
+  if (!recordStepsClaim(load, reply, drew ? 'drawn' : 'declined') || !active(load)) return
+  $.clock.after(0, async () => {
+    if (!active(load)) return
+    const value = await read($, LIVE)
+    if (!active(load)) return
+    await $.state.set({ plugin: 'cs-feed', key: 'live' }, value + 1)
+  })
 }
 
 /**

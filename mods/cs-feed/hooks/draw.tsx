@@ -70,7 +70,12 @@ function chevron(key: string, opened: boolean, pen: Pen): RenderElement {
  * mermaid's diagrams) survives whichever order the two load in.
  */
 export function drawReply(v: ReplyVerdict, engine: RenderElement, pen: Pen): RenderElement {
-  throw new Error('not implemented')
+  const { Box, Text } = pen.el
+  const body = typeof v.body === 'object'
+    ? <Box flexDirection="column" paddingLeft={pen.pad}><Text color={v.body.error.tone === 'red' ? pen.ink.red : v.body.error.tone === 'amber' ? pen.ink.amber : pen.ink.peer}>{v.body.error.head}</Text>{v.body.error.rest.map(line => <Text dimColor>{line}</Text>)}</Box>
+    : v.body === 'nothing' ? NOTHING(pen)
+      : <Box flexDirection="row"><Box width={pen.pad}>{v.name ? <Text color={pen.ink.claude} dimColor>{labels.claude}</Text> : null}</Box><Box flexGrow={1} flexDirection="column">{engine}</Box></Box>
+  return <Box flexDirection="column">{body}{v.stepsLine ? drawCall(v.stepsLine, pen) : null}</Box>
 }
 /** Ours above `beneath` (what next(e) drew: cs's band, or the engine's), in one column. */
 export function drawBand(v: Exclude<BandVerdict, { draw: 'engine' }>, beneath: RenderElement, frame: number, pen: Pen): RenderElement {
