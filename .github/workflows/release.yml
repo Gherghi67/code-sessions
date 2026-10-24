@@ -37,7 +37,7 @@ jobs:
           # count. Zero runs prints an empty line.
           found=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml \
             --commit "$GITHUB_SHA" --event push --branch main --limit 1 \
-            --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
+            --json status,conclusion --jq '.[0] // empty | "\(.status) \(.conclusion)"')
           if [ "$found" != 'completed success' ]; then
             echo "::error::Test is '${found:-no run}' (status conclusion) for $GITHUB_SHA; a release needs a green Test run on the tagged commit"
             exit 1
