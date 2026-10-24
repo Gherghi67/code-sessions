@@ -1,6 +1,6 @@
 // ABOUTME: Exercises the pure state transitions behind live transcript observations.
 // ABOUTME: Event order comes from the design's measured append and turn-start sequence.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { newLoad, observePrompt, observeTurnStart, observeResponse, openTurn, replaceResponseText } from '../hooks/session'
 import { buildTranscript } from '../hooks/transcript'
 
@@ -154,6 +154,48 @@ test('a vetted preset writes the view before the switch and redraws an on-sessio
     { argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 },
     { argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 },
   ])
+})
+
+test('overlapping preset writes finish in command order without replacing the later view', {
+  plugins: [{ name: 'command-entry', tier: 'prepend', register(on) {
+    on('command.run', { command: 'feed' }, async ($, e, next) => {
+      await $.ui.log(e.args)
+      return next(e)
+    })
+  } }],
+}, async ($, on) => {
+  const files = new Map<string, string>([['/session/.cs/local/feed', 'off\n']])
+  let release: (() => void) | undefined
+  let entered: (() => void) | undefined
+  let second: (() => void) | undefined
+  const held = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const secondEntered = new Promise<void>(resolve => { second = resolve })
+  let first = true
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => {
+    const text = files.get(e.path)
+    return text === undefined ? { deny: 'ENOENT: no such file or directory' } : { value: text }
+  })
+  on('fs.exists', () => ({ value: true }))
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.log', ($, e) => { if (e.text === 'clean') second?.(); return { value: undefined } })
+  on('fs.write', async ($, e) => {
+    if (first) { first = false; entered?.(); await held }
+    files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  const clock = mock.clock(on)
+  const normal = $.command.run({ ...STATUS, args: 'normal' })
+  await started
+  const clean = $.command.run({ ...STATUS, args: 'clean' })
+  await secondEntered
+  await clock.settle()
+  release?.()
+  await Promise.all([normal, clean])
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":true,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')
 })
 
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {

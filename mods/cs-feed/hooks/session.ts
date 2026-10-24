@@ -210,6 +210,8 @@ export type Load = {
    */
   feed?: Session
   record?: Promise<Session>
+  /** Writing commands wait before deriving their next view; readers keep their independent tickets. */
+  writes?: Promise<void>
   /**
    * cs's answer on this session's control files for the `on\n` the mirror
    * last read (§20.22: the writes and the on-read are vetted).

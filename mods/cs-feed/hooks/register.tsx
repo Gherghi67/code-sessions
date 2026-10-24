@@ -75,7 +75,15 @@ export function register(on: On) {
  * session.applyFeed). /feed is `immediate`, so a typed /feed runs mid-turn at
  * once (spike3 M12: immediate lets a typed command run mid-turn).
  */
-async function perform($: $, cmd: FeedCommand): Promise<string> {
+function perform($: $, cmd: FeedCommand): Promise<string> {
+  if (cmd.kind === 'status' || cmd.kind === 'open' || cmd.kind === 'close' || cmd.kind === 'usage') return performNow($, cmd)
+  const result = (load.writes ?? Promise.resolve()).then(() => performNow($, cmd))
+  // The caller keeps result's rejection; the queue must still admit the next command.
+  load.writes = result.then(() => undefined, () => undefined)
+  return result
+}
+
+async function performNow($: $, cmd: FeedCommand): Promise<string> {
   await feedRecord(load, $)
   if (cmd.kind === 'status') await applyFeed(load, $, 'status')
   const current = load.feed
