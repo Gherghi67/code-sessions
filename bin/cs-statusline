@@ -2222,8 +2222,12 @@ _is_cols() {
 _sl_tty_cols() {
     _TTY_COLS=""
     _sl_parent_pid
+    # A cached answer is checked like a fresh one: an entry that is not a
+    # count (hand-edited, torn, another writer's shape) must not reach `[`
+    # or the fill loop, so it reads as no terminal.
     if _cache_read stty "$_PARENT" "$OWN_TTY_MAX_AGE"; then
         _TTY_COLS="$_CACHE_TEXT"
+        _is_cols "$_TTY_COLS" || _TTY_COLS=""
         return 0
     fi
     local size

@@ -4942,6 +4942,26 @@ test_band_width_defaults_to_120() {
     assert_eq 116 "$(band_cells "$out")" "nothing measured is 120, less the frame" || return 1
 }
 
+# A cached stty answer is read the way a fresh one is: an entry that is not a
+# column count (a hand-edited file, a torn write, another cs's format) is a
+# miss, so the band is 120 less the frame and nothing reaches stderr.
+test_band_width_ignores_a_poisoned_stty_cache() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export CS_STATUSLINE_PARENT=4242
+    mkdir -p "$TEST_TMPDIR/fakebin" "$HOME/.cache/cs/stty"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TMPDIR/fakebin/stty"
+    chmod +x "$TEST_TMPDIR/fakebin/stty"
+    local bad out err
+    for bad in nope "80 24" 500000000000; do
+        printf '%s\t4242\n%s\n' "$(date +%s)" "$bad" > "$HOME/.cache/cs/stty/4242"
+        out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS" 2>"$TEST_TMPDIR/err")
+        err=$(cat "$TEST_TMPDIR/err")
+        assert_eq 116 "$(band_cells "$out")" "a cached '$bad' is a miss, not a width" || return 1
+        assert_eq "" "$err" "a cached '$bad' prints nothing to stderr" || return 1
+    done
+}
+
 # Inside a real tmux the width is the pane's, from the one query the client
 # rung already makes, asked about the pane in TMUX_PANE.
 test_band_width_from_the_tmux_pane() {
@@ -5224,6 +5244,7 @@ run_test test_band_frame_is_subtracted_from_a_measured_width
 run_test test_band_width_floors_at_twenty
 run_test test_band_columns_from_stdin_rank_below_the_override
 run_test test_band_width_defaults_to_120
+run_test test_band_width_ignores_a_poisoned_stty_cache
 run_test test_band_width_from_the_tmux_pane
 run_test test_band_width_ignores_a_foreign_tmux
 run_test test_band_width_from_the_terminal_is_measured_once

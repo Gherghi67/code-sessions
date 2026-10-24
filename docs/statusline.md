@@ -210,7 +210,7 @@ The render then pulls that color 30% of the way toward the background, so text r
 It picks the band's width W the same way:
 
 1. `CS_STATUSLINE_COLS`, a whole number from 1 to 9999, taken as the final width: a caller that sets it (a test, a wrapper that measured the frame itself) already knows the cells it may use, so no frame comes off it.
-2. `.columns` in the stdin JSON.
+2. `.columns` in the stdin JSON, when the payload carries one (the agent-panel payload does; the status-line payload of Claude Code 2.1.310 does not, so this rung waits for a future one).
 3. Inside a tmux this process is really in (the same verdict the pane id uses), the pane's width, `#{pane_width}` of `TMUX_PANE`. It rides on the theme pass's one `tmux display-message` query and its five-second cache.
 4. The terminal's width from `stty size </dev/tty`, kept five minutes under the parent pid like the `tty` answer, so a resize shows when that entry expires.
 5. 120.
