@@ -1103,8 +1103,9 @@ and a relaunch:
   `clear`, `keep`, `style`, `commands`, `after` and `hide`, then a newline.
   Only cs-feed writes it, before it writes `feed`, so no reader finds on
   beside the old view. A missing file reads as `clean` with nothing hidden.
-  cs-feed refuses a torn file (no closing newline), bad JSON, a missing field
-  or a bad value, and never repairs one.
+  So does a torn file (no closing newline), bad JSON, a missing field or a
+  bad value: cs-feed logs the path and the reason once per load, and the
+  next `/feed` write rewrites the file. The view never decides on or off.
 
 Every write asks cs first. `/feed` runs `$CS_BIN -vet-session <cwd>` (10 s
 timeout), the same rule cs's band asks before its own writes:
