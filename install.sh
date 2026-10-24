@@ -245,6 +245,16 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
+    cs-feed/.claude-plugin/plugin.json
+    cs-feed/hooks/hooks.json
+    cs-feed/hooks/draw.tsx
+    cs-feed/hooks/register.tsx
+    cs-feed/hooks/session.ts
+    cs-feed/hooks/settings.ts
+    cs-feed/hooks/state.d.ts
+    cs-feed/hooks/transcript.ts
+    cs-feed/hooks/verdict.ts
+    cs-feed/hooks/words.ts
 )
 
 # The cs tips file as install.sh names it in settings.json's
@@ -1345,7 +1355,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "6f5728b3dd9160ecdd305e2eb45d83d465c04758bafb312b805e0231581b76b4  bin/cs"
+    "0716304c357abeea8b847dba15d698c96758271100c84b115c5af04c100ccbbf  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1378,8 +1388,8 @@ CS_PAYLOAD_SHA256=(
     "a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8  skills/finish/scripts/finish.sh"
     "09daf172d79a503a4d02884aa002af2e5cba82010d476f4f7744e8d865c1e632  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "0701f6a2a7b3ae5aa71dc13d99beb1fa10e350280b26a93598d5d35c2150cfe3  mods/cs/hooks/register.tsx"
-    "f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e  mods/cs/tips.json"
+    "09e4269791a9780048f3980f0cc7b7894d8623a114a7896b4c54ec9b5cfb6935  mods/cs/hooks/register.tsx"
+    "c77a32327a72a6fd3ad703bb121007a380c1687b1c726b46cf825a503ca8b753  mods/cs/tips.json"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "ff76dabaad83772255b22e29262b0b35fb5db2d3dc56d22d89656ad7363961ce  mods/cs-update/hooks/register.tsx"
@@ -1390,6 +1400,16 @@ CS_PAYLOAD_SHA256=(
     "73f199c6f5820fa25b4ffb8dda8ebe468df187183fc685e23624f4d06210f516  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
+    "44bdc6baba3512597a77b1bcff81d23806724b14fae4aac65e99564f202722dd  mods/cs-feed/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-feed/hooks/hooks.json"
+    "1e7069c6adee0cd7f1f53ea5d50d3873cf6449222787dd086d23d3ef3f260a07  mods/cs-feed/hooks/draw.tsx"
+    "a0f46ff85e1f25cb746efda9ee62fae61af611b9a809c1a8cc18d3a1aa856a00  mods/cs-feed/hooks/register.tsx"
+    "7793d905423077db7e94640f912ebf69ed5000dee87ccfeaffbd4b6545a4ccf4  mods/cs-feed/hooks/session.ts"
+    "097ae1502394519791b890aad368f95a569a64feb8ea8ca0423f6e3e39c714ee  mods/cs-feed/hooks/settings.ts"
+    "1ce533ee58e6ce894c76d1c16522a622e112d9d8f967b548944da38d61ad4248  mods/cs-feed/hooks/state.d.ts"
+    "bd96c958d0985810f5d509f2e856c9633e02f4030644cfe6c26547fc88c0ec2f  mods/cs-feed/hooks/transcript.ts"
+    "dbef075c4fceec08cd66b20c41916a96e687139464f80c9ab4d39894ee352e57  mods/cs-feed/hooks/verdict.ts"
+    "69d87624db0db335e7a9211cc647312ceb87a6a9257ac27d25587d8b72a4e1df  mods/cs-feed/hooks/words.ts"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"
 )

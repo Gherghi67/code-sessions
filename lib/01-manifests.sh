@@ -153,6 +153,16 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
+    cs-feed/.claude-plugin/plugin.json
+    cs-feed/hooks/hooks.json
+    cs-feed/hooks/draw.tsx
+    cs-feed/hooks/register.tsx
+    cs-feed/hooks/session.ts
+    cs-feed/hooks/settings.ts
+    cs-feed/hooks/state.d.ts
+    cs-feed/hooks/transcript.ts
+    cs-feed/hooks/verdict.ts
+    cs-feed/hooks/words.ts
 )
 
 # The cs tips file as install.sh names it in settings.json's
