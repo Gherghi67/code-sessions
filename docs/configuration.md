@@ -21,7 +21,7 @@ The installer deploys these components:
 | Hooks and wrap passes | `~/.claude/hooks/cs/`, including the memory and summary passes that `/wrap` reads. |
 | Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
 | Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
-| Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
+| Mods | `cs`, `cs-update`, `cs-mermaid`, and `cs-feed` in `~/.claude/skills/`. |
 | Spinner tip | `~/.claude/skills/cs/tips.json`, named in `settings.json` as `spinnerTipsOverride.tipsFile`. See [band settings](#band-settings). |
 
 See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
@@ -408,7 +408,7 @@ one toast; the rest of the mod runs.
 
 ### Spinner tip
 
-Claude Code's spinner tips say how to turn on the prompt bars. The installer
+Claude Code's spinner tips say how to turn on the prompt bars and the feed. The installer
 names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
 
 ```json
@@ -449,6 +449,17 @@ instruction lives under `cs:mermaid-diagrams` in a cs session's `CLAUDE.local.md
 neither this toggle nor `.cs/local/disabled` removes it. To opt out of the
 instruction, delete its prose but keep the `<!-- cs:mermaid-diagrams -->`
 comment so migration does not add it again.
+
+The feed (the `cs-feed` mod) is a per-session switch, not a `/config` row: it
+has no `userConfig`, and nothing in `settings.json` turns it on or off. Each
+session keeps its choice in its own `.cs/local`: `.cs/local/feed` holds
+exactly `on\n` for on (anything else is off), and `.cs/local/feed-view` holds
+the view, one JSON object with `group`, `clear`, `keep`, `style`, `commands`,
+`after` and `hide`, then a newline (absent, it reads as `clean`). Turn it on
+with the band's feed key (`ctrl+x 3`) or `/feed on`, and pick a view with
+`/feed clean`, `/feed normal` or one setting at a time; `/feed raw` turns it
+off. Every write asks `cs -vet-session` first, so a session cs refuses
+changes nothing. See [hooks.md](hooks.md#cs-feed-not-a-hook-script--a-claude-code-mod).
 
 ## Environment variables cs sets for you
 

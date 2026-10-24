@@ -1049,6 +1049,162 @@ The shell suite always checks the manifest, its `/config` field and that the
 installer names the mod. `tests/test_mermaid_section.sh` checks the session
 instruction and tombstone, and `tests/test_migrate_claude_md.sh` covers migration.
 
+## cs-feed (not a hook script — a Claude Code mod)
+
+`mods/cs-feed/` is a Claude Code function-hooks plugin, deployed and gated
+the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It restyles
+the chat: your messages, Claude's replies, and the tool calls between them
+folded into short lines. It stays off in every session until you turn it on
+there, and it draws only in a session that `cs -vet-session` accepts. While a
+session is off, every hook passes Claude Code's own drawing through.
+
+The switch is per session:
+
+- `ctrl+x 3 feed`, the cs band's feed key (see the band above): this session
+  on or off. It shows while the lead session is idle.
+- `/feed on` and `/feed off` do the same, typed. `/feed` is an immediate
+  command, so it runs mid-turn too.
+- `/feed clean` turns the feed on with your messages, Claude's replies and one
+  line per turn for the work. `/feed normal` turns it on with each run of tool
+  calls as one line with counts. `/feed raw` turns it off and keeps the view
+  for the next on.
+- `/feed status` reads the file again and replies with the switch and the
+  mode, such as `on · clean` or `off · raw`. It writes nothing.
+- Bare `/feed` opens this session's settings in a pane above the prompt, and
+  `/feed close` shuts it.
+- One setting at a time: `/feed group on|off`, `clear on|off`, `keep on|off`,
+  `style expanded|subtle|line`, `commands grouped|each`, `after clear|keep`,
+  and `/feed hide <kind>` or `/feed show <kind>` for `you`, `said`, `tool`,
+  `search`, `agent`, `question`, `peer` and `helper`. A setting also turns the
+  feed on. Other words reply with the usage line.
+- `/helpers` opens the Helpers pane.
+
+While the feed is on, the mode line under the prompt adds
+`feed clean · /feed to switch` (`normal` or `custom` for other views). A
+switch or a view change redraws in place: no reload, no notice row, and no
+other session changes.
+
+The session's choice lives in two files under its working directory, both in
+the gitignored `.cs/local`, so it survives `/clear`, a rotation, `--resume`
+and a relaunch:
+
+- `.cs/local/feed` holds the switch, and cs's band writes it too (see the band
+  above). Only the whole value `on\n` means on. Absent, empty, torn, `off\n`
+  and any other text mean off, and neither mod trims it. cs-feed logs a read
+  error other than a missing file and reads it as off.
+- `.cs/local/feed-view` holds the view: one JSON object with `group`,
+  `clear`, `keep`, `style`, `commands`, `after` and `hide`, then a newline.
+  Only cs-feed writes it, before it writes `feed`, so no reader finds on
+  beside the old view. A missing file reads as `clean` with nothing hidden.
+  cs-feed refuses a torn file (no closing newline), bad JSON, a missing field
+  or a bad value, and never repairs one.
+
+Every write asks cs first. `/feed` runs `$CS_BIN -vet-session <cwd>` (10 s
+timeout), the same rule cs's band asks before its own writes:
+
+- In a directory with no `.cs/local`, `/feed` writes nothing, starts no
+  process and replies `cs-feed: this directory is not a cs session (no
+  .cs/local), so nothing changed.`
+- Where cs refuses the session, or the launch did not set `CS_BIN`, it writes
+  neither file and replies `cs-feed: no feed change in this session:` with
+  cs's refusal.
+- cs-feed vets the read that turns the feed on, too. At the first draw of each
+  load, a `feed` file that says `on\n` costs one `cs -vet-session` process
+  (0.15-0.44 s), and the hooked rows wait for its answer before they draw. A
+  session cs refuses reads as off: the feed draws nothing, and the log says
+  `cs-feed: the feed is off in this session:` with the refusal, once per
+  distinct refusal. A file that says off, or no file, starts no process.
+- `/feed status` picks up a hand edit or a second Claude process in the
+  directory, and vets a flip to on that neither writer made before it turns
+  the feed on. Bare `/feed`, `/feed close`, and `/feed status` on an unchanged
+  file start no process of their own.
+- A band press needs no second vet: cs-feed reads the file once cs's press
+  handler has finished, and cs vetted before it wrote.
+
+What it draws while on:
+
+- Folded turns. In `clean`, a turn's tool calls fold into one line under
+  Claude's reply, `3 steps this turn` (`1 step this turn`), with a chevron
+  that opens the run lines; while the turn runs, the working line names the
+  live call instead. In `normal`, each run of calls is one line with counts,
+  such as `Ran 2 shell commands · read 1 file`. A call reads in plain words
+  (`Reading app.py`, `Opening example.com`), never a raw command, path or id,
+  and a call a hook refused reads `1 step refused by a hook`. A tool's result
+  row, the progress hint and the turn's timing row draw nothing; the result
+  rides on its call as a `+N lines` chip. Chevrons are buttons only where a
+  click reaches a mod: the desktop app or a fullscreen terminal.
+- The working line. It stays Claude Code's own spinner row, with its clock,
+  token count and cs's tip, and the feed's words as its message: the live
+  call, `Working` or `Thinking`, then `· step N` and `· N helpers working`.
+  A message Claude Code sets itself, such as compacting, passes through.
+- Your messages and Claude's replies in a name column, `you` and `claude`.
+  The reply's Markdown is Claude Code's drawing (or cs-mermaid's), so
+  diagrams draw whichever mod loads first.
+- Errors and safeguard stops. One line takes the reply's place, coloured by
+  who acts: violet for a safeguard stop, red when you must act, amber when
+  Claude Code handles it, such as
+  `Connection lost · check your internet · send again to retry`.
+- Helpers. A helper's row reads like `Read the notes · dispatched · running`,
+  then `finished`, `failed` or `stopped`, with its elapsed time. Helpers
+  launched together share one line with counts per kind. Above the prompt a
+  helper line reads like `2 helpers · 1 done · 1 running`, and `/helpers`
+  opens a pane with the newest six helpers and their own calls.
+- Messages from others. A peer message is one `⇄ <sender> · <first line>`
+  line, messages that arrive together fold into one, a helper's report is a
+  header line over a verdict card or the report's first paragraph, and a task
+  notification is one line.
+- Background runs. After a turn, a line above the prompt reads
+  `Running in the background · <label>` (or `Test running`) with its elapsed
+  time. On the desktop app the band carries the 5-hour and weekly usage and a
+  pill per running helper, job or test. The feed's lines stack above cs's
+  band, never in its place.
+- An answered question reads `? <question> → <answer>`.
+- `/feed hide <kind>` hides one kind of row: `said` hides Claude's replies
+  with their error lines, `peer` the messages from others, and so on.
+
+Questions, info notices and the prompt hint stay Claude Code's. A row that
+reports itself expanded (ctrl+o, `--verbose`) draws Claude Code's own, so the
+detailed view still shows everything. The feed draws under both renderers:
+under `tui: "fullscreen"` a lone shell call arrives as a one-call tool group,
+under the default renderer as a tool row and a result row, and both go
+through the same call decision.
+
+Off costs a little, because every hook stays registered: there is no install
+switch. Measured on Claude Code 2.1.309 beside cs, cs-update and cs-mermaid,
+over a three-turn scenario: 32 worker hops that did not exist without the mod
+(24 renders, 8 stored rows), about 1.6 ms each at the median (6.7 ms p90), and
+probably 8-10 ms at each turn's end (consistent in direction, not significant
+over six runs). About 5-6 MB more memory in the main process, and no change
+in CPU time. While off it reads no transcript, runs no clock, writes no state and starts no
+`cs -vet-session` process. On Claude Code 2.1.310 the cost oracle (below)
+counted the same 32 new hops under the fullscreen renderer (72 against 40) and
+27 under the default renderer (60 against 33), which raises a tool row and a
+result row where fullscreen raises one tool group; with cs-feed alone, 62 and
+50. Its two Pane hooks ran zero times with cs-update's pane and another
+plugin's pane open. A helper spawn adds one hop, and so does a press of the
+band key.
+
+`install.sh` deploys the mod's ten files (`.claude-plugin/plugin.json`,
+`hooks/hooks.json`, `hooks/register.tsx`, `hooks/session.ts`,
+`hooks/settings.ts`, `hooks/transcript.ts`, `hooks/verdict.ts`,
+`hooks/words.ts`, `hooks/draw.tsx` and the state types `hooks/state.d.ts`)
+under `~/.claude/skills/cs-feed/`, and `cs -uninstall` removes the directory.
+The mod writes no heartbeat, so `cs -doctor` has no "last ran" row for it.
+
+Tests: `tests/test_mod_feed.sh` pins the manifest and the installer listing,
+checks that the source never names the events and calls the mod must not
+use (`tool.call`, `turn.step`, `classic.*`, `prompt.compose`, `config.set`,
+`$.command.run`), runs `claude plugin
+validate` and pins its exact hook inventory, type-checks the mod against the
+engine's contract, and runs the tests under `mods/cs-feed/test/` with
+`claude plugin test` when `claude` is on `PATH`. `mods/cs-feed/test/dispatch-count.sh`
+is the cost oracle, never deployed and not in the suite: real sessions under a
+throwaway home directory, a local stand-in API and their own tmux servers count the
+feed's own callbacks with an instrumented copy and its worker hops on the
+shipped plugin, standalone and beside cs's three mods, under both renderers.
+It takes about half an hour and exits non-zero on any mismatch.
+
 ## Hook Configuration
 
 The hooks are configured in `~/.claude/settings.json`:
