@@ -1,7 +1,8 @@
 // ABOUTME: Tests for the band variants gallery in docs/mods-band-variants.js.
 // ABOUTME: Pins the state catalogue, the shipped band's port against register.tsx, and every sketch against the engine.
 import { test, expect } from 'bun:test'
-const { STATES } = require('../mods-band-variants.js')
+const { STATES, VARIANTS } = require('../mods-band-variants.js')
+const { layout, toText, validate } = require('../mods-layout.js')
 
 const state = (id: string) => {
   const found = STATES.find((s: any) => s.id === id)
@@ -24,4 +25,72 @@ test('the catalogue carries the labels buildBandEntries and its producers write'
   expect(state('rail-many').rail.prompts.length).toBe(14)
   expect(state('no-chords').chords).toEqual({})
   expect(state('rotate-due').chords).toEqual({ rotate: 'ctrl+x 1', wrap: 'ctrl+x 2', feed: 'ctrl+x 3' })
+})
+
+const variant = (id: string) => {
+  const found = VARIANTS.find((v: any) => v.id === id)
+  if (found === undefined) throw new Error(`no variant ${id}`)
+  return found
+}
+const lines = (variantId: string, stateId: string, cols: number) => toText(layout(variant(variantId).draw(state(stateId), cols, 'light'), cols))
+
+test('the gallery draws the shipped band first, then the sketches', () => {
+  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped'])
+})
+
+// Read off the draw site in mods/cs/hooks/register.tsx, by hand: a blank row
+// (marginTop 1), the 2-cell inset, the mark and its gap, the shared prefix and
+// its two cells, each key and one cell, the labels, the dim separator.
+test('shipped draws the rotate-due band register.tsx draws', () => {
+  expect(lines('shipped', 'rotate-due', 80)).toEqual([
+    ' '.repeat(31),
+    '  \u25cf ctrl+x  1 rotate  \u00b7  2 wrap',
+  ])
+})
+
+test('shipped draws nothing when the band has nothing to say', () => {
+  expect(variant('shipped').draw(state('idle'), 80, 'light')).toBeNull()
+})
+
+// 14 prompts, cs.bandBars 10, no words at 80 cols: the budget is 80 - 2 - 2 =
+// 76; railTicks starts at hidden 14 - 10 = 4 and 10 bars + `…4` is 12 <= 76.
+// The label takes 76 - 12 - 2 = 62 cells.
+test('shipped folds the oldest four of fourteen prompts and names the newest', () => {
+  const label = '#14 run the full suite and fix what fails'
+  expect(lines('shipped', 'rail-many', 80)[1]).toBe('  \u25cf \u20264\u2502\u2506\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2503  ' + label + ' '.repeat(62 - label.length))
+})
+
+test('every variant that draws a rail folds fourteen prompts into \u20264 at 80 cols', () => {
+  const railed = VARIANTS.filter((v: any) => lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u2503')))
+  expect(railed.map((v: any) => v.id)).toEqual(['shipped'])
+  for (const v of railed) expect({ variant: v.id, folded: lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u20264')) }).toEqual({ variant: v.id, folded: true })
+})
+
+const cells = () => VARIANTS.flatMap((v: any) => STATES.map((s: any) => ({ v, s })))
+
+test('the engine accepts every variant in every state', () => {
+  for (const { v, s } of cells()) {
+    for (const theme of ['light', 'dark']) expect({ cell: `${v.id} / ${s.id} / ${theme}`, refused: validate(v.draw(s.facts, 80, theme)) }).toEqual({ cell: `${v.id} / ${s.id} / ${theme}`, refused: [] })
+  }
+})
+
+test('every variant fits 60 cols in every state, or its note says it clips', () => {
+  for (const { v, s } of cells()) {
+    const w = layout(v.draw(s.facts, 60, 'light'), 60).w
+    expect({ cell: `${v.id} / ${s.id}`, fits: w <= 60 || /\bclips\b/.test(v.note) }).toEqual({ cell: `${v.id} / ${s.id}`, fits: true })
+  }
+})
+
+// Glyphs a monospace terminal font renders: box drawing, the mark, the queue
+// glyph, the middle dot, the ellipsis and the check. Never the Miscellaneous
+// Symbols block, emoji, or the small square, which render as tofu or too light.
+test('no variant draws a glyph outside the terminal-safe set', () => {
+  const allowed = /^[\x20-\x7e\u2500-\u257f\u25cf\u25a4\u00b7\u2026\u2713]*$/u
+  for (const { v, s } of cells()) {
+    for (const cols of [60, 80]) {
+      const text = lines(v.id, s.id, cols).join('\n')
+      expect({ cell: `${v.id} / ${s.id} / ${cols}`, banned: /[\u2600-\u26ff\u25aa]|[\u{1f000}-\u{1faff}]/u.test(text) }).toEqual({ cell: `${v.id} / ${s.id} / ${cols}`, banned: false })
+      expect({ cell: `${v.id} / ${s.id} / ${cols}`, safe: text.split('\n').every(row => allowed.test(row)) }).toEqual({ cell: `${v.id} / ${s.id} / ${cols}`, safe: true })
+    }
+  }
 })
