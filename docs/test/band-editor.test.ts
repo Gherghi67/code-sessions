@@ -308,6 +308,15 @@ test('insert puts a node at a gap and selects it; the engine\'s refusals throw',
   expect(() => E.apply(doc(sel([1, 1])), { type: 'insert', parentPath: [1, 1], index: 0, node: button('x') })).toThrow('a Button cannot go inside a Button')
 })
 
+// A gap runs from 0 to the parent's child count. A move is checked once its
+// node is out: `move [0]` to 9 under the three-child root asks for gap 8 of
+// the two children left.
+test('insert and move refuse a gap outside the parent, naming it', () => {
+  expect(() => E.apply(doc(sel([1])), { type: 'insert', parentPath: [1], index: 9, node: text('x') })).toThrow('no gap 9 in [1]: it has 2 children')
+  expect(() => E.apply(doc(sel([1])), { type: 'insert', parentPath: [1], index: -1, node: text('x') })).toThrow('no gap -1 in [1]: it has 2 children')
+  expect(() => E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [], index: 9 } })).toThrow('no gap 8 in []: it has 2 children')
+})
+
 // The toolbar's + buttons: into a selected Box as its last child, else
 // right after the selected node.
 test('insertPoint is the selected Box\'s end, or the gap after a selected leaf', () => {

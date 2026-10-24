@@ -141,6 +141,7 @@
 
   function insertAt(tree, parentPath, index, node) {
     return updateAt(tree, parentPath, function (p) {
+      if (index < 0 || index > p.kids.length) throw new Error("no gap " + index + " in " + show(parentPath) + ": it has " + p.kids.length + " children");
       var kids = p.kids.slice();
       kids.splice(index, 0, node);
       return Object.assign({}, p, { kids: kids });
