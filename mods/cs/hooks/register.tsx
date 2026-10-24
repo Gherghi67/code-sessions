@@ -235,6 +235,45 @@ let finishProblemShown = false
 // /finish, which lists them and asks; absent, no press). One reading at a
 // time; the idle clock that reads again; the last complaint logged.
 export type FeaturesWord = { label: string; finish?: string }
+type BandPress = () => void | Promise<unknown>
+export type BandEntry =
+  | { key: string; kind: 'word'; label: string; ink?: { color: string | undefined } }
+  | { key: string; kind: 'press'; label: string; onPress: BandPress }
+  | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress }
+type BandFacts = {
+  featured?: { label: string; onPress?: BandPress }
+  countdown?: { seconds: number; ink: string | undefined }
+  rotating: boolean
+  armed: boolean
+  wrapping: boolean
+  waiting: number
+  gate?: string
+  queued: number
+  mail: number
+  rotate: BandPress
+  wrap: BandPress
+  queue: BandPress
+}
+
+export function buildBandEntries(facts: BandFacts): BandEntry[] {
+  const entries: BandEntry[] = []
+  // The features word takes the left; only a ready feature can be pressed.
+  if (facts.featured !== undefined) {
+    const { label, onPress } = facts.featured
+    entries.push(onPress === undefined ? { key: 'cs-features', kind: 'word', label } : { key: 'cs-features', kind: 'press', label, onPress })
+  }
+  // The grace belongs before the clear key whose press stops it.
+  if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `/clear in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
+  if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
+  if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
+  // The queue has no chord: a click or Enter under the band's focus starts it.
+  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 queue ${facts.waiting} \u00b7 start`, onPress: facts.queue })
+  if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
+  if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `\u25a4 queue ${facts.queued}` })
+  if (facts.mail > 0) entries.push({ key: 'cs-mail', kind: 'word', label: `mail ${facts.mail}` })
+  return entries
+}
+
 let featuresWord: FeaturesWord | undefined
 let featuresReading = false
 let featuresClock: { cancel: () => void } | undefined
@@ -528,8 +567,16 @@ export function register(on: On, options: PluginOptions) {
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
     const { Box, Text, Button } = await $.ui.resolve(e)
-    const counting = armed && left !== undefined
     const wrapping = rotating && !armed && !wrapped
+    const finish = featured?.finish
+    const entries = buildBandEntries({
+      featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
+      countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
+      rotating, armed, wrapping, waiting, gate, queued, mail,
+      rotate: armed ? () => pressClear($) : () => pressRotate($),
+      wrap: () => askToWrap($),
+      queue: () => pressQueueStart($),
+    })
     // The Buttons carry no hotkey: a bare digit pressed them from an empty
     // composer, where a digit typed as the answer to a numbered question
     // belongs. A chord bound to each Button's action presses it instead, and
@@ -537,8 +584,9 @@ export function register(on: On, options: PluginOptions) {
     // is spelled beside it, and only when keybindings.json binds one. Chords
     // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
     // each Button its own key; chords that differ are spelled whole.
-    const actions = rotating ? (wrapping ? [ROTATE_ACTION, WRAP_ACTION] : [ROTATE_ACTION]) : []
+    const actions = entries.flatMap(entry => entry.kind === 'chord' ? [entry.action] : [])
     const prefix = sharedPrefix(actions.map(action => chords[action]))
+    const firstChord = entries.findIndex(entry => entry.kind === 'chord')
     const spelled = (action: string) => {
       const chord = chords[action]
       return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
@@ -549,22 +597,10 @@ export function register(on: On, options: PluginOptions) {
     }
     // What the words take, in cells, so the rail knows what the line leaves it.
     const sep = '  \u00b7  '
-    const keyed = counting || rotating || waiting > 0
-    // Whether a word stands before the queue word, or the mail word, which a
-    // separator then parts from it.
-    const wordsBeforeQueue = featured !== undefined || keyed || gate !== undefined
-    const wordsBeforeMail = wordsBeforeQueue || queued > 0
-    const wordText = [
-      featured === undefined ? '' : `${featured.label}${keyed ? sep : ''}`,
-      counting ? `/clear in ${left}s${sep}` : '',
-      prefix !== undefined ? `${prefix}  ` : '',
-      rotating ? `${spelled(ROTATE_ACTION) === undefined ? '' : `${spelled(ROTATE_ACTION)} `}${armed ? '/clear now' : 'rotate'}` : '',
-      wrapping ? `${sep}${spelled(WRAP_ACTION) === undefined ? '' : `${spelled(WRAP_ACTION)} `}wrap` : '',
-      waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
-      gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
-      queued > 0 ? `${wordsBeforeQueue ? sep : ''}\u25a4 queue ${queued}` : '',
-      mail > 0 ? `${wordsBeforeMail ? sep : ''}mail ${mail}` : '',
-    ].join('')
+    const wordText = entries.map((entry, index) => {
+      const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
+      return `${index === firstChord && prefix !== undefined ? `${prefix}  ` : ''}${chord === undefined ? '' : `${chord} `}${entry.label}`
+    }).join(sep)
     const wordCells = cellWidth(wordText)
     // The mark and its space, first on every line the band draws but under a
     // survey, which owns the band.
@@ -612,35 +648,16 @@ export function register(on: On, options: PluginOptions) {
           <Box key="cs-rotate-band" marginLeft={2}>
             {/* the mark: its colour says what is due (bandState) */}
             {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={markColor}>{MARK}</Text></Box>}
-            {/* the session's features: a press finishes the one ready, or asks which */}
-            {featured !== undefined && (featured.finish === undefined || !bandIdle
-              ? <Text dimColor>{featured.label}</Text>
-              : <Button key="cs-features" plain label={featured.label} onPress={() => pressFinish($, featured.finish as string)} />)}
-            {featured !== undefined && keyed && <Text dimColor>{'  \u00b7  '}</Text>}
-            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
-            {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
-            {counting && <Text dimColor>{'  \u00b7  '}</Text>}
-            {prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>}
-            {rotating && key(ROTATE_ACTION)}
-            {rotating && (armed
-              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear now"
-                        onPress={() => pressClear($)} />
-              : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate"
-                        onPress={() => pressRotate($)} />)}
-            {wrapping && <Text dimColor>{'  \u00b7  '}</Text>}
-            {wrapping && key(WRAP_ACTION)}
-            {wrapping && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap" onPress={() => askToWrap($)} />}
-            {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
-            {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
-            {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
-            {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
-            {gate !== undefined && <Text dimColor>{gate}</Text>}
-            {/* the queue while its start key is not offered: a count, no press */}
-            {queued > 0 && wordsBeforeQueue && <Text dimColor>{'  \u00b7  '}</Text>}
-            {queued > 0 && <Text dimColor>{`\u25a4 queue ${queued}`}</Text>}
-            {/* unread mail, last: a count, no press */}
-            {mail > 0 && wordsBeforeMail && <Text dimColor>{'  \u00b7  '}</Text>}
-            {mail > 0 && <Text dimColor>{`mail ${mail}`}</Text>}
+            {entries.flatMap((entry, index) => [
+              index > 0 && <Text dimColor>{sep}</Text>,
+              index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
+              entry.kind === 'chord' && key(entry.action),
+              entry.kind === 'word'
+                ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
+                : entry.kind === 'chord'
+                  ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+                  : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
+            ])}
             {ticks !== undefined && (
               <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
                 {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}

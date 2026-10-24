@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
+import { register, buildBandEntries, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -3219,4 +3219,51 @@ test('the mark takes two cells from the line: the bars move over and the named p
   // 20 leave ten, 19 nine: the bars alone.
   expect(textOf(gapLabel(await band({ bodyColumns: 20 })))).toBe('#4 say fo…')
   expect(gapLabel(await band({ bodyColumns: 19 }))).toBeUndefined()
+})
+
+// The engine flattens child lists and drops conditional empty children; the
+// fixture's h keeps both, so snapshots compare the tree the engine draws.
+function bandSnapshot(tree: any): unknown {
+  if (Array.isArray(tree)) return tree.flat(Infinity).filter(child => child !== false && child !== undefined && child !== null).map(bandSnapshot)
+  if (!tree || typeof tree !== 'object') return tree
+  return { type: tree.type, props: tree.props, children: bandSnapshot(tree.children ?? []) }
+}
+
+const bandScenes: [string, () => void | Promise<void>, { isWorking?: boolean; hasSurvey?: boolean; bodyColumns?: number }?][] = [
+  ['empty', () => {}],
+  ['rotate and wrap', () => { percent = 40 }],
+  ['wrapped', () => { percent = 40; files['/work/.cs/local/wrapped'] = 'uuid-lead\n' }],
+  ['armed', () => { arm() }],
+  ['countdown', async () => { arm(); await turnComplete() }],
+  ['queue start', () => { queueTasks(2) }],
+  ['running queue', () => { queueTasks(2); files['/work/.cs/local/queue.state'] = 'draining\n' }],
+  ['mail', () => { files['/work/.cs/local/mail/new/one.json'] = '{}' }],
+  ['gate', async () => { await gateRuns() }],
+  ['survey gate', async () => { await gateRuns() }, { hasSurvey: true }],
+  ['working', () => { percent = 40; queueTasks(2) }, { isWorking: true }],
+  ['survey', () => { percent = 40; queueTasks(2) }, { hasSurvey: true }],
+  ['features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }],
+  ['working features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }, { isWorking: true }],
+  ['rail', async () => { transcript(LINEAR); await turnComplete() }],
+  ['narrow rail', async () => { transcript(LINEAR); await turnComplete() }, { bodyColumns: 19 }],
+  ['mixed row', async () => { percent = 40; queueTasks(2); files['/work/.cs/local/mail/new/one.json'] = '{}'; transcript(LINEAR); await featuresTurn() }],
+  ['unbound', () => { percent = 40; delete files[KEYS] }],
+  ['different prefixes', () => { percent = 40; bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+w 2': 'strip:jump2' }) }],
+]
+
+for (const [name, arrange, props] of bandScenes) {
+  test(`band drawing snapshot: ${name}`, async () => {
+    bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+    await arrange()
+    expect(JSON.stringify(bandSnapshot(await band(props)))).toMatchSnapshot()
+  })
+}
+
+test('band entries keep the drawn rotate and wrap labels in order', async () => {
+  percent = 40
+  const drawnLabels = buttons(await band()).map(button => button.props.label)
+  const press = () => {}
+  const entries = buildBandEntries({ rotating: true, armed: false, wrapping: true, waiting: 0, queued: 0, mail: 0, rotate: press, wrap: press, queue: press })
+  expect(entries.map(entry => entry.label)).toEqual(drawnLabels)
+  expect(entries.map(entry => entry.label)).toEqual(['rotate', 'wrap'])
 })
