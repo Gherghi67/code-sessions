@@ -259,8 +259,8 @@ export type UserVerdict =
   | { readonly draw: 'you'; readonly text: string; readonly at?: number }
   | { readonly draw: 'hookText'; readonly line: string }
   | { readonly draw: 'frames'; readonly frames: readonly (Frame & { readonly from: string })[] }
-  | { readonly draw: 'peer'; readonly sender: string; readonly headline: string }
-  | { readonly draw: 'burst'; readonly members: readonly { uuid: string; sender: string; at?: number }[]; readonly opened: boolean }
+  | { readonly draw: 'peer'; readonly sender: string; readonly headline: string; readonly nested?: true } // nested: a member row of an opened burst, indented by 2
+  | { readonly draw: 'burst'; readonly members: readonly { uuid: string; sender: string; at?: number }[]; readonly opened: boolean; readonly own?: { readonly sender: string; readonly headline: string } } // own: the head's message, its indented line while opened
   | { readonly draw: 'helperNote'; readonly durationMs?: number; readonly headline: string }
   | { readonly draw: 'backgroundNote' }
 
@@ -295,12 +295,15 @@ export function decideUser(row: UserRow, cx: Context): Decision<UserVerdict> {
   const head = cx.obs.bursts.of.get(row.uuid)
   const members = head ? cx.obs.bursts.members.get(head) : undefined
   const live = head === row.uuid && cx.obs.bursts.open === head
+  const own = { sender: senderOf(row.from, row.text), headline: peerHeadline(row.text, cx.room - 2) }
   if (head && members && members.length >= 2) {
+    // §8.2: the rest draw nothing until the burst is opened; then each message, the head's included, is its own indented line.
     const opened = cx.opened.has(`burst-${head}`)
-    if (head === row.uuid) return { verdict: { draw: 'burst', members, opened }, live }
+    if (head === row.uuid) return { verdict: { draw: 'burst', members, opened, ...(opened ? { own } : {}) }, live }
     if (!opened) return answer({ draw: 'nothing' })
+    return { verdict: { draw: 'peer', ...own, nested: true }, live }
   }
-  return { verdict: { draw: 'peer', sender: senderOf(row.from, row.text), headline: peerHeadline(row.text, cx.room) }, live }
+  return { verdict: { draw: 'peer', sender: own.sender, headline: peerHeadline(row.text, cx.room) }, live }
 }
 
 export type ReplyVerdict = {

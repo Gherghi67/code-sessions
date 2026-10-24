@@ -108,6 +108,27 @@ test('an already drawn peer head becomes a burst when the next peer arrives', as
   await tail.unmount()
 })
 
+test('an opened burst shows each of its messages as its own indented line, once', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine peer' }))
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'head', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'First update' }] } })
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'tail', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'Second update' }] } })
+  const viewport = { columns: 80, rows: 24, isFullscreen: true }
+  const head = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'head', viewport, props: { text: 'First update', origin: { kind: 'peer' }, isExpanded: false } })
+  const tail = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'tail', viewport, props: { text: 'Second update', origin: { kind: 'peer' }, isExpanded: false } })
+  expect(await tail.findAll({ type: 'Text' })).toEqual([])
+  await $.ui.press({ plugin: 'cs-feed', key: 'burst-head' })
+  const headTexts = (await head.findAll({ type: 'Text' })).map(text => text.text)
+  expect(headTexts.length).toBe(2)
+  expect(headTexts[0]?.split(' · ').slice(0, 2)).toEqual(['⇄ 2 messages', 'another session'])
+  expect(headTexts[1]).toBe('⇄ another session · First update')
+  expect((await tail.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['⇄ another session · Second update'])
+  const indent = async (row: typeof tail, text: string) => (await row.findAll({ type: 'Box' })).find(box => box.props.paddingLeft !== undefined && JSON.stringify(box.children).includes(text))?.props.paddingLeft
+  expect(await indent(tail, 'Second update')).toBe(9)
+  await head.unmount()
+  await tail.unmount()
+})
+
 test('SessionMode appends the feed mode while preserving the engine modes', async ($, on) => {
   session(on)
   on('ui.render', { component: 'SessionMode' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.modes.join(' | ') }))

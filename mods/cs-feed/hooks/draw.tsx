@@ -85,13 +85,13 @@ export function drawUser(v: Exclude<UserVerdict, { draw: 'engine' }>, pen: Pen):
     case 'nothing': return NOTHING(pen)
     case 'you': return <Box flexDirection="column" marginTop={1}><Box flexDirection="row"><Box width={pen.pad}><Text color={pen.ink.you} dimColor>{labels.you}</Text></Box><Box flexGrow={1}><Text>{v.text}</Text></Box>{v.at === undefined ? null : <Text dimColor>{hhmm(v.at)}</Text>}</Box></Box>
     case 'hookText': return <Box paddingLeft={pen.pad}><Text dimColor>{hookNotice(v.line)}</Text></Box>
-    case 'peer': return <Box paddingLeft={pen.pad}><Text color={pen.ink.peer}>{peerLine(v.sender, v.headline)}</Text></Box>
+    case 'peer': return <Box paddingLeft={pen.pad + (v.nested ? 2 : 0)}><Text color={pen.ink.peer}>{peerLine(v.sender, v.headline)}</Text></Box>
     case 'helperNote': return <Box paddingLeft={pen.pad}><Text color={pen.ink.peer}>{helperNoteLine(v.headline, v.durationMs)}</Text></Box>
     case 'backgroundNote': return <Box paddingLeft={pen.pad}><Text dimColor>{labels.backgroundUpdate}</Text></Box>
     case 'burst': {
       const head = v.members[0]
       if (!head) return NOTHING(pen)
-      return <Box flexDirection="column" paddingLeft={pen.pad}><Box flexDirection="row"><Text color={pen.ink.peer}>{burstLine(v.members)}</Text>{chevron(`burst-${head.uuid}`, v.opened, pen)}</Box>{v.opened ? v.members.map(member => <Box paddingLeft={2}><Text color={pen.ink.peer}>{joined([member.sender, member.at === undefined ? undefined : hhmm(member.at)])}</Text></Box>) : null}</Box>
+      return <Box flexDirection="column" paddingLeft={pen.pad}><Box flexDirection="row"><Text color={pen.ink.peer}>{burstLine(v.members)}</Text>{chevron(`burst-${head.uuid}`, v.opened, pen)}</Box>{v.own ? <Box paddingLeft={2}><Text color={pen.ink.peer}>{peerLine(v.own.sender, v.own.headline)}</Text></Box> : null}</Box>
     }
     case 'frames': return <Box flexDirection="column" paddingLeft={pen.pad}>{v.frames.map(frame => <Box flexDirection="column"><Text color={pen.ink.peer}>{frameHead(frame)}</Text><Box flexDirection="column" paddingLeft={2}>{frameBody(frame).map(line => <Text dimColor>{line}</Text>)}</Box></Box>)}</Box>
   }
