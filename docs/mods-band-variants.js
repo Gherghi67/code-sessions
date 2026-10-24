@@ -116,8 +116,12 @@
     return undefined;
   }
 
+  // `text` at most `width` cells, ending in `…` when anything was cut.
+  function cut(text, width) {
+    return cells(text) <= width ? text : Array.from(text).slice(0, Math.max(0, width - 1)).join("") + "…";
+  }
   function fitLeft(text, width) {
-    var fitted = cells(text) <= width ? text : Array.from(text).slice(0, Math.max(0, width - 1)).join("") + "…";
+    var fitted = cut(text, width);
     return fitted + " ".repeat(Math.max(0, width - cells(fitted)));
   }
 
@@ -279,11 +283,39 @@
     return band([Bx({ key: "cs-status", marginRight: 2 }, [T({ bold: true, color: markInk(f, theme) }, status)])].concat(words.nodes, rail || []));
   }
 
+  // Two zones across the whole line, pushed apart by space-between: the mark
+  // and the shipped words on the left; on the right the named prompt, cut to
+  // what is left, then the rail, its newest bar at the right edge.
+  function drawTwoZone(f, cols, theme) {
+    var entries = entriesOf(f);
+    var words = actions(f, entries, theme, SEP);
+    var leftCells = 2 + words.cells;
+    var budget = cols - 2 - leftCells - 3;
+    var ticks = hasRail(f) ? railTicks(f.rail.prompts.length, budget, BAND_BARS) : undefined;
+    if (entries.length === 0 && ticks === undefined) return null;
+    var right = [], rightCells = 0;
+    if (ticks !== undefined) {
+      var room = budget - railCells(f.rail, ticks.hidden) - 2;
+      var name = cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room);
+      if (room >= RAIL_LABEL_MIN) {
+        right.push(Bx({ marginRight: 2 }, [T({ dimColor: true, italic: true }, name)]));
+        rightCells += cells(name) + 2;
+      }
+      right.push(Bx({ key: "cs-rail" }, railNodes(f.rail, ticks.hidden, inks(theme).own)));
+      rightCells += railCells(f.rail, ticks.hidden);
+    }
+    return band([Bx({ width: Math.max(cols - 2, leftCells + (rightCells > 0 ? 3 + rightCells : 0)), justifyContent: "space-between" }, [
+      Bx({ key: "cs-actions" }, [Bx({ key: "cs-mark", marginRight: 1 }, [T({ color: markInk(f, theme) }, MARK)])].concat(words.nodes)),
+      right.length > 0 && Bx({ key: "cs-where" }, right),
+    ])]);
+  }
+
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
     { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
     { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once clips at 60 and at 80.", draw: drawStatusFirst },
+    { id: "two-zone", name: "Two zones", note: "Actions on the left, the named prompt and the rail pushed to the right edge with space-between, so the rail always ends where the line does. Every word at once clips at 60 and at 80.", draw: drawTwoZone },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };
