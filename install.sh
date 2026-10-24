@@ -235,6 +235,7 @@ CS_MOD_FILES=(
     cs/hooks/hooks.json
     cs/hooks/register.tsx
     cs/tips.json
+    cs/types.d.ts
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
@@ -333,13 +334,13 @@ _strip_hook_registration() {
 }
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
-# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
+# "command:<name>" actions, which submit /<name>. Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear) key and its wrap key. KEEP IN SYNC with
-# ROTATE_ACTION and WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
+# band's rotate (or /clear), wrap and feed keys. KEEP IN SYNC with
+# ROTATE_ACTION, WRAP_ACTION and FEED_ACTION in mods/cs/hooks/register.tsx. install.sh
 # asks once per machine and binds them. cs -uninstall takes back only the
 # keys that still hold these values, and cs -doctor reports them.
-CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
+CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
 # iTerm2 selects panes with Option+number, so there they never reach Claude
@@ -1345,7 +1346,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "d5e5847605ac946b19bf76fe12e29a327f719259b29450867590269ca2e10b0d  bin/cs"
+    "c3a2d2053fd3e43074eb1d01160295845cc7217ff269cb1725294739df7ba9cf  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "00356c5b1ffb397a535a8dd8067dd90f0c93ef31160408f0aefb2782d02e65b5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1376,10 +1377,11 @@ CS_PAYLOAD_SHA256=(
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
     "a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8  skills/finish/scripts/finish.sh"
-    "09daf172d79a503a4d02884aa002af2e5cba82010d476f4f7744e8d865c1e632  mods/cs/.claude-plugin/plugin.json"
+    "e3da987c1508d339363dae52cc5ef89d7df13e1e14206350f8b28776eda86b1f  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "cd3fd9d9df4bbc805c756c47b33b308f2f3806af69bd6126e22576cea5c1d543  mods/cs/hooks/register.tsx"
+    "9c1e27cd77ef1b84346be042f6aad072ab77a52e451be5c3955e35b8c4ab7fc7  mods/cs/hooks/register.tsx"
     "f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e  mods/cs/tips.json"
+    "db6b9b28413a20485d22f231c8aadd6ad6b4c299ba8a5cfec91e1f59272b2c77  mods/cs/types.d.ts"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "ff76dabaad83772255b22e29262b0b35fb5db2d3dc56d22d89656ad7363961ce  mods/cs-update/hooks/register.tsx"
