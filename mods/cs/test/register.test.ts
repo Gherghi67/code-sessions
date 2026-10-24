@@ -3318,16 +3318,22 @@ test('the band shares the prefix of bound chords and leaves unbound labels unkey
 
 test('a feed press refuses a session whose control files are tracked', async () => {
   enableFeed()
+  files['/work/.cs/local/feed'] = 'on\n'
   runResult = tracked
   await feedKey(await band()).props.onPress()
-  expect(files['/work/.cs/local/feed']).toBeUndefined()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
   expect(written).toEqual({})
   expect(runs.map(run => run.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
   expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
   expect(invalidated).toEqual(['ui.render'])
   runResult = VETTED
   await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  expect(feedKey(await band()).props.label).toBe('feed')
+  await feedKey(await band()).props.onPress()
   expect(files['/work/.cs/local/feed']).toBe('on\n')
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
 })
 
 test('a feed press survives clearing the conversation and loading the band again', async () => {

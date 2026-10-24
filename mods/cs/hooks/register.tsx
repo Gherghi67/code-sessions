@@ -585,7 +585,7 @@ export function register(on: On, options: PluginOptions) {
       featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
       countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
       rotating, armed, wrapping, waiting, gate, queued, mail,
-      feed: feeding ? { on: await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
+      feed: feeding ? { on: lastRefusal === undefined && await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
       rotate: armed ? () => pressClear($) : () => pressRotate($),
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
