@@ -427,11 +427,27 @@ teardown() {
 # is also appended to CS_TEST_SKIP_LOG as the test's name, a tab and the
 # reason require_tool gave (empty for any other skip), which is where the
 # gate's summary counts them.
+# How many tests the running suite will call, counted once: its `run_test`
+# lines whose test is a function the suite defines over several lines. A
+# one-line test body belongs to a throwaway suite written inside a string
+# (test_harness.sh, test_run_all.sh), and its run_test lines are not this
+# suite's. A suite that calls run_test from a loop under-counts, and the
+# counter then reads past its total rather than lying about a test's place.
+_cs_test_total() {
+    if [ -z "${_CS_TEST_TOTAL:-}" ]; then
+        _CS_TEST_TOTAL=$(awk '
+            FNR == NR { if (match($0, /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{ *$/)) { sub(/\(\).*/, ""); def[$0] = 1 }; next }
+            /^run_test / && ($2 in def) { c++ }
+            END { print c + 0 }' "$0" "$0" 2>/dev/null || echo 0)
+    fi
+    printf '%s' "$_CS_TEST_TOTAL"
+}
+
 run_test() {
     local test_name="$1" status=0
     TESTS_RUN=$((TESTS_RUN + 1))
     SKIP_REASON=""
-    echo "  $test_name..."
+    echo "  [$TESTS_RUN/$(_cs_test_total)] $test_name..."
     setup
     "$test_name" 2>&1 || status=$?
     if [ "$status" -eq 0 ]; then
