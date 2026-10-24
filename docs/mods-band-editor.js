@@ -298,6 +298,14 @@
   }
   // Not an edit (a selection): the present moves and no step is taken.
   function replace(h, doc) { return { past: h.past, present: clone(doc), future: h.future }; }
+  // A field's draft, settled before anything else reaches the history: a
+  // step when it changed the frames or the export, nothing when it was
+  // retyped back to what the present holds.
+  function commitDraft(h, draft) {
+    if (!draft) return h;
+    var same = function (d) { return JSON.stringify({ frames: d.frames, exportFrame: d.exportFrame }); };
+    return same(draft) === same(h.present) ? h : commit(h, draft);
+  }
 
   function undo(h) {
     if (h.past.length === 0) return h;
@@ -337,7 +345,7 @@
     return doc;
   }
 
-  var api = { history: history, commit: commit, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, refusal: refusal, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
+  var api = { history: history, commit: commit, commitDraft: commitDraft, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, refusal: refusal, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

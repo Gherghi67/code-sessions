@@ -99,6 +99,21 @@ test('commit takes one undo step for a field however many keystrokes drafted it'
   expect(next.future).toEqual([])
 })
 
+// A draft still open when another edit or a selection comes is settled
+// first: a step of its own when it changed the frames, else dropped.
+test('commitDraft takes a step for a draft that changed the frames, and none for one retyped to the original', () => {
+  const h = E.history(doc(sel([0])))
+  const typed = E.apply(h.present, { type: 'setProp', path: [0], name: 'text', value: 'DRAFTED' })
+  expect(E.commitDraft(h, typed)).toEqual({
+    past: [doc(sel([0]))],
+    present: edited(box({}, text('DRAFTED'), box({ flexDirection: 'column' }, text('b'), button('go')), text('c')), sel([0]), 'set text on Text'),
+    future: [],
+  })
+  const retyped = E.apply(typed, { type: 'setProp', path: [0], name: 'text', value: 'a' })
+  expect(E.commitDraft(h, retyped)).toEqual(E.history(doc(sel([0]))))
+  expect(E.commitDraft(h, null)).toEqual(E.history(doc(sel([0]))))
+})
+
 // Selecting is not an edit: it moves the present without a step to undo.
 test('replace swaps the present and keeps both stacks', () => {
   const h = E.commit(E.history(doc()), doc(sel([0])))

@@ -1152,9 +1152,12 @@ const bdGrids={};
 const samePath=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
 const bdFrame=id=>bdDocNow().frames.find(f=>f.id===id);
 const bdSelected=()=>{ const sel=bdDocNow().selection; return sel&&BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path); };
-// A selection moves the present; an edit commits a step.
-function bdDispatch(action){ bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
-function bdEdit(action){ bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdDraft=null; bdPanelStale=true; composeRender(); }
+// A selection moves the present; an edit commits a step. Either settles an
+// open draft first, so a field typed in but never left (a mousedown on the
+// strip keeps its focus) is a step of its own before what follows.
+function bdSettle(){ bdHist=BandEditor.commitDraft(bdHist,bdDraft); bdDraft=null; }
+function bdDispatch(action){ bdSettle(); bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
+function bdEdit(action){ bdSettle(); bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
 
 function cpField([name,kind,extra],v){
   const hint=typeof extra==="string"?` title="${esc(extra)}"`:"";
@@ -1283,7 +1286,7 @@ function bdInsert(type){
   const sel=bdDocNow().selection, at=BandEditor.insertPoint(bdFrame(sel.frame).tree,sel.path);
   bdEdit({type:"insert",parentPath:at.parentPath,index:at.index,node:BD_FRESH[type]()});
 }
-function bdTravel(by){ bdDraft=null; bdHist=BandEditor.jump(bdHist,by); bdPanelStale=true; composeRender(); }
+function bdTravel(by){ bdSettle(); bdHist=BandEditor.jump(bdHist,by); bdPanelStale=true; composeRender(); }
 // The designer's present document is kept under BD_KEY. The compose
 // panel's single tree, under OLD_KEY, becomes frame 0 once and is removed.
 // What storage hands back is read by BandEditor.readDoc; one it cannot read
@@ -1521,7 +1524,7 @@ function composeUI(){
   });
   $("bd-props").addEventListener("change",e=>{
     if(!e.target.dataset.prop||!bdDraft) return;
-    bdHist=BandEditor.commit(bdHist,bdDraft); bdDraft=null;
+    bdSettle();
     composeRender();
   });
 }
