@@ -605,7 +605,7 @@ chord bound after launch works at once (measured on 2.1.292). An encrypted
 session launched before `keybindings.json` existed gets the file at its next
 launch.
 
-The feed key answers `strip:jump3`, with Ctrl+X 3 as its intended binding.
+The installer binds Ctrl+X 3 to `strip:jump3` for the feed key.
 It draws after wrap when cs-feed advertises `/feed`, while the lead session
 is idle, with no survey or armed handoff. cs-feed must advertise that command
 only while globally enabled. The band reads the command list without running
@@ -620,10 +620,8 @@ previous value and toasts once, unless a later change already owns the value.
 `/cs feed on|off` reports a change without running `/feed` again, so cs-feed
 can report a directly typed `/feed clean|raw` without a command loop.
 
-The feed integration still needs its manifest-listed state contract and the
-installer's third binding. The current installer binds only the first two
-band keys. See the [feed design and alternatives](superpowers/specs/2026-10-24-band-feed-toggle-design.md)
-for the required files and the engine validation blocker.
+The [feed design and alternatives](superpowers/specs/2026-10-24-band-feed-toggle-design.md)
+compares session activation options and layouts for more toggles.
 
 Ctrl+X 1 runs `/rotate`, as if typed: the `rotate` skill draws the purpose from
 the conversation. Before it runs, the press writes the conversation id to
