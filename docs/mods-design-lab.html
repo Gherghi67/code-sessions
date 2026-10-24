@@ -159,6 +159,7 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .frame .strip{position:relative}
 .frame .term{cursor:default;user-select:none}
 .frame .sel{position:absolute;outline:1px solid var(--accent);pointer-events:none}
+.frame .drop{position:absolute;background:var(--accent);pointer-events:none}
 .frame .sel .tag{position:absolute;bottom:100%;left:-1px;margin-bottom:2px;font:10.5px/1.4 "IBM Plex Sans",sans-serif;background:var(--accent);color:#fff;padding:0 5px;white-space:nowrap}
 .frame .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
 /* ---- band variants ---- */
@@ -193,7 +194,7 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
 <h2 id="compose">Band designer <span class="src">Box · Text · Button</span></h2>
-<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. The JSX underneath is what you paste into the mod.</p>
+<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it. The JSX underneath is what you paste into the mod.</p>
 <div class="designer">
   <div class="canvas" id="bd-canvas"></div>
   <aside class="props" id="bd-props"></aside>
@@ -1233,8 +1234,10 @@ function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); return 
 
 // A click selects the node that drew the cell; a second click on the node
 // already selected climbs to its parent. The second click of a double-click
-// is left alone.
+// is left alone, and so is the click that ends a drag.
+let bdDragged=false;
 function bdClick(e){
+  if(bdDragged){ bdDragged=false; return; }
   if(e.detail>1) return;
   const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
   if(!cell||!frame){ if(bdDocNow().selection) bdDispatch({type:"deselect"}); return; }
@@ -1243,21 +1246,99 @@ function bdClick(e){
   const again=sel&&sel.frame===id&&samePath(sel.path,path)&&path.length>0;
   bdDispatch({type:"select",frame:id,path:again?path.slice(0,-1):path});
 }
+
+// ---- drag to reorder ----
+// The node the pointer took hold of, and where it would land: the deepest
+// Box (or, for a Text, Button) under the pointer that may hold it, at the gap
+// the pointer is nearest along that parent's direction.
+let bdDrag=null;
+const bdWithin=(path,top)=>top.every((v,i)=>path[i]===v)&&path.length>=top.length;
+function bdCellAt(x,y,frame){
+  const el=document.elementFromPoint(x,y)?.closest("[data-r]");
+  return el&&el.closest("[data-frame]")?.dataset.frame===frame?{r:+el.dataset.r,c:+el.dataset.c}:null;
+}
+function bdDropTarget(frame,from,cell){
+  const tree=bdFrame(frame).tree, g=bdGrids[frame];
+  let p=BandEditor.pathOfCell(g,cell.r,cell.c);
+  while(p&&(BandEditor.nodeAt(tree,p).type==="Text"||BandEditor.canDrop(tree,from,p)!==null)) p=p.length?p.slice(0,-1):null;
+  if(!p) return null;
+  const dir=String(BandEditor.nodeAt(tree,p).props.flexDirection||"row");
+  const column=/^column/.test(dir), reverse=/-reverse$/.test(dir), at=column?cell.r:cell.c;
+  const spans=BandEditor.nodeAt(tree,p).kids.map((k,i)=>BandEditor.spanOf(g,p.concat([i])));
+  const before=spans.filter(s=>{ if(!s) return false; const mid=column?(s.top+s.bottom)/2:(s.left+s.right)/2; return reverse?mid>at:mid<at; });
+  return {parentPath:p,index:before.length,column,reverse,spans,box:BandEditor.spanOf(g,p)};
+}
+// The 2px bar at the target's gap: before the child at the index, else
+// after the one before it, else at the start of an empty parent.
+function bdIndicator(strip,t){
+  strip.querySelector(".drop")?.remove();
+  if(!t||!t.box) return;
+  const rect=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
+  const base=strip.getBoundingClientRect(), next=t.spans[t.index], prev=t.spans[t.index-1];
+  let style;
+  if(t.column){
+    const y=next?rect(next.top,t.box.left).top:prev?rect(prev.bottom,t.box.left).bottom:rect(t.box.top,t.box.left).top;
+    const l=rect(t.box.top,t.box.left), r=rect(t.box.top,t.box.right);
+    style=`left:${l.left-base.left}px;width:${r.right-l.left}px;top:${y-base.top-1}px;height:2px`;
+  } else {
+    const lead=s=>t.reverse?rect(s.top,s.right).right:rect(s.top,s.left).left, trail=s=>t.reverse?rect(s.top,s.left).left:rect(s.top,s.right).right;
+    const x=next?lead(next):prev?trail(prev):rect(t.box.top,t.box.left).left;
+    const top=rect(t.box.top,t.box.left), bottom=rect(t.box.bottom,t.box.left);
+    style=`left:${x-base.left-1}px;width:2px;top:${top.top-base.top}px;height:${bottom.bottom-top.top}px`;
+  }
+  strip.insertAdjacentHTML("beforeend",`<div class="drop" style="${style}"></div>`);
+}
+function bdDragStart(e){
+  const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]"), sel=bdDocNow().selection;
+  if(e.button!==0||!cell||!frame||!sel||sel.frame!==frame.dataset.frame||!sel.path.length) return;
+  const path=BandEditor.pathOfCell(bdGrids[sel.frame],+cell.dataset.r,+cell.dataset.c);
+  if(!bdWithin(path,sel.path)) return;
+  e.preventDefault();
+  bdDrag={frame:sel.frame,from:sel.path,start:cell,strip:frame.querySelector(".strip"),target:null,moved:false};
+}
+function bdDragMove(e){
+  if(!bdDrag) return;
+  const cell=bdCellAt(e.clientX,e.clientY,bdDrag.frame);
+  if(cell&&(cell.r!==+bdDrag.start.dataset.r||cell.c!==+bdDrag.start.dataset.c)) bdDrag.moved=true;
+  bdDrag.target=bdDrag.moved&&cell?bdDropTarget(bdDrag.frame,bdDrag.from,cell):null;
+  bdIndicator(bdDrag.strip,bdDrag.target);
+}
+function bdDragEnd(){
+  if(!bdDrag) return;
+  const {from,target,moved}=bdDrag; bdDrag=null; bdDragged=moved;
+  if(!target) return composeRender();
+  const i=from[from.length-1], here=samePath(target.parentPath,from.slice(0,-1));
+  if(here&&(target.index===i||target.index===i+1)) return composeRender();
+  bdEdit({type:"move",from,to:{parentPath:target.parentPath,index:target.index}});
+}
+
 // Keys that act on the selection while the designer is on screen and no
 // field has focus; the page's own keys see everything else.
 function bdKeys(e){
-  if(!$("p-compose").classList.contains("on")||!bdDocNow().selection) return;
+  const doc=bdDocNow(), sel=doc.selection;
+  if(!$("p-compose").classList.contains("on")||!sel) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")) return;
-  const sel=bdDocNow().selection, node=bdSelected();
+  const node=bdSelected(), parent=sel.path.length?BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path.slice(0,-1)):null;
+  const i=sel.path[sel.path.length-1];
+  const nudge=d=>parent&&i+d>=0&&i+d<parent.kids.length?{edit:{type:"move",from:sel.path,to:{parentPath:sel.path.slice(0,-1),index:d<0?i-1:i+2}}}:{};
   let act=null;
-  if(e.key==="Escape") act={type:"deselect"};
-  else if(e.key==="Enter"&&e.shiftKey&&sel.path.length) act={type:"select",frame:sel.frame,path:sel.path.slice(0,-1)};
-  else if(e.key==="Enter"&&!e.shiftKey&&node.kids.length) act={type:"select",frame:sel.frame,path:sel.path.concat([0])};
+  if(e.key==="Escape") act={select:{type:"deselect"}};
+  else if(e.key==="Enter"&&e.shiftKey&&sel.path.length) act={select:{type:"select",frame:sel.frame,path:sel.path.slice(0,-1)}};
+  else if(e.key==="Enter"&&!e.shiftKey&&node.kids.length) act={select:{type:"select",frame:sel.frame,path:sel.path.concat([0])}};
+  else if(e.key==="ArrowLeft"||e.key==="ArrowUp") act=nudge(-1);
+  else if(e.key==="ArrowRight"||e.key==="ArrowDown") act=nudge(1);
+  else if((e.key==="Delete"||e.key==="Backspace")&&sel.path.length) act={edit:{type:"remove",path:sel.path}};
+  else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="d"&&sel.path.length) act={edit:{type:"duplicateNode",path:sel.path}};
   if(!act) return;
-  e.preventDefault(); e.stopImmediatePropagation(); bdDispatch(act);
+  e.preventDefault(); e.stopImmediatePropagation();
+  if(act.select) bdDispatch(act.select);
+  if(act.edit) bdEdit(act.edit);
 }
 function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
+  $("bd-canvas").addEventListener("mousedown",bdDragStart);
+  document.addEventListener("mousemove",bdDragMove);
+  document.addEventListener("mouseup",bdDragEnd);
   document.addEventListener("keydown",bdKeys,true);
   // Every keystroke redraws the strip from a draft; the field's change
   // (blur or Enter for text, at once for a select or a checkbox) commits it.

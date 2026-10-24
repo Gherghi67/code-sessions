@@ -10,6 +10,7 @@
   //         exportFrame: the frame the JSX pane prints }.
 
   var show = function (path) { return JSON.stringify(path); };
+  var clone = function (value) { return JSON.parse(JSON.stringify(value)); };
 
   function nodeAt(tree, path) {
     var node = tree;
@@ -83,15 +84,55 @@
   }
 
   // A copy of `doc` with the selected frame's tree changed. `change(tree)`
-  // returns the new tree and `edit`, the words the history lists it by.
+  // returns the new tree, `edit` (the words the history lists it by) and,
+  // when the edit moves the selection, `select`, the path now selected.
   function editTree(doc, verb, change) {
     if (!doc.selection) throw new Error(verb + " needs a selected frame");
     var id = doc.selection.frame;
     var out = change(frameOf(doc, id).tree);
     return Object.assign({}, doc, {
       frames: doc.frames.map(function (f) { return f.id === id ? Object.assign({}, f, { tree: out.tree }) : f; }),
+      selection: out.select ? { frame: id, path: out.select } : doc.selection,
       edit: out.edit,
     });
+  }
+
+  // Why the engine would refuse a node of `type` under `parent`, or null: a
+  // Text holds only words, a Button only Text, which draws in its label's place.
+  function refusal(type, parent) {
+    if (parent.type === "Text") return "a " + type + " cannot go inside a Text";
+    if (parent.type === "Button" && type !== "Text") return "a " + type + " cannot go inside a Button";
+    return null;
+  }
+
+  // Why the node at `from` cannot be moved under `parentPath`, or null when it can.
+  function canDrop(tree, from, parentPath) {
+    if (from.length === 0) return "the root cannot move";
+    if (within(parentPath, from)) return "cannot move " + show(from) + " into itself";
+    return refusal(nodeAt(tree, from).type, nodeAt(tree, parentPath));
+  }
+
+  function insertAt(tree, parentPath, index, node) {
+    return updateAt(tree, parentPath, function (p) {
+      var kids = p.kids.slice();
+      kids.splice(index, 0, node);
+      return Object.assign({}, p, { kids: kids });
+    });
+  }
+  function removeAt(tree, path) {
+    var at = path[path.length - 1];
+    return updateAt(tree, path.slice(0, -1), function (p) {
+      return Object.assign({}, p, { kids: p.kids.filter(function (k, i) { return i !== at; }) });
+    });
+  }
+  // Where `path` points once the node at `removed` is gone: a later sibling
+  // of the removed node, or anything inside one, moves up by one.
+  function afterRemoval(path, removed) {
+    var depth = removed.length - 1;
+    if (path.length <= depth || !within(path, removed.slice(0, -1)) || path[depth] <= removed[depth]) return path;
+    var out = path.slice();
+    out[depth] -= 1;
+    return out;
   }
 
   var ACTIONS = {
@@ -115,6 +156,31 @@
         };
       });
     },
+    // `to.index` is a gap among the parent's children before the move.
+    move: function (doc, a) {
+      return editTree(doc, "move", function (tree) {
+        var why = canDrop(tree, a.from, a.to.parentPath);
+        if (why) throw new Error(why);
+        var node = nodeAt(tree, a.from);
+        var parentPath = afterRemoval(a.to.parentPath, a.from);
+        var sameParent = show(a.to.parentPath) === show(a.from.slice(0, -1));
+        var index = sameParent && a.to.index > a.from[a.from.length - 1] ? a.to.index - 1 : a.to.index;
+        return { tree: insertAt(removeAt(tree, a.from), parentPath, index, node), edit: "move " + node.type, select: parentPath.concat([index]) };
+      });
+    },
+    remove: function (doc, a) {
+      return editTree(doc, "remove", function (tree) {
+        if (a.path.length === 0) throw new Error("the root cannot be removed");
+        return { tree: removeAt(tree, a.path), edit: "remove " + nodeAt(tree, a.path).type, select: a.path.slice(0, -1) };
+      });
+    },
+    duplicateNode: function (doc, a) {
+      return editTree(doc, "duplicateNode", function (tree) {
+        if (a.path.length === 0) throw new Error("the root cannot be duplicated");
+        var node = nodeAt(tree, a.path), at = a.path[a.path.length - 1];
+        return { tree: insertAt(tree, a.path.slice(0, -1), at + 1, clone(node)), edit: "duplicate " + node.type, select: a.path.slice(0, -1).concat([at + 1]) };
+      });
+    },
   };
 
   function apply(doc, action) {
@@ -126,7 +192,6 @@
   // History = { past: Doc[], present: Doc, future: Doc[] }. Each Doc is a
   // structural clone, so no later edit can reach into a step.
   var HISTORY_CAP = 200;
-  var clone = function (doc) { return JSON.parse(JSON.stringify(doc)); };
   function history(doc) { return { past: [], present: clone(doc), future: [] }; }
   // An edit: the present becomes a step back, and the steps ahead are gone.
   function commit(h, doc) {
@@ -135,7 +200,7 @@
   // Not an edit (a selection): the present moves and no step is taken.
   function replace(h, doc) { return { past: h.past, present: clone(doc), future: h.future }; }
 
-  var api = { history: history, commit: commit, replace: replace, apply: apply, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
+  var api = { history: history, commit: commit, replace: replace, apply: apply, canDrop: canDrop, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

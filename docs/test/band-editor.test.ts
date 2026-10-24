@@ -114,3 +114,45 @@ test('history keeps the last 200 steps', () => {
   expect(h.past[199].edit).toBe('step 200')
   expect(h.present.edit).toBe('step 201')
 })
+
+// `to.index` counts the gaps between the parent's children as they stand
+// before the move: 0 is before the first, kids.length after the last.
+const col = (...kids: any[]) => box({ flexDirection: 'column' }, ...kids)
+test('move puts a node at a gap among its siblings or into another parent, and the selection follows it', () => {
+  expect(E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [], index: 3 } }))
+    .toEqual(edited(box({}, col(text('b'), button('go')), text('c'), text('a')), sel([2]), 'move Text'))
+  expect(E.apply(doc(sel([2])), { type: 'move', from: [2], to: { parentPath: [1], index: 1 } }))
+    .toEqual(edited(box({}, text('a'), col(text('b'), text('c'), button('go'))), sel([1, 1]), 'move Text'))
+  expect(E.apply(doc(sel([1, 1])), { type: 'move', from: [1, 1], to: { parentPath: [], index: 0 } }))
+    .toEqual(edited(box({}, button('go'), text('a'), col(text('b')), text('c')), sel([0]), 'move Button'))
+  expect(E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [1], index: 2 } }))
+    .toEqual(edited(box({}, col(text('b'), button('go'), text('a')), text('c')), sel([0, 2]), 'move Text'))
+})
+
+test('a Text may go inside a Button, which then draws it in its label\'s place', () => {
+  expect(E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [1, 1], index: 0 } }))
+    .toEqual(edited(box({}, col(text('b'), { ...button('go'), kids: [text('a')] }), text('c')), sel([0, 1, 0]), 'move Text'))
+})
+
+test('a move the engine would refuse, or that would lose the node, throws the reason', () => {
+  expect(() => E.apply(doc(sel([1])), { type: 'move', from: [1], to: { parentPath: [1], index: 0 } })).toThrow('cannot move [1] into itself')
+  expect(() => E.apply(doc(sel([1])), { type: 'move', from: [1], to: { parentPath: [0], index: 0 } })).toThrow('a Box cannot go inside a Text')
+  expect(() => E.apply(doc(sel([1, 1])), { type: 'move', from: [1, 1], to: { parentPath: [2], index: 0 } })).toThrow('a Button cannot go inside a Text')
+  const twin = { frames: [{ id: 'f1', name: 'Band', tree: box({}, box({}), button('go')) }], selection: sel([0]), exportFrame: 'f1' }
+  expect(() => E.apply(twin, { type: 'move', from: [0], to: { parentPath: [1], index: 0 } })).toThrow('a Box cannot go inside a Button')
+  expect(() => E.apply(doc(sel([])), { type: 'move', from: [], to: { parentPath: [], index: 0 } })).toThrow('the root cannot move')
+  expect(E.canDrop(tree(), [1, 1], [0])).toBe('a Button cannot go inside a Text')
+  expect(E.canDrop(tree(), [2], [1])).toBeNull()
+})
+
+test('remove takes the node out and selects its parent; the root stays', () => {
+  expect(E.apply(doc(sel([1, 0])), { type: 'remove', path: [1, 0] }))
+    .toEqual(edited(box({}, text('a'), col(button('go')), text('c')), sel([1]), 'remove Text'))
+  expect(() => E.apply(doc(sel([])), { type: 'remove', path: [] })).toThrow('the root cannot be removed')
+})
+
+test('duplicateNode puts a copy right after the node and selects the copy', () => {
+  expect(E.apply(doc(sel([1])), { type: 'duplicateNode', path: [1] }))
+    .toEqual(edited(box({}, text('a'), col(text('b'), button('go')), col(text('b'), button('go')), text('c')), sel([2]), 'duplicate Box'))
+  expect(() => E.apply(doc(sel([])), { type: 'duplicateNode', path: [] })).toThrow('the root cannot be duplicated')
+})
