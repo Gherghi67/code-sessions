@@ -2,6 +2,7 @@
 // ABOUTME: Event order comes from the design's measured append and turn-start sequence.
 import { expect, mock, test } from 'claude-code/testing'
 import { newLoad, observePrompt, observeTurnStart, observeResponse, openTurn, replaceResponseText } from '../hooks/session'
+import { DEFAULT_VIEW, parseStoredView } from '../hooks/settings'
 import { buildTranscript } from '../hooks/transcript'
 
 const STATUS = { command: 'feed', args: 'status', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as const
@@ -78,6 +79,38 @@ test('two renders share an on-read vet and a refusal keeps both on the engine wi
   }
   expect(calls).toEqual([{ argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 }])
   expect(logs).toEqual(['the feed is off in this session: not a trusted session'])
+})
+
+test('a torn feed-view leaves the feed on with the default view, logs once, and the next write rewrites it', async ($, on) => {
+  const files = new Map([['/session/.cs/local/feed', 'on\n'], ['/session/.cs/local/feed-view', '{"group":true']])
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => { const value = files.get(e.path); return value === undefined ? { deny: 'ENOENT: no such file or directory' } : { value } })
+  on('fs.exists', () => ({ value: true }))
+  on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  mock.clock(on)
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: `hint:${e.props.hint}` }))
+  const props = { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } as const
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'first', props })
+  expect((await row.find({ type: 'Text' }))?.text).toBe('hint:')
+  const torn = ['could not use /session/.cs/local/feed-view: feed-view is torn: missing closing newline; the feed draws its default view until /feed writes the file again']
+  expect(logs).toEqual(torn)
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(await $.command.run({ ...STATUS, args: 'clean' })).toEqual({ text: "Chat view: clean. your messages, Claude's replies, and one line per turn for the work." })
+  expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":true,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')
+  expect(parseStoredView(files.get('/session/.cs/local/feed-view'))).toEqual(DEFAULT_VIEW)
+  const later = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'later', props })
+  expect((await later.find({ type: 'Text' }))?.text).toBe('hint:')
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(logs).toEqual(torn)
+  await row.unmount()
+  await later.unmount()
 })
 
 test('feed status reads a hand edit and vets an outside flip on only once', async ($, on) => {

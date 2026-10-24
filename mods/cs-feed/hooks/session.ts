@@ -3,8 +3,8 @@
 import type { Args, EngineInterface } from 'claude-code'
 import { atom, read } from 'claude-code'
 
-import type { Session } from './settings'
-import { CS_LOCAL, FEED_FILE, OFF_LINE, ON_LINE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView, viewText } from './settings'
+import type { Session, View } from './settings'
+import { CS_LOCAL, DEFAULT_VIEW, FEED_FILE, OFF_LINE, ON_LINE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView, viewText } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
 import { buildTranscript, callId, EMPTY } from './transcript'
 import { parseEnvelopes, senderOf } from './words'
@@ -237,6 +237,14 @@ export type Load = {
    */
   feed?: Session
   record?: Promise<Session>
+  /**
+   * VIEW_FILE could not be used at the load's read (refused by
+   * parseStoredView, or a read error other than ENOENT): the mirror holds
+   * DEFAULT_VIEW, and the next successful writeFeed writes the view even when
+   * it equals the mirror's, so `/feed clean` repairs the file. Cleared by that
+   * write.
+   */
+  viewUnusable?: true
   /** Writing commands wait before deriving their next view; readers keep their independent tickets. */
   writes?: Promise<void>
   /**
@@ -447,10 +455,14 @@ export function active(load: Load): boolean {
  *   load.vet = fileOn ? await vetOnRead(load, $, cwd) : undefined                 // off or absent: no cs process
  *   on     = fileOn && load.vet === 'passed'
  *   view   = parseStoredView(await $.fs.read(`${cwd}/${VIEW_FILE}`) or undefined)
+ *            or, refused, DEFAULT_VIEW with one log line (storedView)
  *
- * Any read error other than ENOENT is logged ($.ui.log, with the error) and
- * reads as off, as the band's readFeed does (it catches, logs a new complaint
- * once and returns false), so both sides then show off, never on.
+ * A FEED_FILE read error other than ENOENT is logged ($.ui.log, with the
+ * error) and reads as off, as the band's readFeed does (it catches, logs a new
+ * complaint once and returns false), so both sides then show off, never on.
+ * VIEW_FILE never decides on or off: a torn, malformed or unreadable view is
+ * logged once (the load reads it once), the mirror takes DEFAULT_VIEW, and the
+ * next write rewrites the file (Load.viewUnusable).
  *
  * Vetted once per load when the file says on (§20.22: the on-read asks
  * the same cs -vet-session as writeFeed). A
@@ -485,12 +497,27 @@ export function feedRecord(load: Load, $: $): Promise<Session> {
   return load.record ??= (async () => {
     const cwd = await $.session.cwd()
     const feed = await readLocal($, `${cwd}/${FEED_FILE}`)
-    const stored = await readLocal($, `${cwd}/${VIEW_FILE}`)
-    const view = parseStoredView(stored.text)
+    const view = await storedView(load, $, `${cwd}/${VIEW_FILE}`)
     load.vet = isOn(feed.text) ? await vetOnRead(load, $, cwd) : undefined
-    load.feed = { on: !feed.failed && !stored.failed && isOn(feed.text) && load.vet === 'passed', view }
+    load.feed = { on: !feed.failed && isOn(feed.text) && load.vet === 'passed', view }
     return load.feed
   })()
+}
+
+/** VIEW_FILE's view, or DEFAULT_VIEW when it cannot be used (parseStoredView's refusal is logged here, a read error by readLocal). */
+async function storedView(load: Load, $: $, path: string): Promise<View> {
+  const stored = await readLocal($, path)
+  if (stored.failed) {
+    load.viewUnusable = true
+    return DEFAULT_VIEW
+  }
+  try {
+    return parseStoredView(stored.text)
+  } catch (error) {
+    load.viewUnusable = true
+    await $.ui.log(`could not use ${path}: ${error instanceof Error ? error.message : String(error)}; the feed draws its default view until /feed writes the file again`)
+    return DEFAULT_VIEW
+  }
 }
 
 async function readLocal($: $, path: string): Promise<{ text?: string; failed: boolean }> {
@@ -605,7 +632,7 @@ export type WriteOutcome = 'written' | 'no-session' | { readonly refused: string
  *   if (!(await $.fs.exists(`${cwd}/${CS_LOCAL}`))) return 'no-session'   // never create .cs/local; no vet spawned
  *   const refusal = await vetRefusal($, cwd)
  *   if (refusal !== undefined) return { refused: refusal }                   // nothing written, the mirror and load.vet untouched
- *   if (view changed) await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))   // view first: a reader never sees on with the old view
+ *   if (view changed or load.viewUnusable) await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))   // view first: a reader never sees on with the old view
  *   load.feed = { on: load.feed.on, view: next.view }
  *   await $.fs.write(`${cwd}/${FEED_FILE}`, next.on ? ON_LINE : OFF_LINE)
  *   await applyFeed(load, $, 'write')                                       // read back and commit this write's pass with its ticket; no second vet
@@ -625,7 +652,10 @@ export async function writeFeed(load: Load, $: $, next: Session): Promise<WriteO
   if (refused !== undefined) return { refused }
   const current = load.feed ?? await feedRecord(load, $)
   const viewChanged = viewText(current.view) !== viewText(next.view)
-  if (viewChanged) await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))
+  if (viewChanged || load.viewUnusable) {
+    await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))
+    load.viewUnusable = undefined
+  }
   load.feed = { on: current.on, view: next.view }
   await $.fs.write(`${cwd}/${FEED_FILE}`, next.on ? ON_LINE : OFF_LINE)
   await applyFeed(load, $, 'write')
