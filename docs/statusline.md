@@ -209,13 +209,13 @@ The render then pulls that color 30% of the way toward the background, so text r
 
 It picks the band's width W the same way:
 
-1. `CS_STATUSLINE_COLS`, a whole number from 1 to 9999. Tests and wrappers set it.
+1. `CS_STATUSLINE_COLS`, a whole number from 1 to 9999, taken as the final width: a caller that sets it (a test, a wrapper that measured the frame itself) already knows the cells it may use, so no frame comes off it.
 2. `.columns` in the stdin JSON.
 3. Inside a tmux this process is really in (the same verdict the pane id uses), the pane's width, `#{pane_width}` of `TMUX_PANE`. It rides on the theme pass's one `tmux display-message` query and its five-second cache.
 4. The terminal's width from `stty size </dev/tty`, kept five minutes under the parent pid like the `tty` answer, so a resize shows when that entry expires.
 5. 120.
 
-The band's width is that less the frame. Claude Code 2.1.310 draws the status line inside its prompt frame, two columns in on each side, and truncates past it with `…`. `CS_STATUSLINE_FRAME` (a whole number, default 4) sets the frame; with `statusLine.padding` set in Claude Code's settings, add twice the padding. The band is never narrower than 20 cells.
+A measured width (steps 2 to 5) loses the frame. Claude Code 2.1.310 draws the status line inside its prompt frame, two columns in on each side, and truncates past it with `…`. `CS_STATUSLINE_FRAME` (a whole number, default 4) sets the frame; with `statusLine.padding` set in Claude Code's settings, add twice the padding. The band is never narrower than 20 cells, `CS_STATUSLINE_COLS` included.
 
 A hot reading is a solid island on the band rather than colored text on it. An item in amber ink (a reading past its warn threshold, the notes and mail counts) takes the `amberfill` fill and `amberink` ink, bold, with one fill space on each side. A group at crit is one red island holding every item of the group and the joiners between them, in `critink` bold on `crit`, again with a fill space on each side. Islands have no gradient under them, and the fade resumes after an island at the color its cell position gives.
 
@@ -311,12 +311,12 @@ export CS_STATUSLINE_LAYOUT="band"
 # triplet, session (the session's own color, the default) or none (neutral)
 export CS_STATUSLINE_BAND="periwinkle"
 
-# The band's width in columns before the frame (default: stdin .columns, the
-# tmux pane, the terminal, else 120)
+# The band's final width in cells, no frame taken off (default: stdin
+# .columns, the tmux pane, the terminal, else 120, each less the frame)
 export CS_STATUSLINE_COLS=160
 
-# Columns Claude Code's prompt frame takes from the band (default 4; add
-# 2 x statusLine.padding when you set it)
+# Columns Claude Code's prompt frame takes from a measured width (default 4;
+# add 2 x statusLine.padding when you set it)
 export CS_STATUSLINE_FRAME=4
 
 # Force the Powerline rounded caps (U+E0B6/U+E0B4) on (1) or off (0),

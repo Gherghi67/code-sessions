@@ -2233,19 +2233,20 @@ _sl_tty_cols() {
     _cache_write stty "$_PARENT" "$_TTY_COLS"
 }
 
-# The band's width in cells, in _BAND_W: CS_STATUSLINE_COLS, else stdin's
-# .columns, else the pane's width inside a tmux this process is really in,
-# else the terminal's, else 120; less the frame Claude Code draws around the
-# status line (CS_STATUSLINE_FRAME, default 4: two columns each side, more
-# with statusLine.padding), and never under 20.
+# The band's width in cells, in _BAND_W, never under 20: CS_STATUSLINE_COLS
+# as given, since a caller that sets it already knows the cells it may use;
+# else a measured width, stdin's .columns, the pane's width inside a tmux this
+# process is really in, the terminal's, or 120, less the frame Claude Code
+# draws around the status line (CS_STATUSLINE_FRAME, default 4: two columns
+# each side, more with statusLine.padding).
 _band_width() {
     local cols=""
     if _is_cols "${CS_STATUSLINE_COLS:-}"; then
-        cols="$CS_STATUSLINE_COLS"
-    elif _is_cols "${SL_COLUMNS:-}"; then
-        cols="$SL_COLUMNS"
+        _BAND_W="$CS_STATUSLINE_COLS"
     else
-        if [ -n "${TMUX:-}" ] && [ -z "${SL_ENV_FOREIGN:-}" ]; then
+        if _is_cols "${SL_COLUMNS:-}"; then
+            cols="$SL_COLUMNS"
+        elif [ -n "${TMUX:-}" ] && [ -z "${SL_ENV_FOREIGN:-}" ]; then
             _sl_tmux_client
             _is_cols "$_TMUX_CLIENT_WIDTH" && cols="$_TMUX_CLIENT_WIDTH"
         fi
@@ -2253,9 +2254,9 @@ _band_width() {
             _sl_tty_cols
             cols="${_TTY_COLS:-120}"
         fi
+        _num_or "${CS_STATUSLINE_FRAME:-}" 4
+        _BAND_W=$(( 10#$cols - 10#$_NUM ))
     fi
-    _num_or "${CS_STATUSLINE_FRAME:-}" 4
-    _BAND_W=$(( 10#$cols - 10#$_NUM ))
     [ "$_BAND_W" -ge 20 ] || _BAND_W=20
 }
 
@@ -2277,6 +2278,8 @@ _band_bg() {
 SESSION_PALETTE="red blue green yellow purple orange pink cyan"
 _band_from() {
     local want="${CS_STATUSLINE_BAND:-session}"
+    # One word only: the list match below would take "red blue" as a name.
+    case "$want" in *[[:space:]]*) want=session ;; esac
     case " $SESSION_PALETTE brand periwinkle " in
         *" $want "*) _sgr 48 "$want"; _parse_rgb_triplet "$_RGB"; return 0 ;;
     esac

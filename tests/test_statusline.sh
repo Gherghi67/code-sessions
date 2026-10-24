@@ -4838,9 +4838,9 @@ run_test test_a_warm_render_runs_no_program_but_jq
 # --- band layout -------------------------------------------------------------
 
 # The band tests' common ground: the docs fixture on a dark terminal of a known
-# background, truecolor, 80 columns and no prompt frame.
+# background, truecolor, 80 cells wide.
 band_env() {
-    export CS_STATUSLINE_LAYOUT=band CS_STATUSLINE_COLS=80 CS_STATUSLINE_FRAME=0 \
+    export CS_STATUSLINE_LAYOUT=band CS_STATUSLINE_COLS=80 \
         CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40" COLORTERM=truecolor
 }
 
@@ -4883,16 +4883,25 @@ test_band_width_holds_under_the_c_locale() {
     assert_eq 80 "$(band_cells "$out")" "the C locale still yields 80 cells" || return 1
 }
 
-test_band_frame_is_subtracted_from_the_width() {
+# The frame comes off a measured width; CS_STATUSLINE_COLS is already the
+# width the caller may use, so none comes off it.
+test_band_frame_is_subtracted_from_a_measured_width() {
     band_env
-    unset CS_STATUSLINE_FRAME
-    local out
-    out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq 76 "$(band_cells "$out")" "the default frame takes 4 columns" || return 1
-    out=$(CS_STATUSLINE_FRAME=10 run_sl "$FIXTURE_DOCS")
-    assert_eq 70 "$(band_cells "$out")" "a padded frame takes what it names" || return 1
-    out=$(CS_STATUSLINE_FRAME=wide run_sl "$FIXTURE_DOCS")
-    assert_eq 76 "$(band_cells "$out")" "a frame that is not a number is the default" || return 1
+    unset CS_STATUSLINE_COLS
+    local json out
+    json=$(jq -c '. + {columns: 100}' <<< "$FIXTURE_DOCS")
+    out=$(run_sl "$json")
+    assert_eq 96 "$(band_cells "$out")" "the default frame takes 4 columns" || return 1
+    out=$(CS_STATUSLINE_FRAME=10 run_sl "$json")
+    assert_eq 90 "$(band_cells "$out")" "a padded frame takes what it names" || return 1
+    out=$(CS_STATUSLINE_FRAME=0 run_sl "$json")
+    assert_eq 100 "$(band_cells "$out")" "no frame takes nothing" || return 1
+    out=$(CS_STATUSLINE_FRAME=wide run_sl "$json")
+    assert_eq 96 "$(band_cells "$out")" "a frame that is not a number is the default" || return 1
+    out=$(CS_STATUSLINE_COLS=120 run_sl "$json")
+    assert_eq 120 "$(band_cells "$out")" "the override is the final width, the frame untouched" || return 1
+    out=$(CS_STATUSLINE_COLS=120 CS_STATUSLINE_FRAME=10 run_sl "$json")
+    assert_eq 120 "$(band_cells "$out")" "a named frame leaves the override alone too" || return 1
 }
 
 test_band_width_floors_at_twenty() {
@@ -4900,9 +4909,10 @@ test_band_width_floors_at_twenty() {
     export CS_STATUSLINE_SEGMENTS=logo
     local out
     out=$(CS_STATUSLINE_COLS=10 run_sl "$FIXTURE_DOCS")
-    assert_eq 20 "$(band_cells "$out")" "ten columns floor at twenty" || return 1
-    out=$(CS_STATUSLINE_COLS=22 CS_STATUSLINE_FRAME=4 run_sl "$FIXTURE_DOCS")
-    assert_eq 20 "$(band_cells "$out")" "a frame that drops below twenty floors there" || return 1
+    assert_eq 20 "$(band_cells "$out")" "a ten-column override floors at twenty" || return 1
+    unset CS_STATUSLINE_COLS
+    out=$(run_sl "$(jq -c '. + {columns: 22}' <<< "$FIXTURE_DOCS")")
+    assert_eq 20 "$(band_cells "$out")" "a frame that drops a measured width below twenty floors there" || return 1
 }
 
 test_band_columns_from_stdin_rank_below_the_override() {
@@ -4911,11 +4921,11 @@ test_band_columns_from_stdin_rank_below_the_override() {
     local json out
     json=$(jq -c '. + {columns: 100}' <<< "$FIXTURE_DOCS")
     out=$(run_sl "$json")
-    assert_eq 100 "$(band_cells "$out")" ".columns sets the width" || return 1
+    assert_eq 96 "$(band_cells "$out")" ".columns sets the width, less the frame" || return 1
     out=$(CS_STATUSLINE_COLS=80 run_sl "$json")
     assert_eq 80 "$(band_cells "$out")" "CS_STATUSLINE_COLS outranks .columns" || return 1
     out=$(CS_STATUSLINE_COLS=abc run_sl "$json")
-    assert_eq 100 "$(band_cells "$out")" "an override that is not a number is ignored" || return 1
+    assert_eq 96 "$(band_cells "$out")" "an override that is not a number is ignored" || return 1
 }
 
 # Outside tmux and without a terminal to measure, the band is 120 columns.
@@ -4929,7 +4939,7 @@ test_band_width_defaults_to_120() {
     chmod +x "$TEST_TMPDIR/fakebin/stty"
     local out
     out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
-    assert_eq 120 "$(band_cells "$out")" "nothing measured is 120" || return 1
+    assert_eq 116 "$(band_cells "$out")" "nothing measured is 120, less the frame" || return 1
 }
 
 # Inside a real tmux the width is the pane's, from the one query the client
@@ -4945,7 +4955,7 @@ test_band_width_from_the_tmux_pane() {
     printf '%s\t%s\nreal\n' "$(date +%s)" "4242,$TMUX" > "$HOME/.cache/cs/tmux-real/4242,-tmp-fake,1,0"
     local out
     out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
-    assert_eq 90 "$(band_cells "$out")" "the pane's width sets the band" || return 1
+    assert_eq 86 "$(band_cells "$out")" "the pane's width sets the band, less the frame" || return 1
     assert_output_contains_f "$(cat "$TEST_TMPDIR/tmux.args")" "-t %7" "the width asked for is TMUX_PANE's" || return 1
     out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
     assert_eq 1 "$(wc -l < "$TEST_TMPDIR/tmux.args" | tr -d ' ')" "a second render reads the cached answer" || return 1
@@ -4964,20 +4974,29 @@ test_band_width_ignores_a_foreign_tmux() {
     printf '%s\t%s\nforeign\n' "$(date +%s)" "4242,$TMUX" > "$HOME/.cache/cs/tmux-real/4242,-tmp-fake,1,0"
     local out
     out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
-    assert_eq 120 "$(band_cells "$out")" "a foreign pane's width is not used" || return 1
+    assert_eq 116 "$(band_cells "$out")" "a foreign pane's width is not used" || return 1
 }
 
 # Run command string $1 under a pseudo-terminal, so /dev/tty opens; 77 (skip)
-# where no `script` here can provide one.
+# where no `script` here can provide one. BSD script takes the command after
+# the file, util-linux script takes it in -c; each form is proved by a probe
+# that leaves a file behind, since the other form can exit 0 without running
+# the command at all.
 in_pty() {
-    if script -q /dev/null /bin/sh -c true </dev/null >/dev/null 2>&1; then
+    local probe="$TEST_TMPDIR/pty-probe"
+    rm -f "$probe"
+    script -q /dev/null /bin/sh -c "touch '$probe'" </dev/null >/dev/null 2>&1
+    if [ -f "$probe" ]; then
         script -q /dev/null /bin/sh -c "$1" </dev/null >/dev/null 2>&1
-    elif script -qec true /dev/null </dev/null >/dev/null 2>&1; then
-        script -qec "$1" /dev/null </dev/null >/dev/null 2>&1
-    else
-        SKIP_REASON="no script(1) to provide a terminal"
-        return 77
+        return 0
     fi
+    script -qec "touch '$probe'" /dev/null </dev/null >/dev/null 2>&1
+    if [ -f "$probe" ]; then
+        script -qec "$1" /dev/null </dev/null >/dev/null 2>&1
+        return 0
+    fi
+    SKIP_REASON="no script(1) to provide a terminal"
+    return 77
 }
 
 # On a terminal and outside tmux the width is the terminal's, measured once per
@@ -4988,8 +5007,8 @@ test_band_width_from_the_terminal_is_measured_once() {
     export CS_STATUSLINE_PARENT=4243
     printf '%s' "$FIXTURE_DOCS" > "$TEST_TMPDIR/in.json"
     in_pty "stty cols 100 rows 30 </dev/tty; bash '$SL' < '$TEST_TMPDIR/in.json' > '$TEST_TMPDIR/first.txt'; stty cols 60 </dev/tty; bash '$SL' < '$TEST_TMPDIR/in.json' > '$TEST_TMPDIR/second.txt'" || return $?
-    assert_eq 100 "$(band_cells "$(cat "$TEST_TMPDIR/first.txt")")" "the terminal's 100 columns set the band" || return 1
-    assert_eq 100 "$(band_cells "$(cat "$TEST_TMPDIR/second.txt")")" "the second render reuses the measurement" || return 1
+    assert_eq 96 "$(band_cells "$(cat "$TEST_TMPDIR/first.txt")")" "the terminal's 100 columns set the band, less the frame" || return 1
+    assert_eq 96 "$(band_cells "$(cat "$TEST_TMPDIR/second.txt")")" "the second render reuses the measurement" || return 1
 }
 
 test_band_render_writes_nothing_to_stderr() {
@@ -5074,6 +5093,8 @@ test_band_colour_override_precedence() {
     assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "session names the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=chartreuse run_sl "$FIXTURE_DOCS")
     assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND="red blue" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "two palette names are not one" || return 1
     out=$(CS_STATUSLINE_BAND="300;0;0" run_sl "$FIXTURE_DOCS")
     assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
@@ -5199,7 +5220,7 @@ test_band_basic_is_a_flat_fill() {
 run_test test_band_fills_exactly_the_width
 run_test test_band_overflow_emits_every_item_and_no_fill
 run_test test_band_width_holds_under_the_c_locale
-run_test test_band_frame_is_subtracted_from_the_width
+run_test test_band_frame_is_subtracted_from_a_measured_width
 run_test test_band_width_floors_at_twenty
 run_test test_band_columns_from_stdin_rank_below_the_override
 run_test test_band_width_defaults_to_120
