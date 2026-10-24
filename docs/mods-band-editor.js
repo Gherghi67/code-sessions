@@ -346,13 +346,18 @@
     if (!TYPES[n.type]) throw new Error("a saved node is a " + n.type + ", not a Box, Text or Button");
     if (!n.props || typeof n.props !== "object") throw new Error("a saved " + n.type + " has no props");
     if (!Array.isArray(n.kids)) throw new Error("a saved " + n.type + " has no kids list");
-    return { type: n.type, props: n.props, kids: n.kids.map(readTree) };
+    var kids = n.kids.map(readTree);
+    kids.forEach(function (k) { var why = refusal(k.type, n); if (why) throw new Error("a saved tree is refused: " + why); });
+    return { type: n.type, props: n.props, kids: kids };
   }
   function readDoc(d) {
     if (!d || !Array.isArray(d.frames) || d.frames.length === 0) throw new Error("a saved document has no frames");
     var frames = d.frames.map(function (f) {
       if (typeof f.id !== "string" || typeof f.name !== "string") throw new Error("a saved frame has no id or no name");
       return { id: f.id, name: f.name, tree: readTree(f.tree) };
+    });
+    frames.forEach(function (f, i) {
+      if (frames.findIndex(function (g) { return g.id === f.id; }) !== i) throw new Error("a saved document has two frames with the id " + f.id);
     });
     if (!frames.some(function (f) { return f.id === d.exportFrame; })) throw new Error("a saved document exports " + d.exportFrame + ", which is not one of its frames");
     var doc = { frames: frames, selection: null, exportFrame: d.exportFrame };

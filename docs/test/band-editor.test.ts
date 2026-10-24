@@ -290,6 +290,7 @@ test('readDoc takes a saved document and names what is wrong with a bad one', ()
   expect(E.readDoc(saved)).toEqual(saved)
   expect(() => E.readDoc({ frames: [], selection: null, exportFrame: 'f1' })).toThrow('a saved document has no frames')
   expect(() => E.readDoc({ ...doc(), exportFrame: 'f4' })).toThrow('a saved document exports f4, which is not one of its frames')
+  expect(() => E.readDoc({ ...doc(), frames: [frame('f1', 'A', blank()), frame('f1', 'B', blank())] })).toThrow('a saved document has two frames with the id f1')
   expect(() => E.readDoc(doc(sel([5])))).toThrow('no node at [5]: [] has 3 children')
   expect(() => E.readDoc({ ...doc(), frames: [{ id: 'f1', name: 'Band', tree: { type: 'Link', props: {}, kids: [] } }] })).toThrow('a saved node is a Link, not a Box, Text or Button')
 })
@@ -299,6 +300,8 @@ test('readTree reads the compose panel\'s saved tree, ids dropped', () => {
   expect(E.readTree({ id: 1, type: 'Box', props: { gap: 1 }, kids: [{ id: 2, type: 'Text', props: { text: 'hi' }, kids: [] }] }))
     .toEqual(box({ gap: 1 }, text('hi')))
   expect(() => E.readTree({ type: 'Box', props: {} })).toThrow('a saved Box has no kids list')
+  expect(() => E.readTree(box({}, { ...text('hi'), kids: [text('in')] }))).toThrow('a saved tree is refused: a Text cannot go inside a Text')
+  expect(() => E.readTree({ ...button('go'), kids: [box({})] })).toThrow('a saved tree is refused: a Box cannot go inside a Button')
 })
 
 test('insert puts a node at a gap and selects it; the engine\'s refusals throw', () => {
