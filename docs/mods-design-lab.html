@@ -157,6 +157,18 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
 .frame{margin:0 0 16px}
 .frame .strip{position:relative}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:0 0 12px;font-size:12px;color:var(--fg2)}
+.toolbar label{display:flex;gap:6px;align-items:center;text-transform:uppercase;letter-spacing:.06em}
+.toolbar select,.toolbar input{text-transform:none;letter-spacing:0}
+.frame{border:1px solid transparent;padding:6px}
+.frame.on{border-color:var(--accent)}
+.fhead{display:flex;gap:12px;align-items:center;margin:0 0 6px;font-size:12.5px}
+.fhead button{font:inherit;font-size:12px;background:var(--page);color:var(--fg);border:1px solid var(--line);padding:2px 8px;cursor:pointer}
+.fhead button:hover:not(:disabled){border-color:var(--accent)}
+.fhead button:disabled{opacity:.45;cursor:default}
+.fhead .fname{font-weight:600;font-size:13px;border-color:transparent;background:none;padding:2px 4px}
+.fhead label.inline{display:flex;gap:4px;align-items:center;color:var(--fg2)}
+.fhead .fname-edit{font:600 13px "IBM Plex Sans",sans-serif;padding:1px 4px}
 .frame .term{cursor:default;user-select:none}
 .frame .sel{position:absolute;outline:1px solid var(--accent);pointer-events:none}
 .frame .inline-edit{position:absolute;margin:0;padding:0 1px;border:0;outline:1px solid var(--accent);background:var(--term);color:var(--term-fg);font:inherit;font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:15px;line-height:1.35}
@@ -195,7 +207,12 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
 <h2 id="compose">Band designer <span class="src">Box · Text · Button</span></h2>
-<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it. Double-click words to retype them; <kbd>Tab</kbd> moves to the next. The JSX underneath is what you paste into the mod.</p>
+<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it. Double-click words to retype them; <kbd>Tab</kbd> moves to the next. Each frame is one drawing; the state and width apply to all of them, and a new frame can start from any drawing in the Band variants panel, in the state picked. The JSX underneath is the frame marked for export, what you paste into the mod.</p>
+<div class="toolbar" id="bd-tools">
+  <label>State <select id="bd-state"></select></label>
+  <label>Width <span id="bd-colsv"></span><input id="bd-cols" type="range" min="40" max="120" value="80"></label>
+  <label>New frame from <select id="bd-seed"></select></label>
+</div>
 <div class="designer">
   <div class="canvas" id="bd-canvas"></div>
   <aside class="props" id="bd-props"></aside>
@@ -1209,7 +1226,11 @@ function bdFrameCard(f){
   // A band wider than the terminal is clipped here, as the terminal clips it.
   // Yoga would shrink a Text to fit; the canvas does not, so it says so rather
   // than drawing a band that could never look like this.
-  return `<div class="frame" data-frame="${f.id}">`
+  const doc=bdDocNow(), only=doc.frames.length===1;
+  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}" data-frame="${f.id}">`
+    +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="rename">${esc(f.name)}</button>`
+    +`<label class="inline"><input type="radio" name="bd-export" data-act="export"${doc.exportFrame===f.id?" checked":""}> set as export</label>`
+    +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></div>`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +`<div class="strip"><div class="term">${bdPaint(g)}\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span></div></div>`
     +(measured>c?`<p class="why">The tree measures ${measured} cells and the band has ${c}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"")
@@ -1222,6 +1243,9 @@ let bdPanelStale=true;
 function composeRender(){
   if(!bdHist) bdHist=BandEditor.history({frames:[{id:"f1",name:"Band",tree:cpLoad()||cpRotatePreset()}],selection:null,exportFrame:"f1",edit:"open"});
   const doc=bdDocNow();
+  bdStates($("va-state")); bdStates($("bd-state")); $("bd-state").value=$("va-state").value;
+  $("bd-cols").value=Math.min(120,cols()); $("bd-colsv").textContent=cols()+" cols";
+  if(!$("bd-seed").options.length) $("bd-seed").innerHTML=`<option value="">…</option><option value="empty">an empty Box</option>`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("");
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const sel=doc.selection;
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
@@ -1233,6 +1257,35 @@ const bareTree=n=>({type:n.type,props:n.props,kids:(n.kids||[]).map(bareTree)});
 function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(bdFrame(bdHist.present.exportFrame).tree)); }catch{} }
 function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); return raw?bareTree(JSON.parse(raw)):null; }catch{ return null; } }
 
+// The state picker the designer and the variants panel share.
+function bdStates(pick){ if(!pick.options.length) pick.innerHTML=BandVariants.STATES.map(s=>`<option value="${s.id}">${esc(s.id)}: ${esc(s.name)}</option>`).join(""); }
+// A frame drawn by a variant in the picked state, at the page's width and
+// theme; a variant that draws nothing in that state starts an empty column.
+function bdSeed(id){
+  if(id==="empty") return bdEdit({type:"addFrame"});
+  const v=BandVariants.VARIANTS.find(x=>x.id===id), st=BandVariants.STATES.find(x=>x.id===$("va-state").value);
+  const drawn=v.draw(st.facts,cols(),theme());
+  bdEdit({type:"addFrame",tree:drawn?BandEditor.fromEngine(drawn):{type:"Box",props:{flexDirection:"column"},kids:[]},name:`${v.name} · ${st.id}`});
+}
+// A frame's name, retyped in place: Enter or leaving commits, Esc drops it.
+function bdRename(frame,button){
+  const was=bdFrame(frame).name;
+  button.outerHTML=`<input class="fname-edit" name="frame-name" aria-label="frame name" value="${esc(was).replace(/"/g,"&quot;")}">`;
+  const input=$("bd-canvas").querySelector(`[data-frame="${frame}"] .fname-edit`);
+  input.focus(); input.select();
+  let done=false;
+  const finish=keep=>{ if(done) return; done=true; if(keep&&input.value.trim()&&input.value!==was) bdEdit({type:"renameFrame",frame,name:input.value}); else composeRender(); };
+  input.addEventListener("keydown",e=>{ e.stopPropagation(); if(e.key==="Enter") finish(true); else if(e.key==="Escape") finish(false); });
+  input.addEventListener("blur",()=>finish(true));
+}
+function bdFrameAct(el,frame){
+  const act=el.dataset.act;
+  if(act==="rename") return bdRename(frame,el);
+  if(act==="export") return bdEdit({type:"exportFrame",frame});
+  if(act==="duplicate") return bdEdit({type:"addFrame",from:frame});
+  if(act==="remove") return bdEdit({type:"removeFrame",frame});
+}
+
 // A click selects the node that drew the cell; a second click on the node
 // already selected climbs to its parent. The second click of a double-click
 // is left alone, and so is the click that ends a drag.
@@ -1240,7 +1293,10 @@ let bdDragged=false;
 function bdClick(e){
   if(bdDragged){ bdDragged=false; return; }
   if(e.detail>1) return;
-  const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
+  const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]"), act=e.target.closest("[data-act]");
+  if(act&&frame) return bdFrameAct(act,frame.dataset.frame);
+  if(frame&&e.target.closest(".fhead")) return bdDispatch({type:"selectFrame",frame:frame.dataset.frame});
+  if(e.target.closest(".fname-edit")) return;
   if(!cell||!frame){ if(bdDocNow().selection) bdDispatch({type:"deselect"}); return; }
   const id=frame.dataset.frame, path=BandEditor.pathOfCell(bdGrids[id],+cell.dataset.r,+cell.dataset.c);
   const sel=bdDocNow().selection;
@@ -1306,7 +1362,9 @@ function bdDragMove(e){
 }
 function bdDragEnd(){
   if(!bdDrag) return;
-  const {from,target,moved}=bdDrag; bdDrag=null; bdDragged=moved;
+  // The click that ends a drag comes in this turn, if at all (none when the
+  // drag ends off the canvas), so the flag that swallows it lasts no longer.
+  const {from,target,moved}=bdDrag; bdDrag=null; bdDragged=moved; setTimeout(()=>{ bdDragged=false; });
   if(!target) return composeRender();
   const i=from[from.length-1], here=samePath(target.parentPath,from.slice(0,-1));
   if(here&&(target.index===i||target.index===i+1)) return composeRender();
@@ -1378,6 +1436,9 @@ function bdKeys(e){
 }
 function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
+  $("bd-state").addEventListener("input",e=>{ $("va-state").value=e.target.value; });
+  $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
+  $("bd-seed").addEventListener("change",e=>{ const id=e.target.value; e.target.value=""; if(id) bdSeed(id); });
   $("bd-canvas").addEventListener("mousedown",bdDragStart);
   $("bd-canvas").addEventListener("dblclick",bdDoubleClick);
   document.addEventListener("mousemove",bdDragMove);

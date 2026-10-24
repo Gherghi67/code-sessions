@@ -146,6 +146,33 @@
     return out;
   }
 
+  // The inverse of toEngine: an engine tree as the editor holds it, empty
+  // props dropped, a hover of only the two colours spelled as their fields.
+  var HOVER_FIELDS = { borderColor: "hoverBorderColor", backgroundColor: "hoverBackgroundColor" };
+  function fromEngine(e) {
+    var props = {};
+    Object.keys(e.props || {}).forEach(function (k) {
+      var v = e.props[k];
+      if (v === "" || v === false || v === undefined) return;
+      if (k === "hover" && Object.keys(v).every(function (h) { return HOVER_FIELDS[h]; })) {
+        Object.keys(v).forEach(function (h) { props[HOVER_FIELDS[h]] = v[h]; });
+        return;
+      }
+      props[k] = v;
+    });
+    var kids = (e.children || []).filter(function (k) { return k !== null && k !== undefined && k !== false; });
+    if (e.type === "Text") {
+      if (kids.some(function (k) { return typeof k === "object"; })) throw new Error("the editor holds a Text's words as one string; this Text has a Text inside it");
+      var words = kids.join("");
+      if (words !== "") props.text = words;
+      return { type: "Text", props: props, kids: [] };
+    }
+    return { type: e.type, props: props, kids: kids.map(fromEngine) };
+  }
+
+  function frameNumber(id) { return +String(id).replace(/^f/, "") || 0; }
+  function nameOf(doc, id) { return frameOf(doc, id).name; }
+
   var ACTIONS = {
     select: function (doc, a) {
       nodeAt(frameOf(doc, a.frame).tree, a.path);
@@ -202,6 +229,41 @@
         return { tree: insertAt(tree, a.path.slice(0, -1), at + 1, clone(node)), edit: "duplicate " + node.type, select: a.path.slice(0, -1).concat([at + 1]) };
       });
     },
+    // A copy of frame `from`, a tree read from elsewhere, or an empty Box.
+    addFrame: function (doc, a) {
+      if (a.from !== undefined && a.tree !== undefined) throw new Error("addFrame takes a frame to copy or a tree, not both");
+      var id = "f" + (Math.max.apply(null, doc.frames.map(function (f) { return frameNumber(f.id); })) + 1);
+      var source = a.from !== undefined ? frameOf(doc, a.from) : null;
+      var name = source ? source.name + " copy" : a.name || "Frame " + (doc.frames.length + 1);
+      var tree = source ? clone(source.tree) : a.tree ? clone(a.tree) : { type: "Box", props: {}, kids: [] };
+      return Object.assign({}, doc, { frames: doc.frames.concat([{ id: id, name: name, tree: tree }]), selection: { frame: id, path: [] }, edit: "add frame " + name });
+    },
+    renameFrame: function (doc, a) {
+      if (!String(a.name).trim()) throw new Error("a frame needs a name");
+      var was = nameOf(doc, a.frame);
+      return Object.assign({}, doc, {
+        frames: doc.frames.map(function (f) { return f.id === a.frame ? Object.assign({}, f, { name: a.name }) : f; }),
+        edit: "rename frame " + was + " to " + a.name,
+      });
+    },
+    removeFrame: function (doc, a) {
+      var name = nameOf(doc, a.frame);
+      if (doc.frames.length === 1) throw new Error("the last frame cannot be removed");
+      var frames = doc.frames.filter(function (f) { return f.id !== a.frame; });
+      return Object.assign({}, doc, {
+        frames: frames,
+        selection: doc.selection && doc.selection.frame === a.frame ? null : doc.selection,
+        exportFrame: doc.exportFrame === a.frame ? frames[0].id : doc.exportFrame,
+        edit: "remove frame " + name,
+      });
+    },
+    selectFrame: function (doc, a) {
+      frameOf(doc, a.frame);
+      return Object.assign({}, doc, { selection: { frame: a.frame, path: [] } });
+    },
+    exportFrame: function (doc, a) {
+      return Object.assign({}, doc, { exportFrame: a.frame, edit: "export frame " + nameOf(doc, a.frame) });
+    },
   };
 
   function apply(doc, action) {
@@ -221,7 +283,7 @@
   // Not an edit (a selection): the present moves and no step is taken.
   function replace(h, doc) { return { past: h.past, present: clone(doc), future: h.future }; }
 
-  var api = { history: history, commit: commit, replace: replace, apply: apply, canDrop: canDrop, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine };
+  var api = { history: history, commit: commit, replace: replace, apply: apply, canDrop: canDrop, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

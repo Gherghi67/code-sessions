@@ -168,3 +168,64 @@ test('wordPaths lists every Text and Button in document order', () => {
   expect(E.wordPaths(tree())).toEqual([[0], [1, 0], [1, 1], [2]])
   expect(E.wordPaths(box({}, { ...button('feed'), kids: [text('feed '), text('✓')] }))).toEqual([[0], [0, 0], [0, 1]])
 })
+
+// An engine tree with its empty props dropped, as toEngine drops them.
+const bare = (e: any): any => {
+  if (typeof e !== 'object' || e === null) return e
+  const props: any = {}
+  for (const [k, v] of Object.entries(e.props || {})) if (v !== '' && v !== false && v !== undefined) props[k] = v
+  return { type: e.type, props, children: (e.children || []).filter((k: any) => k !== null && k !== undefined && k !== false).map(bare) }
+}
+const engineTrees = () => VARIANTS.flatMap((v: any) => STATES.flatMap((s: any) => ['light', 'dark'].map(theme => ({ cell: `${v.id} / ${s.id} / ${theme}`, tree: v.draw(s.facts, 80, theme) })))).filter((c: any) => c.tree !== null)
+
+test('every tree the gallery draws comes back unchanged from the editor', () => {
+  for (const { cell, tree: e } of engineTrees()) expect({ cell, back: E.toEngine(E.fromEngine(e)) }).toEqual({ cell, back: bare(e) })
+})
+
+test('every editor tree read from the gallery survives a trip through the engine', () => {
+  for (const { cell, tree: e } of engineTrees()) {
+    const t = E.fromEngine(e)
+    expect({ cell, back: E.fromEngine(E.toEngine(t)) }).toEqual({ cell, back: t })
+  }
+})
+
+test('fromEngine spells a Text\'s words as text, the hover colours as fields, and keeps any other hover whole', () => {
+  expect(E.fromEngine({ type: 'Box', props: { key: 'k', hover: { borderColor: 'claude' }, gap: 0 }, children: [
+    { type: 'Text', props: { dimColor: true, bold: false }, children: ['hi'] },
+    { type: 'Button', props: { key: 'r', plain: true, label: '│', hover: { scope: 'r', dimColor: false } }, children: [] },
+    null,
+  ] })).toEqual(box({ key: 'k', hoverBorderColor: 'claude', gap: 0 },
+    text('hi', { dimColor: true }),
+    button('│', { key: 'r', plain: true, hover: { scope: 'r', dimColor: false } })))
+  expect(() => E.fromEngine({ type: 'Text', props: {}, children: [{ type: 'Text', props: {}, children: ['x'] }] }))
+    .toThrow('the editor holds a Text\'s words as one string; this Text has a Text inside it')
+})
+
+const frames = (...fs: any[]) => ({ frames: fs, selection: null, exportFrame: fs[0].id })
+const frame = (id: string, name: string, t: any) => ({ id, name, tree: t })
+const blank = () => box({})
+
+test('addFrame copies a frame, takes a tree, or starts empty, and selects the new frame\'s root', () => {
+  const one = frames(frame('f1', 'Band', tree()))
+  expect(E.apply(one, { type: 'addFrame', from: 'f1' }))
+    .toEqual({ frames: [frame('f1', 'Band', tree()), frame('f2', 'Band copy', tree())], selection: { frame: 'f2', path: [] }, exportFrame: 'f1', edit: 'add frame Band copy' })
+  expect(E.apply(one, { type: 'addFrame', tree: box({ gap: 1 }), name: 'Quiet line' }))
+    .toEqual({ frames: [frame('f1', 'Band', tree()), frame('f2', 'Quiet line', box({ gap: 1 }))], selection: { frame: 'f2', path: [] }, exportFrame: 'f1', edit: 'add frame Quiet line' })
+  expect(E.apply(frames(frame('f1', 'A', blank()), frame('f7', 'B', blank())), { type: 'addFrame' }).frames.map((f: any) => [f.id, f.name, f.tree]))
+    .toEqual([['f1', 'A', blank()], ['f7', 'B', blank()], ['f8', 'Frame 3', blank()]])
+  expect(() => E.apply(one, { type: 'addFrame', from: 'f1', tree: blank() })).toThrow('addFrame takes a frame to copy or a tree, not both')
+})
+
+test('renameFrame, selectFrame and exportFrame name, pick and mark one frame', () => {
+  const two = frames(frame('f1', 'A', blank()), frame('f2', 'B', blank()))
+  expect(E.apply(two, { type: 'renameFrame', frame: 'f2', name: 'Keys' })).toEqual({ ...frames(frame('f1', 'A', blank()), frame('f2', 'Keys', blank())), edit: 'rename frame B to Keys' })
+  expect(() => E.apply(two, { type: 'renameFrame', frame: 'f2', name: ' ' })).toThrow('a frame needs a name')
+  expect(E.apply(two, { type: 'selectFrame', frame: 'f2' })).toEqual({ ...two, selection: { frame: 'f2', path: [] } })
+  expect(E.apply(two, { type: 'exportFrame', frame: 'f2' })).toEqual({ ...two, exportFrame: 'f2', edit: 'export frame B' })
+})
+
+test('removeFrame drops a frame, its selection and its export mark; the last frame stays', () => {
+  const two = { ...frames(frame('f1', 'A', blank()), frame('f2', 'B', blank())), selection: { frame: 'f2', path: [] }, exportFrame: 'f2' }
+  expect(E.apply(two, { type: 'removeFrame', frame: 'f2' })).toEqual({ frames: [frame('f1', 'A', blank())], selection: null, exportFrame: 'f1', edit: 'remove frame B' })
+  expect(() => E.apply(frames(frame('f1', 'A', blank())), { type: 'removeFrame', frame: 'f1' })).toThrow('the last frame cannot be removed')
+})
