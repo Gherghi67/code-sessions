@@ -157,7 +157,9 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
 .frame{margin:0 0 16px}
 .frame .strip{position:relative}
-.toolbar .tools{display:flex;gap:6px;margin-left:auto}
+.toolbar .tools{display:flex;gap:6px}
+.toolbar .fit{margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:11.5px;text-transform:none;letter-spacing:0}
+.toolbar .fit.no,p.why.no{color:var(--error)}
 .toolbar button,.hist button{font:inherit;font-size:12px;background:var(--page);color:var(--fg);border:1px solid var(--line);padding:3px 9px;cursor:pointer}
 .toolbar button:disabled{opacity:.45;cursor:default}
 .toolbar button b{font-weight:600;color:var(--fg2);margin-left:2px}
@@ -218,11 +220,13 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
 <h2 id="compose">Band designer <span class="src">Box · Text · Button</span></h2>
-<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it. Double-click words to retype them; <kbd>Tab</kbd> moves to the next. Each frame is one drawing; the state and width apply to all of them, and a new frame can start from any drawing in the Band variants panel, in the state picked. The JSX underneath is the frame marked for export, what you paste into the mod.</p>
+<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes. Double-click words to retype them; <kbd>Tab</kbd> moves to the next. Each frame is one drawing; the state and width apply to all of them, and a new frame can start from any drawing in the Band variants panel, in the state picked. The JSX underneath is the frame marked for export, what you paste into the mod.</p>
 <div class="toolbar" id="bd-tools">
+  <span class="tools add"><button type="button" data-insert="Box">+ Box</button><button type="button" data-insert="Text">+ Text</button><button type="button" data-insert="Button">+ Button</button></span>
   <label>State <select id="bd-state"></select></label>
   <label>Width <span id="bd-colsv"></span><input id="bd-cols" type="range" min="40" max="120" value="80"></label>
   <label>New frame from <select id="bd-seed"></select></label>
+  <span id="bd-fit" class="fit"></span>
   <span class="tools"><button type="button" id="bd-undo" title="⌘/Ctrl+Z">undo <b></b></button><button type="button" id="bd-redo" title="Shift+⌘/Ctrl+Z">redo <b></b></button></span>
 </div>
 <p class="refuse" id="bd-note" hidden></p>
@@ -1204,6 +1208,11 @@ function cpPaint(g){
 function bdPaint(g){
   return g.rows.map((row,r)=>row.map((c,x)=>`<span class="cell" data-r="${r}" data-c="${x}" style="${cellCss(c.st)}">${esc(c.ch)}</span>`).join("")).join("\n");
 }
+// How a tree's width sits in the band's, in the words every panel prints. A
+// band wider than the terminal is clipped, as the terminal clips it; Yoga
+// would shrink a Text to fit and the canvas does not, so it says so rather
+// than drawing a band that could never look like this.
+function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: clipped at the band's edge, where the engine would shrink a Text to fit`:""); }
 // A grid wider than the band, cut at the band's edge as the terminal cuts it.
 function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
 
@@ -1221,9 +1230,6 @@ function bdFrameCard(f){
   const g=clipTo(ModLayout.layout(tree,c),c);
   const measured=ModLayout.layout(tree,c).w;
   bdGrids[f.id]=g;
-  // A band wider than the terminal is clipped here, as the terminal clips it.
-  // Yoga would shrink a Text to fit; the canvas does not, so it says so rather
-  // than drawing a band that could never look like this.
   const doc=bdDocNow(), only=doc.frames.length===1;
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="rename">${esc(f.name)}</button>`
@@ -1231,7 +1237,7 @@ function bdFrameCard(f){
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></div>`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +`<div class="strip"><div class="term">${bdPaint(g)}\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span></div></div>`
-    +(measured>c?`<p class="why">The tree measures ${measured} cells and the band has ${c}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"")
+    +(measured>c?`<p class="why no">${esc(fitWords(measured,c))}</p>`:"")
     +`</div>`;
 }
 // The props panel is rebuilt only when the present changes from outside it
@@ -1249,6 +1255,9 @@ function composeRender(){
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
   if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
+  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
+  $("bd-fit").textContent=`${fitFrame.name} ${fitWords(fitW,cols())}`; $("bd-fit").classList.toggle("no",fitW>cols());
+  document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`insert a ${b.dataset.insert}`; });
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
   $("bd-hist").innerHTML=bdHistory();
@@ -1262,6 +1271,17 @@ function bdHistory(){
   return bdHist.future.map((d,j)=>line(d,j+1,"ahead")).reverse().join("")
     +line(bdHist.present,0,"now")
     +bdHist.past.map((d,i)=>line(d,i-bdHist.past.length,"back")).reverse().join("");
+}
+// The + buttons insert into a selected Box, or after any other selected node.
+const BD_FRESH={Box:()=>({type:"Box",props:{},kids:[]}),Text:()=>({type:"Text",props:{text:"new text"},kids:[]}),Button:()=>({type:"Button",props:{label:"press me",plain:true},kids:[]})};
+function bdInsertRefusal(type){
+  const sel=bdDocNow().selection; if(!sel) return "select a node to insert next to";
+  const tree=bdFrame(sel.frame).tree, at=BandEditor.insertPoint(tree,sel.path);
+  return BandEditor.refusal(type,BandEditor.nodeAt(tree,at.parentPath));
+}
+function bdInsert(type){
+  const sel=bdDocNow().selection, at=BandEditor.insertPoint(bdFrame(sel.frame).tree,sel.path);
+  bdEdit({type:"insert",parentPath:at.parentPath,index:at.index,node:BD_FRESH[type]()});
 }
 function bdTravel(by){ bdDraft=null; bdHist=BandEditor.jump(bdHist,by); bdPanelStale=true; composeRender(); }
 // The designer's present document is kept under BD_KEY. The compose
@@ -1478,6 +1498,7 @@ function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
   $("bd-state").addEventListener("input",e=>{ $("va-state").value=e.target.value; });
   $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
+  document.querySelectorAll("[data-insert]").forEach(b=>b.onclick=()=>bdInsert(b.dataset.insert));
   $("bd-undo").onclick=()=>bdTravel(-1); $("bd-redo").onclick=()=>bdTravel(1);
   $("bd-hist").addEventListener("click",e=>{ const b=e.target.closest("[data-jump]"); if(b) bdTravel(+b.dataset.jump); });
   $("bd-seed").addEventListener("change",e=>{ const id=e.target.value; e.target.value=""; if(id) bdSeed(id); });
@@ -1519,7 +1540,7 @@ function vaCell(v,s,c,th,named){
   return `<div class="vcell">${named?`<div class="name">${esc(s.id)}</div>`:""}`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +`<div class="term">${body}</div>`
-    +(g.w>c?`<p class="why">The tree measures ${g.w} cells and the band has ${c}: clipped above.</p>`:"")+`</div>`;
+    +(g.w>c?`<p class="why no">${esc(fitWords(g.w,c))}</p>`:"")+`</div>`;
 }
 function variantsRender(){
   const {STATES,VARIANTS}=BandVariants, c=cols(), th=theme();

@@ -272,3 +272,19 @@ test('readTree reads the compose panel\'s saved tree, ids dropped', () => {
     .toEqual(box({ gap: 1 }, text('hi')))
   expect(() => E.readTree({ type: 'Box', props: {} })).toThrow('a saved Box has no kids list')
 })
+
+test('insert puts a node at a gap and selects it; the engine\'s refusals throw', () => {
+  expect(E.apply(doc(sel([1])), { type: 'insert', parentPath: [1], index: 2, node: text('new') }))
+    .toEqual(edited(box({}, text('a'), col(text('b'), button('go'), text('new')), text('c')), sel([1, 2]), 'insert Text'))
+  expect(() => E.apply(doc(sel([0])), { type: 'insert', parentPath: [0], index: 0, node: box({}) })).toThrow('a Box cannot go inside a Text')
+  expect(() => E.apply(doc(sel([1, 1])), { type: 'insert', parentPath: [1, 1], index: 0, node: button('x') })).toThrow('a Button cannot go inside a Button')
+})
+
+// The toolbar's + buttons: into a selected Box as its last child, else
+// right after the selected node.
+test('insertPoint is the selected Box\'s end, or the gap after a selected leaf', () => {
+  expect(E.insertPoint(tree(), [1])).toEqual({ parentPath: [1], index: 2 })
+  expect(E.insertPoint(tree(), [])).toEqual({ parentPath: [], index: 3 })
+  expect(E.insertPoint(tree(), [1, 0])).toEqual({ parentPath: [1], index: 1 })
+  expect(E.insertPoint(tree(), [2])).toEqual({ parentPath: [], index: 3 })
+})

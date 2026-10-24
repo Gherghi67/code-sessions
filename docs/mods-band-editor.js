@@ -123,6 +123,14 @@
     return refusal(nodeAt(tree, from).type, nodeAt(tree, parentPath));
   }
 
+  // Where a new node goes for the node at `path`: a Box takes it as its
+  // last child, anything else has it placed right after.
+  function insertPoint(tree, path) {
+    var node = nodeAt(tree, path);
+    if (node.type === "Box" || path.length === 0) return { parentPath: path, index: node.kids.length };
+    return { parentPath: path.slice(0, -1), index: path[path.length - 1] + 1 };
+  }
+
   function insertAt(tree, parentPath, index, node) {
     return updateAt(tree, parentPath, function (p) {
       var kids = p.kids.slice();
@@ -204,6 +212,13 @@
         var sameParent = show(a.to.parentPath) === show(a.from.slice(0, -1));
         var index = sameParent && a.to.index > a.from[a.from.length - 1] ? a.to.index - 1 : a.to.index;
         return { tree: insertAt(removeAt(tree, a.from), parentPath, index, node), edit: "move " + node.type, select: parentPath.concat([index]) };
+      });
+    },
+    insert: function (doc, a) {
+      return editTree(doc, "insert", function (tree) {
+        var why = refusal(a.node.type, nodeAt(tree, a.parentPath));
+        if (why) throw new Error(why);
+        return { tree: insertAt(tree, a.parentPath, a.index, clone(a.node)), edit: "insert " + a.node.type, select: a.parentPath.concat([a.index]) };
       });
     },
     remove: function (doc, a) {
@@ -321,7 +336,7 @@
     return doc;
   }
 
-  var api = { history: history, commit: commit, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
+  var api = { history: history, commit: commit, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, refusal: refusal, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
