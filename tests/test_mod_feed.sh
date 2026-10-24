@@ -73,9 +73,12 @@ test_mod_validate_inventories_the_one_shape() {
     assert_eq "$HOOKS_LINE" "$line" "the exact hooks inventory" || return 1
 }
 
-# The engine writes its types under .claude-plugin/types on first use, and
-# gitignores them; a checkout without them borrows the cs mod's copy for the
-# check and removes it after. A copy already present is used as it is.
+# The engine writes its types under .claude-plugin/types and a tsconfig.json
+# beside the manifest on first use, and gitignores both; a checkout without
+# the types borrows the cs mod's copy for the check and removes it after. A
+# copy already present is used as it is. The check runs a config of its own,
+# written beside the mod and removed after, never the engine's tsconfig.json:
+# the engine's includes ../../tests, and this mod's tests live in test/.
 test_mod_typechecks_against_the_engine_contract() {
     require_tool npx || return $?
     local target="$MOD/.claude-plugin/types" source="$SCRIPT_DIR/../mods/cs/.claude-plugin/types" copied=0
@@ -87,10 +90,13 @@ test_mod_typechecks_against_the_engine_contract() {
         cp -R "$source" "$target" || { echo "  FAIL: could not copy the engine types"; return 1; }
         copied=1
     fi
-    local out status
-    out="$(cd "$MOD" && npx tsc -p tsconfig.json 2>&1)"
+    local config out status
+    config="$(mktemp "$MOD/tsconfig.check.XXXXXX")" || { [ "$copied" -eq 0 ] || rm -rf "$target"; echo "  FAIL: could not write the check's tsconfig"; return 1; }
+    printf '%s\n' '{"extends": "./.claude-plugin/types/tsconfig.json", "include": ["hooks/**/*", "test/**/*"]}' > "$config"
+    out="$(cd "$MOD" && npx tsc -p "$(basename "$config")" 2>&1)"
     status=$?
-    [ "$copied" -eq 1 ] && rm -rf "$target"
+    rm -f "$config"
+    [ "$copied" -eq 0 ] || rm -rf "$target"
     assert_eq "0" "$status" "tsc exits 0, painters.typecheck.ts included" || { echo "$out"; return 1; }
 }
 
