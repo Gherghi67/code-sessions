@@ -816,12 +816,19 @@ rotate capsule's presets and knobs, each state printing the
 JSX it maps to, in the status line's inks; the shipped capsule is its "Inked" preset.
 Its Band variants panel draws the shipped band and seven sketches of it (`docs/mods-band-variants.js`, pinned by `docs/test/band-variants.test.ts`) in each of fifteen states, so you can judge a direction against what ships before it reaches the mod.
 
-The panel it opens on is a canvas: build a band out of nested Box, Text and
-Button, set each node's props, and copy the JSX underneath into a mod. The
-layout engine behind it lives in `docs/mods-layout.js`, which the page loads as
-a plain script and `tests/test_mods_layout.sh` drives through bun. It
-approximates the engine rather than porting it: a row that overruns the band is
-clipped and named, where the real one shrinks a Text to fit.
+The panel it opens on is the Band designer, where you build a band out of
+nested Box, Text and Button on the strip itself. Click a cell to select the
+node that drew it, drag it to reorder, double-click its words to retype them,
+and set its props in the panel beside the strip. Each frame on the canvas is
+one drawing, started empty or from any Band variants drawing in the picked
+state, and the frame marked for export prints the JSX to paste into a mod.
+Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
+localStorage. The editor's model lives in `docs/mods-band-editor.js`, pinned
+by `docs/test/band-editor.test.ts`. The layout engine behind it lives in
+`docs/mods-layout.js`, which the page loads as a plain script and
+`tests/test_mods_layout.sh` drives through bun. It approximates the engine
+rather than porting it: a row that overruns the band is clipped and named,
+where the real one shrinks a Text to fit.
 
 The mod also registers `/queue`, marked immediate so it runs while a turn is
 in flight instead of waiting for it to end. `/queue <task>` runs
