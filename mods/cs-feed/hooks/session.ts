@@ -499,7 +499,7 @@ async function readLocal($: $, path: string): Promise<{ text?: string; failed: b
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/\bENOENT\b/.test(message)) return { failed: false }
-    await $.ui.log(`cs-feed: could not read ${path}: ${message}`)
+    await $.ui.log(`could not read ${path}: ${message}`)
     return { failed: true }
   }
 }
@@ -676,7 +676,7 @@ export type Vetted = 'passed' | { readonly refused: string }
  *
  *   const refusal = await vetRefusal($, cwd)
  *   if (refusal === undefined) { load.vetLogged = undefined; return 'passed' }
- *   if (refusal !== load.vetLogged) $.ui.log(`cs-feed: the feed is off in this session: ${refusal}`)
+ *   if (refusal !== load.vetLogged) $.ui.log(`the feed is off in this session: ${refusal}`)   // the engine leads the line with the plugin name
  *   load.vetLogged = refusal
  *   return { refused: refusal }
  *
@@ -700,7 +700,7 @@ async function reportVet(load: Load, $: $, vet: Vetted): Promise<void> {
   }
   if (vet.refused !== load.vetLogged) {
     load.vetLogged = vet.refused
-    await $.ui.log(`cs-feed: the feed is off in this session: ${vet.refused}`)
+    await $.ui.log(`the feed is off in this session: ${vet.refused}`)
   }
 }
 
@@ -897,7 +897,7 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
         if (active(load)) $.clock.after(1000, tick)
       } catch (error) {
         load.clocks.tick = false
-        await $.ui.log(`cs-feed: clock stopped: ${error instanceof Error ? error.message : String(error)}`)
+        await $.ui.log(`clock stopped: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
   }
@@ -937,7 +937,7 @@ function startPulse(load: Load, $: $): void {
     } catch (error) {
       // Stopped, not stuck: the flag clears so the next painted draw starts the pulse again.
       load.clocks.pulse = false
-      await $.ui.log(`cs-feed: pulse stopped: ${error instanceof Error ? error.message : String(error)}`)
+      await $.ui.log(`pulse stopped: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
 }

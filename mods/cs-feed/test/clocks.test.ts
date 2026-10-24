@@ -168,7 +168,7 @@ test('a pulse write that fails stops the pulse with one log line, and the next p
   const props = { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } as const
   const first = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'first', props })
   await clock.advance(700)
-  expect(logs).toEqual(['cs-feed: pulse stopped: cs-feed: $.state.set: pulse refused'])
+  expect(logs).toEqual(['pulse stopped: cs-feed: $.state.set: pulse refused'])
   expect(pulses).toEqual([])
   const second = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'second', props })
   await clock.advance(70)

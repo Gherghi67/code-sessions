@@ -11,7 +11,7 @@ PAINTED = ["UserMessage", "AssistantMessage", "ToolUse", "ToolGroup", "ToolResul
 PANE_HOOKS = ["ui.render component=Pane requestId=PANE", "ui.render component=Pane requestId=HELPERS_PANE"]
 HOP = re.compile(r"hooks module (.+?) (\S+) settled in ([0-9.]+)ms \(worker hop, next\(\) included\)(?: key=(.*))?$")
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3})Z ")
-REFUSED_LOG = "cs-feed: the feed is off in this session:"
+REFUSED_LOG = "the feed is off in this session:"
 
 lines, failures, voids, data = [], [], [], {}
 
@@ -213,6 +213,8 @@ for l in launches:
             check(t < l.marks["press"], "planted on, refused: the one log line came before the press, so press, /feed off and /feed status added none")
         check(read(f"{l.dir}/feed-at-end") == "on\n", "planted on, refused: the file still reads on (nothing written)")
         check("no feed change in this session: the launch did not say where cs is (CS_BIN)" in l.screen("03-feed-off"), "planted on, refused: /feed off replies with the refusal")
+        for name in ("00-ready", "03-feed-off"):
+            check("cs-feed: cs-feed:" not in l.screen(name), f"planted on, refused: the engine names the plugin once on the log and reply lines ({name})")
 
     if l.case == "outside":
         check(read(f"{l.dir}/cs-dir-after").strip() == "absent", "outside a cs session: /feed on created nothing")

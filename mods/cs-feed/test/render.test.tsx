@@ -335,6 +335,23 @@ test('the settings pane stays usable while off and pressing group enables this s
   await pane.unmount()
 })
 
+test('a refused settings-pane press logs the refusal once, and the engine adds the plugin name', async ($, on) => {
+  const writes: string[] = []
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'off\n' } : { deny: 'ENOENT: no such file or directory' })
+  on('fs.exists', () => ({ value: true }))
+  on('fs.write', ($, e) => { writes.push(e.path); return { value: undefined } })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: undefined }))
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'Pane' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine pane' }))
+  const pane = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'Pane', requestId: 'cs-feed', props: { title: 'Chat view', isFocused: true, placement: 'inline', bodyColumns: 80, scroll: { offset: 0, bodyRows: 24 }, view: {} } })
+  await $.ui.press({ plugin: 'cs-feed', key: 'btn-group' })
+  expect(writes).toEqual([])
+  expect(logs).toEqual(['no feed change in this session: the launch did not say where cs is (CS_BIN)'])
+  await pane.unmount()
+})
+
 const HELPERS_PANE = { title: 'Helpers', isFocused: true, placement: 'inline', bodyColumns: 80, scroll: { offset: 0, bodyRows: 24 }, view: {} } as const
 
 test('the helpers pane says when no helper ran, whatever the toggle says', async ($, on) => {
@@ -386,6 +403,6 @@ test('the helpers pane shows the newest helpers first with their state, step and
     '○', 'Read the notes · finished · 4s',
     'Read notes.md',
   ])
-  expect(logs).toEqual(["cs-feed: could not read helper checker's transcript: no transcript for checker"])
+  expect(logs).toEqual(["could not read helper checker's transcript: no transcript for checker"])
   await pane.unmount()
 })

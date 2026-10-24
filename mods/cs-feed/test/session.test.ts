@@ -77,7 +77,7 @@ test('two renders share an on-read vet and a refusal keeps both on the engine wi
     await row.unmount()
   }
   expect(calls).toEqual([{ argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 }])
-  expect(logs).toEqual(['cs-feed: the feed is off in this session: not a trusted session'])
+  expect(logs).toEqual(['the feed is off in this session: not a trusted session'])
 })
 
 test('feed status reads a hand edit and vets an outside flip on only once', async ($, on) => {
@@ -106,7 +106,7 @@ test('feed on refuses a directory without cs local before asking for the binary 
   on('fs.exists', ($, e) => { effects.push(e.path); return { value: false } })
   on('env.get', () => { effects.push('env'); return { value: undefined } })
   on('fs.write', () => { effects.push('write'); return { value: undefined } })
-  expect(await $.command.run({ ...STATUS, args: 'on' })).toEqual({ text: 'cs-feed: this directory is not a cs session (no .cs/local), so nothing changed.' })
+  expect(await $.command.run({ ...STATUS, args: 'on' })).toEqual({ text: 'this directory is not a cs session (no .cs/local), so nothing changed.' })
   expect(effects).toEqual(['/session/.cs/local'])
   expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
 })
@@ -118,7 +118,7 @@ test('a missing launch binary refuses a feed write and preserves the mirror and 
   on('fs.exists', () => ({ value: true }))
   on('env.get', { name: 'CS_BIN' }, () => ({ value: undefined }))
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
-  expect(await $.command.run({ ...STATUS, args: 'normal' })).toEqual({ text: 'cs-feed: no feed change in this session: the launch did not say where cs is (CS_BIN)' })
+  expect(await $.command.run({ ...STATUS, args: 'normal' })).toEqual({ text: 'no feed change in this session: the launch did not say where cs is (CS_BIN)' })
   expect(writes).toEqual([])
   expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
 })
@@ -245,7 +245,7 @@ for (const order of ['refusal first', 'write first']) test(`a successful write k
   expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
   expect(file).toBe('on\n')
   expect(runs).toBe(2)
-  expect(logs).toEqual(order === 'refusal first' ? ['cs-feed: the feed is off in this session: old refusal'] : [])
+  expect(logs).toEqual(order === 'refusal first' ? ['the feed is off in this session: old refusal'] : [])
 })
 
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {

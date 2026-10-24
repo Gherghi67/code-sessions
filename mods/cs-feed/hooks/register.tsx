@@ -36,6 +36,9 @@ export function register(on: On) {
   registerFeed(on)
 }
 
+/** What /feed answers, and whether it changed nothing because the directory or cs refused (the settings pane logs those). */
+type Answer = { readonly text: string; readonly refused: boolean }
+
 /**
  * Carries out a typed /feed command or a settings-pane press for THIS session.
  * It never reloads and runs no command.
@@ -45,12 +48,15 @@ export function register(on: On) {
  *   const tr = transition(cmd, load.feed!)
  *   if (tr.session) {                                      // every write: on, off, a preset, a setting, hide/show, a chip, a pane row
  *     const done = await writeFeed(load, $, tr.session)    // asks cs -vet-session first (ruling §20.22)
- *     if (done === 'no-session') return 'cs-feed: this directory is not a cs session (no .cs/local), so nothing changed.'
- *     if (done !== 'written') return `cs-feed: no feed change in this session: ${done.refused}`
+ *     if (done === 'no-session') return { text: 'this directory is not a cs session (no .cs/local), so nothing changed.', refused: true }
+ *     if (done !== 'written') return { text: `no feed change in this session: ${done.refused}`, refused: true }
  *   }
  *   if (tr.pane === 'open') await $.ui.open({ id: PANE, title: 'Chat view', focus: true })
  *   if (tr.pane === 'close') await $.ui.close({ id: PANE })
- *   return tr.reply
+ *   return { text: tr.reply, refused: false }
+ *
+ * The texts carry no plugin name: the engine leads a command's output and a
+ * `$.ui.log` line with it (`cs-feed: no feed change ...` on screen).
  *
  * A refusal writes nothing, leaves the mirror and the drawing as they were,
  * and says why in the reply: the refusal text is cs's own (session.vetRefusal),
@@ -76,7 +82,7 @@ export function register(on: On) {
  * session.applyFeed). /feed is `immediate`, so a typed /feed runs mid-turn at
  * once (spike3 M12: immediate lets a typed command run mid-turn).
  */
-function perform($: $, cmd: FeedCommand): Promise<string> {
+function perform($: $, cmd: FeedCommand): Promise<Answer> {
   if (cmd.kind === 'status' || cmd.kind === 'open' || cmd.kind === 'close' || cmd.kind === 'usage') return performNow($, cmd)
   const result = (load.writes ?? Promise.resolve()).then(() => performNow($, cmd))
   // The caller keeps result's rejection; the queue must still admit the next command.
@@ -84,7 +90,7 @@ function perform($: $, cmd: FeedCommand): Promise<string> {
   return result
 }
 
-async function performNow($: $, cmd: FeedCommand): Promise<string> {
+async function performNow($: $, cmd: FeedCommand): Promise<Answer> {
   await feedRecord(load, $)
   if (cmd.kind === 'status') await applyFeed(load, $, 'status')
   const current = load.feed
@@ -92,12 +98,12 @@ async function performNow($: $, cmd: FeedCommand): Promise<string> {
   const changed = transition(cmd, current)
   if (changed.session) {
     const result = await writeFeed(load, $, changed.session)
-    if (result === 'no-session') return 'cs-feed: this directory is not a cs session (no .cs/local), so nothing changed.'
-    if (result !== 'written') return `cs-feed: no feed change in this session: ${result.refused}`
+    if (result === 'no-session') return { text: 'this directory is not a cs session (no .cs/local), so nothing changed.', refused: true }
+    if (result !== 'written') return { text: `no feed change in this session: ${result.refused}`, refused: true }
   }
   if (changed.pane === 'open') await $.ui.open({ id: PANE, title: 'Chat view', focus: true })
   if (changed.pane === 'close') await $.ui.close({ id: PANE })
-  return changed.reply
+  return { text: changed.reply, refused: false }
 }
 
 /**
@@ -132,7 +138,7 @@ function registerFeed(on: On) {
   })
 
   on('command.run', { command: 'feed' }, async ($, e) => {
-    return { text: await perform($, parseFeedArgs(e.args)) }
+    return { text: (await perform($, parseFeedArgs(e.args))).text }
   })
 
   on('command.run', { command: 'helpers' }, async ($) => {
@@ -177,8 +183,8 @@ function registerFeed(on: On) {
     const session = load.feed ?? await feedRecord(load, $)
     await next(e)
     return drawSettingsPane(modeOf(session), session, { el: $.ui.resolve(e), ink: inks(load.light), room: e.props.bodyColumns }, async cmd => {
-      const reply = await perform($, cmd)
-      if (reply.startsWith('cs-feed:')) await $.ui.log(reply)
+      const answer = await perform($, cmd)
+      if (answer.refused) await $.ui.log(answer.text)
     })
   })
 
@@ -196,7 +202,7 @@ function registerFeed(on: On) {
     for (const agent of shown) {
       const rows = await $.session.messages({ agentId: agent.id })
       own.set(agent.id, Array.isArray(rows) ? rows : undefined)
-      if (!Array.isArray(rows)) await $.ui.log(`cs-feed: could not read helper ${agent.id}'s transcript: ${rows.deny}`)
+      if (!Array.isArray(rows)) await $.ui.log(`could not read helper ${agent.id}'s transcript: ${rows.deny}`)
     }
     const blocks = decideHelpersPane(shown, t, own, load.obs, Date.now())
     if (blocks.some(block => block.status === 'working')) await readTick($)
