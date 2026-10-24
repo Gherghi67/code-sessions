@@ -351,7 +351,7 @@ export function register(on: On, options: PluginOptions) {
     if (!registered) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
-      await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
+      await $.command.register({ name: 'cs', description: "Scroll the transcript or report this session's feed setting.", argumentHint: 'next|prev|first|last|<n>|feed on|off', immediate: true })
     }
     await refreshRail($)
     readFeaturesLater($)
@@ -404,6 +404,11 @@ export function register(on: On, options: PluginOptions) {
   // row of its own would grow the transcript under the view it just moved.
   on('command.run', { command: 'cs' }, async ($, e) => {
     const asked = e.args.trim()
+    // The report comes back from /feed too; sending it on would recurse.
+    if (asked === 'feed on' || asked === 'feed off') {
+      await $.state.set({ plugin: 'cs', key: 'feedOn' }, asked === 'feed on')
+      return {}
+    }
     const count = prompts.length
     const current = readIndex()
     let target: number
@@ -412,7 +417,7 @@ export function register(on: On, options: PluginOptions) {
     else if (asked === 'first') target = 0
     else if (asked === 'last') target = count - 1
     else if (/^\d+$/.test(asked)) target = Number(asked) - 1
-    else return { text: 'usage: /cs next|prev|first|last|<n>' }
+    else return { text: 'usage: /cs next|prev|first|last|<n> or /cs feed on|off' }
     if (count === 0) return { text: 'cs: the rail has no prompts' }
     if (asked === 'next' && target >= count) return { text: 'cs: no prompt after this one' }
     if (asked === 'prev' && target < 0) return { text: 'cs: no prompt before this one' }

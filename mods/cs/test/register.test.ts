@@ -1679,7 +1679,7 @@ test('the mod registers /queue at load, to run at once even mid-turn', async () 
   await startSession()
   expect(commands).toHaveLength(2)
   expect(commands[0]).toMatchObject({ name: 'queue', immediate: true, argumentHint: '[task]' })
-  expect(commands[1]).toMatchObject({ name: 'cs', immediate: true, argumentHint: 'next|prev|first|last|<n>' })
+  expect(commands[1]).toMatchObject({ name: 'cs', immediate: true, argumentHint: 'next|prev|first|last|<n>|feed on|off' })
 })
 
 test('/queue with a task runs cs -queue add with the task as one argument and says it is queued', async () => {
@@ -2430,7 +2430,7 @@ test('/cs next, prev, first, last and N move along the rail from the prompt bein
   expect(await cs('3')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u3', 'u1', 'u1', 'u4', 'u3'])
   expect(await cs('9')).toEqual({ text: 'cs: the rail has 4 prompts' })
-  expect(await cs('sideways')).toEqual({ text: 'usage: /cs next|prev|first|last|<n>' })
+  expect(await cs('sideways')).toEqual({ text: 'usage: /cs next|prev|first|last|<n> or /cs feed on|off' })
   await drawRow('u4', '  say four  ', { first: 0, last: 1, of: 2 })
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
@@ -3374,4 +3374,51 @@ test('feed state stays with its session across registration and stale button pre
   files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
   register(on as any, OPTIONS)
   expect(feedKey(await band()).props.label).toBe('feed')
+})
+
+test('/cs feed agrees with presses without echoing /feed and survives reload', async () => {
+  enableFeed()
+  expect(await cs('feed on')).toEqual({})
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  expect(ran).toEqual([])
+  await feedKey(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'feed', args: 'off' }])
+  expect(await cs('feed on')).toEqual({})
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  expect(await cs('feed off')).toEqual({})
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(ran).toEqual([{ command: 'feed', args: 'off' }])
+})
+
+test('/cs feed refuses unknown settings without changing the session', async () => {
+  enableFeed()
+  for (const args of ['feed', 'feed clean', 'feed on extra', 'feed ON']) {
+    expect(await cs(args)).toEqual({ text: 'usage: /cs next|prev|first|last|<n> or /cs feed on|off' })
+  }
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(ran).toEqual([])
+})
+
+test('a failed feed send cannot undo a reverse report across reload', async () => {
+  enableFeed()
+  const run = $.command.run
+  let refuse = (_error: Error) => {}
+  $.command.run = async () => {
+    await new Promise<void>((_resolve, reject) => { refuse = reject })
+    return { text: '' }
+  }
+  try {
+    const press = feedKey(await band()).props.onPress()
+    await settle()
+    await cs('feed on')
+    register(on as any, OPTIONS)
+    refuse(new Error('feed unavailable'))
+    await press
+    expect(feedKey(await band()).props.label).toBe('feed ✓')
+    expect(toasts).toEqual(['cs: feed request failed after another change: feed unavailable'])
+  } finally {
+    $.command.run = run
+  }
 })

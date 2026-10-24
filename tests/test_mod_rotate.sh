@@ -121,7 +121,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. What sorts after
     # $.ui.log is checked on the source instead.
-    assert_output_contains "$out" '$.session.id, $.session.usage, $.state.get, $.state.set (via pressFeed)' "the visible inventory includes session state reads and writes from the feed press" || return 1
+    assert_output_contains "$out" '$.session.id, $.session.usage, $.state.get, $.state.set, $.ui.ask (via askToWrap, offerToStart)' "the visible inventory includes the feed press and reverse command's session state before the dialogs" || return 1
     assert_output_contains "$out" 'state writes: cs.feedOn' "the feed control writes its declared session value" || return 1
     assert_output_contains "$out" 'state reads: cs.feedOn' "the feed control reads its declared session value" || return 1
     local src="$MOD/hooks/register.tsx" scroll_lines jump_range
@@ -131,7 +131,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     set -- $jump_range
     [ "${scroll_lines% }" -gt "$1" ] && [ "${scroll_lines% }" -lt "$2" ] \
         || { echo "  FAIL: \$.ui.scroll at line ${scroll_lines% } is outside jumpTo (lines $1-$2)"; return 1; }
-    assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToSta… \[+151 chars\]' "the dialog callers reach the validator's cut after the feed state calls" || return 1
+    assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToStart)' "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.open' "$src")" "the mod opens no pane" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.close' "$src")" "and closes none" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.panes' "$src")" "and lists none" || return 1
