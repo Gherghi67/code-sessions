@@ -283,7 +283,7 @@ export type UserVerdict =
  */
 export function decideUser(row: UserRow, cx: Context): Decision<UserVerdict> {
   const answer = (verdict: UserVerdict): Decision<UserVerdict> => ({ verdict, live: false })
-  if (row.isExpanded) return answer({ draw: 'engine' })
+  if (row.isExpanded || !drawsOrigin(row.origin.kind)) return answer({ draw: 'engine' })
   const origin = row.origin.kind
   const typed = origin === 'composer' || origin === 'bridge' || origin === 'sdk'
   const hook = hookTextLine(row.text)
@@ -315,6 +315,24 @@ export function decideUser(row: UserRow, cx: Context): Decision<UserVerdict> {
     return { verdict: { draw: 'peer', ...own, nested: true }, live }
   }
   return { verdict: { draw: 'peer', sender: own.sender, headline: peerHeadline(row.text, cx.room) }, live }
+}
+
+/**
+ * The origins §8.1 routes: typed rows, task notifications, scheduled
+ * triggers, peer and teammate messages, and unclassified rows. Every other
+ * kind is unmeasured, so its row keeps the engine's drawing. Exhaustive over
+ * the contract's kinds: a kind the engine adds fails to compile here instead
+ * of drawing as a peer line.
+ */
+function drawsOrigin(kind: PromptOrigin['kind']): boolean {
+  switch (kind) {
+    case 'composer': case 'bridge': case 'sdk': case 'task-notification': case 'scheduled-trigger':
+    case 'peer': case 'peer-send-message': case 'unclassified':
+      return true
+    case 'projects-relay': case 'channel': case 'coordinator': case 'observer': case 'observer-activity':
+    case 'auto-continuation': case 'slack-ping': case 'plugin':
+      return false
+  }
 }
 
 export type ReplyVerdict = {

@@ -1,7 +1,7 @@
 // ABOUTME: Checks each feed painter's visible words through real mounted engine render chains.
 // ABOUTME: Test hooks supply recorded session inputs and retain an observable engine drawing beneath the feed.
 import { expect, mock, test } from 'claude-code/testing'
-import type { AgentInfo, On, SessionMessage } from 'claude-code'
+import type { AgentInfo, On, PromptOrigin, SessionMessage } from 'claude-code'
 
 function session(on: On, rows: SessionMessage[] = [], agents: () => AgentInfo[] = () => []) {
   on('session.cwd', () => ({ value: '/session' }))
@@ -28,6 +28,22 @@ test('UserMessage draws the terminal you margin and leaves the desktop engine bo
   expect(calls).toBe(2)
   await terminal.unmount()
   await desktop.unmount()
+})
+
+test('UserMessage keeps the engine row for an origin the feed has no rule for, envelope text included', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine prompt' }))
+  const origins: PromptOrigin[] = [
+    { kind: 'plugin', name: 'helper-plugin' },
+    { kind: 'channel', server: 'example' },
+    { kind: 'slack-ping' },
+    { kind: 'auto-continuation' },
+  ]
+  for (const [index, origin] of origins.entries()) {
+    const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: `row-${index}`, props: { text: '<teammate-message teammate_id="alice">Ready</teammate-message>', origin, isExpanded: false } })
+    expect((await row.find({ type: 'Text' }))?.text).toBe('engine prompt')
+    await row.unmount()
+  }
 })
 
 test('UserMessage draws your text in the you ink, and a slash command with its name in that ink and its arguments dim', async ($, on) => {
