@@ -56,7 +56,7 @@ export type FiledCall = {
   readonly turn: TurnId
   /** The run this call is in; absent for a standalone call. A run's id is its first call's. */
   readonly run?: CallId
-  /** 1-based count of calls the turn filed up to this one, as the working line's "step N" says it. */
+  /** Machinery steps filed through this call; helpers and questions do not increment it. */
   readonly step: number
   /**
    * ToolUseSummary.agentId on an Agent call: known while the session tracks the
@@ -375,10 +375,10 @@ export function questionPairs(input: unknown, result: unknown): readonly Questio
     const boundary = normalized.search(/[?:](?:\s|$)/)
     return (boundary >= 0 ? normalized.slice(0, boundary) : normalized.split('.')[0] ?? '').trim()
   }
-  if (object(result.answers)) return Object.entries(result.answers).flatMap(([key, value]) => typeof value === 'string' ? [{ question: question(key), answer: value }] : [])
-  if (typeof result.response !== 'string' || !object(input) || !Array.isArray(input.questions)) return []
-  const first = input.questions[0]
-  return object(first) && typeof first.question === 'string' ? [{ question: question(first.question), answer: result.response }] : []
+  const pairs = object(result.answers) ? Object.entries(result.answers).flatMap(([key, value]) => typeof value === 'string' ? [{ question: question(key), answer: value }] : []) : []
+  if (pairs.length || typeof result.response !== 'string') return pairs
+  const first: unknown = object(input) && Array.isArray(input.questions) ? input.questions[0] : undefined
+  return [{ question: object(first) && typeof first.question === 'string' ? question(first.question) : 'a question', answer: result.response }]
 }
 
 /**

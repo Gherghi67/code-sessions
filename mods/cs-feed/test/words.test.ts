@@ -13,6 +13,10 @@ test('helper envelopes preserve report data as inert frames and bound plain lead
   expect(framesFromText('{"type":"idle_notification","from":"reader","summary":"Ready"}')).toEqual([{ from: 'reader', state: 'waiting', at: undefined, summary: 'Ready', relays: false, lead: undefined }])
   expect(parseEnvelopes('<teammate-message from="reader"><relay-marker/>\nThis agent read text written by people other than you\nOne\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight</teammate-message>')).toEqual([{ from: 'reader', state: undefined, at: undefined, summary: undefined, relays: true, lead: { text: 'One\nTwo\nThree\nFour\nFive\nSix', more: 2 } }])
   expect(parseEnvelopes('ordinary text')).toEqual([])
+  expect(parseEnvelopes('<teammate-message from="docs">Built.\n\n- a\n- b</teammate-message>')[0]?.lead).toEqual({ text: 'Built.', more: 2 })
+  expect(parseEnvelopes('<teammate-message from="docs">[1,2,3]</teammate-message>')[0]?.lead).toEqual({ text: '3 items', more: 0 })
+  expect(parseEnvelopes('<teammate-message from="docs">{not json}</teammate-message>')[0]?.lead).toEqual({ text: 'a structured report', more: 0 })
+  expect(framesFromText('Build finished.\nAll 12 checks pass.')).toEqual([])
 })
 
 test('peer and hook labels clean only their display text and keep safe fallbacks', () => {

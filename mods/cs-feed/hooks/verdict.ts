@@ -4,8 +4,11 @@ import type { PromptOrigin, UserMessageFrom, UserMessageTask } from 'claude-code
 
 import type { Observations, Opened, Phase } from './session'
 import type { Kind, View } from './settings'
+import { modeOf } from './settings'
 import type { CallId, FiledCall, Run, Transcript, Turn, TurnId } from './transcript'
+import { callId } from './transcript'
 import type { ErrorLine, Frame } from './words'
+import { repliesOwnSteps, isRefusal, errorLine, callWords, framesFromText, hookTextLine, senderOf, peerHeadline, fit, elapsed } from './words'
 
 /**
  * A call as a row's props show it, from ToolUse or one ToolGroupCall, parsed at
@@ -64,7 +67,16 @@ export type HelperState = 'dispatched' | 'running' | 'finished' | 'failed' | 'st
  * on a background launch: no time).
  */
 export function helperState(call: CallView, filed: FiledCall | undefined, agents: readonly import('claude-code').AgentInfo[]): HelperState {
-  throw new Error('not implemented')
+  if (call.isRunning) return 'dispatched'
+  const agent = filed?.agentId ? agents.find(agent => agent.id === filed.agentId) : undefined
+  if (agent && busy(agent.status)) return 'running'
+  if (call.isErrored || agent?.status === 'failed') return 'failed'
+  if (call.isInterrupted || agent?.status === 'killed') return 'stopped'
+  return 'finished'
+}
+
+function busy(status: string): boolean {
+  return status === 'running' || status === 'pending' || status === 'waiting'
 }
 
 /**
@@ -92,7 +104,50 @@ export function helperState(call: CallView, filed: FiledCall | undefined, agents
  * live = the call's turn is the open turn, or the call is unfiled.
  */
 export function decideCall(call: CallView, cx: Context): Decision<CallVerdict> {
-  throw new Error('not implemented')
+  return callDecision(call, cx, true)
+}
+
+function callDecision(call: CallView, cx: Context, turnLine: boolean): Decision<CallVerdict> {
+  const filed = call.id ? cx.t.calls.get(call.id) : undefined
+  const turn = filed ? cx.t.byId.get(filed.turn) : undefined
+  const live = !filed || filed.turn === cx.open?.id
+  const opened = filed ? cx.opened.has(`turn-${filed.turn}`) : false
+  const folded = cx.view.group && !(!live && cx.view.keep)
+  if (filed && turn && folded && turnLine && turn.first === filed.id) {
+    const owner = stepsOwner(filed.turn, cx)
+    if (typeof owner === 'object') return { verdict: { draw: 'nothing' }, live }
+    const done = turn.steps.filter(id => cx.t.calls.get(id)?.outcome.state === 'done').length
+    return { verdict: !done && !opened ? { draw: 'nothing' } : { draw: 'turn', turn: filed.turn, done, opened, body: opened ? [callDecision(call, cx, false).verdict] : [] }, live: live || owner === 'pending' }
+  }
+  const refused = call.isErrored && typeof call.output === 'string' && isRefusal(call.output)
+  const cls = filed?.cls ?? (refused ? 'machinery' : call.tool === 'Agent' || call.tool === 'Task' ? 'helper' : call.tool === 'AskUserQuestion' ? 'question' : 'machinery')
+  if (hidden(cx.view, callKind(call.tool, cls))) return { verdict: { draw: 'nothing' }, live }
+  if (cls === 'helper') {
+    const state = helperState(call, filed, cx.agents)
+    const started = call.id ? cx.obs.helperStartedAt.get(call.id) : undefined
+    const elapsedMs = state === 'running' || state === 'dispatched' ? started === undefined ? undefined : Math.max(0, cx.now - started) : filed?.outcome.state === 'done' ? filed.outcome.durationMs : undefined
+    return { verdict: { draw: 'helper', call, state, elapsedMs }, live }
+  }
+  if (cls === 'question') return { verdict: { draw: 'question', call, opened: call.id ? cx.opened.has(call.id) : false }, live }
+  if (!filed && cx.open && call.isRunning) return { verdict: { draw: 'nothing' }, live }
+  if (filed?.cls === 'machinery' && folded && !opened) return { verdict: { draw: 'nothing' }, live }
+  if (filed && !live && !cx.view.keep && cx.view.clear && !opened) return { verdict: { draw: 'nothing' }, live }
+  if (filed && cx.view.group && call.isRunning && !opened) return { verdict: { draw: 'nothing' }, live }
+  if (filed?.run && (cx.view.commands === 'grouped' || (!live && cx.view.after === 'clear' && !cx.view.keep && !opened))) return { verdict: runDecision(call, filed, cx), live }
+  return { verdict: { draw: 'call', call, filed, opened: cx.view.style === 'expanded' || (call.id ? cx.opened.has(call.id) : false) }, live }
+}
+
+function callKind(tool: string, cls = 'machinery'): Kind {
+  return cls === 'helper' ? 'agent' : cls === 'question' ? 'question' : tool === 'WebSearch' || tool === 'WebFetch' ? 'search' : 'tool'
+}
+
+function runDecision(call: CallView, filed: FiledCall, cx: Context): CallVerdict {
+  const stored = filed.run ? cx.t.runs.get(filed.run) : undefined
+  if (!stored) return { draw: 'call', call, filed, opened: cx.opened.has(filed.id) }
+  const visible = stored.calls.filter(id => { const member = cx.t.calls.get(id); return member && !hidden(cx.view, callKind(member.tool, member.cls)) })
+  if (visible[0] !== filed.id) return { draw: 'nothing' }
+  const naming = !cx.view.group || !cx.open ? visible.findLast(id => id === filed.id ? call.isRunning : cx.t.calls.get(id)?.outcome.state === 'running') : undefined
+  return { draw: 'run', run: { ...stored, calls: visible }, naming, opened: cx.view.style === 'expanded' || cx.opened.has(`open-${stored.id}`) }
 }
 
 /**
@@ -133,7 +188,12 @@ export function decideCall(call: CallView, cx: Context): Decision<CallVerdict> {
  * that files the next call).
  */
 export function stepsOwner(turn: TurnId, cx: Context): 'tool' | 'pending' | { readonly reply: string } {
-  throw new Error('not implemented')
+  const last = [...cx.t.calls.values()].filter(call => call.turn === turn).at(-1)
+  const uuid = last ? cx.obs.latestByCall.get(last.id) : undefined
+  const anchor = uuid ? cx.obs.anchors.get(uuid) : undefined
+  if (!uuid || !anchor || hidden(cx.view, 'said') || !repliesOwnSteps(anchor.text)) return 'tool'
+  const drawn = cx.obs.stepsDrawn.get(uuid)
+  return drawn === true ? { reply: uuid } : drawn === false ? 'tool' : 'pending'
 }
 
 export type GroupVerdict =
@@ -148,13 +208,17 @@ export type GroupVerdict =
  * group passes through on its own `isExpanded` and otherwise stacks its calls'
  * decisions; ctrl+o needs no module flag.
  */
-export function decideGroup(props: { calls: readonly CallView[]; isActive: boolean; isExpanded: boolean }, cx: Context): Decision<GroupVerdict> {
-  throw new Error('not implemented')
+export function decideGroup(props: { calls: readonly CallView[]; isActive: boolean; isExpanded: boolean; isCallsOnly?: boolean }, cx: Context): Decision<GroupVerdict> {
+  if (props.isExpanded || props.isCallsOnly !== true) return { verdict: { draw: 'engine' }, live: false }
+  const decisions = props.calls.map(call => decideCall(call, cx))
+  const live = decisions.some(decision => decision.live)
+  if (props.calls.length >= 2 && !hidden(cx.view, 'agent') && props.calls.every(call => call.id && cx.t.calls.get(call.id)?.cls === 'helper')) return { verdict: { draw: 'batch', helpers: props.calls }, live }
+  return { verdict: { draw: 'stack', calls: decisions.map(decision => decision.verdict) }, live }
 }
 
 /** ToolResult: nothing when its call is filed (the result rides on the call's chip and opened output); else the engine's (§4.8). */
 export function decideToolResult(id: CallId, isExpanded: boolean | undefined, cx: Context): 'nothing' | 'engine' {
-  throw new Error('not implemented')
+  return !isExpanded && cx.t.calls.has(id) ? 'nothing' : 'engine'
 }
 
 export type UserRow = {
@@ -184,7 +248,35 @@ export type UserVerdict =
  * task; an id neither knows reads as a background task, not a helper.
  */
 export function decideUser(row: UserRow, cx: Context): Decision<UserVerdict> {
-  throw new Error('not implemented')
+  const answer = (verdict: UserVerdict): Decision<UserVerdict> => ({ verdict, live: false })
+  if (row.isExpanded) return answer({ draw: 'engine' })
+  const origin = row.origin.kind
+  const typed = origin === 'composer' || origin === 'bridge' || origin === 'sdk'
+  const hook = hookTextLine(row.text)
+  if (!typed && origin !== 'task-notification') {
+    const frames = cx.obs.frames.get(row.uuid) ?? framesFromText(row.text)
+    if (frames.length) return answer(hidden(cx.view, 'peer') ? { draw: 'nothing' } : { draw: 'frames', frames })
+  }
+  if (typed || origin === 'scheduled-trigger' || (origin === 'unclassified' && !row.from?.name && !hook)) {
+    if (cx.surface !== 'terminal') return answer({ draw: 'engine' })
+    return answer(hidden(cx.view, 'you') ? { draw: 'nothing' } : { draw: 'you', text: row.text, at: cx.obs.promptAt.get(row.uuid) })
+  }
+  if (hook) return answer({ draw: 'hookText', line: hook })
+  if (origin === 'task-notification') {
+    const filed = row.task?.toolUseId ? cx.t.calls.get(callId(row.task.toolUseId)) : undefined
+    const helper = filed?.cls === 'helper' || cx.agents.some(agent => agent.id === row.task?.id)
+    if (helper) return answer(hidden(cx.view, 'helper') ? { draw: 'nothing' } : { draw: 'helperNote', durationMs: row.task?.durationMs, headline: peerHeadline(row.text, cx.room) })
+    return answer(cx.view.clear && !cx.view.keep ? { draw: 'nothing' } : { draw: 'backgroundNote' })
+  }
+  if (hidden(cx.view, 'peer')) return answer({ draw: 'nothing' })
+  const head = cx.obs.bursts.of.get(row.uuid)
+  const members = head ? cx.obs.bursts.members.get(head) : undefined
+  if (head && members && members.length >= 2) {
+    const opened = cx.opened.has(`burst-${head}`)
+    if (head === row.uuid) return answer({ draw: 'burst', members, opened })
+    if (!opened) return answer({ draw: 'nothing' })
+  }
+  return answer({ draw: 'peer', sender: senderOf(row.from, row.text), headline: peerHeadline(row.text, cx.room) })
 }
 
 export type ReplyVerdict = {
@@ -212,7 +304,7 @@ export type ReplyDecision =
 /**
  * AssistantMessage. Error detection runs before the `said` check (ruling §20.2:
  * hiding what Claude said never hides that the reply failed), and the safeguard
- * rules require an error prefix (ruling §20.6). On desktop the body stays the
+ * rules require an error prefix or a whole one-line reply (ruling §20.6). On desktop the body stays the
  * engine's own and the steps line is still attached under it (ruling §20.1).
  *
  * Live only while its steps-line claim is pending (ReplyDecision, ruling
@@ -249,7 +341,28 @@ export type ReplyDecision =
  *                    line on tool row         line on tool row
  */
 export function decideReply(row: { uuid: string; text: string; isFirstOfReply: boolean }, cx: Context): ReplyDecision {
-  throw new Error('not implemented')
+  const anchor = cx.obs.anchors.get(row.uuid)
+  const filed = anchor ? cx.t.calls.get(anchor.call) : undefined
+  const turn = filed ? cx.t.byId.get(filed.turn) : undefined
+  const last = turn?.id ? [...cx.t.calls.values()].filter(call => call.turn === turn.id).at(-1) : undefined
+  const fragment = anchor !== undefined && anchor.text !== row.text
+  const spent = cx.phase === 'idle' || turn !== cx.open
+  const eligible = anchor && turn?.first && last?.id === anchor.call && cx.obs.latestByCall.get(last.id) === row.uuid && !hidden(cx.view, 'said') && repliesOwnSteps(anchor.text) && cx.view.group && !(spent && cx.view.keep)
+  const recorded = cx.obs.stepsDrawn.get(row.uuid)
+  const claim: StepsClaim = recorded !== undefined ? recorded ? 'drawn' : 'declined' : !eligible ? 'declined' : !spent ? 'pending' : fragment ? 'declined' : 'drawn'
+  const error = fragment ? undefined : errorLine(row.text)
+  const verdict: Omit<ReplyVerdict, 'stepsLine'> = { body: error ? { error } : hidden(cx.view, 'said') ? 'nothing' : 'engine', name: !error && !hidden(cx.view, 'said') && !fragment && row.isFirstOfReply && cx.surface === 'terminal' }
+  if (claim === 'pending') return { verdict, claim, live: true }
+  if (claim !== 'drawn' || !eligible || fragment || !turn?.id || !turn.first) return { verdict, claim, live: false }
+  const done = turn.steps.filter(id => cx.t.calls.get(id)?.outcome.state === 'done').length
+  const opened = cx.opened.has(`turn-${turn.id}`)
+  const first = cx.t.calls.get(turn.first)
+  const stepsLine: CallVerdict = { draw: 'turn', turn: turn.id, done, opened, body: opened && first ? [callDecision(callView(first), cx, false).verdict] : [] }
+  return { verdict: { ...verdict, stepsLine }, claim, live: false }
+}
+
+function callView(filed: FiledCall): CallView {
+  return { id: filed.id, tool: filed.tool, input: filed.input, isRunning: filed.outcome.state === 'running', isErrored: filed.outcome.state === 'done' && filed.outcome.errored, isInterrupted: filed.outcome.state === 'done' && filed.outcome.interrupted, output: filed.outcome.state === 'done' ? filed.outcome.output : undefined }
 }
 
 export type SpinnerVerdict =
@@ -273,7 +386,13 @@ export type SpinnerVerdict =
  * (open-measurements M22).
  */
 export function decideSpinner(props: { message: string | null; mode: 'requesting' | 'responding' | 'thinking' | 'tool-input' | 'tool-use' }, cx: Context): Decision<SpinnerVerdict> {
-  throw new Error('not implemented')
+  if (props.message !== null || !cx.open) return { verdict: { draw: 'engine' }, live: false }
+  const steps = cx.open.steps.length
+  const running = cx.open.steps.map(id => cx.t.calls.get(id)).findLast(call => call?.outcome.state === 'running')
+  const words = cx.view.group && props.mode === 'responding' ? 'Writing' : cx.view.group && running ? callWords(running, 'present') : steps ? 'Working' : 'Thinking'
+  const helpers = cx.agents.filter(agent => !agent.parentId && (agent.status === 'running' || agent.status === 'pending')).length
+  const message = words + (steps ? ` · step ${steps}` : '') + (helpers ? ` · ${helpers} ${helpers === 1 ? 'helper' : 'helpers'} working` : '')
+  return { verdict: { draw: 'rewrite', message, suffix: '' }, live: true }
 }
 
 export type BandVerdict =
@@ -290,17 +409,49 @@ export type Pill = { readonly kind: 'helper' | 'job' | 'test'; readonly words: s
  * with no open turn and no helper line.
  */
 export function decideBand(props: { hasSurvey: boolean; isWorking: boolean; maxRows: number; bodyColumns: number }, usage: { fiveHour?: number; week?: number }, cx: Context): Decision<BandVerdict> {
-  throw new Error('not implemented')
+  const answer = (verdict: BandVerdict): Decision<BandVerdict> => ({ verdict, live: false })
+  if (props.hasSurvey) return answer({ draw: 'engine' })
+  const agents = cx.agents.filter(agent => !agent.parentId && !agent.teammateId)
+  const background = cx.t.background.filter(run => !cx.obs.bgEnded.has(run.id) && !cx.agents.some(agent => agent.id === run.id || agent.teammateId === run.id || agent.description === run.words))
+  const elapsedMs = (id: CallId) => { const at = cx.obs.bgSeenAt.get(id); return at === undefined ? undefined : Math.max(0, cx.now - at) }
+  if (cx.surface === 'desktop') {
+    const pills: Pill[] = [...agents.filter(agent => agent.status === 'running').map(agent => ({ kind: 'helper' as const, words: fit(agent.description, 28) })), ...background.map(run => ({ kind: run.isTest ? 'test' as const : 'job' as const, words: run.words, elapsedMs: elapsedMs(run.id) }))]
+    return answer(usage.fiveHour === undefined && usage.week === undefined && !pills.length ? { draw: 'engine' } : { draw: 'desktop', usage, pills })
+  }
+  if (agents.some(agent => busy(agent.status))) {
+    const members = [...cx.obs.batch.kinds].map(([id, kind]) => ({ kind, status: agents.find(agent => agent.id === id)?.status ?? 'completed' }))
+    const running = members.filter(member => busy(member.status)).length
+    const failed = members.filter(member => member.status === 'failed' || member.status === 'killed').length
+    const done = members.length - running - failed
+    const kinds = new Map<string, { kind: string; cells: string; done: number; n: number }>()
+    for (const member of members) {
+      const kind = kinds.get(member.kind) ?? { kind: fit(member.kind === 'general-purpose' ? 'general' : member.kind, 18), cells: '', done: 0, n: 0 }
+      const working = busy(member.status)
+      const failed = member.status === 'failed' || member.status === 'killed'
+      kind.cells += working ? '◐' : failed ? '✕' : '●'
+      kind.done += !working && !failed ? 1 : 0
+      kind.n++
+      kinds.set(member.kind, kind)
+    }
+    const room = Math.max(0, props.maxRows - 3)
+    const shown = kinds.size > room ? Math.max(0, room - 1) : room
+    const head = [`${members.length} ${members.length === 1 ? 'helper' : 'helpers'}`, ...(done ? [`${done} done`] : []), ...(running ? [`${running} running`] : []), ...(failed ? [`${failed} failed`] : []), ...(cx.obs.batch.startedAt === undefined ? [] : [elapsed(cx.now - cx.obs.batch.startedAt)])].join(' · ')
+    return answer({ draw: 'helpers', head, kinds: [...kinds.values()].slice(0, shown), more: Math.max(0, kinds.size - shown), spinning: running > 0 })
+  }
+  const first = background[0]
+  if (!first || props.isWorking || cx.open) return answer({ draw: 'engine' })
+  return answer({ draw: 'background', words: first.words, isTest: background.some(run => run.isTest), more: background.length - 1, elapsedMs: elapsedMs(first.id), typing: props.bodyColumns >= 90 })
 }
 
 /** CommandOutput §3.3: dim "·" and the text, red on error, a leading "cs-feed:" removed; isExpanded -> engine. */
 export function decideCommandOutput(props: { command: string; text: string; isErrored: boolean }, cx: Context): 'engine' | 'nothing' | { text: string; isErrored: boolean } {
-  throw new Error('not implemented')
+  const text = props.text.trim().replace(/^cs-feed:\s*/, '').trim()
+  return text ? { text, isErrored: props.isErrored } : 'nothing'
 }
 
 /** SessionMode §3.5: append "feed {mode} · /feed to switch" while this session's feed is on. Off (raw), site() passes the row through before any painter runs, so this never says "feed raw". */
 export function sessionModes(modes: readonly string[], view: View): readonly string[] {
-  throw new Error('not implemented')
+  return [...modes, `feed ${modeOf({ on: true, view })} · /feed to switch`]
 }
 
 /** Shared with the pane: is a kind hidden? */

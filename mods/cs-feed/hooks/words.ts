@@ -247,6 +247,7 @@ export function parseEnvelopes(raw: string): readonly Frame[] {
 }
 /** §8.3 source 2: frames read from a row's own text (a row stored before this load). */
 export function framesFromText(text: string): readonly Frame[] {
+  if (!text.split('\n').some(line => /^[{[]/.test(line.trim()))) return []
   const frames: Frame[] = []
   let plain: string[] = []
   const flush = () => {
@@ -281,14 +282,24 @@ function frame(body: string, from?: string, summary?: string): Frame {
 
 function reportLead(text: string): Frame['lead'] {
   if (!text) return undefined
+  if (text.startsWith('[')) {
+    try {
+      const value: unknown = JSON.parse(text)
+      if (Array.isArray(value)) return { text: `${value.length} items`, more: 0 }
+    } catch {
+      return { text: 'a structured report', more: 0 }
+    }
+  }
   const opening = text.indexOf('{')
   const object = opening >= 0 ? jsonObject(text.slice(opening)) : undefined
   const sentence = opening > 0 ? text.slice(0, opening).trim() : undefined
   const card = object ? reportCard(object, sentence) : undefined
   if (card) return { ...(sentence ? { sentence } : {}), card, more: 0 }
-  const paragraph = text.split(/\n\s*\n/)[0] ?? ''
+  if (opening === 0) return { text: 'a structured report', more: 0 }
+  const remaining = sentence ?? text
+  const paragraph = remaining.split(/\n\s*\n/)[0] ?? ''
   const lead = paragraph.split('\n').slice(0, 6).join('\n').slice(0, 600)
-  return { text: lead, more: Math.max(0, text.split('\n').length - lead.split('\n').length) }
+  return { text: lead, more: Math.max(0, remaining.split('\n').filter(line => line.trim()).length - lead.split('\n').filter(line => line.trim()).length) }
 }
 
 function reportTone(value: unknown): Card['tone'] {

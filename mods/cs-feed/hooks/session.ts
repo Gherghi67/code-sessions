@@ -150,7 +150,7 @@ export type Observations = {
   /**
    * background call ids a task notification named as ended (its <tool-use-id>),
    * seen at session.append on door `delivery` (mid-turn) or `prompt` (idle),
-   * origin `task-notification` (spike2 M1c). Lost on reload: the run stays listed (ruling §20.16).
+   * origin `task-notification` (spike2 M1c). After reload the API snapshot also supplies recorded closes (option B).
    */
   readonly bgEnded: Set<CallId>
   phase: Phase
@@ -265,6 +265,19 @@ export function observeTurnStart(load: Load): void {
   load.obs.phase = 'live'
 }
 
+export function observeTurnComplete(load: Load): void {
+  load.obs.phase = 'idle'
+  load.obs.mainTurn = undefined
+}
+
+/** Returns whether the shell must schedule the claim's LIVE bump. */
+export function recordStepsClaim(load: Load, reply: string, claim: import('./verdict').StepsClaim): boolean {
+  if (claim === 'pending' || load.obs.stepsDrawn.has(reply)) return false
+  const drew = claim === 'drawn'
+  load.obs.stepsDrawn.set(reply, drew)
+  return drew
+}
+
 /** Called before next(response); the returned stored text may then replace the anchor text. */
 export function observeResponse(load: Load, row: { uuid: string; text: string; calls: readonly string[] }): void {
   const first = row.calls[0]
@@ -279,6 +292,11 @@ export function observeResponse(load: Load, row: { uuid: string; text: string; c
   }
   const last = row.calls.at(-1)
   if (last) load.obs.callSincePrompt = callId(last)
+}
+
+export function replaceResponseText(load: Load, uuid: string, text: string): void {
+  const anchor = load.obs.anchors.get(uuid)
+  if (anchor) load.obs.anchors.set(uuid, { ...anchor, text })
 }
 
 /**
@@ -492,7 +510,7 @@ export function vetOnRead(load: Load, $: $, cwd: string): Promise<Vetted> {
  *
  *   snap.state = 'refreshing'
  *   const plain = await $.session.messages()
- *   const api = await $.session.messages({ as: 'api' })   // Q-idle-delivery option B, if Alex takes it
+ *   const api = await $.session.messages({ as: 'api' })   // Q-idle-delivery option B
  *   snapshot = buildTranscript(plain, api, load.obs.turnOpeners)   // whole, never merged
  *   snap.cached = snapshot
  *   const seen = { transcript: signature(snapshot), phase, working }
@@ -544,7 +562,11 @@ export function dirty(load: Load, $: $): void {
  * (TurnId is its first call's), and the Spinner still needs it ("Thinking").
  */
 export function openTurn(load: Load, t: Transcript): Turn | undefined {
-  throw new Error('not implemented')
+  const last = t.turns.at(-1)
+  if (load.obs.phase === 'idle') return undefined
+  if (load.obs.phase === 'live') return last
+  const working = load.obs.working ?? [...t.calls.values()].some(call => call.turn === last?.id && call.outcome.state === 'running')
+  return working ? last : undefined
 }
 
 /**

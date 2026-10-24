@@ -190,28 +190,12 @@ export function parseFeedArgs(args: string): FeedCommand {
   if ((word === 'hide' || word === 'show') && isKind(value)) return { kind: word, what: value }
   const spec = FIELDS.find(spec => spec.word === word)
   if (!spec) return { kind: 'usage' }
-  switch (spec.field) {
-    case 'group': case 'clear': case 'keep': {
-      const parsed = fieldValue(spec.values, value)
-      if (parsed !== undefined) return { kind: 'set', field: spec.field, value: parsed }
-      break
-    }
-    case 'style': {
-      const parsed = fieldValue(spec.values, value)
-      if (parsed !== undefined) return { kind: 'set', field: spec.field, value: parsed }
-      break
-    }
-    case 'commands': {
-      const parsed = fieldValue(spec.values, value)
-      if (parsed !== undefined) return { kind: 'set', field: spec.field, value: parsed }
-      break
-    }
-    case 'after': {
-      const parsed = fieldValue(spec.values, value)
-      if (parsed !== undefined) return { kind: 'set', field: spec.field, value: parsed }
-    }
-  }
-  return { kind: 'usage' }
+  const candidate = { kind: 'set' as const, field: spec.field, value: fieldValue<Fields[keyof Fields]>(spec.values, value) }
+  return isSetting(candidate) ? candidate : { kind: 'usage' }
+}
+
+function isSetting(candidate: { readonly kind: 'set'; readonly field: keyof Fields; readonly value: unknown }): candidate is Setting {
+  return FIELDS.some(spec => spec.field === candidate.field && spec.values.some(value => value === candidate.value))
 }
 
 function fieldValue<T extends Fields[keyof Fields]>(values: readonly T[], word: string | undefined): T | undefined {

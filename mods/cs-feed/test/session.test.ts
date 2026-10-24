@@ -1,7 +1,21 @@
 // ABOUTME: Exercises the pure state transitions behind live transcript observations.
 // ABOUTME: Event order comes from the design's measured append and turn-start sequence.
 import { expect, test } from 'claude-code/testing'
-import { newLoad, observePrompt, observeTurnStart, observeResponse } from '../hooks/session'
+import { newLoad, observePrompt, observeTurnStart, observeResponse, openTurn, replaceResponseText } from '../hooks/session'
+import { buildTranscript } from '../hooks/transcript'
+
+test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {
+  const load = newLoad()
+  const t = buildTranscript([{ role: 'user', text: 'work', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'live', tool: 'Read', input: {} }] }])
+  expect(openTurn(load, t)?.id).toBe('live')
+  load.obs.working = false
+  expect(openTurn(load, t)).toBeUndefined()
+  load.obs.phase = 'live'
+  const empty = buildTranscript([{ role: 'user', text: 'work', toolUses: [] }])
+  expect(openTurn(load, empty)).toEqual({ steps: [], runs: [] })
+  load.obs.phase = 'idle'
+  expect(openTurn(load, empty)).toBeUndefined()
+})
 
 test('a prompt-door idle peer opens its first response call unless a typed prompt intervenes', () => {
   const load = newLoad()
@@ -26,4 +40,7 @@ test('a response anchors its text before filing the same row’s new calls', () 
   observeResponse(load, { uuid: 'second', text: 'continuing', calls: ['after'] })
   expect(load.obs.anchors.get('second')).toEqual({ call: 'before', text: 'continuing', seq: 1 })
   expect(load.obs.callSincePrompt).toBe('after')
+  replaceResponseText(load, 'second', 'stored text')
+  expect(load.obs.anchors.get('second')).toEqual({ call: 'before', text: 'stored text', seq: 1 })
+  expect([...load.obs.latestByCall]).toEqual([['before', 'second']])
 })

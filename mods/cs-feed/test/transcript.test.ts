@@ -50,6 +50,7 @@ test('questions retain literal answers and shorten only the question sentence', 
   expect(questionPairs({ questions: [{ question: 'Which look? Each is drawn on the page.' }] }, { answers: { 'Which look? Each is drawn on the page.': 'Red' } })).toEqual([{ question: 'Which look', answer: 'Red' }])
   expect(questionPairs({ questions: [{ question: 'Anything else?' }] }, { response: 'free text' })).toEqual([{ question: 'Anything else', answer: 'free text' }])
   expect(questionPairs({}, {})).toEqual([])
+  expect(questionPairs({}, { response: 'free text' })).toEqual([{ question: 'a question', answer: 'free text' }])
   expect(questionPairs({}, { answers: { 'Read v1.2. Ready? Details follow.': 'yes', 'First.Second': 'ok' } })).toEqual([{ question: 'Read v1.2. Ready', answer: 'yes' }, { question: 'First', answer: 'ok' }])
 })
 

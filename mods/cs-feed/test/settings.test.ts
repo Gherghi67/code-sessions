@@ -8,7 +8,14 @@ test('an off session reports raw without changing its view', () => {
 })
 
 test('feed accepts the usage grammar and rejects unknown or extra sole words', () => {
-  expect(['', 'close', 'on', 'off', 'status', 'clean', 'normal', 'raw', 'group off please', 'clear yes', 'keep false', 'style expanded', 'style subtle', 'style line', 'commands grouped', 'commands each', 'after clear', 'after keep', 'hide peer', 'show peer', 'loud', 'clean now'].map(text => parseFeedArgs(text).kind)).toEqual(['open', 'close', 'switch', 'switch', 'status', 'preset', 'preset', 'preset', 'set', 'set', 'set', 'set', 'set', 'set', 'set', 'set', 'set', 'set', 'hide', 'show', 'usage', 'usage'])
+  expect(['', 'close', 'on', 'off', 'status', 'clean', 'normal', 'raw', 'group off please', 'clear yes', 'keep false', 'style expanded', 'style subtle', 'style line', 'commands grouped', 'commands each', 'after clear', 'after keep', 'hide peer', 'show peer', 'loud', 'clean now'].map(parseFeedArgs)).toEqual([
+    { kind: 'open' }, { kind: 'close' }, { kind: 'switch', on: true }, { kind: 'switch', on: false }, { kind: 'status' },
+    { kind: 'preset', to: 'clean' }, { kind: 'preset', to: 'normal' }, { kind: 'preset', to: 'raw' },
+    { kind: 'set', field: 'group', value: false }, { kind: 'set', field: 'clear', value: true }, { kind: 'set', field: 'keep', value: false },
+    { kind: 'set', field: 'style', value: 'expanded' }, { kind: 'set', field: 'style', value: 'subtle' }, { kind: 'set', field: 'style', value: 'line' },
+    { kind: 'set', field: 'commands', value: 'grouped' }, { kind: 'set', field: 'commands', value: 'each' }, { kind: 'set', field: 'after', value: 'clear' }, { kind: 'set', field: 'after', value: 'keep' },
+    { kind: 'hide', what: 'peer' }, { kind: 'show', what: 'peer' }, { kind: 'usage' }, { kind: 'usage' },
+  ])
   expect(parseFeedArgs('  GROUP   TRUE ')).toEqual({ kind: 'set', field: 'group', value: true })
   expect(parseFeedArgs('group no')).toEqual({ kind: 'set', field: 'group', value: false })
   expect(parseFeedArgs('style subtle')).toEqual({ kind: 'set', field: 'style', value: 'subtle' })
@@ -40,6 +47,9 @@ test('commands change only the session fields named by the transition table', ()
   const changed = transition(parseFeedArgs('normal'), current)
   expect(changed).toEqual({ session: { on: true, view: { group: false, clear: false, keep: true, style: 'subtle', commands: 'grouped', after: 'keep', hide: ['peer'] } }, reply: 'Chat view: normal. each run of tool calls is one line with counts.' })
   expect(transition(parseFeedArgs('raw'), current).session).toEqual(current)
+  const on = { on: true, view: { group: false, clear: false, keep: true, style: 'line' as const, commands: 'each' as const, after: 'keep' as const, hide: ['peer'] as const } }
+  expect(transition(parseFeedArgs('raw'), on).session).toEqual({ on: false, view: { group: false, clear: false, keep: true, style: 'line', commands: 'each', after: 'keep', hide: ['peer'] } })
+  expect(transition(parseFeedArgs('off'), on).session).toEqual({ on: false, view: { group: false, clear: false, keep: true, style: 'line', commands: 'each', after: 'keep', hide: ['peer'] } })
   expect(transition(parseFeedArgs('on'), current).session).toEqual({ ...current, on: true })
   expect(transition(parseFeedArgs('group off'), current).session).toEqual({ on: true, view: { ...current.view, group: false } })
   expect(transition(parseFeedArgs('show peer'), current).session).toEqual({ on: true, view: DEFAULT_VIEW })
