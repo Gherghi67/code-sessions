@@ -1,0 +1,467 @@
+// ABOUTME: cs-feed mod: restyles the chat transcript ("the feed"). Always loaded, every hook always registered; a session whose .cs/local/feed is not exactly "on\n", or that cs -vet-session refuses, gets Claude Code's own drawing.
+// ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
+import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
+import { read } from 'claude-code'
+
+import { LIVE, active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, toggle, transcript, writeFeed } from './session'
+import type { Load } from './session'
+import { modeOf, parseFeedArgs, transition } from './settings'
+import type { FeedCommand } from './settings'
+import { decideGroup, decideSpinner } from './verdict'
+import type { CallView, Context } from './verdict'
+import { NOTHING, drawGroup } from './draw'
+import type { Pen } from './draw'
+
+type $ = EngineInterface
+
+export const PANE = 'cs-feed'
+export const HELPERS_PANE = 'cs-feed-helpers'
+
+// One Load per module evaluation. A reload (a change of these files, such as a
+// cs update) evaluates the module again and register() makes a new one; the
+// old module keeps its own until its in-flight dispatches settle (spike Q1).
+// A per-session toggle is not a reload: it is a file this load reads.
+let load: Load = newLoad()
+
+/**
+ * No install switch (Alex's ruling 1, design revision 2): register() always
+ * registers the one shape, and each hook returns the engine's drawing while
+ * this session's feed is off. The off cost beside cs's three mods is spike4's
+ * inert mod: +32 worker hops per three-turn scenario (24 ui.render, 8
+ * session.append), about 1.6 ms p50 per new render hop, probably +8-10 ms at
+ * each turn's end (not significant per run, n=6), +5 MB RSS. Accepted.
+ */
+export function register(on: On) {
+  load = newLoad()
+  registerFeed(on)
+}
+
+/**
+ * Carries out a typed /feed command or a settings-pane press for THIS session.
+ * It never reloads and runs no command.
+ *
+ *   await feedRecord(load, $)                              // the mirror exists from here on (vetted at the load's on-read)
+ *   if (cmd.kind === 'status') await applyFeed(load, $, 'status')   // status reports the file as vetted; a vet only for an outside flip to on
+ *   const tr = transition(cmd, load.feed!)
+ *   if (tr.session) {                                      // every write: on, off, a preset, a setting, hide/show, a chip, a pane row
+ *     const done = await writeFeed(load, $, tr.session)    // asks cs -vet-session first (ruling §20.22)
+ *     if (done === 'no-session') return 'cs-feed: this directory is not a cs session (no .cs/local), so nothing changed.'
+ *     if (done !== 'written') return `cs-feed: no feed change in this session: ${done.refused}`
+ *   }
+ *   if (tr.pane === 'open') await $.ui.open({ id: PANE, title: 'Chat view', focus: true })
+ *   if (tr.pane === 'close') await $.ui.close({ id: PANE })
+ *   return tr.reply
+ *
+ * A refusal writes nothing, leaves the mirror and the drawing as they were,
+ * and says why in the reply: the refusal text is cs's own (session.vetRefusal),
+ * in the pattern cs's band toasts it with ("cs: no rotation in this session:
+ * <refusal>"). The
+ * band's press asks the same cs rule with the same argv, so a session cs
+ * refuses is refused by both writers. Bare /feed, /feed close and /feed status
+ * write nothing and ask no vet of their own; the one cs process any of them
+ * can cause is a read's (the load's feedRecord when it is the first asker, or
+ * status's re-read finding an outside flip to on; ruling §20.22).
+ *
+ * /feed status re-reads FEED_FILE first because the mirror changes only at a
+ * press, a /feed write or a load: after a hand edit, or a second Claude process
+ * in this directory, it is stale. When the file differs, that read also redraws
+ * this session to match (applyFeed's dirty() and invalidate); a flip to on that
+ * no writer of ours vetted is vetted first, and a refusal reads off (logged
+ * once, session.vetOnRead). The reply's first word is the mirror's after that
+ * read: `off` in a session cs refuses, whatever the file says. The view half is
+ * still the mirror's: applyFeed reads FEED_FILE only.
+ *
+ * writeFeed's read-back, not tr.session, sets the mirror, and its invalidate
+ * redraws cs's band too (the label follows on its next redraw: inferred, see
+ * session.applyFeed). /feed is `immediate`, so a typed /feed runs mid-turn at
+ * once (spike3 M12: immediate lets a typed command run mid-turn).
+ */
+async function perform($: $, cmd: FeedCommand): Promise<string> {
+  throw new Error('not implemented')
+}
+
+/**
+ * The one shape. No tool.call, no turn.step, no classic.*, no prompt.compose,
+ * no config.set: nothing registered here awaits across a tool call or a
+ * stream. Every hook is registered whatever this session's toggle says; the
+ * toggle decides what they draw, never what is registered.
+ *
+ * Every hook body is a block (`=> { … }`), never an expression body: the cost
+ * oracle's probe build inserts one counting statement at the top of each body
+ * of a copy (Deploy touchpoints, finding 5). The probe script checks that it
+ * inserted exactly as many as there are on() calls.
+ */
+function registerFeed(on: On) {
+  // Commands do not survive a reload (spike Q2, measured): every load registers them.
+  // cs's band shows the feed chord only while $.command.list() lists /feed from
+  // plugin cs-feed, reads it when the band is evaluated (4-5 ms after a reloaded
+  // plugin's session.start, spike3 M14), and nothing redraws the band when the
+  // command list changes later. So both registrations are the FIRST statements,
+  // issued before any await, and session.start settles (next) only after both
+  // resolved. Nothing else may come before them. Not a manifest markdown command:
+  // the band filters `source === 'plugin' && plugin === 'cs-feed'`, and /feed
+  // must be answered by the command.run hook below; neither is measured for a
+  // markdown command. /clear (cs's rotation) reloads nothing (spike3 M13: same
+  // load, no session.start, /feed stays registered), so the gap exists only on a
+  // true reload. Whether the band's post-reload evaluation waits for this hook to
+  // settle is not measured (open-measurements M24).
+  on('session.start', async ($, e, next) => {
+    const feed = $.command.register({ name: 'feed', description: 'Chat view for this session: on, off, clean, normal, raw, or one setting', argumentHint: 'on | off | clean | normal | raw | status | <setting> <value>', immediate: true })
+    const helpers = $.command.register({ name: 'helpers', description: "Show each helper's own work, call by call", immediate: true })
+    await Promise.all([feed, helpers])
+    return next(e)
+  })
+
+  on('command.run', { command: 'feed' }, async ($, e) => {
+    return { text: await perform($, parseFeedArgs(e.args)) }
+  })
+
+  on('command.run', { command: 'helpers' }, async ($) => {
+    await $.ui.open({ id: HELPERS_PANE, title: 'Helpers', focus: true })
+    return { text: 'Helpers open above the prompt.' }
+  })
+
+  // cs's band key (`ctrl+x 3 feed`, Button key `cs-feed`, action strip:jump3).
+  // next(e) resolves only after cs's onPress (pressFeed) promise settles
+  // (spike5 M16: 64 of 64, idle and mid-turn, both --plugin-dir orders; with a
+  // 400 ms sleep before the write, next took 403-415 ms). So the file read
+  // straight after it is the post-press value, with no timer. Band-side
+  // precondition: pressFeed awaits its $.fs.write before returning and the
+  // Button's onPress returns pressFeed's promise (mods/cs/hooks/register.tsx
+  // pressFeed and buildBandEntries, today). Work cs started without awaiting
+  // would not be covered (inferred from the handler, spike5 "Not measured").
+  // A press while one is pending gets that press's in-flight promise
+  // (pressFeed is single-flight: `if (feedPressPending !== undefined) return
+  // feedPressPending`) and writes nothing, so its next resolves after the first
+  // press's write and both hooks read the same value. A press pressFeed refuses
+  // (session not vetted, a write error) leaves the file as it is or torn; the
+  // read says what both sides now show. This read is not vetted again
+  // (ruling §20.22): pressFeed vetted before it wrote, so a flip to on read
+  // here is the press's; an on that did not change keeps the load's cached
+  // answer, so a session cs refused stays off (session.applyFeed 'press').
+  // Measured alternative, not taken: an `fs.write` op hook sees the write
+  // with e.text (M16), but it runs before the write lands and for every
+  // fs.write of every plugin, where this runs for one Button.
+  // Matcher literals: KEEP IN SYNC with settings.BAND_PLUGIN / BAND_ELEMENT (a kit test compares them).
+  on('ui.press', { plugin: 'cs', element: 'cs-feed' }, async ($, e, next) => {
+    const result = await next(e)
+    await applyFeed(load, $, 'press')
+    return result
+  })
+
+  // The two Pane bodies run ungated, whatever this session's toggle says: a
+  // person opened them (/feed, /helpers). Their off cost: beside cs they join the
+  // hop cs-update's bare { component: 'Pane' } hook already causes on every Pane
+  // render; standalone they are new hops (host-side requestId selection is
+  // open-measurements #4). spike4's inert probe had neither.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // TODO: const s = await feedRecord(load, $); drawSettingsPane(modeOf(s), s, pen, cmd => void perform($, cmd))
+    throw new Error('not implemented')
+  })
+
+  on('ui.render', { component: 'Pane', requestId: HELPERS_PANE }, async ($, e, next) => {
+    // TODO: $.agent.list(), then $.session.messages({ agentId }) for the newest 6, drawHelpersPane.
+    throw new Error('not implemented')
+  })
+
+  // The transcript grew. One hook per door, never a bare session.append: sec-default
+  // forwards attachment, hook-context, compaction, tool-message and org-plugin notes
+  // past user mods (validate/verdicts.md G), and on a seat without it a bare hook would
+  // be a worker hop for each of those rows too. These five are the doors whose rows
+  // change what plain messages() holds or carry a fact the feed observes. A matcher
+  // cannot say "no agentId", so each hook skips a helper's rows.
+  //
+  // Doors measured on 2.1.309 (spike Q4, spike2 M1, spike5 M19): a typed prompt, an
+  // idle peer message (isMeta) and an idle task notification come on `prompt`; a
+  // prompt, peer message or task notification delivered into a running turn comes on
+  // `delivery` (type attachment, name queued_command). So the observers key on
+  // e.origin.kind, not on the door. Teammate envelopes are inferred to share these
+  // paths, not measured.
+  //
+  // Each observer records whatever this session's toggle says: the hop is paid
+  // either way, and a flip on then finds phase and observations current.
+  // dirty() schedules a refresh only while active(). No append hook calls
+  // $.ui.invalidate (spike5 M18: it re-evaluates every selected instance).
+  on('session.append', { door: 'prompt' }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId !== undefined) return result
+    // Synchronous from here to the return: no await. spike5 M19 measured this
+    // continuation running before turn.start, 0-1 ms later, which consumes it.
+    load.obs.peerPending = e.origin.kind === 'peer' && e.message.isMeta === true
+    // TODO observe(load.obs, e), synchronous, by e.origin.kind:
+    //   composer -> promptAt.set(uuid, now); closes the open burst
+    //   peer     -> joins or starts a burst; <teammate-message envelopes -> frames
+    //   task-notification -> bgEnded.add(its <tool-use-id>)
+    dirty(load, $)
+    return result
+  })
+  on('session.append', { door: 'command' }, async ($, e, next) => {
+    // A skill or slash invocation lands in plain messages() as a user entry and opens a turn (spike Q4). Dirty only.
+    const result = await next(e)
+    if (e.agentId === undefined) dirty(load, $)
+    return result
+  })
+  on('session.append', { door: 'response' }, async ($, e, next) => {
+    // BEFORE next, synchronously (uuid and tool_use blocks are pinned), so the
+    // reply's first evaluation, +6-9 ms after this append (spike5 M18), finds it:
+    // TODO observeResponse(load.obs, e) when e.agentId === undefined:
+    //   non-empty text -> anchors.set(e.uuid, { call: callSincePrompt, text, seq: anchorSeq++ }) and
+    //                     latestByCall.set(callSincePrompt, e.uuid) when callSincePrompt is set; close the open burst
+    //   tool_use blocks, in order -> callSincePrompt = the last one's id;
+    //                     mainTurn?.peer && !mainTurn.openerTaken -> turnOpeners.add(first id), openerTaken = true
+    //   first sight of a run_in_background Bash -> bgSeenAt
+    const result = await next(e)
+    if (e.agentId !== undefined) return result
+    // TODO settleAnchorText(load.obs, e.uuid, result): the stored text replaces the anchor's (a hook beneath may rewrite text blocks). Synchronous.
+    dirty(load, $)
+    return result
+  })
+  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) dirty(load, $)
+    return result
+  })
+  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+    // Deliveries into a running turn (measured, spike2 M1). They never reach plain messages(),
+    // so these observations are their only trace: the same observe(load.obs, e) by origin as
+    // the prompt door (composer -> promptAt, peer -> bursts and frames, task-notification -> bgEnded).
+    // A peer delivered mid-turn opens no turn, so peerPending is not touched here.
+    const result = await next(e)
+    if (e.agentId !== undefined) return result
+    // TODO observe(load.obs, e)
+    dirty(load, $)
+    return result
+  })
+
+  // Consumes the prompt hook's peerPending (spike5 M19 order) into this turn's
+  // record, and only then clears it: revision 1 cleared it here without reading
+  // it, which lost the peer turn whenever the flag was set first (validate2).
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      load.obs.mainTurn = { peer: load.obs.peerPending, openerTaken: false }
+      load.obs.peerPending = false
+      load.obs.phase = 'live'
+      load.obs.callSincePrompt = undefined
+      dirty(load, $)
+    }
+    return next(e)
+  })
+
+  // Main loop only. A helper's end needs no event: its row's own props, ToolUseSummary.agentId
+  // and durationMs, and $.agent.list() say it (verdict.helperState). Set at entry, before next.
+  // Whether the final reply's first evaluation sees phase idle depends on the Stop hook: without one
+  // turn.complete comes first (spike5 M18); with one it comes after both evaluations (spike4's rig,
+  // 36 of 36 turns, M27), and the reply's claim is pending until this phase change's LIVE bump
+  // re-evaluates it (ruling §20.23 (a)). verdict.stepsOwner is built for both orders.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      load.obs.phase = 'idle'
+      load.obs.mainTurn = undefined
+      dirty(load, $)
+    }
+    return next(e)
+  })
+
+  // The one fact about a helper the transcript lacks: when a running one started.
+  // Off cost: a new hop per helper spawn in every session, off included (no cs
+  // mod hooks agent.spawn, and spike4's inert probe had none).
+  on('agent.spawn', async ($, e, next) => {
+    const result = await next(e)
+    if (e.parentAgentId === undefined) load.obs.helperStartedAt.set(e.tool_use_id as import('./transcript').CallId, Date.now())
+    return result
+  })
+
+  sites(on, PAINTERS)
+}
+
+// ---------------------------------------------------------------------------
+// The render sites: one table, one wrapper.
+// ---------------------------------------------------------------------------
+
+/** The sites the feed draws. AskUserQuestion, InfoNotice and PromptHint stay the engine's (ruling §20.13); Pane is hooked by requestId in both shapes. */
+type Hooked = Exclude<RenderComponent, 'AskUserQuestion' | 'InfoNotice' | 'PromptHint' | 'Pane'>
+type Props<C extends RenderComponent> = Partial<RenderInput<C>['props']>
+
+/**
+ * What a painter decides for one draw. Only site() turns it into calls of next():
+ *   engine   next(e), props untouched
+ *   rewrite  next with these props; the engine draws the row (its clock, tokens, cs's tip)
+ *   frame    the engine's drawing (props rewritten when given) placed inside a tree of ours
+ *   tree     ours; next(e) has still run, so observers beneath (cs's rail) saw the row
+ *   nothing  no row; next(e) has still run
+ */
+export type Drawn<C extends RenderComponent> =
+  | { readonly kind: 'engine' }
+  | { readonly kind: 'rewrite'; readonly props: Props<C> }
+  | { readonly kind: 'frame'; readonly props?: Props<C>; readonly frame: (drawn: RenderElement) => RenderElement }
+  | { readonly kind: 'tree'; readonly tree: RenderElement }
+  | { readonly kind: 'nothing' }
+
+/** A decision and whether it was taken from the open turn's state (site() then reads LIVE). */
+export type Decided<D> = { readonly drawn: D; readonly live: boolean }
+
+/** A painter sees its row, the context and a pen. It has no `$` and no `next`: it cannot write, and it cannot skip the engine. */
+export type Painter<C extends RenderComponent, D extends Drawn<C> = Drawn<C>> = (e: RenderInput<C>, cx: Context, pen: Pen) => Promise<Decided<D>>
+
+/** The engine draws the row; we may only change its props. A replacing Spinner drops the cs tip (explore-cs 1.3, 0 of 60). */
+export type RewriteOnly<C extends RenderComponent> = Extract<Drawn<C>, { kind: 'engine' | 'rewrite' }>
+/** Ours goes around what next(e) drew (cs's band), never in its place. */
+export type AroundOnly<C extends RenderComponent> = Extract<Drawn<C>, { kind: 'engine' | 'frame' }>
+
+type Limits = {
+  Spinner: RewriteOnly<'Spinner'>
+  ToolProgress: RewriteOnly<'ToolProgress'>
+  SessionMode: RewriteOnly<'SessionMode'>
+  AbovePrompt: AroundOnly<'AbovePrompt'>
+}
+/** Every hooked site exactly once, each limited to what it may draw. A missing site, an extra one, or a Spinner painter that returns a tree is a compile error. */
+export type PainterTable = { readonly [C in Hooked]: Painter<C, C extends keyof Limits ? Limits[C] : Drawn<C>> }
+
+const PAINTERS = {
+  UserMessage: async (e, cx, pen) => {
+    // decideUser(toUserRow(e), cx) -> 'engine' | tree(drawUser) | nothing. next(e) always runs (cs's rail observer).
+    throw new Error('not implemented')
+  },
+  AssistantMessage: async (e, cx, pen) => {
+    // decideReply: error -> tree(error line); said hidden -> nothing;
+    // else frame: props { isFirstOfReply: false } (no engine bullet), frame = drawn => drawReply(verdict, drawn, pen).
+    // The markdown is the engine's (or cs-mermaid's) drawing in either load order.
+    // Live only while the steps-line claim is pending (verdict.ReplyDecision,
+    // ruling §20.23 (a)): the instance does not exist while the reply streams
+    // and is evaluated twice once stored (spike5 M18), before turn.complete
+    // when a Stop hook runs (M27); a pending reply reads LIVE, so the
+    // turn.complete bump re-evaluates it and it settles the claim then. This
+    // entry hands site() the claim with its Decided (the sketch leaves that
+    // one field untyped on the table); site() records a settled claim
+    // (session.noteStepsDrawn) and later evaluations reuse it (verdict.stepsOwner).
+    throw new Error('not implemented')
+  },
+  ToolUse: async (e, cx, pen) => {
+    // decideCall(toCallView(e.props), cx) -> nothing | tree(drawCall). Under the default renderer a lone call
+    // arrives here, under fullscreen as a one-call ToolGroup (spike2 M3): both go through decideCall.
+    throw new Error('not implemented')
+  },
+  ToolGroup: async (e, cx, pen) => {
+    const { verdict, live } = decideGroup({ ...e.props, calls: e.props.calls.map(toCallView) }, cx)
+    return { drawn: verdict.draw === 'engine' ? { kind: 'engine' } : { kind: 'tree', tree: drawGroup(verdict, pen) }, live }
+  },
+  ToolResult: async (e, cx, pen) => {
+    // decideToolResult -> nothing when filed, else engine (§4.8).
+    throw new Error('not implemented')
+  },
+  ToolProgress: async () => ({ drawn: { kind: 'rewrite', props: { hint: '' } }, live: false }),
+  TurnDuration: async () => ({ drawn: { kind: 'nothing' }, live: false }),
+  CommandOutput: async (e, cx, pen) => {
+    // decideCommandOutput -> engine | nothing | tree.
+    throw new Error('not implemented')
+  },
+  Spinner: async (e, cx) => {
+    // The working line: the engine's own row with our words as its message, never a tree of ours.
+    // "Writing" comes from the row's own mode ('responding'), not from the transcript: the reply's
+    // row is stored only once it has streamed (spike5 M18), too late for the line it names.
+    const { verdict, live } = decideSpinner(e.props, cx)
+    return { drawn: verdict.draw === 'rewrite' ? { kind: 'rewrite', props: { message: verdict.message, suffix: '' } } : { kind: 'engine' }, live }
+  },
+  SessionMode: async (e, cx) => {
+    // rewrite: props { modes: sessionModes(e.props.modes, cx.view) }.
+    throw new Error('not implemented')
+  },
+  AbovePrompt: async (e, cx, pen) => {
+    // decideBand -> engine | frame: drawn => drawBand(ours, drawn, frame, pen): ours ABOVE what next(e) drew, cs's band included.
+    throw new Error('not implemented')
+  },
+} satisfies PainterTable
+
+/**
+ * The only way this mod hooks a render site, so the composition rules hold by
+ * construction rather than by each painter remembering them. It registers
+ * `on('ui.render', { component }, async ($, e, next) => { … })`: the event a
+ * literal and the hook an inline function, as the host's static scan requires
+ * (spike5 M20), `on` passed unchanged from register() (M20 (a), (f) loaded).
+ * A matcher built from a variable inside a helper the table loop calls is not
+ * among M20's twelve shapes: open-measurements M21, with its fallback (one
+ * literal on() line per site, each delegating to this function). The scan runs
+ * before load, so a refusal fails the whole module at its first load, in every
+ * session, not one site. The cost oracle's probe inserts its counting statement
+ * here as tally(`ui.render ${e.component}`, e): the matcher text is the same
+ * `{ component }` for every site, so the tally keys on e.component.
+ *
+ *   - next(e) runs exactly once per draw, whatever the decision. `engine(p?)`
+ *     calls it (with props rewritten when given) and memoises; the `finally`
+ *     calls it if nothing else did. An inner hook (cs's UserMessage rail
+ *     observer, cs's band, cs-mermaid) therefore always runs, whichever order
+ *     the user-tier plugins load in (CS:464-475, T:13457).
+ *   - this session's feed off, or the row's own isExpanded (ctrl+o, --verbose)
+ *     returns the engine's drawing with props untouched (§10, per row: no module
+ *     flag). The off check reads the per-load mirror (session.feedRecord), not
+ *     the file, so off costs the hop and next(e), no op; applyFeed() invalidates
+ *     on every flip. The mirror says off in a session cs -vet-session refuses,
+ *     whatever the file says (ruling §20.22). Until the load's record settles,
+ *     every evaluation awaits it here, before next(e) and before context():
+ *     in an on-session that wait holds the load's vet (one cs process,
+ *     0.15-0.44 s), so the first painted draw after a load waits for it before
+ *     the refresh's two messages() reads (Q-idle-delivery option B).
+ *   - a decision that is `live` reads LIVE, subscribing this instance alone to
+ *     the next refresh; every other row is never redrawn by the feed's own updates.
+ *   - a throw draws the engine's component (IDX:4102); next has already run.
+ *   - for AssistantMessage, the reply's steps-line claim is recorded once,
+ *     when it settles (noteStepsDrawn after the painter returns, claim
+ *     'drawn' or 'declined'; a 'pending' claim records nothing and its
+ *     decision is live): module memory, plus at most one $.clock.after(0)
+ *     LIVE bump. Nothing else a render does writes.
+ *
+ *   on('ui.render', { component }, async ($, e, next) => {
+ *     let drawn: Promise<RenderElement> | undefined
+ *     const engine = (p?) => (drawn ??= next(p ? { ...e, props: { ...e.props, ...p } } : e))
+ *     try {
+ *       if (e.component === 'AbovePrompt') noteWorking(load, $, e.props.isWorking)   // the phase stays settled while off
+ *       if (ownExpanded(e)) return await engine()
+ *       const s = load.feed ?? await feedRecord(load, $)   // in an on-session the load's vet (one cs process) is awaited here
+ *       if (!s.on) return await engine()
+ *       const cx = await context($, e, s)
+ *       const { drawn: d, live } = await paint(e, cx, pen($, e, cx))
+ *       if (live) await read($, LIVE)
+ *       switch (d.kind) {
+ *         case 'engine':  return await engine()
+ *         case 'rewrite': return await engine(d.props)
+ *         case 'frame':   return d.frame(await engine(d.props))
+ *         case 'tree':    await engine(); return d.tree
+ *         case 'nothing': await engine(); return NOTHING(pen)
+ *       }
+ *     } finally {
+ *       await engine()
+ *     }
+ *   })
+ */
+function site<C extends Hooked>(on: On, component: C, paint: Painter<C>): void {
+  throw new Error('not implemented')
+}
+
+/** Installs every entry of the table through site(). The completeness check lives on the table's type; this loop needs one cast. */
+function sites(on: On, table: PainterTable): void {
+  for (const component of Object.keys(table) as Hooked[]) site(on, component, table[component] as Painter<typeof component>)
+}
+
+/**
+ * What every painter reads, built once per painted draw: this session's view
+ * (from the record site() already holds) + transcript snapshot + open turn +
+ * observations. site() has noted the band's `isWorking` before this (the one
+ * place a render prop feeds the load); this starts the clocks on a painted draw.
+ * It awaits transcript(), which starts the refresh itself when one is only
+ * scheduled (session.Snap), so a first draw never takes a snapshot older than
+ * the dirty() that preceded it.
+ *
+ *   startClocks(load, $)
+ *   const t = await transcript(load, $)
+ *   { t, view: s.view, obs: load.obs, opened: load.opened, open: openTurn(load, t), phase: load.obs.phase,
+ *     agents: load.agents, now: Date.now(), surface: e.surface,
+ *     clickable: e.surface !== 'terminal' || !!e.viewport?.isFullscreen, room: (e.viewport?.columns ?? 80) - pad }
+ */
+async function context($: $, e: RenderInput, s: import('./settings').Session): Promise<Context> {
+  throw new Error('not implemented')
+}
+
+/** ToolUse props or one ToolGroupCall, parsed at the boundary. */
+function toCallView(call: unknown): CallView {
+  throw new Error('not implemented')
+}

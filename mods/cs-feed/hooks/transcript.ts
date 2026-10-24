@@ -1,0 +1,288 @@
+// ABOUTME: cs-feed's one cross-row structure: turns, runs and filed calls, a pure function of one $.session.messages() result.
+// ABOUTME: Built whole on every refresh and swapped in; never merged, never written to $.state. Same transcript, same answer, whatever was switched when.
+import type { ApiMessage, SessionMessage } from 'claude-code'
+
+export type CallId = string & { readonly __brand: 'CallId' }
+
+/**
+ * A turn's identity is its first call's tool_use_id (any class: a turn that
+ * opens with a helper still has one). It is stable across reads while
+ * messages() slides its 4096-entry window, where a position would shift and
+ * file every call under the wrong turn until the next build. A turn with no
+ * call has no id and needs none: nothing of it folds, nothing has a chevron.
+ *
+ * Residual: a turn whose real first call has slid out of the window takes the
+ * id of its first call still in the window, once. Its turn chevron closes.
+ */
+export type TurnId = CallId
+
+/**
+ * Machinery joins runs and counts as a step of the turn. A helper (Agent, Task)
+ * or a question (AskUserQuestion) stands alone, unless a hook refused it, when
+ * it is filed as machinery (§4.7c).
+ */
+export type CallClass = 'machinery' | 'helper' | 'question'
+
+export type QuestionPair = { readonly question: string; readonly answer: string }
+
+export type Outcome =
+  | { readonly state: 'running' } // no result in the transcript yet
+  | {
+      readonly state: 'done'
+      readonly errored: boolean
+      readonly refused: boolean // errored and the text reads as a hook refusal (words.isRefusal)
+      readonly interrupted: boolean
+      readonly lines: number // the "+N lines" chip
+      readonly output?: string // stdout+stderr or the error text, cut to 2000; kept for the newest OUTPUT_KEPT calls only
+      readonly answers?: readonly QuestionPair[] // questions only
+      /** ToolUseSummary.durationMs: a foreground helper that ran to completion. Absent on a background launch. */
+      readonly durationMs?: number
+    }
+
+export type FiledCall = {
+  readonly id: CallId
+  readonly tool: string
+  readonly input: Readonly<Record<string, unknown>>
+  readonly cls: CallClass
+  readonly outcome: Outcome
+  /** Always set: a filed call's turn holds at least this call, so it has an id. */
+  readonly turn: TurnId
+  /** The run this call is in; absent for a standalone call. A run's id is its first call's. */
+  readonly run?: CallId
+  /** 1-based count of calls the turn filed up to this one, as the working line's "step N" says it. */
+  readonly step: number
+  /**
+   * ToolUseSummary.agentId on an Agent call: known while the session tracks the
+   * run and once the call is answered. Links the row to $.agent.list() and to
+   * $.session.messages({ agentId }) without an agent.spawn observation.
+   */
+  readonly agentId?: string
+}
+
+export type Run = { readonly id: CallId; readonly turn: TurnId; readonly calls: readonly CallId[] }
+
+export type Turn = {
+  /** The first call's id; absent while the turn has no call. */
+  readonly id?: TurnId
+  /** The turn's first machinery call: the row the turn line draws on. */
+  readonly first?: CallId
+  /** Machinery calls plus refused standalone ones, in order: what "{n} steps this turn" counts (done ones). */
+  readonly steps: readonly CallId[]
+  readonly runs: readonly CallId[]
+}
+
+/** A Bash call started with run_in_background that no later entry says has ended (§9.1). */
+export type BackgroundRun = { readonly id: CallId; readonly words: string; readonly isTest: boolean }
+
+export type Transcript = {
+  readonly calls: ReadonlyMap<CallId, FiledCall>
+  /** In transcript order. Only the last one is ever looked up by place (the open turn); every other lookup goes by id. */
+  readonly turns: readonly Turn[]
+  readonly byId: ReadonlyMap<TurnId, Turn>
+  readonly runs: ReadonlyMap<CallId, Run>
+  readonly background: readonly BackgroundRun[]
+}
+
+export const EMPTY: Transcript = { calls: new Map(), turns: [], byId: new Map(), runs: new Map(), background: [] }
+export const OUTPUT_KEPT = 400
+
+/**
+ * Does this user entry open a turn? A user entry opens a turn when it has text,
+ * no tool results, and is not bash-mode text (<bash-input>, <bash-stdout>),
+ * which runs no model turn. Measured on 2.1.309 (spike Q4, spike2 M1):
+ *
+ *   - Plain messages() drops isMeta rows (Stop-hook feedback, a skill's body)
+ *     and local-command echoes. A Stop-hook continuation is two assistant
+ *     entries in a row: one turn.
+ *   - A prompt typed mid-turn, a peer message and a task notification delivered
+ *     into a running turn never appear: the engine folds them into the next
+ *     tool_result's content (visible only in `as: 'api'`). They cannot split a turn.
+ *   - A prompt typed during a text-only turn, and a task notification arriving
+ *     while idle, appear as user entries after the last turn's reply. Each is a
+ *     turn of its own in the engine too, so opening one is right.
+ *
+ * Residual (rationale, open question Q-idle-delivery): a peer message arriving
+ * while idle is stored isMeta, so plain drops it and its turn's reply and calls
+ * read as part of the previous turn, the same plain shape as a Stop-hook
+ * continuation. Not measured: what an interrupted turn leaves before the next
+ * prompt (the rule opens a turn on that prompt either way).
+ */
+export function opensTurn(entry: SessionMessage): boolean {
+  throw new Error('not implemented')
+}
+
+/**
+ * The whole structure from the whole transcript, in one pass:
+ *
+ *   turn = none; run = undefined
+ *   for entry of messages:
+ *     user:      if opensTurn(entry): turn = new Turn (no id yet); run = undefined
+ *                (tool-result entries add nothing: toolUses carry their outcome)
+ *     assistant: if the joined api message before it opens a peer turn (opensPeerTurn via joinApi),
+ *                or its first tool_use id is in openers: turn = new Turn; run = undefined
+ *                if entry.text.trim(): run = undefined
+ *                for use of entry.toolUses: file(use)
+ *   file(use):   turn.id ??= use.id   (the turn's identity is its first call)
+ *                cls = classOf(use); refused standalones become machinery
+ *                machinery: run ??= use.id; runs[run].push(use.id); turn.first ??= use.id; steps.push
+ *                standalone: run = undefined (a standalone call ends the run)
+ *                step = ++filedInTurn; agentId = use.agentId; durationMs = use.durationMs
+ *
+ * A total function of the transcript: every tool_use in it is filed exactly
+ * once, under the turn whose opening entry precedes it, and that turn's id is
+ * a call id the transcript itself holds. With no `openers` there is no input
+ * from live events, and the same transcript files the same way before and after
+ * any switch; `openers` is the one live input (finding 1, below).
+ */
+export function buildTranscript(messages: readonly SessionMessage[], api?: readonly ApiMessage[], openers?: ReadonlySet<CallId>): Transcript {
+  throw new Error('not implemented')
+}
+
+/**
+ * Q-idle-delivery option B (Alex rules; finding 1). An idle peer message is
+ * stored isMeta, so plain drops it and its turn reads as part of the previous
+ * one. Two sources open such a turn, and only these two:
+ *
+ *  1. Live provenance, for rows stored while this load ran: a call id in
+ *     `openers` (Observations.turnOpeners, from session.append origin `peer`)
+ *     opens a turn at that call. Exact, and it covers teammate envelopes.
+ *  2. History (rows from before the load): where plain has two assistant
+ *     entries in a row, the `api` user message between those two replies
+ *     opens a turn only if opensPeerTurn says so.
+ *
+ * Not a substring search. The previous rule (an envelope tag anywhere in a text
+ * block) split on a Stop hook whose feedback quoted `<task-notification>`:
+ * M1d shows that feedback becomes a text-only api user message between two
+ * adjacent assistant entries. Withdrawn with it: "an injection the feed does
+ * not know can only merge, never split" as a structural claim. It now holds
+ * only as far as opensPeerTurn's anchored prefix holds, which the tests below
+ * check case by case; it is not proven for every hook type.
+ *
+ * Also withdrawn: "no switch can file a call in a different turn than a fresh
+ * build". It holds for source 2 alone. With source 1 a fresh load (a change
+ * of these files, such as a cs update, or a relaunch) loses the openers and
+ * falls back to source 2: a teammate idle turn, which source 2 does not match,
+ * merges again after it. A per-session toggle is not a reload and loses nothing.
+ *
+ * Source 1's live order is measured (spike5 M19): the prompt hook sets
+ * peerPending synchronously after its next(e), turn.start (0-1 ms later)
+ * consumes it into the turn's record, and the response hook adds that turn's
+ * first tool_use id. See session.Observations.peerPending.
+ */
+
+/**
+ * Source 2 needs, for two adjacent plain assistant entries, the `api` message
+ * between them. Neither form carries a uuid, and their windows differ (plain
+ * drops isMeta and local-command rows; api is "the messages the next request is
+ * built from", the last compaction's summary in place of what it replaced,
+ * opening on a user message; each holds at most 4096). So the join is
+ * positional, anchored at the newest end, and verified pair by pair:
+ *
+ *   A = plain's assistant entries, newest first; B = api's assistant messages, newest first
+ *   pair A[k] with B[k] for k = 0, 1, … while the pair is CONSISTENT:
+ *     - same tool_use ids in the same order (plain toolUses[].tool_use_id, api tool_use blocks' `id`), and
+ *     - same text (plain `text` === api text blocks joined the way plain joins them)
+ *   stop at the first inconsistent pair, or when either list ends.
+ *   A consistent pair is VERIFIED only when (revision 2.1, validate3):
+ *     - it carries tool_use ids (they are unique, so a shifted pair cannot match them), or
+ *     - it is tool-free and its text occurs exactly once among plain's tool-free
+ *       assistant texts AND exactly once among api's.
+ *   A consistent tool-free pair whose text repeats is unverified: the walk goes on
+ *   past it, and every gap that touches it answers false.
+ *   For a verified pair (A[k], B[k]) whose next-older pair (A[k+1], B[k+1]) is also
+ *   verified, and whose plain entries are adjacent (no plain user entry between them):
+ *   the api messages strictly between B[k+1] and B[k] must be exactly one user
+ *   message U; then opensPeerTurn(U) decides. Zero or two or more user messages
+ *   between them, or anything else: false.
+ *
+ * Why text alone does not verify: two consecutive identical short tool-free
+ * texts (m1d's Stop-hook continuation is `ok`, `ok`) with a one-message offset
+ * between the windows would verify a shifted pair and put a peer preamble one
+ * entry off. The offset is reachable: the refresh reads plain, then api, so a
+ * row stored between the reads gives api one message plain lacks. Under one
+ * divergence a shifted pair is inconsistent (the walk stops) or a repeated
+ * tool-free text (unverified), so it never verifies. Cost: a repeated tool-free
+ * text closes the gaps beside it to the merge.
+ *
+ * Every failure answers false, the merge: the conservative direction (a peer
+ * turn reads as part of the previous turn, as without option B). Compaction
+ * replaces the oldest api messages with a summary, so the pairing stops there;
+ * turns older than the last compaction fall back to the merge.
+ *
+ * Assumption, not measured, load-bearing (open-measurements M23): between two
+ * verified anchors, plain and api hold the same assistant messages in the same
+ * order (api never merges two stored assistant rows that plain keeps apart,
+ * nor the reverse). One divergence makes the walk stop or leaves the pair
+ * unverified, so the rule only stops splitting. Two compensating divergences
+ * between verified pairs (one api message extra, one missing) are not closed
+ * by the rule above: there it could split wrongly, which M23 measures.
+ *
+ * Kit tests, from spike2's m1b and m1d dumps (plain + api): m1b joins and
+ * opens the peer turn; m1d stays one turn, its `ok`, `ok` pairs consistent
+ * but unverified; m1d with api's newest message dropped (a one-message
+ * offset) verifies no shifted pair and stays one turn; a repeated-text
+ * fixture (two turns ending in the same short text, an idle peer message
+ * between them) answers false at that gap; m1b with the api list
+ * cut at its oldest 3 messages (a window start) still joins at the newest
+ * end; m1b with one api text block edited fails verification from that pair
+ * on and answers false there.
+ *
+ * Returns, for each plain index of an A[k] that passed, the one api user
+ * message U between it and the older verified entry; buildTranscript asks
+ * opensPeerTurn(U) for those indexes and for no other.
+ */
+export function joinApi(plain: readonly SessionMessage[], api: readonly ApiMessage[]): ReadonlyMap<number, ApiMessage> {
+  throw new Error('not implemented')
+}
+
+/**
+ * The history rule, conservative by construction: a whitelist of block
+ * shapes, true only when EVERY block of the message is one of
+ *   (a) a text block that STARTS (offset 0, no leading whitespace) with the one
+ *       measured engine preamble `Another Claude session sent a message:\n<cross-session-message `
+ *       (M1b) and holds its closing `</cross-session-message>`; or
+ *   (b) a text block that starts with `<system-reminder>` and holds none of
+ *       `<cross-session-message`, `<teammate-message`, `<task-notification>`
+ *       (an engine reminder riding along, such as the token count),
+ * and exactly one block is (a). Anything else answers false: a tool_result
+ * block, a `Stop hook feedback:` block or a `<system-reminder>\nStop hook
+ * blocking error` block (M1d: neither is (a); the reminder is (b) only while it
+ * quotes no envelope), any block of a shape not measured.
+ * A tag quoted anywhere else, a block that only contains the preamble later in
+ * its text, a teammate envelope (not measured: added only once measured), and
+ * `<task-notification>` (an idle notification is a plain user entry already,
+ * M1c, so it is never this shape) all answer false: the two replies stay one turn.
+ *
+ * Kit tests, fixtures derived from spike2's recorded dumps with neutral text:
+ *   - m1d api, the Stop-hook feedback edited to read `Stop hook feedback:\n<task-notification>…</task-notification>`  -> false, one turn
+ *   - the same with `<cross-session-message from="x">…</cross-session-message>` quoted in the feedback           -> false
+ *   - a system-reminder block (hook context) holding the full peer preamble                                       -> false
+ *   - a text block `see: Another Claude session sent a message:\n<cross-session-message …>` (preamble not at 0)    -> false
+ *   - m1b api entry 0 (the idle peer row)                                                                          -> true, a turn of its own
+ *   - buildTranscript on m1b plain + api: the peer turn's reply files under its own turn; on m1d: one turn
+ *   - source 1: m1b plain with openers = { first call of the peer turn } and NO api -> the peer turn opens at that call
+ */
+export function opensPeerTurn(between: ApiMessage): boolean {
+  throw new Error('not implemented')
+}
+
+/** Questions' answers and pairs from a stored AskUserQuestion record (§11b). */
+export function questionPairs(input: unknown, result: unknown): readonly QuestionPair[] {
+  throw new Error('not implemented')
+}
+
+/**
+ * Background runs from the transcript (§9.1, minus the classic.Stop source the
+ * fork used, which sec-default skips on org seats): a Bash use with
+ * `run_in_background` (or a result marked `backgroundedToDeliverMessage`, spike2
+ * M1a) opens one; a KillShell/TaskStop naming it, or a later user entry naming
+ * its id in a <tool-use-id> or <task-id> tag (an idle task notification), closes
+ * it. A notification delivered mid-turn is not in plain messages() (M1c), so
+ * that close comes from the live delivery observation (Observations.bgEnded),
+ * which a reload loses (ruling §20.16, open question Q-idle-delivery). A run
+ * started before a reload is recovered here, its elapsed counted from this
+ * load's first sight.
+ */
+export function backgroundRuns(messages: readonly SessionMessage[]): readonly BackgroundRun[] {
+  throw new Error('not implemented')
+}
