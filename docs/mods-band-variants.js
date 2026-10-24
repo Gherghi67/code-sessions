@@ -134,10 +134,10 @@
     return e.check ? Btn(props, [e.label.slice(0, -1), T({ color: inks(theme).own }, "✓")]) : Btn(props);
   }
 
-  // The shipped band's words: a shared chord prefix spelled once, dim, before
-  // the first bound key and `prefixGap` cells before it (2 on the shipped
-  // band); each key bold in the session colour; `sep` between entries.
-  // Returns the nodes and the cells they take.
+  // The shipped band's words: a shared chord prefix spelled once, dim,
+  // `prefixGap` cells (2 on the shipped band) before the first bound key; each
+  // key bold in the session colour; `sep` between entries. Returns the nodes
+  // and the cells they take.
   function actions(f, entries, theme, sep, prefixGap) {
     var gap = prefixGap === undefined ? 2 : prefixGap;
     var chordOf = function (e) { return e.kind === "chord" ? f.chords[e.role] : undefined; };
@@ -173,7 +173,8 @@
     return out;
   }
   function railCells(rail, hidden) { return (hidden > 0 ? cells("…" + hidden) : 0) + rail.prompts.length - hidden; }
-  function promptLabel(rail, width) { return fitLeft("#" + (rail.named + 1) + " " + rail.prompts[rail.named], width); }
+  function promptName(rail) { return "#" + (rail.named + 1) + " " + rail.prompts[rail.named]; }
+  function promptLabel(rail, width) { return fitLeft(promptName(rail), width); }
   function hasRail(f) { return f.rail !== undefined && f.rail.prompts.length > 1; }
 
   // The rail and the named prompt in `budget` cells, `gap` cells after the
@@ -226,14 +227,14 @@
     var span = function (n) { return items.slice(0, n).reduce(function (sum, it) { return sum + it.cells; }, 0) + gap.length * Math.max(0, n - 1); };
     var kept = items.length;
     var withHint = hint !== "" && span(kept) + 4 + cells(hint) <= room;
-    var fold = function (n) { return n === items.length ? 0 : gap.length + cells("\u2026" + (items.length - n)); };
+    var fold = function (n) { return n === items.length ? 0 : gap.length + cells("…" + (items.length - n)); };
     while (kept > 1 && span(kept) + fold(kept) > room) kept--;
     var nodes = [];
     items.slice(0, kept).forEach(function (it, i) {
       if (i > 0) nodes.push(T({}, gap));
       nodes.push(it.node);
     });
-    if (kept < items.length) nodes.push(T({ dimColor: true }, gap + "\u2026" + (items.length - kept)));
+    if (kept < items.length) nodes.push(T({ dimColor: true }, gap + "…" + (items.length - kept)));
     if (withHint) nodes.push(Bx({ marginLeft: 4 }, [T({ dimColor: true }, hint)]));
     return band(nodes);
   }
@@ -298,7 +299,7 @@
     var right = [], rightCells = 0;
     if (ticks !== undefined) {
       var room = budget - railCells(f.rail, ticks.hidden) - 2;
-      var name = cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room);
+      var name = cut(promptName(f.rail), room);
       if (room >= RAIL_LABEL_MIN) {
         right.push(Bx({ marginRight: 2 }, [T({ dimColor: true, italic: true }, name)]));
         rightCells += cells(name) + 2;
@@ -328,7 +329,7 @@
       left.push(Bx({ key: "cs-rail" }, railNodes(f.rail, ticks.hidden, inks(theme).own)));
       leftCells += railCells(f.rail, ticks.hidden);
       var room = budget - leftCells - 2;
-      var name = cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room);
+      var name = cut(promptName(f.rail), room);
       if (room >= RAIL_LABEL_MIN) {
         left.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, name)]));
         leftCells += 2 + cells(name);
@@ -354,7 +355,7 @@
     if (ticks !== undefined) {
       rail.push(Bx({ key: "cs-rail", marginLeft: words.cells > 0 ? 3 : 0 }, railNodes(f.rail, ticks.hidden, inks(theme).own)));
       var room = budget - railCells(f.rail, ticks.hidden) - 2;
-      if (room >= RAIL_LABEL_MIN) rail.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room))]));
+      if (room >= RAIL_LABEL_MIN) rail.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, cut(promptName(f.rail), room))]));
     }
     return Bx({ flexDirection: "column" }, [
       Bx({ key: "cs-rotate-band", marginLeft: 2, borderStyle: "round", borderColor: markInk(f, theme), paddingX: 1 }, words.nodes.concat(rail)),
@@ -376,7 +377,7 @@
     if (ticks !== undefined) {
       var where = [Bx({ key: "cs-rail" }, railNodes(f.rail, ticks.hidden, inks(theme).own))];
       var room = budget - railCells(f.rail, ticks.hidden) - 2;
-      if (room >= RAIL_LABEL_MIN) where.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room))]));
+      if (room >= RAIL_LABEL_MIN) where.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, cut(promptName(f.rail), room))]));
       rows.push(entries.length > 0 ? Bx({ key: "cs-where", marginLeft: 2 }, where) : Bx({ key: "cs-where" }, [mark].concat(where)));
     }
     return Bx({ flexDirection: "column" }, [Bx({ marginTop: 1 }, [Bx({ key: "cs-rotate-band", marginLeft: 2, flexDirection: "column" }, rows)])]);
@@ -384,7 +385,7 @@
 
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
-    { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
+    { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into …N, so it never overruns.", draw: drawQuiet },
     { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
     { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once clips at 60 and at 80.", draw: drawStatusFirst },
     { id: "two-zone", name: "Two zones", note: "Actions on the left, the named prompt and the rail pushed to the right edge with space-between, so the rail always ends where the line does. Every word at once clips at 60 and at 80.", draw: drawTwoZone },
