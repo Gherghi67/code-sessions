@@ -361,6 +361,27 @@
     ]);
   }
 
+  // Two rows: the mark and the shipped words, then the rail and its named
+  // prompt under the words with the whole width to itself. With no words the
+  // rail's row carries the mark.
+  function drawStacked(f, cols, theme) {
+    var entries = entriesOf(f);
+    var words = actions(f, entries, theme, SEP);
+    var budget = cols - 2 - 2;
+    var ticks = hasRail(f) ? railTicks(f.rail.prompts.length, budget, BAND_BARS) : undefined;
+    if (entries.length === 0 && ticks === undefined) return null;
+    var mark = Bx({ key: "cs-mark", marginRight: 1 }, [T({ color: markInk(f, theme) }, MARK)]);
+    var rows = [];
+    if (entries.length > 0) rows.push(Bx({ key: "cs-actions" }, [mark].concat(words.nodes)));
+    if (ticks !== undefined) {
+      var where = [Bx({ key: "cs-rail" }, railNodes(f.rail, ticks.hidden, inks(theme).own))];
+      var room = budget - railCells(f.rail, ticks.hidden) - 2;
+      if (room >= RAIL_LABEL_MIN) where.push(Bx({ marginLeft: 2 }, [T({ dimColor: true, italic: true }, cut("#" + (f.rail.named + 1) + " " + f.rail.prompts[f.rail.named], room))]));
+      rows.push(entries.length > 0 ? Bx({ key: "cs-where", marginLeft: 2 }, where) : Bx({ key: "cs-where" }, [mark].concat(where)));
+    }
+    return Bx({ flexDirection: "column" }, [Bx({ marginTop: 1 }, [Bx({ key: "cs-rotate-band", marginLeft: 2, flexDirection: "column" }, rows)])]);
+  }
+
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
@@ -369,6 +390,7 @@
     { id: "two-zone", name: "Two zones", note: "Actions on the left, the named prompt and the rail pushed to the right edge with space-between, so the rail always ends where the line does. Every word at once clips at 60 and at 80.", draw: drawTwoZone },
     { id: "rail-first", name: "Rail first", note: "The rail leads at the inset and its named prompt grows into the room; the words fold compact to the right edge and the mark ends the line. Every word at once clips at 60 and at 80.", draw: drawRailFirst },
     { id: "capsule", name: "Capsule", note: "The shipped words in a round border whose ink carries the state, for comparison with the rotate capsule presets: three rows for one line of words. Every word at once clips at 60 and at 80.", draw: drawCapsule },
+    { id: "stacked", name: "Stacked", note: "Two rows: the shipped words, then the rail under them with the whole width, so a long line of words no longer squeezes the rail out. The words' row still clips at 60 and at 80 with every word at once.", draw: drawStacked },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };
