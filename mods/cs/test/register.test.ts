@@ -3336,6 +3336,29 @@ test('a feed press refuses a session whose control files are tracked', async () 
   expect(feedKey(await band()).props.label).toBe('feed ✓')
 })
 
+// A prompt clears the handoff's refusal so its toast says it again, but cs's
+// answer on the session's control files still stands for the feed key: a
+// refused vet keeps the key off until a vet passes or the mod loads again.
+test('a refused session keeps the feed key off across prompts, whichever vet refused it', async () => {
+  enableFeed()
+  files['/work/.cs/local/feed'] = 'on\n'
+  runResult = tracked
+  await startSession()
+  expect(runs.map(run => run.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(feedKey(await band()).props.label).toBe('feed')
+  await promptSubmit()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  await feedKey(await band()).props.onPress()
+  await promptSubmit()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+  runResult = VETTED
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  await feedKey(await band()).props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+})
+
 test('a feed press survives clearing the conversation and loading the band again', async () => {
   enableFeed()
   await feedKey(await band()).props.onPress()

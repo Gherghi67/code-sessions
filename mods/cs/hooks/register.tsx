@@ -200,6 +200,12 @@ let clearing = false
 // cs's last refusal of this session's control files, toasted once: the band
 // asks on every render while a handoff is armed.
 let lastRefusal: string | undefined
+// Whether cs's last answer on this session's control files was a refusal. Set
+// and cleared by every vet (sessionVetted), so the session start's and a feed
+// press's alike; only a passed vet or a reload clears it, never a prompt. The
+// feed key reads off while it is set: the band's label says what cs-feed
+// draws, and cs-feed reads a refused session as off.
+let feedVetRefused = false
 // Counts presses of the clear button: a press acts only if no later press or
 // prompt came while cs was answering it.
 let pressCount = 0
@@ -347,6 +353,7 @@ export function register(on: On, options: PluginOptions) {
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
+  feedVetRefused = false
   featuresWord = undefined; featuresReading = false; featuresClock = undefined; featuresComplaint = undefined
   railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); denySaid = false; notYetSaid = false; tailSaid = false; drawnRead = -1; redrawPending = false
   on('session.start', async ($, e, next) => {
@@ -584,7 +591,7 @@ export function register(on: On, options: PluginOptions) {
       featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
       countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
       rotating, armed, wrapping, waiting, gate, queued, mail,
-      feed: feeding ? { on: lastRefusal === undefined && await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
+      feed: feeding ? { on: !feedVetRefused && await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
       rotate: armed ? () => pressClear($) : () => pressRotate($),
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
@@ -1286,6 +1293,7 @@ async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> 
   }
   if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(`cs: no rotation in this session: ${refusal}`)
   lastRefusal = refusal
+  feedVetRefused = refusal !== undefined
   return refusal === undefined
 }
 

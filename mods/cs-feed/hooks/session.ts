@@ -468,8 +468,8 @@ export function active(load: Load): boolean {
  * the same cs -vet-session as writeFeed). A
  * refused session reads as off: the mirror says off, every hook passes the
  * engine's drawing through, nothing is written, and the refusal is logged once
- * (vetOnRead). cs's band labels the key off there too (`lastRefusal ===
- * undefined && readFeed`), so both sides agree and both refuse writes
+ * (vetOnRead). cs's band labels the key off there too (`!feedVetRefused &&
+ * readFeed`: its last vet refused), so both sides agree and both refuse writes
  * (rationale (e) trace 7). A session whose file says off or is absent spawns
  * no cs process.
  *

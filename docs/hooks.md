@@ -622,6 +622,12 @@ and run `cs -update` in a terminal, as described in
 The key reads `feed` while off and `feed ✓` while on, the check in the
 session's colour. A press asks `cs -vet-session` before it writes, as the
 other band writers do. A refusal leaves the file alone and draws feed as off.
+The key reads `feed ✓` only while the file holds `on\n` and the band's
+last `cs -vet-session` answer in this load was not a refusal. The band asks
+at session start in a cs session with `.cs/local`, and at every step that
+acts on the control files, such as a press of the clear, rotate or feed key.
+A prompt does not clear a refusal. A vet that passes, or a reload, does.
+Before the band's first vet in a load, it reads the file unvetted.
 An accepted press
 flips `.cs/local/feed` under the session's working
 directory, then invalidates the band. The file holds `on\n` or `off\n` and
