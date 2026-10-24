@@ -2258,8 +2258,28 @@ _band_bg() {
     _BG_R="$_R"; _BG_G="$_G"; _BG_B="$_B"
 }
 
-# The band colour in _R/_G/_B, before its pull toward the background.
+# The band colour in _R/_G/_B, before its pull toward the background, first
+# match winning: CS_STATUSLINE_BAND as a palette name, `brand`, `periwinkle` or
+# an r;g;b triplet (`none` asks for the neutral outright); the session's own
+# colour from its state file; the neutral. An override that names none of these
+# is the session colour, so a typo never breaks the bar.
+SESSION_PALETTE="red blue green yellow purple orange pink cyan"
 _band_from() {
+    local want="${CS_STATUSLINE_BAND:-session}"
+    case " $SESSION_PALETTE brand periwinkle " in
+        *" $want "*) _sgr 48 "$want"; _parse_rgb_triplet "$_RGB"; return 0 ;;
+    esac
+    [ "$want" = "none" ] && { _band_neutral; return 0; }
+    _parse_rgb_triplet "$want" && return 0
+    if [ -n "$SL_LOCAL_DIR" ]; then
+        _read_state_key "$SL_LOCAL_DIR/state" claude_session_color
+        case " $SESSION_PALETTE " in
+            *" $_STATE_VALUE "*)
+                if [ -n "$_STATE_VALUE" ]; then
+                    _sgr 48 "$_STATE_VALUE"; _parse_rgb_triplet "$_RGB"; return 0
+                fi ;;
+        esac
+    fi
     _band_neutral
 }
 

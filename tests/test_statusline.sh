@@ -4998,6 +4998,90 @@ test_band_render_writes_nothing_to_stderr() {
     assert_eq "" "$(run_sl_stderr "$FIXTURE_DOCS")" "the band renders silently" || return 1
 }
 
+# The fill the band starts at: the run that opens the line after its reset,
+# one blank cell.
+band_first_cell() {
+    printf '%s' "${1:4:40}" | sed -n "s/^\($ESC_\[[0-9;]*m\) .*/\1/p" | tr -d '\033'
+}
+
+# A session whose machine-local state names colour $1.
+band_session_colour() {
+    export CLAUDE_SESSION_NAME=band-sess
+    mkdir -p "$CS_SESSIONS_ROOT/band-sess/.cs/local"
+    printf 'claude_session_color: %s\n' "$1" > "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
+}
+
+# The first cell is the band colour pulled 30% toward the background, and the
+# last cell is the background itself. With no session and no override the
+# colour is neutral: the dark background 21;24;40 lifted to 61;64;90, pulled
+# to 49;52;75.
+test_band_fades_from_the_band_colour_to_the_background() {
+    band_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[0m" "$(printf '%s' "${out:0:4}" | tr -d '\033')" "the line opens with a reset" || return 1
+    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "the first cell is the neutral band colour" || return 1
+    local tail="${ESC_}[48;2;21;24;40m ${ESC_}[0m"
+    assert_eq "$tail" "${out: -${#tail}}" "the last cell is the background" || return 1
+}
+
+# A light terminal's neutral is the background darkened 30 a channel:
+# 250;246;235 to 220;216;205, pulled to 229;225;214.
+test_band_neutral_darkens_a_light_background() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="250;246;235"
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;229;225;214m" "$(band_first_cell "$out")" "a light neutral is a darker step" || return 1
+}
+
+# The session colour from the state file: blue 106;155;204 pulled toward
+# 21;24;40 is 81;116;155.
+test_band_takes_the_session_colour() {
+    band_env
+    band_session_colour blue
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "the session colour starts the band" || return 1
+}
+
+test_band_without_a_usable_session_colour_is_neutral() {
+    band_env
+    local out
+    band_session_colour magenta
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "a colour outside the palette is neutral" || return 1
+    rm -f "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
+}
+
+# CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 pulls to
+# 161;34;38 (the -59.7 truncates to -59), the triplet 100;200;0 to 77;148;12,
+# brand 217;119;87 to 159;91;73. `session` and anything unusable fall to the
+# session colour (blue, 81;116;155); `none` is the neutral even with one set.
+test_band_colour_override_precedence() {
+    band_env
+    band_session_colour blue
+    local out
+    out=$(CS_STATUSLINE_BAND=red run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;161;34;38m" "$(band_first_cell "$out")" "a palette name" || return 1
+    out=$(CS_STATUSLINE_BAND="100;200;0" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;77;148;12m" "$(band_first_cell "$out")" "an r;g;b triplet" || return 1
+    out=$(CS_STATUSLINE_BAND=brand run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;159;91;73m" "$(band_first_cell "$out")" "the brand coral" || return 1
+    out=$(CS_STATUSLINE_BAND=session run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "session names the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND=chartreuse run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND="300;0;0" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
+    assert_eq "" "$(CS_STATUSLINE_BAND=chartreuse run_sl_stderr "$FIXTURE_DOCS")" "an unusable override is silent" || return 1
+}
+
+
 run_test test_band_fills_exactly_the_width
 run_test test_band_overflow_emits_every_item_and_no_fill
 run_test test_band_width_holds_under_the_c_locale
@@ -5009,5 +5093,10 @@ run_test test_band_width_from_the_tmux_pane
 run_test test_band_width_ignores_a_foreign_tmux
 run_test test_band_width_from_the_terminal_is_measured_once
 run_test test_band_render_writes_nothing_to_stderr
+run_test test_band_fades_from_the_band_colour_to_the_background
+run_test test_band_neutral_darkens_a_light_background
+run_test test_band_takes_the_session_colour
+run_test test_band_without_a_usable_session_colour_is_neutral
+run_test test_band_colour_override_precedence
 
 report_results
