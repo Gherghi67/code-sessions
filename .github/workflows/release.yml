@@ -16,11 +16,13 @@ permissions:
 jobs:
   # The release skill tags only a commit whose own Test run is green, but a
   # tag pushed by hand would build and publish untested. This job makes the
-  # rule hold for every tag: it fails unless the Test workflow concluded
-  # success for exactly the tagged commit. A commit that never reached main
-  # has no Test run (test.yml runs on push to main, and skips a push that only
-  # touches docs/superpowers or docs/upstream) and fails here too; a run
-  # still in progress fails the same way, so tag after Test finishes.
+  # rule hold for every tag: it fails unless the Test workflow's push run on
+  # main completed with success for exactly the tagged commit. A commit that
+  # never reached main has no such run (a pull_request run on the same sha
+  # tested the PR's merge commit, not this one; test.yml also skips a push
+  # that only touches docs/superpowers or docs/upstream) and fails here too; a
+  # run still in progress fails the same way, naming its status, so tag after
+  # Test finishes.
   ci-green:
     runs-on: ubuntu-latest
     permissions:
@@ -30,10 +32,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml \
-            --commit "$GITHUB_SHA" --limit 1 --json conclusion --jq '.[0].conclusion')
-          if [ "$conclusion" != success ]; then
-            echo "::error::Test concluded '${conclusion:-no run}' for $GITHUB_SHA; a release needs a green Test run on the tagged commit"
+          # Only a push run on main tested this exact commit: a pull_request run
+          # carries the PR head's sha but tested the merge commit, so it does not
+          # count. Zero runs prints an empty line.
+          found=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml \
+            --commit "$GITHUB_SHA" --event push --branch main --limit 1 \
+            --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
+          if [ "$found" != 'completed success' ]; then
+            echo "::error::Test is '${found:-no run}' (status conclusion) for $GITHUB_SHA; a release needs a green Test run on the tagged commit"
             exit 1
           fi
 

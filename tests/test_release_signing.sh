@@ -133,18 +133,18 @@ printf '%s' "$GH_REPLY"
 EOF
     chmod +x "$TEST_TMPDIR/bin/gh"
     local reply rc out
-    for reply in success failure cancelled '' null; do
+    for reply in 'completed success' 'completed failure' 'completed cancelled' 'in_progress ' ''; do
         : > "$TEST_TMPDIR/calls"
         rc=0
         out=$(cd "$TEST_TMPDIR" && PATH="$TEST_TMPDIR/bin:$PATH" GH_CALLS="$TEST_TMPDIR/calls" GH_REPLY="$reply" \
             GITHUB_REPOSITORY=example/cs GITHUB_SHA=0123abcd bash -e gate.sh 2>&1) || rc=$?
-        if [ "$reply" = success ]; then
+        if [ "$reply" = 'completed success' ]; then
             assert_eq 0 "$rc" 'a green Test run lets the release build' || return 1
         else
             assert_eq 1 "$rc" "a Test run that is '$reply' fails the release" || return 1
-            case "$out" in *'::error::'*0123abcd*) ;; *) echo "  FAIL: the gate must name the commit in an error annotation, got: $out"; return 1 ;; esac
+            case "$out" in *'::error::'*"'${reply:-no run}'"*0123abcd*) ;; *) echo "  FAIL: the gate must name what it found and the commit in an error annotation, got: $out"; return 1 ;; esac
         fi
-        assert_file_contains "$TEST_TMPDIR/calls" 'workflow test.yml --commit 0123abcd' 'the gate looks up the Test workflow run for the tagged commit' || return 1
+        assert_file_contains "$TEST_TMPDIR/calls" 'workflow test.yml --commit 0123abcd --event push --branch main' 'the gate looks up the Test workflow push run on main for the tagged commit' || return 1
     done
 }
 
