@@ -219,8 +219,8 @@ export type Load = {
    * or the file reads off. Set from vetOnRead's answer (by feedRecord at the
    * load's on-read, by applyFeed('status') at an outside flip to on), by
    * applyFeed to 'passed' when a press's write turned the file on (cs's
-   * pressFeed vetted it on the way in), and by writeFeed to 'passed' when its
-   * own vet passed. A read that finds the file off clears it, so the next on
+   * pressFeed vetted it on the way in), and at a successful write's ticketed
+   * read-back. A read that finds the file off clears it, so the next on
    * that no writer of ours vetted is vetted again. A refused writeFeed leaves
    * it as it was (the mirror and the drawing stay as they were). Cached for
    * the load otherwise: a session cs stops trusting after a pass keeps the
@@ -416,6 +416,7 @@ export type FeedRead = 'press' | 'write' | 'status'
  *   const fileOn = isOn(the read)
  *   let vet = load.vet
  *   if (!fileOn) vet = undefined                                   // the next on is vetted again unless a writer of ours vetted it
+ *   else if (after === 'write') vet = 'passed'                      // commit this writer's fresh answer with its read ticket
  *   else if (vet === undefined && after !== 'status') vet = 'passed'   // the writer vetted it on the way in: no cs process
  *   else if (vet === undefined) vet = await vetOnRead(load, $, cwd)    // an outside flip to on: one cs process
  *   if (ticket < load.reads.applied) return                        // a read started earlier that resolves later changes nothing, load.vet included
@@ -457,10 +458,12 @@ export async function applyFeed(load: Load, $: $, after: FeedRead): Promise<void
   const fileOn = isOn(file.text)
   let vet = load.vet
   if (!fileOn) vet = undefined
+  else if (after === 'write') vet = 'passed'
   else if (vet === undefined) vet = after === 'status' ? await vetOnRead(load, $, cwd) : 'passed'
   if (ticket < load.reads.applied) return
   load.reads.applied = ticket
   load.vet = vet
+  if (vet === 'passed') load.vetLogged = undefined
   const current = load.feed
   if (!current) throw new Error('feed record did not settle')
   const on = fileOn && vet === 'passed'
@@ -482,11 +485,10 @@ export type WriteOutcome = 'written' | 'no-session' | { readonly refused: string
  *   if (!(await $.fs.exists(`${cwd}/${CS_LOCAL}`))) return 'no-session'   // never create .cs/local; no vet spawned
  *   const refusal = await vetRefusal($, cwd)
  *   if (refusal !== undefined) return { refused: refusal }                   // nothing written, the mirror and load.vet untouched
- *   load.vet = 'passed'                                                      // cs's freshest answer: the read-back below does not ask again
  *   if (view changed) await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))   // view first: a reader never sees on with the old view
  *   load.feed = { on: load.feed.on, view: next.view }
  *   await $.fs.write(`${cwd}/${FEED_FILE}`, next.on ? ON_LINE : OFF_LINE)
- *   await applyFeed(load, $, 'write')                                       // read back: what the file holds now is the truth; no second vet
+ *   await applyFeed(load, $, 'write')                                       // read back and commit this write's pass with its ticket; no second vet
  *   return 'written'
  *
  * The vet comes after the directory test, so a directory with no .cs/local
@@ -502,7 +504,6 @@ export async function writeFeed(load: Load, $: $, next: Session): Promise<WriteO
   const refused = await vetRefusal($, cwd)
   if (refused !== undefined) return { refused }
   const current = load.feed ?? await feedRecord(load, $)
-  load.vet = 'passed'
   const viewChanged = viewText(current.view) !== viewText(next.view)
   if (viewChanged) await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))
   load.feed = { on: current.on, view: next.view }

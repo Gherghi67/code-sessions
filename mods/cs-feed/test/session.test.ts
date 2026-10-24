@@ -198,6 +198,49 @@ test('overlapping preset writes finish in command order without replacing the la
   expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":true,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')
 })
 
+test('a successful write keeps its fresh vet when an older status refusal lands during the write', async ($, on) => {
+  let file = 'off\n'
+  let runs = 0
+  let releaseVet: (() => void) | undefined
+  let vetEntered: (() => void) | undefined
+  let releaseWrite: (() => void) | undefined
+  let writeEntered: (() => void) | undefined
+  const vetHeld = new Promise<void>(resolve => { releaseVet = resolve })
+  const vetStarted = new Promise<void>(resolve => { vetEntered = resolve })
+  const writeHeld = new Promise<void>(resolve => { releaseWrite = resolve })
+  const writeStarted = new Promise<void>(resolve => { writeEntered = resolve })
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: file } : { deny: 'ENOENT: no such file or directory' })
+  on('fs.exists', () => ({ value: true }))
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', async () => {
+    runs++
+    if (runs === 1) {
+      vetEntered?.()
+      await vetHeld
+      return { value: { exitCode: 1, stdout: '', stderr: 'old refusal\n', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.write', async ($, e) => { writeEntered?.(); await writeHeld; file = e.text; return { value: undefined } })
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
+  file = 'on\n'
+  const status = $.command.run(STATUS)
+  await vetStarted
+  const write = $.command.run({ ...STATUS, args: 'on' })
+  await writeStarted
+  releaseVet?.()
+  expect(await status).toEqual({ text: 'off · raw' })
+  releaseWrite?.()
+  expect(await write).toEqual({ text: 'Chat view: on.' })
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(file).toBe('on\n')
+  expect(runs).toBe(2)
+  expect(logs).toEqual(['cs-feed: the feed is off in this session: old refusal'])
+})
+
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {
   const load = newLoad()
   const t = buildTranscript([{ role: 'user', text: 'work', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'live', tool: 'Read', input: {} }] }])
