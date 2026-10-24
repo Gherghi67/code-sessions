@@ -118,11 +118,14 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart), $.session.compact (via offerToStart), $.session.cwd' "/queue runs cs from its own hook and its start offer, which alone submits a prompt and compacts; the rotation asks cs -vet-session before it arms; the /finish watch runs kill -0 to ask after cs's pid" || return 1
     assert_output_contains "$out" '$.command.list, $.command.register, $.command.run (via askToWrap, clearAndContinue, noteConversation, pressFinish, rotate)' "the band discovers commands; the wrap, clear, finish and rotate keys and conversation colour keep their command routes" || return 1
     assert_output_contains "$out" '$.clock.after, $.clock.every (via readFeatures, startCountdown, watchFinish), $.clock.now (via gateWord)' "the forced /rotate, the next-step toast and the rail's redraw are one-shot timers, the grace, the /finish watch and the idle features read tickers, and the gate word alone reads the time" || return 1
-    local src="$MOD/hooks/register.tsx" scroll_lines jump_range
+    local src="$MOD/hooks/register.tsx" scroll_lines jump_range feed_range
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. $.ui.log and
     # selected later calls are checked on the source instead.
     assert_eq "5" "$(grep -c '\$\.ui\.log' "$src")" "five calls log a features word read failure, a features complaint, a transcript read failure, a /color that did not run and a feed read failure" || return 1
+    feed_range=$(awk '/^async function pressFeed\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
+    set -- $feed_range
+    assert_eq "1" "$(awk -v start="$1" -v end="$2" 'NR > start && NR < end && /\$\.fs\.write/ { count++ } END { print count + 0 }' "$src")" "one call inside pressFeed writes the feed file" || return 1
     assert_output_contains "$out" '$.session.id, $.session.usage, $.ui.ask (via askToWrap, offerToStart), $.ui.invalidate' "the visible inventory includes the session, dialogs and redraw calls" || return 1
     scroll_lines=$(grep -n '\$\.ui\.scroll' "$src" | cut -d: -f1 | tr '\n' ' ')
     jump_range=$(awk '/^async function jumpTo\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
