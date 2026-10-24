@@ -75,7 +75,10 @@
   function cells(text) { return graphemes(text).reduce(function (sum, g) { return sum + cellsOf(g); }, 0); }
 
   // The inks, by the lab painter's names. The session colour stands as
-  // `claude` (the session palette's orange is the same rgb); amber and crit
+  // `claude`, 215,119,87, two steps of red off the session palette's orange
+  // (217,119,87, which RAW.CORAL matches exactly): `claude` is a theme key
+  // the JSX prints as a string, where CORAL would print as a const the mod
+  // must declare. Amber and crit
   // pivot on the theme as the bar's do. The session palette's blue and green
   // are not names the painter knows, so the mark's running and clear inks
   // stand as `suggestion` and `success`.
