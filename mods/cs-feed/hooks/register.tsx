@@ -373,12 +373,12 @@ export const PAINTERS = {
   ToolUse: async (e, cx, pen) => {
     // decideCall(toCallView(e.props), cx) -> nothing | tree(drawCall). Under the default renderer a lone call
     // arrives here, under fullscreen as a one-call ToolGroup (spike2 M3): both go through decideCall.
-    const { verdict, live } = decideCall(toCallView(e.props), cx)
-    return { drawn: { kind: 'tree', tree: drawCall(verdict, pen) }, live }
+    const { verdict, live, clock } = decideCall(toCallView(e.props), cx)
+    return { drawn: { kind: 'tree', tree: drawCall(verdict, pen) }, live, clock }
   },
   ToolGroup: async (e, cx, pen) => {
-    const { verdict, live } = decideGroup({ ...e.props, calls: e.props.calls.map(toCallView) }, cx)
-    return { drawn: verdict.draw === 'engine' ? { kind: 'engine' } : { kind: 'tree', tree: drawGroup(verdict, pen) }, live }
+    const { verdict, live, clock } = decideGroup({ ...e.props, calls: e.props.calls.map(toCallView) }, cx)
+    return { drawn: verdict.draw === 'engine' ? { kind: 'engine' } : { kind: 'tree', tree: drawGroup(verdict, pen) }, live, clock }
   },
   ToolResult: async (e, cx, pen) => {
     return { drawn: { kind: decideToolResult(callId(e.props.tool_use_id), e.props.isExpanded, cx) }, live: false }
@@ -393,8 +393,8 @@ export const PAINTERS = {
     // The working line: the engine's own row with our words as its message, never a tree of ours.
     // "Writing" comes from the row's own mode ('responding'), not from the transcript: the reply's
     // row is stored only once it has streamed (spike5 M18), too late for the line it names.
-    const { verdict, live } = decideSpinner(e.props, cx)
-    return { drawn: verdict.draw === 'rewrite' ? { kind: 'rewrite', props: { message: verdict.message, suffix: '' } } : { kind: 'engine' }, live }
+    const { verdict, live, clock } = decideSpinner(e.props, cx)
+    return { drawn: verdict.draw === 'rewrite' ? { kind: 'rewrite', props: { message: verdict.message, suffix: '' } } : { kind: 'engine' }, live, clock }
   },
   SessionMode: async (e, cx) => {
     return { drawn: { kind: 'rewrite', props: { modes: sessionModes(e.props.modes, cx.view) } }, live: false }

@@ -55,6 +55,13 @@ export type Decision<V> = { readonly verdict: V; readonly live: boolean; readonl
 /** The clock tokens a drawing reads besides LIVE; absent: none. */
 export type Clock = 'tick' | 'pulse' | 'both'
 
+/** Both drawings' clocks, for a row that stacks several decisions. */
+export function clocks(all: readonly (Clock | undefined)[]): Clock | undefined {
+  const tick = all.some(clock => clock === 'tick' || clock === 'both')
+  const pulse = all.some(clock => clock === 'pulse' || clock === 'both')
+  return tick && pulse ? 'both' : tick ? 'tick' : pulse ? 'pulse' : undefined
+}
+
 export type CallVerdict =
   | { readonly draw: 'nothing' }
   | { readonly draw: 'turn'; readonly turn: TurnId; readonly done: number; readonly opened: boolean; readonly body: readonly CallVerdict[] }
@@ -135,7 +142,8 @@ function callDecision(call: CallView, cx: Context, turnLine: boolean): Decision<
     const state = helperState(call, filed, cx.agents)
     const started = call.id ? cx.obs.helperStartedAt.get(call.id) : undefined
     const elapsedMs = state === 'running' || state === 'dispatched' ? started === undefined ? undefined : Math.max(0, cx.now - started) : filed?.outcome.state === 'done' ? filed.outcome.durationMs : undefined
-    return { verdict: { draw: 'helper', call, state, elapsedMs }, live }
+    // A running helper's end comes from the tick's agent list and its elapsed from the clock; a dispatched one's end is its own row's props.
+    return { verdict: { draw: 'helper', call, state, elapsedMs }, live, clock: state === 'running' || (state === 'dispatched' && elapsedMs !== undefined) ? 'tick' : undefined }
   }
   if (cls === 'question') return { verdict: { draw: 'question', call, opened: call.id ? cx.opened.has(call.id) : false }, live }
   if (!filed && cx.open && call.isRunning) return { verdict: { draw: 'nothing' }, live }
@@ -234,9 +242,10 @@ export function decideGroup(props: { calls: readonly CallView[]; isActive: boole
     const running = helpers.some(helper => helper.state === 'running' || helper.state === 'dispatched')
     const end = running ? cx.now : ends.length ? Math.max(...ends) : undefined
     const key = `helpers-${props.calls[0]?.id}`
-    return { verdict: { draw: 'batch', key, opened: cx.opened.has(key), helpers, elapsedMs: starts.length && end !== undefined ? Math.max(0, end - Math.min(...starts)) : undefined }, live }
+    // §7.2 while any runs: the spinner turns (PULSE), the elapsed and the states move with the tick.
+    return { verdict: { draw: 'batch', key, opened: cx.opened.has(key), helpers, elapsedMs: starts.length && end !== undefined ? Math.max(0, end - Math.min(...starts)) : undefined }, live, clock: running ? 'both' : undefined }
   }
-  return { verdict: { draw: 'stack', calls: decisions.map(decision => decision.verdict) }, live }
+  return { verdict: { draw: 'stack', calls: decisions.map(decision => decision.verdict) }, live, clock: clocks(decisions.map(decision => decision.clock)) }
 }
 
 /** ToolResult: nothing when its call is filed (the result rides on the call's chip and opened output); else the engine's (§4.8). */
@@ -418,7 +427,8 @@ export function decideSpinner(props: { message: string | null; mode: 'requesting
   const words = cx.view.group && props.mode === 'responding' ? 'Writing' : cx.view.group && running ? callWords(running, 'present') : steps ? 'Working' : 'Thinking'
   const helpers = cx.agents.filter(agent => !agent.parentId && (agent.status === 'running' || agent.status === 'pending')).length
   const message = words + (steps ? ` · step ${steps}` : '') + (helpers ? ` · ${helpers} ${helpers === 1 ? 'helper' : 'helpers'} working` : '')
-  return { verdict: { draw: 'rewrite', message, suffix: '' }, live: true }
+  // The helper count is the tick's agent list (§5.1), so the line reads TICK while it counts any.
+  return { verdict: { draw: 'rewrite', message, suffix: '' }, live: true, clock: helpers ? 'tick' : undefined }
 }
 
 export type BandVerdict =
