@@ -157,11 +157,11 @@
   // The rail's bars after `hidden` folded prompts: `…N` dim, `┃` bold in the
   // session colour for the named prompt, `┆` for one a jump was refused, `│`
   // otherwise, each a Button scoped for its hover card.
-  function railNodes(rail, hidden, theme) {
+  function railNodes(rail, hidden, namedInk) {
     var out = [];
     if (hidden > 0) out.push(T({ dimColor: true }, "…" + hidden));
     for (var i = hidden; i < rail.prompts.length; i++) {
-      if (i === rail.named) out.push(T({ bold: true, color: inks(theme).own }, "┃"));
+      if (i === rail.named) out.push(T(namedInk === undefined ? { bold: true } : { bold: true, color: namedInk }, "┃"));
       else out.push(Btn({ key: "cs-rail-" + i, plain: true, dimColor: true, label: rail.refused.indexOf(i) >= 0 ? "┆" : "│", hover: { scope: "cs-rail-" + i, dimColor: false } }));
     }
     return out;
@@ -170,6 +170,24 @@
   function promptLabel(rail, width) { return fitLeft("#" + (rail.named + 1) + " " + rail.prompts[rail.named], width); }
   function hasRail(f) { return f.rail !== undefined && f.rail.prompts.length > 1; }
 
+  // The rail and the named prompt in `budget` cells, `gap` cells after the
+  // words, as the shipped band fits them: undefined when no bar fits; the
+  // label, padded to what is left, only when that is RAIL_LABEL_MIN or more.
+  function railRun(f, budget, namedInk, gap) {
+    var ticks = hasRail(f) ? railTicks(f.rail.prompts.length, budget, BAND_BARS) : undefined;
+    if (ticks === undefined) return undefined;
+    var labelCells = budget - railCells(f.rail, ticks.hidden) - 2;
+    return [
+      Bx({ key: "cs-rail", marginLeft: gap }, railNodes(f.rail, ticks.hidden, namedInk)),
+      labelCells >= RAIL_LABEL_MIN && Bx({ width: labelCells, marginLeft: 2 }, [T({ dimColor: true, italic: true, wrap: "truncate-end" }, promptLabel(f.rail, labelCells))]),
+    ];
+  }
+
+  // A band's line under its blank row, two cells in.
+  function band(nodes) {
+    return Bx({ flexDirection: "column" }, [Bx({ marginTop: 1 }, [Bx({ key: "cs-rotate-band", marginLeft: 2 }, nodes)])]);
+  }
+
   // The band as the draw site composes it: a blank row, then at two cells in
   // the mark, the words, the rail after a 3-cell gap, and the named prompt in
   // what the line leaves. The hover cards that swap a prompt in under the
@@ -177,20 +195,9 @@
   function drawShipped(f, cols, theme) {
     var entries = entriesOf(f);
     var words = actions(f, entries, theme, SEP);
-    var budget = cols - 2 - 2 - (words.cells > 0 ? 3 + words.cells : 0);
-    var ticks = hasRail(f) ? railTicks(f.rail.prompts.length, budget, BAND_BARS) : undefined;
-    if (entries.length === 0 && ticks === undefined) return null;
-    var labelCells = ticks === undefined ? 0 : budget - railCells(f.rail, ticks.hidden) - 2;
-    return Bx({ flexDirection: "column" }, [
-      Bx({ marginTop: 1 }, [
-        Bx({ key: "cs-rotate-band", marginLeft: 2 }, [
-          Bx({ key: "cs-mark", marginRight: 1 }, [T({ color: markInk(f, theme) }, MARK)]),
-        ].concat(words.nodes, [
-          ticks !== undefined && Bx({ key: "cs-rail", marginLeft: words.cells > 0 ? 3 : 0 }, railNodes(f.rail, ticks.hidden, theme)),
-          labelCells >= RAIL_LABEL_MIN && Bx({ width: labelCells, marginLeft: 2 }, [T({ dimColor: true, italic: true, wrap: "truncate-end" }, promptLabel(f.rail, labelCells))]),
-        ])),
-      ]),
-    ]);
+    var rail = railRun(f, cols - 2 - 2 - (words.cells > 0 ? 3 + words.cells : 0), inks(theme).own, words.cells > 0 ? 3 : 0);
+    if (entries.length === 0 && rail === undefined) return null;
+    return band([Bx({ key: "cs-mark", marginRight: 1 }, [T({ color: markInk(f, theme) }, MARK)])].concat(words.nodes, rail || []));
   }
 
   // Words alone in the default ink, three cells apart: no mark, no key beside
@@ -222,12 +229,40 @@
     });
     if (kept < items.length) nodes.push(T({ dimColor: true }, gap + "\u2026" + (items.length - kept)));
     if (withHint) nodes.push(Bx({ marginLeft: 4 }, [T({ dimColor: true }, hint)]));
-    return Bx({ flexDirection: "column" }, [Bx({ marginTop: 1 }, [Bx({ key: "cs-rotate-band", marginLeft: 2 }, nodes)])]);
+    return band(nodes);
+  }
+
+  // The bound keys lead, each digit bold in the session colour and the only
+  // coloured ink on the line, its word beside it in the default ink; a shared
+  // prefix is spelled once, dim, before them. The other words follow, dim,
+  // two cells apart, then the rail with its named bar bold and uncoloured.
+  function drawKeysFirst(f, cols, theme) {
+    var entries = entriesOf(f);
+    var chordOf = function (e) { return e.kind === "chord" ? f.chords[e.role] : undefined; };
+    var ordered = entries.filter(function (e) { return e.kind === "chord"; }).concat(entries.filter(function (e) { return e.kind !== "chord"; }));
+    var prefix = sharedPrefix(ordered.map(chordOf));
+    var nodes = [], text = [];
+    if (prefix !== undefined) { nodes.push(Bx({ marginRight: 2 }, [T({ dimColor: true }, prefix)])); text.push(prefix + "  "); }
+    ordered.forEach(function (e, i) {
+      if (i > 0) { nodes.push(T({}, "  ")); text.push("  "); }
+      var c = chordOf(e);
+      var k = c === undefined ? undefined : prefix === undefined ? c : c.slice(prefix.length + 1);
+      if (k !== undefined) { nodes.push(Bx({ marginRight: 1 }, [T({ bold: true, color: inks(theme).own }, k)])); text.push(k + " "); }
+      if (e.kind === "chord") nodes.push(Btn({ key: e.key, action: ACTIONS[e.role], plain: true, label: e.label }));
+      else if (e.kind === "press") nodes.push(Btn({ key: e.key, plain: true, label: e.label }));
+      else nodes.push(T(e.ink === undefined ? { dimColor: true } : { bold: true }, e.label));
+      text.push(e.label);
+    });
+    var wordCells = cells(text.join(""));
+    var rail = railRun(f, cols - 2 - (wordCells > 0 ? 3 + wordCells : 0), undefined, wordCells > 0 ? 3 : 0);
+    if (entries.length === 0 && rail === undefined) return null;
+    return band(nodes.concat(rail || []));
   }
 
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
+    { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };
