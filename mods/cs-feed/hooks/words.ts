@@ -229,7 +229,7 @@ export type Card = {
   readonly report?: string
 }
 export type Frame = {
-  readonly from: string
+  readonly from?: string
   readonly state?: string // "_notification" stripped, underscores as spaces, idle -> "waiting"
   readonly at?: number
   readonly summary?: string
@@ -247,7 +247,7 @@ export function parseEnvelopes(raw: string): readonly Frame[] {
 }
 /** §8.3 source 2: frames read from a row's own text (a row stored before this load). */
 export function framesFromText(text: string): readonly Frame[] {
-  if (!text.split('\n').some(line => /^[{[]/.test(line.trim()))) return []
+  if (!text.split('\n').some(line => statusObject(line) !== undefined)) return []
   const frames: Frame[] = []
   let plain: string[] = []
   const flush = () => {
@@ -256,14 +256,19 @@ export function framesFromText(text: string): readonly Frame[] {
     plain = []
   }
   for (const line of text.split('\n')) {
-    const status = jsonObject(line.trim())
-    if (status && typeof status.type === 'string') {
+    const status = statusObject(line)
+    if (status) {
       flush()
       frames.push(frame(line))
     } else plain.push(line)
   }
   flush()
   return frames
+}
+
+function statusObject(line: string): Record<string, unknown> | undefined {
+  const value = jsonObject(line.trim())
+  return value && [value.type, value.status, value.verdict, value.result].some(value => string(value)) ? value : undefined
 }
 
 function frame(body: string, from?: string, summary?: string): Frame {
@@ -277,7 +282,8 @@ function frame(body: string, from?: string, summary?: string): Frame {
   const rawTime = whole?.timestamp
   const at = typeof rawTime === 'number' ? rawTime : typeof rawTime === 'string' && Number.isFinite(Date.parse(rawTime)) ? Date.parse(rawTime) : undefined
   const lead = reportLead(text)
-  return { from: clean(from ?? string(whole?.from) ?? string(whole?.teammate_id) ?? 'helper') || 'helper', state: stateWords(whole?.type), at, summary: summary ?? string(whole?.summary), relays, lead: whole?.type && !lead?.card ? undefined : lead }
+  const name = from ?? string(whole?.from) ?? string(whole?.teammate_id)
+  return { from: name ? clean(name) || undefined : undefined, state: stateWords(whole?.type), at, summary: summary ?? string(whole?.summary), relays, lead: whole?.type && !lead?.card ? undefined : lead }
 }
 
 function reportLead(text: string): Frame['lead'] {

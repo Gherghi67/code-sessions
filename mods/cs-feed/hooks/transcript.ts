@@ -282,15 +282,10 @@ function outcomeOf(use: ToolUseSummary, keepOutput: boolean): Outcome {
  * between verified pairs (one api message extra, one missing) are not closed
  * by the rule above: there it could split wrongly, which M23 measures.
  *
- * Kit tests, from spike2's m1b and m1d dumps (plain + api): m1b joins and
- * opens the peer turn; m1d stays one turn, its `ok`, `ok` pairs consistent
- * but unverified; m1d with api's newest message dropped (a one-message
- * offset) verifies no shifted pair and stays one turn; a repeated-text
- * fixture (two turns ending in the same short text, an idle peer message
- * between them) answers false at that gap; m1b with the api list
- * cut at its oldest 3 messages (a window start) still joins at the newest
- * end; m1b with one api text block edited fails verification from that pair
- * on and answers false there.
+ * Kit tests use synthetic adjacent assistant pairs for peer joining, changed
+ * text, differing or reordered ids, and uniqueness on each side. The recorded
+ * m1d `ok`, `ok` pair remains unverified even with the newest API reply absent.
+ * m1b has no earlier assistant to verify around its first peer row (M23).
  *
  * Returns, for each plain index of an A[k] that passed, the one api user
  * message U between it and the older verified entry; buildTranscript asks
@@ -402,8 +397,9 @@ export function backgroundRuns(messages: readonly SessionMessage[], api: readonl
       const result = object(use.result) ? use.result : undefined
       if (use.tool === 'Bash' && (use.input.run_in_background === true || result?.backgroundedToDeliverMessage === true)) {
         const id = callId(use.tool_use_id)
-        const words = callWords(use, 'present')
         const label = use.input.description || use.input.command
+        const commandLike = typeof label === 'string' && /[;&|<>`$\/\\]|^\s*(?:cd|bash|python\d*(?:\.\d+)*|node|npm|git|pgrep)\b/.test(label)
+        const words = callWords(commandLike ? { tool: 'Bash', input: {} } : use, 'present')
         running.set(id, { id, words, isTest: typeof label === 'string' && looksLikeTest(label) })
         if (typeof result?.backgroundTaskId === 'string') taskCalls.set(result.backgroundTaskId, id)
       }

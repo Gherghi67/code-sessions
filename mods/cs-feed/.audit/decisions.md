@@ -15,8 +15,8 @@ All source references below are relative to the authorized feed-arch directory u
 | an off session reports raw without changing its view | design/rationale.md:111, raw is on false, not a field set |
 | the file switch accepts only its complete on line | design/rationale.md:178, exactly on plus newline is on |
 | a mode matches every field and requires no hidden kinds | explore-features.md:63, all preset fields match and hide is empty |
-| stored views refuse torn, malformed, invalid and incomplete records | errand-70483ca3-760c-4d6b-9ae3-ef9451d0dad4.brief.md:31, each refused with the specific reason |
-| feed accepts the usage grammar and rejects unknown or extra sole words | explore-features.md:116-138, parser table and edges; design/rationale.md:31-37 adds on, off, status |
+| stored views refuse torn, malformed, invalid and incomplete records | errand-70483ca3-760c-4d6b-9ae3-ef9451d0dad4.brief.md:30, each refused with the specific reason |
+| feed accepts the usage grammar and rejects unknown or extra sole words | explore-features.md:116-138, parser table and edges; design/rationale.md:26 adds on, off, status |
 | commands change only the session fields named by the transition table | design/rationale.md:221-224 and explore-features.md:120-130 |
 
 Observed failures before implementation: modeOf threw `Error: not implemented`; missing FIELDS gave `Expected: "normal", Received: "clean"`; stored-view refusal gave `Expected: "feed-view is torn: missing closing newline", Received: Error: not implemented`; grammar and transition each threw `Error: not implemented`. After implementation the kit reported 6 pass, 0 fail.
@@ -31,17 +31,17 @@ The initial npx invocation selected an unrelated cached npm package named tsc an
 |---|---|
 | recorded prompts, deliveries and Stop continuations retain their measured turns | spike2.md:85: typed text during a text-only stream becomes its own turn; :128: idle peer reply is the first entry and has no preceding user; :145: idle task notification starts its own turn; :151: STOPTEST and two adjacent ok replies are one turn. The seven plain captures have respectively 3, 1, 2, 4, 2, 2, 3 visible turns. Every paired API capture is exercised. |
 | only plain user text without tool results or bash framing opens a turn | design/rationale.md:108: text, no tool results, not bash-mode text |
-| API joins verify ordered tool ids and stop at the first inconsistent pair | design/sketch/hooks/transcript.ts, joinApi comment: same tool_use ids in the same order and same text; stop at the first inconsistent pair |
-| a tool-free text verifies only when it is unique in both lists | design/rationale.md revision 2.1 and spike2.md:151; m1d API entries 11 and 13 both say ok, and a truncated newest API window must not verify them |
+| API joins verify ordered tool ids and stop at the first inconsistent pair | design/rationale.md:281: same tool_use ids in the same order and same text; stop at the first inconsistent pair |
+| a tool-free text verifies only when it is unique in both lists | design/rationale.md:282 and spike2.md:151; m1d API entries 11 and 13 both say ok, and a truncated newest API window must not verify them |
 | peer history accepts one anchored preamble and refuses quoted envelopes | design/rationale.md:388: every block is the measured preamble at offset 0 or a reminder quoting no envelope; exactly one preamble |
 | background launches close on idle notifications and API mid-turn notifications | design/rationale.md:621: the same API read finds background closes folded into tool_result content; explore-features.md:541: description or command is retained for test detection |
 | questions retain literal answers and shorten only the question sentence | explore-features.md:584-585: first ? or : followed by space/end, else first period; the literal Which look and Anything else pins |
 | structured output precedes model-facing wrappers and retains its count when capped | explore-features.md:212: stdout and stderr joined, else error text; capped at 2000 characters |
 | a prompt-door idle peer opens its first response call unless a typed prompt intervenes | design/rationale.md:538: prompt-door peer isMeta, then turn.start, then response call is an opener; typed prompt in between is none |
 | call labels clean descriptions and name tools without exposing commands | explore-features.md:297-304: Bash, Read, cleaned path, WebFetch literal pins; :288: MCP tool name |
-| hook refusals and background test words use the specified phrases | explore-features.md §4.7b refusal phrases and :539: test, tests, suite, spec, specs, e2e, verify, check |
-| compact labels preserve singular counts and bounded time and text | explore-features.md:267: 1 step this turn; :426: elapsed formats and floor; design/sketch/hooks/words.ts: fit and hhmm contracts |
-| run summaries count kinds and chips without counting refused calls as failed work | explore-features.md:306-333: exact count ordering, three literal run examples, refused count, failed count and +1 lines |
+| hook refusals and background test words use the specified phrases | explore-features.md:346 refusal phrases and :540: test, tests, suite, spec, specs, e2e, verify, check |
+| compact labels preserve singular counts and bounded time and text | explore-features.md:267: 1 step this turn; :426: elapsed formats and floor; :339: fitting; :155: local 09:07; design/sketch/hooks/words.ts:41 and :51 fit and hhmm contracts |
+| run summaries count kinds and chips without counting refused calls as failed work | explore-features.md:306-333: exact count ordering, three literal run examples, refused and failed counts; design/rationale.md:479 overrides the stale plural pin with +1 line |
 
 Before implementations, each first red was `Error: not implemented` (open, peer, join, build, background, questions, labels, classification, compact formatting, run summaries). Unique-text verification first failed `Expected: [1], Received: []`. Pure peer observations first failed `Export named 'observePrompt' not found`. The question-priority extension failed with `Received: Read v1.2` and `First.Second`; the command-only background extension received `isTest: false`; the structured-output extension received `lines: 1, output: <tool_result>wrapped</tool_result>` rather than the three stdout/stderr lines. Each was rerun green after its fix. Full logs remain local in .audit; the latest run is 19 pass, 0 fail.
 
@@ -83,11 +83,11 @@ The latest complete run after the words slice reports 24 pass, 0 fail; npx tsc e
 | reply claims settle in either evaluation order and fragments remain write-once | design/rationale.md:539, both bump orders, complete-before-first evaluation, live fragment then whole text, spent fragment false for good; last call includes helpers |
 | failed replies remain visible when said is hidden and desktop keeps the engine body | design/rationale.md:470-471, both surfaces and errors before said hiding |
 | groups preserve non-call content and expansion, and known results ride on their calls | engine index.d.ts:10524-10532 requires isCallsOnly true; explore-features.md:433-442 helper groups and :350 known result suppression |
-| an unknown phase uses the band observation or a running call without inventing a turn id | design/sketch/hooks/session.ts openTurn contract: phase unknown uses AbovePrompt.isWorking, then a call without a result; open turn may have no call id |
+| an unknown phase uses the band observation or a running call without inventing a turn id | design/sketch/hooks/session.ts:503-509: phase unknown uses AbovePrompt.isWorking, then a call without a result; open turn may have no call id |
 | spinner rewrites only an empty engine message using machinery steps and response mode | explore-features.md:362-371; design/rationale.md:478 preserves engine compaction text/suffix; :481 machinery-only steps |
 | user routing preserves authorship, quiet hook text and conservative task notifications | explore-features.md:471-485 ordered routing and burst member records; design/rationale.md:477 unknown task is background |
 | the band caps helper kinds, remembers vanished members and preserves survey and desktop composition | explore-features.md:447-452 batch rules and maxRows 6 pin; :550-565 desktop, survey and composition; :535-538 background timing and width |
-| command answers trim the feed prefix and mode labels preserve existing session modes | explore-features.md:178-180 command output and §3.5; design/sketch/hooks/verdict.ts sessionModes contract |
+| command answers trim the feed prefix and mode labels preserve existing session modes | explore-features.md:178-180 command output and :189 session mode; design/sketch/hooks/verdict.ts:301 mode contract |
 
 Each numbered decision row ran red before its branch was implemented. Row 1 threw `Error: not implemented`; rows 2 and 3 received a call instead of `{ draw: nothing }`; rows 4 and 5 received `call` instead of `run`; row 6 received `opened: false` instead of true. Helper, group, spinner, user, band and command tests each threw `Error: not implemented`. Standalone handling first returned a call instead of nothing for an unfiled running row. Reply tests first could not import observeTurnComplete; the hidden-error extension then received body nothing instead of its literal Connection lost error. A pending ReplyDecision initially failed tsc TS2322 because its local body annotation permitted stepsLine; narrowing the annotation to Omit<ReplyVerdict, 'stepsLine'> fixed the type without a cast.
 
@@ -96,6 +96,30 @@ recordStepsClaim is a pure explicit-Load transition: it returns true only for th
 Review extensions: empty sender name first routed as peer, then correctly as you; the report lead pin first counted 3 rather than 2 remaining nonblank lines; the question fallback first returned [] rather than a question/free text. Each exact extension was red before its fix. Integrated peer joining and live-openers now assert turn ids [a,b] versus [a] without either source. Settings grammar now checks every full literal command, raw/off starts from an on custom view, and FIELDS-backed type narrowing removes the repeated parser switch. Their empirical mutation results are recorded with the final verification.
 
 At the pure-modules checkpoint the kit reports 41 pass, 0 fail; npx tsc exits 0. Public verdicts remain discriminated unions, and pending replies cannot carry a steps line. New observation fields are inert batch/burst inputs; polling, timers and hook wiring are deferred. No process, filesystem or dynamic code execution was added to the pure modules.
+
+### Recorded turn counts
+
+The JSON line numbers below match the authorized source dumps and the copied fixture JSON (redaction changed no line counts). They point to text fields; the immediately preceding role field identifies each opener.
+
+| Capture | Expected | Evidence |
+|---|---:|---|
+| messages-plain.json | 3 | :4 `STOPTEST please`, :19 `probeskill` command-message, :29 `hello SIMPLE`; bash-mode rows :39/:44 are excluded by rationale.md:108 |
+| messages-m1a-plain.json | 1 | :4 `SLOWTOOL run it`; spike2.md:60 says `one turn` despite mid-turn delivery |
+| messages-m1a2-sendnow-plain.json | 2 | :4 `SLOWTOOL run it`, :59 task-notification; spike2.md:83 records entries 4-5 for the idle notification |
+| messages-m1a2-stream-plain.json | 4 | :4 SLOWTOOL, :59 task-notification, :69 `SLOWTEXT go`, :79 `MIDSTREAM plain`; spike2.md:85 says the queued text became `its own turn` |
+| messages-m1b-plain.json | 2 | :4 leading assistant `ok`, :9 SLOWTOOL; spike2.md:128 says the peer reply is the first entry, with no preceding user. It receives an implicit visible-window turn, not a fabricated verified peer gap |
+| messages-m1c-plain.json | 2 | :4 SLOWTOOL, :55 `BGTOOL go`; spike2.md:141 records BGTOOL entries 4-9, and :145 distinguishes an idle notification that starts its own turn |
+| messages-m1d-plain.json | 3 | :4 SLOWTOOL, :55 BGTOOL, :150 STOPTEST; spike2.md:151 gives `user STOPTEST please`, `assistant ok`, `assistant ok`, a single continuation turn |
+
+### Final review and validation
+
+Three review extensions were run red then green: a background description `npm test` first displayed literally instead of Running a shell command (explore-features.md:538); `[build] ready` first became a report frame instead of a peer headline (:503 requires recognized JSON status objects); a sender-less resumed status first used helper instead of the row's build-helper (:490 gives frame sender, then row sender, then helper). Missing sender is now optional in parsed Frame, while the routed frames verdict requires a resolved sender.
+
+Plugin validation first exited 1 with three undeclared state-token errors. Adding the manifest's types path exposed a second exit 1: the sketch's side-effect import in state.d.ts violated the self-contained contract. Removing that import follows engine index.d.ts:91-99. Validation then exited 0 and reported all three state tokens. The catalog-only missing-icon warning remains outside this local build scope. state.d.ts is deployed and named by the manifest; it contains only declarations.
+
+The five required type mutations were applied by hand to separate temporary copies. Base tsc exited 0. Spinner tree, Spinner nothing, band tree, partial painter table and live settled reply each exited 2, with exactly one TS2578 unused expect-error at painters.typecheck.ts lines 11, 14, 17, 20 and 26 respectively. Logs are bite-base.log, bite-spinner-tree.log, bite-spinner-nothing.log, bite-band-tree.log, bite-partial-table.log and bite-live-reply.log.
+
+Five behavior sensitivity mutations each produced 40 pass, 1 fail, exit 1: wrong preset payload; off as a no-op; raw as a no-op; removal of the historical peer split; removal of the live opener. The latter two received [a] where the integrated test requires [a,b]. These are intentional negative runs, not unresolved failures. They live only in temporary copies; their logs are sensitivity-*.log.
 
 ## Fixture identity and packaging check
 

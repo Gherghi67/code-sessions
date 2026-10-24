@@ -39,6 +39,8 @@ test('user routing preserves authorship, quiet hook text and conservative task n
   const cx = context()
   const peer: UserRow = { uuid: 'peer', text: 'Build finished.\nAll 12 checks pass.', origin: { kind: 'peer' }, isExpanded: false, from: { name: 'build-helper' } }
   expect(decideUser(peer, cx)).toEqual({ verdict: { draw: 'peer', sender: 'build-helper', headline: 'Build finished.' }, live: false })
+  expect(decideUser({ ...peer, text: '[build] ready' }, cx)).toEqual({ verdict: { draw: 'peer', sender: 'build-helper', headline: '[build] ready' }, live: false })
+  expect(decideUser({ ...peer, text: '{"type":"idle_notification"}' }, cx)).toEqual({ verdict: { draw: 'frames', frames: [{ from: 'build-helper', state: 'waiting', at: undefined, summary: undefined, relays: false, lead: undefined }] }, live: false })
   expect(decideUser({ ...peer, isExpanded: true }, cx)).toEqual({ verdict: { draw: 'engine' }, live: false })
   expect(decideUser({ uuid: 'you', text: 'Work', origin: { kind: 'composer' }, isExpanded: false }, cx)).toEqual({ verdict: { draw: 'you', text: 'Work', at: undefined }, live: false })
   expect(decideUser({ uuid: 'you', text: 'Work', origin: { kind: 'unclassified' }, from: { name: '' }, isExpanded: false }, cx)).toEqual({ verdict: { draw: 'you', text: 'Work', at: undefined }, live: false })

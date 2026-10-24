@@ -235,7 +235,7 @@ export type UserVerdict =
   | { readonly draw: 'nothing' }
   | { readonly draw: 'you'; readonly text: string; readonly at?: number }
   | { readonly draw: 'hookText'; readonly line: string }
-  | { readonly draw: 'frames'; readonly frames: readonly Frame[] }
+  | { readonly draw: 'frames'; readonly frames: readonly (Frame & { readonly from: string })[] }
   | { readonly draw: 'peer'; readonly sender: string; readonly headline: string }
   | { readonly draw: 'burst'; readonly members: readonly { uuid: string; sender: string; at?: number }[]; readonly opened: boolean }
   | { readonly draw: 'helperNote'; readonly durationMs?: number; readonly headline: string }
@@ -254,7 +254,7 @@ export function decideUser(row: UserRow, cx: Context): Decision<UserVerdict> {
   const typed = origin === 'composer' || origin === 'bridge' || origin === 'sdk'
   const hook = hookTextLine(row.text)
   if (!typed && origin !== 'task-notification') {
-    const frames = cx.obs.frames.get(row.uuid) ?? framesFromText(row.text)
+    const frames = (cx.obs.frames.get(row.uuid) ?? framesFromText(row.text)).map(frame => ({ ...frame, from: frame.from || (row.from?.name ? senderOf(row.from) : 'helper') }))
     if (frames.length) return answer(hidden(cx.view, 'peer') ? { draw: 'nothing' } : { draw: 'frames', frames })
   }
   if (typed || origin === 'scheduled-trigger' || (origin === 'unclassified' && !row.from?.name && !hook)) {

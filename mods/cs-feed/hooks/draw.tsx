@@ -54,7 +54,7 @@ export function drawBand(v: Exclude<BandVerdict, { draw: 'engine' }>, beneath: R
   throw new Error('not implemented')
 }
 
-/** The "Chat view" pane (§2.3) for this session: header, an on/off row (FeedCommand `toggle`), one row per FIELDS entry with its picture, the Show chips. Buttons are siblings of Texts, never inside one. */
+/** The "Chat view" pane (§2.3) for this session: header, an on/off row (FeedCommand `switch`), one row per FIELDS entry with its picture, the Show chips. Buttons are siblings of Texts, never inside one. */
 export function drawSettingsPane(mode: string, session: Session, pen: Pen, onPress: (cmd: FeedCommand) => void): RenderElement {
   throw new Error('not implemented')
 }

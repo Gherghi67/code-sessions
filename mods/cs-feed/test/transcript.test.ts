@@ -44,6 +44,7 @@ test('background launches close on idle notifications and API mid-turn notificat
   // Captured API messages have the engine contract's role and content block structure.
   expect(buildTranscript(rows, m1cApi as ApiMessage[]).background).toEqual([])
   expect(backgroundRuns([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'test', tool: 'Bash', input: { command: 'npm test', run_in_background: true } }] }])).toEqual([{ id: 'test', words: 'Running a shell command', isTest: true }])
+  expect(backgroundRuns([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'test', tool: 'Bash', input: { description: 'npm test', command: 'npm test', run_in_background: true } }] }])).toEqual([{ id: 'test', words: 'Running a shell command', isTest: true }])
 })
 
 test('questions retain literal answers and shorten only the question sentence', () => {
