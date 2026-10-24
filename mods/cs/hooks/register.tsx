@@ -1353,9 +1353,10 @@ async function pressFeed($: EngineInterface) {
       if (!(await sessionVetted($, cwd))) return
       const on = !(await readFeed($))
       await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
-      $.ui.invalidate('ui.render')
     } catch (err) {
       $.ui.toast(`cs: feed update failed: ${String(err instanceof Error ? err.message : err)}`)
+    } finally {
+      $.ui.invalidate('ui.render')
     }
   })()
   feedPressPending = pending

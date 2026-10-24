@@ -3324,7 +3324,7 @@ test('a feed press refuses a session whose control files are tracked', async () 
   expect(written).toEqual({})
   expect(runs.map(run => run.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
   expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
-  expect(invalidated).toEqual([])
+  expect(invalidated).toEqual(['ui.render'])
   runResult = VETTED
   await feedKey(await band()).props.onPress()
   expect(files['/work/.cs/local/feed']).toBe('on\n')
@@ -3348,22 +3348,27 @@ test('a feed press survives clearing the conversation and loading the band again
   expect(feedKey(await band()).props.label).toBe('feed ✓')
 })
 
-test('a refused feed write allows another press', async () => {
+test('a torn feed write redraws its off state and allows another press', async () => {
   enableFeed()
+  files['/work/.cs/local/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
   const write = $.fs.write
-  $.fs.write = async () => { throw new Error('EACCES /work/.cs/local/feed') }
+  $.fs.write = async path => {
+    files[path] = ''
+    throw new Error('EACCES /work/.cs/local/feed')
+  }
   try {
     await feedKey(await band()).props.onPress()
+    expect(invalidated).toEqual(['ui.render'])
     expect(feedKey(await band()).props.label).toBe('feed')
-    expect(files['/work/.cs/local/feed']).toBeUndefined()
-    expect(invalidated).toEqual([])
+    expect(files['/work/.cs/local/feed']).toBe('')
     expect(toasts).toEqual(['cs: feed update failed: EACCES /work/.cs/local/feed'])
   } finally {
     $.fs.write = write
   }
   await feedKey(await band()).props.onPress()
   expect(feedKey(await band()).props.label).toBe('feed ✓')
-  expect(invalidated).toEqual(['ui.render'])
+  expect(invalidated).toEqual(['ui.render', 'ui.render'])
 })
 
 test('duplicate feed presses both wait until the one write is ready', async () => {
