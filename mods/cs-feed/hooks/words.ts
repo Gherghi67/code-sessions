@@ -489,28 +489,36 @@ export function hookTextLine(text: string): string | undefined {
 /**
  * Whether a reply may carry its turn's steps line (§4.4), from the reply's
  * whole stored text alone (finding 6). False when the text holds a mermaid
- * fence: cs-mermaid, when it is the outer hook, calls next once per prose part
+ * fence with a non-blank body: cs-mermaid, when it is the outer hook, calls next once per prose part
  * and not at all for a diagram-only reply (mods/cs-mermaid/hooks/register.tsx
  * 195-197), so no single drawing of ours would own the line. A function of
  * the text, not of what this load saw drawn, so the tool row and the reply row
  * decide the same in either plugin order.
  *
  * The fence scan is cs-mermaid's rule (`scanFences`: a ```mermaid line, outer
- * ```` or ~~~ blocks quote it), duplicated: plugins do not import each other.
- * A test runs both scanners over cs-mermaid's own fixtures and pins equal answers.
+ * ```` or ~~~ blocks quote it), duplicated: plugins do not import each other,
+ * and the test kit refuses an import from another plugin's folder. cs-mermaid
+ * draws the reply only when a closed fence has a non-blank body (`fencesOf`
+ * drops blank ones), so a blank fence leaves the line to the reply. A test pins
+ * the answers cs-mermaid's own fence fixtures give, and blank fences.
  */
 export function repliesOwnSteps(text: string): boolean {
   let outer: string | undefined
-  let mermaid = false
+  let mermaid: { body: boolean } | undefined
   for (const line of text.split('\n')) {
     const trimmed = line.trim()
+    if (mermaid) {
+      if (trimmed === '```') {
+        if (mermaid.body) return false
+        mermaid = undefined
+      } else if (trimmed) mermaid.body = true
+      continue
+    }
     const mark = /^(`{3,}|~{3,})/.exec(trimmed)?.[1]
     if (!mark) continue
     if (outer) {
       if (mark[0] === outer[0] && mark.length >= outer.length && trimmed === mark) outer = undefined
-    } else if (mermaid) {
-      if (trimmed === '```') return false
-    } else if (mark === '```' && trimmed.slice(3).trim() === 'mermaid') mermaid = true
+    } else if (mark === '```' && trimmed.slice(3).trim() === 'mermaid') mermaid = { body: false }
     else if (mark.length > 3 || mark.startsWith('~')) outer = mark
   }
   return true

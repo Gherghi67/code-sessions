@@ -49,17 +49,29 @@ test('error rules preserve ordered literal remedies and reject quoted safeguard 
   expect(errorLine('Error: unknown')).toEqual({ head: 'Claude Code hit an error', rest: ['ctrl+o shows it'], tone: 'amber', act: false })
 })
 
-test('steps ownership agrees with the mermaid scanner on its documented fence fixtures', () => {
+// cs-mermaid draws a reply itself exactly when its scanner finds a mermaid
+// fence with a non-blank body (mods/cs-mermaid/hooks/register.tsx: fencesOf
+// drops blank bodies, and the hook hands the reply to the engine whole when it
+// finds none); a reply owns its steps line exactly when cs-mermaid does not
+// draw it. The texts are the ones cs-mermaid's own fence tests use
+// (mods/cs-mermaid/test/register.test.tsx), with the answer its fencesOf gives
+// each, plus blank fences. The kit refuses an import from outside this
+// plugin's folder, so cs-mermaid's scanner cannot run here.
+test('steps ownership agrees with the mermaid scanner on its fence fixtures and on blank fences', () => {
   const rows: readonly [string, boolean][] = [
-    ['Flow:\n\n```mermaid\ngraph TD\nA --> B\n```', false],
+    [['Flow:', '', '```mermaid', 'graph TD', '  A[prompt] --> B{cached?}', '  B -->|no| C[render]', '```'].join('\n'), false],
     ['```ts\nconst a = 1\n```', true],
     ['x\n````mermaid\ngraph TD\nA-->B\n````\n', true],
     ['Write it like this:\n````markdown\n```mermaid\ngraph TD\nA --> B\n```\n````\nthen run it.', true],
     ['~~~\n```mermaid\ngraph TD\nA --> B\n```\n~~~', true],
     ['````\nquoted\n````\n```mermaid\ngraph TD\nA --> B\n```', false],
+    ['a\n```mermaid\ngraph TD\nA --> B\n```\nb\n```mermaid\ngraph LR\nC --> D\n```', false],
+    ['```mermaid\n```', true],
+    ['```mermaid\n   \n```\nthen prose', true],
+    ['```mermaid\n```\n```mermaid\ngraph TD\n```', false],
   ]
   for (const [text, owns] of rows) {
-    expect(repliesOwnSteps(text)).toBe(owns)
+    expect({ text, owns: repliesOwnSteps(text) }).toEqual({ text, owns })
   }
 })
 

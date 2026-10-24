@@ -1409,7 +1409,7 @@ CS_PAYLOAD_SHA256=(
     "1ce533ee58e6ce894c76d1c16522a622e112d9d8f967b548944da38d61ad4248  mods/cs-feed/hooks/state.d.ts"
     "bd96c958d0985810f5d509f2e856c9633e02f4030644cfe6c26547fc88c0ec2f  mods/cs-feed/hooks/transcript.ts"
     "dbef075c4fceec08cd66b20c41916a96e687139464f80c9ab4d39894ee352e57  mods/cs-feed/hooks/verdict.ts"
-    "438e3bfb110c8b0a921355bcf4550f80a6e939feff1869013c90eedfb535f733  mods/cs-feed/hooks/words.ts"
+    "69d87624db0db335e7a9211cc647312ceb87a6a9257ac27d25587d8b72a4e1df  mods/cs-feed/hooks/words.ts"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"
 )
