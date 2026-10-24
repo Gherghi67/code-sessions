@@ -7,6 +7,44 @@ export type Tense = 'present' | 'past'
 
 export const labels = { you: 'you', claude: 'claude', backgroundUpdate: 'background task update', reportHint: 'ctrl+o shows the whole report' } as const
 export const marks = { dot: '·', live: '●', idle: '○', peer: '⇄', closed: '›', opened: '⌄', question: '?', failed: '✕' } as const
+export const braille = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
+export const breathing = ['·', '•', '●', '•'] as const
+export const usagePeriods = { fiveHour: '5h', week: 'week' } as const
+export const settingsWords = { title: 'Chat view', switch: 'Feed', shortcuts: '· /feed clean · /feed normal · /feed raw · /feed close', show: 'Show', hideHelp: '/feed hide <kind> · /feed show <kind>' } as const
+export function settingValue(value: boolean | string): string { return typeof value === 'boolean' ? value ? 'on' : 'off' : value }
+export function settingCommand(word: string, value: boolean | string): string { return `/feed ${word} ${settingValue(value)}` }
+export function kindChip(kind: string, shown: boolean): string { return `${shown ? marks.live : marks.idle} ${kind}` }
+
+export function moreKinds(count: number): string { return `+${count} more ${count === 1 ? 'kind' : 'kinds'}` }
+
+export function helperCounts(states: readonly import('./verdict').HelperState[], durationMs?: number): string {
+  const done = states.filter(state => state === 'finished').length
+  const running = states.filter(state => state === 'running' || state === 'dispatched').length
+  const failed = states.filter(state => state === 'failed' || state === 'stopped').length
+  return joined([`${states.length} ${states.length === 1 ? 'helper' : 'helpers'}`, done ? `${done} done` : undefined, running ? `${running} running` : undefined, failed ? `${failed} failed` : undefined, durationMs === undefined ? undefined : elapsed(durationMs)])
+}
+
+export function helperFraction(done: number, count: number, failed = 0): string {
+  return joined([`${done}/${count}`, failed ? `${failed} failed` : undefined])
+}
+
+export function backgroundLine(words: string, isTest: boolean, more: number): string {
+  const label = /[|;&><`$\/]|^(?:cd|bash|python|node|npm|git|pgrep)\b/.test(words) ? 'Running a shell command' : words
+  return joined([isTest ? 'Test running' : 'Running in the background', label, more ? `+${more} more` : undefined])
+}
+
+export function backgroundTail(durationMs: number | undefined, typing: boolean): string {
+  const tail = joined([durationMs === undefined ? undefined : elapsed(durationMs), typing ? 'you can keep typing' : undefined])
+  return tail ? `${marks.dot} ${tail}` : ''
+}
+
+export function usageLabel(percent: number, period: '5h' | 'week'): string {
+  return joined([`${Math.round(percent)}%`, period])
+}
+
+export function pillLabel(pill: import('./verdict').Pill): string {
+  return joined([pill.kind === 'helper' ? 'Helper' : pill.kind === 'test' ? '⚗ Test' : 'Job', pill.words, pill.elapsedMs === undefined ? undefined : elapsed(pill.elapsedMs)])
+}
 
 export function joined(parts: readonly (string | undefined)[]): string {
   return parts.filter(part => part !== undefined && part !== '').join(' · ')

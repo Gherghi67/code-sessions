@@ -108,3 +108,64 @@ test('an already drawn peer head becomes a burst when the next peer arrives', as
   await tail.unmount()
 })
 
+test('SessionMode appends the feed mode while preserving the engine modes', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'SessionMode' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.modes.join(' | ') }))
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'SessionMode', props: { modes: ['auto mode on'] } })
+  expect((await row.find({ type: 'Text' }))?.text).toBe('auto mode on | feed clean · /feed to switch')
+  await row.unmount()
+})
+
+test('CommandOutput draws the cleaned command answer beside a dim dot', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'CommandOutput' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine command' }))
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'CommandOutput', props: { command: 'feed', args: 'clean', text: 'cs-feed: Chat view: clean.', isErrored: false } })
+  expect((await row.find({ type: 'Text', text: 'Chat view: clean.' }))?.text).toBe('Chat view: clean.')
+  expect((await row.find({ type: 'Text', text: '·' }))?.text).toBe('·')
+  expect((await row.find({ type: 'Text', text: 'Chat view: clean.' }))?.props.dimColor).toBe(true)
+  await row.unmount()
+})
+
+test('ToolGroup draws known helpers as a batch and opens their names without unfolding the engine group', async ($, on) => {
+  const calls = [
+    { tool_use_id: 'reader', tool: 'Agent', input: { description: 'Read the notes', subagent_type: 'Explore' }, isRunning: true, isErrored: false, isInterrupted: false },
+    { tool_use_id: 'planner', tool: 'Agent', input: { description: 'Plan the change', subagent_type: 'Plan' }, isRunning: false, isErrored: false, isInterrupted: false },
+  ]
+  session(on, [{ role: 'assistant', text: '', toolUses: calls }])
+  const expanded: boolean[] = []
+  on('ui.render', { component: 'ToolGroup' }, ($, e) => { expanded.push(e.props.isExpanded); return $.ui.resolve(e).Text({ children: 'engine group' }) })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolGroup', viewport: { columns: 80, rows: 24, isFullscreen: true }, props: { calls, isActive: true, isExpanded: false, isCallsOnly: true } })
+  expect((await row.find({ type: 'Text', text: '2 helpers' }))?.text).toBe('2 helpers · 1 done · 1 running')
+  expect((await row.find({ type: 'Text', text: 'Explore' }))?.text).toBe('Explore')
+  expect((await row.find({ type: 'Text', text: 'Plan' }))?.text).toBe('Plan')
+  expect(await row.find({ type: 'Text', text: 'Read the notes' })).toBeUndefined()
+  await $.ui.press({ plugin: 'cs-feed', key: 'helpers-reader' })
+  expect((await row.find({ type: 'Text', text: 'Read the notes' }))?.text).toBe('Read the notes')
+  expect((await row.find({ type: 'Text', text: 'Plan the change' }))?.text).toBe('Plan the change')
+  expect(expanded).toEqual([false, false])
+  await row.unmount()
+})
+
+test('the settings pane stays usable while off and pressing group enables this session with that field changed', async ($, on) => {
+  const files = new Map([['/session/.cs/local/feed', 'off\n']])
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => { const value = files.get(e.path); return value === undefined ? { deny: 'ENOENT: no such file or directory' } : { value } })
+  on('fs.exists', () => ({ value: true }))
+  on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  mock.clock(on)
+  on('ui.render', { component: 'Pane' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine pane' }))
+  const pane = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'Pane', requestId: 'cs-feed', props: { title: 'Chat view', isFocused: true, placement: 'inline', bodyColumns: 80, scroll: { offset: 0, bodyRows: 24 }, view: {} } })
+  expect((await pane.find({ type: 'Text', text: 'Chat view' }))?.text).toBe('Chat view')
+  expect((await pane.find({ type: 'Text', text: 'raw' }))?.text).toBe('raw')
+  expect((await pane.find({ type: 'Button', key: 'btn-group' }))?.props.label).toBe('Group a turn into one line')
+  await $.ui.press({ plugin: 'cs-feed', key: 'btn-group' })
+  expect(files.get('/session/.cs/local/feed')).toBe('on\n')
+  expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":false,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')
+  expect((await pane.find({ type: 'Text', text: 'custom' }))?.text).toBe('custom')
+  await pane.unmount()
+})

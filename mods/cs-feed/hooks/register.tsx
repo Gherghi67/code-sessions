@@ -6,10 +6,10 @@ import { active, appendText, applyFeed, dirty, feedRecord, newLoad, noteStepsDra
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
-import { decideCall, decideGroup, decideReply, decideSpinner, decideToolResult, decideUser } from './verdict'
+import { decideBand, decideCall, decideCommandOutput, decideGroup, decideReply, decideSpinner, decideToolResult, decideUser, sessionModes } from './verdict'
 import { callId } from './transcript'
 import type { CallView, Context } from './verdict'
-import { NOTHING, drawCall, drawGroup, drawReply, drawUser, inks } from './draw'
+import { NOTHING, drawBand, drawCall, drawCommandOutput, drawGroup, drawReply, drawSettingsPane, drawUser, inks } from './draw'
 import type { Pen } from './draw'
 
 type $ = EngineInterface
@@ -174,8 +174,12 @@ function registerFeed(on: On) {
   // render; standalone they are new hops (host-side requestId selection is
   // open-measurements #4). spike4's inert probe had neither.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    // TODO: const s = await feedRecord(load, $); drawSettingsPane(modeOf(s), s, pen, cmd => void perform($, cmd))
-    throw new Error('not implemented')
+    const session = load.feed ?? await feedRecord(load, $)
+    await next(e)
+    return drawSettingsPane(modeOf(session), session, { el: $.ui.resolve(e), ink: inks(load.light), room: e.props.bodyColumns }, async cmd => {
+      const reply = await perform($, cmd)
+      if (reply.startsWith('cs-feed:')) await $.ui.log(reply)
+    })
   })
 
   on('ui.render', { component: 'Pane', requestId: HELPERS_PANE }, async ($, e, next) => {
@@ -359,8 +363,8 @@ export const PAINTERS = {
   ToolProgress: async () => ({ drawn: { kind: 'rewrite', props: { hint: '' } }, live: false }),
   TurnDuration: async () => ({ drawn: { kind: 'nothing' }, live: false }),
   CommandOutput: async (e, cx, pen) => {
-    // decideCommandOutput -> engine | nothing | tree.
-    throw new Error('not implemented')
+    const verdict = decideCommandOutput(e.props, cx)
+    return { drawn: typeof verdict === 'string' ? { kind: verdict } : { kind: 'tree', tree: drawCommandOutput(verdict, pen) }, live: false }
   },
   Spinner: async (e, cx) => {
     // The working line: the engine's own row with our words as its message, never a tree of ours.
@@ -370,8 +374,7 @@ export const PAINTERS = {
     return { drawn: verdict.draw === 'rewrite' ? { kind: 'rewrite', props: { message: verdict.message, suffix: '' } } : { kind: 'engine' }, live }
   },
   SessionMode: async (e, cx) => {
-    // rewrite: props { modes: sessionModes(e.props.modes, cx.view) }.
-    throw new Error('not implemented')
+    return { drawn: { kind: 'rewrite', props: { modes: sessionModes(e.props.modes, cx.view) } }, live: false }
   },
   AbovePrompt: async (e, cx, pen) => {
     // decideBand -> engine | frame: drawn => drawBand(ours, drawn, frame, pen): ours ABOVE what next(e) drew, cs's band included.

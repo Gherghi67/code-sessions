@@ -3,8 +3,10 @@
 import type { EngineInterface, RenderElement } from 'claude-code'
 
 import type { BandVerdict, CallVerdict, Context, GroupVerdict, ReplyVerdict, UserVerdict } from './verdict'
-import type { FeedCommand, Session } from './settings'
-import { burstLine, callChips, callWords, fit, frameBody, frameHead, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, outputLines, peerLine, questionLines, runChips, runWords, stepsLine } from './words'
+import type { FeedCommand, FieldSpec, Session, View } from './settings'
+import { FIELDS, KINDS, parseFeedArgs } from './settings'
+import { kindChip, settingCommand, settingValue, settingsWords } from './words'
+import { backgroundLine, backgroundTail, braille, breathing, burstLine, callChips, callWords, fit, frameBody, frameHead, helperCounts, helperFraction, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, moreKinds, outputLines, peerLine, pillLabel, questionLines, runChips, runWords, stepsLine, usageLabel, usagePeriods } from './words'
 
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
 
@@ -33,6 +35,11 @@ export type Pen = {
 
 export const NOTHING = (pen: Pen): RenderElement => pen.el.Box({})
 
+export function drawCommandOutput(v: { readonly text: string; readonly isErrored: boolean }, pen: Pen): RenderElement {
+  const { Box, Text } = pen.el
+  return <Box paddingLeft={pen.pad} flexDirection="row"><Box width={2}><Text dimColor>{marks.dot}</Text></Box><Text color={v.isErrored ? pen.ink.red : undefined} dimColor={!v.isErrored}>{v.text}</Text></Box>
+}
+
 /** Turn line, run line, call line, helper row, question rows (§4.6, §7.1, §11). */
 export function drawCall(v: CallVerdict, pen: Pen): RenderElement {
   const { Box, Text, Button } = pen.el
@@ -60,7 +67,16 @@ export function drawCall(v: CallVerdict, pen: Pen): RenderElement {
 }
 /** 'stack' draws each call's tree in a column; 'batch' the §7.2 helper batch; 'engine' never reaches here. */
 export function drawGroup(v: Exclude<GroupVerdict, { draw: 'engine' }>, pen: Pen): RenderElement {
-  throw new Error('not implemented')
+  const { Box, Text } = pen.el
+  if (v.draw === 'stack') return <Box flexDirection="column">{v.calls.map(call => drawCall(call, pen))}</Box>
+  const busy = v.helpers.some(helper => helper.state === 'running' || helper.state === 'dispatched')
+  const failed = v.helpers.some(helper => helper.state === 'failed' || helper.state === 'stopped')
+  const kinds = [...new Set(v.helpers.map(helper => helper.kind))]
+  const cell = (state: import('./verdict').HelperState) => <Text color={state === 'failed' || state === 'stopped' ? pen.ink.red : state === 'finished' ? pen.ink.green : pen.ink.peer}>{state === 'failed' || state === 'stopped' ? marks.failed : state === 'finished' ? marks.live : '◐'}</Text>
+  return <Box flexDirection="column"><Box paddingLeft={pen.pad} flexDirection="row" gap={1}><Text color={busy ? pen.ink.peer : failed ? pen.ink.red : pen.ink.green}>{busy ? braille[Math.floor(pen.cx.now / 70) % braille.length] : failed ? marks.failed : marks.live}</Text><Text>{helperCounts(v.helpers.map(helper => helper.state), v.elapsedMs)}</Text>{chevron(v.key, v.opened, pen)}</Box>{kinds.map(kind => {
+    const members = v.helpers.filter(helper => helper.kind === kind)
+    return <Box paddingLeft={pen.pad + 2} flexDirection="row" gap={1}><Text dimColor>{fit(kind, 22)}</Text><Text dimColor>{String(members.length)}</Text>{members.map(helper => cell(helper.state))}<Text dimColor>{helperFraction(members.filter(helper => helper.state === 'finished').length, members.length, members.filter(helper => helper.state === 'failed' || helper.state === 'stopped').length)}</Text></Box>
+  })}{v.opened ? v.helpers.map(helper => <Box paddingLeft={pen.pad + 2} flexDirection="row" gap={1}>{cell(helper.state)}<Text>{fit(callWords(helper.call, helper.state === 'running' || helper.state === 'dispatched' ? 'present' : 'past'), 60)}</Text></Box>) : null}</Box>
 }
 /** The "you" margin, the hook-text line, peer lines, bursts, frames and cards (§3.1, §8). */
 export function drawUser(v: Exclude<UserVerdict, { draw: 'engine' }>, pen: Pen): RenderElement {
@@ -106,8 +122,27 @@ export function drawBand(v: Exclude<BandVerdict, { draw: 'engine' }>, beneath: R
 }
 
 /** The "Chat view" pane (§2.3) for this session: header, an on/off row (FeedCommand `switch`), one row per FIELDS entry with its picture, the Show chips. Buttons are siblings of Texts, never inside one. */
-export function drawSettingsPane(mode: string, session: Session, pen: Pen, onPress: (cmd: FeedCommand) => void): RenderElement {
-  throw new Error('not implemented')
+export function drawSettingsPane(mode: string, session: Session, pen: Pick<Pen, 'el' | 'ink' | 'room'>, onPress: (cmd: FeedCommand) => Promise<void>): RenderElement {
+  const { Box, Text, Button } = pen.el
+  return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Text bold>{settingsWords.title}</Text><Text color={pen.ink.accent}>{mode}</Text><Text dimColor>{settingsWords.shortcuts}</Text></Box><Box flexDirection="row" gap={1}><Button key="btn-feed" label={settingsWords.switch} onPress={() => onPress({ kind: 'switch', on: !session.on })} /><Text color={pen.ink.accent} bold>{settingValue(session.on)}</Text></Box>{FIELDS.map(spec => {
+    const current = session.view[spec.field]
+    const next = spec.values[(spec.values.findIndex(value => value === current) + 1) % spec.values.length]
+    if (next === undefined) throw new Error(`setting ${spec.field} has no next value`)
+    const command = settingCommand(spec.word, next)
+    return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`btn-${spec.field}`} label={spec.title} onPress={() => onPress(parseFeedArgs(command.slice(6)))} /><Text color={pen.ink.accent} bold>{settingValue(current)}</Text><Text dimColor>{joined([marks.dot, command])}</Text></Box><Box paddingLeft={2} flexDirection="column">{fieldPicture(spec, session.view).map(line => <Text dimColor>{fit(line, Math.max(1, pen.room - 4))}</Text>)}</Box></Box>
+  })}<Text bold>{settingsWords.show}</Text><Box flexDirection="row" gap={1}>{KINDS.map(kind => {
+    const shown = !session.view.hide.includes(kind)
+    return <Button key={`kind-${kind}`} label={kindChip(kind, shown)} onPress={() => onPress({ kind: shown ? 'hide' : 'show', what: kind })} />
+  })}</Box><Text dimColor>{settingsWords.hideHelp}</Text></Box>
+}
+
+function fieldPicture(spec: FieldSpec, view: View): readonly string[] {
+  switch (spec.field) {
+    case 'group': case 'clear': case 'keep': return spec.picture(view[spec.field])
+    case 'style': return spec.picture(view.style)
+    case 'commands': return spec.picture(view.commands)
+    case 'after': return spec.picture(view.after)
+  }
 }
 /** The "Helpers" pane (§7.4): last 6 helpers, newest first, head, "now:", up to 12 calls from each one's transcript. */
 export function drawHelpersPane(blocks: readonly HelperBlock[], pen: Pen): RenderElement {

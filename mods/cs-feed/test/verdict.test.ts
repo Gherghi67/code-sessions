@@ -73,7 +73,7 @@ test('groups preserve non-call content and expansion, and known results ride on 
   expect(decideGroup({ calls: [call()], isActive: false, isExpanded: true, isCallsOnly: true }, cx)).toEqual({ verdict: { draw: 'engine' }, live: false })
   const t = buildTranscript([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'h1', tool: 'Agent', input: {}, result: {} }, { tool_use_id: 'h2', tool: 'Task', input: {}, result: {} }] }])
   const helpers = [call('h1', 'Agent'), call('h2', 'Task')]
-  expect(decideGroup({ calls: helpers, isActive: false, isExpanded: false, isCallsOnly: true }, { ...cx, t, open: undefined })).toEqual({ verdict: { draw: 'batch', helpers }, live: false })
+  expect(decideGroup({ calls: helpers, isActive: false, isExpanded: false, isCallsOnly: true }, { ...cx, t, open: undefined })).toEqual({ verdict: { draw: 'batch', key: 'helpers-h1', opened: false, elapsedMs: undefined, helpers: [{ call: helpers[0], kind: 'general-purpose', state: 'finished' }, { call: helpers[1], kind: 'general-purpose', state: 'finished' }] }, live: false })
   expect(decideGroup({ calls: [call('unknown', 'Agent')], isActive: false, isExpanded: false, isCallsOnly: true }, cx).verdict.draw).toBe('stack')
   expect(decideToolResult(callId('a'), false, cx)).toBe('nothing')
   expect(decideToolResult(callId('a'), true, cx)).toBe('engine')

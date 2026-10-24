@@ -198,8 +198,10 @@ export function stepsOwner(turn: TurnId, cx: Context): 'tool' | 'pending' | { re
 
 export type GroupVerdict =
   | { readonly draw: 'engine' } // ctrl+o (isExpanded), or a group a hook other than ours set apart
-  | { readonly draw: 'batch'; readonly helpers: readonly CallView[] } // §7.2: two or more helper launches, all known
+  | { readonly draw: 'batch'; readonly key: string; readonly opened: boolean; readonly helpers: readonly BatchHelper[]; readonly elapsedMs?: number }
   | { readonly draw: 'stack'; readonly calls: readonly CallVerdict[] } // each call's own verdict, stacked; all 'nothing' draws nothing
+
+export type BatchHelper = { readonly call: CallView; readonly kind: string; readonly state: HelperState }
 
 /**
  * A ToolGroup row is drawn here, never unfolded: unfolding would hand the
@@ -212,7 +214,19 @@ export function decideGroup(props: { calls: readonly CallView[]; isActive: boole
   if (props.isExpanded || props.isCallsOnly !== true) return { verdict: { draw: 'engine' }, live: false }
   const decisions = props.calls.map(call => decideCall(call, cx))
   const live = decisions.some(decision => decision.live)
-  if (props.calls.length >= 2 && !hidden(cx.view, 'agent') && props.calls.every(call => call.id && cx.t.calls.get(call.id)?.cls === 'helper')) return { verdict: { draw: 'batch', helpers: props.calls }, live }
+  if (props.calls.length >= 2 && !hidden(cx.view, 'agent') && props.calls.every(call => call.id && cx.t.calls.get(call.id)?.cls === 'helper')) {
+    const helpers = props.calls.map(call => ({ call, kind: typeof call.input.subagent_type === 'string' ? call.input.subagent_type : 'general-purpose', state: helperState(call, call.id ? cx.t.calls.get(call.id) : undefined, cx.agents) }))
+    const starts = props.calls.flatMap(call => { const at = call.id ? cx.obs.helperStartedAt.get(call.id) : undefined; return at === undefined ? [] : [at] })
+    const ends = props.calls.flatMap(call => {
+      const start = call.id ? cx.obs.helperStartedAt.get(call.id) : undefined
+      const outcome = call.id ? cx.t.calls.get(call.id)?.outcome : undefined
+      return start !== undefined && outcome?.state === 'done' && outcome.durationMs !== undefined ? [start + outcome.durationMs] : []
+    })
+    const running = helpers.some(helper => helper.state === 'running' || helper.state === 'dispatched')
+    const end = running ? cx.now : ends.length ? Math.max(...ends) : undefined
+    const key = `helpers-${props.calls[0]?.id}`
+    return { verdict: { draw: 'batch', key, opened: cx.opened.has(key), helpers, elapsedMs: starts.length && end !== undefined ? Math.max(0, end - Math.min(...starts)) : undefined }, live }
+  }
   return { verdict: { draw: 'stack', calls: decisions.map(decision => decision.verdict) }, live }
 }
 
