@@ -53,7 +53,6 @@ let compactedAt: number[]
 let compactResult: any
 let commands: any[]
 let availableCommands: { name: string; source: string; plugin?: string }[]
-let sessionValues: Map<string, { value: boolean; version: number }>
 // What `$.ui.scroll` was asked, and what it answers; the paths `$.fs.read` was given; each file's mtime.
 let scrolls: any[]
 let scrollResult: any
@@ -87,17 +86,6 @@ const $ = {
     list: async () => availableCommands,
     run: async (args: any) => { ran.push(args); return { text: '' } },
     register: async (spec: any) => { commands.push(spec); return { command: spec.name } },
-  },
-  state: {
-    get: async (ref: { plugin: string; key: string }): Promise<{ value?: boolean; version: number }> =>
-      sessionValues.get(`${sessionId}:${ref.plugin}:${ref.key}`) ?? { version: 0 },
-    set: async (ref: { plugin: string; key: string }, value: boolean, options?: { ifVersion: number }) => {
-      const key = `${sessionId}:${ref.plugin}:${ref.key}`
-      const version = sessionValues.get(key)?.version ?? 0
-      if (options !== undefined && options.ifVersion !== version) return { isSet: false, version }
-      sessionValues.set(key, { value, version: version + 1 })
-      return { isSet: true, version: version + 1 }
-    },
   },
   process: {
     run: async (argv: string[], init: any) => {
@@ -172,7 +160,7 @@ beforeEach(() => {
   timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
-  availableCommands = []; sessionValues = new Map()
+  availableCommands = []
   scrolls = []; scrollResult = {}; reads = []; mtimes = {}
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
@@ -3294,26 +3282,47 @@ test('the feed chord toggles this session and colours its check with the keys', 
   percent = 40
   const tree = await band()
   expect(feedKey(tree)?.props.label).toBe('feed')
+  expect(buttons(tree).find(button => button.props.label === 'feed')?.props.key).toBe('cs-feed')
   expect(feedKey(tree).props.action).toBe('strip:jump3')
   expect(words(tree)).toEqual(['●', 'ctrl+x', '1', '  ·  ', '2', '  ·  ', '3'])
   await feedKey(tree).props.onPress()
   const on = await band()
   expect(feedKey(on).props.label).toBe('feed ✓')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
   expect(texts(feedKey(on)).map(text => [textOf(text), text.props.color])).toEqual([['✓', 'rgb(220,38,38)']])
   expect(ran).toEqual([{ command: 'feed', args: 'on' }])
   await feedKey(on).props.onPress()
   expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
   expect(ran).toEqual([{ command: 'feed', args: 'on' }, { command: 'feed', args: 'off' }])
 })
 
-test('a refused feed command restores the label and toasts once', async () => {
+test('a feed press survives clearing the conversation and loading the band again', async () => {
+  enableFeed()
+  await feedKey(await band()).props.onPress()
+  sessionId = 'uuid-next'
+  files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+  for (const content of ['', 'o', 'on', 'off\n', 'on\njunk', ' on\n', 'on\r\n']) {
+    files['/work/.cs/local/feed'] = content
+    expect(feedKey(await band()).props.label).toBe('feed')
+  }
+  delete files['/work/.cs/local/feed']
+  expect(feedKey(await band()).props.label).toBe('feed')
+  files['/work/.cs/local/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+})
+
+test('a refused feed command leaves the stored setting and toasts once', async () => {
   enableFeed()
   const run = $.command.run
   $.command.run = async () => { throw new Error('Unknown command: feed') }
   try {
     await feedKey(await band()).props.onPress()
-    expect(feedKey(await band()).props.label).toBe('feed')
-    expect(toasts).toEqual(['cs: feed did not change: Unknown command: feed'])
+    expect(feedKey(await band()).props.label).toBe('feed ✓')
+    expect(toasts).toEqual(['cs: feed request failed: Unknown command: feed'])
   } finally {
     $.command.run = run
   }
@@ -3371,9 +3380,14 @@ test('feed state stays with its session across registration and stale button pre
   expect(ran).toEqual([{ command: 'feed', args: 'on' }, { command: 'feed', args: 'off' }])
   await feedKey(await band()).props.onPress()
   sessionId = 'uuid-next'
-  files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
+  cwdPath = '/other'
+  existing.add('/other/.cs/local')
+  realPaths['/other'] = '/other'
+  realPaths['/home/.claude-sessions/other'] = '/other'
+  files['/other/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
   register(on as any, OPTIONS)
   expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
 })
 
 test('/cs feed agrees with presses without echoing /feed and survives reload', async () => {
@@ -3417,7 +3431,7 @@ test('a failed feed send cannot undo a reverse report across reload', async () =
     refuse(new Error('feed unavailable'))
     await press
     expect(feedKey(await band()).props.label).toBe('feed ✓')
-    expect(toasts).toEqual(['cs: feed request failed after another change: feed unavailable'])
+    expect(toasts).toEqual(['cs: feed request failed: feed unavailable'])
   } finally {
     $.command.run = run
   }

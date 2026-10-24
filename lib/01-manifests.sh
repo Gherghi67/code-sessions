@@ -143,7 +143,6 @@ CS_MOD_FILES=(
     cs/hooks/hooks.json
     cs/hooks/register.tsx
     cs/tips.json
-    cs/types.d.ts
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx

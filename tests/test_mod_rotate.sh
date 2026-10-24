@@ -121,9 +121,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. What sorts after
     # $.ui.log is checked on the source instead.
-    assert_output_contains "$out" '$.session.id, $.session.usage, $.state.get, $.state.set, $.ui.ask (via askToWrap, offerToStart)' "the visible inventory includes the feed press and reverse command's session state before the dialogs" || return 1
-    assert_output_contains "$out" 'state writes: cs.feedOn' "the feed control writes its declared session value" || return 1
-    assert_output_contains "$out" 'state reads: cs.feedOn' "the feed control reads its declared session value" || return 1
+    assert_output_contains "$out" '$.session.id, $.session.usage, $.ui.ask (via askToWrap, offerToStart), $.ui.invalidate, $.ui.log' "the visible inventory includes the session, dialogs and redraw calls" || return 1
     local src="$MOD/hooks/register.tsx" scroll_lines jump_range
     scroll_lines=$(grep -n '\$\.ui\.scroll' "$src" | cut -d: -f1 | tr '\n' ' ')
     jump_range=$(awk '/^async function jumpTo\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
@@ -136,7 +134,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     assert_eq "0" "$(grep -c '\$\.ui\.close' "$src")" "and closes none" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.panes' "$src")" "and lists none" || return 1
     assert_output_contains "$out" '$.fs.list (via hasFeatureDirs, queueLength, unreadMail)' "the band counts the queue's tasks and the mailbox's unread mail by listing their directories, and looks for a base's feature directories at the sessions root before asking cs; nothing else lists one" || return 1
-    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, clearPressed, csSessionName, forceRotation, queueRunning, readFinish, readState, readWrapped, refreshRail)' "the wrap marker, the press marker, the state (for the session's recorded name too), the queue's state, the /finish record, keybindings.json and the transcript are read" || return 1
+    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, clearPressed, csSessionName, forceRotation, queueRunning, readFeed, readFinish, readState, readWrapped, refreshRail)' "the wrap marker, the press marker, the state (for the session's recorded name too), the queue's state, the feed file, the /finish record, keybindings.json and the transcript are read" || return 1
     assert_output_contains "$out" '$.fs.stat (via refreshRail, resolvedPath)' "stat resolves where a path lands, to prove the cwd is the sessions root's entry, and gates the transcript's re-read on its size and mtime; no other rule hangs on a modification time" || return 1
 }
 

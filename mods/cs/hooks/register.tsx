@@ -406,7 +406,8 @@ export function register(on: On, options: PluginOptions) {
     const asked = e.args.trim()
     // The report comes back from /feed too; sending it on would recurse.
     if (asked === 'feed on' || asked === 'feed off') {
-      await $.state.set({ plugin: 'cs', key: 'feedOn' }, asked === 'feed on')
+      await $.fs.write(`${await $.session.cwd()}/.cs/local/feed`, asked === 'feed on' ? 'on\n' : 'off\n')
+      $.ui.invalidate('ui.render')
       return {}
     }
     const count = prompts.length
@@ -585,7 +586,7 @@ export function register(on: On, options: PluginOptions) {
       featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
       countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
       rotating, armed, wrapping, waiting, gate, queued, mail,
-      feed: feeding ? { on: (await $.state.get({ plugin: 'cs', key: 'feedOn' })).value ?? false, color: own, onPress: () => pressFeed($) } : undefined,
+      feed: feeding ? { on: await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
       rotate: armed ? () => pressClear($) : () => pressRotate($),
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
@@ -1331,22 +1332,32 @@ function tellFeed($: EngineInterface, on: boolean) {
   return $.command.run({ command: 'feed', args: on ? 'on' : 'off' })
 }
 
+async function readFeed($: EngineInterface): Promise<boolean> {
+  try {
+    // Writes are non-atomic: only the whole on line counts. Trimming would
+    // accept a torn write without its newline; every other value is off.
+    return (await $.fs.read(`${await $.session.cwd()}/.cs/local/feed`)) === 'on\n'
+  } catch (err) {
+    if (err instanceof Error && /\bENOENT\b/.test(err.message)) return false
+    throw err
+  }
+}
+
 async function pressFeed($: EngineInterface) {
   if (feedPressPending !== undefined) return
   const pending = {}
   feedPressPending = pending
   try {
-    const held = await $.state.get({ plugin: 'cs', key: 'feedOn' })
-    const on = !(held.value ?? false)
-    const written = await $.state.set({ plugin: 'cs', key: 'feedOn' }, on, { ifVersion: held.version })
-    if (!written.isSet) return
+    const on = !(await readFeed($))
+    await $.fs.write(`${await $.session.cwd()}/.cs/local/feed`, on ? 'on\n' : 'off\n')
+    $.ui.invalidate('ui.render')
     try {
       await tellFeed($, on)
     } catch (err) {
-      // A later press or reverse report owns its value, even if this run fails.
-      const reverted = await $.state.set({ plugin: 'cs', key: 'feedOn' }, held.value ?? false, { ifVersion: written.version })
-      $.ui.toast(`cs: ${reverted.isSet ? 'feed did not change' : 'feed request failed after another change'}: ${String(err instanceof Error ? err.message : err)}`)
+      $.ui.toast(`cs: feed request failed: ${String(err instanceof Error ? err.message : err)}`)
     }
+  } catch (err) {
+    $.ui.toast(`cs: feed did not change: ${String(err instanceof Error ? err.message : err)}`)
   } finally {
     if (feedPressPending === pending) feedPressPending = undefined
   }
