@@ -8,6 +8,8 @@
 
 One capsule carries identity — the Claude mark, the session, the branch, the model — and one carries the context gauge. The quota capsule (5h, joined by a vertical ellipsis to wk once wk reaches 50) is always there; the Fable window gets its own capsule at 50. Colour is state: bold amber ink on a number past its warn threshold, and the capsule inverts to red at crit, its text white on the red. The plain form (`NO_COLOR=1`) is `claude-sessions · ⎇ main↑1 +2!1 · ✦ Fable 5.1 medium > ◑ ctx 42% > ◷ 5h 31% ⋮ ◶ wk 84% · 5d16h`.
 
+Capsules are one of two layouts; the other, the [band](#band-layout), draws the same items on one full-width row that fades from the session's color into the terminal background.
+
 ## Segments
 
 Default order: `logo,session,notes,mail,git,model,ctx,limits`. One capsule holds identity (which session, which branch, which model); one holds the context gauge; one quota capsule always follows, holding 5h and, from 50, wk after a vertical ellipsis; on a Fable session the model window gets its own capsule from 50. `pane` and `fable` ship but leave the default order — name them in `CS_STATUSLINE_SEGMENTS` to show them. The `cost` segment ships too, off by default the same way.
@@ -42,13 +44,14 @@ The render's cost is its fork count. The bar repaints on Claude Code's events an
 |------|------|-------|-----------|
 | `git status` (the `git` segment) | 5 s | `~/.cache/cs/git/` | the first render after five seconds, so a branch switch or a dirty file shows at the next repaint after that, within a minute while idle |
 | `ps` + `awk`, the tmux ancestry walk (is this process really in the tmux server `TMUX` names) | 5 min | `~/.cache/cs/tmux-real/`, by parent pid and `TMUX` | once per conversation, and never on the render path: the parent (Claude Code) is the same for every render, and a process that only inherited `TMUX` has a different parent, so it cannot inherit the verdict. On a miss the render answers real and a detached child does the walk, keyed on the same parent, so the next render reads a settled verdict; a `ps` that cannot answer is never cached, and the render after it spawns another child. A wrapper Claude Code runs in place of the script (a status-line bridge, a new process each tick) sets `CS_STATUSLINE_PARENT` to the pid it is itself the child of, and both parent-keyed caches key on that |
-| `tmux display-message`, the attached client's theme and tty | 5 s | `~/.cache/cs/tmux-client/`, by parent pid and `TMUX` | asked once per theme pass, both fields from one query, and again by the first render after five seconds; a theme toggle or a re-attach from another terminal shows at the next repaint after that, within a minute while idle |
+| `tmux display-message`, the attached client's theme and tty, and this pane's width | 5 s | `~/.cache/cs/tmux-client2/`, by parent pid and `TMUX` | asked once per theme pass, all three fields from one query (`-t "$TMUX_PANE"` when set), and again by the first render after five seconds; a theme toggle or a re-attach from another terminal shows at the next repaint after that, within a minute while idle. The [band layout](#band-layout) reads the width from the same answer |
+| `stty size </dev/tty`, the terminal's width (band layout only, outside a real tmux, with no width on stdin or in `CS_STATUSLINE_COLS`) | 5 min | `~/.cache/cs/stty/`, by parent pid | once per conversation; the cache keeps an empty answer (no terminal) too, so a render with no terminal does not ask again until the entry expires |
 | `tty`, this render's own terminal device (the key of the measured background outside tmux) | 5 min | `~/.cache/cs/tty/`, by parent pid | once per conversation, and only on a render outside tmux that reaches the measured-background rung (see [Terminal theme](#terminal-theme)); under Claude Code stdin is the JSON pipe, so the answer is empty, and only a render started from a shell gets a device |
 | `jq --stream` over Claude Code's `.claude.json` for the account id (Fable sessions) | 5 min | `~/.cache/cs/org/`, by config path | an account swap shows within five minutes, or six while idle; the refresher, which attributes a reading and detects a swap across its own fetch, always reads the config itself and renews the entry |
 | `jq` over the Fable usage record, and `date` for its reset countdown | with the record | `fable.<account>.json.fields` beside it: pct, resets_at, fetched_at, next_poll_at, and the reset as an epoch, one per line | written by the refresher with the JSON, never by a render, so a slow parse of an old record cannot overwrite a newer sidecar; the refresher honours the JSON's schedule (so a recorded backoff is never skipped) and rewrites a sidecar that disagrees with it from the JSON, without a fetch; a record with no sidecar (from before it existed) is parsed with `jq` until the next refresh |
 | `mv` for the `.cs/local/context-pct` and `.cs/local/limits` stamps | 60 s when the value is unchanged | `<stamp>.at` beside each, `epoch value`; a teammate's heartbeat touch keeps its own | a changed value is written at once; an unchanged one once a minute, which is the heartbeat (its readers allow 900 s for the mtime and 1800 s for `stamped_at`) |
 
-The parent-keyed buckets (`tmux-real/`, `tmux-client/`, `tmux-walking/` and `tty/`) gain an entry per conversation, so the usage refresher (see [Fable usage](#fable-usage)), which already runs detached and under its own lock, removes their entries older than an hour. An hour is far past every one of their TTLs (5 s, 10 s and 5 min), so a removed entry was already a miss and a conversation that needs it again recomputes it. The sweep runs only where the refresher does (a Fable session with `curl`), and the render never sweeps.
+The parent-keyed buckets (`tmux-real/`, `tmux-client2/`, `tmux-walking/`, `tty/` and `stty/`, plus `tmux-client/`, the two-field form cs no longer writes) gain an entry per conversation, so the usage refresher (see [Fable usage](#fable-usage)), which already runs detached and under its own lock, removes their entries older than an hour. An hour is far past every one of their TTLs (5 s, 10 s and 5 min), so a removed entry was already a miss and a conversation that needs it again recomputes it. The sweep runs only where the refresher does (a Fable session with `curl`), and the render never sweeps.
 
 A cache entry is two lines: `epoch<TAB>identity`, then the text. The identity is the raw value the file name was made from (the workspace path, the config path, `<parent pid>,<TMUX>`), so two values that sanitise to the same name (`/x/a/b` and `/x/a-b`) never answer for each other, and the age is arithmetic against the render's one clock rather than a `find` or `stat` fork; the terminal-theme entry under `~/.cache/cs/term/` (see [Colors](#colors)) carries an epoch too. Every cache write is a builtin `printf`, and a read takes an entry only when both its lines are complete, so a torn read is a miss, never a wrong answer. Data gathering is still gated per segment: disabling `git` in `CS_STATUSLINE_SEGMENTS` means the git line is neither forked for nor cached. There is no transcript parsing and no network access; a Fable session reads the usage cache and never fetches from the render (see [Fable usage](#fable-usage)).
 
@@ -172,6 +175,8 @@ Color depth is detected per render, in priority order: `FORCE_COLOR=0`, `NO_COLO
 | `amber` | hot numbers, notes and mail counts | light: `180;83;9`; dark: `253;230;138` — light/dark by the measured `CS_TERM_BG_RGB`, by theme only when unmeasured | 130/221 | 33/93 |
 | `crit` | inverted capsule fill | light: `215;0;21`; dark: `255;69;58` | 160/203 | 31 |
 | `critink` | inverted capsule text | `255;255;255` on both themes | 231 | 97 |
+| `amberfill` | the band's amber island fill | light: `251;232;196`; dark: `120;74;12` | 223/94 | 33 |
+| `amberink` | the band's amber island text | light: `140;64;8`; dark: `255;228;160` | 94/223 | 30 |
 | `effort-*` | the effort word | Claude Code's /effort picker colours, pixel-sampled; lifted a third toward white on dark; `effort-max-1..3` are the gradient stops | 136/179, 28/71, 63/105, 93/135, 110·140·175 / 153·183·218 | 33, 32, 34, 35, 36·35·95 |
 
 Every capsule fill is `surface`, a shade of the terminal's own background so the bar harmonizes with the terminal instead of sitting on a fixed grey; darker on a light terminal, lighter on a dark one. On a cream terminal (`253;246;227`) the derived surface comes out `227;221;204`, a warm off-white a few shades darker — so the values above are the fallback for an unmeasured background and a reference for what the derived shade lands near, not fixed paints.
@@ -183,6 +188,42 @@ Removed from the bar: `hairline`, `chiptext` (the mark uses `brand` instead), `b
 Capsule ends are the Powerline glyphs U+E0B6 and U+E0B4, drawn as fill-colored ink on the terminal's default background so they read as rounded ends. They need a font that carries them (any Nerd Font does), and a font without them shows a box at every capsule edge. A terminal cannot be asked whether it has a glyph, so cs asks you: the installer shows a sample capsule and asks whether its ends look rounded, and records the answer per machine in `~/.config/cs/statusline-caps` (`on` or `off`). Until a machine has answered, the capsules are square chips with the same spacing. `cs -statusline caps on|off|ask` rewrites the answer, `cs -doctor` reports it, and `CS_STATUSLINE_CAPS=1` or `=0` in the environment overrides the file either way. Caps render at every color level — the cap's ink is the capsule's fill, which 256-color and basic terminals both have — and never in plain mode.
 
 Inside tmux, Claude Code mutes its own branding and any truecolor status line to a fallback palette. cs sets `CLAUDE_CODE_TMUX_TRUECOLOR=1` in claude's environment at launch (unless you set it yourself) to keep these colors at full saturation, and inside tmux publishes the same value into the session's environment so teammate panes claude opens get it as well.
+
+## Band layout
+
+`CS_STATUSLINE_LAYOUT=band` draws the same items as the capsules on one full-width band instead. The band's fill fades, cell by cell, from the band color at the left edge to the terminal background at the right: a strip of the session's color that dissolves into the terminal. The capsule layout is the default; `capsules`, an empty value and any value other than `band` all draw capsules.
+
+```
+ ✳ my-session  ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%
+```
+
+Items start one cell in, after a cell of band. The joiners inside a group are the capsules' joiners (`  ·  `, ` ⋮ `, and blank fill for the others), and `  ·  ` joins one group to the next as well, since the band has no gaps between capsules. After the last item the fade runs on as blank cells to the band's last cell, which is exactly the terminal background. Items wider than the band are all printed, none cut, and Claude Code truncates the line.
+
+Each render picks the band color, first match winning:
+
+1. `CS_STATUSLINE_BAND`: a session-palette name (`red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan`), `brand`, `periwinkle`, an `r;g;b` triplet of 0-255 values, `session` (step 2), or `none` (step 3). Any other value is step 2, never an error on the bar.
+2. The session's own color, `claude_session_color` in `.cs/local/state`, through the same palette the session pill uses.
+3. A neutral: the terminal background lifted a step, `+40;+40;+50` on a dark terminal and `-30` a channel on a light one, held within 0-255.
+
+The render then pulls that color 30% of the way toward the background, so text reads on the band's brightest cells. The background is `CS_TERM_BG_RGB` when it parses, else the one the `surface` token assumes (dark `28;28;28`, light `255;255;255`).
+
+It picks the band's width W the same way:
+
+1. `CS_STATUSLINE_COLS`, a whole number from 1 to 9999. Tests and wrappers set it.
+2. `.columns` in the stdin JSON.
+3. Inside a tmux this process is really in (the same verdict the pane id uses), the pane's width, `#{pane_width}` of `TMUX_PANE`. It rides on the theme pass's one `tmux display-message` query and its five-second cache.
+4. The terminal's width from `stty size </dev/tty`, kept five minutes under the parent pid like the `tty` answer, so a resize shows when that entry expires.
+5. 120.
+
+The band's width is that less the frame. Claude Code 2.1.310 draws the status line inside its prompt frame, two columns in on each side, and truncates past it with `…`. `CS_STATUSLINE_FRAME` (a whole number, default 4) sets the frame; with `statusLine.padding` set in Claude Code's settings, add twice the padding. The band is never narrower than 20 cells.
+
+A hot reading is a solid island on the band rather than colored text on it. An item in amber ink (a reading past its warn threshold, the notes and mail counts) takes the `amberfill` fill and `amberink` ink, bold, with one fill space on each side. A group at crit is one red island holding every item of the group and the joiners between them, in `critink` bold on `crit`, again with a fill space on each side. Islands have no gradient under them, and the fade resumes after an island at the color its cell position gives.
+
+On the band, primary text (bold `ink`, and `white`) is `255;255;255` on a dark terminal and `20;20;30` on a light one; regular `ink` is `214;222;240` / `40;44;60`; `ink2` (labels and joiners) is `150;165;200` / `90;96;120`. The brand mark, the effort word, the session palette and `periwinkle` keep their own colors.
+
+Below truecolor the band has no gradient. At 256 colors a flat `surface` fill runs across W cells (237 dark, 254 light), the inks and islands in their 256 tokens; at basic, the same with the basic tokens. Plain mode (`NO_COLOR` and the rest) ignores the layout and prints the plain line the capsules print.
+
+A 200-column band renders in 20 to 30 ms on a Mac at load 15, the same as the capsules: starting bash and the one `jq` pass dominate, and the per-cell work is shell arithmetic. Width costs no fork on a warm render: the tmux width comes with the client query, and `stty` runs at most once in five minutes per conversation.
 
 ## Subagent rows
 
@@ -262,6 +303,21 @@ export CS_SUBAGENT_STATUSLINE_DISABLE=1
 
 # Choose and order segments
 export CS_STATUSLINE_SEGMENTS="session,ctx,git,limits"
+
+# The layout: capsules (the default) or band (see Band layout)
+export CS_STATUSLINE_LAYOUT="band"
+
+# The band's color: a session-palette name, brand, periwinkle, an r;g;b
+# triplet, session (the session's own color, the default) or none (neutral)
+export CS_STATUSLINE_BAND="periwinkle"
+
+# The band's width in columns before the frame (default: stdin .columns, the
+# tmux pane, the terminal, else 120)
+export CS_STATUSLINE_COLS=160
+
+# Columns Claude Code's prompt frame takes from the band (default 4; add
+# 2 x statusLine.padding when you set it)
+export CS_STATUSLINE_FRAME=4
 
 # Force the Powerline rounded caps (U+E0B6/U+E0B4) on (1) or off (0),
 # overriding this machine's recorded answer in ~/.config/cs/statusline-caps
