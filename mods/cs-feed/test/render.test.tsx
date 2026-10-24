@@ -122,6 +122,47 @@ test('an already drawn peer head becomes a burst when the next peer arrives', as
   await tail.unmount()
 })
 
+const PEER_MARK = { name: 'peer-mark', tier: 'prepend' as const, register(on: On) {
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    await $.ui.log('row-start')
+    try { return await next(e) } finally { await $.ui.log('row-end') }
+  })
+} }
+
+test('a burst head reads LIVE while its burst is open, and once your message closes it the feed never redraws it again', { plugins: [PEER_MARK] }, async ($, on) => {
+  let rows: SessionMessage[] = []
+  const clock = mock.clock(on)
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : { deny: 'ENOENT: no such file or directory' })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.messages', ($, e) => ({ value: e.as === 'api' ? [] : rows }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  const evaluations: (string | undefined)[][] = []
+  let drawing = false
+  on('ui.log', ($, e) => { if (e.text === 'row-start') { drawing = true; evaluations.push([]) } if (e.text === 'row-end') drawing = false; return { value: undefined } })
+  on('state.get', async ($, e, next) => { if (drawing) evaluations.at(-1)?.push(e.key); return next(e) })
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine peer' }))
+  const peer = (uuid: string, text: string) => $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid, message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text }] } })
+  await peer('head', 'First update')
+  await peer('tail', 'Second update')
+  const head = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'head', props: { text: 'First update', origin: { kind: 'peer' }, isExpanded: false } })
+  await clock.settle()
+  expect(evaluations.at(-1)).toEqual(['live'])
+  rows = [{ role: 'user', text: 'Thanks, carry on', toolUses: [] }]
+  await $.session.append({ door: 'prompt', origin: { kind: 'composer' }, uuid: 'mine', message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'Thanks, carry on' }] } })
+  await clock.settle()
+  expect(evaluations.at(-1)).toEqual([])
+  const settled = evaluations.length
+  rows = [...rows, { role: 'assistant', text: 'Carrying on.', toolUses: [] }]
+  await $.session.append({ door: 'response', origin: { kind: 'model', model: 'model' }, uuid: 'reply', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Carrying on.' }] } })
+  await clock.settle()
+  expect(evaluations.length).toBe(settled)
+  expect((await head.find({ type: 'Text', text: '⇄' }))?.text.split(' · ').slice(0, 2)).toEqual(['⇄ 2 messages', 'another session'])
+  await head.unmount()
+})
+
 test('an opened burst shows each of its messages as its own indented line, once', async ($, on) => {
   session(on)
   on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine peer' }))
