@@ -13,7 +13,7 @@ export function callWords(call: Pick<CallView, 'tool' | 'input'>, tense: Tense):
   const path = call.input.file_path ?? call.input.notebook_path
   const file = typeof path === 'string' ? basename(path) : ''
   const skill = typeof call.input.skill === 'string' ? clean(call.input.skill) : ''
-  const host = typeof call.input.url === 'string' ? call.input.url.match(/^https?:\/\/([^/?#]+)/i)?.[1]?.replace(/^www\./, '') : undefined
+  const host = typeof call.input.url === 'string' ? hostname(call.input.url) : undefined
   switch (call.tool) {
     case 'Bash': case 'PowerShell': return past ? 'Ran a shell command' : 'Running a shell command'
     case 'Read': return `${past ? 'Read' : 'Reading'} ${file || 'a file'}`
@@ -42,6 +42,15 @@ export function clean(text: string): string {
 
 function basename(path: string): string {
   return path.replace(/\/+$/, '').split(/[\\/]/).at(-1) ?? ''
+}
+
+function hostname(value: string): string | undefined {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.hostname.replace(/^www\./, '') : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** "mcp__claude_ai_Slack__send" -> "Slack send"; a built-in keeps its name. */
@@ -86,13 +95,13 @@ function countWords(kind: string, n: number): string {
   }
 }
 
-/** §4.6 chips after " · ": refused, "N failed", "+N lines" (plural kept for one: "+1 lines", ruling §20.10). */
+/** §4.6 chips after " · ": refused, "N failed", "+1 line" or "+N lines" (ruling §20.10). */
 export function runChips(run: Run, t: Transcript): readonly string[] {
   const outcomes = run.calls.flatMap(id => { const outcome = t.calls.get(id)?.outcome; return outcome?.state === 'done' ? [outcome] : [] })
   const refused = outcomes.filter(outcome => outcome.refused).length
   const failed = outcomes.filter(outcome => outcome.errored && !outcome.refused).length
   const lines = outcomes.reduce((n, outcome) => n + outcome.lines, 0)
-  return [...(refused && refused < run.calls.length ? [refusedWords(refused)] : []), ...(failed ? [`${failed} failed`] : []), ...(lines ? [`+${lines} lines`] : [])]
+  return [...(refused && refused < run.calls.length ? [refusedWords(refused)] : []), ...(failed ? [`${failed} failed`] : []), ...lineChip(lines)]
 }
 export function callChips(call: CallView, filed?: FiledCall): readonly string[] {
   if (call.isRunning) return []
@@ -100,7 +109,11 @@ export function callChips(call: CallView, filed?: FiledCall): readonly string[] 
   const text = typeof call.output === 'string' ? call.output : ''
   const refused = call.isErrored && (isRefusal(text) || (outcome?.state === 'done' && outcome.refused))
   const lines = outcome?.state === 'done' ? outcome.lines : text.trim() ? text.trimEnd().split('\n').length : 0
-  return [...(refused ? [refusedWords(1)] : call.isErrored ? ['1 failed'] : []), ...(lines ? [`+${lines} lines`] : [])]
+  return [...(refused ? [refusedWords(1)] : call.isErrored ? ['1 failed'] : []), ...lineChip(lines)]
+}
+
+function lineChip(lines: number): readonly string[] {
+  return lines ? [`+${lines} ${lines === 1 ? 'line' : 'lines'}`] : []
 }
 
 /** "1 step this turn" / "{n} steps this turn". */
@@ -140,21 +153,70 @@ export type ErrorLine = { readonly head: string; readonly rest: readonly string[
 
 /**
  * §6 rules 1-12, first match wins. Ruling §20.6: rules 1 and 2 (safeguards)
- * also need the text to start with an error prefix or "API Error", so a normal
- * reply quoting such a sentence stays a reply.
+ * need an error prefix or a whole one-line reply; multiline quoted prose stays a reply.
  */
 export function errorLine(text: string): ErrorLine | undefined {
-  throw new Error('not implemented')
+  const prefixed = /^(?:API Error|Error:|Request timed out|Connection error|Claude AI usage limit|Credit balance|Invalid API key|Please run \/login|Prompt is too long)/i.test(text)
+  if (!prefixed && text.includes('\n')) return undefined
+  const content = text.replace(/^(?:API Error|Error):?\s*/i, '')
+  const who = content.match(/^(.{1,40})['’]s safeguards/i)?.[1]
+  const line = (head: string, rest: readonly string[], tone: Tone, act = tone === 'red'): ErrorLine => ({ head, rest, tone, act })
+  if (who && /stopped the response above|continuing/i.test(content)) return line(`${who}'s safeguards cut the reply above`, ['Claude continues', 'esc esc goes back to an earlier message'], 'violet')
+  if (/stopped by a safety classifier/i.test(content)) return line('A safeguard cut the reply above', ['Claude continues', 'esc esc goes back to an earlier message'], 'violet')
+  if (!prefixed) return undefined
+  if (/safeguards|usage policy|\/legal\/aup/i.test(content)) return line(`${who ?? 'The model'}'s safeguards stopped this reply`, ['often a false alarm', 'esc esc to edit your message, or /model to switch'], 'violet', true)
+  if (/529|overloaded/i.test(content)) return line("Claude's servers are busy", ['not your setup', 'Claude Code retries, or send again'], 'amber')
+  if (/usage limit|rate limit|429/i.test(content)) {
+    const reset = content.match(/resets?\s+([^\n,;]+)/i)?.[1]?.trim()
+    return line('Usage limit reached', [...(reset ? [`resets ${reset}`] : []), 'nothing is lost', '/model to switch'], 'red')
+  }
+  if (/prompt is too long|context length|too many tokens/i.test(content)) return line('This chat is too long for the model', ['run /compact', 'nothing is lost'], 'red')
+  if (/401|403|authentication|login|api key|oauth/i.test(content)) return line('Login needed', ['run /login', 'nothing is lost'], 'red')
+  if (/credit|billing/i.test(content)) return line('Billing problem on the account', ['nothing is lost'], 'red')
+  if (/connection|network|socket|timeout|timed out/i.test(content)) return line('Connection lost', ['check your internet', 'send again to retry'], 'amber')
+  if (/\b5\d\d\b|server_error|internal/i.test(content)) return line("Server error on Claude's side", ['your work is kept', 'send a message to try again'], 'amber')
+  if (/400|invalid_request|max_output/i.test(content)) return line('Claude refused this request', ['ctrl+o shows why', 'esc esc to edit your message'], 'red')
+  return line('Claude Code hit an error', ['ctrl+o shows it'], 'amber')
 }
 
 /** §8.2 headline: first non-empty line, tags removed, paths shrunk, a status object read as words, fit. */
 export function peerHeadline(text: string, room: number): string {
-  throw new Error('not implemented')
+  const first = text.split('\n').find(line => line.trim()) ?? ''
+  const status = jsonObject(first)
+  const words = status ? [stateWords(status.type), string(status.summary) ?? string(status.message) ?? string(status.status)].filter(Boolean).join(' · ') : first.replace(/<[^>]*>/g, '')
+  return fit(words.replace(/(?:\/(?:Users|home|private|tmp|var|opt|Volumes)\/|~\/)[^\s,;]+/g, basename).replace(/\s+/g, ' ').trim(), room)
 }
 
 /** §8.2 sender from the envelope's from, teammate_id or name, cleaned; else "another session". */
 export function senderOf(from: unknown, raw?: string): string {
-  throw new Error('not implemented')
+  const name = string(from) ?? (record(from) ? string(from.name) : undefined) ?? attribute(raw ?? '', 'from') ?? attribute(raw ?? '', 'teammate_id') ?? attribute(raw ?? '', 'name')
+  return (name ? clean(name) : '') || 'another session'
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function string(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    return record(value) ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function attribute(raw: string, name: 'from' | 'teammate_id' | 'name' | 'summary'): string | undefined {
+  return new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`).exec(raw)?.[1]
+}
+
+function stateWords(value: unknown): string | undefined {
+  const state = string(value)?.replace(/_notification$/, '').replace(/_/g, ' ')
+  return state === 'idle' ? 'waiting' : state
 }
 
 export type Card = {
@@ -177,11 +239,85 @@ export type Frame = {
 
 /** §8.3 source 1: teammate-message envelopes in a raw user row (session.append), parsed once by uuid. */
 export function parseEnvelopes(raw: string): readonly Frame[] {
-  throw new Error('not implemented')
+  return [...raw.matchAll(/<teammate-message\b([^>]*)>([\s\S]*?)<\/teammate-message>/g)].flatMap(match => {
+    const attributes = match[1]
+    const body = match[2]
+    return attributes !== undefined && body !== undefined ? [frame(body, attribute(attributes, 'from') ?? attribute(attributes, 'teammate_id'), attribute(attributes, 'summary'))] : []
+  })
 }
 /** §8.3 source 2: frames read from a row's own text (a row stored before this load). */
 export function framesFromText(text: string): readonly Frame[] {
-  throw new Error('not implemented')
+  const frames: Frame[] = []
+  let plain: string[] = []
+  const flush = () => {
+    const body = plain.join('\n').trim()
+    if (body) frames.push(frame(body, undefined, body.split('\n')[0]))
+    plain = []
+  }
+  for (const line of text.split('\n')) {
+    const status = jsonObject(line.trim())
+    if (status && typeof status.type === 'string') {
+      flush()
+      frames.push(frame(line))
+    } else plain.push(line)
+  }
+  flush()
+  return frames
+}
+
+function frame(body: string, from?: string, summary?: string): Frame {
+  let relays = false
+  const text = body.split('\n').filter(line => {
+    const marker = /^\s*<[^>]+\/>\s*$/.test(line) || /This agent read .*written by people other than you/.test(line)
+    relays ||= marker
+    return !marker
+  }).join('\n').trim()
+  const whole = jsonObject(text)
+  const rawTime = whole?.timestamp
+  const at = typeof rawTime === 'number' ? rawTime : typeof rawTime === 'string' && Number.isFinite(Date.parse(rawTime)) ? Date.parse(rawTime) : undefined
+  const lead = reportLead(text)
+  return { from: clean(from ?? string(whole?.from) ?? string(whole?.teammate_id) ?? 'helper') || 'helper', state: stateWords(whole?.type), at, summary: summary ?? string(whole?.summary), relays, lead: whole?.type && !lead?.card ? undefined : lead }
+}
+
+function reportLead(text: string): Frame['lead'] {
+  if (!text) return undefined
+  const opening = text.indexOf('{')
+  const object = opening >= 0 ? jsonObject(text.slice(opening)) : undefined
+  const sentence = opening > 0 ? text.slice(0, opening).trim() : undefined
+  const card = object ? reportCard(object, sentence) : undefined
+  if (card) return { ...(sentence ? { sentence } : {}), card, more: 0 }
+  const paragraph = text.split(/\n\s*\n/)[0] ?? ''
+  const lead = paragraph.split('\n').slice(0, 6).join('\n').slice(0, 600)
+  return { text: lead, more: Math.max(0, text.split('\n').length - lead.split('\n').length) }
+}
+
+function reportTone(value: unknown): Card['tone'] {
+  const word = string(value)?.toLowerCase() ?? ''
+  if (/^(?:done|pass|passed|ok|success|succeeded|green|complete|completed|confirms?)$/.test(word)) return 'ok'
+  if (/^(?:fail|failed|error|blocked|red|contradicts|refused)$/.test(word)) return 'bad'
+  return 'mid'
+}
+
+function reportCard(object: Record<string, unknown>, sentence?: string): Card | undefined {
+  const status = string(object.status) ?? string(object.verdict) ?? string(object.result)
+  const entries = Object.entries(object)
+  const target = Object.values(object).find(value => record(value) && (string(value.name) || string(value.title) || string(value.id)))
+  const arrays = entries.filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
+  const report = entries.find(([key, value]) => typeof value === 'string' && (/(?:_file|_path|report|dossier)$/.test(key) || /^\//.test(value)))?.[1]
+  if (!status && !target && !arrays.length && !report) return undefined
+  const scores: Card['scores'][number][] = []
+  const lists: Card['lists'][number][] = []
+  for (const [label, items] of arrays) {
+    const tones = items.map(item => record(item) ? reportTone(item.verdict ?? item.status ?? item.result) : 'mid')
+    if (tones.some(tone => tone !== 'mid')) scores.push({ label, dots: tones.slice(0, 24), pass: tones.filter(tone => tone === 'ok').length, of: items.length })
+    else {
+      const first = items[0]
+      const words = string(first) ?? (record(first) ? string(first.name) ?? string(first.title) ?? string(first.description) : undefined) ?? (first === undefined ? '' : JSON.stringify(first))
+      lists.push({ label, count: items.length, first: words })
+    }
+  }
+  const targetWords = record(target) ? [string(target.name) ?? string(target.title) ?? string(target.id), string(target.model), string(target.profile), typeof target.temperature === 'number' ? `temp ${target.temperature}` : undefined].filter(Boolean).join(' · ') : undefined
+  return { tone: reportTone(status), status: (status ?? '').replace(/[_-]/g, ' ').slice(0, 40), sub: string(object.review_status) ?? string(object.summary) ?? string(object.message) ?? (object.result !== status ? string(object.result) : undefined) ?? (!status && sentence && sentence.length > 8 ? sentence : undefined), target: targetWords, scores, lists, report: typeof report === 'string' ? basename(report) : undefined }
 }
 
 /** §9.1 test words: test, tests, suite, spec, specs, e2e, verify, check. */
@@ -191,7 +327,8 @@ export function looksLikeTest(words: string): boolean {
 
 /** §8.1 #3: text whose first line starts with a hook name and reaches a colon; the quiet line it draws. */
 export function hookTextLine(text: string): string | undefined {
-  throw new Error('not implemented')
+  if (!/^(?:Stop hook feedback|UserPromptSubmit|PostToolUse|PreToolUse)[^\n]*:/.test(text)) return undefined
+  return (text.split('\n').map(line => line.trim()).find(line => line && !/(?:feedback|context):$/.test(line) && !/^(?:Stop hook|UserPromptSubmit)/.test(line)) ?? 'hook feedback').slice(0, 110)
 }
 
 /**
@@ -208,5 +345,18 @@ export function hookTextLine(text: string): string | undefined {
  * A test runs both scanners over cs-mermaid's own fixtures and pins equal answers.
  */
 export function repliesOwnSteps(text: string): boolean {
-  throw new Error('not implemented')
+  let outer: string | undefined
+  let mermaid = false
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    const mark = /^(`{3,}|~{3,})/.exec(trimmed)?.[1]
+    if (!mark) continue
+    if (outer) {
+      if (mark[0] === outer[0] && mark.length >= outer.length && trimmed === mark) outer = undefined
+    } else if (mermaid) {
+      if (trimmed === '```') return false
+    } else if (mark === '```' && trimmed.slice(3).trim() === 'mermaid') mermaid = true
+    else if (mark.length > 3 || mark.startsWith('~')) outer = mark
+  }
+  return true
 }

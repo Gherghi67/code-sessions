@@ -272,13 +272,13 @@ export function observeResponse(load: Load, row: { uuid: string; text: string; c
     load.obs.turnOpeners.add(callId(first))
     load.obs.mainTurn.openerTaken = true
   }
-  const last = row.calls.at(-1)
-  if (last) load.obs.callSincePrompt = callId(last)
   if (row.text && load.obs.callSincePrompt) {
     const call = load.obs.callSincePrompt
     load.obs.anchors.set(row.uuid, { call, text: row.text, seq: ++load.obs.anchorSeq })
     load.obs.latestByCall.set(call, row.uuid)
   }
+  const last = row.calls.at(-1)
+  if (last) load.obs.callSincePrompt = callId(last)
 }
 
 /**

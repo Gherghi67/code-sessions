@@ -2,3 +2,4 @@ node_modules/
 .audit/*.log
 .audit/commit.txt
 .audit/bite/
+.audit/mermaid/

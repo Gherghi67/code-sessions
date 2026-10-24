@@ -70,6 +70,9 @@ test('API joins verify ordered tool ids and stop at the first inconsistent pair'
   const peer: ApiMessage = { role: 'user', content: [{ type: 'text', text: 'Another Claude session sent a message:\n<cross-session-message from="test-session">hello</cross-session-message>' }] }
   const api: ApiMessage[] = [{ role: 'assistant', content: [{ type: 'text', text: 'before' }, { type: 'tool_use', id: 'a' }] }, peer, { role: 'assistant', content: [{ type: 'text', text: 'after' }, { type: 'tool_use', id: 'b' }] }]
   expect([...joinApi(plain, api).keys()]).toEqual([1])
+  expect(buildTranscript(plain, api).turns.map(turn => turn.id)).toEqual(['a', 'b'])
+  expect(buildTranscript(plain).turns.map(turn => turn.id)).toEqual(['a'])
+  expect(buildTranscript(plain, undefined, new Set([callId('b')])).turns.map(turn => turn.id)).toEqual(['a', 'b'])
   expect([...joinApi(plain, [...api.slice(0, 2), { role: 'assistant', content: [{ type: 'text', text: 'changed' }, { type: 'tool_use', id: 'b' }] }]).keys()]).toEqual([])
   expect([...joinApi(plain, [...api.slice(0, 2), { role: 'assistant', content: [{ type: 'text', text: 'after' }, { type: 'tool_use', id: 'other' }] }]).keys()]).toEqual([])
   const multiple: SessionMessage[] = [plain[0] ?? { role: 'assistant', text: '', toolUses: [] }, { role: 'assistant', text: 'after', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: {} }, { tool_use_id: 'c', tool: 'Read', input: {} }] }]

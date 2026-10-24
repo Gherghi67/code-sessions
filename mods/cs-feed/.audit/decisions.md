@@ -49,6 +49,24 @@ The engine kit does not load JSON imports. Each fixture therefore also has a Typ
 
 m1b's leading orphan assistant reply gets an implicit visible turn, as required to retain leading-window content. It proves no historical peer join: open-measurements.md M23 explicitly says its peer row is first and cannot exercise an adjacent assistant gap. The join test uses a shape-derived pair and says so. The API background close follows rationale option B over the stale sketch's reload-loss comment. Machinery-only step counts follow ruling 20.12 over the sketch's all-filed-call pseudocode.
 
+## Words and observation corrections
+
+| Test | Source sentence |
+|---|---|
+| error rules preserve ordered literal remedies and reject quoted safeguard prose | explore-features.md:386-405, ordered rules 1-12; design/rationale.md:475, safeguard rules accept an error prefix OR a whole one-line reply |
+| steps ownership agrees with the mermaid scanner on its documented fence fixtures | design/rationale.md:541 requires parity; mods/cs-mermaid/test/register.test.tsx:9-20 supplies the six input shapes; the expected booleans are literals |
+| peer and hook labels clean only their display text and keep safe fallbacks | explore-features.md:475 gives hook routing and 110-character limit; :482 gives the literal build-helper headline; :485 specifies sender attributes |
+| helper envelopes preserve report data as inert frames and bound plain leads | explore-features.md:492-515 gives frame fields, target, score, plain lists, report path and six-line lead cap |
+| a response anchors its text before filing the same row’s new calls | design/sketch/hooks/register.tsx:213-217 records text against the previous call before updating from tool_use blocks |
+
+Errors, peer labels and report frames each first failed `Error: not implemented`. The URL userinfo case first received `Opening reader:example@example.com`, then passed as `Opening example.com`. The anchor-order case first received true for an anchor on a first row whose call had not yet preceded its text, then passed false.
+
+Two stale sketch assertions were corrected against the rationale before implementation: §20.10 says `+1 line`, so the extended chip test failed with `Received: ["+1 lines"]` before the fix; §20.6 permits a whole one-line safeguard message, so that new assertion received undefined before the prefix-or-one-line fix. Multiline quoted prose remains a normal reply.
+
+The kit refuses imports outside the plugin. Actual scanner parity therefore used a temporary in-plugin copy of cs-mermaid's TypeScript source. All copied files were byte-identical and their SHA-256 hashes are in mermaid-equivalence.log. An initial directory diff reported only the intentionally omitted hooks.json; the source-only check passed. The actual scanner and the independent literal expectations both passed (20 tests total). The temporary import and copied modules were removed; committed tests retain the literal fixtures. No engine mocks were used.
+
+The latest complete run after the words slice reports 24 pass, 0 fail; npx tsc exits 0. Input-boundary review found no executable interpretation of JSON, attributes or tool output. JSON is parsed as unknown and narrowed; arbitrary field names are data. URL labels read only hostname, never userinfo. Report paths become display basenames and are never opened.
+
 ## Fixture identity and packaging check
 
 All fourteen JSON dumps retain their recorded structure and line numbering. Twenty-eight encoded username path segments were changed from the original human username to `test-user`; no other JSON bytes changed. Their TypeScript data modules contain the adjacent JSON bytes, two ABOUTME lines, `export default`, and one module-terminating newline. All fourteen parsed payload pairs are equal. The kit loader rejects JSON imports, so these modules package the recorded data without mocking the engine.
