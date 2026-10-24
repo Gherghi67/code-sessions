@@ -143,23 +143,20 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 .finder .hit .where{margin-left:auto;color:var(--fg2);font-size:12px}
 @media (max-width:900px){.shell{grid-template-columns:1fr}.rail{position:static;height:auto;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}.rail .grp{display:none}.lab > div:last-child{position:static}.controls{max-height:none}}
 @media (prefers-reduced-motion:reduce){.panel.on,.finder.on{animation:none}.term,.rail a,.copy{transition:none}}
-/* ---- compose ---- */
-.compose{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:18px;align-items:start}
-.compose .tree{border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--panel)}
-.compose .tree ul{list-style:none;margin:0;padding:0 0 0 14px}
-.compose .tree>ul{padding-left:0}
-.compose .node{display:flex;align-items:center;gap:6px;width:100%;text-align:left;border:1px solid transparent;border-radius:6px;padding:3px 6px;background:none;color:var(--fg);font:inherit;font-size:13px;cursor:pointer}
-.compose .node:hover{border-color:var(--line)}
-.compose .node.on{border-color:var(--accent);background:var(--panel2,rgba(127,127,127,.12))}
-.compose .node .ty{font-weight:600}
-.compose .node .sum{color:var(--fg2);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.compose .treebar{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.compose .treebar button{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--page);color:var(--fg);cursor:pointer}
-.compose .treebar button:hover{border-color:var(--accent)}
-.compose .insp{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 14px;margin-bottom:14px}
-.compose .insp label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--fg2)}
-.compose .insp label.inline{flex-direction:row;align-items:center;gap:6px}
-.compose .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
+/* ---- band designer ---- */
+:root{--accent:var(--hot)}
+.designer{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
+@media (max-width:1100px){.designer{grid-template-columns:1fr}}
+.designer .props{background:var(--panel);border:1px solid var(--line);padding:12px;position:sticky;top:calc(var(--head-h,96px) + 12px);max-height:calc(100vh - var(--head-h,96px) - 24px);overflow-y:auto}
+.props .insp{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px 14px}
+.props .insp label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--fg2)}
+.props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
+.frame{margin:0 0 16px}
+.frame .strip{position:relative}
+.frame .term{cursor:default;user-select:none}
+.frame .sel{position:absolute;outline:1px solid var(--accent);pointer-events:none}
+.frame .sel .tag{position:absolute;bottom:100%;left:-1px;margin-bottom:2px;font:10.5px/1.4 "IBM Plex Sans",sans-serif;background:var(--accent);color:#fff;padding:0 5px;white-space:nowrap}
+.frame .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
 /* ---- band variants ---- */
 .vrow{margin:0 0 26px}
 .vrow > .why{color:var(--fg2);font-size:12.5px;margin:0 0 8px;max-width:90ch}
@@ -191,30 +188,13 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
-<h2 id="compose">Compose a band <span class="src">Box · Text · Button</span></h2>
-<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>. Pick a node, set its props, watch the strip. The JSX underneath is what you paste into the mod. The other six elements are in their own panels; the canvas draws these three.</p>
-<div class="compose">
-  <div>
-    <div class="tree" id="cp-tree"></div>
-    <div class="treebar">
-      <button type="button" data-add="Box">+ Box</button>
-      <button type="button" data-add="Text">+ Text</button>
-      <button type="button" data-add="Button">+ Button</button>
-      <button type="button" id="cp-up">↑</button>
-      <button type="button" id="cp-down">↓</button>
-      <button type="button" id="cp-del">delete</button>
-      <button type="button" id="cp-preset">load the rotate band</button>
-    </div>
-    <p class="why" style="margin-top:10px">A new node lands inside the selected Box, or beside the selected leaf, so a Text never takes one: the engine drops a tree that nests a Box or a Button in a Text, and says nothing about it. The refusal you can still reach — a hover with no key to scope it — prints above the strip.</p>
-  </div>
-  <div>
-    <div class="insp" id="cp-insp"></div>
-    <div id="cp-refuse"></div>
-    <div class="term" id="cp-term"></div>
-    <div id="cp-over"></div>
-    <pre class="spec" id="cp-spec"></pre>
-  </div>
+<h2 id="compose">Band designer <span class="src">Box · Text · Button</span></h2>
+<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. The JSX underneath is what you paste into the mod.</p>
+<div class="designer">
+  <div class="canvas" id="bd-canvas"></div>
+  <aside class="props" id="bd-props"></aside>
 </div>
+<pre class="spec" id="cp-spec"></pre>
 
 </section>
 <!-- ============================== SITES ============================== -->
@@ -586,6 +566,7 @@ none|start fresh</textarea></label>
 </div>
 <script src="mods-layout.js"></script>
 <script src="mods-band-variants.js"></script>
+<script src="mods-band-editor.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
@@ -1081,8 +1062,7 @@ function coverage(){
 
 
 // ---------- COMPOSE ----------
-// One tree, edited in place. Nodes carry an id so the outline can name the
-// selection without holding a reference the re-render would stale.
+// The fields a node's props panel draws, per element.
 const CP_SCHEMA={
   Box:[
     ["key","text","a key scopes hover and keeps the node's identity across redraws"],
@@ -1111,55 +1091,41 @@ const CP_SCHEMA={
     ["plain","bool"],["dimColor","bool"],["autoFocus","bool"],["flexGrow","num"],
   ],
 };
-let cpId=0;
-const cpNode=(type,props,kids)=>({id:++cpId,type,props:props||{},kids:kids||[]});
-let cpTree=null, cpSel=0;
-
+const ed=(type,props,kids)=>({type,props:props||{},kids:kids||[]});
 function cpRotatePreset(){
-  const band=cpNode("Box",{key:"cs-rotate-band",borderStyle:"round",borderColor:"CORAL",paddingX:1,hoverBorderColor:"CORAL"},[
-    cpNode("Text",{text:"✳ ",color:"CORAL",bold:true}),
-    cpNode("Button",{key:"cs-rotate",hotkey:"1",plain:true,label:"rotate this conversation"}),
-    cpNode("Text",{text:"  ·  ",dimColor:true}),
-    cpNode("Button",{key:"cs-wrap",hotkey:"2",plain:true,label:"wrap up this session"}),
-    cpNode("Text",{text:"  ·  ",dimColor:true}),
-    cpNode("Text",{text:"█████",color:"warning"}),
-    cpNode("Text",{text:"░░░░░",dimColor:true}),
-    cpNode("Text",{text:" 47%",color:"warning",bold:true}),
+  const band=ed("Box",{key:"cs-rotate-band",borderStyle:"round",borderColor:"CORAL",paddingX:1,hoverBorderColor:"CORAL"},[
+    ed("Text",{text:"✳ ",color:"CORAL",bold:true}),
+    ed("Button",{key:"cs-rotate",hotkey:"1",plain:true,label:"rotate this conversation"}),
+    ed("Text",{text:"  ·  ",dimColor:true}),
+    ed("Button",{key:"cs-wrap",hotkey:"2",plain:true,label:"wrap up this session"}),
+    ed("Text",{text:"  ·  ",dimColor:true}),
+    ed("Text",{text:"█████",color:"warning"}),
+    ed("Text",{text:"░░░░░",dimColor:true}),
+    ed("Text",{text:" 47%",color:"warning",bold:true}),
   ]);
-  return cpNode("Box",{flexDirection:"column"},[band]);
+  return ed("Box",{flexDirection:"column"},[band]);
 }
-// The tree the editor holds carries editor-only props (text, hoverBorderColor);
-// this is the shape the engine and the JSX printer read.
-function cpToEngine(n){
-  const p=Object.assign({},n.props);
-  const text=p.text||""; delete p.text;
-  const hb=p.hoverBorderColor, hg=p.hoverBackgroundColor;
-  delete p.hoverBorderColor; delete p.hoverBackgroundColor;
-  if(hb||hg){ p.hover={}; if(hb) p.hover.borderColor=hb; if(hg) p.hover.backgroundColor=hg; }
-  Object.keys(p).forEach(k=>{ if(p[k]===""||p[k]===false||p[k]===undefined) delete p[k]; });
-  if(n.type==="Text") return {type:"Text",props:p,children:[text]};
-  if(n.type==="Button") return {type:"Button",props:p,children:[]};
-  return {type:"Box",props:p,children:n.kids.map(cpToEngine)};
-}
-function cpFind(n,id,parent){ if(n.id===id) return {node:n,parent:parent}; for(const k of n.kids){ const hit=cpFind(k,id,n); if(hit) return hit; } return null; }
-function cpSelected(){ return cpFind(cpTree,cpSel,null)||{node:cpTree,parent:null}; }
 
-function cpOutline(n,depth){
-  const sum=n.type==="Text"?(n.props.text||"").slice(0,24):n.type==="Button"?(n.props.label||""):`${n.kids.length} child${n.kids.length===1?"":"ren"}`;
-  let html=`<li><button type="button" class="node${n.id===cpSel?" on":""}" data-node="${n.id}"><span class="ty">${n.type}</span><span class="sum">${esc(sum)}</span></button>`;
-  if(n.kids.length) html+=`<ul>${n.kids.map(k=>cpOutline(k,depth+1)).join("")}</ul>`;
-  return html+"</li>";
-}
-function cpInspector(){
-  const n=cpSelected().node, rows=CP_SCHEMA[n.type]||[];
-  return rows.map(([name,kind,extra])=>{
+// The designer's document (docs/mods-band-editor.js) and, per frame, the
+// grid its strip was last painted from, which a click is looked up in.
+let bdDoc=null;
+const bdGrids={};
+const samePath=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
+const bdFrame=id=>bdDoc.frames.find(f=>f.id===id);
+const bdSelected=()=>bdDoc.selection&&BandEditor.nodeAt(bdFrame(bdDoc.selection.frame).tree,bdDoc.selection.path);
+function bdDispatch(action){ bdDoc=BandEditor.apply(bdDoc,action); composeRender(); }
+
+function cpInspector(n){
+  if(!n) return `<p class="why">Click a cell on the strip to select the node that drew it.</p>`;
+  const rows=CP_SCHEMA[n.type]||[];
+  return `<div class="insp">`+rows.map(([name,kind,extra])=>{
     const v=n.props[name], hint=typeof extra==="string"?` title="${esc(extra)}"`:"";
     if(kind==="bool") return `<label class="inline"${hint}><input type="checkbox" name="${name}" data-prop="${name}" data-kind="bool"${v?" checked":""}> ${name}</label>`;
     if(kind==="num") return `<label${hint}>${name} <input type="number" name="${name}" data-prop="${name}" data-kind="num" value="${v===undefined?"":v}" style="width:80px"></label>`;
     if(kind==="color") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text" class="cpcolor">${cpColorOptions(v)}</select></label>`;
     if(kind==="select") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${(extra||[]).map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select></label>`;
     return `<label${hint}>${name} <input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}"></label>`;
-  }).join("");
+  }).join("")+`</div>`;
 }
 function cpColorOptions(v){
   const raw=Object.keys(RAW);
@@ -1168,6 +1134,19 @@ function cpColorOptions(v){
     raw.map(k=>`<option value="${k}"${v===k?" selected":""}>${k} (const)</option>`));
   return opts.join("");
 }
+// One cell's style as CSS.
+function cellCss(st){
+  const css=[];
+  if(st.color) css.push(`color:${col(st.color)}`);
+  if(st.bg) css.push(`background:${col(st.bg)}`);
+  if(st.bold) css.push("font-weight:700");
+  if(st.dim) css.push("opacity:.55");
+  if(st.italic) css.push("font-style:italic");
+  const deco=[st.underline?"underline":"",st.strikethrough?"line-through":""].filter(Boolean).join(" ");
+  if(deco) css.push(`text-decoration:${deco}`);
+  if(st.inverse) css.push(`background:${col("text")};color:${col("inverseText")}`);
+  return css.join(";");
+}
 // Grid of cells -> spans, one span per run of cells that share a style.
 function cpPaint(g){
   return g.rows.map(row=>{
@@ -1175,77 +1154,94 @@ function cpPaint(g){
     while(i<row.length){
       const st=row[i].st; let j=i,txt="";
       while(j<row.length&&row[j].st===st){ txt+=row[j].ch; j++; }
-      const css=[];
-      if(st.color) css.push(`color:${col(st.color)}`);
-      if(st.bg) css.push(`background:${col(st.bg)}`);
-      if(st.bold) css.push("font-weight:700");
-      if(st.dim) css.push("opacity:.55");
-      if(st.italic) css.push("font-style:italic");
-      const deco=[st.underline?"underline":"",st.strikethrough?"line-through":""].filter(Boolean).join(" ");
-      if(deco) css.push(`text-decoration:${deco}`);
-      if(st.inverse) css.push(`background:${col("text")};color:${col("inverseText")}`);
-      html+=span(txt,css.join(";"));
+      html+=span(txt,cellCss(st));
       i=j;
     }
     return html;
   }).join("\n");
 }
+// Grid of cells -> one span per cell, addressed by row and column, so a
+// pointer on the strip finds its cell.
+function bdPaint(g){
+  return g.rows.map((row,r)=>row.map((c,x)=>`<span class="cell" data-r="${r}" data-c="${x}" style="${cellCss(c.st)}">${esc(c.ch)}</span>`).join("")).join("\n");
+}
 // A grid wider than the band, cut at the band's edge as the terminal cuts it.
 function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
-function composeRender(){
-  if(!cpTree) cpTree=cpLoad()||cpRotatePreset();
-  $("cp-tree").innerHTML=`<ul>${cpOutline(cpTree,0)}</ul>`;
-  $("cp-insp").innerHTML=cpInspector();
-  const tree=cpToEngine(cpTree);
+
+// The outline and the type-and-key tag over the selected node's cells.
+function bdChrome(strip,g,path,node){
+  const s=BandEditor.spanOf(g,path); if(!s) return;
+  const at=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
+  const base=strip.getBoundingClientRect(), a=at(s.top,s.left), b=at(s.bottom,s.right);
+  const box=`left:${a.left-base.left}px;top:${a.top-base.top}px;width:${b.right-a.left}px;height:${b.bottom-a.top}px`;
+  strip.insertAdjacentHTML("beforeend",`<div class="sel" style="${box}"><span class="tag">${esc(node.type+(node.props.key?" "+node.props.key:""))}</span></div>`);
+}
+function bdFrameCard(f){
+  const tree=BandEditor.toEngine(f.tree), c=cols();
   const refused=ModLayout.validate(tree);
-  $("cp-refuse").innerHTML=refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"";
-  const g=ModLayout.layout(tree,cols());
+  const g=clipTo(ModLayout.layout(tree,c),c);
+  const measured=ModLayout.layout(tree,c).w;
+  bdGrids[f.id]=g;
   // A band wider than the terminal is clipped here, as the terminal clips it.
   // Yoga would shrink a Text to fit; the canvas does not, so it says so rather
   // than drawing a band that could never look like this.
-  const over=g.w>cols();
-  const shown=clipTo(g,cols());
-  $("cp-term").innerHTML=cpPaint(shown)+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
-  $("cp-over").innerHTML=over?`<p class="why">The tree measures ${g.w} cells and the band has ${cols()}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"";
-  $("cp-spec").textContent=ModLayout.toJsx(tree);
+  return `<div class="frame" data-frame="${f.id}">`
+    +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
+    +`<div class="strip"><div class="term">${bdPaint(g)}\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span></div></div>`
+    +(measured>c?`<p class="why">The tree measures ${measured} cells and the band has ${c}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"")
+    +`</div>`;
+}
+function composeRender(){
+  if(!bdDoc) bdDoc={frames:[{id:"f1",name:"Band",tree:cpLoad()||cpRotatePreset()}],selection:null,exportFrame:"f1"};
+  $("bd-canvas").innerHTML=bdDoc.frames.map(bdFrameCard).join("");
+  const sel=bdDoc.selection;
+  if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
+  $("bd-props").innerHTML=cpInspector(bdSelected());
+  $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(bdDoc.exportFrame).tree));
   cpSave();
 }
-function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(cpTree)); }catch{} }
-function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); if(!raw) return null; const t=JSON.parse(raw); cpId=cpMaxId(t); return t; }catch{ return null; } }
-function cpMaxId(n){ return n.kids.reduce((a,k)=>Math.max(a,cpMaxId(k)),n.id||0); }
-function cpAdd(type){
-  const {node,parent}=cpSelected();
-  const fresh=type==="Text"?cpNode("Text",{text:"new text"}):type==="Button"?cpNode("Button",{label:"press me",plain:true}):cpNode("Box",{});
-  if(node.type==="Box"){ node.kids.push(fresh); }
-  else if(parent){ parent.kids.splice(parent.kids.indexOf(node)+1,0,fresh); }
-  else { cpTree.kids.push(fresh); }
-  cpSel=fresh.id; composeRender();
+const bareTree=n=>({type:n.type,props:n.props,kids:(n.kids||[]).map(bareTree)});
+function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(bdFrame(bdDoc.exportFrame).tree)); }catch{} }
+function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); return raw?bareTree(JSON.parse(raw)):null; }catch{ return null; } }
+
+// A click selects the node that drew the cell; a second click on the node
+// already selected climbs to its parent. The second click of a double-click
+// is left alone.
+function bdClick(e){
+  if(e.detail>1) return;
+  const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
+  if(!cell||!frame){ if(bdDoc.selection) bdDispatch({type:"deselect"}); return; }
+  const id=frame.dataset.frame, path=BandEditor.pathOfCell(bdGrids[id],+cell.dataset.r,+cell.dataset.c);
+  const sel=bdDoc.selection;
+  const again=sel&&sel.frame===id&&samePath(sel.path,path)&&path.length>0;
+  bdDispatch({type:"select",frame:id,path:again?path.slice(0,-1):path});
 }
-function cpMove(d){
-  const {node,parent}=cpSelected(); if(!parent) return;
-  const i=parent.kids.indexOf(node), j=i+d;
-  if(j<0||j>=parent.kids.length) return;
-  parent.kids.splice(i,1); parent.kids.splice(j,0,node); composeRender();
-}
-function cpDelete(){
-  const {node,parent}=cpSelected(); if(!parent) return;
-  parent.kids.splice(parent.kids.indexOf(node),1); cpSel=parent.id; composeRender();
+// Keys that act on the selection while the designer is on screen and no
+// field has focus; the page's own keys see everything else.
+function bdKeys(e){
+  if(!$("p-compose").classList.contains("on")||!bdDoc.selection) return;
+  if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")) return;
+  const sel=bdDoc.selection, node=bdSelected();
+  let act=null;
+  if(e.key==="Escape") act={type:"deselect"};
+  else if(e.key==="Enter"&&e.shiftKey&&sel.path.length) act={type:"select",frame:sel.frame,path:sel.path.slice(0,-1)};
+  else if(e.key==="Enter"&&!e.shiftKey&&node.kids.length) act={type:"select",frame:sel.frame,path:sel.path.concat([0])};
+  if(!act) return;
+  e.preventDefault(); e.stopImmediatePropagation(); bdDispatch(act);
 }
 function composeUI(){
-  $("cp-tree").addEventListener("click",e=>{ const b=e.target.closest("[data-node]"); if(!b) return; cpSel=+b.dataset.node; composeRender(); });
-  document.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>cpAdd(b.dataset.add));
-  $("cp-up").onclick=()=>cpMove(-1); $("cp-down").onclick=()=>cpMove(1); $("cp-del").onclick=cpDelete;
-  $("cp-preset").onclick=()=>{ cpTree=cpRotatePreset(); cpSel=0; composeRender(); };
-  $("cp-insp").addEventListener("input",e=>{
+  $("bd-canvas").addEventListener("click",bdClick);
+  document.addEventListener("keydown",bdKeys,true);
+  $("bd-props").addEventListener("input",e=>{
     const el=e.target, name=el.dataset.prop; if(!name) return;
-    const n=cpSelected().node;
+    const n=bdSelected();
     if(el.dataset.kind==="bool") n.props[name]=el.checked;
     else if(el.dataset.kind==="num") n.props[name]=el.value===""?undefined:+el.value;
     else n.props[name]=el.value;
     if(n.props[name]===undefined||n.props[name]===""||n.props[name]===false) delete n.props[name];
     const keep=document.activeElement===el?[name,el.selectionStart]:null;
     composeRender();
-    if(keep){ const again=$("cp-insp").querySelector(`[data-prop="${keep[0]}"]`); if(again){ again.focus(); if(again.setSelectionRange&&keep[1]!=null) try{ again.setSelectionRange(keep[1],keep[1]); }catch{} } }
+    if(keep){ const again=$("bd-props").querySelector(`[data-prop="${keep[0]}"]`); if(again){ again.focus(); if(again.setSelectionRange&&keep[1]!=null) try{ again.setSelectionRange(keep[1],keep[1]); }catch{} } }
   });
 }
 
@@ -1354,7 +1350,7 @@ function renderHits(q){
   hits.querySelectorAll(".hit[data-id]").forEach(h=>h.onclick=()=>{ show(h.dataset.id); $("finder").classList.remove("on"); });
 }
 function finderUI(){
-  document.body.insertAdjacentHTML("beforeend",`<div class="finder" id="finder" role="dialog" aria-label="find a prop"><input type="text" placeholder="prop, element, site, theme key…" aria-label="find"><div class="hits"></div></div>`);
+  document.body.insertAdjacentHTML("beforeend",`<div class="finder" id="finder" role="dialog" aria-label="find a prop"><input type="text" name="find" placeholder="prop, element, site, theme key…" aria-label="find"><div class="hits"></div></div>`);
   const f=$("finder"), i=f.querySelector("input");
   i.addEventListener("input",()=>renderHits(i.value));
   i.addEventListener("keydown",e=>{ const hs=[...f.querySelectorAll(".hit[data-id]")]; let n=hs.findIndex(h=>h.classList.contains("on"));
