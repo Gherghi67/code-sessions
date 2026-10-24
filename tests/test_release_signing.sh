@@ -115,6 +115,39 @@ test_ci_release_manifest() {
     assert_file_contains "$workflow" '^            SHA256SUMS$' 'the manifest is a release asset' || return 1
 }
 
+test_ci_release_gates_on_green_test_run() {
+    local workflow="$SCRIPT_DIR/../.github/workflows/release.yml"
+    awk '
+        /^      - / { selected=($0 == "      - name: Require a green Test run for the tagged commit"); body=0 }
+        selected && /^        run: \|/ { body=1; next }
+        body && !/^          / && !/^$/ { body=0 }
+        body && /^          / { print substr($0, 11) }
+    ' "$workflow" > "$TEST_TMPDIR/gate.sh"
+    [ -s "$TEST_TMPDIR/gate.sh" ] || { echo '  FAIL: release workflow must require a green Test run for the tagged commit'; return 1; }
+    assert_file_contains "$workflow" '^    needs: ci-green$' 'the build job waits on the gate' || return 1
+    mkdir "$TEST_TMPDIR/bin"
+    cat > "$TEST_TMPDIR/bin/gh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GH_CALLS"
+printf '%s' "$GH_REPLY"
+EOF
+    chmod +x "$TEST_TMPDIR/bin/gh"
+    local reply rc out
+    for reply in 'completed success' 'completed failure' 'completed cancelled' 'in_progress ' ''; do
+        : > "$TEST_TMPDIR/calls"
+        rc=0
+        out=$(cd "$TEST_TMPDIR" && PATH="$TEST_TMPDIR/bin:$PATH" GH_CALLS="$TEST_TMPDIR/calls" GH_REPLY="$reply" \
+            GITHUB_REPOSITORY=example/cs GITHUB_SHA=0123abcd bash -e gate.sh 2>&1) || rc=$?
+        if [ "$reply" = 'completed success' ]; then
+            assert_eq 0 "$rc" 'a green Test run lets the release build' || return 1
+        else
+            assert_eq 1 "$rc" "a Test run that is '$reply' fails the release" || return 1
+            case "$out" in *'::error::'*"'${reply:-no run}'"*0123abcd*) ;; *) echo "  FAIL: the gate must name what it found and the commit in an error annotation, got: $out"; return 1 ;; esac
+        fi
+        assert_file_contains "$TEST_TMPDIR/calls" 'workflow test.yml --commit 0123abcd --event push --branch main' 'the gate looks up the Test workflow push run on main for the tagged commit' || return 1
+    done
+}
+
 test_release_verification_documented() {
     local docs="$SCRIPT_DIR/../docs"
     local file
@@ -135,5 +168,6 @@ test_release_verification_documented() {
 
 run_test test_manifest_authentication
 run_test test_ci_release_manifest
+run_test test_ci_release_gates_on_green_test_run
 run_test test_release_verification_documented
 report_results

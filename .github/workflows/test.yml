@@ -1,5 +1,5 @@
 # ABOUTME: Runs the bash test suites (macOS + Linux) and the Rust TUI tests on push/PR
-# ABOUTME: The release workflow only builds binaries; this is the gate that runs tests
+# ABOUTME: The release workflow builds binaries only after a green run of this workflow on the tagged commit
 
 name: Test
 
