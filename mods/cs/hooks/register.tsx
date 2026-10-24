@@ -1260,7 +1260,7 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
 // is a no. Each new refusal is toasted once. Each answer starts a cs process
 // (0.15-0.44 s measured), so only the steps that act ask: the session start's
 // heartbeat, a countdown's start and zero, a forced /rotate, a press of the
-// clear or the rotate button, and the emptying of the wrap marker
+// clear, rotate or feed button, and the emptying of the wrap marker
 // (clearWrapped, as a prompt starts a turn) and of the press marker
 // (clearPressed, at a main-loop turn's end or when the engine refuses the
 // press's run).
@@ -1338,8 +1338,10 @@ async function pressFeed($: EngineInterface) {
   const pending = {}
   feedPressPending = pending
   try {
+    const cwd = await $.session.cwd()
+    if (!(await sessionVetted($, cwd))) return
     const on = !(await readFeed($))
-    await $.fs.write(`${await $.session.cwd()}/.cs/local/feed`, on ? 'on\n' : 'off\n')
+    await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
     $.ui.invalidate('ui.render')
   } catch (err) {
     $.ui.toast(`cs: feed update failed: ${String(err instanceof Error ? err.message : err)}`)

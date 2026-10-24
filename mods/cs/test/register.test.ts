@@ -3299,6 +3299,20 @@ test('the feed chord toggles this session and colours its check with the keys', 
   expect(invalidated).toEqual(['ui.render', 'ui.render'])
 })
 
+test('a feed press refuses a session whose control files are tracked', async () => {
+  enableFeed()
+  runResult = tracked
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBeUndefined()
+  expect(written).toEqual({})
+  expect(runs.map(run => run.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+  expect(invalidated).toEqual([])
+  runResult = VETTED
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+})
+
 test('a feed press survives clearing the conversation and loading the band again', async () => {
   enableFeed()
   await feedKey(await band()).props.onPress()
