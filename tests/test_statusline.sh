@@ -2543,24 +2543,28 @@ test_refresh_reclaims_an_abandoned_lock() {
     assert_not_exists "$CS_USAGE_DIR/.lock" "the reclaiming refresher must release the lock" || return 1
 }
 
-# The three caches keyed on the parent pid (tmux-client, tmux-real, tty) mint a
-# new entry per conversation and nothing on the render path may fork to remove
-# them, so the refresher sweeps them. Only those three: a cache keyed on a
-# repeating identity is left alone.
+# The caches keyed on the parent pid (tmux-client2 and the tmux-client entries
+# written before it, tmux-real, tty, stty) mint a new entry per conversation
+# and nothing on the render path may fork to remove them, so the refresher
+# sweeps them. Only those: a cache keyed on a repeating identity is left alone.
 test_refresh_prunes_the_pid_keyed_caches() {
     make_usage_shims 200 "$USAGE_BODY"
     use_scratch_usage_env
     local cache="$HOME/.cache/cs"
-    mkdir -p "$cache/tmux-client" "$cache/tmux-real" "$cache/tmux-walking" "$cache/tty" "$cache/git"
-    TZ=UTC touch -t 202608270730.00 "$cache/tmux-client/old" "$cache/tmux-real/old" "$cache/tmux-walking/old" "$cache/tty/old" "$cache/git/old"
-    touch "$cache/tmux-client/fresh" "$cache/tmux-real/fresh" "$cache/tty/fresh"
+    mkdir -p "$cache/tmux-client" "$cache/tmux-client2" "$cache/tmux-real" "$cache/tmux-walking" "$cache/tty" "$cache/stty" "$cache/git"
+    TZ=UTC touch -t 202608270730.00 "$cache/tmux-client/old" "$cache/tmux-client2/old" "$cache/tmux-real/old" "$cache/tmux-walking/old" "$cache/tty/old" "$cache/stty/old" "$cache/git/old"
+    touch "$cache/tmux-client/fresh" "$cache/tmux-client2/fresh" "$cache/tmux-real/fresh" "$cache/tty/fresh" "$cache/stty/fresh"
     PATH="$USAGE_BINDIR:$PATH" CS_STATUSLINE_NOW=1787816000 bash "$SL" --refresh-usage
     assert_not_exists "$cache/tmux-client/old" "an old tmux-client entry must be swept" || return 1
     assert_not_exists "$cache/tmux-real/old" "an old tmux-real entry must be swept" || return 1
     assert_not_exists "$cache/tty/old" "an old tty entry must be swept" || return 1
+    assert_not_exists "$cache/tmux-client2/old" "an old tmux-client2 entry must be swept" || return 1
+    assert_not_exists "$cache/stty/old" "an old stty entry must be swept" || return 1
     assert_exists "$cache/tmux-client/fresh" "a fresh tmux-client entry must survive" || return 1
     assert_exists "$cache/tmux-real/fresh" "a fresh tmux-real entry must survive" || return 1
     assert_exists "$cache/tty/fresh" "a fresh tty entry must survive" || return 1
+    assert_exists "$cache/tmux-client2/fresh" "a fresh tmux-client2 entry must survive" || return 1
+    assert_exists "$cache/stty/fresh" "a fresh stty entry must survive" || return 1
     assert_exists "$cache/git/old" "the sweep must not touch a cache keyed on a repeating identity" || return 1
 }
 
@@ -4830,5 +4834,180 @@ test_a_warm_render_runs_no_program_but_jq() {
 }
 
 run_test test_a_warm_render_runs_no_program_but_jq
+
+# --- band layout -------------------------------------------------------------
+
+# The band tests' common ground: the docs fixture on a dark terminal of a known
+# background, truecolor, 80 columns and no prompt frame.
+band_env() {
+    export CS_STATUSLINE_LAYOUT=band CS_STATUSLINE_COLS=80 CS_STATUSLINE_FRAME=0 \
+        CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40" COLORTERM=truecolor
+}
+
+# The cells rendered line $1 takes on screen: its escapes stripped, counted the
+# way _display_width counts.
+band_cells() {
+    local plain
+    plain=$(printf '%s' "$1" | sed "s/$ESC_\[[0-9;]*m//g")
+    ( _load_sl_functions; _display_width "$plain"; printf '%s' "$_WIDTH" )
+}
+
+test_band_fills_exactly_the_width() {
+    band_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq 80 "$(band_cells "$out")" "an 80-column band is 80 cells" || return 1
+    out=$(CS_STATUSLINE_COLS=40 CS_STATUSLINE_SEGMENTS=logo,session run_sl "$FIXTURE_DOCS")
+    assert_eq 40 "$(band_cells "$out")" "a 40-column band is 40 cells" || return 1
+    assert_eq "${ESC_}[0m" "${out: -4}" "the line ends with a reset" || return 1
+}
+
+# The docs fixture's items take 55 cells (one band cell, ✳, my-session, Opus
+# high, ○ ctx 8%, ◷ 5h 23%, and the joiners between them). Past the width they
+# are all emitted, uncut and with no fill after them: Claude Code truncates.
+test_band_overflow_emits_every_item_and_no_fill() {
+    band_env
+    local out
+    out=$(CS_STATUSLINE_COLS=40 run_sl "$FIXTURE_DOCS")
+    assert_eq 55 "$(band_cells "$out")" "items wider than the band are emitted whole" || return 1
+    assert_eq " ✳ my-session  ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%" \
+        "$(printf '%s' "$out" | sed "s/$ESC_\[[0-9;]*m//g")" "every item, uncut, and no fill after the last" || return 1
+}
+
+# Under the C locale bash sees bytes, and a glyph's continuation bytes must
+# stay in its cell rather than each take a cell of gradient.
+test_band_width_holds_under_the_c_locale() {
+    band_env
+    local out
+    out=$(LC_ALL=C run_sl "$FIXTURE_DOCS")
+    assert_eq 80 "$(band_cells "$out")" "the C locale still yields 80 cells" || return 1
+}
+
+test_band_frame_is_subtracted_from_the_width() {
+    band_env
+    unset CS_STATUSLINE_FRAME
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq 76 "$(band_cells "$out")" "the default frame takes 4 columns" || return 1
+    out=$(CS_STATUSLINE_FRAME=10 run_sl "$FIXTURE_DOCS")
+    assert_eq 70 "$(band_cells "$out")" "a padded frame takes what it names" || return 1
+    out=$(CS_STATUSLINE_FRAME=wide run_sl "$FIXTURE_DOCS")
+    assert_eq 76 "$(band_cells "$out")" "a frame that is not a number is the default" || return 1
+}
+
+test_band_width_floors_at_twenty() {
+    band_env
+    export CS_STATUSLINE_SEGMENTS=logo
+    local out
+    out=$(CS_STATUSLINE_COLS=10 run_sl "$FIXTURE_DOCS")
+    assert_eq 20 "$(band_cells "$out")" "ten columns floor at twenty" || return 1
+    out=$(CS_STATUSLINE_COLS=22 CS_STATUSLINE_FRAME=4 run_sl "$FIXTURE_DOCS")
+    assert_eq 20 "$(band_cells "$out")" "a frame that drops below twenty floors there" || return 1
+}
+
+test_band_columns_from_stdin_rank_below_the_override() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    local json out
+    json=$(jq -c '. + {columns: 100}' <<< "$FIXTURE_DOCS")
+    out=$(run_sl "$json")
+    assert_eq 100 "$(band_cells "$out")" ".columns sets the width" || return 1
+    out=$(CS_STATUSLINE_COLS=80 run_sl "$json")
+    assert_eq 80 "$(band_cells "$out")" "CS_STATUSLINE_COLS outranks .columns" || return 1
+    out=$(CS_STATUSLINE_COLS=abc run_sl "$json")
+    assert_eq 100 "$(band_cells "$out")" "an override that is not a number is ignored" || return 1
+}
+
+# Outside tmux and without a terminal to measure, the band is 120 columns.
+# stty is a failing shim, so a runner that does have a terminal measures nothing
+# either.
+test_band_width_defaults_to_120() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TMPDIR/fakebin/stty"
+    chmod +x "$TEST_TMPDIR/fakebin/stty"
+    local out
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 120 "$(band_cells "$out")" "nothing measured is 120" || return 1
+}
+
+# Inside a real tmux the width is the pane's, from the one query the client
+# rung already makes, asked about the pane in TMUX_PANE.
+test_band_width_from_the_tmux_pane() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export TMUX="/tmp/fake,1,0" TMUX_PANE="%7" CS_STATUSLINE_PARENT=4242
+    mkdir -p "$TEST_TMPDIR/fakebin" "$HOME/.cache/cs/tmux-real"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "dark\\t/dev/ttys002\\t90\\n"\n' \
+        "$TEST_TMPDIR/tmux.args" > "$TEST_TMPDIR/fakebin/tmux"
+    chmod +x "$TEST_TMPDIR/fakebin/tmux"
+    printf '%s\t%s\nreal\n' "$(date +%s)" "4242,$TMUX" > "$HOME/.cache/cs/tmux-real/4242,-tmp-fake,1,0"
+    local out
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 90 "$(band_cells "$out")" "the pane's width sets the band" || return 1
+    assert_output_contains_f "$(cat "$TEST_TMPDIR/tmux.args")" "-t %7" "the width asked for is TMUX_PANE's" || return 1
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 1 "$(wc -l < "$TEST_TMPDIR/tmux.args" | tr -d ' ')" "a second render reads the cached answer" || return 1
+}
+
+# A TMUX this process only inherited names a pane it is not in: its width is
+# not the band's.
+test_band_width_ignores_a_foreign_tmux() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export TMUX="/tmp/fake,1,0" TMUX_PANE="%7" CS_STATUSLINE_PARENT=4242
+    mkdir -p "$TEST_TMPDIR/fakebin" "$HOME/.cache/cs/tmux-real"
+    printf '#!/bin/sh\nprintf "dark\\t/dev/ttys002\\t90\\n"\n' > "$TEST_TMPDIR/fakebin/tmux"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TMPDIR/fakebin/stty"
+    chmod +x "$TEST_TMPDIR/fakebin/tmux" "$TEST_TMPDIR/fakebin/stty"
+    printf '%s\t%s\nforeign\n' "$(date +%s)" "4242,$TMUX" > "$HOME/.cache/cs/tmux-real/4242,-tmp-fake,1,0"
+    local out
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 120 "$(band_cells "$out")" "a foreign pane's width is not used" || return 1
+}
+
+# Run command string $1 under a pseudo-terminal, so /dev/tty opens; 77 (skip)
+# where no `script` here can provide one.
+in_pty() {
+    if script -q /dev/null /bin/sh -c true </dev/null >/dev/null 2>&1; then
+        script -q /dev/null /bin/sh -c "$1" </dev/null >/dev/null 2>&1
+    elif script -qec true /dev/null </dev/null >/dev/null 2>&1; then
+        script -qec "$1" /dev/null </dev/null >/dev/null 2>&1
+    else
+        SKIP_REASON="no script(1) to provide a terminal"
+        return 77
+    fi
+}
+
+# On a terminal and outside tmux the width is the terminal's, measured once per
+# conversation: a resize inside the cache window is not measured again.
+test_band_width_from_the_terminal_is_measured_once() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export CS_STATUSLINE_PARENT=4243
+    printf '%s' "$FIXTURE_DOCS" > "$TEST_TMPDIR/in.json"
+    in_pty "stty cols 100 rows 30 </dev/tty; bash '$SL' < '$TEST_TMPDIR/in.json' > '$TEST_TMPDIR/first.txt'; stty cols 60 </dev/tty; bash '$SL' < '$TEST_TMPDIR/in.json' > '$TEST_TMPDIR/second.txt'" || return $?
+    assert_eq 100 "$(band_cells "$(cat "$TEST_TMPDIR/first.txt")")" "the terminal's 100 columns set the band" || return 1
+    assert_eq 100 "$(band_cells "$(cat "$TEST_TMPDIR/second.txt")")" "the second render reuses the measurement" || return 1
+}
+
+test_band_render_writes_nothing_to_stderr() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    assert_eq "" "$(run_sl_stderr "$FIXTURE_DOCS")" "the band renders silently" || return 1
+}
+
+run_test test_band_fills_exactly_the_width
+run_test test_band_overflow_emits_every_item_and_no_fill
+run_test test_band_width_holds_under_the_c_locale
+run_test test_band_frame_is_subtracted_from_the_width
+run_test test_band_width_floors_at_twenty
+run_test test_band_columns_from_stdin_rank_below_the_override
+run_test test_band_width_defaults_to_120
+run_test test_band_width_from_the_tmux_pane
+run_test test_band_width_ignores_a_foreign_tmux
+run_test test_band_width_from_the_terminal_is_measured_once
+run_test test_band_render_writes_nothing_to_stderr
 
 report_results
