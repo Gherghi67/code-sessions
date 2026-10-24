@@ -594,8 +594,9 @@ The mod queues `/color` when a conversation begins inside the running Claude Cod
 
 The band's keys are chords, never a bare digit: a digit typed to answer a
 numbered question belongs to the prompt and to other mods. Each Button answers
-an engine action, `strip:jump1` for the rotate (or `/clear`) key and
-`strip:jump2` for the wrap key, and the installer binds Ctrl+X 1 and Ctrl+X 2
+an engine action, `strip:jump1` for the rotate (or `/clear`) key,
+`strip:jump2` for the wrap key and `strip:jump3` for feed.
+The installer binds Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3
 to them in `keybindings.json` (see
 [configuration.md](configuration.md#rotate-and-wrap-keys)). The band spells,
 bold in the session's colour, whatever chord that file binds to each action,
@@ -604,6 +605,45 @@ and Ctrl+X Tab. Claude Code re-reads `keybindings.json` while it runs, so a
 chord bound after launch works at once (measured on 2.1.292). An encrypted
 session launched before `keybindings.json` existed gets the file at its next
 launch.
+
+The installer binds Ctrl+X 3 to `strip:jump3` for the feed key.
+It draws after wrap when cs-feed advertises `/feed`, while the lead session
+is idle, with no survey or armed handoff. The installer always installs and
+registers cs-feed, with no global install switch. The band reads the command list without running
+a status command. With all three chords bound, the shared prefix draws once:
+`● ctrl+x  1 rotate  ·  2 wrap  ·  3 feed`. If the feed chord is unbound,
+its label still draws and the other keys keep their shared prefix:
+`● ctrl+x  1 rotate  ·  2 wrap  ·  feed`. With a recorded yes to keybindings,
+`cs -update` binds the third chord without another prompt. A recorded no
+keeps the keys unbound. To change that answer, remove `~/.config/cs/option-keys`
+and run `cs -update` in a terminal, as described in
+[configuration.md](configuration.md#rotate-and-wrap-keys).
+
+The key reads `feed` while off and `feed ✓` while on, the check in the
+session's colour. A press asks `cs -vet-session` before it writes, as the
+other band writers do. A refusal leaves the file alone and draws feed as off.
+An accepted press
+flips `.cs/local/feed` under the session's working
+directory, then invalidates the band. The file holds `on\n` or `off\n` and
+survives `/clear`, reload and resume. The existing writer is non-atomic, so
+only the whole value `on\n` means on. Absent, empty, torn and other content
+means off; readers must not trim it. Read errors also mean off; the band logs
+each distinct error except a missing file. Each failed write attempt toasts, and
+every completed press invalidates the band, including a failed write.
+Duplicate presses wait for the same write and redraw.
+The file is machine-local, under the gitignored `.cs/local`, never committed,
+and written only after `cs -vet-session` accepts the session.
+
+The Button's stable element key is `cs-feed`, its action `strip:jump3`.
+cs-feed must hook `ui.press` with `{ plugin: 'cs', element: 'cs-feed' }`, await
+`next(e)`, then read the file the band's handler wrote. The band sends no
+command. When cs-feed writes the file directly, the band reads the new value
+on its next redraw. Spike 3 measured immediate cross-plugin press hooks with
+no transcript rows, while command delivery queued until idle and host state
+reset on `/clear` and resume (`feed-arch/spike3.md`, M12 and M13).
+
+The [feed design and alternatives](superpowers/specs/2026-10-24-band-feed-toggle-design.md)
+compares session activation options and layouts for more toggles.
 
 Ctrl+X 1 runs `/rotate`, as if typed: the `rotate` skill draws the purpose from
 the conversation. Before it runs, the press writes the conversation id to

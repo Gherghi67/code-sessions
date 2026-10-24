@@ -235,6 +235,47 @@ let finishProblemShown = false
 // /finish, which lists them and asks; absent, no press). One reading at a
 // time; the idle clock that reads again; the last complaint logged.
 export type FeaturesWord = { label: string; finish?: string }
+type BandPress = () => void | Promise<unknown>
+export type BandEntry =
+  | { key: string; kind: 'word'; label: string; ink?: { color: string | undefined } }
+  | { key: string; kind: 'press'; label: string; onPress: BandPress }
+  | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress; ink?: { text: string; color: string | undefined } }
+type BandFacts = {
+  featured?: { label: string; onPress?: BandPress }
+  countdown?: { seconds: number; ink: string | undefined }
+  rotating: boolean
+  armed: boolean
+  wrapping: boolean
+  feed?: { on: boolean; color: string | undefined; onPress: BandPress }
+  waiting: number
+  gate?: string
+  queued: number
+  mail: number
+  rotate: BandPress
+  wrap: BandPress
+  queue: BandPress
+}
+
+export function buildBandEntries(facts: BandFacts): BandEntry[] {
+  const entries: BandEntry[] = []
+  // The features word takes the left; only a ready feature can be pressed.
+  if (facts.featured !== undefined) {
+    const { label, onPress } = facts.featured
+    entries.push(onPress === undefined ? { key: 'cs-features', kind: 'word', label } : { key: 'cs-features', kind: 'press', label, onPress })
+  }
+  // The grace belongs before the clear key whose press stops it.
+  if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `/clear in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
+  if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
+  if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
+  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
+  // The queue has no chord: a click or Enter under the band's focus starts it.
+  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 queue ${facts.waiting} \u00b7 start`, onPress: facts.queue })
+  if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
+  if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `\u25a4 queue ${facts.queued}` })
+  if (facts.mail > 0) entries.push({ key: 'cs-mail', kind: 'word', label: `mail ${facts.mail}` })
+  return entries
+}
+
 let featuresWord: FeaturesWord | undefined
 let featuresReading = false
 let featuresClock: { cancel: () => void } | undefined
@@ -280,6 +321,8 @@ type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
 let bandOptions: BandOptions | undefined
 let bandProblem: string | undefined
 let bandProblemSaid = false
+let feedPressPending: Promise<void> | undefined
+let feedComplaint: string | undefined
 
 // What is wrong with a value for one of the band's rows, by field name;
 // undefined when the band can draw it, or the field is not the band's.
@@ -298,6 +341,8 @@ export function register(on: On, options: PluginOptions) {
     ? { prompts: options.bandPrompts as boolean, prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number }
     : undefined
   bandProblemSaid = false
+  feedPressPending = undefined
+  feedComplaint = undefined
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
@@ -518,18 +563,32 @@ export function register(on: On, options: PluginOptions) {
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined }
+    let feedEligible = bandIdle && !armed
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
     drawnRead = named
-    if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && !railing && featured === undefined) return drawn
+    const hasContent = rotating || waiting > 0 || queued > 0 || mail > 0 || gate !== undefined || railing || featured !== undefined
+    if (!hasContent && !feedEligible) return drawn
+    // Listing /feed reads availability without queuing a command or adding a status row.
+    const feeding = feedEligible && (await $.command.list()).some(command => command.name === 'feed' && command.source === 'plugin' && command.plugin === 'cs-feed')
+    if (!hasContent && !feeding) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
     const { Box, Text, Button } = await $.ui.resolve(e)
-    const counting = armed && left !== undefined
     const wrapping = rotating && !armed && !wrapped
+    const finish = featured?.finish
+    const entries = buildBandEntries({
+      featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
+      countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
+      rotating, armed, wrapping, waiting, gate, queued, mail,
+      feed: feeding ? { on: lastRefusal === undefined && await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
+      rotate: armed ? () => pressClear($) : () => pressRotate($),
+      wrap: () => askToWrap($),
+      queue: () => pressQueueStart($),
+    })
     // The Buttons carry no hotkey: a bare digit pressed them from an empty
     // composer, where a digit typed as the answer to a numbered question
     // belongs. A chord bound to each Button's action presses it instead, and
@@ -537,8 +596,9 @@ export function register(on: On, options: PluginOptions) {
     // is spelled beside it, and only when keybindings.json binds one. Chords
     // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
     // each Button its own key; chords that differ are spelled whole.
-    const actions = rotating ? (wrapping ? [ROTATE_ACTION, WRAP_ACTION] : [ROTATE_ACTION]) : []
+    const actions = entries.flatMap(entry => entry.kind === 'chord' ? [entry.action] : [])
     const prefix = sharedPrefix(actions.map(action => chords[action]))
+    const firstChord = entries.findIndex(entry => entry.kind === 'chord' && chords[entry.action] !== undefined)
     const spelled = (action: string) => {
       const chord = chords[action]
       return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
@@ -549,22 +609,10 @@ export function register(on: On, options: PluginOptions) {
     }
     // What the words take, in cells, so the rail knows what the line leaves it.
     const sep = '  \u00b7  '
-    const keyed = counting || rotating || waiting > 0
-    // Whether a word stands before the queue word, or the mail word, which a
-    // separator then parts from it.
-    const wordsBeforeQueue = featured !== undefined || keyed || gate !== undefined
-    const wordsBeforeMail = wordsBeforeQueue || queued > 0
-    const wordText = [
-      featured === undefined ? '' : `${featured.label}${keyed ? sep : ''}`,
-      counting ? `/clear in ${left}s${sep}` : '',
-      prefix !== undefined ? `${prefix}  ` : '',
-      rotating ? `${spelled(ROTATE_ACTION) === undefined ? '' : `${spelled(ROTATE_ACTION)} `}${armed ? '/clear now' : 'rotate'}` : '',
-      wrapping ? `${sep}${spelled(WRAP_ACTION) === undefined ? '' : `${spelled(WRAP_ACTION)} `}wrap` : '',
-      waiting > 0 ? `${rotating ? sep : ''}\u25a4 queue ${waiting} \u00b7 start` : '',
-      gate !== undefined ? `${rotating || waiting > 0 ? sep : ''}${gate}` : '',
-      queued > 0 ? `${wordsBeforeQueue ? sep : ''}\u25a4 queue ${queued}` : '',
-      mail > 0 ? `${wordsBeforeMail ? sep : ''}mail ${mail}` : '',
-    ].join('')
+    const wordText = entries.map((entry, index) => {
+      const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
+      return `${index === firstChord && prefix !== undefined ? `${prefix}  ` : ''}${chord === undefined ? '' : `${chord} `}${entry.label}`
+    }).join(sep)
     const wordCells = cellWidth(wordText)
     // The mark and its space, first on every line the band draws but under a
     // survey, which owns the band.
@@ -595,7 +643,7 @@ export function register(on: On, options: PluginOptions) {
       return fitLeft(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
-    if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
+    if (entries.length === 0 && ticks === undefined) return drawn
     const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
     const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
     // One thin line, a blank line above it so it reads apart from the
@@ -612,35 +660,18 @@ export function register(on: On, options: PluginOptions) {
           <Box key="cs-rotate-band" marginLeft={2}>
             {/* the mark: its colour says what is due (bandState) */}
             {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={markColor}>{MARK}</Text></Box>}
-            {/* the session's features: a press finishes the one ready, or asks which */}
-            {featured !== undefined && (featured.finish === undefined || !bandIdle
-              ? <Text dimColor>{featured.label}</Text>
-              : <Button key="cs-features" plain label={featured.label} onPress={() => pressFinish($, featured.finish as string)} />)}
-            {featured !== undefined && keyed && <Text dimColor>{'  \u00b7  '}</Text>}
-            {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
-            {counting && <Text bold color={await rampColor($, left as number)}>{`/clear in ${left}s`}</Text>}
-            {counting && <Text dimColor>{'  \u00b7  '}</Text>}
-            {prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>}
-            {rotating && key(ROTATE_ACTION)}
-            {rotating && (armed
-              ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear now"
-                        onPress={() => pressClear($)} />
-              : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate"
-                        onPress={() => pressRotate($)} />)}
-            {wrapping && <Text dimColor>{'  \u00b7  '}</Text>}
-            {wrapping && key(WRAP_ACTION)}
-            {wrapping && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap" onPress={() => askToWrap($)} />}
-            {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
-            {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
-            {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
-            {gate !== undefined && (rotating || waiting > 0) && <Text dimColor>{'  \u00b7  '}</Text>}
-            {gate !== undefined && <Text dimColor>{gate}</Text>}
-            {/* the queue while its start key is not offered: a count, no press */}
-            {queued > 0 && wordsBeforeQueue && <Text dimColor>{'  \u00b7  '}</Text>}
-            {queued > 0 && <Text dimColor>{`\u25a4 queue ${queued}`}</Text>}
-            {/* unread mail, last: a count, no press */}
-            {mail > 0 && wordsBeforeMail && <Text dimColor>{'  \u00b7  '}</Text>}
-            {mail > 0 && <Text dimColor>{`mail ${mail}`}</Text>}
+            {entries.flatMap((entry, index) => [
+              index > 0 && <Text dimColor>{sep}</Text>,
+              index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
+              entry.kind === 'chord' && key(entry.action),
+              entry.kind === 'word'
+                ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
+                : entry.kind === 'chord'
+                  ? entry.ink === undefined
+                    ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+                    : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
+                  : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
+            ])}
             {ticks !== undefined && (
               <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
                 {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
@@ -679,13 +710,14 @@ export function register(on: On, options: PluginOptions) {
 }
 
 // The chord prefix every bound key shares, up to its last space (`ctrl+x` of
-// `ctrl+x 1` and `ctrl+x 2`); undefined when a key is unbound, the chords
-// differ before their last word, or a chord is one word.
+// `ctrl+x 1` and `ctrl+x 2`); undefined when none are bound, the bound chords
+// differ before their last word, or a bound chord is one word.
 export function sharedPrefix(chords: (string | undefined)[]): string | undefined {
-  if (chords.length === 0) return undefined
-  const prefixes = chords.map(chord => {
-    const at = chord?.lastIndexOf(' ') ?? -1
-    return chord === undefined || at <= 0 ? undefined : chord.slice(0, at)
+  const bound = chords.filter((chord): chord is string => chord !== undefined)
+  if (bound.length === 0) return undefined
+  const prefixes = bound.map(chord => {
+    const at = chord.lastIndexOf(' ')
+    return at <= 0 ? undefined : chord.slice(0, at)
   })
   const first = prefixes[0]
   return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined
@@ -1233,7 +1265,7 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
 // is a no. Each new refusal is toasted once. Each answer starts a cs process
 // (0.15-0.44 s measured), so only the steps that act ask: the session start's
 // heartbeat, a countdown's start and zero, a forced /rotate, a press of the
-// clear or the rotate button, and the emptying of the wrap marker
+// clear, rotate or feed button, and the emptying of the wrap marker
 // (clearWrapped, as a prompt starts a turn) and of the press marker
 // (clearPressed, at a main-loop turn's end or when the engine refuses the
 // press's run).
@@ -1285,7 +1317,7 @@ async function sessionColor($: EngineInterface): Promise<string | undefined> {
   return state?.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
 }
 
-// The engine actions the band's Buttons answer to. They carry no default
+// The engine actions the rotate and wrap Buttons answer to. They carry no default
 // chord and no engine handler is mounted for them (measured on 2.1.291 and
 // 2.1.292), so the chord a person binds to one presses the Button. The band
 // depends on that: a Claude Code that mounts a handler for either action
@@ -1293,6 +1325,46 @@ async function sessionColor($: EngineInterface): Promise<string | undefined> {
 // CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
 export const ROTATE_ACTION = 'strip:jump1'
 export const WRAP_ACTION = 'strip:jump2'
+export const FEED_ACTION = 'strip:jump3'
+
+async function readFeed($: EngineInterface): Promise<boolean> {
+  let complaint: string | undefined
+  try {
+    // Writes are non-atomic: only the whole on line counts. Trimming would
+    // accept a torn write without its newline; every other value is off.
+    const text = await $.fs.read(`${await $.session.cwd()}/.cs/local/feed`)
+    feedComplaint = undefined
+    return text === 'on\n'
+  } catch (err) {
+    const message = String(err instanceof Error ? err.message : err)
+    if (!message.endsWith(' failed: ENOENT')) complaint = `cs: the feed setting could not be read: ${message}`
+  }
+  if (complaint !== undefined && complaint !== feedComplaint) $.ui.log(complaint)
+  feedComplaint = complaint
+  return false
+}
+
+async function pressFeed($: EngineInterface) {
+  if (feedPressPending !== undefined) return feedPressPending
+  const pending = (async () => {
+    try {
+      const cwd = await $.session.cwd()
+      if (!(await sessionVetted($, cwd))) return
+      const on = !(await readFeed($))
+      await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
+    } catch (err) {
+      $.ui.toast(`cs: feed update failed: ${String(err instanceof Error ? err.message : err)}`)
+    } finally {
+      $.ui.invalidate('ui.render')
+    }
+  })()
+  feedPressPending = pending
+  try {
+    await pending
+  } finally {
+    if (feedPressPending === pending) feedPressPending = undefined
+  }
+}
 
 // The chord keybindings.json binds to each action in the Global context, as
 // the person wrote it. Claude Code reads that file from CLAUDE_CONFIG_DIR, else

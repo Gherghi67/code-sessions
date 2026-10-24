@@ -326,28 +326,28 @@ export CS_PLATFORM_OVERRIDE="linux"   # macos, wsl, or linux
 
 ## Rotate and wrap keys
 
-The installer offers, once per machine, to bind four keys in Claude Code's
+The installer offers, once per machine, to bind five keys in Claude Code's
 `keybindings.json` (in `$CLAUDE_CONFIG_DIR` when you set it, otherwise
 `~/.claude/keybindings.json`). Run inside an encrypted session, where
 `CLAUDE_CONFIG_DIR` is the session's `.cs/claude-config`, cs writes the shell's
 file instead, the one that session links:
 
 ```json
-{"bindings": [{"context": "Global", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap", "ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2"}}]}
+{"bindings": [{"context": "Global", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap", "ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2", "ctrl+x 3": "strip:jump3"}}]}
 ```
 
 Ctrl+X then R submits `/rotate`, and Ctrl+X then W submits `/wrap`, band or no
-band. Ctrl+X then 1 and Ctrl+X then 2 press the `cs` mod's band above the
-prompt: 1 its rotate key, or its `/clear` once a handoff is armed, and 2 its
-wrap key. The band has no key of its own, so a digit you type to answer a
-question never presses it; without these two chords it answers only a click or
+band. Ctrl+X then 1, 2 or 3 presses the `cs` mod's band above the
+prompt: 1 its rotate key, or its `/clear` after arming a handoff, 2 its
+wrap key and 3 its feed key. The band has no key of its own, so a digit you type to answer a
+question never presses it; without these three chords it answers only a click or
 Ctrl+X Tab. Text you are typing stays in the prompt. Claude Code drops a Ctrl+X that gets no second
 key within 3 seconds. The chords need no terminal setting. Ctrl+X 1 and
 Ctrl+X 2 reach the band only because Claude Code mounts no handler of its own
 for `strip:jump1` and `strip:jump2` (measured on 2.1.291 and 2.1.292); a
 release that mounts one takes the chord from the band without a warning.
 
-- A yes merges the four keys into the file's first `Global` block (or adds one,
+- A yes merges the five keys into the file's first `Global` block (or adds one,
   creating the file when there is none). cs never replaces a key you already
   bind to something else, in any context: it keeps your action and names the
   key in a warning. A bare `ctrl+x` you bind counts too: Claude Code would
@@ -366,7 +366,8 @@ release that mounts one takes the chord from the band without a warning.
   `no`; `$XDG_CONFIG_HOME/cs/option-keys` when you set that). After a `no` it
   never asks again. After a `yes`, every install and `cs -update` adds any of
   the keys nothing binds, so a machine that bound Ctrl+X R and Ctrl+X W before
-  gets Ctrl+X 1 and Ctrl+X 2 on its next update. Claude Code picks the file up
+  gets Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 on its next update, without another
+  prompt. Claude Code picks the file up
   without a relaunch. An encrypted session launched before the file existed
   gets it at its next launch, when cs links it into the session.
 - With no terminal attached (CI, a pipe) and no recorded answer, the installer
@@ -374,7 +375,7 @@ release that mounts one takes the chord from the band without a warning.
   to run `cs -update` in a terminal.
 - To change the answer, remove `~/.config/cs/option-keys` and run `cs -update`
   (or `./install.sh`) in a terminal; it asks again. To drop the keys after a
-  `yes`, answer `no` there and delete the four entries from `keybindings.json`.
+  `yes`, answer `no` there and delete the five entries from `keybindings.json`.
 - `cs -uninstall` removes only the keys that still hold cs's values, the
   chords and an earlier cs's `alt+1` and `alt+2` alike, drops a `Global` block
   that leaves empty, deletes the file when it holds nothing else (a symlinked

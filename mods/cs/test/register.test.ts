@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
+import { register, buildBandEntries, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -52,6 +52,7 @@ let submitted: any[]
 let compactedAt: number[]
 let compactResult: any
 let commands: any[]
+let availableCommands: { name: string; source: string; plugin?: string }[]
 // What `$.ui.scroll` was asked, and what it answers; the paths `$.fs.read` was given; each file's mtime.
 let scrolls: any[]
 let scrollResult: any
@@ -82,6 +83,7 @@ const $ = {
     submit: async (args: any) => { submitted.push(args); return {} },
   },
   command: {
+    list: async () => availableCommands,
     run: async (args: any) => { ran.push(args); return { text: '' } },
     register: async (spec: any) => { commands.push(spec); return { command: spec.name } },
   },
@@ -114,7 +116,7 @@ const $ = {
   fs: {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
-    read: async (path: string) => { reads.push(path); if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+    read: async (path: string) => { reads.push(path); if (path in files) return files[path]; throw new Error(`cs: $.fs.read(${path}) failed: ENOENT`) },
     // A directory is listed from the files under it, a deeper file standing
     // for the directory that holds it; one with none is absent.
     list: async (path: string) => {
@@ -158,6 +160,7 @@ beforeEach(() => {
   timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
+  availableCommands = []
   scrolls = []; scrollResult = {}; reads = []; mtimes = {}
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
@@ -238,6 +241,14 @@ const bindKeys = (bindings: Record<string, string | null>, context = 'Global') =
   files[KEYS] = JSON.stringify({ bindings: [{ context, bindings }] })
 }
 const words = (tree: any): string[] => texts(tree).map(textOf)
+// Button labels are visible text even when the fake renderer has no children.
+const bandWords = (tree: any): string[] => {
+  if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(bandWords)
+  if (tree.type === 'Text') return [textOf(tree)]
+  if (tree.type === 'Button') return [tree.props.label]
+  return (tree.children ?? []).flatMap(bandWords)
+}
 // The words drawn while no pointer rests on the band: a hover card's stay hidden.
 const restingWords = (tree: any): string[] => {
   if (!tree || typeof tree !== 'object') return []
@@ -270,7 +281,7 @@ test('a chord bound elsewhere is spelled as the person wrote it', async () => {
   bindKeys({ 'Ctrl+K 9': 'strip:jump1' })
   percent = 40
   const drawn = words(await band())
-  expect(drawn).toContain('Ctrl+K 9')
+  expect(drawn).toEqual(['●', 'Ctrl+K', '9', '  ·  '])
   expect(drawn.join(' ')).not.toContain('ctrl+x')
 })
 
@@ -299,7 +310,7 @@ test('CLAUDE_CONFIG_DIR names the keybindings.json the band reads, as it does fo
   percent = 40
   expect(words(await band()).join(' ')).not.toContain('ctrl+x 1')
   files['/cfg/keybindings.json'] = files[KEYS]
-  expect(words(await band())).toContain('ctrl+x 1')
+  expect(words(await band())).toEqual(['●', 'ctrl+x', '1', '  ·  '])
 })
 
 test('the band draws no context gauge: the status bar already carries it', async () => {
@@ -3219,4 +3230,300 @@ test('the mark takes two cells from the line: the bars move over and the named p
   // 20 leave ten, 19 nine: the bars alone.
   expect(textOf(gapLabel(await band({ bodyColumns: 20 })))).toBe('#4 say fo…')
   expect(gapLabel(await band({ bodyColumns: 19 }))).toBeUndefined()
+})
+
+// The engine flattens child lists and drops conditional empty children; the
+// fixture's h keeps both, so snapshots compare the tree the engine draws.
+function bandSnapshot(tree: any): unknown {
+  if (Array.isArray(tree)) return tree.flat(Infinity).filter(child => child !== false && child !== undefined && child !== null).map(bandSnapshot)
+  if (!tree || typeof tree !== 'object') return tree
+  return { type: tree.type, props: tree.props, children: bandSnapshot(tree.children ?? []) }
+}
+
+const bandScenes: [string, () => void | Promise<void>, { isWorking?: boolean; hasSurvey?: boolean; bodyColumns?: number }?][] = [
+  ['empty', () => {}],
+  ['rotate and wrap', () => { percent = 40 }],
+  ['wrapped', () => { percent = 40; files['/work/.cs/local/wrapped'] = 'uuid-lead\n' }],
+  ['armed', () => { arm() }],
+  ['countdown', async () => { arm(); await turnComplete() }],
+  ['queue start', () => { queueTasks(2) }],
+  ['running queue', () => { queueTasks(2); files['/work/.cs/local/queue.state'] = 'draining\n' }],
+  ['mail', () => { files['/work/.cs/local/mail/new/one.json'] = '{}' }],
+  ['gate', async () => { await gateRuns() }],
+  ['survey gate', async () => { await gateRuns() }, { hasSurvey: true }],
+  ['working', () => { percent = 40; queueTasks(2) }, { isWorking: true }],
+  ['survey', () => { percent = 40; queueTasks(2) }, { hasSurvey: true }],
+  ['features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }],
+  ['working features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }, { isWorking: true }],
+  ['rail', async () => { transcript(LINEAR); await turnComplete() }],
+  ['narrow rail', async () => { transcript(LINEAR); await turnComplete() }, { bodyColumns: 19 }],
+  ['mixed row', async () => { percent = 40; queueTasks(2); files['/work/.cs/local/mail/new/one.json'] = '{}'; transcript(LINEAR); await featuresTurn() }],
+  ['unbound', () => { percent = 40; delete files[KEYS] }],
+  ['different prefixes', () => { percent = 40; bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+w 2': 'strip:jump2' }) }],
+]
+
+for (const [name, arrange, props] of bandScenes) {
+  test(`band drawing snapshot: ${name}`, async () => {
+    bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+    await arrange()
+    expect(JSON.stringify(bandSnapshot(await band(props)))).toMatchSnapshot()
+  })
+}
+
+test('band entries keep the drawn rotate and wrap labels in order', async () => {
+  percent = 40
+  const drawnLabels = buttons(await band()).map(button => button.props.label)
+  const press = () => {}
+  const entries = buildBandEntries({ rotating: true, armed: false, wrapping: true, waiting: 0, queued: 0, mail: 0, rotate: press, wrap: press, queue: press })
+  expect(entries.map(entry => entry.label)).toEqual(drawnLabels)
+  expect(entries.map(entry => entry.label)).toEqual(['rotate', 'wrap'])
+})
+
+const feedKey = (tree: any) => buttons(tree).find(button => button.props.key === 'cs-feed')
+const enableFeed = () => {
+  availableCommands = [{ name: 'feed', source: 'plugin', plugin: 'cs-feed' }]
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2', 'ctrl+x 3': 'strip:jump3' })
+}
+
+test('the feed chord toggles this session and colours its check with the keys', async () => {
+  enableFeed()
+  percent = 40
+  const tree = await band()
+  expect(feedKey(tree)?.props.label).toBe('feed')
+  expect(buttons(tree).find(button => button.props.label === 'feed')?.props.key).toBe('cs-feed')
+  expect(feedKey(tree).props.action).toBe('strip:jump3')
+  expect(words(tree)).toEqual(['●', 'ctrl+x', '1', '  ·  ', '2', '  ·  ', '3'])
+  await feedKey(tree).props.onPress()
+  const on = await band()
+  expect(feedKey(on).props.label).toBe('feed ✓')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+  expect(texts(feedKey(on)).map(text => [textOf(text), text.props.color])).toEqual([['✓', 'rgb(220,38,38)']])
+  expect(ran).toEqual([])
+  expect(invalidated).toEqual(['ui.render'])
+  await feedKey(on).props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  expect(ran).toEqual([])
+  expect(invalidated).toEqual(['ui.render', 'ui.render'])
+})
+
+test('the band shares the prefix of bound chords and leaves unbound labels unkeyed', async () => {
+  enableFeed()
+  percent = 40
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  expect(bandWords(await band())).toEqual(['●', 'ctrl+x', '1', 'rotate', '  ·  ', '2', 'wrap', '  ·  ', 'feed'])
+  bindKeys({ 'ctrl+x 2': 'strip:jump2', 'ctrl+x 3': 'strip:jump3' })
+  expect(bandWords(await band())).toEqual(['●', 'rotate', '  ·  ', 'ctrl+x', '2', 'wrap', '  ·  ', '3', 'feed'])
+})
+
+test('a feed press refuses a session whose control files are tracked', async () => {
+  enableFeed()
+  files['/work/.cs/local/feed'] = 'on\n'
+  runResult = tracked
+  await feedKey(await band()).props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+  expect(written).toEqual({})
+  expect(runs.map(run => run.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+  expect(invalidated).toEqual(['ui.render'])
+  runResult = VETTED
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  expect(feedKey(await band()).props.label).toBe('feed')
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+})
+
+test('a feed press survives clearing the conversation and loading the band again', async () => {
+  enableFeed()
+  await feedKey(await band()).props.onPress()
+  sessionId = 'uuid-next'
+  files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+  for (const content of ['', 'o', 'on', 'off\n', 'on\njunk', ' on\n', 'on\r\n']) {
+    files['/work/.cs/local/feed'] = content
+    expect(feedKey(await band()).props.label).toBe('feed')
+  }
+  delete files['/work/.cs/local/feed']
+  expect(feedKey(await band()).props.label).toBe('feed')
+  files['/work/.cs/local/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+})
+
+test('a torn feed write redraws its off state and allows another press', async () => {
+  enableFeed()
+  files['/work/.cs/local/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  const write = $.fs.write
+  $.fs.write = async path => {
+    files[path] = ''
+    throw new Error('EACCES /work/.cs/local/feed')
+  }
+  try {
+    await feedKey(await band()).props.onPress()
+    expect(invalidated).toEqual(['ui.render'])
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(files['/work/.cs/local/feed']).toBe('')
+    expect(toasts).toEqual(['cs: feed update failed: EACCES /work/.cs/local/feed'])
+  } finally {
+    $.fs.write = write
+  }
+  await feedKey(await band()).props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  expect(invalidated).toEqual(['ui.render', 'ui.render'])
+})
+
+test('duplicate feed presses both wait until the one write is ready', async () => {
+  enableFeed()
+  const write = $.fs.write
+  let finish = () => {}
+  const writes: [string, string][] = []
+  $.fs.write = async (path, text) => {
+    writes.push([path, text])
+    await new Promise<void>(resolve => { finish = resolve })
+    await write(path, text)
+  }
+  try {
+    const key = feedKey(await band())
+    let duplicateFinished = false
+    const press = key.props.onPress().then(() => files['/work/.cs/local/feed'])
+    const duplicate = key.props.onPress().then(() => {
+      duplicateFinished = true
+      return files['/work/.cs/local/feed']
+    })
+    await settle()
+    expect(duplicateFinished).toBe(false)
+    expect(writes).toEqual([['/work/.cs/local/feed', 'on\n']])
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(invalidated).toEqual([])
+    finish()
+    expect(await Promise.all([press, duplicate])).toEqual(['on\n', 'on\n'])
+    expect(feedKey(await band()).props.label).toBe('feed ✓')
+    expect(invalidated).toEqual(['ui.render'])
+    expect(ran).toEqual([])
+  } finally {
+    finish()
+    $.fs.write = write
+  }
+})
+
+test('a non-session redraw does not discover feed commands', async () => {
+  enableFeed()
+  cwdPath = '/outside'
+  const list = $.command.list
+  let listed = 0
+  $.command.list = async () => { listed++; return list() }
+  try {
+    expect(await band()).toBe(DRAWN)
+    expect(await band()).toBe(DRAWN)
+    expect(listed).toBe(0)
+    expect(runs).toEqual([])
+  } finally {
+    $.command.list = list
+  }
+})
+
+test('the feed control follows command availability and the band ownership gates', async () => {
+  enableFeed()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(feedKey(await band({ isWorking: true }))).toBeUndefined()
+  expect(feedKey(await band({ hasSurvey: true }))).toBeUndefined()
+  sessionId = 'uuid-teammate'
+  expect(feedKey(await band())).toBeUndefined()
+  sessionId = 'uuid-lead'
+  arm()
+  expect(buttons(await band()).map(button => button.props.key)).toEqual(['cs-rotate'])
+  delete files[MARKER]
+  for (const command of [undefined, { name: 'feed', source: 'user' }, { name: 'feed', source: 'plugin', plugin: 'another-plugin' }]) {
+    availableCommands = command === undefined ? [] : [command]
+    expect(await band()).toBe(DRAWN)
+  }
+  expect(ran).toEqual([{ command: 'color', args: 'red' }, { command: 'color', args: 'red' }])
+})
+
+test('feed state stays with its session across registration and stale button presses', async () => {
+  enableFeed()
+  const stale = feedKey(await band())
+  await stale.props.onPress()
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  await stale.props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(ran).toEqual([])
+  await feedKey(await band()).props.onPress()
+  sessionId = 'uuid-next'
+  cwdPath = '/other'
+  existing.add('/other/.cs/local')
+  realPaths['/other'] = '/other'
+  realPaths['/home/.claude-sessions/other'] = '/other'
+  files['/other/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(files['/work/.cs/local/feed']).toBe('on\n')
+})
+
+test('a companion feed file change appears on the next redraw without reloading', async () => {
+  enableFeed()
+  const stale = feedKey(await band())
+  files['/work/.cs/local/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  files['/work/.cs/local/feed'] = 'off\n'
+  expect(feedKey(await band()).props.label).toBe('feed')
+  files['/work/.cs/local/feed'] = 'on\n'
+  await stale.props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(ran).toEqual([])
+})
+
+test('an unreadable feed file leaves the band visible and reports each read error once', async () => {
+  enableFeed()
+  percent = 40
+  cwdPath = '/ENOENT'
+  existing.add('/ENOENT/.cs/local')
+  realPaths['/ENOENT'] = '/ENOENT'
+  realPaths['/home/.claude-sessions/ENOENT'] = '/ENOENT'
+  files['/ENOENT/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-lead\n'
+  const read = $.fs.read
+  let error = 'cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'
+  $.fs.read = async path => {
+    if (path === '/ENOENT/.cs/local/feed') throw new Error(error)
+    return read(path)
+  }
+  try {
+    for (let redraw = 0; redraw < 2; redraw++) {
+      expect(buttons(await band()).map(button => button.props.label)).toEqual(['rotate', 'wrap', 'feed'])
+    }
+    expect(logs).toEqual(['cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'])
+    error = 'cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR'
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(logs).toEqual([
+      'cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES',
+      'cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR',
+    ])
+    expect(toasts).toEqual([])
+    expect(written).toEqual({})
+    expect(invalidated).toEqual([])
+    expect(ran).toEqual([])
+  } finally {
+    $.fs.read = read
+  }
+})
+
+test('feed presses use the local directory even when private storage exists', async () => {
+  enableFeed()
+  existing.add('/work/.cs/private')
+  files['/work/.cs/private/feed'] = 'on\n'
+  expect(feedKey(await band()).props.label).toBe('feed')
+  await feedKey(await band()).props.onPress()
+  await feedKey(await band()).props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
+  expect(files['/work/.cs/private/feed']).toBe('on\n')
+  expect(written).toEqual({ '/work/.cs/local/feed': 'off\n' })
+  expect(ran).toEqual([])
 })
