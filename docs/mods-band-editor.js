@@ -319,8 +319,8 @@
   // retyped back to what the present holds.
   function commitDraft(h, draft) {
     if (!draft) return h;
-    var same = function (d) { return JSON.stringify({ frames: d.frames, exportFrame: d.exportFrame }); };
-    return same(draft) === same(h.present) ? h : commit(h, draft);
+    var content = function (d) { return JSON.stringify({ frames: d.frames, exportFrame: d.exportFrame }); };
+    return content(draft) === content(h.present) ? h : commit(h, draft);
   }
 
   function undo(h) {
