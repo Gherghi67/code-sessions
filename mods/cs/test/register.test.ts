@@ -3378,6 +3378,22 @@ test('a feed press already writing ignores another press until the file is ready
   }
 })
 
+test('a non-session redraw does not discover feed commands', async () => {
+  enableFeed()
+  cwdPath = '/outside'
+  const list = $.command.list
+  let listed = 0
+  $.command.list = async () => { listed++; return list() }
+  try {
+    expect(await band()).toBe(DRAWN)
+    expect(await band()).toBe(DRAWN)
+    expect(listed).toBe(0)
+    expect(runs).toEqual([])
+  } finally {
+    $.command.list = list
+  }
+})
+
 test('the feed control follows command availability and the band ownership gates', async () => {
   enableFeed()
   expect(feedKey(await band()).props.label).toBe('feed')

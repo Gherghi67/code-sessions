@@ -561,15 +561,18 @@ export function register(on: On, options: PluginOptions) {
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
-    // Discovery requires cs-feed to expose /feed only while globally enabled. Listing it neither
-    // queues a command nor adds a status row to the transcript.
-    let feeding = bandIdle && !armed && (await $.command.list()).some(command => command.name === 'feed' && command.source === 'plugin' && command.plugin === 'cs-feed')
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feeding) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feeding = false }
+    let feedEligible = bandIdle && !armed
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
     drawnRead = named
-    if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && !railing && featured === undefined && !feeding) return drawn
+    const hasContent = rotating || waiting > 0 || queued > 0 || mail > 0 || gate !== undefined || railing || featured !== undefined
+    if (!hasContent && !feedEligible) return drawn
+    // Discovery requires cs-feed to expose /feed only while globally enabled. Listing it neither
+    // queues a command nor adds a status row to the transcript.
+    const feeding = feedEligible && (await $.command.list()).some(command => command.name === 'feed' && command.source === 'plugin' && command.plugin === 'cs-feed')
+    if (!hasContent && !feeding) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
