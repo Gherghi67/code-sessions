@@ -6,9 +6,9 @@ import { active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, r
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
-import { decideGroup, decideSpinner } from './verdict'
+import { decideGroup, decideSpinner, decideUser } from './verdict'
 import type { CallView, Context } from './verdict'
-import { NOTHING, drawGroup, inks } from './draw'
+import { NOTHING, drawGroup, drawUser, inks } from './draw'
 import type { Pen } from './draw'
 
 type $ = EngineInterface
@@ -336,8 +336,8 @@ export type PainterTable = { readonly [C in Hooked]: Painter<C, C extends keyof 
 
 export const PAINTERS = {
   UserMessage: async (e, cx, pen) => {
-    // decideUser(toUserRow(e), cx) -> 'engine' | tree(drawUser) | nothing. next(e) always runs (cs's rail observer).
-    throw new Error('not implemented')
+    const { verdict, live } = decideUser({ ...e.props, uuid: e.requestId }, cx)
+    return { drawn: verdict.draw === 'engine' ? { kind: 'engine' } : { kind: 'tree', tree: drawUser(verdict, pen) }, live }
   },
   AssistantMessage: async (e, cx, pen) => {
     // decideReply: error -> tree(error line); said hidden -> nothing;

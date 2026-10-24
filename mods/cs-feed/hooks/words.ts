@@ -5,6 +5,46 @@ import type { CallView } from './verdict'
 
 export type Tense = 'present' | 'past'
 
+export const labels = { you: 'you', claude: 'claude', backgroundUpdate: 'background task update', reportHint: 'ctrl+o shows the whole report' } as const
+export const marks = { dot: '·', live: '●', idle: '○', peer: '⇄', closed: '›', opened: '⌄', question: '?', failed: '✕' } as const
+
+export function joined(parts: readonly (string | undefined)[]): string {
+  return parts.filter(part => part !== undefined && part !== '').join(' · ')
+}
+
+export function peerLine(sender: string, headline: string): string {
+  return `${marks.peer} ${joined([sender, headline])}`
+}
+
+export function hookNotice(line: string): string {
+  return `${marks.idle} ${line}`
+}
+
+export function burstLine(members: readonly { sender: string; at?: number }[]): string {
+  const last = members.at(-1)?.at
+  return `${marks.peer} ${joined([`${members.length} messages`, [...new Set(members.map(member => member.sender))].join(', '), last === undefined ? undefined : `last ${hhmm(last)}`])}`
+}
+
+export function helperNoteLine(headline: string, durationMs?: number): string {
+  return `${marks.peer} ${joined(['helper', durationMs === undefined ? undefined : elapsed(durationMs), headline])}`
+}
+
+export function frameHead(frame: Frame & { from: string }): string {
+  return `${marks.peer} ${joined([frame.from, frame.state, frame.at === undefined ? undefined : hhmm(frame.at), frame.summary, frame.relays ? 'relays content written by others' : undefined])}`
+}
+
+export function frameBody(frame: Frame): readonly string[] {
+  const lead = frame.lead
+  if (!lead) return []
+  const card = lead.card
+  const lines = card ? [
+    joined([card.status, card.sub]), card.target,
+    ...card.scores.map(score => `${score.label} ${score.dots.map(dot => dot === 'ok' ? '●' : dot === 'bad' ? '✕' : '○').join('')} ${score.pass}/${score.of}`),
+    ...card.lists.map(list => joined([`${list.count} ${list.label}`, list.first])), card.report,
+  ] : [lead.sentence, lead.text]
+  return [...lines.filter((line): line is string => line !== undefined && line !== ''), ...(lead.more ? [`+${lead.more} more ${lead.more === 1 ? 'line' : 'lines'} · ctrl+o shows all`] : []), labels.reportHint]
+}
+
 /** §4.6 call words: a cleaned description of 3+ characters, else by tool ("Reading app.py", "Opened example.com"). */
 export function callWords(call: Pick<CallView, 'tool' | 'input'>, tense: Tense): string {
   const description = typeof call.input.description === 'string' ? clean(call.input.description) : ''
