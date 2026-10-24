@@ -1068,7 +1068,7 @@ session is off, every hook passes Claude Code's own drawing through.
 The switch is per session:
 
 - `ctrl+x 3 feed`, the cs band's feed key (see the band above): this session
-  on or off. It shows while the lead session is idle.
+  on or off. It shows while the lead session is idle and no handoff is armed.
 - `/feed on` and `/feed off` do the same, typed. `/feed` is an immediate
   command, so it runs mid-turn too.
 - `/feed clean` turns the feed on with your messages, Claude's replies and one
@@ -1143,9 +1143,10 @@ What it draws while on:
   click reaches a mod: the desktop app or a fullscreen terminal.
 - The working line. It stays Claude Code's own spinner row, with its clock,
   token count and cs's tip, and the feed's words as its message: the live
-  call, `Working` or `Thinking`, then `· step N` and `· N helpers working`.
+  call, `Working`, `Thinking` or `Writing`, then `· step N` and `· N helpers working`.
   A message Claude Code sets itself, such as compacting, passes through.
-- Your messages and Claude's replies in a name column, `you` and `claude`.
+- Your messages and Claude's replies in a name column, `you` and `claude`
+  (terminal only; on desktop the rows keep Claude Code's drawing).
   The reply's Markdown is Claude Code's drawing (or cs-mermaid's), so
   diagrams draw whichever mod loads first.
 - Errors and safeguard stops. One line takes the reply's place, coloured by
@@ -1168,7 +1169,7 @@ What it draws while on:
   band, never in its place.
 - An answered question reads `? <question> → <answer>`.
 - `/feed hide <kind>` hides one kind of row: `said` hides Claude's replies
-  with their error lines, `peer` the messages from others, and so on.
+  (an error line still shows), `peer` the messages from others, and so on.
 
 Questions, info notices and the prompt hint stay Claude Code's. A row that
 reports itself expanded (ctrl+o, `--verbose`) draws Claude Code's own, so the
@@ -1183,8 +1184,9 @@ over a three-turn scenario: 32 worker hops that did not exist without the mod
 (24 renders, 8 stored rows), about 1.6 ms each at the median (6.7 ms p90), and
 probably 8-10 ms at each turn's end (consistent in direction, not significant
 over six runs). About 5-6 MB more memory in the main process, and no change
-in CPU time. While off it reads no transcript, runs no clock, writes no state and starts no
-`cs -vet-session` process. On Claude Code 2.1.310 the cost oracle (below)
+in CPU time. While off its rows read no transcript, run no clock, write no state and start no
+`cs -vet-session` process; opening the `/helpers` pane reads the transcript and the agent list
+whatever the switch says. On Claude Code 2.1.310 the cost oracle (below)
 counted the same 32 new hops under the fullscreen renderer (72 against 40) and
 27 under the default renderer (60 against 33), which raises a tool row and a
 result row where fullscreen raises one tool group; with cs-feed alone, 62 and
