@@ -52,6 +52,8 @@ let submitted: any[]
 let compactedAt: number[]
 let compactResult: any
 let commands: any[]
+let availableCommands: { name: string; source: string; plugin?: string }[]
+let sessionValues: Map<string, { value: boolean; version: number }>
 // What `$.ui.scroll` was asked, and what it answers; the paths `$.fs.read` was given; each file's mtime.
 let scrolls: any[]
 let scrollResult: any
@@ -82,8 +84,20 @@ const $ = {
     submit: async (args: any) => { submitted.push(args); return {} },
   },
   command: {
+    list: async () => availableCommands,
     run: async (args: any) => { ran.push(args); return { text: '' } },
     register: async (spec: any) => { commands.push(spec); return { command: spec.name } },
+  },
+  state: {
+    get: async (ref: { plugin: string; key: string }): Promise<{ value?: boolean; version: number }> =>
+      sessionValues.get(`${sessionId}:${ref.plugin}:${ref.key}`) ?? { version: 0 },
+    set: async (ref: { plugin: string; key: string }, value: boolean, options?: { ifVersion: number }) => {
+      const key = `${sessionId}:${ref.plugin}:${ref.key}`
+      const version = sessionValues.get(key)?.version ?? 0
+      if (options !== undefined && options.ifVersion !== version) return { isSet: false, version }
+      sessionValues.set(key, { value, version: version + 1 })
+      return { isSet: true, version: version + 1 }
+    },
   },
   process: {
     run: async (argv: string[], init: any) => {
@@ -158,6 +172,7 @@ beforeEach(() => {
   timers = []; invalidated = []; toasts = []; logs = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
   runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
   compactedAt = []; compactResult = { messages: [] }
+  availableCommands = []; sessionValues = new Map()
   scrolls = []; scrollResult = {}; reads = []; mtimes = {}
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
@@ -3266,4 +3281,97 @@ test('band entries keep the drawn rotate and wrap labels in order', async () => 
   const entries = buildBandEntries({ rotating: true, armed: false, wrapping: true, waiting: 0, queued: 0, mail: 0, rotate: press, wrap: press, queue: press })
   expect(entries.map(entry => entry.label)).toEqual(drawnLabels)
   expect(entries.map(entry => entry.label)).toEqual(['rotate', 'wrap'])
+})
+
+const feedKey = (tree: any) => buttons(tree).find(button => button.props.key === 'cs-feed')
+const enableFeed = () => {
+  availableCommands = [{ name: 'feed', source: 'plugin', plugin: 'cs-feed' }]
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2', 'ctrl+x 3': 'strip:jump3' })
+}
+
+test('the feed chord toggles this session and colours its check with the keys', async () => {
+  enableFeed()
+  percent = 40
+  const tree = await band()
+  expect(feedKey(tree)?.props.label).toBe('feed')
+  expect(feedKey(tree).props.action).toBe('strip:jump3')
+  expect(words(tree)).toEqual(['●', 'ctrl+x', '1', '  ·  ', '2', '  ·  ', '3'])
+  await feedKey(tree).props.onPress()
+  const on = await band()
+  expect(feedKey(on).props.label).toBe('feed ✓')
+  expect(texts(feedKey(on)).map(text => [textOf(text), text.props.color])).toEqual([['✓', 'rgb(220,38,38)']])
+  expect(ran).toEqual([{ command: 'feed', args: 'on' }])
+  await feedKey(on).props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(ran).toEqual([{ command: 'feed', args: 'on' }, { command: 'feed', args: 'off' }])
+})
+
+test('a refused feed command restores the label and toasts once', async () => {
+  enableFeed()
+  const run = $.command.run
+  $.command.run = async () => { throw new Error('Unknown command: feed') }
+  try {
+    await feedKey(await band()).props.onPress()
+    expect(feedKey(await band()).props.label).toBe('feed')
+    expect(toasts).toEqual(['cs: feed did not change: Unknown command: feed'])
+  } finally {
+    $.command.run = run
+  }
+})
+
+test('a feed press already awaiting delivery ignores another press', async () => {
+  enableFeed()
+  const run = $.command.run
+  let deliver = () => {}
+  $.command.run = async args => {
+    ran.push(args)
+    await new Promise<void>(resolve => { deliver = resolve })
+    return { text: '' }
+  }
+  try {
+    const press = feedKey(await band()).props.onPress()
+    await settle()
+    const duplicate = feedKey(await band()).props.onPress()
+    await settle()
+    expect(ran).toEqual([{ command: 'feed', args: 'on' }])
+    deliver()
+    await Promise.all([press, duplicate])
+  } finally {
+    deliver()
+    $.command.run = run
+  }
+})
+
+test('the feed control follows command availability and the band ownership gates', async () => {
+  enableFeed()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(feedKey(await band({ isWorking: true }))).toBeUndefined()
+  expect(feedKey(await band({ hasSurvey: true }))).toBeUndefined()
+  sessionId = 'uuid-teammate'
+  expect(feedKey(await band())).toBeUndefined()
+  sessionId = 'uuid-lead'
+  arm()
+  expect(buttons(await band()).map(button => button.props.key)).toEqual(['cs-rotate'])
+  delete files[MARKER]
+  for (const command of [undefined, { name: 'feed', source: 'user' }, { name: 'feed', source: 'plugin', plugin: 'another-plugin' }]) {
+    availableCommands = command === undefined ? [] : [command]
+    expect(await band()).toBe(DRAWN)
+  }
+  expect(ran).toEqual([{ command: 'color', args: 'red' }, { command: 'color', args: 'red' }])
+})
+
+test('feed state stays with its session across registration and stale button presses', async () => {
+  enableFeed()
+  const stale = feedKey(await band())
+  await stale.props.onPress()
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed ✓')
+  await stale.props.onPress()
+  expect(feedKey(await band()).props.label).toBe('feed')
+  expect(ran).toEqual([{ command: 'feed', args: 'on' }, { command: 'feed', args: 'off' }])
+  await feedKey(await band()).props.onPress()
+  sessionId = 'uuid-next'
+  files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-next\n'
+  register(on as any, OPTIONS)
+  expect(feedKey(await band()).props.label).toBe('feed')
 })

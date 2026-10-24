@@ -239,13 +239,14 @@ type BandPress = () => void | Promise<unknown>
 export type BandEntry =
   | { key: string; kind: 'word'; label: string; ink?: { color: string | undefined } }
   | { key: string; kind: 'press'; label: string; onPress: BandPress }
-  | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress }
+  | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress; ink?: { text: string; color: string | undefined } }
 type BandFacts = {
   featured?: { label: string; onPress?: BandPress }
   countdown?: { seconds: number; ink: string | undefined }
   rotating: boolean
   armed: boolean
   wrapping: boolean
+  feed?: { on: boolean; color: string | undefined; onPress: BandPress }
   waiting: number
   gate?: string
   queued: number
@@ -266,6 +267,7 @@ export function buildBandEntries(facts: BandFacts): BandEntry[] {
   if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `/clear in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
   if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
   if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
+  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
   // The queue has no chord: a click or Enter under the band's focus starts it.
   if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 queue ${facts.waiting} \u00b7 start`, onPress: facts.queue })
   if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
@@ -319,6 +321,7 @@ type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
 let bandOptions: BandOptions | undefined
 let bandProblem: string | undefined
 let bandProblemSaid = false
+let feedPressPending: object | undefined
 
 // What is wrong with a value for one of the band's rows, by field name;
 // undefined when the band can draw it, or the field is not the band's.
@@ -337,6 +340,7 @@ export function register(on: On, options: PluginOptions) {
     ? { prompts: options.bandPrompts as boolean, prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number }
     : undefined
   bandProblemSaid = false
+  feedPressPending = undefined
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
@@ -557,12 +561,15 @@ export function register(on: On, options: PluginOptions) {
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined }
+    // Discovery requires cs-feed to expose /feed only while globally enabled. Listing it neither
+    // queues a command nor adds a status row to the transcript.
+    let feeding = bandIdle && !armed && (await $.command.list()).some(command => command.name === 'feed' && command.source === 'plugin' && command.plugin === 'cs-feed')
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feeding) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feeding = false }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
     drawnRead = named
-    if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && !railing && featured === undefined) return drawn
+    if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && !railing && featured === undefined && !feeding) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
@@ -573,6 +580,7 @@ export function register(on: On, options: PluginOptions) {
       featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
       countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
       rotating, armed, wrapping, waiting, gate, queued, mail,
+      feed: feeding ? { on: (await $.state.get({ plugin: 'cs', key: 'feedOn' })).value ?? false, color: own, onPress: () => pressFeed($) } : undefined,
       rotate: armed ? () => pressClear($) : () => pressRotate($),
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
@@ -631,7 +639,7 @@ export function register(on: On, options: PluginOptions) {
       return fitLeft(`#${i + 1} ${p.text}`, labelCells)
     }
     // A line too narrow for any tick, with nothing else to say, draws nothing.
-    if (!rotating && waiting === 0 && queued === 0 && mail === 0 && gate === undefined && featured === undefined && ticks === undefined) return drawn
+    if (entries.length === 0 && ticks === undefined) return drawn
     const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
     const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
     // One thin line, a blank line above it so it reads apart from the
@@ -655,7 +663,9 @@ export function register(on: On, options: PluginOptions) {
               entry.kind === 'word'
                 ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
                 : entry.kind === 'chord'
-                  ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+                  ? entry.ink === undefined
+                    ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+                    : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
                   : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
             ])}
             {ticks !== undefined && (
@@ -1302,7 +1312,7 @@ async function sessionColor($: EngineInterface): Promise<string | undefined> {
   return state?.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
 }
 
-// The engine actions the band's Buttons answer to. They carry no default
+// The engine actions the rotate and wrap Buttons answer to. They carry no default
 // chord and no engine handler is mounted for them (measured on 2.1.291 and
 // 2.1.292), so the chord a person binds to one presses the Button. The band
 // depends on that: a Claude Code that mounts a handler for either action
@@ -1310,6 +1320,32 @@ async function sessionColor($: EngineInterface): Promise<string | undefined> {
 // CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
 export const ROTATE_ACTION = 'strip:jump1'
 export const WRAP_ACTION = 'strip:jump2'
+export const FEED_ACTION = 'strip:jump3'
+
+function tellFeed($: EngineInterface, on: boolean) {
+  return $.command.run({ command: 'feed', args: on ? 'on' : 'off' })
+}
+
+async function pressFeed($: EngineInterface) {
+  if (feedPressPending !== undefined) return
+  const pending = {}
+  feedPressPending = pending
+  try {
+    const held = await $.state.get({ plugin: 'cs', key: 'feedOn' })
+    const on = !(held.value ?? false)
+    const written = await $.state.set({ plugin: 'cs', key: 'feedOn' }, on, { ifVersion: held.version })
+    if (!written.isSet) return
+    try {
+      await tellFeed($, on)
+    } catch (err) {
+      // A later press or reverse report owns its value, even if this run fails.
+      const reverted = await $.state.set({ plugin: 'cs', key: 'feedOn' }, held.value ?? false, { ifVersion: written.version })
+      $.ui.toast(`cs: ${reverted.isSet ? 'feed did not change' : 'feed request failed after another change'}: ${String(err instanceof Error ? err.message : err)}`)
+    }
+  } finally {
+    if (feedPressPending === pending) feedPressPending = undefined
+  }
+}
 
 // The chord keybindings.json binds to each action in the Global context, as
 // the person wrote it. Claude Code reads that file from CLAUDE_CONFIG_DIR, else

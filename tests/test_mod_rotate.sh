@@ -116,12 +116,14 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     assert_output_not_contains "$out" '$.prompt.fill' "nothing fills the composer any more" || return 1
     assert_output_contains "$out" 'env reads: CLAUDE_CONFIG_DIR, CS_BIN, CS_ROTATE_BUTTON_CTX, CS_ROTATE_FORCE_CTX, CS_SESSIONS_ROOT, CS_STATUSLINE_CTX_WARN, CS_TERM_BG_RGB, CS_TERM_THEME, CS_TRANSCRIPTS_DIR, HOME' "the cs path, the two thresholds, the bar's warn band, the measured background and the theme (the count's amber pivot), where keybindings.json lives, the sessions root and where transcripts live are read from the environment; the caps consent is not" || return 1
     assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart), $.session.compact (via offerToStart), $.session.cwd' "/queue runs cs from its own hook and its start offer, which alone submits a prompt and compacts; the rotation asks cs -vet-session before it arms; the /finish watch runs kill -0 to ask after cs's pid" || return 1
-    assert_output_contains "$out" '$.command.run (via askToWrap, clearAndContinue, noteConversation, pressFinish, rotate)' "the keys run their commands, the features word's press runs /finish, a new conversation re-applies /color, and nothing else runs one" || return 1
+    assert_output_contains "$out" '$.command.list, $.command.register, $.command.run (via askToWrap, clearAndContinue, noteConversation, pressFinish, rotate, tellFeed)' "the band discovers commands and sends feed changes through tellFeed; the other keys and conversation colour keep their command routes" || return 1
     assert_output_contains "$out" '$.clock.after, $.clock.every (via readFeatures, startCountdown, watchFinish), $.clock.now (via gateWord)' "the forced /rotate, the next-step toast and the rail's redraw are one-shot timers, the grace, the /finish watch and the idle features read tickers, and the gate word alone reads the time" || return 1
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. What sorts after
     # $.ui.log is checked on the source instead.
-    assert_output_contains "$out" '$.ui.log (via' "the visible inventory reaches \$.ui.log" || return 1
+    assert_output_contains "$out" '$.session.id, $.session.usage, $.state.get, $.state.set (via pressFeed)' "the visible inventory includes session state reads and writes from the feed press" || return 1
+    assert_output_contains "$out" 'state writes: cs.feedOn' "the feed control writes its declared session value" || return 1
+    assert_output_contains "$out" 'state reads: cs.feedOn' "the feed control reads its declared session value" || return 1
     local src="$MOD/hooks/register.tsx" scroll_lines jump_range
     scroll_lines=$(grep -n '\$\.ui\.scroll' "$src" | cut -d: -f1 | tr '\n' ' ')
     jump_range=$(awk '/^async function jumpTo\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
@@ -129,7 +131,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     set -- $jump_range
     [ "${scroll_lines% }" -gt "$1" ] && [ "${scroll_lines% }" -lt "$2" ] \
         || { echo "  FAIL: \$.ui.scroll at line ${scroll_lines% } is outside jumpTo (lines $1-$2)"; return 1; }
-    assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToStart)' "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
+    assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToSta… \[+151 chars\]' "the dialog callers reach the validator's cut after the feed state calls" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.open' "$src")" "the mod opens no pane" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.close' "$src")" "and closes none" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.panes' "$src")" "and lists none" || return 1
