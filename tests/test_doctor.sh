@@ -1161,7 +1161,7 @@ test_doctor_rotate_wrap_keys_row_names_the_state() {
     printf 'yes\n' > "$xdg/cs/option-keys"
     printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' > "$kb"
     output=$(_ok_doctor)
-    assert_output_contains "$output" "OK.*Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)" \
+    assert_output_contains "$output" "OK.*Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 press the cs band)" \
         "every key holds cs's values: bound" || return 1
 
     printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}}]}' > "$kb"

@@ -24,25 +24,31 @@ defines the list at line 3144[^commands] and its provider at line 1781[^provider
 list on reload, so neither supplies a reliable current inventory.
 See line 2355[^identity] and line 4041[^plugin-list].
 
-This discovery requires cs-feed to register `/feed` only while its global
-install switch is on. Command presence alone cannot establish an
-unrelated configuration boolean. The companion mod is outside this job, so
-that registration rule still needs verification with it.
+The installer always installs and registers cs-feed, with no global install
+switch. The band offers the control whenever that provider lists
+`/feed`. The companion mod's registration timing remains outside this job.
 
 The file `${session.cwd}/.cs/local/feed` stores the setting. It holds one line,
 `on\n` or `off\n`, and stays in `.cs/local` even when private storage exists.
-Every draw of the control and every press reads it through `$.fs.read`,
-using the working directory as `readState` does. Only the whole value
+The control reads it through `$.fs.read` on redraw and after a press passes
+vetting, using the working directory as `readState` does. After a vet refusal,
+redraws show off without trusting the file. Only the whole value
 `on\n` means on. Absent, empty, torn and other content means off. Readers
-must not trim it. Other read errors propagate. The contract defines paths
+must not trim it. All read errors mean off. A missing file is silent; the
+band logs each distinct other error once. A successful read or missing file
+clears the remembered error. The contract defines paths
 and read errors at line 3305[^file-read].
 
 A press writes the opposite value through the existing, non-atomic
-`$.fs.write` helper, then invalidates the band. The write contract at
+`$.fs.write` helper after `cs -vet-session` accepts the session.
+The machine-local file stays under the gitignored `.cs/local` and is never
+committed. A vet refusal leaves the file alone and draws the control as off.
+The write contract at
 line 3333[^file-write] promises file creation, not atomic replacement.
-The strict reader makes a partial write read as off. A failed update toasts
-once; another press can retry. A press while a write is in progress does
-nothing.
+The strict reader makes a partial write read as off. Each failed write attempt
+toasts, and every completed press invalidates the band, including a failed
+write or vet refusal. Duplicate presses await the same operation, so both
+resolve after the one write and redraw. Another press can retry.
 
 The file survives `/clear`, reload and resume. Host state survives a hot
 reload, per line 3466[^state], but the supplied spike 3[^file-channel]
@@ -70,9 +76,10 @@ allows that child shape at line 1108[^button-text]. Separators remain beside
 Buttons. The channel uses a `ui.press` event hook; it needs no runtime
 `$.ui.press` method.
 
-## Alternatives to the global install switch
+## Alternatives considered before dropping the global install switch
 
-The supplied cross-session probe[^cross-session] measured a global option
+The global switch is no longer part of the design. The alternatives below
+record the earlier investigation. The supplied cross-session probe[^cross-session] measured a global option
 flip reloading other open sessions roughly one second later, with a notice
 row in each transcript. The contract fixes options for each activation and
 reloads when they change, at line 9770[^activation]. The ranking below favors

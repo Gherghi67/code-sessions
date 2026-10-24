@@ -571,8 +571,7 @@ export function register(on: On, options: PluginOptions) {
     drawnRead = named
     const hasContent = rotating || waiting > 0 || queued > 0 || mail > 0 || gate !== undefined || railing || featured !== undefined
     if (!hasContent && !feedEligible) return drawn
-    // Discovery requires cs-feed to expose /feed only while globally enabled. Listing it neither
-    // queues a command nor adds a status row to the transcript.
+    // Listing /feed reads availability without queuing a command or adding a status row.
     const feeding = feedEligible && (await $.command.list()).some(command => command.name === 'feed' && command.source === 'plugin' && command.plugin === 'cs-feed')
     if (!hasContent && !feeding) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))

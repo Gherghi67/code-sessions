@@ -1320,7 +1320,7 @@ else
                 # one key, so an Enter typed after one of them is still queued
                 # and would answer this one. EOF leaves it unanswered.
                 while :; do
-                    echo -en "   Bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band in Claude Code? [y/n] "
+                    echo -en "   Bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band in Claude Code? [y/n] "
                     if ! read -n 1 -r; then echo ""; break; fi
                     echo ""
                     case "$REPLY" in
@@ -1337,7 +1337,7 @@ else
                     info "Rotate/wrap keys: not bound. You won't be asked again; to change that, remove $_rotate_wrap_keys_answer_file and run cs -update."
                 fi
             else
-                info "Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band, run cs -update in a terminal."
+                info "Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band, run cs -update in a terminal."
             fi
             ;;
     esac

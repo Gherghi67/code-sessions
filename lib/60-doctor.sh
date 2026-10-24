@@ -756,7 +756,7 @@ _doctor_check_rotate_wrap_keys() {
         if [ -n "$retired" ]; then
             _doctor_warn "Rotate/wrap keys: $retired still hold cs's earlier bindings in $file (run cs -update to remove them)"
         else
-            _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)"
+            _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 press the cs band)"
         fi
         return
     fi
