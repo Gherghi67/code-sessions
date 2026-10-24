@@ -24,7 +24,7 @@ export const HELPERS_PANE = 'cs-feed-helpers'
 let load: Load = newLoad()
 
 /**
- * No install switch (Alex's ruling 1, design revision 2): register() always
+ * No install switch: register() always
  * registers the one shape, and each hook returns the engine's drawing while
  * this session's feed is off. The off cost beside cs's three mods is spike4's
  * inert mod: +32 worker hops per three-turn scenario (24 ui.render, 8
@@ -81,8 +81,7 @@ async function perform($: $, cmd: FeedCommand): Promise<string> {
 }
 
 /**
- * The one shape. No tool.call, no turn.step, no classic.*, no prompt.compose,
- * no config.set: nothing registered here awaits across a tool call or a
+ * The one shape. Nothing registered here awaits across a tool call or a
  * stream. Every hook is registered whatever this session's toggle says; the
  * toggle decides what they draw, never what is registered.
  *
@@ -234,8 +233,7 @@ function registerFeed(on: On) {
   })
 
   // Consumes the prompt hook's peerPending (spike5 M19 order) into this turn's
-  // record, and only then clears it: revision 1 cleared it here without reading
-  // it, which lost the peer turn whenever the flag was set first (validate2).
+  // record, and only then clears it, so the next response keeps its peer opener.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       load.obs.mainTurn = { peer: load.obs.peerPending, openerTaken: false }

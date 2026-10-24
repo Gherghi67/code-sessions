@@ -74,7 +74,7 @@ export type Observations = {
    * The text is replaced by the stored text from next(e)'s result, synchronously,
    * in case a hook beneath rewrote a text block (rewritable); an evaluation
    * between the two sees a mismatch and reads as a fragment for that draw.
-   * While the turn is live that leaves the claim pending (revision 2.2), so
+   * While the turn is live that leaves the claim pending (§20.23), so
    * the stored text is in place by the turn.complete re-evaluation. Only when
    * the evaluation in that window also finds the turn spent (no Stop hook)
    * does site() record stepsDrawn false, and the write-once record keeps it
@@ -129,8 +129,7 @@ export type Observations = {
    * prompt.submit -> session.append door prompt (peer, isMeta) -> that hook's
    * next(e) resolves -> turn.start 0-1 ms later. Both hooks run in this load's
    * environment and the append continuation's seq was below turn.start's every
-   * time, so turn.start reads the flag the prompt hook just set. Revision 1
-   * cleared it in turn.start instead, which raced (validate2).
+   * time, so turn.start reads the flag the prompt hook just set.
    */
   peerPending: boolean
   /**
@@ -206,8 +205,8 @@ export type Load = {
   feed?: Session
   /**
    * cs's answer on this session's control files for the `on\n` the mirror
-   * last read (ruling §20.22, accepted by Alex 2026-10-24: the writes and
-   * the on-read are vetted). Undefined: not asked for the file's current on,
+   * last read (§20.22: the writes and the on-read are vetted).
+   * Undefined: not asked for the file's current on,
    * or the file reads off. Set from vetOnRead's answer (by feedRecord at the
    * load's on-read, by applyFeed('status') at an outside flip to on), by
    * applyFeed to 'passed' when a press's write turned the file on (cs's
@@ -329,8 +328,8 @@ export function active(load: Load): boolean {
  * reads as off, as the band's readFeed does (it catches, logs a new complaint
  * once and returns false), so both sides then show off, never on.
  *
- * Vetted once per load when the file says on (ruling §20.22, accepted by Alex
- * 2026-10-24: the on-read asks the same cs -vet-session as writeFeed). A
+ * Vetted once per load when the file says on (§20.22: the on-read asks
+ * the same cs -vet-session as writeFeed). A
  * refused session reads as off: the mirror says off, every hook passes the
  * engine's drawing through, nothing is written, and the refusal is logged once
  * (vetOnRead). cs's band labels the key off there too (`lastRefusal ===
@@ -429,7 +428,7 @@ export type WriteOutcome = 'written' | 'no-session' | { readonly refused: string
 /**
  * Writes this session's record, from an event hook only (perform: /feed typed,
  * a settings-pane press), and only where cs trusts this session's control
- * files, as cs's band press does (ruling §20.22, accepted by Alex 2026-10-24):
+ * files, as cs's band press does (§20.22):
  *
  *   const cwd = await $.session.cwd()
  *   if (!(await $.fs.exists(`${cwd}/${CS_LOCAL}`))) return 'no-session'   // never create .cs/local; no vet spawned
@@ -479,7 +478,7 @@ export function vetRefusal($: $, cwd: string): Promise<string | undefined> {
 export type Vetted = 'passed' | { readonly refused: string }
 
 /**
- * The read-side vet (ruling §20.22, accepted by Alex 2026-10-24: a file that
+ * The read-side vet (§20.22: a file that
  * says on is vetted before the feed turns on). Asked only when FEED_FILE reads
  * exactly `on\n` and no answer is cached for that on (Load.vet): by
  * feedRecord at the load's read, and by applyFeed('status') for a flip to on

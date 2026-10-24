@@ -180,7 +180,7 @@ function runDecision(call: CallView, filed: FiledCall, cx: Context): CallVerdict
  * 36 turns, open-measurements M27) the Stop hook runs between the reply's
  * store and turn.complete: the reply's first evaluations find the turn live
  * and stay pending; turn.complete's phase change bumps LIVE, which
- * re-evaluates the reply (ruling §20.23 (a), accepted by Alex 2026-10-24);
+ * re-evaluates the reply (§20.23 (a));
  * it finds the turn spent and claims, and its claim's bump makes the tool row
  * yield. A derivation both rows evaluate at different moments drew it nowhere
  * in that order. Keyed by the turn's LAST call: a reply followed by more
@@ -291,7 +291,7 @@ export type StepsClaim = 'drawn' | 'declined' | 'pending'
 
 /**
  * A reply decision is live exactly while its steps-line claim is pending
- * (ruling §20.23 (a), accepted by Alex 2026-10-24): a pending reply reads
+ * (§20.23 (a)): a pending reply reads
  * LIVE so that turn.complete's bump re-evaluates it, and it draws no steps
  * line yet (the tool row does). A settled claim never reads LIVE: the reply
  * is not evaluated while it streams and twice once stored (spike5 M18), so
@@ -378,8 +378,7 @@ export type SpinnerVerdict =
  * ruling §20.12); + ' · N helper(s) working'. With a message of the engine's own
  * (compaction) the row is the engine's, suffix included (ruling §20.9).
  *
- * "Writing" moved here from the transcript's tail (revision 1 read `tail
- * 'text'`): the reply row is stored only once it has streamed (spike5 M18), so
+ * The reply row is stored only once it has streamed (spike5 M18), so
  * the tail says 'text' only after the writing is over. `mode` is the engine's
  * own word on what the turn does. That the Spinner instance is re-evaluated
  * when `mode` changes is inferred (a prop change), not measured

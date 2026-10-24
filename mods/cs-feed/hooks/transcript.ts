@@ -204,7 +204,7 @@ function outcomeOf(use: ToolUseSummary, keepOutput: boolean): Outcome {
 }
 
 /**
- * Q-idle-delivery option B (Alex rules; finding 1). An idle peer message is
+ * Q-idle-delivery option B (finding 1). An idle peer message is
  * stored isMeta, so plain drops it and its turn reads as part of the previous
  * one. Two sources open such a turn, and only these two:
  *
@@ -248,7 +248,7 @@ function outcomeOf(use: ToolUseSummary, keepOutput: boolean): Outcome {
  *     - same tool_use ids in the same order (plain toolUses[].tool_use_id, api tool_use blocks' `id`), and
  *     - same text (plain `text` === api text blocks joined the way plain joins them)
  *   stop at the first inconsistent pair, or when either list ends.
- *   A consistent pair is VERIFIED only when (revision 2.1, validate3):
+ *   A consistent pair is VERIFIED only when:
  *     - it carries tool_use ids (they are unique, so a shifted pair cannot match them), or
  *     - it is tool-free and its text occurs exactly once among plain's tool-free
  *       assistant texts AND exactly once among api's.
@@ -377,8 +377,7 @@ export function questionPairs(input: unknown, result: unknown): readonly Questio
 }
 
 /**
- * Background runs from the transcript (§9.1, minus the classic.Stop source the
- * fork used, which sec-default skips on org seats): a Bash use with
+ * Background runs from the transcript (§9.1): a Bash use with
  * `run_in_background` (or a result marked `backgroundedToDeliverMessage`, spike2
  * M1a) opens one; a KillShell/TaskStop naming it, or a later user entry naming
  * its id in a <tool-use-id> or <task-id> tag (an idle task notification), closes

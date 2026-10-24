@@ -4,8 +4,8 @@
 export const PLUGIN = 'cs-feed'
 
 /**
- * The per-session truth, shared with cs's band (Alex's ruling 2, design
- * revision 2). Relative to `$.session.cwd()`, which both sides read the same
+ * The per-session truth, shared with cs's band.
+ * Relative to `$.session.cwd()`, which both sides read the same
  * way. Exactly `on\n` is on; anything else is off: absent, torn by a
  * non-atomic write, `off\n`, or any other text. cs's band reads it with
  * `=== 'on\n'` (mods/cs/hooks/register.tsx readFeed) and writes it from the
@@ -20,8 +20,8 @@ export const CS_LOCAL = '.cs/local'
 /**
  * How long `cs -vet-session` may take before its answer counts as a refusal.
  * Every /feed write asks it first, as cs's band press does, and so does a
- * read that finds FEED_FILE on with no answer cached for it (ruling §20.22,
- * accepted by Alex 2026-10-24; session.vetRefusal, session.vetOnRead). KEEP
+ * read that finds FEED_FILE on with no answer cached for it (§20.22,
+ * session.vetRefusal, session.vetOnRead). KEEP
  * IN SYNC with VET_TIMEOUT_MS in mods/cs/hooks/register.tsx. The env name
  * `CS_BIN` stays a literal at its one read, as cs's is: validate lists the
  * names a module reads.
@@ -210,7 +210,7 @@ function fieldValue<T extends Fields[keyof Fields]>(values: readonly T[], word: 
  * §20.22); passed, it writes VIEW_FILE when `view` changed, then FEED_FILE,
  * then reads FEED_FILE back for the mirror and invalidates. cs's band key does not come through here: it
  * writes FEED_FILE itself, and cs-feed's ui.press hook reads it after next(e).
- * Nothing reloads and no command runs ($.command.run is not used anywhere).
+ * Nothing reloads and no command runs.
  *
  *   /feed clean | normal   on, the preset's fields, `hide` kept
  *   /feed raw              off (the view is kept for the next on)
