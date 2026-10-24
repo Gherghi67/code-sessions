@@ -295,7 +295,8 @@ test('readDoc takes a saved document and names what is wrong with a bad one', ()
   expect(() => E.readDoc({ ...doc(), frames: [{ id: 'f1', name: 'Band', tree: { type: 'Link', props: {}, kids: [] } }] })).toThrow('a saved node is a Link, not a Box, Text or Button')
 })
 
-// The compose panel's saved tree carried an id on every node.
+// A tree saved under the compose panel's key carries an id on every node,
+// which the editor's nodes do not hold.
 test('readTree reads the compose panel\'s saved tree, ids dropped', () => {
   expect(E.readTree({ id: 1, type: 'Box', props: { gap: 1 }, kids: [{ id: 2, type: 'Text', props: { text: 'hi' }, kids: [] }] }))
     .toEqual(box({ gap: 1 }, text('hi')))

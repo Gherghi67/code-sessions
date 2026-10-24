@@ -1288,10 +1288,10 @@ function bdInsert(type){
 }
 function bdTravel(by){ bdSettle(); bdHist=BandEditor.jump(bdHist,by); bdPanelStale=true; composeRender(); }
 // The designer's present document is kept under BD_KEY. The compose
-// panel's single tree, under OLD_KEY, becomes frame 0 once and is removed.
+// panel's single tree, under COMPOSE_KEY, becomes frame 0 once and is removed.
 // What storage hands back is read by BandEditor.readDoc; one it cannot read
 // is set aside under BD_KEY.unreadable and named on the page.
-const BD_KEY="mods-lab-band-designer", OLD_KEY="mods-lab-band";
+const BD_KEY="mods-lab-band-designer", COMPOSE_KEY="mods-lab-band";
 let bdNote="";
 function bdStore(){
   try{ return window.localStorage; }
@@ -1307,12 +1307,12 @@ function bdOpen(){
   const unreadable=(key,raw,err)=>{ store.setItem(BD_KEY+".unreadable",raw); bdNote=`The saved designer under ${key} could not be read (${err.message}); it is kept under ${BD_KEY}.unreadable and the designer starts from the shipped band.`; return bdShipped(); };
   const raw=store.getItem(BD_KEY);
   if(raw!==null){ try{ return BandEditor.readDoc(JSON.parse(raw)); }catch(err){ return unreadable(BD_KEY,raw,err); } }
-  const old=store.getItem(OLD_KEY);
-  if(old===null) return bdShipped();
+  const composed=store.getItem(COMPOSE_KEY);
+  if(composed===null) return bdShipped();
   let doc;
-  try{ doc={frames:[{id:"f1",name:"Band",tree:BandEditor.readTree(JSON.parse(old))}],selection:null,exportFrame:"f1",edit:"open the compose panel's band"}; }
-  catch(err){ return unreadable(OLD_KEY,old,err); }
-  store.setItem(BD_KEY,JSON.stringify(doc)); store.removeItem(OLD_KEY);
+  try{ doc={frames:[{id:"f1",name:"Band",tree:BandEditor.readTree(JSON.parse(composed))}],selection:null,exportFrame:"f1",edit:"open the compose panel's band"}; }
+  catch(err){ return unreadable(COMPOSE_KEY,composed,err); }
+  store.setItem(BD_KEY,JSON.stringify(doc)); store.removeItem(COMPOSE_KEY);
   return doc;
 }
 function bdSave(){
