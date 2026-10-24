@@ -30,6 +30,20 @@ test('UserMessage draws the terminal you margin and leaves the desktop engine bo
   await desktop.unmount()
 })
 
+test('UserMessage draws your text in the you ink, and a slash command with its name in that ink and its arguments dim', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine prompt' }))
+  const plain = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'plain', props: { text: 'Read the notes', origin: { kind: 'composer' }, isExpanded: false } })
+  expect((await plain.find({ type: 'Text', text: 'Read the notes' }))?.props.color).toBe('#9fb4c8')
+  const command = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'command', props: { text: '/feed clean now', origin: { kind: 'composer' }, isExpanded: false } })
+  const name = await command.find({ type: 'Text', text: '/feed' })
+  const args = await command.find({ type: 'Text', text: 'clean now' })
+  expect([name?.text, name?.props.color, name?.props.dimColor]).toEqual(['/feed', '#9fb4c8', undefined])
+  expect([args?.text, args?.props.dimColor]).toEqual(['clean now', true])
+  await plain.unmount()
+  await command.unmount()
+})
+
 test('UserMessage keeps hook feedback as a quiet circle line', async ($, on) => {
   session(on)
   on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine prompt' }))

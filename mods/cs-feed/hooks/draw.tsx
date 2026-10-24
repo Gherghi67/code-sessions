@@ -5,7 +5,7 @@ import type { EngineInterface, RenderElement } from 'claude-code'
 import type { BandVerdict, CallVerdict, Context, GroupVerdict, HelperBlock, ReplyVerdict, UserVerdict } from './verdict'
 import type { FeedCommand, FieldSpec, Session, View } from './settings'
 import { FIELDS, KINDS, parseFeedArgs } from './settings'
-import { helperNowLine, helperPaneHead, helpersPaneWords, kindChip, settingCommand, settingValue, settingsWords } from './words'
+import { helperNowLine, helperPaneHead, helpersPaneWords, kindChip, settingCommand, settingValue, settingsWords, slashCommand } from './words'
 import { backgroundLine, backgroundTail, braille, breathing, burstLine, callChips, callWords, fit, frameBody, frameHead, helperCounts, helperFraction, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, moreKinds, outputLines, peerLine, pillLabel, questionLines, runChips, runWords, stepsLine, usageLabel, usagePeriods } from './words'
 
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
@@ -83,7 +83,13 @@ export function drawUser(v: Exclude<UserVerdict, { draw: 'engine' }>, pen: Pen):
   const { Box, Text } = pen.el
   switch (v.draw) {
     case 'nothing': return NOTHING(pen)
-    case 'you': return <Box flexDirection="column" marginTop={1}><Box flexDirection="row"><Box width={pen.pad}><Text color={pen.ink.you} dimColor>{labels.you}</Text></Box><Box flexGrow={1}><Text>{v.text}</Text></Box>{v.at === undefined ? null : <Text dimColor>{hhmm(v.at)}</Text>}</Box></Box>
+    case 'you': {
+      const command = slashCommand(v.text)
+      const text = command
+        ? <Box flexGrow={1} flexDirection="row" gap={1}><Text color={pen.ink.you}>{command.name}</Text>{command.args ? <Text dimColor>{command.args}</Text> : null}</Box>
+        : <Box flexGrow={1}><Text color={pen.ink.you}>{v.text}</Text></Box>
+      return <Box flexDirection="column" marginTop={1}><Box flexDirection="row"><Box width={pen.pad}><Text color={pen.ink.you} dimColor>{labels.you}</Text></Box>{text}{v.at === undefined ? null : <Text dimColor>{hhmm(v.at)}</Text>}</Box></Box>
+    }
     case 'hookText': return <Box paddingLeft={pen.pad}><Text dimColor>{hookNotice(v.line)}</Text></Box>
     case 'peer': return <Box paddingLeft={pen.pad + (v.nested ? 2 : 0)}><Text color={pen.ink.peer}>{peerLine(v.sender, v.headline)}</Text></Box>
     case 'helperNote': return <Box paddingLeft={pen.pad}><Text color={pen.ink.peer}>{helperNoteLine(v.headline, v.durationMs)}</Text></Box>

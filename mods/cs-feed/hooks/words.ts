@@ -58,6 +58,12 @@ export function helperNowLine(step: string): string {
   return `${helpersPaneWords.now} ${step}`
 }
 
+/** §3.1: a message that starts with a slash command: its name, then its arguments (empty when it has none). */
+export function slashCommand(text: string): { readonly name: string; readonly args: string } | undefined {
+  const match = /^(\/[A-Za-z0-9][\w:.-]*)(?:\s+([\s\S]*))?$/.exec(text.trim())
+  return match?.[1] ? { name: match[1], args: (match[2] ?? '').trim() } : undefined
+}
+
 export function joined(parts: readonly (string | undefined)[]): string {
   return parts.filter(part => part !== undefined && part !== '').join(' · ')
 }
