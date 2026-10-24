@@ -198,7 +198,7 @@ test('overlapping preset writes finish in command order without replacing the la
   expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":true,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')
 })
 
-test('a successful write keeps its fresh vet when an older status refusal lands during the write', async ($, on) => {
+for (const order of ['refusal first', 'write first']) test(`a successful write keeps its fresh vet with an older status refusal: ${order}`, async ($, on) => {
   let file = 'off\n'
   let runs = 0
   let releaseVet: (() => void) | undefined
@@ -231,14 +231,21 @@ test('a successful write keeps its fresh vet when an older status refusal lands 
   await vetStarted
   const write = $.command.run({ ...STATUS, args: 'on' })
   await writeStarted
-  releaseVet?.()
-  expect(await status).toEqual({ text: 'off · raw' })
-  releaseWrite?.()
-  expect(await write).toEqual({ text: 'Chat view: on.' })
+  if (order === 'refusal first') {
+    releaseVet?.()
+    expect(await status).toEqual({ text: 'off · raw' })
+    releaseWrite?.()
+    expect(await write).toEqual({ text: 'Chat view: on.' })
+  } else {
+    releaseWrite?.()
+    expect(await write).toEqual({ text: 'Chat view: on.' })
+    releaseVet?.()
+    expect(await status).toEqual({ text: 'on · clean' })
+  }
   expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
   expect(file).toBe('on\n')
   expect(runs).toBe(2)
-  expect(logs).toEqual(['cs-feed: the feed is off in this session: old refusal'])
+  expect(logs).toEqual(order === 'refusal first' ? ['cs-feed: the feed is off in this session: old refusal'] : [])
 })
 
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {

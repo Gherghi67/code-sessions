@@ -457,9 +457,14 @@ export async function applyFeed(load: Load, $: $, after: FeedRead): Promise<void
   if (ticket < load.reads.applied) return
   const fileOn = isOn(file.text)
   let vet = load.vet
+  let asked = false
   if (!fileOn) vet = undefined
   else if (after === 'write') vet = 'passed'
-  else if (vet === undefined) vet = after === 'status' ? await vetOnRead(load, $, cwd) : 'passed'
+  else if (vet === undefined && after === 'status') {
+    const refused = await vetRefusal($, cwd)
+    vet = refused === undefined ? 'passed' : { refused }
+    asked = true
+  } else if (vet === undefined) vet = 'passed'
   if (ticket < load.reads.applied) return
   load.reads.applied = ticket
   load.vet = vet
@@ -467,10 +472,12 @@ export async function applyFeed(load: Load, $: $, after: FeedRead): Promise<void
   const current = load.feed
   if (!current) throw new Error('feed record did not settle')
   const on = fileOn && vet === 'passed'
-  if (current.on === on) return
-  load.feed = { on, view: current.view }
-  if (on) dirty(load, $)
-  await $.ui.invalidate('ui.render')
+  if (current.on !== on) {
+    load.feed = { on, view: current.view }
+    if (on) dirty(load, $)
+  }
+  if (asked && vet !== undefined) await reportVet(load, $, vet)
+  if (current.on !== on) await $.ui.invalidate('ui.render')
 }
 
 /** What a /feed write did: written, nothing (no .cs/local), or nothing because cs refused this session's control files (the reason, for the reply). */
@@ -568,15 +575,20 @@ export type Vetted = 'passed' | { readonly refused: string }
  */
 export async function vetOnRead(load: Load, $: $, cwd: string): Promise<Vetted> {
   const refused = await vetRefusal($, cwd)
-  if (refused === undefined) {
+  const vet = refused === undefined ? 'passed' : { refused }
+  await reportVet(load, $, vet)
+  return vet
+}
+
+async function reportVet(load: Load, $: $, vet: Vetted): Promise<void> {
+  if (vet === 'passed') {
     load.vetLogged = undefined
-    return 'passed'
+    return
   }
-  if (refused !== load.vetLogged) {
-    load.vetLogged = refused
-    await $.ui.log(`cs-feed: the feed is off in this session: ${refused}`)
+  if (vet.refused !== load.vetLogged) {
+    load.vetLogged = vet.refused
+    await $.ui.log(`cs-feed: the feed is off in this session: ${vet.refused}`)
   }
-  return { refused }
 }
 
 /**
