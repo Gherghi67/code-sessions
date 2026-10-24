@@ -35,7 +35,7 @@ const variant = (id: string) => {
 const lines = (variantId: string, stateId: string, cols: number) => toText(layout(variant(variantId).draw(state(stateId), cols, 'light'), cols))
 
 test('the gallery draws the shipped band first, then the sketches', () => {
-  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped', 'quiet', 'keys-first'])
+  expect(VARIANTS.map((v: any) => v.id)).toEqual(['shipped', 'quiet', 'keys-first', 'status-first'])
 })
 
 // Each sketch in the state that shows what it tries, worked by hand from its
@@ -45,6 +45,8 @@ const SKETCHES: [string, string, number, string[]][] = [
   ['quiet', 'everything', 60, [' '.repeat(59), '  3 features \u00b7 fix-auth ready   rotate   wrap   feed \u2713   \u20263']],
   ['keys-first', 'rotate-due', 80, [' '.repeat(26), '  ctrl+x  1 rotate  2 wrap']],
   ['keys-first', 'countdown', 80, [' '.repeat(36), '  ctrl+x  1 /clear now  /clear in 7s']],
+  ['status-first', 'countdown', 80, [' '.repeat(46), '  armed  /clear in 7s  \u00b7  ctrl+x  1 /clear now']],
+  ['status-first', 'gate-running', 80, [' '.repeat(48), '  running gate  finishing fix-auth \u00b7 gate 1m 12s']],
 ]
 for (const [v, s, cols, want] of SKETCHES) {
   test(`${v} draws ${s} at ${cols} cols as its note describes`, () => {
@@ -76,7 +78,7 @@ test('shipped folds the oldest four of fourteen prompts and names the newest', (
 
 test('every variant that draws a rail folds fourteen prompts into \u20264 at 80 cols', () => {
   const railed = VARIANTS.filter((v: any) => lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u2503')))
-  expect(railed.map((v: any) => v.id)).toEqual(['shipped', 'keys-first'])
+  expect(railed.map((v: any) => v.id)).toEqual(['shipped', 'keys-first', 'status-first'])
   for (const v of railed) expect({ variant: v.id, folded: lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u20264')) }).toEqual({ variant: v.id, folded: true })
 })
 
@@ -91,7 +93,7 @@ test('the engine accepts every variant in every state', () => {
 // The cells that overrun 60 cols, each declared in its variant's note.
 test('the cells that clip at 60 cols are the ones the notes name', () => {
   const clipped = cells().filter(({ v, s }: any) => layout(v.draw(s.facts, 60, 'light'), 60).w > 60).map(({ v, s }: any) => `${v.id} / ${s.id}`)
-  expect(clipped).toEqual(['shipped / everything', 'keys-first / everything'])
+  expect(clipped).toEqual(['shipped / everything', 'keys-first / everything', 'status-first / everything'])
 })
 
 test('every variant fits 60 cols in every state, or its note says it clips', () => {

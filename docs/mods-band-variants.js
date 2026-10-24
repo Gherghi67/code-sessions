@@ -259,10 +259,31 @@
     return band(nodes.concat(rail || []));
   }
 
+  // What the band is in, as a word: the mark's states spelled out, with what
+  // runs and whether the handoff is armed.
+  function statusWord(f) {
+    if (f.gate !== undefined) return "running gate";
+    if (f.queued > 0) return "running queue";
+    if (f.armed) return "armed";
+    return f.rotating ? "due" : "idle";
+  }
+
+  // The state's word leads in the mark's ink, bold, where the mark stood;
+  // the shipped words and rail follow it.
+  function drawStatusFirst(f, cols, theme) {
+    var entries = entriesOf(f);
+    var status = statusWord(f);
+    var words = actions(f, entries, theme, SEP);
+    var rail = railRun(f, cols - 2 - cells(status) - 2 - (words.cells > 0 ? 3 + words.cells : 0), inks(theme).own, words.cells > 0 ? 3 : 0);
+    if (entries.length === 0 && rail === undefined) return null;
+    return band([Bx({ key: "cs-status", marginRight: 2 }, [T({ bold: true, color: markInk(f, theme) }, status)])].concat(words.nodes, rail || []));
+  }
+
   var VARIANTS = [
     { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into \u2026N, so it never overruns.", draw: drawQuiet },
     { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
+    { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once clips at 60 and at 80.", draw: drawStatusFirst },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };
