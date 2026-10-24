@@ -3,8 +3,10 @@
 (function (root) {
   "use strict";
 
-  // A cell is one terminal column: the character, and the style it carries.
-  // `st` is shared between cells of the same run, so never mutate one in place.
+  // A cell is one terminal column: the character, the style it carries, and
+  // the index path from the root to the node that drew it (a Box owns its
+  // border, padding, gaps, margins and slack). `st` is shared between cells
+  // of the same run, so never mutate one in place.
   var EMPTY = { color: "", bg: "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
 
   function styleOf(props) {
@@ -22,14 +24,14 @@
   }
 
   var chars = function (s) { return Array.from(String(s)); };
-  function run(s, st) { return chars(s).map(function (ch) { return { ch: ch, st: st }; }); }
-  function blanks(n, st) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY }); return out; }
+  function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path }; }); }
+  function blanks(n, st, path) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY, path: path }); return out; }
 
   // Break `cells` into rows no wider than `room`, by the Text wrap mode. A
   // truncation mark inherits the style of the run it lands in.
   function wrapCells(cells, room, mode) {
     if (room <= 0) return [[]];
-    var dots = function (i) { return { ch: "\u2026", st: (cells[i] || cells[cells.length - 1] || { st: EMPTY }).st }; };
+    var dots = function (i) { var from = cells[i] || cells[cells.length - 1]; return { ch: "\u2026", st: from.st, path: from.path }; };
     if (!mode || mode === "wrap") {
       var out = [];
       for (var i = 0; i < cells.length; i += room) out.push(cells.slice(i, i + room));
@@ -58,13 +60,13 @@
     return st;
   }
 
-  function textCells(node, inherited) {
+  function textCells(node, inherited, path) {
     var st = mergeStyle(inherited || EMPTY, node.props);
     var cells = [];
-    (node.children || []).forEach(function (kid) {
+    (node.children || []).forEach(function (kid, i) {
       if (kid == null || kid === false) return;
-      if (typeof kid === "string" || typeof kid === "number") cells = cells.concat(run(kid, st));
-      else if (kid.type === "Text") cells = cells.concat(textCells(kid, st));
+      if (typeof kid === "string" || typeof kid === "number") cells = cells.concat(run(kid, st, path));
+      else if (kid.type === "Text") cells = cells.concat(textCells(kid, st, path.concat([i])));
     });
     return cells;
   }
@@ -85,12 +87,7 @@
     arrow: { tl: "\u2198", t: "\u2193", tr: "\u2199", r: "\u2190", br: "\u2196", b: "\u2191", bl: "\u2197", l: "\u2192" },
   };
 
-  function padRow(row, w, st) { return row.length >= w ? row.slice(0, w) : row.concat(blanks(w - row.length, st)); }
-  function padBlock(g, w, h, st) {
-    var rows = g.rows.map(function (r) { return padRow(r, w, st); });
-    while (rows.length < h) rows.push(blanks(w, st));
-    return grid(rows);
-  }
+  function padRow(row, w, st, path) { return row.length >= w ? row.slice(0, w) : row.concat(blanks(w - row.length, st, path)); }
   function num(v) { return typeof v === "number" ? v : 0; }
   // padding / margin: the side spelling wins over the axis, the axis over the whole.
   function edge(p, side, axis) {
@@ -112,12 +109,13 @@
     };
   }
 
-  function layout(node, availWidth) {
+  function layout(node, availWidth, at) {
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
+    var path = at || [];
     if (!node) return grid([]);
-    if (node.type === "Text") return grid(wrapCells(textCells(node, EMPTY), width, (node.props || {}).wrap));
-    if (node.type === "Button") return layoutButton(node, width);
-    if (node.type === "Box") return layoutBox(node, width);
+    if (node.type === "Text") return grid(wrapCells(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
+    if (node.type === "Button") return layoutButton(node, width, path);
+    if (node.type === "Box") return layoutBox(node, width, path);
     return grid([]);
   }
 
@@ -125,19 +123,19 @@
   // is the engine's own prefix, not part of the label. Children, when there
   // are any, draw in the label's place as inline runs (strings and Text), and
   // the label only names the control.
-  function layoutButton(node, width) {
+  function layoutButton(node, width, path) {
     var p = node.props || {};
     var st = styleOf({ color: p.color, dimColor: p.dimColor, bold: p.bold });
-    var kids = (node.children || []).filter(function (k) { return k != null && k !== false && k !== ""; });
-    var body = kids.length ? textCells({ props: {}, children: kids }, st) : run(p.label == null ? "" : String(p.label), st);
-    if (!p.plain) body = run("[ ", st).concat(body, run(" ]", st));
+    var drawn = (node.children || []).some(function (k) { return k != null && k !== false && k !== ""; });
+    var body = drawn ? textCells({ props: {}, children: node.children }, st, path) : run(p.label == null ? "" : String(p.label), st, path);
+    if (!p.plain) body = run("[ ", st, path).concat(body, run(" ]", st, path));
     var cells = [];
-    if (p.hotkey) cells = cells.concat(run(String(p.hotkey) + ": ", { color: "suggestion", bold: true, bg: "", dim: false, italic: false, underline: false, strikethrough: false, inverse: false }));
+    if (p.hotkey) cells = cells.concat(run(String(p.hotkey) + ": ", { color: "suggestion", bold: true, bg: "", dim: false, italic: false, underline: false, strikethrough: false, inverse: false }, path));
     cells = cells.concat(body);
     return grid([cells.slice(0, Math.max(0, width))]);
   }
 
-  function layoutBox(node, width) {
+  function layoutBox(node, width, path) {
     var p = node.props || {};
     if (p.display === "none") return grid([]);
     var m = margins(p), pd = pads(p);
@@ -151,7 +149,6 @@
     // the band after this Box's own margins and chrome.
     var inner = outer ? Math.max(0, outer - chrome) : Math.max(0, width - m.l - m.r - chrome);
 
-    var kids = (node.children || []).filter(Boolean);
     var gap = num(p.gap);
     var dir = String(p.flexDirection || "row");
     var column = dir.indexOf("column") === 0;
@@ -159,38 +156,40 @@
 
     // Every child measures against the full inner room; a row that overruns it
     // overflows (the terminal clips) rather than starving its later children.
-    var blocks = kids.map(function (kid) { return { node: kid, g: layout(kid, inner) }; });
+    // A child's path keeps its index among all the children, falsy ones too.
+    var blocks = [];
+    (node.children || []).forEach(function (kid, i) { if (kid) blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])) }); });
     if (reverse) blocks.reverse();
 
-    var body = column ? stackColumn(blocks, inner, gap, p, outer) : stackRow(blocks, inner, gap, p, outer);
+    var body = column ? stackColumn(blocks, inner, gap, p, outer, path) : stackRow(blocks, inner, gap, p, outer, path);
 
     // Height: an explicit height pads or (with overflow hidden) clips the body.
     var bodyRows = body.rows;
     if (typeof p.height === "number") {
       var room = Math.max(0, p.height - (border ? 2 : 0) - pd.t - pd.b);
       if (bodyRows.length > room && p.overflow === "hidden") bodyRows = bodyRows.slice(0, room);
-      while (bodyRows.length < room) bodyRows.push(blanks(body.w));
+      while (bodyRows.length < room) bodyRows.push(blanks(body.w, EMPTY, path));
     }
 
     var w = body.w;
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
-    if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w), p.backgroundColor); });
-    var rows = bodyRows.map(function (r) { return blanks(pd.l, fillSt).concat(padRow(r, w, fillSt), blanks(pd.r, fillSt)); });
-    for (var i = 0; i < pd.t; i++) rows.unshift(blanks(w + pd.l + pd.r, fillSt));
-    for (var j = 0; j < pd.b; j++) rows.push(blanks(w + pd.l + pd.r, fillSt));
+    if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w, EMPTY, path), p.backgroundColor); });
+    var rows = bodyRows.map(function (r) { return blanks(pd.l, fillSt, path).concat(padRow(r, w, fillSt, path), blanks(pd.r, fillSt, path)); });
+    for (var i = 0; i < pd.t; i++) rows.unshift(blanks(w + pd.l + pd.r, fillSt, path));
+    for (var j = 0; j < pd.b; j++) rows.push(blanks(w + pd.l + pd.r, fillSt, path));
 
     if (border) {
       var g = BORDERS[border], iw = w + pd.l + pd.r;
-      rows = rows.map(function (r) { return [{ ch: g.l, st: edgeSt }].concat(r, [{ ch: g.r, st: edgeSt }]); });
-      rows.unshift(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt));
-      rows.push(run(g.bl + repeat(g.b, iw) + g.br, edgeSt));
+      rows = rows.map(function (r) { return [{ ch: g.l, st: edgeSt, path: path }].concat(r, [{ ch: g.r, st: edgeSt, path: path }]); });
+      rows.unshift(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt, path));
+      rows.push(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path));
     }
 
-    if (m.l || m.r) rows = rows.map(function (r) { return blanks(m.l).concat(r, blanks(m.r)); });
+    if (m.l || m.r) rows = rows.map(function (r) { return blanks(m.l, EMPTY, path).concat(r, blanks(m.r, EMPTY, path)); });
     var mw = rows.length ? rows[0].length : 0;
-    for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw));
-    for (var b = 0; b < m.b; b++) rows.push(blanks(mw));
+    for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw, EMPTY, path));
+    for (var b = 0; b < m.b; b++) rows.push(blanks(mw, EMPTY, path));
     return grid(rows);
   }
 
@@ -199,7 +198,7 @@
       if (c.st && c.st.bg) return c;
       var st = {}; for (var k in (c.st || EMPTY)) st[k] = (c.st || EMPTY)[k];
       st.bg = bg;
-      return { ch: c.ch, st: st };
+      return { ch: c.ch, st: st, path: c.path };
     });
   }
 
@@ -217,16 +216,16 @@
     return { lead: 0, between: 0, tail: free };
   }
 
-  function alignRow(g, h, align, st) {
+  function alignRow(g, h, align, st, path) {
     if (g.h >= h) return g;
     var slack = h - g.h, rows = g.rows.slice();
     var top = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-    for (var i = 0; i < top; i++) rows.unshift(blanks(g.w, st));
-    while (rows.length < h) rows.push(blanks(g.w, st));
+    for (var i = 0; i < top; i++) rows.unshift(blanks(g.w, st, path));
+    while (rows.length < h) rows.push(blanks(g.w, st, path));
     return grid(rows);
   }
 
-  function stackRow(blocks, inner, gap, p, outer) {
+  function stackRow(blocks, inner, gap, p, outer, path) {
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
     var h = blocks.reduce(function (a, b) { return Math.max(a, b.g.h); }, 0) || (blocks.length ? 1 : 0);
     var content = blocks.reduce(function (a, b) { return a + b.g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
@@ -247,29 +246,29 @@
 
     var rows = [];
     for (var y = 0; y < h; y++) {
-      var row = blanks(s.lead, fillSt);
+      var row = blanks(s.lead, fillSt, path);
       blocks.forEach(function (b, i) {
-        if (i) row = row.concat(blanks(gap + s.between, fillSt));
-        var a = alignRow(b.g, h, p.alignItems, fillSt);
-        row = row.concat(a.rows[y] || blanks(b.g.w, fillSt), blanks(extra[i], fillSt));
+        if (i) row = row.concat(blanks(gap + s.between, fillSt, path));
+        var a = alignRow(b.g, h, p.alignItems, fillSt, path);
+        row = row.concat(a.rows[y] || blanks(b.g.w, fillSt, path), blanks(extra[i], fillSt, path));
       });
       rows.push(row);
     }
     var w = outer ? inner : Math.max(room, rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0));
-    return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt) : padRow(r, w, fillSt); }));
+    return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt, path) : padRow(r, w, fillSt, path); }));
   }
 
-  function stackColumn(blocks, inner, gap, p, outer) {
+  function stackColumn(blocks, inner, gap, p, outer, path) {
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
     var natural = blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
     var w = outer ? inner : natural;
     var rows = [];
     blocks.forEach(function (b, i) {
-      if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt));
+      if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt, path));
       var slack = Math.max(0, w - b.g.w);
       var align = p.alignItems;
       var lead = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-      b.g.rows.forEach(function (r) { rows.push(padRow(blanks(lead, fillSt).concat(r), w, fillSt)); });
+      b.g.rows.forEach(function (r) { rows.push(padRow(blanks(lead, fillSt, path).concat(r), w, fillSt, path)); });
     });
     return grid(rows);
   }

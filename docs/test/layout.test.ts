@@ -112,6 +112,49 @@ test('the shipped rotate band lays out as the mod draws it', () => {
   ])
 })
 
+// Each cell names the node that drew it, as the index path from the root, so
+// a click on the canvas can find the node under it. On the oracle band's
+// middle row: col 0 is the border and col 1 the padding (the Box's own), col 7
+// is the `r` of `rotate` (the Button, child 1), col 66 the first meter cell
+// (the warning Text, child 1 of the Text at child 4).
+test('every cell of the oracle band names the node that drew it', () => {
+  const band = B({ borderStyle: 'round', borderColor: 'claude', paddingX: 1, key: 'cs-rotate-band' },
+    T({ color: 'coral', bold: true }, '\u2733 '),
+    { type: 'Button', props: { key: 'cs-rotate', hotkey: '1', plain: true, label: 'rotate this conversation' }, children: [] },
+    T({ dimColor: true }, '  \u00b7  '),
+    { type: 'Button', props: { key: 'cs-wrap', hotkey: '2', plain: true, label: 'wrap up this session' }, children: [] },
+    { type: 'Text', props: {}, children: [
+      T({ dimColor: true }, '  \u00b7  '),
+      T({ color: 'warning' }, '\u2588'.repeat(5)),
+      T({ dimColor: true }, '\u2591'.repeat(5)),
+      T({ color: 'warning', bold: true }, ' 47%'),
+    ] },
+  )
+  const g = layout(band, 100)
+  expect(g.rows[0][0]).toMatchObject({ ch: '\u256d', path: [] })
+  expect(g.rows[1][0]).toMatchObject({ ch: '\u2502', path: [] })
+  expect(g.rows[1][1]).toMatchObject({ ch: ' ', path: [] })
+  expect(g.rows[1][7]).toMatchObject({ ch: 'r', path: [1] })
+  expect(g.rows[1][66]).toMatchObject({ ch: '\u2588', path: [4, 1] })
+})
+
+// Width 9, content 3 + gap 2 + 1 = 6, so flex-end leads with 3 cells.
+test('a gap, a margin and justify slack belong to the Box that makes them', () => {
+  const g = layout(B({ width: 9, gap: 2, justifyContent: 'flex-end' }, B({ marginRight: 1 }, T({}, 'ab')), T({}, 'c')), 40)
+  expect(toText(g)).toEqual(['   ab   c'])
+  expect(g.rows[0].map((c: any) => c.path)).toEqual([[], [], [], [0, 0], [0, 0], [0], [], [], [1]])
+})
+
+test('every cell of every band the gallery draws names a node', () => {
+  const { STATES, VARIANTS } = require('../mods-band-variants.js')
+  const unnamed: string[] = []
+  for (const v of VARIANTS) for (const st of STATES) for (const cols of [40, 80]) {
+    const g = layout(v.draw(st.facts, cols, 'light'), cols)
+    g.rows.forEach((r: any[], y: number) => r.forEach((c: any, x: number) => { if (!Array.isArray(c.path)) unnamed.push(`${v.id} / ${st.id} / ${cols} at ${y},${x}`) }))
+  }
+  expect(unnamed).toEqual([])
+})
+
 test('toJsx emits the tree the lab prints, palette keys quoted and raw inks braced', () => {
   const { toJsx } = require('../mods-layout.js')
   const tree = B({ borderStyle: 'round', borderColor: 'CORAL', paddingX: 1, key: 'band' },
