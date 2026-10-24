@@ -105,6 +105,15 @@ test('shipped folds the oldest four of fourteen prompts and names the newest', (
   expect(lines('shipped', 'rail-many', 80)[1]).toBe('  \u25cf \u20264\u2502\u2506\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2503  ' + label + ' '.repeat(62 - label.length))
 })
 
+// The fewest cells a named prompt gets. rail-few has no words, so under
+// shipped labelCells = cols - 2 (inset) - 2 (mark) - 3 (bars) - 2 (gap):
+// 19 cols leave 10, the minimum, and the label is cut to fit; 18 leave 9,
+// and no label is drawn.
+test('shipped names the prompt when ten cells are left after the rail, and not at nine', () => {
+  expect(lines('shipped', 'rail-few', 19)).toEqual([' '.repeat(19), '  \u25cf \u2502\u2502\u2503  #3 why do\u2026'])
+  expect(lines('shipped', 'rail-few', 18)).toEqual([' '.repeat(7), '  \u25cf \u2502\u2502\u2503'])
+})
+
 test('every variant that draws a rail folds fourteen prompts into \u20264 at 80 cols', () => {
   const railed = VARIANTS.filter((v: any) => lines(v.id, 'rail-many', 80).some((row: string) => row.includes('\u2503')))
   expect(railed.map((v: any) => v.id)).toEqual(['shipped', 'keys-first', 'status-first', 'two-zone', 'rail-first', 'capsule', 'stacked'])
