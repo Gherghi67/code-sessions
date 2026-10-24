@@ -7,7 +7,8 @@
   // Text's words are its `text` prop, so only a Box or a Button has kids. A
   // node is addressed by its index path from the frame's root.
   // Doc = { frames: [{ id, name, tree }], selection: { frame, path } | null,
-  //         exportFrame: the frame the JSX pane prints }.
+  //         exportFrame: the frame the JSX pane prints,
+  //         edit: what the last edit did, as the history lists it }.
 
   var show = function (path) { return JSON.stringify(path); };
   var clone = function (value) { return JSON.parse(JSON.stringify(value)); };

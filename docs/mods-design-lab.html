@@ -1261,8 +1261,8 @@ function composeRender(){
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
   $("bd-hist").innerHTML=bdHistory();
-  $("bd-note").hidden=!bdNote; $("bd-note").textContent=bdNote;
   bdSave();
+  $("bd-note").hidden=!bdNote; $("bd-note").textContent=bdNote;
 }
 // One line per step, newest first: the undone steps ahead (dim), the
 // present, then the steps back. A line jumps by its offset from the present.
@@ -1290,7 +1290,10 @@ function bdTravel(by){ bdDraft=null; bdHist=BandEditor.jump(bdHist,by); bdPanelS
 // is set aside under BD_KEY.unreadable and named on the page.
 const BD_KEY="mods-lab-band-designer", OLD_KEY="mods-lab-band";
 let bdNote="";
-function bdStore(){ try{ return window.localStorage; }catch{ return null; } }
+function bdStore(){
+  try{ return window.localStorage; }
+  catch(err){ bdNote=`localStorage is out of reach (${err.message}): the designer lasts until the page closes.`; return null; }
+}
 function bdShipped(){
   const drawn=BandVariants.VARIANTS[0].draw(BandVariants.STATES.find(x=>x.id==="rotate-due").facts,cols(),theme());
   return {frames:[{id:"f1",name:"Shipped · rotate-due",tree:BandEditor.fromEngine(drawn)}],selection:null,exportFrame:"f1",edit:"open the shipped band"};
