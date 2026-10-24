@@ -814,6 +814,7 @@ the conversation it meets next unjudged.
 Design lab: `docs/mods-design-lab.html` (open it in a browser) shows every element, prop, render site and rule a mod can use, and the
 rotate capsule's presets and knobs, each state printing the
 JSX it maps to, in the status line's inks; the shipped capsule is its "Inked" preset.
+Its Band variants panel draws the shipped band and seven sketches of it (`docs/mods-band-variants.js`, pinned by `docs/test/band-variants.test.ts`) in each of fifteen states, so you can judge a direction against what ships before it reaches the mod.
 
 The panel it opens on is a canvas: build a band out of nested Box, Text and
 Button, set each node's props, and copy the JSX underneath into a mod. The
