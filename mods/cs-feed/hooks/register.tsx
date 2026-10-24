@@ -6,9 +6,10 @@ import { active, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWork
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
-import { decideGroup, decideReply, decideSpinner, decideUser } from './verdict'
+import { decideCall, decideGroup, decideReply, decideSpinner, decideUser } from './verdict'
+import { callId } from './transcript'
 import type { CallView, Context } from './verdict'
-import { NOTHING, drawGroup, drawReply, drawUser, inks } from './draw'
+import { NOTHING, drawCall, drawGroup, drawReply, drawUser, inks } from './draw'
 import type { Pen } from './draw'
 
 type $ = EngineInterface
@@ -357,7 +358,8 @@ export const PAINTERS = {
   ToolUse: async (e, cx, pen) => {
     // decideCall(toCallView(e.props), cx) -> nothing | tree(drawCall). Under the default renderer a lone call
     // arrives here, under fullscreen as a one-call ToolGroup (spike2 M3): both go through decideCall.
-    throw new Error('not implemented')
+    const { verdict, live } = decideCall(toCallView(e.props), cx)
+    return { drawn: { kind: 'tree', tree: drawCall(verdict, pen) }, live }
   },
   ToolGroup: async (e, cx, pen) => {
     const { verdict, live } = decideGroup({ ...e.props, calls: e.props.calls.map(toCallView) }, cx)
@@ -457,6 +459,7 @@ async function site<C extends Hooked>($: $, e: RenderInput<C>, next: (e: RenderI
         el: $.ui.resolve(e), ink: inks(load.light), room: cx.room,
         pad: e.surface === 'terminal' ? 7 : 0, clickable: cx.clickable,
         press: key => toggle(load, $, key),
+        helpers: async () => { await $.ui.open({ id: HELPERS_PANE, title: 'Helpers', focus: true }) }, cx,
       }
       const decision = await paint(e as RenderInput<C>, cx, pen)
       if (e.component === 'AssistantMessage' && decision.claim !== undefined && decision.claim !== 'pending') noteStepsDrawn(load, $, e.requestId, decision.claim === 'drawn')
@@ -516,5 +519,12 @@ async function context($: $, e: RenderInput, s: import('./settings').Session): P
 
 /** ToolUse props or one ToolGroupCall, parsed at the boundary. */
 function toCallView(call: unknown): CallView {
-  throw new Error('not implemented')
+  if (!call || typeof call !== 'object' || Array.isArray(call) || !('tool' in call) || typeof call.tool !== 'string') throw new Error('tool row has no tool name')
+  const row = call as Record<string, unknown>
+  return {
+    id: typeof row.tool_use_id === 'string' && row.tool_use_id ? callId(row.tool_use_id) : undefined,
+    tool: call.tool,
+    input: row.input && typeof row.input === 'object' && !Array.isArray(row.input) ? row.input as Record<string, unknown> : {},
+    isRunning: row.isRunning === true, isErrored: row.isErrored === true, isInterrupted: row.isInterrupted === true, output: row.output,
+  }
 }

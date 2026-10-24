@@ -2,9 +2,9 @@
 // ABOUTME: No decisions and no $ calls but resolve; a Button never sits inside a Text (the engine refuses the whole tree).
 import type { EngineInterface, RenderElement } from 'claude-code'
 
-import type { BandVerdict, CallVerdict, GroupVerdict, ReplyVerdict, UserVerdict } from './verdict'
+import type { BandVerdict, CallVerdict, Context, GroupVerdict, ReplyVerdict, UserVerdict } from './verdict'
 import type { FeedCommand, Session } from './settings'
-import { burstLine, frameBody, frameHead, helperNoteLine, hhmm, hookNotice, joined, labels, marks, peerLine } from './words'
+import { burstLine, callChips, callWords, fit, frameBody, frameHead, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, outputLines, peerLine, questionLines, runChips, runWords, stepsLine } from './words'
 
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
 
@@ -26,14 +26,37 @@ export type Pen = {
   readonly room: number
   readonly pad: number // 7 on the terminal, 0 on desktop
   readonly clickable: boolean
-  readonly press: (key: string) => void // session.toggle
+  readonly press: (key: string) => Promise<void> // session.toggle
+  readonly helpers: () => Promise<void>
+  readonly cx: Context
 }
 
 export const NOTHING = (pen: Pen): RenderElement => pen.el.Box({})
 
 /** Turn line, run line, call line, helper row, question rows (§4.6, §7.1, §11). */
 export function drawCall(v: CallVerdict, pen: Pen): RenderElement {
-  throw new Error('not implemented')
+  const { Box, Text, Button } = pen.el
+  switch (v.draw) {
+    case 'nothing': return NOTHING(pen)
+    case 'turn': return <Box flexDirection="column">{v.done > 0 ? <Box paddingLeft={pen.pad} flexDirection="row"><Text dimColor>{stepsLine(v.done)}</Text>{chevron(`turn-${v.turn}`, v.opened, pen)}</Box> : null}{v.opened ? <Box paddingLeft={2} flexDirection="column">{v.body.map(call => drawCall(call, pen))}</Box> : null}</Box>
+    case 'run': {
+      const naming = v.naming ? pen.cx.t.calls.get(v.naming) : undefined
+      const words = runWords(v.run, pen.cx.t, naming ? callWords(naming, 'present') : undefined)
+      const chips = !naming && pen.cx.view.style !== 'line' ? runChips(v.run, pen.cx.t) : []
+      return <Box flexDirection="column"><Box paddingLeft={pen.pad} flexDirection="row"><Text color={naming ? pen.ink.accent : undefined} dimColor={!naming}>{naming ? marks.live : marks.idle}</Text><Text>{fit(words, pen.room - 4)}</Text>{chips.map(chip => <Text backgroundColor={pen.ink.chip}>{chip}</Text>)}{chevron(`open-${v.run.id}`, v.opened, pen)}</Box>{v.opened ? <Box paddingLeft={2} flexDirection="column">{v.run.calls.flatMap(id => {
+        const filed = pen.cx.t.calls.get(id)
+        if (!filed) return []
+        const done = filed.outcome.state === 'done' ? filed.outcome : undefined
+        return [drawCall({ draw: 'call', call: { id, tool: filed.tool, input: filed.input, isRunning: !done, isErrored: done?.errored === true, isInterrupted: done?.interrupted === true, output: done?.output }, filed, opened: true }, pen)]
+      })}</Box> : null}</Box>
+    }
+    case 'call': {
+      const chips = pen.cx.view.style === 'line' ? [] : callChips(v.call, v.filed)
+      return <Box flexDirection="column"><Box paddingLeft={pen.pad} flexDirection="row"><Text color={v.call.isErrored ? pen.ink.red : v.call.isRunning ? pen.ink.accent : undefined} dimColor={!v.call.isRunning && !v.call.isErrored}>{v.call.isRunning ? marks.live : marks.idle}</Text><Text>{fit(callWords(v.call, v.call.isRunning ? 'present' : 'past'), pen.room - 4)}</Text>{chips.map(chip => <Text backgroundColor={pen.ink.chip}>{chip}</Text>)}{v.call.id ? chevron(v.call.id, v.opened, pen) : null}</Box>{v.opened ? <Box paddingLeft={pen.pad + 2} flexDirection="column">{outputLines(v.call.output ?? (v.filed?.outcome.state === 'done' ? v.filed.outcome.output : undefined)).map(line => <Text dimColor>{line}</Text>)}</Box> : null}</Box>
+    }
+    case 'helper': return <Box paddingLeft={pen.pad} flexDirection="row"><Text color={v.state === 'failed' || v.state === 'stopped' ? pen.ink.red : pen.ink.peer}>{helperLine(v.call, v.state, v.elapsedMs)}</Text>{pen.clickable ? <Button key={`helper-${v.call.id ?? v.call.tool}`} label={marks.closed} onPress={pen.helpers} /> : <Text dimColor>{marks.closed}</Text>}</Box>
+    case 'question': return <Box paddingLeft={pen.pad} flexDirection="column">{questionLines(v.call, v.call.id ? pen.cx.t.calls.get(v.call.id) : undefined).map(line => <Text>{line}</Text>)}</Box>
+  }
 }
 /** 'stack' draws each call's tree in a column; 'batch' the §7.2 helper batch; 'engine' never reaches here. */
 export function drawGroup(v: Exclude<GroupVerdict, { draw: 'engine' }>, pen: Pen): RenderElement {

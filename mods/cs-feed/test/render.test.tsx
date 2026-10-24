@@ -49,3 +49,18 @@ test('AssistantMessage frames the engine markdown once with the terminal claude 
   expect(flags).toEqual([false])
   await row.unmount()
 })
+
+test('ToolUse draws a completed read with its own words and a fullscreen disclosure', async ($, on) => {
+  session(on)
+  let calls = 0
+  on('ui.render', { component: 'ToolUse' }, ($, e) => { calls++; return $.ui.resolve(e).Text({ children: 'engine tool' }) })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolUse', viewport: { columns: 80, rows: 24, isFullscreen: true }, props: { tool_use_id: 'read', tool: 'Read', input: { file_path: '/repo/notes.md' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'the notes' } })
+  expect((await row.find({ type: 'Text', text: 'Read notes.md' }))?.text).toBe('Read notes.md')
+  expect((await row.find({ type: 'Button' }))?.props.label).toBe('›')
+  expect(calls).toBe(1)
+  await $.ui.press({ plugin: 'cs-feed', key: 'read' })
+  expect((await row.find({ type: 'Text', text: 'the notes' }))?.text).toBe('the notes')
+  expect((await row.find({ type: 'Button' }))?.props.label).toBe('⌄')
+  expect(calls).toBe(2)
+  await row.unmount()
+})

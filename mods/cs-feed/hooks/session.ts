@@ -810,6 +810,8 @@ export function noteStepsDrawn(load: Load, $: $, reply: string, drew: boolean): 
  * Every instance then passes through, so it costs one evaluation wave and
  * changes nothing drawn.
  */
-export function toggle(load: Load, $: $, key: string): void {
-  throw new Error('not implemented')
+export async function toggle(load: Load, $: $, key: string): Promise<void> {
+  if (load.opened.has(key)) load.opened.delete(key)
+  else load.opened.add(key)
+  await $.ui.invalidate('ui.render')
 }

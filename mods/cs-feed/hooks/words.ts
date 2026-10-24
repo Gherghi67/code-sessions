@@ -29,6 +29,25 @@ export function helperNoteLine(headline: string, durationMs?: number): string {
   return `${marks.peer} ${joined(['helper', durationMs === undefined ? undefined : elapsed(durationMs), headline])}`
 }
 
+export function helperLine(call: CallView, state: import('./verdict').HelperState, durationMs?: number): string {
+  return joined([callWords(call, state === 'running' || state === 'dispatched' ? 'present' : 'past'), state === 'dispatched' ? 'dispatched · running' : state, durationMs === undefined ? undefined : elapsed(durationMs)])
+}
+
+export function outputLines(output: unknown): readonly string[] {
+  const text = typeof output === 'string' ? output : output && typeof output === 'object' && !Array.isArray(output)
+    ? ['stdout', 'stderr'].flatMap(key => { const value = (output as Record<string, unknown>)[key]; return typeof value === 'string' ? [value] : [] }).join('\n') : ''
+  return text.split('\n').filter((line, index, rows) => line !== '' || index < rows.length - 1).slice(0, 12)
+}
+
+export function questionLines(call: CallView, filed?: FiledCall): readonly string[] {
+  if (filed?.outcome.state === 'done' && filed.outcome.answers?.length) return filed.outcome.answers.map(pair => `${marks.question} ${pair.question} → ${pair.answer}`)
+  const questions = Array.isArray(call.input.questions) ? call.input.questions.flatMap(question => {
+    if (!question || typeof question !== 'object' || !('question' in question) || typeof question.question !== 'string') return []
+    return [question.question.split(/(?<=[?.!])\s/)[0] ?? question.question]
+  }) : []
+  return [...questions.map(question => `Asked you: ${question}`), ...(call.isRunning ? [] : ['No answer'])]
+}
+
 export function frameHead(frame: Frame & { from: string }): string {
   return `${marks.peer} ${joined([frame.from, frame.state, frame.at === undefined ? undefined : hhmm(frame.at), frame.summary, frame.relays ? 'relays content written by others' : undefined])}`
 }
