@@ -134,13 +134,6 @@ test('the cells that clip at 60 cols are the ones the notes name', () => {
   expect(clipped).toEqual(['shipped / everything', 'keys-first / everything', 'status-first / everything', 'two-zone / everything', 'rail-first / everything', 'capsule / everything', 'stacked / everything'])
 })
 
-test('every variant fits 60 cols in every state, or its note says it clips', () => {
-  for (const { v, s } of cells()) {
-    const w = layout(v.draw(s.facts, 60, 'light'), 60).w
-    expect({ cell: `${v.id} / ${s.id}`, fits: w <= 60 || /\bclips\b/.test(v.note) }).toEqual({ cell: `${v.id} / ${s.id}`, fits: true })
-  }
-})
-
 // Glyphs a monospace terminal font renders: box drawing, the mark, the queue
 // glyph, the middle dot, the ellipsis and the check. Never the Miscellaneous
 // Symbols block, emoji, or the small square, which render as tofu or too light.
