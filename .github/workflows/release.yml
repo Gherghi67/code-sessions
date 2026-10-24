@@ -18,7 +18,8 @@ jobs:
   # tag pushed by hand would build and publish untested. This job makes the
   # rule hold for every tag: it fails unless the Test workflow concluded
   # success for exactly the tagged commit. A commit that never reached main
-  # has no Test run (test.yml runs on push to main) and fails here too; a run
+  # has no Test run (test.yml runs on push to main, and skips a push that only
+  # touches docs/superpowers or docs/upstream) and fails here too; a run
   # still in progress fails the same way, so tag after Test finishes.
   ci-green:
     runs-on: ubuntu-latest
