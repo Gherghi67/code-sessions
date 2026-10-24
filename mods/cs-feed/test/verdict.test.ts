@@ -183,6 +183,16 @@ test('rule 1 folds a live turn onto its first machinery call and counts only com
   expect(decideCall(call(), { ...cx, view: { ...cx.view, hide: ['tool'] } }).verdict).toEqual({ draw: 'turn', turn: 'a', done: 2, opened: false, body: [] })
 })
 
+test('a call the snapshot does not hold is live only while a turn is open, running or done', () => {
+  const cx = context()
+  expect(decideCall(call('unfiled', 'Read', true), cx)).toEqual({ verdict: { draw: 'nothing' }, live: true })
+  expect(decideCall(call('unfiled', 'Read'), cx).live).toBe(true)
+  const idle = { ...cx, open: undefined, phase: 'idle' as const }
+  expect(decideCall(call('unfiled', 'Read'), idle).live).toBe(false)
+  expect(decideCall({ ...call('unfiled', 'Read'), id: undefined }, idle).live).toBe(false)
+  expect(decideGroup({ calls: [call('unfiled', 'Read'), call('other', 'Bash')], isActive: false, isExpanded: false, isCallsOnly: true }, idle).live).toBe(false)
+})
+
 test('rule 2 hides a spent turn when clear is on and keep and group are off', () => {
   const cx = context()
   expect(decideCall(call(), { ...cx, open: undefined, phase: 'idle', view: { ...cx.view, group: false } })).toEqual({ verdict: { draw: 'nothing' }, live: false })

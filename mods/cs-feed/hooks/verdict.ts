@@ -117,7 +117,7 @@ export function helperBusy(status: string): boolean {
  *     turn was live and left pending) the line stays here and the decision is
  *     live, so the LIVE bump the reply's claim schedules redraws this row.
  *     A fenced reply never claims, so its line stays here in both plugin orders.
- * live = the call's turn is the open turn, or the call is unfiled.
+ * live = the call's turn is the open turn, or the call is unfiled while a turn is open.
  */
 export function decideCall(call: CallView, cx: Context): Decision<CallVerdict> {
   return callDecision(call, cx, true)
@@ -126,7 +126,9 @@ export function decideCall(call: CallView, cx: Context): Decision<CallVerdict> {
 function callDecision(call: CallView, cx: Context, turnLine: boolean): Decision<CallVerdict> {
   const filed = call.id ? cx.t.calls.get(call.id) : undefined
   const turn = filed ? cx.t.byId.get(filed.turn) : undefined
-  const live = !filed || filed.turn === cx.open?.id
+  // An unfiled call reads LIVE only while a turn is open (it may be about to be filed, rationale decision 8);
+  // while idle it is history older than the snapshot's window, or id-less, and no refresh will file it.
+  const live = filed ? filed.turn === cx.open?.id : cx.open !== undefined
   const opened = filed ? cx.opened.has(`turn-${filed.turn}`) : false
   const folded = cx.view.group && !(!live && cx.view.keep)
   if (filed && turn && folded && turnLine && turn.first === filed.id) {

@@ -1408,7 +1408,7 @@ CS_PAYLOAD_SHA256=(
     "097ae1502394519791b890aad368f95a569a64feb8ea8ca0423f6e3e39c714ee  mods/cs-feed/hooks/settings.ts"
     "1ce533ee58e6ce894c76d1c16522a622e112d9d8f967b548944da38d61ad4248  mods/cs-feed/hooks/state.d.ts"
     "bd96c958d0985810f5d509f2e856c9633e02f4030644cfe6c26547fc88c0ec2f  mods/cs-feed/hooks/transcript.ts"
-    "89053b1cbca514a931d5ad87d6b0103e87ee7ce3291a8134641e7fb202c2a842  mods/cs-feed/hooks/verdict.ts"
+    "bc0c0524bf350c9e1cbd24a95e0e9a71c4b1902f959d2edef6e27b30a60895ac  mods/cs-feed/hooks/verdict.ts"
     "438e3bfb110c8b0a921355bcf4550f80a6e939feff1869013c90eedfb535f733  mods/cs-feed/hooks/words.ts"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"

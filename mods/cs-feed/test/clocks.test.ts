@@ -105,6 +105,30 @@ test('a running helper row and a busy helper batch redraw with the clocks; a fin
   await batch.unmount()
 })
 
+test('a call older than the snapshot is drawn from its props once while no turn is open, whatever the LIVE bumps', async ($, on) => {
+  const rows: SessionMessage[] = [{ role: 'user', text: 'Start', toolUses: [] }]
+  const clock = feedOn(on, rows, () => [])
+  const bumps: unknown[] = []
+  let draws = 0
+  on('state.set', async ($, e, next) => { if (e.key === 'live') bumps.push(e.value); return next(e) })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('ui.render', { component: 'ToolUse' }, ($, e) => { draws++; return $.ui.resolve(e).Text({ children: 'engine tool' }) })
+  await $.turn.start({ text: 'Start', turnId: 'turn' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 'turn', reason: 'answer' })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolUse', requestId: 'old', props: { tool_use_id: 'old', tool: 'Read', input: { file_path: 'notes.md' }, isRunning: false, isErrored: false, isInterrupted: false } })
+  await clock.settle()
+  const before = { draws, bumps: bumps.length }
+  for (const uuid of ['one', 'two']) {
+    rows.push({ role: 'assistant', text: '', toolUses: [{ tool_use_id: `call-${uuid}`, tool: 'Read', input: { file_path: `${uuid}.md` }, result: {} }] })
+    await $.session.append({ door: 'response', origin: { kind: 'model', model: 'model' }, uuid, message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: `call-${uuid}`, name: 'Read', input: { file_path: `${uuid}.md` } }] } })
+    await clock.settle()
+  }
+  expect(bumps.length).toBe(before.bumps + 2)
+  expect(draws).toBe(before.draws)
+  await row.unmount()
+})
+
 test('the working line redraws with the clock while it counts helpers', async ($, on) => {
   const clock = feedOn(on, [{ role: 'user', text: 'Look around', toolUses: [] }], () => [{ id: 'reader', type: 'Explore', description: 'Read the notes', status: 'running' }])
   let draws = 0
