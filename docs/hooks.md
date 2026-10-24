@@ -819,7 +819,9 @@ Its Band variants panel draws the shipped band and seven sketches of it (`docs/m
 The panel it opens on is the Band designer, where you build a band out of
 nested Box, Text and Button on the strip itself. Click a cell to select the
 node that drew it, drag it to reorder, double-click its words to retype them,
-and set its props in the panel beside the strip. Each frame on the canvas is
+and set its props in the panel beside the strip. A chord's key and its word
+are one group on the strip, one level above the word, and moving the group
+carries both. Each frame on the canvas is
 one drawing, started empty or from any Band variants drawing in the picked
 state, and the frame marked for export prints the JSX to paste into a mod.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's

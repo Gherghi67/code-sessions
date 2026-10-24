@@ -157,6 +157,12 @@
     return e.check ? Btn(props, [e.label.slice(0, -1), T({ color: inks(theme).own }, "✓")]) : Btn(props);
   }
 
+  // A chord's key, bold in the session colour one cell before its word, and
+  // the word's Button, held in one Box so the two move as one.
+  function chord(e, key, button, theme) {
+    return Bx({ key: "cs-chord-" + e.role }, [Bx({ marginRight: 1 }, [T({ bold: true, color: inks(theme).own }, key)]), button]);
+  }
+
   // The shipped band's words: a shared chord prefix spelled once, dim,
   // `prefixGap` cells (2 on the shipped band) before the first bound key; each
   // key bold in the session colour; `sep` between entries. Returns the nodes
@@ -176,8 +182,7 @@
       var lead = i === first && prefix !== undefined;
       if (lead) nodes.push(Bx({ marginRight: gap }, [T({ dimColor: true }, prefix)]));
       var k = spelled(e);
-      if (k !== undefined) nodes.push(Bx({ marginRight: 1 }, [T({ bold: true, color: inks(theme).own }, k)]));
-      nodes.push(entryNode(e, theme));
+      nodes.push(k === undefined ? entryNode(e, theme) : chord(e, k, entryNode(e, theme), theme));
       text.push((lead ? prefix + " ".repeat(gap) : "") + (k === undefined ? "" : k + " ") + e.label);
     });
     return { nodes: nodes, cells: cells(text.join(sep)) };
@@ -277,9 +282,11 @@
       if (i > 0) { nodes.push(T({}, "  ")); text.push("  "); }
       var c = chordOf(e);
       var k = c === undefined ? undefined : prefix === undefined ? c : c.slice(prefix.length + 1);
-      if (k !== undefined) { nodes.push(Bx({ marginRight: 1 }, [T({ bold: true, color: inks(theme).own }, k)])); text.push(k + " "); }
-      if (e.kind === "chord") nodes.push(Btn({ key: e.key, action: ACTIONS[e.role], plain: true, label: e.label }));
-      else if (e.kind === "press") nodes.push(Btn({ key: e.key, plain: true, label: e.label }));
+      if (k !== undefined) text.push(k + " ");
+      if (e.kind === "chord") {
+        var button = Btn({ key: e.key, action: ACTIONS[e.role], plain: true, label: e.label });
+        nodes.push(k === undefined ? button : chord(e, k, button, theme));
+      } else if (e.kind === "press") nodes.push(Btn({ key: e.key, plain: true, label: e.label }));
       else nodes.push(T(e.ink === undefined ? { dimColor: true } : { bold: true }, e.label));
       text.push(e.label);
     });

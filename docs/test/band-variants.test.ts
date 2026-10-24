@@ -93,6 +93,38 @@ test('shipped prints the feed chord with its coloured check as the Button childr
   expect(toJsx(tree)).toContain("<Button key=\"cs-feed\" action=\"strip:jump3\" plain label={'feed \\u2713'} onPress={press}>feed <Text color=\"claude\">{'\\u2713'}</Text></Button>")
 })
 
+test('shipped holds each chord\'s key and its Button in one group', () => {
+  expect(toJsx(variant('shipped').draw(state('rotate-due'), 80, 'light'))).toContain([
+    '      <Box key="cs-chord-rotate">',
+    '        <Box marginRight={1}>',
+    '          <Text color="claude" bold>1</Text>',
+    '        </Box>',
+    '        <Button key="cs-rotate" action="strip:jump1" plain label="rotate" onPress={press} />',
+    '      </Box>',
+  ].join('\n'))
+})
+
+// Every drawing that spells a chord's key beside its word holds the two in
+// one Box keyed for the chord, so the designer moves them together. The
+// quiet line spells its keys apart from the words, in one trailing hint.
+const ROLES: Record<string, string> = { 'strip:jump1': 'rotate', 'strip:jump2': 'wrap', 'strip:jump3': 'feed' }
+test('every sketch with keys beside words groups each chord\'s key with its Button', () => {
+  const loose: string[] = []
+  for (const v of VARIANTS.filter((x: any) => x.id !== 'quiet')) for (const s of STATES) {
+    const walk = (n: any, parent: any) => {
+      if (!n || typeof n !== 'object') return
+      const role = n.type === 'Button' && ROLES[n.props.action]
+      if (role && s.facts.chords[role] !== undefined) {
+        const kids = parent.children.filter(Boolean)
+        if (parent.props.key !== `cs-chord-${role}` || kids.length !== 2 || kids[1] !== n) loose.push(`${v.id} / ${s.id} / ${role}`)
+      }
+      ;(n.children || []).forEach((k: any) => walk(k, n))
+    }
+    walk(v.draw(s.facts, 80, 'light'), null)
+  }
+  expect(loose).toEqual([])
+})
+
 test('shipped draws nothing when the band has nothing to say', () => {
   expect(variant('shipped').draw(state('idle'), 80, 'light')).toBeNull()
 })
