@@ -6,7 +6,7 @@ import { active, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWork
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
-import { decideCall, decideGroup, decideReply, decideSpinner, decideUser } from './verdict'
+import { decideCall, decideGroup, decideReply, decideSpinner, decideToolResult, decideUser } from './verdict'
 import { callId } from './transcript'
 import type { CallView, Context } from './verdict'
 import { NOTHING, drawCall, drawGroup, drawReply, drawUser, inks } from './draw'
@@ -366,8 +366,7 @@ export const PAINTERS = {
     return { drawn: verdict.draw === 'engine' ? { kind: 'engine' } : { kind: 'tree', tree: drawGroup(verdict, pen) }, live }
   },
   ToolResult: async (e, cx, pen) => {
-    // decideToolResult -> nothing when filed, else engine (§4.8).
-    throw new Error('not implemented')
+    return { drawn: { kind: decideToolResult(callId(e.props.tool_use_id), e.props.isExpanded, cx) }, live: false }
   },
   ToolProgress: async () => ({ drawn: { kind: 'rewrite', props: { hint: '' } }, live: false }),
   TurnDuration: async () => ({ drawn: { kind: 'nothing' }, live: false }),

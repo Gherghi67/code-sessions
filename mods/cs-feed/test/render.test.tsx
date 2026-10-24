@@ -1,14 +1,14 @@
 // ABOUTME: Checks each feed painter's visible words through real mounted engine render chains.
 // ABOUTME: Test hooks supply recorded session inputs and retain an observable engine drawing beneath the feed.
 import { expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, SessionMessage } from 'claude-code'
 
-function session(on: On) {
+function session(on: On, rows: SessionMessage[] = []) {
   on('session.cwd', () => ({ value: '/session' }))
   on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : { deny: 'ENOENT: no such file or directory' })
   on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
-  on('session.messages', () => ({ value: [] }))
+  on('session.messages', ($, e) => ({ value: e.as === 'api' ? [] : rows }))
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
   return mock.clock(on)
@@ -63,4 +63,18 @@ test('ToolUse draws a completed read with its own words and a fullscreen disclos
   expect((await row.find({ type: 'Button' }))?.props.label).toBe('⌄')
   expect(calls).toBe(2)
   await row.unmount()
+})
+
+test('ToolResult hides a filed result while its own expanded row stays with the engine', async ($, on) => {
+  session(on, [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'read', tool: 'Read', input: {} }] }])
+  let calls = 0
+  on('ui.render', { component: 'ToolResult' }, ($, e) => { calls++; return $.ui.resolve(e).Text({ children: 'engine result' }) })
+  const props = { tool_use_id: 'read', tool: 'Read', output: 'notes', isErrored: false }
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolResult', requestId: 'normal', props })
+  expect(await row.findAll({ type: 'Text' })).toEqual([])
+  const expanded = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolResult', requestId: 'expanded', props: { ...props, isExpanded: true } })
+  expect((await expanded.find({ type: 'Text' }))?.text).toBe('engine result')
+  expect(calls).toBe(2)
+  await row.unmount()
+  await expanded.unmount()
 })
