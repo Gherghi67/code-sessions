@@ -249,3 +249,58 @@ test('the settings pane stays usable while off and pressing group enables this s
   expect((await pane.find({ type: 'Text', text: 'custom' }))?.text).toBe('custom')
   await pane.unmount()
 })
+
+const HELPERS_PANE = { title: 'Helpers', isFocused: true, placement: 'inline', bodyColumns: 80, scroll: { offset: 0, bodyRows: 24 }, view: {} } as const
+
+test('the helpers pane says when no helper ran, whatever the toggle says', async ($, on) => {
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', () => ({ deny: 'ENOENT: no such file or directory' }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.render', { component: 'Pane' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine pane' }))
+  const pane = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'Pane', requestId: 'cs-feed-helpers', props: HELPERS_PANE })
+  expect((await pane.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['No helper ran in this session.'])
+  await pane.unmount()
+})
+
+test('the helpers pane shows the newest helpers first with their state, step and own calls, and keeps a head whose transcript is unreadable', async ($, on) => {
+  const main: SessionMessage[] = [
+    { role: 'user', text: 'Look around', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [
+      { tool_use_id: 'read-call', tool: 'Agent', input: { description: 'Read the notes' }, result: {}, text: 'done', agentId: 'reader', durationMs: 4000 },
+      { tool_use_id: 'plan-call', tool: 'Agent', input: { description: 'Make a plan' }, agentId: 'planner' },
+      { tool_use_id: 'gone-call', tool: 'Agent', input: { description: 'Check the build' }, result: {}, text: 'failed', isError: true, agentId: 'checker', durationMs: 2000 },
+    ] },
+  ]
+  const own: Record<string, SessionMessage[]> = {
+    reader: [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'r1', tool: 'Read', input: { file_path: '/repo/notes.md' }, result: {}, text: 'notes' }] }],
+    planner: [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'p1', tool: 'Grep', input: {}, result: {}, text: 'hits' }, { tool_use_id: 'p2', tool: 'Edit', input: { file_path: '/repo/plan.md' } }] }],
+  }
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', () => ({ deny: 'ENOENT: no such file or directory' }))
+  on('session.messages', ($, e) => {
+    if (e.agentId === undefined) return { value: e.as === 'api' ? [] : main }
+    const rows = own[e.agentId]
+    return { value: rows ?? { deny: `no transcript for ${e.agentId}` } }
+  })
+  on('agent.list', () => ({ value: [
+    { id: 'reader', type: 'Explore', description: 'Read the notes', status: 'completed' },
+    { id: 'planner', type: 'Plan', description: 'Make a plan', status: 'running' },
+    { id: 'checker', type: 'general-purpose', description: 'Check the build', status: 'failed' },
+  ] }))
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'Pane' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine pane' }))
+  const pane = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'Pane', requestId: 'cs-feed-helpers', props: HELPERS_PANE })
+  const texts = (await pane.findAll({ type: 'Text' })).map(text => text.text)
+  expect(texts).toEqual([
+    '○', 'Check the build · failed · 2s',
+    '●', 'Make a plan · working',
+    'now: Editing plan.md',
+    'Searched the code', 'Editing plan.md',
+    '○', 'Read the notes · finished · 4s',
+    'Read notes.md',
+  ])
+  expect(logs).toEqual(["cs-feed: could not read helper checker's transcript: no transcript for checker"])
+  await pane.unmount()
+})

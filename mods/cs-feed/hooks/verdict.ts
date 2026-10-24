@@ -1,6 +1,6 @@
 // ABOUTME: cs-feed's decisions: for each render site, what the row draws, from its own props, the snapshot, the view and this load's observations.
 // ABOUTME: Pure functions with no $ and no clock; draw.tsx turns a verdict into a tree. Every decision also says whether it depends on the open turn (then the row reads LIVE).
-import type { PromptOrigin, UserMessageFrom, UserMessageTask } from 'claude-code'
+import type { AgentInfo, PromptOrigin, SessionMessage, UserMessageFrom, UserMessageTask } from 'claude-code'
 
 import type { Observations, Opened, Phase } from './session'
 import type { Kind, View } from './settings'
@@ -8,7 +8,7 @@ import { modeOf } from './settings'
 import type { CallId, FiledCall, Run, Transcript, Turn, TurnId } from './transcript'
 import { callId } from './transcript'
 import type { ErrorLine, Frame } from './words'
-import { repliesOwnSteps, isRefusal, errorLine, callWords, framesFromText, hookTextLine, senderOf, peerHeadline, fit, elapsed, marks } from './words'
+import { repliesOwnSteps, isRefusal, errorLine, callWords, clean, framesFromText, hookTextLine, senderOf, peerHeadline, fit, elapsed, marks } from './words'
 
 /**
  * A call as a row's props show it, from ToolUse or one ToolGroupCall, parsed at
@@ -483,6 +483,45 @@ export function decideBand(props: { hasSurvey: boolean; isWorking: boolean; maxR
   if (!first || props.isWorking || cx.open) return answer({ draw: 'engine' })
   const shownElapsed = elapsedMs(first.id)
   return answer({ draw: 'background', words: first.words, isTest: background.some(run => run.isTest), more: background.length - 1, elapsedMs: shownElapsed, typing: props.bodyColumns >= 90 }, shownElapsed === undefined ? 'pulse' : 'both')
+}
+
+/** One helper in the Helpers pane (§7.4): its head's parts, its current step while it works, and its own last calls in words. */
+export type HelperBlock = {
+  readonly name: string
+  readonly status: 'working' | 'finished' | 'failed' | 'stopped'
+  readonly elapsedMs?: number
+  readonly now?: string
+  readonly calls: readonly string[]
+}
+
+/**
+ * §7.4: the last 6 top-level helpers of `agents` (as $.agent.list() orders
+ * them), newest first. A running helper's elapsed comes from the spawn this
+ * load saw (helperStartedAt, by its Agent call, found through the call's
+ * agentId); a finished one's from the call's durationMs; neither known: no
+ * time. Its own calls are the last 12 tool uses of its transcript (`own`, by
+ * agent id), present while a call has no result, past once it has one; "now"
+ * is the newest call's present words while the helper works. An unreadable
+ * transcript (`own` has undefined) leaves the head alone (§7.4 (c)).
+ */
+export function decideHelpersPane(agents: readonly AgentInfo[], t: Transcript, own: ReadonlyMap<string, readonly SessionMessage[] | undefined>, obs: Observations, now: number): readonly HelperBlock[] {
+  const crew = agents.filter(agent => !agent.parentId && !agent.teammateId).slice(-6).reverse()
+  return crew.map(agent => {
+    const working = helperBusy(agent.status)
+    const filed = [...t.calls.values()].find(call => call.agentId === agent.id)
+    const started = filed ? obs.helperStartedAt.get(filed.id) : undefined
+    const elapsedMs = working ? started === undefined ? undefined : Math.max(0, now - started) : filed?.outcome.state === 'done' ? filed.outcome.durationMs : undefined
+    const uses = (own.get(agent.id) ?? []).flatMap(message => message.toolUses).slice(-12)
+    const done = (use: (typeof uses)[number]) => use.result !== undefined || use.text !== undefined
+    const last = uses.at(-1)
+    return {
+      name: clean(agent.description) || agent.name || agent.type || 'helper',
+      status: working ? 'working' : agent.status === 'failed' ? 'failed' : agent.status === 'killed' ? 'stopped' : 'finished',
+      elapsedMs,
+      now: working && last ? callWords(last, 'present') : undefined,
+      calls: uses.map(use => callWords(use, done(use) ? 'past' : 'present')),
+    }
+  })
 }
 
 /** CommandOutput §3.3: dim "·" and the text, red on error, a leading "cs-feed:" removed; isExpanded -> engine. */

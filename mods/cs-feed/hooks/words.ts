@@ -46,6 +46,18 @@ export function pillLabel(pill: import('./verdict').Pill): string {
   return joined([pill.kind === 'helper' ? 'Helper' : pill.kind === 'test' ? '⚗ Test' : 'Job', pill.words, pill.elapsedMs === undefined ? undefined : elapsed(pill.elapsedMs)])
 }
 
+/** The Helpers pane's words (§7.4). */
+export const helpersPaneWords = { none: 'No helper ran in this session.', now: 'now:' } as const
+
+/** §7.4 head: "{name} · working · {elapsed}" while running, else "{name} · {status} · {elapsed}"; no time when none is known. */
+export function helperPaneHead(name: string, status: 'working' | 'finished' | 'failed' | 'stopped', durationMs?: number): string {
+  return joined([name, status, durationMs === undefined ? undefined : elapsed(durationMs)])
+}
+
+export function helperNowLine(step: string): string {
+  return `${helpersPaneWords.now} ${step}`
+}
+
 export function joined(parts: readonly (string | undefined)[]): string {
   return parts.filter(part => part !== undefined && part !== '').join(' · ')
 }

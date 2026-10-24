@@ -2,10 +2,10 @@
 // ABOUTME: No decisions and no $ calls but resolve; a Button never sits inside a Text (the engine refuses the whole tree).
 import type { EngineInterface, RenderElement } from 'claude-code'
 
-import type { BandVerdict, CallVerdict, Context, GroupVerdict, ReplyVerdict, UserVerdict } from './verdict'
+import type { BandVerdict, CallVerdict, Context, GroupVerdict, HelperBlock, ReplyVerdict, UserVerdict } from './verdict'
 import type { FeedCommand, FieldSpec, Session, View } from './settings'
 import { FIELDS, KINDS, parseFeedArgs } from './settings'
-import { kindChip, settingCommand, settingValue, settingsWords } from './words'
+import { helperNowLine, helperPaneHead, helpersPaneWords, kindChip, settingCommand, settingValue, settingsWords } from './words'
 import { backgroundLine, backgroundTail, braille, breathing, burstLine, callChips, callWords, fit, frameBody, frameHead, helperCounts, helperFraction, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, moreKinds, outputLines, peerLine, pillLabel, questionLines, runChips, runWords, stepsLine, usageLabel, usagePeriods } from './words'
 
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
@@ -151,8 +151,13 @@ function fieldPicture(spec: FieldSpec, view: View): readonly string[] {
     case 'after': return spec.picture(view.after)
   }
 }
-/** The "Helpers" pane (§7.4): last 6 helpers, newest first, head, "now:", up to 12 calls from each one's transcript. */
-export function drawHelpersPane(blocks: readonly HelperBlock[], pen: Pen): RenderElement {
-  throw new Error('not implemented')
+/** The "Helpers" pane (§7.4): the newest helpers first, each a head with the live glyph while it works, "now:" and its own last calls, indented. */
+export function drawHelpersPane(blocks: readonly HelperBlock[], pen: Pick<Pen, 'el' | 'ink' | 'room'>): RenderElement {
+  const { Box, Text } = pen.el
+  if (!blocks.length) return <Box><Text dimColor>{helpersPaneWords.none}</Text></Box>
+  const room = Math.max(1, pen.room - 2)
+  return <Box flexDirection="column">{blocks.map(block => {
+    const working = block.status === 'working'
+    return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Text color={working ? pen.ink.accent : block.status === 'finished' ? undefined : pen.ink.red} dimColor={!working}>{working ? marks.live : marks.idle}</Text><Text>{fit(helperPaneHead(block.name, block.status, block.elapsedMs), room)}</Text></Box>{block.now ? <Box paddingLeft={2}><Text dimColor>{fit(helperNowLine(block.now), room)}</Text></Box> : null}{block.calls.map(call => <Box paddingLeft={2}><Text dimColor>{fit(call, room)}</Text></Box>)}</Box>
+  })}</Box>
 }
-export type HelperBlock = { readonly head: string; readonly running: boolean; readonly now?: string; readonly calls: readonly string[] }

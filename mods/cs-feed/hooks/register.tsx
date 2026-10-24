@@ -1,15 +1,15 @@
 // ABOUTME: cs-feed mod: restyles the chat transcript ("the feed"). Always loaded, every hook always registered; a session whose .cs/local/feed is not exactly "on\n", or that cs -vet-session refuses, gets Claude Code's own drawing.
 // ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
-import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput, SessionMessage } from 'claude-code'
 
 import { active, appendText, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWorking, observeAppend, observeModel, observeSpawn, observePrompt, observeTurnComplete, observeTurnStart, openTurn, readLive, readPulse, readTick, replaceResponseText, startClocks, toggle, transcript, writeFeed } from './session'
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
-import { decideBand, decideCall, decideCommandOutput, decideGroup, decideReply, decideSpinner, decideToolResult, decideUser, sessionModes } from './verdict'
+import { decideBand, decideCall, decideCommandOutput, decideGroup, decideHelpersPane, decideReply, decideSpinner, decideToolResult, decideUser, sessionModes } from './verdict'
 import { callId } from './transcript'
 import type { CallView, Clock, Context } from './verdict'
-import { NOTHING, drawBand, drawCall, drawCommandOutput, drawGroup, drawReply, drawSettingsPane, drawUser, inks } from './draw'
+import { NOTHING, drawBand, drawCall, drawCommandOutput, drawGroup, drawHelpersPane, drawReply, drawSettingsPane, drawUser, inks } from './draw'
 import type { Pen } from './draw'
 
 type $ = EngineInterface
@@ -182,9 +182,25 @@ function registerFeed(on: On) {
     })
   })
 
+  // The Helpers pane (§7.4): the agent list, the main snapshot (for each
+  // helper's Agent call: its spawn time and durationMs) and, for the newest 6,
+  // each helper's own transcript. One that cannot be read leaves its head alone
+  // (§7.4 (c)); its deny is logged. While a helper works the pane reads TICK
+  // for its elapsed time and step.
   on('ui.render', { component: 'Pane', requestId: HELPERS_PANE }, async ($, e, next) => {
-    // TODO: $.agent.list(), then $.session.messages({ agentId }) for the newest 6, drawHelpersPane.
-    throw new Error('not implemented')
+    await next(e)
+    const agents = await $.agent.list()
+    const t = await transcript(load, $)
+    const shown = agents.filter(agent => !agent.parentId && !agent.teammateId).slice(-6)
+    const own = new Map<string, readonly SessionMessage[] | undefined>()
+    for (const agent of shown) {
+      const rows = await $.session.messages({ agentId: agent.id })
+      own.set(agent.id, Array.isArray(rows) ? rows : undefined)
+      if (!Array.isArray(rows)) await $.ui.log(`cs-feed: could not read helper ${agent.id}'s transcript: ${rows.deny}`)
+    }
+    const blocks = decideHelpersPane(shown, t, own, load.obs, Date.now())
+    if (blocks.some(block => block.status === 'working')) await readTick($)
+    return drawHelpersPane(blocks, { el: $.ui.resolve(e), ink: inks(load.light), room: e.props.bodyColumns })
   })
 
   // The transcript grew. One hook per door, never a bare session.append: sec-default
