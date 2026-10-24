@@ -69,13 +69,13 @@ export type HelperState = 'dispatched' | 'running' | 'finished' | 'failed' | 'st
 export function helperState(call: CallView, filed: FiledCall | undefined, agents: readonly import('claude-code').AgentInfo[]): HelperState {
   if (call.isRunning) return 'dispatched'
   const agent = filed?.agentId ? agents.find(agent => agent.id === filed.agentId) : undefined
-  if (agent && busy(agent.status)) return 'running'
+  if (agent && helperBusy(agent.status)) return 'running'
   if (call.isErrored || agent?.status === 'failed') return 'failed'
   if (call.isInterrupted || agent?.status === 'killed') return 'stopped'
   return 'finished'
 }
 
-function busy(status: string): boolean {
+export function helperBusy(status: string): boolean {
   return status === 'running' || status === 'pending' || status === 'waiting'
 }
 
@@ -271,12 +271,13 @@ export function decideUser(row: UserRow, cx: Context): Decision<UserVerdict> {
   if (hidden(cx.view, 'peer')) return answer({ draw: 'nothing' })
   const head = cx.obs.bursts.of.get(row.uuid)
   const members = head ? cx.obs.bursts.members.get(head) : undefined
+  const live = head === row.uuid && cx.obs.bursts.open === head
   if (head && members && members.length >= 2) {
     const opened = cx.opened.has(`burst-${head}`)
-    if (head === row.uuid) return answer({ draw: 'burst', members, opened })
+    if (head === row.uuid) return { verdict: { draw: 'burst', members, opened }, live }
     if (!opened) return answer({ draw: 'nothing' })
   }
-  return answer({ draw: 'peer', sender: senderOf(row.from, row.text), headline: peerHeadline(row.text, cx.room) })
+  return { verdict: { draw: 'peer', sender: senderOf(row.from, row.text), headline: peerHeadline(row.text, cx.room) }, live }
 }
 
 export type ReplyVerdict = {
@@ -417,15 +418,15 @@ export function decideBand(props: { hasSurvey: boolean; isWorking: boolean; maxR
     const pills: Pill[] = [...agents.filter(agent => agent.status === 'running').map(agent => ({ kind: 'helper' as const, words: fit(agent.description, 28) })), ...background.map(run => ({ kind: run.isTest ? 'test' as const : 'job' as const, words: run.words, elapsedMs: elapsedMs(run.id) }))]
     return answer(usage.fiveHour === undefined && usage.week === undefined && !pills.length ? { draw: 'engine' } : { draw: 'desktop', usage, pills })
   }
-  if (agents.some(agent => busy(agent.status))) {
+  if (agents.some(agent => helperBusy(agent.status))) {
     const members = [...cx.obs.batch.kinds].map(([id, kind]) => ({ kind, status: agents.find(agent => agent.id === id)?.status ?? 'completed' }))
-    const running = members.filter(member => busy(member.status)).length
+    const running = members.filter(member => helperBusy(member.status)).length
     const failed = members.filter(member => member.status === 'failed' || member.status === 'killed').length
     const done = members.length - running - failed
     const kinds = new Map<string, { kind: string; cells: string; done: number; n: number }>()
     for (const member of members) {
       const kind = kinds.get(member.kind) ?? { kind: fit(member.kind === 'general-purpose' ? 'general' : member.kind, 18), cells: '', done: 0, n: 0 }
-      const working = busy(member.status)
+      const working = helperBusy(member.status)
       const failed = member.status === 'failed' || member.status === 'killed'
       kind.cells += working ? '◐' : failed ? '✕' : '●'
       kind.done += !working && !failed ? 1 : 0

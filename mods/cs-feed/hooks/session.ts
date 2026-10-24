@@ -1,12 +1,14 @@
 // ABOUTME: cs-feed's per-load core: this session's record (mirror of .cs/local/feed and feed-view), the transcript snapshot and its refresh, the observations and the clocks.
 // ABOUTME: A new Load is made by every register(); $.state holds only three redraw tokens, written only from $.clock callbacks; the record is written only from event hooks.
-import type { EngineInterface } from 'claude-code'
+import type { Args, EngineInterface } from 'claude-code'
 import { atom, read } from 'claude-code'
 
 import type { Session } from './settings'
 import { CS_LOCAL, FEED_FILE, OFF_LINE, ON_LINE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView, viewText } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
 import { buildTranscript, callId, EMPTY } from './transcript'
+import { parseEnvelopes, senderOf } from './words'
+import { helperBusy } from './verdict'
 
 type $ = EngineInterface
 
@@ -34,6 +36,9 @@ export const PULSE = atom({ plugin: 'cs-feed', key: 'pulse' } as const, 0)
 export function readLive($: $): Promise<number> {
   return read($, LIVE)
 }
+
+export function readTick($: $): Promise<number> { return read($, TICK) }
+export function readPulse($: $): Promise<number> { return read($, PULSE) }
 
 /**
  * Where the main loop stands, from main-loop turn.start / turn.complete (observed,
@@ -174,8 +179,10 @@ export type Opened = Set<string>
  * live); turn.complete then sets phase idle and calls dirty(); the next refresh
  * finds the same `transcript` but `phase` changed, bumps LIVE, and the turn's
  * rows redraw spent and stop reading LIVE.
+ * `burst` holds the open peer head and its members, so arrivals and closure
+ * redraw that head through LIVE; a closed head stops subscribing.
  */
-export type Seen = { readonly transcript: string; readonly phase: Phase; readonly working: boolean | undefined }
+export type Seen = { readonly transcript: string; readonly phase: Phase; readonly working: boolean | undefined; readonly burst: string }
 
 /**
  * The snapshot and its one refresh (validate2 gap 2):
@@ -269,10 +276,68 @@ export function observePrompt(load: Load, row: { door: 'prompt' | 'delivery'; pe
   }
 }
 
+export function appendText(content: readonly { readonly type: string; readonly [field: string]: unknown }[]): string {
+  return content.flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n')
+}
+
+export function observeAppend(load: Load, row: Args<'session.append'>): void {
+  const text = appendText(row.message.content)
+  const kind = row.origin.kind
+  const now = Date.now()
+  if (kind === 'composer' || kind === 'bridge') {
+    load.obs.bursts.open = undefined
+    if (kind === 'composer' && !row.message.isMeta) {
+      load.obs.promptAt.set(row.uuid, now)
+      boundMap(load.obs.promptAt, 2000)
+    }
+  }
+  const frames = parseEnvelopes(text)
+  if (frames.length) {
+    load.obs.frames.set(row.uuid, frames)
+    boundMap(load.obs.frames, 200)
+  }
+  if (kind === 'peer' || kind === 'peer-send-message') {
+    const head = load.obs.bursts.open ?? row.uuid
+    load.obs.bursts.open = head
+    load.obs.bursts.of.set(row.uuid, head)
+    const members = load.obs.bursts.members.get(head) ?? []
+    if (!members.some(member => member.uuid === row.uuid)) load.obs.bursts.members.set(head, [...members, { uuid: row.uuid, sender: senderOf(undefined, text), at: now }])
+  }
+  if (kind === 'task-notification') for (const match of text.matchAll(/<tool-use-id>\s*([^<]+?)\s*<\/tool-use-id>/g)) {
+    const id = match[1]?.trim()
+    if (id) load.obs.bgEnded.add(callId(id))
+  }
+}
+
+function boundMap<K extends string, V>(map: Map<K, V>, limit: number): void {
+  while (map.size > limit) {
+    const key = map.keys().next().value
+    if (key === undefined) return
+    map.delete(key)
+  }
+}
+
+export function observeModel(load: Load, uuid: string, content: readonly { readonly type: string; readonly [field: string]: unknown }[]): void {
+  const text = appendText(content)
+  const calls = content.flatMap(block => block.type === 'tool_use' && typeof block.id === 'string' && block.id ? [block.id] : [])
+  observeResponse(load, { uuid, text, calls })
+  for (const block of content) {
+    if (block.type !== 'tool_use' || block.name !== 'Bash' || typeof block.id !== 'string' || !block.id || !block.input || typeof block.input !== 'object' || !('run_in_background' in block.input) || block.input.run_in_background !== true) continue
+    const id = callId(block.id)
+    if (!load.obs.bgSeenAt.has(id)) load.obs.bgSeenAt.set(id, Date.now())
+  }
+}
+
+export function observeHelper(load: Load, id: string): void {
+  load.obs.helperStartedAt.set(callId(id), Date.now())
+  boundMap(load.obs.helperStartedAt, 200)
+}
+
 export function observeTurnStart(load: Load): void {
   load.obs.mainTurn = { peer: load.obs.peerPending, openerTaken: false }
   load.obs.peerPending = false
   load.obs.phase = 'live'
+  load.obs.callSincePrompt = undefined
 }
 
 export function observeTurnComplete(load: Load): void {
@@ -290,6 +355,7 @@ export function recordStepsClaim(load: Load, reply: string, claim: import('./ver
 
 /** Called before next(response); the returned stored text may then replace the anchor text. */
 export function observeResponse(load: Load, row: { uuid: string; text: string; calls: readonly string[] }): void {
+  if (row.text) load.obs.bursts.open = undefined
   const first = row.calls[0]
   if (first && load.obs.mainTurn?.peer && !load.obs.mainTurn.openerTaken) {
     load.obs.turnOpeners.add(callId(first))
@@ -299,6 +365,8 @@ export function observeResponse(load: Load, row: { uuid: string; text: string; c
     const call = load.obs.callSincePrompt
     load.obs.anchors.set(row.uuid, { call, text: row.text, seq: ++load.obs.anchorSeq })
     load.obs.latestByCall.set(call, row.uuid)
+    boundMap(load.obs.anchors, 400)
+    for (const [id, reply] of load.obs.latestByCall) if (!load.obs.anchors.has(reply)) load.obs.latestByCall.delete(id)
   }
   const last = row.calls.at(-1)
   if (last) load.obs.callSincePrompt = callId(last)
@@ -626,7 +694,7 @@ export function transcript(load: Load, $: $): Promise<Transcript> {
       const api = await $.session.messages({ as: 'api' })
       const snapshot = buildTranscript(plain, api, load.obs.turnOpeners)
       snap.cached = snapshot
-      const seen: Seen = { transcript: JSON.stringify([[...snapshot.calls.values()], snapshot.turns, [...snapshot.runs.values()], snapshot.background]), phase: load.obs.phase, working: load.obs.working }
+      const seen: Seen = { transcript: JSON.stringify([[...snapshot.calls.values()], snapshot.turns, [...snapshot.runs.values()], snapshot.background]), phase: load.obs.phase, working: load.obs.working, burst: JSON.stringify([load.obs.bursts.open, load.obs.bursts.open ? load.obs.bursts.members.get(load.obs.bursts.open) : undefined]) }
       if (active(load) && JSON.stringify(seen) !== JSON.stringify(snap.bumped)) {
         $.clock.after(0, async () => {
           if (!active(load)) return
@@ -751,7 +819,16 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
       try {
         const agents = await $.agent.list()
         if (!active(load)) { load.clocks.tick = false; return }
+        const previous = new Set(load.agents.map(agent => agent.id))
         load.agents = agents
+        const crew = agents.filter(agent => !agent.parentId && !agent.teammateId)
+        if (crew.some(agent => helperBusy(agent.status))) {
+          load.obs.batch.startedAt ??= Date.now()
+          for (const agent of crew) if (helperBusy(agent.status) || load.obs.batch.kinds.has(agent.id) || !previous.has(agent.id)) load.obs.batch.kinds.set(agent.id, agent.type)
+        } else {
+          load.obs.batch.kinds.clear()
+          load.obs.batch.startedAt = undefined
+        }
         if (load.themeAt === undefined || Date.now() - load.themeAt >= 30000) {
           const rows = await $.config.list()
           if (!active(load)) { load.clocks.tick = false; return }
@@ -780,7 +857,7 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
 }
 
 function animating(load: Load): boolean {
-  return load.agents.some(agent => agent.status === 'running') || load.snap.cached.background.some(run => !load.obs.bgEnded.has(run.id))
+  return load.agents.some(agent => helperBusy(agent.status)) || load.snap.cached.background.some(run => !load.obs.bgEnded.has(run.id))
 }
 
 function startPulse(load: Load, $: $): void {

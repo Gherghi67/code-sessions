@@ -1,15 +1,15 @@
 // ABOUTME: Checks each feed painter's visible words through real mounted engine render chains.
 // ABOUTME: Test hooks supply recorded session inputs and retain an observable engine drawing beneath the feed.
 import { expect, mock, test } from 'claude-code/testing'
-import type { On, SessionMessage } from 'claude-code'
+import type { AgentInfo, On, SessionMessage } from 'claude-code'
 
-function session(on: On, rows: SessionMessage[] = []) {
+function session(on: On, rows: SessionMessage[] = [], agents: () => AgentInfo[] = () => []) {
   on('session.cwd', () => ({ value: '/session' }))
   on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : { deny: 'ENOENT: no such file or directory' })
   on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('session.messages', ($, e) => ({ value: e.as === 'api' ? [] : rows }))
-  on('agent.list', () => ({ value: [] }))
+  on('agent.list', () => ({ value: agents() }))
   on('config.list', () => ({ value: [] }))
   return mock.clock(on)
 }
@@ -78,3 +78,33 @@ test('ToolResult hides a filed result while its own expanded row stays with the 
   await row.unmount()
   await expanded.unmount()
 })
+
+test('prompt peer observations group two stored messages under their first row', async ($, on) => {
+  session(on)
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine peer' }))
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'head', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'First update' }] } })
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'tail', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'Second update' }] } })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'head', props: { text: 'First update', origin: { kind: 'peer' }, isExpanded: false } })
+  expect((await row.find({ type: 'Text', text: '⇄' }))?.text.split(' · ').slice(0, 2)).toEqual(['⇄ 2 messages', 'another session'])
+  const tail = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'tail', props: { text: 'Second update', origin: { kind: 'peer' }, isExpanded: false } })
+  expect(await tail.findAll({ type: 'Text' })).toEqual([])
+  await row.unmount()
+  await tail.unmount()
+})
+
+test('an already drawn peer head becomes a burst when the next peer arrives', async ($, on) => {
+  const clock = session(on)
+  on('ui.render', { component: 'UserMessage' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine peer' }))
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'head', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'First update' }] } })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'head', props: { text: 'First update', origin: { kind: 'peer' }, isExpanded: false } })
+  expect((await row.find({ type: 'Text' }))?.text).toBe('⇄ another session · First update')
+  await clock.settle()
+  await $.session.append({ door: 'prompt', origin: { kind: 'peer' }, uuid: 'tail', message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'Second update' }] } })
+  const tail = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'UserMessage', requestId: 'tail', props: { text: 'Second update', origin: { kind: 'peer' }, isExpanded: false } })
+  await clock.settle()
+  expect((await row.find({ type: 'Text', text: '⇄' }))?.text.split(' · ').slice(0, 2)).toEqual(['⇄ 2 messages', 'another session'])
+  expect(await tail.findAll({ type: 'Text' })).toEqual([])
+  await row.unmount()
+  await tail.unmount()
+})
+

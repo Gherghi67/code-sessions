@@ -37,3 +37,23 @@ test('a tick suspended in agent list stops after feed off without a token write 
   expect((await row.find({ type: 'Text' }))?.text).toBe('hint:ctrl+b')
   await row.unmount()
 })
+
+for (const status of ['pending', 'waiting'] as const) test(`the pulse continues while a helper is ${status}`, async ($, on) => {
+  const pulses: unknown[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : { deny: 'ENOENT: no such file or directory' })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [{ id: 'helper', description: 'Read notes', type: 'Explore', status }] }))
+  on('config.list', () => ({ value: [] }))
+  on('state.set', async ($, e, next) => { if (e.key === 'pulse') pulses.push(e.value); return next(e) })
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.hint }))
+  const clock = mock.clock(on)
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
+  await clock.advance(1070)
+  expect(pulses).toEqual([1])
+  await clock.advance(70)
+  expect(pulses).toEqual([1, 2])
+  await row.unmount()
+})

@@ -2,7 +2,7 @@
 // ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
 import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
 
-import { active, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWorking, openTurn, readLive, startClocks, toggle, transcript, writeFeed } from './session'
+import { active, appendText, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWorking, observeAppend, observeHelper, observeModel, observePrompt, observeTurnComplete, observeTurnStart, openTurn, readLive, readPulse, readTick, replaceResponseText, startClocks, toggle, transcript, writeFeed } from './session'
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
@@ -206,11 +206,8 @@ function registerFeed(on: On) {
     if (e.agentId !== undefined) return result
     // Synchronous from here to the return: no await. spike5 M19 measured this
     // continuation running before turn.start, 0-1 ms later, which consumes it.
-    load.obs.peerPending = e.origin.kind === 'peer' && e.message.isMeta === true
-    // TODO observe(load.obs, e), synchronous, by e.origin.kind:
-    //   composer -> promptAt.set(uuid, now); closes the open burst
-    //   peer     -> joins or starts a burst; <teammate-message envelopes -> frames
-    //   task-notification -> bgEnded.add(its <tool-use-id>)
+    observePrompt(load, { door: 'prompt', peer: e.origin.kind === 'peer', isMeta: e.message.isMeta === true })
+    observeAppend(load, e)
     dirty(load, $)
     return result
   })
@@ -223,15 +220,10 @@ function registerFeed(on: On) {
   on('session.append', { door: 'response' }, async ($, e, next) => {
     // BEFORE next, synchronously (uuid and tool_use blocks are pinned), so the
     // reply's first evaluation, +6-9 ms after this append (spike5 M18), finds it:
-    // TODO observeResponse(load.obs, e) when e.agentId === undefined:
-    //   non-empty text -> anchors.set(e.uuid, { call: callSincePrompt, text, seq: anchorSeq++ }) and
-    //                     latestByCall.set(callSincePrompt, e.uuid) when callSincePrompt is set; close the open burst
-    //   tool_use blocks, in order -> callSincePrompt = the last one's id;
-    //                     mainTurn?.peer && !mainTurn.openerTaken -> turnOpeners.add(first id), openerTaken = true
-    //   first sight of a run_in_background Bash -> bgSeenAt
+    if (e.agentId === undefined) observeModel(load, e.uuid, e.message.content)
     const result = await next(e)
     if (e.agentId !== undefined) return result
-    // TODO settleAnchorText(load.obs, e.uuid, result): the stored text replaces the anchor's (a hook beneath may rewrite text blocks). Synchronous.
+    if (result.message) replaceResponseText(load, e.uuid, appendText(result.message.content))
     dirty(load, $)
     return result
   })
@@ -247,7 +239,7 @@ function registerFeed(on: On) {
     // A peer delivered mid-turn opens no turn, so peerPending is not touched here.
     const result = await next(e)
     if (e.agentId !== undefined) return result
-    // TODO observe(load.obs, e)
+    observeAppend(load, e)
     dirty(load, $)
     return result
   })
@@ -256,10 +248,7 @@ function registerFeed(on: On) {
   // record, and only then clears it, so the next response keeps its peer opener.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
-      load.obs.mainTurn = { peer: load.obs.peerPending, openerTaken: false }
-      load.obs.peerPending = false
-      load.obs.phase = 'live'
-      load.obs.callSincePrompt = undefined
+      observeTurnStart(load)
       dirty(load, $)
     }
     return next(e)
@@ -273,8 +262,7 @@ function registerFeed(on: On) {
   // re-evaluates it (ruling §20.23 (a)). verdict.stepsOwner is built for both orders.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
-      load.obs.phase = 'idle'
-      load.obs.mainTurn = undefined
+      observeTurnComplete(load)
       dirty(load, $)
     }
     return next(e)
@@ -285,7 +273,7 @@ function registerFeed(on: On) {
   // mod hooks agent.spawn, and spike4's inert probe had none).
   on('agent.spawn', async ($, e, next) => {
     const result = await next(e)
-    if (e.parentAgentId === undefined) load.obs.helperStartedAt.set(e.tool_use_id as import('./transcript').CallId, Date.now())
+    if (e.parentAgentId === undefined) observeHelper(load, e.tool_use_id)
     return result
   })
 
