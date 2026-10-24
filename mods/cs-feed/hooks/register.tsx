@@ -2,7 +2,7 @@
 // ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
 import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
 
-import { active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, readLive, toggle, transcript, writeFeed } from './session'
+import { active, applyFeed, dirty, feedRecord, newLoad, noteWorking, openTurn, readLive, startClocks, toggle, transcript, writeFeed } from './session'
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
@@ -494,7 +494,14 @@ function sites(on: On, table: PainterTable): void {
  *     clickable: e.surface !== 'terminal' || !!e.viewport?.isFullscreen, room: (e.viewport?.columns ?? 80) - pad }
  */
 async function context($: $, e: RenderInput, s: import('./settings').Session): Promise<Context> {
-  throw new Error('not implemented')
+  startClocks(load, $, e.component === 'AbovePrompt' && e.surface === 'desktop')
+  const t = await transcript(load, $)
+  return {
+    t, view: s.view, obs: load.obs, opened: load.opened, open: openTurn(load, t),
+    phase: load.obs.phase, agents: load.agents, now: Date.now(), surface: e.surface,
+    clickable: e.surface !== 'terminal' || e.viewport?.isFullscreen === true,
+    room: Math.max(1, (e.viewport?.columns ?? 80) - (e.surface === 'terminal' ? 7 : 0)),
+  }
 }
 
 /** ToolUse props or one ToolGroupCall, parsed at the boundary. */

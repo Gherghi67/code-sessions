@@ -6,7 +6,7 @@ import { atom, read } from 'claude-code'
 import type { Session } from './settings'
 import { CS_LOCAL, FEED_FILE, OFF_LINE, ON_LINE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView, viewText } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
-import { callId, EMPTY } from './transcript'
+import { buildTranscript, callId, EMPTY } from './transcript'
 
 type $ = EngineInterface
 
@@ -245,6 +245,8 @@ export type Load = {
   /** The polled agent list and theme, refreshed by the 1 s tick. */
   agents: readonly import('claude-code').AgentInfo[]
   light: boolean
+  themeAt?: number
+  desktopBand?: boolean
   /** Whether the tick and pulse are scheduled; cleared by a callback that stops. startClocks is idempotent on it, so an off-on-off within one load never doubles them. */
   clocks: { tick: boolean; pulse: boolean }
 }
@@ -599,7 +601,39 @@ export async function vetOnRead(load: Load, $: $, cwd: string): Promise<Vetted> 
  * render.
  */
 export function transcript(load: Load, $: $): Promise<Transcript> {
-  throw new Error('not implemented')
+  const snap = load.snap
+  if (snap.state === 'clean') return Promise.resolve(snap.cached)
+  if (snap.inFlight) return snap.inFlight
+  snap.state = 'refreshing'
+  snap.inFlight = (async () => {
+    try {
+      const plain = await $.session.messages()
+      const api = await $.session.messages({ as: 'api' })
+      const snapshot = buildTranscript(plain, api, load.obs.turnOpeners)
+      snap.cached = snapshot
+      const seen: Seen = { transcript: JSON.stringify([[...snapshot.calls.values()], snapshot.turns, [...snapshot.runs.values()], snapshot.background]), phase: load.obs.phase, working: load.obs.working }
+      if (active(load) && JSON.stringify(seen) !== JSON.stringify(snap.bumped)) {
+        $.clock.after(0, async () => {
+          if (!active(load)) return
+          const value = await read($, LIVE)
+          if (!active(load)) return
+          snap.bumped = seen
+          await $.state.set({ plugin: 'cs-feed', key: 'live' }, value + 1)
+        })
+      }
+      const again = snap.again
+      snap.again = false
+      snap.inFlight = undefined
+      snap.state = again ? 'scheduled' : 'clean'
+      if (again && active(load)) return transcript(load, $)
+      return snapshot
+    } catch (error) {
+      snap.inFlight = undefined
+      snap.state = 'scheduled'
+      throw error
+    }
+  })()
+  return snap.inFlight
 }
 
 /**
@@ -657,7 +691,10 @@ export function openTurn(load: Load, t: Transcript): Turn | undefined {
  * clocks only on a painted draw.
  */
 export function noteWorking(load: Load, $: $, isWorking: boolean): void {
-  throw new Error('not implemented')
+  const changed = load.obs.working !== isWorking || load.obs.phase === 'unknown'
+  load.obs.working = isWorking
+  if (load.obs.phase === 'unknown') load.obs.phase = isWorking ? 'live' : 'idle'
+  if (changed) dirty(load, $)
 }
 
 /**
@@ -689,8 +726,59 @@ export function noteWorking(load: Load, $: $, isWorking: boolean): void {
  * `/feed off` while agent.list is held, release it, advance 5 s: zero
  * `state.set` of TICK or PULSE after the flip and no held wait left.
  */
-export function startClocks(load: Load, $: $): void {
-  throw new Error('not implemented')
+export function startClocks(load: Load, $: $, desktopBand = false): void {
+  if (!active(load)) return
+  if (desktopBand) load.desktopBand = true
+  if (!load.clocks.tick) {
+    load.clocks.tick = true
+    $.clock.after(1000, async function tick() {
+      if (!active(load)) { load.clocks.tick = false; return }
+      try {
+        const agents = await $.agent.list()
+        if (!active(load)) { load.clocks.tick = false; return }
+        load.agents = agents
+        if (load.themeAt === undefined || Date.now() - load.themeAt >= 30000) {
+          const rows = await $.config.list()
+          if (!active(load)) { load.clocks.tick = false; return }
+          const theme = rows.find(row => row.key === 'theme')?.value
+          load.light = typeof theme === 'string' && theme.startsWith('light')
+          if (load.desktopBand) {
+            const appearance = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 1000 })
+            if (!active(load)) { load.clocks.tick = false; return }
+            load.light = appearance.exitCode !== 0 || appearance.stdout.trim() !== 'Dark'
+          }
+          load.themeAt = Date.now()
+        }
+        const value = await read($, TICK)
+        if (!active(load)) { load.clocks.tick = false; return }
+        await $.state.set({ plugin: 'cs-feed', key: 'tick' }, value + 1)
+        if (!active(load)) { load.clocks.tick = false; return }
+        startPulse(load, $)
+        if (active(load)) $.clock.after(1000, tick)
+      } catch (error) {
+        load.clocks.tick = false
+        await $.ui.log(`cs-feed: clock stopped: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
+  }
+  startPulse(load, $)
+}
+
+function animating(load: Load): boolean {
+  return load.agents.some(agent => agent.status === 'running') || load.snap.cached.background.some(run => !load.obs.bgEnded.has(run.id))
+}
+
+function startPulse(load: Load, $: $): void {
+  if (!active(load) || !animating(load) || load.clocks.pulse) return
+  load.clocks.pulse = true
+  $.clock.after(70, async function pulse() {
+    if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
+    const value = await read($, PULSE)
+    if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
+    await $.state.set({ plugin: 'cs-feed', key: 'pulse' }, value + 1)
+    if (!active(load) || !animating(load)) { load.clocks.pulse = false; return }
+    $.clock.after(70, pulse)
+  })
 }
 
 /**

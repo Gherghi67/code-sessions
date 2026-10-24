@@ -13,7 +13,9 @@ export type Inks = {
 }
 /** §13 table; `light` from the /config theme, read by the 1 s tick at most every 30 s. */
 export function inks(light: boolean): Inks {
-  throw new Error('not implemented')
+  return light
+    ? { you: '#2f4f6f', claude: '#8a4a1f', peer: '#5b3fb5', mark: '#5b3fb5', chip: '#e4e6eb', green: '#1f7a4a', red: '#b42318', amber: '#8a5a00', accent: '#d97757' }
+    : { you: '#9fb4c8', claude: '#e3c4a2', peer: '#a78bfa', mark: '#b9acec', chip: '#3b3b3b', green: '#7fbf8f', red: '#e06c6c', amber: '#d8b36a', accent: '#d97757' }
 }
 
 /** Context every tree needs: elements, inks, room, whether chevrons are Buttons, and the press handler. */
