@@ -207,7 +207,7 @@ if inserted != tokens:
 insert_once(f"{feed}/register.tsx", "if (!session.on) return await engine()", "tally(`painter ${e.component}`)", "after")
 # The mirror's flips after the load's read (applyFeed is the one place `on` changes).
 insert_once(f"{feed}/session.ts", "load.feed = { on, view: current.view }", "tally(on ? 'mirror on' : 'mirror off')", "after")
-insert_once(f"{feed}/session.ts", "load.feed = { on: !feed.failed && !stored.failed && isOn(feed.text) && load.vet === 'passed', view }", "tally(load.feed.on ? 'record on' : 'record off')", "after")
+insert_once(f"{feed}/session.ts", "load.feed = { on: !feed.failed && isOn(feed.text) && load.vet === 'passed', view }", "tally(load.feed.on ? 'record on' : 'record off')", "after")
 # Token writes: before each $.state.set of LIVE, TICK or PULSE.
 insert_before_each(f"{feed}/session.ts", "await $.state.set({ plugin: 'cs-feed', key: '", lambda key: f"tally('state.set {key}')", 4)
 add_import(f"{feed}/register.tsx")
