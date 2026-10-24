@@ -2,13 +2,13 @@
 // ABOUTME: On/off comes from cs's band key (a ui.press hook reads the file after next) or /feed (writes it where cs -vet-session passes). PAINTERS is the one table of render sites; site() is the one caller of next().
 import type { EngineInterface, On, RenderComponent, RenderElement, RenderInput } from 'claude-code'
 
-import { active, appendText, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWorking, observeAppend, observeHelper, observeModel, observePrompt, observeTurnComplete, observeTurnStart, openTurn, readLive, readPulse, readTick, replaceResponseText, startClocks, toggle, transcript, writeFeed } from './session'
+import { active, appendText, applyFeed, dirty, feedRecord, newLoad, noteStepsDrawn, noteWorking, observeAppend, observeModel, observeSpawn, observePrompt, observeTurnComplete, observeTurnStart, openTurn, readLive, readPulse, readTick, replaceResponseText, startClocks, toggle, transcript, writeFeed } from './session'
 import type { Load } from './session'
 import { modeOf, parseFeedArgs, transition } from './settings'
 import type { FeedCommand } from './settings'
 import { decideBand, decideCall, decideCommandOutput, decideGroup, decideReply, decideSpinner, decideToolResult, decideUser, sessionModes } from './verdict'
 import { callId } from './transcript'
-import type { CallView, Context } from './verdict'
+import type { CallView, Clock, Context } from './verdict'
 import { NOTHING, drawBand, drawCall, drawCommandOutput, drawGroup, drawReply, drawSettingsPane, drawUser, inks } from './draw'
 import type { Pen } from './draw'
 
@@ -273,11 +273,18 @@ function registerFeed(on: On) {
   })
 
   // The one fact about a helper the transcript lacks: when a running one started.
+  // It is also how the band learns of a helper without polling: the spawn asks
+  // the next refresh to read $.agent.list(), and dirty() schedules it; a
+  // changed Seen.helpers bumps LIVE, which the band reads while a turn is open
+  // or a helper is known. A denied spawn started nothing.
   // Off cost: a new hop per helper spawn in every session, off included (no cs
   // mod hooks agent.spawn, and spike4's inert probe had none).
   on('agent.spawn', async ($, e, next) => {
     const result = await next(e)
-    if (e.parentAgentId === undefined) observeHelper(load, e.tool_use_id)
+    if (e.parentAgentId === undefined && result.deny === undefined) {
+      observeSpawn(load, e.tool_use_id)
+      dirty(load, $)
+    }
     return result
   })
 
@@ -307,8 +314,8 @@ export type Drawn<C extends RenderComponent> =
   | { readonly kind: 'tree'; readonly tree: RenderElement }
   | { readonly kind: 'nothing' }
 
-/** A decision and whether it was taken from the open turn's state (site() then reads LIVE). */
-export type Decided<D> = { readonly drawn: D; readonly live: boolean; readonly claim?: import('./verdict').StepsClaim }
+/** A decision, whether it was taken from the open turn's state (site() then reads LIVE), and the clock tokens it moves with (verdict.Clock). */
+export type Decided<D> = { readonly drawn: D; readonly live: boolean; readonly claim?: import('./verdict').StepsClaim; readonly clock?: Clock }
 
 /** A painter sees its row, the context and a pen. It has no `$` and no `next`: it cannot write, and it cannot skip the engine. */
 export type Painter<C extends RenderComponent, D extends Drawn<C> = Drawn<C>> = (e: RenderInput<C>, cx: Context, pen: Pen) => Promise<Decided<D>>
@@ -377,8 +384,9 @@ export const PAINTERS = {
     return { drawn: { kind: 'rewrite', props: { modes: sessionModes(e.props.modes, cx.view) } }, live: false }
   },
   AbovePrompt: async (e, cx, pen) => {
-    // decideBand -> engine | frame: drawn => drawBand(ours, drawn, frame, pen): ours ABOVE what next(e) drew, cs's band included.
-    throw new Error('not implemented')
+    // Ours ABOVE what next(e) drew, cs's band included; the tokens it reads are the decision's (decideBand).
+    const { verdict, live, clock } = decideBand(e.props, cx.usage ?? {}, cx)
+    return { drawn: verdict.draw === 'engine' ? { kind: 'engine' } : { kind: 'frame', frame: beneath => drawBand(verdict, beneath, Math.floor(cx.now / 70), pen) }, live, clock }
   },
 } satisfies PainterTable
 
@@ -405,7 +413,9 @@ export const PAINTERS = {
  *     0.15-0.44 s), so the first painted draw after a load waits for it before
  *     the refresh's two messages() reads (Q-idle-delivery option B).
  *   - a decision that is `live` reads LIVE, subscribing this instance alone to
- *     the next refresh; every other row is never redrawn by the feed's own updates.
+ *     the next refresh; one with a `clock` reads TICK or PULSE (or both), only
+ *     while what it draws moves; every other row is never redrawn by the
+ *     feed's own updates.
  *   - a throw draws the engine's component (IDX:4102); next has already run.
  *   - for AssistantMessage, the reply's steps-line claim is recorded once,
  *     when it settles (noteStepsDrawn after the painter returns, claim
@@ -422,8 +432,10 @@ export const PAINTERS = {
  *       const s = load.feed ?? await feedRecord(load, $)   // in an on-session the load's vet (one cs process) is awaited here
  *       if (!s.on) return await engine()
  *       const cx = await context($, e, s)
- *       const { drawn: d, live } = await paint(e, cx, pen($, e, cx))
+ *       const { drawn: d, live, clock } = await paint(e, cx, pen($, e, cx))
  *       if (live) await read($, LIVE)
+ *       if (clock is 'tick' or 'both') await read($, TICK)     // an elapsed time or a polled count it shows
+ *       if (clock is 'pulse' or 'both') await read($, PULSE)   // an animation it shows
  *       switch (d.kind) {
  *         case 'engine':  return await engine()
  *         case 'rewrite': return await engine(d.props)
@@ -454,6 +466,8 @@ async function site<C extends Hooked>($: $, e: RenderInput<C>, next: (e: RenderI
       const decision = await paint(e as RenderInput<C>, cx, pen)
       if (e.component === 'AssistantMessage' && decision.claim !== undefined && decision.claim !== 'pending') noteStepsDrawn(load, $, e.requestId, decision.claim === 'drawn')
       if (decision.live) await readLive($)
+      if (decision.clock === 'tick' || decision.clock === 'both') await readTick($)
+      if (decision.clock === 'pulse' || decision.clock === 'both') await readPulse($)
       switch (decision.drawn.kind) {
         case 'engine': return await engine()
         case 'rewrite': return await engine(decision.drawn.props)
@@ -494,17 +508,26 @@ function sites(on: On, table: PainterTable): void {
  *   const t = await transcript(load, $)
  *   { t, view: s.view, obs: load.obs, opened: load.opened, open: openTurn(load, t), phase: load.obs.phase,
  *     agents: load.agents, now: Date.now(), surface: e.surface,
- *     clickable: e.surface !== 'terminal' || !!e.viewport?.isFullscreen, room: (e.viewport?.columns ?? 80) - pad }
+ *     clickable: e.surface !== 'terminal' || !!e.viewport?.isFullscreen, room: (e.viewport?.columns ?? 80) - pad,
+ *     usage: the desktop band's rate limits, one $.session.usage() per desktop AbovePrompt draw }
  */
 async function context($: $, e: RenderInput, s: import('./settings').Session): Promise<Context> {
-  startClocks(load, $, e.component === 'AbovePrompt' && e.surface === 'desktop')
+  const desktopBand = e.component === 'AbovePrompt' && e.surface === 'desktop'
+  startClocks(load, $, desktopBand)
   const t = await transcript(load, $)
   return {
     t, view: s.view, obs: load.obs, opened: load.opened, open: openTurn(load, t),
     phase: load.obs.phase, agents: load.agents, now: Date.now(), surface: e.surface,
     clickable: e.surface !== 'terminal' || e.viewport?.isFullscreen === true,
     room: Math.max(1, (e.viewport?.columns ?? 80) - (e.surface === 'terminal' ? 7 : 0)),
+    usage: desktopBand ? bandUsage(await $.session.usage()) : undefined,
   }
+}
+
+/** §9.2 (b): the desktop band's two rate-limit windows, from session.usage (five_hour, seven_day); a window with no reading is left out. */
+function bandUsage(usage: import('claude-code').SessionUsage): { fiveHour?: number; week?: number } {
+  const percent = (kind: string) => usage.rateLimits.find(limit => limit.kind === kind)?.percentUsed
+  return { fiveHour: percent('five_hour'), week: percent('seven_day') }
 }
 
 /** ToolUse props or one ToolGroupCall, parsed at the boundary. */

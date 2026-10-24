@@ -17,7 +17,9 @@ test('a tick suspended in agent list stops after feed off without a token write 
   on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('session.messages', () => ({ value: [] }))
-  on('agent.list', async () => { entered?.(); await held; return { value: [] } })
+  // The load's first refresh reads the list at once; the tick's read is the one held.
+  let lists = 0
+  on('agent.list', async () => { if (++lists > 1) { entered?.(); await held } return { value: [] } })
   on('config.list', () => ({ value: [] }))
   on('state.set', async ($, e, next) => { writes.push(e.key); return next(e) })
   on('clock.after', { ms: 1000 }, async ($, e, next) => { waits++; return next(e) })
@@ -51,7 +53,7 @@ for (const status of ['pending', 'waiting'] as const) test(`the pulse continues 
   on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.hint }))
   const clock = mock.clock(on)
   const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
-  await clock.advance(1070)
+  await clock.advance(70)
   expect(pulses).toEqual([1])
   await clock.advance(70)
   expect(pulses).toEqual([1, 2])

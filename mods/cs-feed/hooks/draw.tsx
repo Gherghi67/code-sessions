@@ -72,7 +72,7 @@ export function drawGroup(v: Exclude<GroupVerdict, { draw: 'engine' }>, pen: Pen
   const busy = v.helpers.some(helper => helper.state === 'running' || helper.state === 'dispatched')
   const failed = v.helpers.some(helper => helper.state === 'failed' || helper.state === 'stopped')
   const kinds = [...new Set(v.helpers.map(helper => helper.kind))]
-  const cell = (state: import('./verdict').HelperState) => <Text color={state === 'failed' || state === 'stopped' ? pen.ink.red : state === 'finished' ? pen.ink.green : pen.ink.peer}>{state === 'failed' || state === 'stopped' ? marks.failed : state === 'finished' ? marks.live : '◐'}</Text>
+  const cell = (state: import('./verdict').HelperState) => <Text color={state === 'failed' || state === 'stopped' ? pen.ink.red : state === 'finished' ? pen.ink.green : pen.ink.peer}>{state === 'failed' || state === 'stopped' ? marks.failed : state === 'finished' ? marks.live : marks.working}</Text>
   return <Box flexDirection="column"><Box paddingLeft={pen.pad} flexDirection="row" gap={1}><Text color={busy ? pen.ink.peer : failed ? pen.ink.red : pen.ink.green}>{busy ? braille[Math.floor(pen.cx.now / 70) % braille.length] : failed ? marks.failed : marks.live}</Text><Text>{helperCounts(v.helpers.map(helper => helper.state), v.elapsedMs)}</Text>{chevron(v.key, v.opened, pen)}</Box>{kinds.map(kind => {
     const members = v.helpers.filter(helper => helper.kind === kind)
     return <Box paddingLeft={pen.pad + 2} flexDirection="row" gap={1}><Text dimColor>{fit(kind, 22)}</Text><Text dimColor>{String(members.length)}</Text>{members.map(helper => cell(helper.state))}<Text dimColor>{helperFraction(members.filter(helper => helper.state === 'finished').length, members.length, members.filter(helper => helper.state === 'failed' || helper.state === 'stopped').length)}</Text></Box>
@@ -118,7 +118,14 @@ export function drawReply(v: ReplyVerdict, engine: RenderElement, pen: Pen): Ren
 }
 /** Ours above `beneath` (what next(e) drew: cs's band, or the engine's), in one column. */
 export function drawBand(v: Exclude<BandVerdict, { draw: 'engine' }>, beneath: RenderElement, frame: number, pen: Pen): RenderElement {
-  throw new Error('not implemented')
+  const { Box, Text } = pen.el
+  let ours: RenderElement
+  switch (v.draw) {
+    case 'helpers': ours = <Box flexDirection="column" paddingLeft={pen.pad}><Box flexDirection="row" gap={1}><Text color={pen.ink.peer}>{v.spinning ? braille[frame % braille.length] : marks.live}</Text><Text color={pen.ink.peer}>{v.head}</Text></Box>{v.kinds.map(kind => <Box flexDirection="row" gap={1}><Text dimColor>{kind.kind}</Text>{[...kind.cells].map(cell => <Text color={cell === marks.working ? pen.ink.peer : cell === marks.failed ? pen.ink.red : pen.ink.green}>{cell}</Text>)}<Text dimColor>{helperFraction(kind.done, kind.n)}</Text></Box>)}{v.more ? <Text dimColor>{moreKinds(v.more)}</Text> : null}</Box>; break
+    case 'background': ours = <Box paddingLeft={pen.pad} flexDirection="row" gap={1}><Text color={pen.ink.accent}>{breathing[Math.floor(frame / 2) % breathing.length]}</Text><Text>{fit(backgroundLine(v.words, v.isTest, v.more), pen.room)}</Text><Text dimColor>{backgroundTail(v.elapsedMs, v.typing)}</Text></Box>; break
+    case 'desktop': ours = <Box justifyContent="flex-end" flexDirection="row" gap={1}>{v.usage.fiveHour === undefined ? null : <Text>{usageLabel(v.usage.fiveHour, usagePeriods.fiveHour)}</Text>}{v.usage.week === undefined ? null : <Text>{usageLabel(v.usage.week, usagePeriods.week)}</Text>}{v.pills.map(pill => <Text backgroundColor={pen.ink.chip}>{pillLabel(pill)}</Text>)}</Box>; break
+  }
+  return <Box flexDirection="column">{ours}{beneath}</Box>
 }
 
 /** The "Chat view" pane (§2.3) for this session: header, an on/off row (FeedCommand `switch`), one row per FIELDS entry with its picture, the Show chips. Buttons are siblings of Texts, never inside one. */

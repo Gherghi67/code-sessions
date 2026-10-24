@@ -172,17 +172,35 @@ export type Observations = {
 export type Opened = Set<string>
 
 /**
- * What the open turn's drawings were last drawn from (finding 2). A refresh
- * bumps LIVE when any member differs from the last bump's, so a change of phase
- * or of `working` with an identical snapshot still redraws the rows that read
- * LIVE. Trace: the final reply is stored, the refresh lands and bumps (phase
- * live); turn.complete then sets phase idle and calls dirty(); the next refresh
- * finds the same `transcript` but `phase` changed, bumps LIVE, and the turn's
- * rows redraw spent and stop reading LIVE.
- * `burst` holds the open peer head and its members, so arrivals and closure
- * redraw that head through LIVE; a closed head stops subscribing.
+ * What the drawings that read LIVE were last drawn from (finding 2; rationale
+ * decision 8, "Targeted redraws"). A refresh bumps LIVE when any member
+ * differs from the last bump's, and only then, so a LIVE reader is redrawn
+ * exactly when something it draws from changed and never by a stored row
+ * that changed none of it. The members, and why each is here:
+ *
+ * - `transcript`: the snapshot's calls, turns, runs and background runs. The
+ *   open turn's rows, the Spinner and a not-yet-filed call draw from these.
+ * - `phase`: turn.start / turn.complete. turn.complete with an identical
+ *   snapshot must still redraw the turn's rows spent (they then stop reading
+ *   LIVE) and re-evaluate a reply whose steps-line claim is pending
+ *   (§20.23 (a)). Trace: the final reply is stored, the refresh bumps (phase
+ *   live); turn.complete sets phase idle and calls dirty(); the next refresh
+ *   finds the same `transcript` but `phase` changed and bumps.
+ * - `working`: the band's AbovePrompt.isWorking, which settles phase after a
+ *   module load mid-turn (no turn.start reaches it, spike Q5).
+ * - `burst`: the open peer burst's head and its members (§8.2). A peer row
+ *   arriving joins the open burst, so its head, already drawn as one peer
+ *   line, must redraw as "N messages"; the head reads LIVE while its burst is
+ *   open and stops once Claude's text or a message of the person's closes it,
+ *   so a closed head is drawn once and never again by the feed.
+ * - `helpers`: the top-level helpers the refresh's agent.list() reported,
+ *   with their status. A spawn calls dirty() and asks the next refresh to read
+ *   the list (Snap.askAgents), so the band (a LIVE reader while a turn is open
+ *   or a helper is known) learns of a helper from the agent.spawn hook, not by
+ *   polling; the load's first refresh reads it too, so a helper from before
+ *   this load is found at the first painted draw.
  */
-export type Seen = { readonly transcript: string; readonly phase: Phase; readonly working: boolean | undefined; readonly burst: string }
+export type Seen = { readonly transcript: string; readonly phase: Phase; readonly working: boolean | undefined; readonly burst: string; readonly helpers: string }
 
 /**
  * The snapshot and its one refresh (validate2 gap 2):
@@ -202,6 +220,8 @@ export type Snap = {
   state: 'clean' | 'scheduled' | 'refreshing'
   inFlight?: Promise<Transcript>
   again: boolean
+  /** The next refresh also reads $.agent.list(): set for the load's first refresh and by every main-loop agent.spawn. */
+  askAgents: boolean
   /** The Seen of the last LIVE bump. */
   bumped?: Seen
 }
@@ -262,7 +282,7 @@ export type Load = {
 
 export function newLoad(): Load {
   return {
-    reads: { started: 0, applied: 0 }, snap: { cached: EMPTY, state: 'scheduled', again: false },
+    reads: { started: 0, applied: 0 }, snap: { cached: EMPTY, state: 'scheduled', again: false, askAgents: true },
     obs: { promptAt: new Map(), frames: new Map(), bursts: { of: new Map(), members: new Map() }, batch: { kinds: new Map() }, anchors: new Map(), latestByCall: new Map(), anchorSeq: 0, stepsDrawn: new Map(), turnOpeners: new Set(), peerPending: false, helperStartedAt: new Map(), bgSeenAt: new Map(), bgEnded: new Set(), phase: 'unknown' },
     opened: new Set(), agents: [], light: false, clocks: { tick: false, pulse: false },
   }
@@ -328,9 +348,34 @@ export function observeModel(load: Load, uuid: string, content: readonly { reado
   }
 }
 
-export function observeHelper(load: Load, id: string): void {
+/**
+ * A main-loop helper started (agent.spawn, after its next). Records its start
+ * time (helperStartedAt) and asks the next refresh to read the agent list, so
+ * the band's LIVE redraw shows it (Seen.helpers); the hook calls dirty().
+ */
+export function observeSpawn(load: Load, id: string): void {
   load.obs.helperStartedAt.set(callId(id), Date.now())
   boundMap(load.obs.helperStartedAt, 200)
+  load.snap.askAgents = true
+}
+
+/**
+ * The polled agent list (the 1 s tick, and a refresh that Snap.askAgents
+ * marks) and the band's batch (§7.3 (b)): the helpers launched since none was
+ * busy, each kind remembered, its start taken when the first joins, all reset
+ * when none is busy.
+ */
+export function noteAgents(load: Load, agents: readonly import('claude-code').AgentInfo[]): void {
+  const previous = new Set(load.agents.map(agent => agent.id))
+  load.agents = agents
+  const crew = agents.filter(agent => !agent.parentId && !agent.teammateId)
+  if (crew.some(agent => helperBusy(agent.status))) {
+    load.obs.batch.startedAt ??= Date.now()
+    for (const agent of crew) if (helperBusy(agent.status) || load.obs.batch.kinds.has(agent.id) || !previous.has(agent.id)) load.obs.batch.kinds.set(agent.id, agent.type)
+  } else {
+    load.obs.batch.kinds.clear()
+    load.obs.batch.startedAt = undefined
+  }
 }
 
 export function observeTurnStart(load: Load): void {
@@ -668,9 +713,11 @@ async function reportVet(load: Load, $: $, vet: Vetted): Promise<void> {
  *   snap.state = 'refreshing'
  *   const plain = await $.session.messages()
  *   const api = await $.session.messages({ as: 'api' })   // Q-idle-delivery option B
+ *   if (snap.askAgents) noteAgents(load, await $.agent.list())   // the load's first refresh, and after a spawn
  *   snapshot = buildTranscript(plain, api, load.obs.turnOpeners)   // whole, never merged
  *   snap.cached = snapshot
- *   const seen = { transcript: signature(snapshot), phase, working }
+ *   const seen = { transcript: signature(snapshot), phase, working, burst, helpers }   // Seen
+ *   startPulse(load, $)                                   // a helper the spawn revealed animates at its first redraw
  *   if (seen differs from snap.bumped in any member) $.clock.after(0, bump)
  *   bump: if (!active(load)) return; snap.bumped = seen; $.state.set(LIVE, n + 1)
  *   if (snap.again && active(load)) { snap.again = false; start one more refresh }   // gap 2
@@ -692,9 +739,19 @@ export function transcript(load: Load, $: $): Promise<Transcript> {
     try {
       const plain = await $.session.messages()
       const api = await $.session.messages({ as: 'api' })
+      if (snap.askAgents) {
+        snap.askAgents = false
+        noteAgents(load, await $.agent.list())
+      }
       const snapshot = buildTranscript(plain, api, load.obs.turnOpeners)
       snap.cached = snapshot
-      const seen: Seen = { transcript: JSON.stringify([[...snapshot.calls.values()], snapshot.turns, [...snapshot.runs.values()], snapshot.background]), phase: load.obs.phase, working: load.obs.working, burst: JSON.stringify([load.obs.bursts.open, load.obs.bursts.open ? load.obs.bursts.members.get(load.obs.bursts.open) : undefined]) }
+      const seen: Seen = {
+        transcript: JSON.stringify([[...snapshot.calls.values()], snapshot.turns, [...snapshot.runs.values()], snapshot.background]),
+        phase: load.obs.phase, working: load.obs.working,
+        burst: JSON.stringify([load.obs.bursts.open, load.obs.bursts.open ? load.obs.bursts.members.get(load.obs.bursts.open) : undefined]),
+        helpers: JSON.stringify(load.agents.filter(agent => !agent.parentId && !agent.teammateId).map(agent => [agent.id, agent.status])),
+      }
+      startPulse(load, $)
       if (active(load) && JSON.stringify(seen) !== JSON.stringify(snap.bumped)) {
         $.clock.after(0, async () => {
           if (!active(load)) return
@@ -819,16 +876,7 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
       try {
         const agents = await $.agent.list()
         if (!active(load)) { load.clocks.tick = false; return }
-        const previous = new Set(load.agents.map(agent => agent.id))
-        load.agents = agents
-        const crew = agents.filter(agent => !agent.parentId && !agent.teammateId)
-        if (crew.some(agent => helperBusy(agent.status))) {
-          load.obs.batch.startedAt ??= Date.now()
-          for (const agent of crew) if (helperBusy(agent.status) || load.obs.batch.kinds.has(agent.id) || !previous.has(agent.id)) load.obs.batch.kinds.set(agent.id, agent.type)
-        } else {
-          load.obs.batch.kinds.clear()
-          load.obs.batch.startedAt = undefined
-        }
+        noteAgents(load, agents)
         if (load.themeAt === undefined || Date.now() - load.themeAt >= 30000) {
           const rows = await $.config.list()
           if (!active(load)) { load.clocks.tick = false; return }

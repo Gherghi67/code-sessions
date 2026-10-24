@@ -21,7 +21,7 @@ test('the band caps helper kinds, remembers vanished members and preserves surve
   cx.obs.batch.startedAt = 10000
   const props = { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 100 }
   const batch = { ...cx, agents, open: undefined, phase: 'idle' as const }
-  expect(decideBand(props, {}, batch)).toEqual({ verdict: { draw: 'helpers', head: '5 helpers · 5 running · 0s', kinds: [{ kind: 'general', cells: '◐', done: 0, n: 1 }, { kind: 'Explore', cells: '◐', done: 0, n: 1 }], more: 3, spinning: true }, live: false })
+  expect(decideBand(props, {}, batch)).toEqual({ verdict: { draw: 'helpers', head: '5 helpers · 5 running · 0s', kinds: [{ kind: 'general', cells: '◐', done: 0, n: 1 }, { kind: 'Explore', cells: '◐', done: 0, n: 1 }], more: 3, spinning: true }, live: true, clock: 'both' })
   cx.obs.batch.kinds.set('gone', 'general-purpose')
   const remembered = decideBand(props, {}, batch).verdict
   expect(remembered.draw).toBe('helpers')
@@ -29,10 +29,13 @@ test('the band caps helper kinds, remembers vanished members and preserves surve
   expect(remembered.head).toBe('6 helpers · 1 done · 5 running · 0s')
   expect(remembered.kinds[0]).toEqual({ kind: 'general', cells: '◐●', done: 1, n: 2 })
   expect(decideBand({ ...props, hasSurvey: true }, {}, batch)).toEqual({ verdict: { draw: 'engine' }, live: false })
-  expect(decideBand(props, { fiveHour: 20, week: 49 }, { ...cx, surface: 'desktop', agents: [], open: undefined })).toEqual({ verdict: { draw: 'desktop', usage: { fiveHour: 20, week: 49 }, pills: [] }, live: false })
+  cx.obs.batch.kinds.clear()
+  expect(decideBand(props, { fiveHour: 20, week: 49 }, { ...cx, surface: 'desktop', agents: [], open: undefined })).toEqual({ verdict: { draw: 'desktop', usage: { fiveHour: 20, week: 49 }, pills: [] }, live: false, clock: undefined })
+  expect(decideBand(props, {}, { ...cx, agents: [], open: undefined })).toEqual({ verdict: { draw: 'engine' }, live: false, clock: undefined })
+  expect(decideBand({ ...props, isWorking: true }, {}, { ...cx, agents: [], open: undefined })).toEqual({ verdict: { draw: 'engine' }, live: true, clock: undefined })
   const bg = buildTranscript([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'job', tool: 'Bash', input: { description: 'Run the unit tests', run_in_background: true }, result: { backgroundTaskId: 'task' } }] }])
   cx.obs.bgSeenAt.set(callId('job'), 0)
-  expect(decideBand(props, {}, { ...cx, t: bg, open: undefined, now: 120000 })).toEqual({ verdict: { draw: 'background', words: 'Run the unit tests', isTest: true, more: 0, elapsedMs: 120000, typing: true }, live: false })
+  expect(decideBand(props, {}, { ...cx, t: bg, open: undefined, now: 120000 })).toEqual({ verdict: { draw: 'background', words: 'Run the unit tests', isTest: true, more: 0, elapsedMs: 120000, typing: true }, live: false, clock: 'both' })
 })
 
 test('user routing preserves authorship, quiet hook text and conservative task notifications', () => {

@@ -126,6 +126,65 @@ test('CommandOutput draws the cleaned command answer beside a dim dot', async ($
   await row.unmount()
 })
 
+const BAND = { hasSurvey: false, maxRows: 6, bodyColumns: 90, scroll: { offset: 0, bodyRows: 6 }, view: {} } as const
+const SPAWN = { prompt: 'Work', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'model', background: false, fork: false } as const
+
+// The tokens a band evaluation reads, told apart from the clocks' own reads:
+// a prepend-tier plugin (its own environment, so it speaks through ui.log)
+// marks each AbovePrompt evaluation in flight above cs-feed's hook.
+const BAND_MARK = { name: 'band-mark', tier: 'prepend' as const, register(on: On) {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    await $.ui.log('band-start')
+    try { return await next(e) } finally { await $.ui.log('band-end') }
+  })
+} }
+function bandReads(on: On, reads: string[]) {
+  let drawing = false
+  on('ui.log', ($, e) => { if (e.text === 'band-start') drawing = true; if (e.text === 'band-end') drawing = false; return { value: undefined } })
+  on('state.get', async ($, e, next) => { if (drawing) reads.push(e.key); return next(e) })
+}
+
+test('an idle band with nothing to show reads no redraw token and is not redrawn while the clocks run', { plugins: [BAND_MARK] }, async ($, on) => {
+  const clock = session(on)
+  const reads: string[] = []
+  let evaluations = 0
+  bandReads(on, reads)
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => { evaluations++; return $.ui.resolve(e).Text({ children: 'engine band' }) })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, isWorking: false } })
+  await clock.settle()
+  const settled = evaluations
+  await clock.advance(3000)
+  expect((await row.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine band'])
+  expect(reads).toEqual([])
+  expect(evaluations).toBe(settled)
+  await row.unmount()
+})
+
+test('helpers spawned in a turn reach the band through the spawn, and a vanished helper keeps its kind', { plugins: [BAND_MARK] }, async ($, on) => {
+  let agents: AgentInfo[] = []
+  const clock = session(on, [], () => agents)
+  const reads: string[] = []
+  bandReads(on, reads)
+  on('agent.spawn', ($, e) => ({ model: 'model', agentId: e.tool_use_id === 'read-call' ? 'reader' : 'planner' }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine band' }))
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, isWorking: true } })
+  await clock.settle()
+  expect((await row.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine band'])
+  expect([...new Set(reads)]).toEqual(['live'])
+  agents = [{ id: 'reader', type: 'Explore', description: 'Read notes', status: 'pending' }, { id: 'planner', type: 'Plan', description: 'Make a plan', status: 'running' }]
+  await $.agent.spawn({ ...SPAWN, tool_use_id: 'read-call', description: 'Read notes', subagentType: 'Explore' })
+  await $.agent.spawn({ ...SPAWN, tool_use_id: 'plan-call', description: 'Make a plan', subagentType: 'Plan' })
+  await clock.settle()
+  expect((await row.find({ type: 'Text', text: '2 helpers' }))?.text.split(' · ').slice(0, 2)).toEqual(['2 helpers', '2 running'])
+  expect((await row.findAll({ type: 'Text' })).at(-1)?.text).toBe('engine band')
+  expect([...new Set(reads)].sort()).toEqual(['live', 'pulse', 'tick'])
+  agents = [{ id: 'reader', type: 'Explore', description: 'Read notes', status: 'pending' }]
+  await clock.advance(1000)
+  expect((await row.find({ type: 'Text', text: '2 helpers' }))?.text.split(' · ').slice(0, 3)).toEqual(['2 helpers', '1 done', '1 running'])
+  expect((await row.find({ type: 'Text', text: 'Plan' }))?.text).toBe('Plan')
+  await row.unmount()
+})
+
 test('ToolGroup draws known helpers as a batch and opens their names without unfolding the engine group', async ($, on) => {
   const calls = [
     { tool_use_id: 'reader', tool: 'Agent', input: { description: 'Read the notes', subagent_type: 'Explore' }, isRunning: true, isErrored: false, isInterrupted: false },

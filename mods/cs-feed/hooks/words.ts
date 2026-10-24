@@ -6,7 +6,7 @@ import type { CallView } from './verdict'
 export type Tense = 'present' | 'past'
 
 export const labels = { you: 'you', claude: 'claude', backgroundUpdate: 'background task update', reportHint: 'ctrl+o shows the whole report' } as const
-export const marks = { dot: '·', live: '●', idle: '○', peer: '⇄', closed: '›', opened: '⌄', question: '?', failed: '✕' } as const
+export const marks = { dot: '·', live: '●', idle: '○', peer: '⇄', closed: '›', opened: '⌄', question: '?', failed: '✕', working: '◐' } as const
 export const braille = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
 export const breathing = ['·', '•', '●', '•'] as const
 export const usagePeriods = { fiveHour: '5h', week: 'week' } as const

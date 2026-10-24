@@ -8,7 +8,7 @@ import { modeOf } from './settings'
 import type { CallId, FiledCall, Run, Transcript, Turn, TurnId } from './transcript'
 import { callId } from './transcript'
 import type { ErrorLine, Frame } from './words'
-import { repliesOwnSteps, isRefusal, errorLine, callWords, framesFromText, hookTextLine, senderOf, peerHeadline, fit, elapsed } from './words'
+import { repliesOwnSteps, isRefusal, errorLine, callWords, framesFromText, hookTextLine, senderOf, peerHeadline, fit, elapsed, marks } from './words'
 
 /**
  * A call as a row's props show it, from ToolUse or one ToolGroupCall, parsed at
@@ -41,10 +41,19 @@ export type Context = {
   /** Clicks reach a mod: any surface but the terminal, or a fullscreen terminal (§4.6). */
   readonly clickable: boolean
   readonly room: number // columns for text
+  /** The desktop band's rate-limit percentages (§9.2), read only for a desktop AbovePrompt draw. */
+  readonly usage?: { readonly fiveHour?: number; readonly week?: number }
 }
 
-/** A decision and whether it was taken from the open turn's state (the shell then reads LIVE). */
-export type Decision<V> = { readonly verdict: V; readonly live: boolean }
+/**
+ * A decision, whether it was taken from the open turn's state (the shell then
+ * reads LIVE), and which clock tokens what it draws moves with: TICK for an
+ * elapsed time or a polled count, PULSE for an animation frame.
+ */
+export type Decision<V> = { readonly verdict: V; readonly live: boolean; readonly clock?: Clock }
+
+/** The clock tokens a drawing reads besides LIVE; absent: none. */
+export type Clock = 'tick' | 'pulse' | 'both'
 
 export type CallVerdict =
   | { readonly draw: 'nothing' }
@@ -421,16 +430,30 @@ export type Pill = { readonly kind: 'helper' | 'job' | 'test'; readonly words: s
  * engine pass, survey -> engine. Rows: maxRows - 2 for the band beneath, minus
  * the head; kinds beyond fold into "+N more kinds" (§7.3c). Background line only
  * with no open turn and no helper line.
+ *
+ * What the band reads (rationale "Cost while on: the band hook"; idle with
+ * nothing to show it reads no token and the feed never redraws it):
+ *   LIVE   while a turn is open (the engine's isWorking, or the open turn) or a
+ *          helper is known (busy, or kept in the batch): a spawn's refresh
+ *          bumps LIVE when Seen.helpers changed, so the band learns of a helper
+ *          from the agent.spawn hook, never by polling
+ *   TICK   while it shows an elapsed time or a count the 1 s tick moves
+ *   PULSE  while it animates (the helper spinner, the breathing dot)
  */
 export function decideBand(props: { hasSurvey: boolean; isWorking: boolean; maxRows: number; bodyColumns: number }, usage: { fiveHour?: number; week?: number }, cx: Context): Decision<BandVerdict> {
-  const answer = (verdict: BandVerdict): Decision<BandVerdict> => ({ verdict, live: false })
-  if (props.hasSurvey) return answer({ draw: 'engine' })
   const agents = cx.agents.filter(agent => !agent.parentId && !agent.teammateId)
+  const helpersKnown = agents.some(agent => helperBusy(agent.status)) || cx.obs.batch.kinds.size > 0
+  const live = props.isWorking || cx.open !== undefined || helpersKnown
+  const answer = (verdict: BandVerdict, clock?: Clock): Decision<BandVerdict> => ({ verdict, live, clock })
+  if (props.hasSurvey) return { verdict: { draw: 'engine' }, live: false }
   const background = cx.t.background.filter(run => !cx.obs.bgEnded.has(run.id) && !cx.agents.some(agent => agent.id === run.id || agent.teammateId === run.id || agent.description === run.words))
   const elapsedMs = (id: CallId) => { const at = cx.obs.bgSeenAt.get(id); return at === undefined ? undefined : Math.max(0, cx.now - at) }
   if (cx.surface === 'desktop') {
     const pills: Pill[] = [...agents.filter(agent => agent.status === 'running').map(agent => ({ kind: 'helper' as const, words: fit(agent.description, 28) })), ...background.map(run => ({ kind: run.isTest ? 'test' as const : 'job' as const, words: run.words, elapsedMs: elapsedMs(run.id) }))]
-    return answer(usage.fiveHour === undefined && usage.week === undefined && !pills.length ? { draw: 'engine' } : { draw: 'desktop', usage, pills })
+    if (usage.fiveHour === undefined && usage.week === undefined && !pills.length) return answer({ draw: 'engine' })
+    const moving = pills.some(pill => pill.elapsedMs !== undefined)
+    const turning = pills.some(pill => pill.kind === 'helper')
+    return answer({ draw: 'desktop', usage, pills }, moving && turning ? 'both' : moving ? 'tick' : turning ? 'pulse' : undefined)
   }
   if (agents.some(agent => helperBusy(agent.status))) {
     const members = [...cx.obs.batch.kinds].map(([id, kind]) => ({ kind, status: agents.find(agent => agent.id === id)?.status ?? 'completed' }))
@@ -442,7 +465,7 @@ export function decideBand(props: { hasSurvey: boolean; isWorking: boolean; maxR
       const kind = kinds.get(member.kind) ?? { kind: fit(member.kind === 'general-purpose' ? 'general' : member.kind, 18), cells: '', done: 0, n: 0 }
       const working = helperBusy(member.status)
       const failed = member.status === 'failed' || member.status === 'killed'
-      kind.cells += working ? '◐' : failed ? '✕' : '●'
+      kind.cells += working ? marks.working : failed ? marks.failed : marks.live
       kind.done += !working && !failed ? 1 : 0
       kind.n++
       kinds.set(member.kind, kind)
@@ -450,11 +473,13 @@ export function decideBand(props: { hasSurvey: boolean; isWorking: boolean; maxR
     const room = Math.max(0, props.maxRows - 3)
     const shown = kinds.size > room ? Math.max(0, room - 1) : room
     const head = [`${members.length} ${members.length === 1 ? 'helper' : 'helpers'}`, ...(done ? [`${done} done`] : []), ...(running ? [`${running} running`] : []), ...(failed ? [`${failed} failed`] : []), ...(cx.obs.batch.startedAt === undefined ? [] : [elapsed(cx.now - cx.obs.batch.startedAt)])].join(' · ')
-    return answer({ draw: 'helpers', head, kinds: [...kinds.values()].slice(0, shown), more: Math.max(0, kinds.size - shown), spinning: running > 0 })
+    // Busy helpers: the counts move with the tick's agent list and the head's elapsed with the clock; the spinner turns.
+    return answer({ draw: 'helpers', head, kinds: [...kinds.values()].slice(0, shown), more: Math.max(0, kinds.size - shown), spinning: running > 0 }, running > 0 ? 'both' : 'tick')
   }
   const first = background[0]
   if (!first || props.isWorking || cx.open) return answer({ draw: 'engine' })
-  return answer({ draw: 'background', words: first.words, isTest: background.some(run => run.isTest), more: background.length - 1, elapsedMs: elapsedMs(first.id), typing: props.bodyColumns >= 90 })
+  const shownElapsed = elapsedMs(first.id)
+  return answer({ draw: 'background', words: first.words, isTest: background.some(run => run.isTest), more: background.length - 1, elapsedMs: shownElapsed, typing: props.bodyColumns >= 90 }, shownElapsed === undefined ? 'pulse' : 'both')
 }
 
 /** CommandOutput §3.3: dim "·" and the text, red on error, a leading "cs-feed:" removed; isExpanded -> engine. */
