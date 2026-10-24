@@ -1404,7 +1404,7 @@ CS_PAYLOAD_SHA256=(
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-feed/hooks/hooks.json"
     "1e7069c6adee0cd7f1f53ea5d50d3873cf6449222787dd086d23d3ef3f260a07  mods/cs-feed/hooks/draw.tsx"
     "a0f46ff85e1f25cb746efda9ee62fae61af611b9a809c1a8cc18d3a1aa856a00  mods/cs-feed/hooks/register.tsx"
-    "567f3d9019fdf58190ac59febfca8e6e9ad20cf87e589d025a71d1bf64042330  mods/cs-feed/hooks/session.ts"
+    "a39aac310a0a4d03bc9e94654a2a0f11f0f076291bf5d4bd88bd15169df1e4d8  mods/cs-feed/hooks/session.ts"
     "097ae1502394519791b890aad368f95a569a64feb8ea8ca0423f6e3e39c714ee  mods/cs-feed/hooks/settings.ts"
     "1ce533ee58e6ce894c76d1c16522a622e112d9d8f967b548944da38d61ad4248  mods/cs-feed/hooks/state.d.ts"
     "bd96c958d0985810f5d509f2e856c9633e02f4030644cfe6c26547fc88c0ec2f  mods/cs-feed/hooks/transcript.ts"

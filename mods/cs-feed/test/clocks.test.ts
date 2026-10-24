@@ -25,7 +25,10 @@ test('a tick suspended in agent list stops after feed off without a token write 
   on('state.set', async ($, e, next) => { writes.push(e.key); return next(e) })
   on('clock.after', { ms: 1000 }, async ($, e, next) => { waits++; return next(e) })
   const clock = mock.clock(on)
+  // A turn is open, so the tick asks for the agent list.
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: `hint:${e.props.hint}` }))
+  await $.turn.start({ text: 'Work', turnId: 'turn' })
   const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
   expect((await row.find({ type: 'Text' }))?.text).toBe('hint:')
   const advancing = clock.advance(1000)
@@ -38,6 +41,37 @@ test('a tick suspended in agent list stops after feed off without a token write 
   expect(writes).toEqual([])
   expect(waits).toBe(1)
   expect((await row.find({ type: 'Text' }))?.text).toBe('hint:ctrl+b')
+  await row.unmount()
+})
+
+const SPAWN = { prompt: 'Work', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'model', background: false, fork: false } as const
+
+test('the tick asks for the agent list only while a turn is open or a helper is busy', async ($, on) => {
+  let agents: AgentInfo[] = []
+  let lists = 0
+  const clock = feedOn(on, [{ role: 'user', text: 'Start', toolUses: [] }], () => { lists++; return agents })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('agent.spawn', () => ({ model: 'model', agentId: 'reader' }))
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.hint }))
+  await $.turn.start({ text: 'Start', turnId: 'turn' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 'turn', reason: 'answer' })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
+  await clock.settle()
+  expect(lists).toBe(1)
+  await clock.advance(3000)
+  expect(lists).toBe(1)
+  agents = [{ id: 'reader', type: 'Explore', description: 'Read the notes', status: 'running' }]
+  await $.agent.spawn({ ...SPAWN, tool_use_id: 'read-call', description: 'Read the notes', subagentType: 'Explore' })
+  await clock.settle()
+  expect(lists).toBe(2)
+  await clock.advance(3000)
+  expect(lists).toBe(5)
+  agents = []
+  await clock.advance(1000)
+  expect(lists).toBe(6)
+  await clock.advance(3000)
+  expect(lists).toBe(6)
   await row.unmount()
 })
 

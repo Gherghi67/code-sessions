@@ -869,13 +869,13 @@ export function noteWorking(load: Load, $: $, isWorking: boolean): void {
 
 /**
  * The clocks, started at a painted draw and gated on need: the 1 s tick
- * (agent list, theme every 30 s, a TICK write) while active; the 70 ms pulse
+ * (agent list while pollsAgents, theme every 30 s, a TICK write) while active; the 70 ms pulse
  * only while a helper runs or a background run is listed (ruling §20.14).
  * Idempotent on load.clocks. Each callback (finding 4):
  *
  *   tick = async () => {
  *     if (!active(load)) return stop('tick')
- *     const agents = await $.agent.list();        if (!active(load)) return stop('tick')
+ *     if (pollsAgents(load)) { const agents = await $.agent.list(); if (!active(load)) return stop('tick') }
  *     const light = await themeIsLight($, load);  if (!active(load)) return stop('tick')
  *     load.agents = agents; load.light = light
  *     await $.state.set(TICK, n + 1)               // an in-flight write that settles after off redraws only readers, which now pass through
@@ -904,9 +904,11 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
     $.clock.after(1000, async function tick() {
       if (!active(load)) { load.clocks.tick = false; return }
       try {
-        const agents = await $.agent.list()
-        if (!active(load)) { load.clocks.tick = false; return }
-        noteAgents(load, agents)
+        if (pollsAgents(load)) {
+          const agents = await $.agent.list()
+          if (!active(load)) { load.clocks.tick = false; return }
+          noteAgents(load, agents)
+        }
         if (load.themeAt === undefined || Date.now() - load.themeAt >= 30000) {
           const rows = await $.config.list()
           if (!active(load)) { load.clocks.tick = false; return }
@@ -932,6 +934,20 @@ export function startClocks(load: Load, $: $, desktopBand = false): void {
     })
   }
   startPulse(load, $)
+}
+
+/**
+ * Whether the tick asks $.agent.list(): while a main-loop turn is open (a
+ * helper may start or end inside it) or a top-level helper the last list
+ * reported is busy (a background helper's end is found by this poll). Idle
+ * with no busy helper it asks nothing; a later helper becomes known through
+ * the agent.spawn hook, whose refresh reads the list (Snap.askAgents). The
+ * list keeps a finished agent for a while (the contract: "until the engine
+ * drops its task"), so a listed but finished helper does not keep the poll.
+ */
+function pollsAgents(load: Load): boolean {
+  // phase live counts before the snapshot holds the turn's first row; unknown asks openTurn (the band's isWorking, a running call).
+  return load.obs.phase === 'live' || openTurn(load, load.snap.cached) !== undefined || load.agents.some(agent => !agent.parentId && !agent.teammateId && helperBusy(agent.status))
 }
 
 /**
