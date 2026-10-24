@@ -237,7 +237,7 @@ _serve_remote() {  # session_name, session_dir, permission_mode
     unset ANTHROPIC_API_KEY
     # Inside tmux the window keeps its remote:<name> name, which
     # _spawn_precheck reads to refuse a second window.
-    [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
+    [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)"
     cd -- "$dir" || error "could not enter $dir"
     printf '%s\n' "$$" > "$meta/local/remote.pid" || error "could not write $meta/local/remote.pid"
     _remote_release_after "$$" "$meta" < /dev/null > /dev/null 2>&1 &

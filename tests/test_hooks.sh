@@ -2076,7 +2076,7 @@ test_a_launch_cleanup_releases_its_pane_and_keeps_the_others_title() {
     _real_tmux_window || return $?
     _tt_hook session-start.sh "$TT_PANE_A" current-session startup
     local lib="$SCRIPT_DIR/../lib"
-    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
+    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
         || { _tt kill-server; return 1; }
     # The pane's shell starts later on a loaded machine; wait for its mark.
     wait_until test -e "$TEST_TMPDIR/cleaned"
@@ -2135,7 +2135,7 @@ test_a_launch_in_a_second_pane_joins_the_window_name() {
     _real_tmux_window || return $?
     _tt_hook session-start.sh "$TT_PANE_A" current-session startup
     local lib="$SCRIPT_DIR/../lib"
-    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
+    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
         || { _tt kill-server; return 1; }
     # The pane's shell starts later on a loaded machine; wait for its mark.
     wait_until test -e "$TEST_TMPDIR/launched"

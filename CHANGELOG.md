@@ -9,6 +9,9 @@ All notable changes to cs are documented here. Release notes are also available 
 ### Added
 - The `cs-feed` mod restyles the chat, one session at a time: your messages and Claude's replies in a name column, and each turn's tool calls folded into one line under the reply (`3 steps this turn`), with the working line naming the live call. It stays off in every session until you turn it on there, with the band's new feed key (`ctrl+x 3`, shown while the session is idle; the installer binds it with the other two) or `/feed on`; `/feed clean`, `/feed normal` and `/feed raw` pick a view, `/feed` opens its settings above the prompt and `/helpers` each helper's own calls. The choice lives in the session's `.cs/local/feed` (exactly `on\n` is on) and `.cs/local/feed-view`, so it survives `/clear`, a rotation and a relaunch and no other session changes. Every write asks `cs -vet-session` first, and so does the read that turns a session on, so a session cs refuses stays off and says why once. While off it passes Claude Code's own drawing through, at about 32 extra worker hops per three turns beside cs's other mods.
 
+### Removed
+- The iTerm2/WezTerm tab tint. A launch no longer colours its tab from the session name; the tab keeps its `cs: <name>` title, and the session colour stays inside the terminal, on the band's left rule, the status line and the session pill. The twelve-colour name hash, the escape passthrough and the reset at exit go with it; `cs -doctor`'s iTerm2 row now reads only the attention bounce.
+
 ## 2026.10.10
 
 ### Features

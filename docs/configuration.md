@@ -277,9 +277,7 @@ export CS_NO_ROTATION_WAKE="1"
 
 # Disable the iTerm2 attention bounce (the dock bounce a finished turn starts
 # with shell integration, until the next prompt, and the attention marker
-# the status line reads). The tab tint uses the session color and is NOT gated
-# by this: set_tab_title emits the iTerm2 escapes unconditionally at launch,
-# and the colour resets when the session exits. Under tmux it also starts
+# the status line reads). Under tmux it also starts
 # claude as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no
 # progress line and no Claude icon. Unset, cs enables both under tmux.
 # cs -doctor reports the integration state.

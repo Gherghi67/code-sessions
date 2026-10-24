@@ -315,17 +315,17 @@ _doctor_check_tui_build() {
     fi
 }
 
-# iTerm2 awareness, reported only when running inside iTerm2: tab color and
-# title ship via native escapes regardless; the attention dock bounce needs
-# the it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
+# iTerm2 awareness, reported only when running inside iTerm2: the tab title
+# ships via native escapes regardless; the attention dock bounce needs the
+# it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
 _doctor_check_iterm2() {
     [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || return 0
     if [ -n "${CS_NO_ITERM2:-}" ]; then
         _doctor_ok "iTerm2: integrations disabled (CS_NO_ITERM2)"
     elif [ -x "${CS_IT2_DIR:-$HOME/.iterm2}/it2attention" ]; then
-        _doctor_ok "iTerm2: tab color + attention bounce active (it2 utilities found)"
+        _doctor_ok "iTerm2: attention bounce active (it2 utilities found)"
     else
-        _doctor_ok "iTerm2: tab color active; attention bounce off (shell integration not installed)"
+        _doctor_ok "iTerm2: attention bounce off (shell integration not installed)"
     fi
 }
 

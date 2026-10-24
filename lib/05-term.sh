@@ -114,80 +114,9 @@ _trim() {  # text
     printf '%s' "$s"
 }
 
-# Detect the outer terminal, even when running inside tmux.
-# tmux overrides TERM_PROGRAM, so we check LC_TERMINAL and ITERM_SESSION_ID as fallbacks.
-_detect_terminal() {
-    local term="${TERM_PROGRAM:-}"
-    if [ "$term" = "tmux" ] || [ -n "${TMUX:-}" ]; then
-        # Inside tmux: check env vars that survive from the outer terminal
-        if [ "${LC_TERMINAL:-}" = "iTerm2" ] || [ -n "${ITERM_SESSION_ID:-}" ]; then
-            echo "iTerm.app"
-        elif [ "${LC_TERMINAL:-}" = "WezTerm" ]; then
-            echo "WezTerm"
-        else
-            echo "tmux"
-        fi
-    else
-        echo "$term"
-    fi
-}
-
-# Send an escape sequence, using tmux DCS passthrough when inside tmux.
-# tmux intercepts proprietary escape sequences (like iTerm2 tab color) unless
-# wrapped in: ESC P tmux ; ESC ESC <payload> ESC backslash
-# (ESC must be doubled inside the DCS payload per tmux protocol)
-_send_escape() {
-    if [ -n "${TMUX:-}" ]; then
-        printf '\033Ptmux;\033\033%b\033\\' "$1"
-    else
-        printf '\033%b' "$1"
-    fi
-}
-
-# Pick a tab color deterministically from a string (e.g., session name).
-# Same name always produces the same color for visual consistency across launches.
-_color_from_name() {
-    local name="$1"
-    local colors=(
-        "255,82,82"     # red
-        "255,152,0"     # orange
-        "255,193,7"     # amber
-        "198,255,0"     # chartreuse
-        "76,175,80"     # green
-        "0,150,136"     # teal
-        "0,188,212"     # cyan
-        "3,169,244"     # sky blue
-        "92,107,192"    # indigo
-        "149,117,205"   # purple
-        "236,64,122"    # pink
-        "255,138,101"   # coral
-    )
-    # shasum first, so a box that has it keeps the colors it already shows;
-    # coreutils-only Linux and WSL carry sha256sum instead, and cksum is the
-    # POSIX floor beneath both. With none of them the digest is empty, every
-    # name lands on the same color, and the missing command complains on stderr
-    # at every tab change — the determinism above is the whole point.
-    local hash=""
-    if command -v shasum >/dev/null 2>&1; then
-        hash=$(printf '%s' "$name" | shasum | cut -d' ' -f1)
-    elif command -v sha256sum >/dev/null 2>&1; then
-        hash=$(printf '%s' "$name" | sha256sum | cut -d' ' -f1)
-    fi
-    local index
-    if [ -n "$hash" ]; then
-        index=$(( 16#${hash:0:8} % ${#colors[@]} ))
-    else
-        local sum
-        sum=$(printf '%s' "$name" | cksum 2>/dev/null | cut -d' ' -f1) || sum=""
-        case "$sum" in ''|*[!0-9]*) sum=0 ;; esac
-        index=$(( sum % ${#colors[@]} ))
-    fi
-    echo "${colors[$index]}"
-}
-
-# Map a claude_session_color name to its RGB (comma form for set_tab_title).
+# Map a claude_session_color name to its RGB (comma form, for the session pill).
 # These are Claude Code's own /color palette (the shared dark/light theme
-# `*_FOR_SUBAGENTS_ONLY` tokens): the tab color and Claude Code's own session
+# `*_FOR_SUBAGENTS_ONLY` tokens): the pill and Claude Code's own session
 # accent share the statusline's eight-color palette. KEEP IN SYNC with the
 # session palette in _sgr (bin/cs-statusline).
 _session_color_rgb() {
@@ -224,7 +153,7 @@ _session_pill() {
         "$ICON_LOGO" "$rgb" "$name"
 }
 
-# Set terminal tab title and optional tab color.
+# Set terminal tab title.
 # Uses standard xterm escape sequences (works in iTerm2, Terminal.app, Ghostty, Alacritty, WezTerm, etc.)
 # Also sets tmux window name when running inside tmux.
 set_tab_title() {
@@ -235,10 +164,7 @@ set_tab_title() {
     [ -t 1 ] || return 0
 
     local title="$1"
-    local color="${2:-}"  # optional: "blue", r,g,b values, or "auto:name" to hash from name
-    local session="${3:-}"  # optional: the cs session, to share a tmux window's name with its other panes
-    local outer_term
-    outer_term=$(_detect_terminal)
+    local session="${2:-}"  # optional: the cs session, to share a tmux window's name with its other panes
 
     # Standard xterm OSC 0: set window and tab title (also sets tmux pane title)
     printf '\033]0;%s\007' "$title"
@@ -257,33 +183,9 @@ set_tab_title() {
         tmux set-window-option ${TMUX_PANE:+-t "$TMUX_PANE"} allow-set-title off 2>/dev/null || true
     fi
 
-    # Tab color via iTerm2 escape sequences (also supported by WezTerm)
-    if [ -n "$color" ]; then
-        case "$outer_term" in
-            iTerm.app|WezTerm)
-                local r g b
-                case "$color" in
-                    auto:*)
-                        # Derive color from name hash
-                        IFS=',' read -r r g b <<< "$(_color_from_name "${color#auto:}")"
-                        ;;
-                    blue) r=66  g=133 b=244 ;;
-                    *)
-                        # Accept r,g,b format
-                        IFS=',' read -r r g b <<< "$color"
-                        ;;
-                esac
-                if [ -n "${r:-}" ] && [ -n "${g:-}" ] && [ -n "${b:-}" ]; then
-                    _send_escape "]6;1;bg;red;brightness;${r}\a"
-                    _send_escape "]6;1;bg;green;brightness;${g}\a"
-                    _send_escape "]6;1;bg;blue;brightness;${b}\a"
-                fi
-                ;;
-        esac
-    fi
 }
 
-# Reset terminal tab title and color to defaults
+# Reset terminal tab title to its default
 reset_tab_title() {
     # Symmetric with set_tab_title: skip when not on a TTY
     [ -t 1 ] || return 0
@@ -303,13 +205,5 @@ reset_tab_title() {
         tmux set-window-option allow-set-title on 2>/dev/null || true
     fi
 
-    # Reset tab color (iTerm2/WezTerm)
-    local outer_term
-    outer_term=$(_detect_terminal)
-    case "$outer_term" in
-        iTerm.app|WezTerm)
-            _send_escape ']6;1;bg;*;default\a'
-            ;;
-    esac
 }
 

@@ -817,12 +817,9 @@ EOF
 
     echo ""
 
-    # Set terminal tab title and color. The tab color is the session's
-    # claude_session_color (same RGB as the statusline block); fall back to a
-    # name hash only if no color is recorded.
-    local _tab_color
-    _tab_color=$(_session_color_rgb "$claude_session_color")
-    set_tab_title "cs: $session_name" "${_tab_color:-auto:$session_name}" "$session_name"
+    # Title the terminal tab; the session colour stays inside the terminal
+    # (band rule, status line, pill), never on the tab.
+    set_tab_title "cs: $session_name" "$session_name"
 
     cd -- "$session_dir"
 
