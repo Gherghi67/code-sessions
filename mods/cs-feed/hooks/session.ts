@@ -5,6 +5,7 @@ import { atom } from 'claude-code'
 
 import type { Session } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
+import { callId, EMPTY } from './transcript'
 
 type $ = EngineInterface
 
@@ -57,7 +58,9 @@ export type Observations = {
   /** user-row uuid -> teammate frames parsed from the raw envelope (§8.3 source 1). Lost: parse the row's text. */
   readonly frames: Map<string, readonly import('./words').Frame[]>
   /** peer-row uuid -> its burst's head uuid; `open` is the burst a new peer row joins (§8.2). Lost: one line per message. */
-  readonly bursts: { readonly of: Map<string, string>; open?: string }
+  readonly bursts: { readonly of: Map<string, string>; readonly members: Map<string, readonly { uuid: string; sender: string; at?: number }[]>; open?: string }
+  /** The helper batch keeps vanished agents' kinds until no member is busy. */
+  readonly batch: { readonly kinds: Map<string, string>; startedAt?: number }
   /**
    * reply uuid -> the newest call id stored before it in the same turn, the
    * reply's whole text as stored, and an order stamp (§4.4). The key is the
@@ -241,7 +244,41 @@ export type Load = {
 }
 
 export function newLoad(): Load {
-  throw new Error('not implemented')
+  return {
+    reads: { started: 0, applied: 0 }, snap: { cached: EMPTY, state: 'scheduled', again: false },
+    obs: { promptAt: new Map(), frames: new Map(), bursts: { of: new Map(), members: new Map() }, batch: { kinds: new Map() }, anchors: new Map(), latestByCall: new Map(), anchorSeq: 0, stepsDrawn: new Map(), turnOpeners: new Set(), peerPending: false, helperStartedAt: new Map(), bgSeenAt: new Map(), bgEnded: new Set(), phase: 'unknown' },
+    opened: new Set(), agents: [], light: false, clocks: { tick: false, pulse: false },
+  }
+}
+
+/** Called after the prompt-door append settles, before turn.start. */
+export function observePrompt(load: Load, row: { door: 'prompt' | 'delivery'; peer: boolean; isMeta: boolean }): void {
+  if (row.door === 'prompt') {
+    load.obs.peerPending = row.peer && row.isMeta
+    load.obs.callSincePrompt = undefined
+  }
+}
+
+export function observeTurnStart(load: Load): void {
+  load.obs.mainTurn = { peer: load.obs.peerPending, openerTaken: false }
+  load.obs.peerPending = false
+  load.obs.phase = 'live'
+}
+
+/** Called before next(response); the returned stored text may then replace the anchor text. */
+export function observeResponse(load: Load, row: { uuid: string; text: string; calls: readonly string[] }): void {
+  const first = row.calls[0]
+  if (first && load.obs.mainTurn?.peer && !load.obs.mainTurn.openerTaken) {
+    load.obs.turnOpeners.add(callId(first))
+    load.obs.mainTurn.openerTaken = true
+  }
+  const last = row.calls.at(-1)
+  if (last) load.obs.callSincePrompt = callId(last)
+  if (row.text && load.obs.callSincePrompt) {
+    const call = load.obs.callSincePrompt
+    load.obs.anchors.set(row.uuid, { call, text: row.text, seq: ++load.obs.anchorSeq })
+    load.obs.latestByCall.set(call, row.uuid)
+  }
 }
 
 /**

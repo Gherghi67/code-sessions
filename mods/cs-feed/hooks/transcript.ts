@@ -1,8 +1,15 @@
 // ABOUTME: cs-feed's one cross-row structure: turns, runs and filed calls, a pure function of one $.session.messages() result.
 // ABOUTME: Built whole on every refresh and swapped in; never merged, never written to $.state. Same transcript, same answer, whatever was switched when.
-import type { ApiMessage, SessionMessage } from 'claude-code'
+import type { ApiMessage, SessionMessage, ToolUseSummary } from 'claude-code'
+import { isRefusal, callWords, looksLikeTest } from './words'
 
 export type CallId = string & { readonly __brand: 'CallId' }
+
+export function callId(value: string): CallId {
+  if (!value) throw new Error('A tool call id must not be empty')
+  // Engine tool-use ids are opaque strings; this constructor enforces their only local invariant.
+  return value as CallId
+}
 
 /**
  * A turn's identity is its first call's tool_use_id (any class: a turn that
@@ -108,7 +115,7 @@ export const OUTPUT_KEPT = 400
  * prompt (the rule opens a turn on that prompt either way).
  */
 export function opensTurn(entry: SessionMessage): boolean {
-  throw new Error('not implemented')
+  return entry.role === 'user' && entry.text.trim().length > 0 && !entry.toolResults?.length && !/^\s*<bash-(?:input|stdout)>/.test(entry.text)
 }
 
 /**
@@ -126,7 +133,7 @@ export function opensTurn(entry: SessionMessage): boolean {
  *                cls = classOf(use); refused standalones become machinery
  *                machinery: run ??= use.id; runs[run].push(use.id); turn.first ??= use.id; steps.push
  *                standalone: run = undefined (a standalone call ends the run)
- *                step = ++filedInTurn; agentId = use.agentId; durationMs = use.durationMs
+ *                step = turn.steps.length; agentId = use.agentId; durationMs = use.durationMs
  *
  * A total function of the transcript: every tool_use in it is filed exactly
  * once, under the turn whose opening entry precedes it, and that turn's id is
@@ -135,7 +142,65 @@ export function opensTurn(entry: SessionMessage): boolean {
  * any switch; `openers` is the one live input (finding 1, below).
  */
 export function buildTranscript(messages: readonly SessionMessage[], api?: readonly ApiMessage[], openers?: ReadonlySet<CallId>): Transcript {
-  throw new Error('not implemented')
+  const calls = new Map<CallId, FiledCall>()
+  const turns: { id?: TurnId; first?: CallId; steps: CallId[]; runs: CallId[] }[] = []
+  const byId = new Map<TurnId, Turn>()
+  const runs = new Map<CallId, { id: CallId; turn: TurnId; calls: CallId[] }>()
+  const joined = api ? joinApi(messages, api) : new Map<number, ApiMessage>()
+  let turn: (typeof turns)[number] | undefined
+  let run: (typeof runs extends Map<CallId, infer R> ? R : never) | undefined
+  const count = messages.reduce((n, entry) => n + entry.toolUses.length, 0)
+  let filed = 0
+  for (const [index, entry] of messages.entries()) {
+    const peer = joined.get(index)
+    const first = entry.toolUses[0]
+    if (opensTurn(entry) || (peer && opensPeerTurn(peer)) || (first && openers?.has(callId(first.tool_use_id)))) {
+      turn = { steps: [], runs: [] }
+      turns.push(turn)
+      run = undefined
+    }
+    if (entry.role !== 'assistant') continue
+    if (!turn && (entry.text.trim() || entry.toolUses.length)) {
+      turn = { steps: [], runs: [] }
+      turns.push(turn)
+    }
+    if (entry.text.trim()) run = undefined
+    for (const use of entry.toolUses) {
+      if (!turn) throw new Error(`Call ${use.tool_use_id} has no transcript turn`)
+      const id = callId(use.tool_use_id)
+      if (calls.has(id)) throw new Error(`Duplicate tool call id ${id}`)
+      turn.id ??= id
+      byId.set(turn.id, turn)
+      const outcome = outcomeOf(use, filed++ >= count - OUTPUT_KEPT)
+      const cls: CallClass = outcome.state === 'done' && outcome.refused ? 'machinery' : use.tool === 'Agent' || use.tool === 'Task' ? 'helper' : use.tool === 'AskUserQuestion' ? 'question' : 'machinery'
+      if (cls === 'machinery') {
+        if (!run) {
+          run = { id, turn: turn.id, calls: [] }
+          runs.set(id, run)
+          turn.runs.push(id)
+        }
+        run.calls.push(id)
+        turn.first ??= id
+        turn.steps.push(id)
+      } else run = undefined
+      calls.set(id, { id, tool: use.tool, input: use.input, cls, outcome, turn: turn.id, run: cls === 'machinery' ? run?.id : undefined, step: turn.steps.length, agentId: use.agentId })
+    }
+  }
+  return { calls, turns, byId, runs, background: backgroundRuns(messages, api) }
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function outcomeOf(use: ToolUseSummary, keepOutput: boolean): Outcome {
+  if (use.text === undefined && use.result === undefined) return { state: 'running' }
+  const result = object(use.result) ? use.result : undefined
+  const output = [result?.stdout, result?.stderr].filter(part => typeof part === 'string' && part.length > 0).join('\n')
+  const error = [result?.error, result?.denyReason].filter(part => typeof part === 'string' && part.length > 0).join('\n')
+  const text = output || error || use.text || (typeof use.result === 'string' ? use.result : '')
+  const errored = use.isError === true || typeof result?.denyReason === 'string'
+  return { state: 'done', errored, refused: errored && isRefusal(text), interrupted: result?.interrupted === true, lines: text.trim() ? text.trimEnd().split('\n').length : 0, output: keepOutput && text ? text.slice(0, 2000) : undefined, durationMs: use.durationMs, answers: use.tool === 'AskUserQuestion' ? questionPairs(use.input, use.result) : undefined }
 }
 
 /**
@@ -232,7 +297,35 @@ export function buildTranscript(messages: readonly SessionMessage[], api?: reado
  * opensPeerTurn(U) for those indexes and for no other.
  */
 export function joinApi(plain: readonly SessionMessage[], api: readonly ApiMessage[]): ReadonlyMap<number, ApiMessage> {
-  throw new Error('not implemented')
+  const left = plain.flatMap((message, index) => message.role === 'assistant' ? [{ index, text: message.text, ids: message.toolUses.map(use => use.tool_use_id) }] : []).reverse()
+  const right = api.flatMap((message, index) => message.role === 'assistant' ? [{ index, text: apiText(message), ids: message.content.flatMap(block => block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []) }] : []).reverse()
+  const joined = new Map<number, ApiMessage>()
+  const leftCounts = textCounts(left)
+  const rightCounts = textCounts(right)
+  let newer: { plain: number; api: number; verified: boolean } | undefined
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const a = left[i]
+    const b = right[i]
+    if (!a || !b) throw new Error(`Missing API join pair at ${i}`)
+    if (a.text !== b.text || a.ids.length !== b.ids.length || a.ids.some((id, j) => id !== b.ids[j])) break
+    const verified = a.ids.length > 0 || (leftCounts.get(a.text) === 1 && rightCounts.get(b.text) === 1)
+    if (verified && newer?.verified && newer.plain === a.index + 1 && newer.api === b.index + 2) {
+      const between = api[b.index + 1]
+      if (between?.role === 'user') joined.set(newer.plain, between)
+    }
+    newer = { plain: a.index, api: b.index, verified }
+  }
+  return joined
+}
+
+function textCounts(rows: readonly { text: string; ids: readonly string[] }[]): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>()
+  for (const row of rows) if (row.ids.length === 0) counts.set(row.text, (counts.get(row.text) ?? 0) + 1)
+  return counts
+}
+
+function apiText(message: ApiMessage): string {
+  return message.content.flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n')
 }
 
 /**
@@ -259,16 +352,33 @@ export function joinApi(plain: readonly SessionMessage[], api: readonly ApiMessa
  *   - a system-reminder block (hook context) holding the full peer preamble                                       -> false
  *   - a text block `see: Another Claude session sent a message:\n<cross-session-message …>` (preamble not at 0)    -> false
  *   - m1b api entry 0 (the idle peer row)                                                                          -> true, a turn of its own
- *   - buildTranscript on m1b plain + api: the peer turn's reply files under its own turn; on m1d: one turn
- *   - source 1: m1b plain with openers = { first call of the peer turn } and NO api -> the peer turn opens at that call
+ *   - m1b starts with an orphan reply, so it cannot prove an adjacent-pair peer join (M23).
+ *   - source 1 uses a shape-derived event sequence; the first peer call is a live opener.
  */
 export function opensPeerTurn(between: ApiMessage): boolean {
-  throw new Error('not implemented')
+  if (between.role !== 'user' || typeof between.content === 'string') return false
+  let peers = 0
+  for (const block of between.content) {
+    if (block.type !== 'text' || typeof block.text !== 'string') return false
+    if (block.text.startsWith('Another Claude session sent a message:\n<cross-session-message ') && block.text.includes('</cross-session-message>')) {
+      peers++
+    } else if (!block.text.startsWith('<system-reminder>') || /<(?:cross-session-message|teammate-message|task-notification)/.test(block.text)) return false
+  }
+  return peers === 1
 }
 
 /** Questions' answers and pairs from a stored AskUserQuestion record (§11b). */
 export function questionPairs(input: unknown, result: unknown): readonly QuestionPair[] {
-  throw new Error('not implemented')
+  if (!object(result)) return []
+  const question = (text: string) => {
+    const normalized = text.replace(/\s+/g, ' ')
+    const boundary = normalized.search(/[?:](?:\s|$)/)
+    return (boundary >= 0 ? normalized.slice(0, boundary) : normalized.split('.')[0] ?? '').trim()
+  }
+  if (object(result.answers)) return Object.entries(result.answers).flatMap(([key, value]) => typeof value === 'string' ? [{ question: question(key), answer: value }] : [])
+  if (typeof result.response !== 'string' || !object(input) || !Array.isArray(input.questions)) return []
+  const first = input.questions[0]
+  return object(first) && typeof first.question === 'string' ? [{ question: question(first.question), answer: result.response }] : []
 }
 
 /**
@@ -278,11 +388,44 @@ export function questionPairs(input: unknown, result: unknown): readonly Questio
  * M1a) opens one; a KillShell/TaskStop naming it, or a later user entry naming
  * its id in a <tool-use-id> or <task-id> tag (an idle task notification), closes
  * it. A notification delivered mid-turn is not in plain messages() (M1c), so
- * that close comes from the live delivery observation (Observations.bgEnded),
- * which a reload loses (ruling §20.16, open question Q-idle-delivery). A run
+ * the API tool_result content supplies that close (rationale option B). A run
  * started before a reload is recovered here, its elapsed counted from this
  * load's first sight.
  */
-export function backgroundRuns(messages: readonly SessionMessage[]): readonly BackgroundRun[] {
-  throw new Error('not implemented')
+export function backgroundRuns(messages: readonly SessionMessage[], api: readonly ApiMessage[] = []): readonly BackgroundRun[] {
+  const running = new Map<CallId, BackgroundRun>()
+  const taskCalls = new Map<string, CallId>()
+  const close = (id: string) => running.delete(taskCalls.get(id) ?? callId(id))
+  for (const entry of messages) {
+    if (entry.role === 'user') for (const id of notificationIds(entry.text)) close(id)
+    for (const use of entry.toolUses) {
+      const result = object(use.result) ? use.result : undefined
+      if (use.tool === 'Bash' && (use.input.run_in_background === true || result?.backgroundedToDeliverMessage === true)) {
+        const id = callId(use.tool_use_id)
+        const words = callWords(use, 'present')
+        const label = use.input.description || use.input.command
+        running.set(id, { id, words, isTest: typeof label === 'string' && looksLikeTest(label) })
+        if (typeof result?.backgroundTaskId === 'string') taskCalls.set(result.backgroundTaskId, id)
+      }
+      if (use.tool === 'KillShell' || use.tool === 'TaskStop') {
+        const id = use.input.task_id ?? use.input.shell_id
+        if (typeof id === 'string' && id) close(id)
+      }
+    }
+  }
+  for (const entry of api) {
+    if (entry.role !== 'user') continue
+    for (const block of entry.content) {
+      const text = block.type === 'tool_result' ? block.content : block.type === 'text' ? block.text : undefined
+      if (typeof text !== 'string') continue
+      for (const notification of text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
+        for (const id of notificationIds(notification[0])) close(id)
+      }
+    }
+  }
+  return [...running.values()]
+}
+
+function notificationIds(text: string): readonly string[] {
+  return [...text.matchAll(/<(?:tool-use-id|task-id)>([^<]+)<\/(?:tool-use-id|task-id)>/g)].flatMap(match => match[1]?.trim() ? [match[1].trim()] : [])
 }
