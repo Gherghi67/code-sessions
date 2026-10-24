@@ -116,7 +116,7 @@ const $ = {
   fs: {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
-    read: async (path: string) => { reads.push(path); if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+    read: async (path: string) => { reads.push(path); if (path in files) return files[path]; throw new Error(`cs: $.fs.read(${path}) failed: ENOENT`) },
     // A directory is listed from the files under it, a deeper file standing
     // for the directory that holds it; one with none is absent.
     list: async (path: string) => {
@@ -1667,7 +1667,7 @@ test('the mod registers /queue at load, to run at once even mid-turn', async () 
   await startSession()
   expect(commands).toHaveLength(2)
   expect(commands[0]).toMatchObject({ name: 'queue', immediate: true, argumentHint: '[task]' })
-  expect(commands[1]).toMatchObject({ name: 'cs', immediate: true, argumentHint: 'next|prev|first|last|<n>|feed on|off' })
+  expect(commands[1]).toMatchObject({ name: 'cs', immediate: true, argumentHint: 'next|prev|first|last|<n>' })
 })
 
 test('/queue with a task runs cs -queue add with the task as one argument and says it is queued', async () => {
@@ -2418,7 +2418,7 @@ test('/cs next, prev, first, last and N move along the rail from the prompt bein
   expect(await cs('3')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u3', 'u1', 'u1', 'u4', 'u3'])
   expect(await cs('9')).toEqual({ text: 'cs: the rail has 4 prompts' })
-  expect(await cs('sideways')).toEqual({ text: 'usage: /cs next|prev|first|last|<n> or /cs feed on|off' })
+  expect(await cs('sideways')).toEqual({ text: 'usage: /cs next|prev|first|last|<n>' })
   await drawRow('u4', '  say four  ', { first: 0, last: 1, of: 2 })
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
@@ -3317,7 +3317,7 @@ test('a feed press survives clearing the conversation and loading the band again
   expect(feedKey(await band()).props.label).toBe('feed ✓')
 })
 
-test('a failed feed write leaves the label unchanged and allows another press', async () => {
+test('a refused feed write allows another press', async () => {
   enableFeed()
   const write = $.fs.write
   $.fs.write = async () => { throw new Error('EACCES /work/.cs/local/feed') }
@@ -3326,7 +3326,7 @@ test('a failed feed write leaves the label unchanged and allows another press', 
     expect(feedKey(await band()).props.label).toBe('feed')
     expect(files['/work/.cs/local/feed']).toBeUndefined()
     expect(invalidated).toEqual([])
-    expect(toasts).toEqual(['cs: feed did not change: EACCES /work/.cs/local/feed'])
+    expect(toasts).toEqual(['cs: feed update failed: EACCES /work/.cs/local/feed'])
   } finally {
     $.fs.write = write
   }
@@ -3403,29 +3403,43 @@ test('feed state stays with its session across registration and stale button pre
   expect(files['/work/.cs/local/feed']).toBe('on\n')
 })
 
-test('/cs feed agrees with presses without echoing /feed and survives reload', async () => {
+test('a companion feed file change appears on the next redraw without reloading', async () => {
   enableFeed()
-  expect(await cs('feed on')).toEqual({})
+  const stale = feedKey(await band())
+  files['/work/.cs/local/feed'] = 'on\n'
   expect(feedKey(await band()).props.label).toBe('feed ✓')
-  expect(ran).toEqual([])
-  await feedKey(await band()).props.onPress()
-  expect(ran).toEqual([])
-  expect(await cs('feed on')).toEqual({})
-  register(on as any, OPTIONS)
-  expect(feedKey(await band()).props.label).toBe('feed ✓')
-  expect(await cs('feed off')).toEqual({})
-  register(on as any, OPTIONS)
+  files['/work/.cs/local/feed'] = 'off\n'
+  expect(feedKey(await band()).props.label).toBe('feed')
+  files['/work/.cs/local/feed'] = 'on\n'
+  await stale.props.onPress()
+  expect(files['/work/.cs/local/feed']).toBe('off\n')
   expect(feedKey(await band()).props.label).toBe('feed')
   expect(ran).toEqual([])
 })
 
-test('/cs feed refuses unknown settings without changing the session', async () => {
+test('an unreadable feed file reports its error without writing or redrawing', async () => {
   enableFeed()
-  for (const args of ['feed', 'feed clean', 'feed on extra', 'feed ON']) {
-    expect(await cs(args)).toEqual({ text: 'usage: /cs next|prev|first|last|<n> or /cs feed on|off' })
+  cwdPath = '/ENOENT'
+  existing.add('/ENOENT/.cs/local')
+  realPaths['/ENOENT'] = '/ENOENT'
+  realPaths['/home/.claude-sessions/ENOENT'] = '/ENOENT'
+  files['/ENOENT/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-lead\n'
+  const key = feedKey(await band())
+  const read = $.fs.read
+  $.fs.read = async path => {
+    if (path === '/ENOENT/.cs/local/feed') throw new Error('cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES')
+    return read(path)
   }
-  expect(feedKey(await band()).props.label).toBe('feed')
-  expect(ran).toEqual([])
+  try {
+    await expect(band()).rejects.toThrow('cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES')
+    await key.props.onPress()
+    expect(toasts).toEqual(['cs: feed update failed: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'])
+    expect(written).toEqual({})
+    expect(invalidated).toEqual([])
+    expect(ran).toEqual([])
+  } finally {
+    $.fs.read = read
+  }
 })
 
 test('feed presses use the local directory even when private storage exists', async () => {

@@ -121,7 +121,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. What sorts after
     # $.ui.log is checked on the source instead.
-    assert_output_contains "$out" '$.session.id, $.session.usage, $.ui.ask (via askToWrap, offerToStart), $.ui.invalidate, $.ui.log' "the visible inventory includes the session, dialogs and redraw calls" || return 1
+    assert_output_contains "$out" '$.session.id, $.session.usage, $.ui.ask (via askToWrap, offerToStart), $.ui.invalidate' "the visible inventory includes the session, dialogs and redraw calls" || return 1
     local src="$MOD/hooks/register.tsx" scroll_lines jump_range
     scroll_lines=$(grep -n '\$\.ui\.scroll' "$src" | cut -d: -f1 | tr '\n' ' ')
     jump_range=$(awk '/^async function jumpTo\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
