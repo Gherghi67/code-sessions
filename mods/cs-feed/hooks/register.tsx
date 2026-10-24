@@ -334,7 +334,7 @@ type Limits = {
 /** Every hooked site exactly once, each limited to what it may draw. A missing site, an extra one, or a Spinner painter that returns a tree is a compile error. */
 export type PainterTable = { readonly [C in Hooked]: Painter<C, C extends keyof Limits ? Limits[C] : Drawn<C>> }
 
-const PAINTERS = {
+export const PAINTERS = {
   UserMessage: async (e, cx, pen) => {
     // decideUser(toUserRow(e), cx) -> 'engine' | tree(drawUser) | nothing. next(e) always runs (cs's rail observer).
     throw new Error('not implemented')
