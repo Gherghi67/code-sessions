@@ -5082,6 +5082,120 @@ test_band_colour_override_precedence() {
 }
 
 
+# The docs fixture with its ctx and limits readings replaced: $1 ctx, $2 5h,
+# $3 wk.
+band_fixture() {
+    jq -c --argjson c "$1" --argjson h "$2" --argjson w "$3" \
+        '.context_window.used_percentage = $c
+         | .rate_limits.five_hour.used_percentage = $h
+         | .rate_limits.seven_day.used_percentage = $w' <<< "$FIXTURE_DOCS"
+}
+
+# An amber reading is a solid island: its own fill and ink, bold, a fill space
+# each side. The gradient resumes after it where the cells put it: ctx 45 ends
+# at cell 44, and cell 45 (the dot joiner's first space) is 45/79 of the way
+# from 49;52;75 to 21;24;40, so 34;37;56, in the dim ink.
+test_band_amber_reading_is_an_island() {
+    band_env
+    local out
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[48;2;120;74;12;38;2;255;228;160;1m 45% ${ESC_}[48;2;34;37;56;38;2;150;165;200;22m " \
+        "the ctx number at warn is an amber island, the gradient resuming after it" || return 1
+    assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
+}
+
+# A crit group is one red island, its joiners inside it: 5h at crit takes wk
+# with it. The island ends at cell 67, and the fade runs on from cell 68 at
+# 25;28;45.
+test_band_crit_group_is_one_red_island() {
+    band_env
+    local out
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[48;2;255;69;58;38;2;255;255;255;1m ◷ 5h 95% ⋮ ◶ wk 60% ${ESC_}[48;2;25;28;45m    " \
+        "the limits group at crit is one red island" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;33;36;55;38;2;150;165;200;22m ${ESC_}[48;2;255;69;58;" \
+        "the dot before the island sits on the gradient, its last cell at 46" || return 1
+    assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
+}
+
+# The band's own inks on a dark terminal, each cell on its own fill: the mark
+# keeps the brand coral (cell 1), bold text takes the primary (my-session from
+# cell 3), the effort word its own colour (cell 25), a label the dim ink
+# (cell 34).
+test_band_inks_on_a_dark_terminal() {
+    band_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[48;2;49;52;75;38;2;217;119;87;1m✳" "the mark is brand coral" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;48;51;74;38;2;255;255;255;1mm" "the session name is primary" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;41;44;64;38;2;146;158;250;22mh" "the effort word keeps its colour" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;37;40;60;38;2;150;165;200;22m○" "a label is dim" || return 1
+}
+
+# The three band inks per theme, which no default item exercises all of.
+test_band_ink_roles_per_theme() {
+    ( _load_sl_functions
+      LEVEL=truecolor; SL_THEME=dark
+      _band_ink ink bold; assert_eq "38;2;255;255;255" "$_BAND_FG" "dark primary" || return 1
+      _band_ink white "";  assert_eq "38;2;255;255;255" "$_BAND_FG" "white is the primary" || return 1
+      _band_ink ink "";    assert_eq "38;2;214;222;240" "$_BAND_FG" "dark secondary" || return 1
+      _band_ink ink2 "";   assert_eq "38;2;150;165;200" "$_BAND_FG" "dark dim" || return 1
+      SL_THEME=light
+      _band_ink ink bold; assert_eq "38;2;20;20;30" "$_BAND_FG" "light primary" || return 1
+      _band_ink ink "";    assert_eq "38;2;40;44;60" "$_BAND_FG" "light secondary" || return 1
+      _band_ink ink2 "";   assert_eq "38;2;90;96;120" "$_BAND_FG" "light dim" || return 1
+      _band_ink periwinkle ""; assert_eq "38;2;76;29;149" "$_BAND_FG" "periwinkle keeps its colour" || return 1 )
+}
+
+test_band_layout_unset_or_unknown_is_the_capsules() {
+    band_env
+    local want out
+    want=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$want" "$CAPL" "the default layout draws capsules" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "capsules is the default layout" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unknown layout is the capsules" || return 1
+}
+
+test_band_plain_level_prints_the_plain_line() {
+    band_env
+    export NO_COLOR=1
+    local want out
+    want=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "plain ignores the layout" || return 1
+}
+
+# Below truecolor the band is a flat surface fill, every cell, islands in the
+# level's own tokens.
+test_band_256_is_a_flat_fill() {
+    band_env
+    unset COLORTERM
+    local out
+    out=$(run_sl "$(band_fixture 45 95 60)")
+    assert_eq 80 "$(band_cells "$out")" "a flat band is 80 cells" || return 1
+    assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
+    assert_eq "[48;5;237m" "$(band_first_cell "$out")" "the band is the 256 surface" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;94;38;5;223;1m 45% " "the amber island in 256 tokens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;203;38;5;231;1m ◷ 5h 95% ⋮ ◶ wk 60% " "the crit island in 256 tokens" || return 1
+}
+
+test_band_basic_is_a_flat_fill() {
+    band_env
+    unset COLORTERM
+    export TERM=xterm
+    local out
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_eq 80 "$(band_cells "$out")" "a basic band is 80 cells" || return 1
+    assert_output_not_contains_f "$out" "48;" "no 256 or truecolor fill" || return 1
+    assert_eq "[100m" "$(band_first_cell "$out")" "the band is the basic surface" || return 1
+    assert_output_contains_f "$out" "${ESC_}[43;30;1m 45% " "the amber island in basic tokens" || return 1
+}
+
+
 run_test test_band_fills_exactly_the_width
 run_test test_band_overflow_emits_every_item_and_no_fill
 run_test test_band_width_holds_under_the_c_locale
@@ -5098,5 +5212,13 @@ run_test test_band_neutral_darkens_a_light_background
 run_test test_band_takes_the_session_colour
 run_test test_band_without_a_usable_session_colour_is_neutral
 run_test test_band_colour_override_precedence
+run_test test_band_amber_reading_is_an_island
+run_test test_band_crit_group_is_one_red_island
+run_test test_band_inks_on_a_dark_terminal
+run_test test_band_ink_roles_per_theme
+run_test test_band_layout_unset_or_unknown_is_the_capsules
+run_test test_band_plain_level_prints_the_plain_line
+run_test test_band_256_is_a_flat_fill
+run_test test_band_basic_is_a_flat_fill
 
 report_results

@@ -878,7 +878,9 @@ _sgr() {
                     [ "$SL_THEME" = "dark" ] && rgb="170;161;148" || rgb="128;116;106" ;;
                 # Inks. `amber` is a foreground: the hot number's colour on
                 # the neutral capsule, dark enough to hold contrast on cream and
-                # bright enough on a dark surface. Nothing paints amber as a fill.
+                # bright enough on a dark surface. Nothing paints amber as a
+                # fill; the band's amber island has its own pair, amberfill and
+                # amberink, below.
                 # It pivots on the measured terminal background when there is
                 # one (the bar's surface is a shade of it, the agent rows sit on
                 # it directly) and on the theme flag only without a measurement:
@@ -923,6 +925,11 @@ _sgr() {
                 # White on the red fill whatever the theme: the fill is the
                 # same hue on both, so its ink is too.
                 critink) rgb="255;255;255" ;;
+                # The band's amber island: a solid fill under a hot reading,
+                # deep on a dark terminal and pale on a light one, its ink the
+                # other way round.
+                amberfill) [ "$SL_THEME" = "dark" ] && rgb="120;74;12" || rgb="251;232;196" ;;
+                amberink)  [ "$SL_THEME" = "dark" ] && rgb="255;228;160" || rgb="140;64;8" ;;
                 # The effort word wears Claude Code's own /effort picker
                 # colours (pixel-sampled from the light picker); on dark they
                 # are lifted a third of the way to white so they keep reading
@@ -981,6 +988,8 @@ _sgr() {
                 ink2)    [ "$SL_THEME" = "dark" ] && idx=250 || idx=241 ;;
                 crit)    [ "$SL_THEME" = "dark" ] && idx=203 || idx=160 ;;
                 critink) idx=231 ;;
+                amberfill) [ "$SL_THEME" = "dark" ] && idx=94 || idx=223 ;;
+                amberink)  [ "$SL_THEME" = "dark" ] && idx=223 || idx=94 ;;
                 effort-low)    [ "$SL_THEME" = "dark" ] && idx=179 || idx=136 ;;
                 effort-medium) [ "$SL_THEME" = "dark" ] && idx=71  || idx=28 ;;
                 effort-high)   [ "$SL_THEME" = "dark" ] && idx=105 || idx=63 ;;
@@ -1029,6 +1038,8 @@ _sgr() {
                 ink2)    [ "$SL_THEME" = "dark" ] && base=97 || base=37 ;;
                 crit)    base=31 ;;
                 critink) base=97 ;;
+                amberfill) base=33 ;;
+                amberink)  base=30 ;;
                 effort-low)    base=33 ;;
                 effort-medium) base=32 ;;
                 effort-high)   base=34 ;;
@@ -2039,8 +2050,8 @@ _seg_cost() {
 # continuation bytes: the count is the same either way. The shell's own
 # locale is never changed, because a bash linked against libintl can die
 # setting one inside a command substitution. No subprocess. Used by
-# bin/cs-subagent-statusline (_fixed_width and _truncate); no caller in this
-# file.
+# the band layout's cell count and by bin/cs-subagent-statusline (_fixed_width
+# and _truncate).
 _display_width() {
     local s="${1//[$'\x80'-$'\xBF']/}"
     _WIDTH=${#s}
@@ -2362,6 +2373,27 @@ _band_text() {  # text fg weight
     done
 }
 
+# A solid island: text $3 on fill $1 in ink $2, bold, one run with no gradient
+# under it; its cells still count toward the band's positions.
+_band_island() {  # fill fg text
+    _display_width "$3"
+    _BAND_OUT+=$'\033['"$1;$2;1m$3"
+    _BAND_POS=$((_BAND_POS + _WIDTH))
+}
+
+# The text joiner $1 puts between two items of a group, in _JOIN_TEXT, and in
+# _JOIN_INKED whether it is a glyph drawn in the dim ink rather than blank fill.
+_band_joiner() {
+    _JOIN_INKED=""
+    case "$1" in
+        dot)   _JOIN_TEXT="  ·  "; _JOIN_INKED=1 ;;
+        bar)   _JOIN_TEXT=" ⋮ ";  _JOIN_INKED=1 ;;
+        pad)   _JOIN_TEXT="  " ;;
+        space) _JOIN_TEXT=" " ;;
+        *)     _JOIN_TEXT="" ;;
+    esac
+}
+
 # $1 cells of blank fill as one run, coloured at its first cell.
 _band_blank() {
     _band_cell_bg
@@ -2387,24 +2419,46 @@ _render_band() {
         _sgr 48 surface; _BAND_FLAT="$_SGR"
     fi
     _band_blank 1
-    local i k g first weight
+    local i k g first weight island fill
     for ((k = 0; k < ${#_GROUPS[@]}; k++)); do
         g="${_GROUPS[k]}"
         if [ "$k" -gt 0 ]; then
             _band_ink ink2 ""; _band_text "  ·  " "$_BAND_FG" 22
         fi
+        # A crit group is one red island, its joiners inside it.
+        case "$_CRIT_GROUPS" in
+            *" $g "*)
+                island=" "; first=1
+                for ((i = 0; i < n; i++)); do
+                    [ "${_SEG_GROUP[i]}" = "$g" ] || continue
+                    if [ -z "$first" ]; then
+                        _band_joiner "${_SEG_JOIN[i]}"; island+="$_JOIN_TEXT"
+                    fi
+                    first=""
+                    island+="${_SEG_TEXT[i]}"
+                done
+                _sgr 48 crit; fill="$_SGR"; _sgr 38 critink
+                _band_island "$fill" "$_SGR" "$island "
+                continue ;;
+        esac
         first=1
         for ((i = 0; i < n; i++)); do
             [ "${_SEG_GROUP[i]}" = "$g" ] || continue
             if [ -z "$first" ]; then
-                case "${_SEG_JOIN[i]}" in
-                    dot)   _band_ink ink2 ""; _band_text "  ·  " "$_BAND_FG" 22 ;;
-                    bar)   _band_ink ink2 ""; _band_text " ⋮ " "$_BAND_FG" 22 ;;
-                    pad)   _band_text "  " "" "" ;;
-                    space) _band_text " " "" "" ;;
-                esac
+                _band_joiner "${_SEG_JOIN[i]}"
+                if [ -n "$_JOIN_INKED" ]; then
+                    _band_ink ink2 ""; _band_text "$_JOIN_TEXT" "$_BAND_FG" 22
+                else
+                    _band_text "$_JOIN_TEXT" "" ""
+                fi
             fi
             first=""
+            # An amber item is a solid island of its own.
+            if [ "${_SEG_INK[i]}" = "amber" ]; then
+                _sgr 48 amberfill; fill="$_SGR"; _sgr 38 amberink
+                _band_island "$fill" "$_SGR" " ${_SEG_TEXT[i]} "
+                continue
+            fi
             weight=22
             [ -n "${_SEG_BOLD[i]}" ] && weight=1
             _band_ink "${_SEG_INK[i]}" "${_SEG_BOLD[i]}"
