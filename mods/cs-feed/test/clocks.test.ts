@@ -46,6 +46,25 @@ test('a tick suspended in agent list stops after feed off without a token write 
 
 const SPAWN = { prompt: 'Work', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'model', background: false, fork: false } as const
 
+test('a finished call the snapshot does not hold yet redraws once a refresh files it into the open turn', async ($, on) => {
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'Start', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'first', tool: 'Read', input: { file_path: 'a.md' }, result: {} }] },
+  ]
+  const clock = feedOn(on, rows, () => [])
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  await $.turn.start({ text: 'Start', turnId: 'turn' })
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolUse', requestId: 'late', props: { tool_use_id: 'late', tool: 'Read', input: { file_path: 'notes.md' }, isRunning: false, isErrored: false, isInterrupted: false } })
+  await clock.settle()
+  expect((await row.find({ type: 'Text', text: 'notes.md' }))?.text).toBe('Read notes.md')
+  rows.push({ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'late', tool: 'Read', input: { file_path: 'notes.md' }, result: {} }] })
+  await $.session.append({ door: 'response', origin: { kind: 'model', model: 'model' }, uuid: 'late-row', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'late', name: 'Read', input: { file_path: 'notes.md' } }] } })
+  await clock.settle()
+  expect(await row.find({ type: 'Text', text: 'notes.md' })).toBeUndefined()
+  await row.unmount()
+})
+
 test('the tick asks for the agent list only while a turn is open or a helper is busy', async ($, on) => {
   let agents: AgentInfo[] = []
   let lists = 0

@@ -351,7 +351,7 @@ test('the settings pane stays usable while off and pressing group enables this s
   await pane.unmount()
 })
 
-test('a refused settings-pane press logs the refusal once, and the engine adds the plugin name', async ($, on) => {
+test('a refused settings-pane press writes nothing and logs the refusal once without the plugin name', async ($, on) => {
   const writes: string[] = []
   const logs: string[] = []
   on('session.cwd', () => ({ value: '/session' }))
