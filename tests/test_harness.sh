@@ -359,6 +359,26 @@ run_test test_ok" "CS_TEST_SKIP_LOG=$record")"
         "each skip is recorded once, a tool's reason not leaking onto the next skip: $out" || return 1
 }
 
+# A suite that takes minutes shows nothing between one test's name and the
+# next; the counter in front of each name says how far along the run is.
+test_each_test_line_counts_its_place_in_the_suite() {
+    local out
+    # Tests are written over several lines, as every real suite writes them;
+    # the total counts those definitions, not one-line bodies like this
+    # file's other throwaway suites. Assembled line by line so none of them
+    # sits at this file's own column 0, where this suite's total would count it.
+    local body
+    body=$(printf '%s\n' \
+        'test_first() {' '    return 0' '}' \
+        'test_second() {' '    return 77' '}' \
+        'test_third() {' '    return 1' '}' \
+        'run_test test_first' 'run_test test_second' 'run_test test_third')
+    out="$(run_throwaway_suite "$body")"
+    assert_output_contains "$out" '^  \[1/3\] test_first\.\.\.$' "the first test is numbered 1 of 3: $out" || return 1
+    assert_output_contains "$out" '^  \[2/3\] test_second\.\.\.$' 'a skipped test still takes its number' || return 1
+    assert_output_contains "$out" '^  \[3/3\] test_third\.\.\.$' 'a failing test still takes its number' || return 1
+}
+
 # Several suites unset every exported CS_* variable in their own setup(), which
 # runs before each test body. Both variables must still reach require_tool and
 # run_test there. This setup scrubs exactly as those suites do.
@@ -409,6 +429,7 @@ run_test test_require_tool_names_every_missing_tool_when_it_skips
 run_test test_require_tool_runs_the_test_when_every_tool_is_present
 run_test test_a_helper_around_require_tool_passes_the_failure_through
 run_test test_a_skip_is_recorded_with_its_reason
+run_test test_each_test_line_counts_its_place_in_the_suite
 run_test test_a_suite_that_scrubs_cs_variables_still_fails_a_declared_missing_tool
 run_test test_a_suite_that_scrubs_cs_variables_still_records_its_skips
 report_results
