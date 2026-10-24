@@ -4,7 +4,7 @@ import type { EngineInterface } from 'claude-code'
 import { atom, read } from 'claude-code'
 
 import type { Session } from './settings'
-import { FEED_FILE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView } from './settings'
+import { CS_LOCAL, FEED_FILE, OFF_LINE, ON_LINE, VIEW_FILE, VET_TIMEOUT_MS, isOn, parseStoredView, viewText } from './settings'
 import type { CallId, Transcript, Turn } from './transcript'
 import { callId, EMPTY } from './transcript'
 
@@ -492,8 +492,20 @@ export type WriteOutcome = 'written' | 'no-session' | { readonly refused: string
  * Non-atomic writes, as the band's: a write torn by a crash leaves a file that
  * reads as off on both sides.
  */
-export function writeFeed(load: Load, $: $, next: Session): Promise<WriteOutcome> {
-  throw new Error('not implemented')
+export async function writeFeed(load: Load, $: $, next: Session): Promise<WriteOutcome> {
+  const cwd = await $.session.cwd()
+  if (!(await $.fs.exists(`${cwd}/${CS_LOCAL}`))) return 'no-session'
+  const refused = await vetRefusal($, cwd)
+  if (refused !== undefined) return { refused }
+  const current = load.feed ?? await feedRecord(load, $)
+  load.vet = 'passed'
+  const viewChanged = viewText(current.view) !== viewText(next.view)
+  if (viewChanged) await $.fs.write(`${cwd}/${VIEW_FILE}`, viewText(next.view))
+  load.feed = { on: current.on, view: next.view }
+  await $.fs.write(`${cwd}/${FEED_FILE}`, next.on ? ON_LINE : OFF_LINE)
+  await applyFeed(load, $, 'write')
+  if (viewChanged && load.feed.on === current.on) await $.ui.invalidate('ui.render')
+  return 'written'
 }
 
 /**

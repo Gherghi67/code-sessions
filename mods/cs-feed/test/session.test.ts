@@ -99,6 +99,63 @@ test('feed status reads a hand edit and vets an outside flip on only once', asyn
   expect(logs).toEqual([])
 })
 
+test('feed on refuses a directory without cs local before asking for the binary or writing', async ($, on) => {
+  const effects: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', () => ({ deny: 'ENOENT: no such file or directory' }))
+  on('fs.exists', ($, e) => { effects.push(e.path); return { value: false } })
+  on('env.get', () => { effects.push('env'); return { value: undefined } })
+  on('fs.write', () => { effects.push('write'); return { value: undefined } })
+  expect(await $.command.run({ ...STATUS, args: 'on' })).toEqual({ text: 'cs-feed: this directory is not a cs session (no .cs/local), so nothing changed.' })
+  expect(effects).toEqual(['/session/.cs/local'])
+  expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
+})
+
+test('a missing launch binary refuses a feed write and preserves the mirror and files', async ($, on) => {
+  const writes: unknown[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'off\n' } : { deny: 'ENOENT: no such file or directory' })
+  on('fs.exists', () => ({ value: true }))
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: undefined }))
+  on('fs.write', ($, e) => { writes.push(e); return { value: undefined } })
+  expect(await $.command.run({ ...STATUS, args: 'normal' })).toEqual({ text: 'cs-feed: no feed change in this session: the launch did not say where cs is (CS_BIN)' })
+  expect(writes).toEqual([])
+  expect(await $.command.run(STATUS)).toEqual({ text: 'off · raw' })
+})
+
+test('a vetted preset writes the view before the switch and redraws an on-session view change', async ($, on) => {
+  const files = new Map<string, string>([['/session/.cs/local/feed', 'off\n']])
+  const writes: { path: string; text: string }[] = []
+  const runs: unknown[] = []
+  const redraws: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => {
+    const text = files.get(e.path)
+    return text === undefined ? { deny: 'ENOENT: no such file or directory' } : { value: text }
+  })
+  on('fs.exists', () => ({ value: true }))
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', ($, e) => {
+    runs.push({ argv: e.argv, timeoutMs: e.init?.timeoutMs })
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.write', ($, e) => { writes.push({ path: e.path, text: e.text }); files.set(e.path, e.text); return { value: undefined } })
+  on('ui.invalidate', ($, e) => { redraws.push(e.event); return { value: undefined } })
+  expect(await $.command.run({ ...STATUS, args: 'normal' })).toEqual({ text: 'Chat view: normal. each run of tool calls is one line with counts.' })
+  expect(writes).toEqual([
+    { path: '/session/.cs/local/feed-view', text: '{"group":false,"clear":false,"keep":true,"style":"subtle","commands":"grouped","after":"keep","hide":[]}\n' },
+    { path: '/session/.cs/local/feed', text: 'on\n' },
+  ])
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · normal' })
+  expect(await $.command.run({ ...STATUS, args: 'clean' })).toEqual({ text: "Chat view: clean. your messages, Claude's replies, and one line per turn for the work." })
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  expect(redraws).toEqual(['ui.render', 'ui.render'])
+  expect(runs).toEqual([
+    { argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 },
+    { argv: ['/bin/cs', '-vet-session', '/session'], timeoutMs: 10000 },
+  ])
+})
+
 test('an unknown phase uses the band observation or a running call without inventing a turn id', () => {
   const load = newLoad()
   const t = buildTranscript([{ role: 'user', text: 'work', toolUses: [] }, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'live', tool: 'Read', input: {} }] }])
