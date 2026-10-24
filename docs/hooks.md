@@ -609,11 +609,16 @@ The installer binds Ctrl+X 3 to `strip:jump3` for the feed key.
 It draws after wrap when cs-feed advertises `/feed`, while the lead session
 is idle, with no survey or armed handoff. cs-feed must advertise that command
 only while globally enabled. The band reads the command list without running
-a status command. The shared prefix still draws once:
-`● ctrl+x  1 rotate  ·  2 wrap  ·  3 feed`.
+a status command. With all three chords bound, the shared prefix draws once:
+`● ctrl+x  1 rotate  ·  2 wrap  ·  3 feed`. If the feed chord is unbound,
+its label still draws and the other keys keep their shared prefix:
+`● ctrl+x  1 rotate  ·  2 wrap  ·  feed`. Run `cs -update` and accept the
+keybindings prompt to bind the third chord.
 
 The key reads `feed` while off and `feed ✓` while on, the check in the
-session's colour. A press flips `.cs/local/feed` under the session's working
+session's colour. A press asks `cs -vet-session` before it writes, as the
+other band writers do. A refusal leaves the file alone. An accepted press
+flips `.cs/local/feed` under the session's working
 directory, then invalidates the band. The file holds `on\n` or `off\n` and
 survives `/clear`, reload and resume. The existing writer is non-atomic, so
 only the whole value `on\n` means on. Absent, empty, torn and other content

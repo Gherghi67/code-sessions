@@ -597,7 +597,7 @@ export function register(on: On, options: PluginOptions) {
     // each Button its own key; chords that differ are spelled whole.
     const actions = entries.flatMap(entry => entry.kind === 'chord' ? [entry.action] : [])
     const prefix = sharedPrefix(actions.map(action => chords[action]))
-    const firstChord = entries.findIndex(entry => entry.kind === 'chord')
+    const firstChord = entries.findIndex(entry => entry.kind === 'chord' && chords[entry.action] !== undefined)
     const spelled = (action: string) => {
       const chord = chords[action]
       return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
@@ -709,13 +709,14 @@ export function register(on: On, options: PluginOptions) {
 }
 
 // The chord prefix every bound key shares, up to its last space (`ctrl+x` of
-// `ctrl+x 1` and `ctrl+x 2`); undefined when a key is unbound, the chords
-// differ before their last word, or a chord is one word.
+// `ctrl+x 1` and `ctrl+x 2`); undefined when none are bound, the bound chords
+// differ before their last word, or a bound chord is one word.
 export function sharedPrefix(chords: (string | undefined)[]): string | undefined {
-  if (chords.length === 0) return undefined
-  const prefixes = chords.map(chord => {
-    const at = chord?.lastIndexOf(' ') ?? -1
-    return chord === undefined || at <= 0 ? undefined : chord.slice(0, at)
+  const bound = chords.filter((chord): chord is string => chord !== undefined)
+  if (bound.length === 0) return undefined
+  const prefixes = bound.map(chord => {
+    const at = chord.lastIndexOf(' ')
+    return at <= 0 ? undefined : chord.slice(0, at)
   })
   const first = prefixes[0]
   return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined

@@ -241,6 +241,14 @@ const bindKeys = (bindings: Record<string, string | null>, context = 'Global') =
   files[KEYS] = JSON.stringify({ bindings: [{ context, bindings }] })
 }
 const words = (tree: any): string[] => texts(tree).map(textOf)
+// Button labels are visible text even when the fake renderer has no children.
+const bandWords = (tree: any): string[] => {
+  if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(bandWords)
+  if (tree.type === 'Text') return [textOf(tree)]
+  if (tree.type === 'Button') return [tree.props.label]
+  return (tree.children ?? []).flatMap(bandWords)
+}
 // The words drawn while no pointer rests on the band: a hover card's stay hidden.
 const restingWords = (tree: any): string[] => {
   if (!tree || typeof tree !== 'object') return []
@@ -273,7 +281,7 @@ test('a chord bound elsewhere is spelled as the person wrote it', async () => {
   bindKeys({ 'Ctrl+K 9': 'strip:jump1' })
   percent = 40
   const drawn = words(await band())
-  expect(drawn).toContain('Ctrl+K 9')
+  expect(drawn).toEqual(['●', 'Ctrl+K', '9', '  ·  '])
   expect(drawn.join(' ')).not.toContain('ctrl+x')
 })
 
@@ -302,7 +310,7 @@ test('CLAUDE_CONFIG_DIR names the keybindings.json the band reads, as it does fo
   percent = 40
   expect(words(await band()).join(' ')).not.toContain('ctrl+x 1')
   files['/cfg/keybindings.json'] = files[KEYS]
-  expect(words(await band())).toContain('ctrl+x 1')
+  expect(words(await band())).toEqual(['●', 'ctrl+x', '1', '  ·  '])
 })
 
 test('the band draws no context gauge: the status bar already carries it', async () => {
@@ -3297,6 +3305,15 @@ test('the feed chord toggles this session and colours its check with the keys', 
   expect(files['/work/.cs/local/feed']).toBe('off\n')
   expect(ran).toEqual([])
   expect(invalidated).toEqual(['ui.render', 'ui.render'])
+})
+
+test('the band shares the prefix of bound chords and leaves unbound labels unkeyed', async () => {
+  enableFeed()
+  percent = 40
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  expect(bandWords(await band())).toEqual(['●', 'ctrl+x', '1', 'rotate', '  ·  ', '2', 'wrap', '  ·  ', 'feed'])
+  bindKeys({ 'ctrl+x 2': 'strip:jump2', 'ctrl+x 3': 'strip:jump3' })
+  expect(bandWords(await band())).toEqual(['●', 'rotate', '  ·  ', 'ctrl+x', '2', 'wrap', '  ·  ', '3', 'feed'])
 })
 
 test('a feed press refuses a session whose control files are tracked', async () => {

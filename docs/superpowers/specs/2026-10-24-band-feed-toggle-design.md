@@ -170,15 +170,24 @@ the need for a types file and its manifest and install entries.
 expectations in `tests/test_mod_rotate.sh` name command discovery and the
 new file reader, with no feed command sender or state operations.
 
-The requested checks pass with 250 Bun tests, 19 unchanged snapshots, and
-7 shell checks. A second build leaves the generated files unchanged. The
+The requested checks pass with 253 Bun tests, 19 unchanged snapshots,
+7 mod checks, 113 doctor checks and 19 installer key tests run singly.
+A second build leaves the generated files unchanged. The
 persistence test first failed with expected `feed ✓`, received `feed`, after
 a simulated clear and reload. It now covers empty, torn and malformed values
 as well as the exact on line. Other tests cover direct companion writes,
 private storage, separate working directories, duplicate presses and refused
-reads and writes. The companion integration and actual terminal painting
-remain untested. Installer and doctor fixtures outside this job's scope still
-describe the earlier two-key band and need a separate update.
+reads and writes. The review checks cover a refused session write, command
+discovery outside cs sessions and an unbound chord beside bound chords.
+The companion integration and actual terminal painting remain untested.
+
+Run each installer key test in its own shell and isolated test home:
+
+```bash
+while IFS= read -r name; do
+    bash -c 'source <(sed "/^run_test /d; /^report_results$/d" "$0"); run_test "$1"; report_results' tests/test_install.sh "$name" || exit
+done < <(awk '/^test_.*(keys|rotate_wrap).*\(\) \{/ { sub(/\(\).*/, ""); print }' tests/test_install.sh)
+```
 
 [^commands]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:3144`.
 [^provider]: `mods/cs/.claude-plugin/types/claude-code/index.d.ts:1781`.
