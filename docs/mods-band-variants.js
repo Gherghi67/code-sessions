@@ -368,7 +368,7 @@
   }
 
   var VARIANTS = [
-    { id: "shipped", name: "Shipped", note: "The band the cs mod draws, from its own drawBand in the bundled docs/surfaces/cs.js, handed the terminal less the five [-] cells. With every word at once its five Buttons alone take 60 cells: at 80 the rest shrink to a cell or none and wrap, six rows tall, and the Buttons run past the edge at 60. The line has no rule for what to drop.", draw: cs.band },
+    { id: "shipped", name: "Shipped", note: "The band the cs mod draws, from its own drawBand in the bundled docs/surfaces/cs.js, handed the terminal less the five [-] cells. With every word at once it leaves out its lowest words, then shortens the free text before the actions, until the line fits: one row at 80 and at 60, never past the edge.", draw: cs.band },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into …N, so it never overruns.", draw: drawQuiet },
     { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once shrinks the words into extra rows at 60 and at 80.", draw: drawKeysFirst },
     { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once shrinks the words into extra rows at 60 and at 80.", draw: drawStatusFirst },
