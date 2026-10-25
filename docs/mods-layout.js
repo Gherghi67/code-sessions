@@ -268,6 +268,7 @@
   function layoutButton(node, width, path) {
     var p = node.props || {};
     var st = styleOf(p.plain ? { dimColor: p.dimColor } : { dimColor: p.dimColor, bold: true, color: p.variant === "primary" ? "suggestion" : "" });
+    if (p.lit) st = mergeStyle(st, p.lit);
     var drawn = (node.children || []).some(function (k) { return k != null && k !== false && k !== ""; });
     var body = drawn ? textCells({ props: {}, children: node.children }, st, path) : run(p.label == null ? "" : String(p.label), st, path);
     var cells;
@@ -526,6 +527,42 @@
     return { w: w, h: y, spots: spots };
   }
 
+  // The tree as 2.1.310 draws it while the pointer is over the node at
+  // `o.hover` and the Button at `o.focus` has the focus (index paths, or
+  // null). The pointer is over that node and every node holding it. A
+  // node's hover props merge into its props when its hover.scope is hot, a
+  // node of that scope being under the pointer; with no scope, when the
+  // nearest keyed Box holding it is under the pointer, or, for a keyed Box,
+  // when it is (Ot, Mt, vt). A Button under the pointer or with the focus
+  // lights (rr): its Text inverts and drops its dim, then takes its own hover
+  // props, carried to layoutButton as `lit`. The tree keeps its shape, so
+  // every cell names the node it names without them.
+  function interact(tree, o) {
+    var under = function (path) { return !!o.hover && path.length <= o.hover.length && path.every(function (v, i) { return v === o.hover[i]; }); };
+    var same = function (a, b) { return !!a && !!b && a.length === b.length && a.every(function (v, i) { return v === b[i]; }); };
+    var hot = {};
+    (function scopes(n, path) {
+      if (!n || typeof n !== "object") return;
+      var h = (n.props || {}).hover;
+      if (h && h.scope && under(path)) hot[h.scope] = true;
+      (n.children || []).forEach(function (k, i) { scopes(k, path.concat([i])); });
+    })(tree, []);
+    return (function lit(n, path, boxHovered) {
+      if (!n || typeof n !== "object") return n;
+      var p = n.props || {}, h = p.hover, keyed = n.type === "Box" && p.key !== undefined;
+      var on = !!h && (h.scope ? !!hot[h.scope] : keyed ? under(path) : boxHovered);
+      var over = {};
+      if (on) Object.keys(h).forEach(function (k) { if (k !== "scope") over[k] = h[k]; });
+      var props = p;
+      if (n.type === "Button") {
+        var bright = under(path) || same(o.focus, path);
+        props = Object.assign({}, p, { lit: Object.assign({ inverse: bright, dimColor: !!p.dimColor && !bright }, over) });
+      } else if (on) props = Object.assign({}, p, over);
+      var inside = keyed ? under(path) : boxHovered;
+      return { type: n.type, props: props, children: (n.children || []).map(function (k, i) { return lit(k, path.concat([i]), inside); }) };
+    })(tree, [], false);
+  }
+
   // Plain text of each row, for tests and for the copy-as-text button.
   function toText(g) {
     return g.rows.map(function (r) { return r.map(function (c) { return c.ch; }).join(""); });
@@ -646,7 +683,7 @@
     return out;
   }
 
-  var api = { layout: layout, layoutScreen: layoutScreen, layoutPane: layoutPane, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
+  var api = { layout: layout, layoutScreen: layoutScreen, layoutPane: layoutPane, interact: interact, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ModLayout = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

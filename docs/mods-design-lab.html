@@ -273,7 +273,8 @@ body.dragging{user-select:none;cursor:grabbing}
 .frame .why.empty{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
 .ronote{font-size:12px;color:var(--fg2);margin:0 0 8px}
 .fhead .quiet{display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .12s ease-out}
-.frame:hover .quiet,.frame.on .quiet,.frame:focus-within .quiet{opacity:1}
+.frame:hover .quiet,.frame.on .quiet,.frame:focus-within .quiet,.frame.preview .quiet{opacity:1}
+.fhead button[aria-pressed=true]{color:var(--accent-ink);border-color:currentColor}
 .fhead label.inline{display:flex;gap:4px;align-items:center;min-height:24px;cursor:pointer}
 .fhead .fname-edit{font:500 12px "IBM Plex Sans",sans-serif;padding:1px 4px}
 .fhead :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -1480,7 +1481,7 @@ const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Erro
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
 // "a", "a or b", "a, b or c".
 const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
-const BD_NEEDS={"hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
+const BD_NEEDS={"engine drawing":"the engine's own drawing beside it"};
 const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`;
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
@@ -1489,6 +1490,8 @@ function bdPartNode(sid,part){
   if(!n||typeof n!=="object") throw new Error(`part ${part.id} of ${sid} names no element at ${JSON.stringify(part.path)}`);
   return n;
 }
+// The frames in preview, by id, and what the pointer and the focus are on (bdPreviewHover).
+const bdPreview=new Map();
 // The grid a frame paints, inside the chrome the engine draws round its
 // surface: AbovePrompt keeps five cells at the right of each row for its
 // `[-]`, which sits on the first row one cell in, and the band is clipped to
@@ -1496,7 +1499,7 @@ function bdPartNode(sid,part){
 // tab and clipped to its rows; any other surface fills the terminal's row.
 // A frame of no surface is measured at its natural width, clipped at the band's edge.
 function bdGridOf(f,c){
-  const tree=BandEditor.toEngine(f.tree), chrome=f.source&&bdSurface(f.source.surface).chrome;
+  const pv=bdPreview.get(f.id), drawn=BandEditor.toEngine(f.tree), tree=pv?ModLayout.interact(drawn,pv):drawn, chrome=f.source&&bdSurface(f.source.surface).chrome;
   if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
   if(chrome&&chrome.kind==="pane") return ModLayout.layoutPane(tree,{columns:c,rows:chrome.rows,title:chrome.title,titles:[chrome.title]});
   if(chrome&&chrome.kind==="above-prompt"){
@@ -1509,6 +1512,23 @@ function bdGridOf(f,c){
   }
   return screenGrid(tree,c);
 }
+// Preview: a frame drawn as the terminal draws it under the pointer. The
+// pointer over the strip is over the node that drew the cell under it; a
+// click gives the Button under it the focus, as ctrl+x tab would, and a click
+// on it again or off any Button takes the focus away. Nothing is selected or
+// edited while it is on. Per frame and not saved: it is a way of looking.
+function bdPreviewHover(id,path){
+  const pv=bdPreview.get(id);
+  if(!pv||(path===null?pv.hover===null:pv.hover&&samePath(pv.hover,path))) return;
+  pv.hover=path; composeRender();
+}
+function bdPreviewPress(id,path){
+  let n=BandEditor.toEngine(bdFrame(id).tree);
+  for(const i of path) n=n&&typeof n==="object"?n.children[i]:undefined;
+  const pv=bdPreview.get(id), button=n&&typeof n==="object"&&n.type==="Button";
+  pv.focus=button&&!(pv.focus&&samePath(pv.focus,path))?path:null;
+  composeRender();
+}
 // The cells a frame's tree is handed: the band, the terminal less AbovePrompt's
 // five `[-]` cells; anything else, the terminal's width.
 const bdRoom=f=>f.source&&bdSurface(f.source.surface).chrome?.kind==="above-prompt"?cols()-5:cols();
@@ -1520,12 +1540,13 @@ function bdFrameCard(f){
   const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
   const prompt=!surf||surf.chrome?.kind==="above-prompt";
   const room=bdRoom(f), measured=reach(ModLayout.layout(tree,room));
-  const ro=bdReadOnly(f.id);
-  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}" data-frame="${f.id}">`
+  const ro=bdReadOnly(f.id), pv=bdPreview.has(f.id);
+  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}${pv?" preview":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
     +(ro?`<span class="badge ref" title="${esc(ro)}">reference</span>`:"")
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
+    +`<button type="button" data-act="preview" aria-pressed="${pv}" title="Draw it under the pointer: hover a node, click a Button to give it the focus">preview</button>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
     +(surf&&surf.needs.length?`<p class="needs">${bdNeedsWords(surf.needs,w=>`<b>${w}</b>`)}</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
@@ -1601,6 +1622,7 @@ function composeRender(){
     +[...new Set(SURFACES.map(x=>x.mod))].map(m=>`<optgroup label="${esc(m)}">`+SURFACES.filter(x=>x.mod===m).flatMap(x=>x.states.map(st=>`<option value="s:${esc(x.id)}/${esc(st.id)}">${esc(x.id)}/${esc(st.id)}</option>`)).join("")+`</optgroup>`).join("")
     +`<optgroup label="Band variants, in the picked state">`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("")+`</optgroup>`;
   for(const id in bdGrids) delete bdGrids[id];
+  for(const id of [...bdPreview.keys()]) if(!doc.frames.some(f=>f.id===id)) bdPreview.delete(id);
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const fs=bdFontSize(); $("bd-canvas").style.setProperty("--fs",fs+"px");
   $("bd-zoom").value=String(bdZoom); $("bd-zoom").options[0].textContent=`Fit (${Math.round(fs/15*100)}%)`;
@@ -1707,6 +1729,7 @@ function bdFrameAct(el,frame){
   if(act==="export") return bdEdit({type:"exportFrame",frame});
   if(act==="duplicate") return bdEdit({type:"addFrame",from:frame});
   if(act==="remove") return bdEdit({type:"removeFrame",frame});
+  if(act==="preview"){ if(bdPreview.has(frame)) bdPreview.delete(frame); else bdPreview.set(frame,{hover:null,focus:null}); return composeRender(); }
 }
 
 // A click selects the node that drew the cell; a second click on the node
@@ -1722,6 +1745,7 @@ function bdClick(e){
   if(e.target.closest(".fname-edit")) return;
   if(!cell||!frame){ if(bdDocNow().selection) bdDispatch({type:"deselect"}); return; }
   const id=frame.dataset.frame, path=BandEditor.pathOfCell(bdGrids[id],+cell.dataset.r,+cell.dataset.c);
+  if(bdPreview.has(id)) return bdPreviewPress(id,path);
   const sel=bdDocNow().selection;
   const again=sel&&sel.frame===id&&samePath(sel.path,path)&&path.length>0;
   bdDispatch({type:"select",frame:id,path:again?path.slice(0,-1):path});
@@ -1768,7 +1792,7 @@ function bdIndicator(strip,t){
 }
 function bdDragStart(e){
   const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]"), sel=bdDocNow().selection;
-  if(e.button!==0||!cell||!frame||!sel||sel.frame!==frame.dataset.frame||!sel.path.length) return;
+  if(e.button!==0||!cell||!frame||!sel||sel.frame!==frame.dataset.frame||!sel.path.length||bdPreview.has(sel.frame)) return;
   const path=BandEditor.pathOfCell(bdGrids[sel.frame],+cell.dataset.r,+cell.dataset.c);
   if(!bdWithin(path,sel.path)) return;
   e.preventDefault();
@@ -1862,7 +1886,7 @@ function bdInline(frame,path){
 }
 function bdDoubleClick(e){
   const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
-  if(!cell||!frame) return;
+  if(!cell||!frame||bdPreview.has(frame.dataset.frame)) return;
   bdInline(frame.dataset.frame,BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c));
 }
 
@@ -1936,9 +1960,11 @@ function composeUI(){
   $("bd-layers").addEventListener("mouseleave",()=>bdHoverSet(null));
   $("bd-canvas").addEventListener("mousemove",e=>{
     const cell=!bdDrag&&e.target.closest("[data-r]"), frame=cell&&cell.closest("[data-frame]");
-    bdHoverSet(frame?{frame:frame.dataset.frame,path:BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c)}:null);
+    const at=frame&&{frame:frame.dataset.frame,path:BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c)};
+    for(const id of bdPreview.keys()) bdPreviewHover(id,at&&at.frame===id?at.path:null);
+    bdHoverSet(at&&!bdPreview.has(at.frame)?at:null);
   });
-  $("bd-canvas").parentElement.addEventListener("mouseleave",()=>bdHoverSet(null));
+  $("bd-canvas").parentElement.addEventListener("mouseleave",()=>{ for(const id of bdPreview.keys()) bdPreviewHover(id,null); bdHoverSet(null); });
   $("bd-props").addEventListener("toggle",e=>{ const g=e.target.dataset?.group; if(g) e.target.open?bdShut.delete(g):bdShut.add(g); },true);
   document.querySelectorAll(".itabs").forEach(list=>{
     const tabs=[...list.querySelectorAll("[role=tab]")];

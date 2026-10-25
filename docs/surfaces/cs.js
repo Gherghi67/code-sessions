@@ -422,7 +422,7 @@
     slot: "AbovePrompt",
     source: "generated",
     global: "CsSurfaces",
-    needs: ["hover", "focus inverse", "engine drawing"],
+    needs: ["engine drawing"],
     chrome: { kind: "above-prompt" },
     states: STATES.map((s) => ({ id: s.id, name: s.name, draw: (cols, theme) => band(s.facts, cols, theme) })),
     parts: [

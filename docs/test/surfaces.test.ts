@@ -24,15 +24,23 @@ test('every state has a unique id, a name, and draws a tree the engine accepts, 
 })
 
 // A state names what a person sees, so two states of one surface that draw
-// the same cells, character and ink, in both themes name one thing twice.
-// Two pairs are allowed. The rail's hover cards, absent on the desktop,
-// are what the lab cannot draw yet (cs.AbovePrompt needs hover; the card
-// count is pinned below). A call's chevron in a fullscreen terminal is a
-// Button drawn as the bare dim mark the Text is, so the pair differs in what
-// a press does, pinned here.
-test('no two states of a surface draw the same screen at 80 cols, light and dark', () => {
-  const { layoutScreen } = require('../mods-layout.js')
-  const screen = (st: any) => ['light', 'dark'].map(theme => layoutScreen(st.draw(80, theme), 80).rows.map((r: any[]) => r.map(c => c.ch + JSON.stringify(c.st)).join('')).join('\n')).join('\n\n')
+// the same cells, character and ink, in both themes, at rest and with the
+// pointer over each of its Buttons, name one thing twice. The pointer is what
+// tells the rail's hover cards (absent on the desktop) and a call's pressable
+// chevron (a Button, which inverts under it) from their twins at rest.
+const buttonPaths = (n: any, path: number[] = [], out: number[][] = []): number[][] => {
+  if (!n || typeof n !== 'object') return out
+  if (n.type === 'Button') out.push(path)
+  ;(n.children || []).forEach((k: any, i: number) => buttonPaths(k, path.concat([i]), out))
+  return out
+}
+test('no two states of a surface draw the same screen at 80 cols, light and dark, at rest or under the pointer', () => {
+  const { layoutScreen, interact } = require('../mods-layout.js')
+  const paint = (tree: any) => layoutScreen(tree, 80).rows.map((r: any[]) => r.map(c => c.ch + JSON.stringify(c.st)).join('')).join('\n')
+  const screen = (st: any) => ['light', 'dark'].map(theme => {
+    const tree = st.draw(80, theme)
+    return [paint(tree), ...buttonPaths(tree).map(hover => paint(interact(tree, { hover, focus: null })))].join('\n\n')
+  }).join('\n\n')
   const twins: string[] = []
   for (const s of SURFACES) {
     const seen = new Map<string, string>()
@@ -42,9 +50,37 @@ test('no two states of a surface draw the same screen at 80 cols, light and dark
       else twins.push(`${s.id}: ${first} == ${st.id}`)
     }
   }
-  expect(twins).toEqual(['cs.AbovePrompt: rail-few == rail-desktop', 'cs-feed.ToolUse: call-running == call-running-clickable'])
-  const chevron = (id: string) => state(`cs-feed.ToolUse/${id}`).draw(80, 'light').children[0].children[2]
-  expect([chevron('call-running').type, chevron('call-running-clickable')]).toMatchObject(['Text', { type: 'Button', props: { key: 'toolu_01', label: '\u203a', plain: true } }])
+  expect(twins).toEqual([])
+})
+
+// The pointer over a rail bar, worked by hand from drawBand: the bar is a
+// Button, so it inverts and drops its dim; its hover.scope lights the card of
+// the same scope, an absolute Box at the label's top left that swaps
+// display none for flex, so the hovered prompt, italic and not dim, covers
+// the named one (both padded by fitLeft to the label's 66 cells).
+const pathOfKey = (n: any, key: string, path: number[] = []): number[] | undefined => {
+  if (!n || typeof n !== 'object') return undefined
+  if (n.props?.key === key) return path
+  for (let i = 0; i < (n.children || []).length; i++) { const p = pathOfKey(n.children[i], key, path.concat([i])); if (p) return p }
+  return undefined
+}
+test('cs draws a rail bar under the pointer inverted, with its prompt over the named one', () => {
+  const { layoutScreen, interact } = require('../mods-layout.js')
+  const tree = state('cs.AbovePrompt/rail-few').draw(80, 'light')
+  const g = layoutScreen(interact(tree, { hover: pathOfKey(tree, 'cs-rail-0'), focus: null }), 75)
+  expect(toText(g)[1].replace(/\s+$/, '')).toBe('  \u25cf \u2502\u2502\u2503  #1 fix the login redirect')
+  expect([g.rows[1][4].st, g.rows[1][5].st.inverse, g.rows[1][9].st]).toMatchObject([{ inverse: true, dim: false }, false, { italic: true, dim: false }])
+  expect(toText(layoutScreen(tree, 75))[1].replace(/\s+$/, '')).toBe('  \u25cf \u2502\u2502\u2503  #3 why does the cache miss on first load')
+})
+
+// ctrl+x tab moves the focus along the band's Buttons; the focused one
+// inverts, its words only: the key beside it is a Text of its own.
+test('cs draws the focused Button of the band inverted', () => {
+  const { layoutScreen, interact } = require('../mods-layout.js')
+  const tree = state('cs.AbovePrompt/rotate-due').draw(80, 'light')
+  const row = layoutScreen(interact(tree, { hover: null, focus: pathOfKey(tree, 'cs-rotate') }), 75).rows[1]
+  expect(row.map((c: any) => c.ch).join('').replace(/\s+$/, '')).toBe('  \u25cf ctrl+x  1 rotate  \u00b7  2 wrap')
+  expect(row.map((c: any, x: number) => c.st.inverse ? x : -1).filter((x: number) => x >= 0)).toEqual([14, 15, 16, 17, 18, 19])
 })
 
 // A node of a state's tree by child index path, as a layout cell names it.

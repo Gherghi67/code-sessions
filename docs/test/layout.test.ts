@@ -498,3 +498,40 @@ test('toJsx prints a Markdown or a Code node as the element the mod writes', () 
   expect(toJsx({ type: 'Markdown', props: { text: 'Gate **green**' }, children: [] })).toBe('<Markdown text="Gate **green**" />')
   expect(toJsx(B({}, { type: 'Code', props: { source: 'graph TD', language: 'mermaid' }, children: [] }))).toBe('<Box>\n  <Code source="graph TD" language="mermaid" />\n</Box>')
 })
+
+// Hover and focus as 2.1.310 draws them. A Button lights when the pointer
+// is over it or it has the focus ("let C=M.focused||M.hovered||S,W=x===!0&&
+// !C"): its whole Text inverts and drops its dim ("wc(n,{inverse:C,dimColor:W,
+// ...H},...)"), then its own hover props apply. A node's hover props merge
+// when its hover.scope is hot (a node of that scope is under the pointer,
+// "c=(o?f.isHot:m)&&p?Me(ot(p))??{}:{}"), or, with no scope, when the keyed
+// Box it sits in is under the pointer (Ot provides that, "wc(Ne.Provider,
+// {value:k}"); a keyed Box's own hover merges when it is under the pointer.
+const { interact } = require('../mods-layout.js')
+const Bh = (props: any) => ({ type: 'Button', props: { plain: true, ...props }, children: [] })
+test('a Button under the pointer or with the focus inverts and drops its dim', () => {
+  const tree = B({}, Bh({ key: 'a', label: 'ab', dimColor: true }), Bh({ key: 'b', label: 'cd', hotkey: '1' }))
+  const hovered = layout(interact(tree, { hover: [0], focus: null }), 40).rows[0]
+  expect([hovered[0].st, hovered[2].st.inverse]).toMatchObject([{ inverse: true, dim: false }, false])
+  const focused = layout(interact(tree, { hover: null, focus: [1] }), 40).rows[0]
+  expect(toText({ rows: [focused] })).toEqual(['ab1: cd'])
+  expect(focused.slice(2).map((c: any) => [c.st.inverse, c.st.color])).toEqual([[true, 'suggestion'], [true, ''], [true, ''], [true, ''], [true, '']])
+  expect(layout(interact(tree, { hover: null, focus: null }), 40).rows[0][0].st).toMatchObject({ inverse: false, dim: true })
+})
+
+test('a hovered node lights its scope: every node of that scope merges its hover props', () => {
+  const tree = B({}, Bh({ key: 'bar', label: '│', dimColor: true, hover: { scope: 's', dimColor: false } }),
+    B({ display: 'none', hover: { scope: 's', display: 'flex' } }, T({}, 'card')))
+  expect(toText(layout(interact(tree, { hover: null, focus: null }), 40))).toEqual(['│'])
+  expect(toText(layout(interact(tree, { hover: [0], focus: null }), 40))).toEqual(['│card'])
+})
+
+test('a keyed Box under the pointer merges its own hover, and the Text it holds merges a hover of no scope', () => {
+  const tree = B({ key: 'row', hover: { backgroundColor: 'red' } }, T({ hover: { color: 'claude' } }, 'x'), T({}, 'y'))
+  const over = layout(interact(tree, { hover: [1], focus: null }), 40).rows[0]
+  expect(over.map((c: any) => [c.st.bg, c.st.color])).toEqual([['red', 'claude'], ['red', '']])
+  const off = layout(interact(tree, { hover: null, focus: null }), 40).rows[0]
+  expect(off.map((c: any) => [c.st.bg, c.st.color])).toEqual([['', ''], ['', '']])
+  // An unkeyed Box under the pointer gives the Text in it nothing to merge.
+  expect(layout(interact(B({}, T({ hover: { color: 'claude' } }, 'x')), { hover: [0], focus: null }), 40).rows[0][0].st.color).toBe('')
+})
