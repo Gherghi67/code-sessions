@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ABOUTME: Tests for the design lab's mod bundles under docs/surfaces: each committed bundle is what a rebuild prints, a plain script, and its fixtures typecheck.
+# ABOUTME: Tests for the design lab's mod bundles under docs/surfaces: each committed bundle is what a rebuild prints and a plain script; its fixtures typecheck where the engine's types exist.
 # ABOUTME: A change to a mod's draw code without a rebuild of its bundle fails here.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -108,7 +108,9 @@ test_mod_sources_named_here_are_the_ones_the_bundles_carry() {
 
 # The fixtures are typed against the mods' exported view types, so a change
 # to a view's shape breaks them here. The engine writes its types into a mod
-# on first use and they are gitignored; the cs mod's copy is the contract. A
+# on first use and they are gitignored; the cs mod's copy is the contract.
+# This runs only where they exist and npx finds a tsc, a dev machine that has
+# loaded the mod; CI has neither and skips it by name. A
 # config of the test's own is written beside the fixtures and removed after.
 # The mods' own files carry errors of their own (five TS2532 in mods/cs, one in mods/cs-update),
 # which this check does not judge: only errors in docs/surfaces fail it.

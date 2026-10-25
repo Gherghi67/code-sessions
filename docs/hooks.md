@@ -821,8 +821,12 @@ bundles each mod's exported draw functions with the lab's fixtures for them
 into one plain script per mod (`docs/surfaces/cs.js`, `cs-feed.js`,
 `cs-update.js`, `cs-mermaid.js`), which the page loads after
 `docs/surfaces/shim.js`, the stand-in for the engine's `h` and its elements.
-The fixtures are TypeScript typed against each mod's view types, so a change
-to a view breaks them at type-check. The repository holds the built bundles,
+The fixtures are TypeScript typed against each mod's view types, and
+`tests/test_lab_surfaces.sh` typechecks them where Claude Code's
+engine-written types exist (`mods/cs/.claude-plugin/types/`, written when the
+engine first loads the mod, and gitignored) and npx finds a tsc: a dev
+machine. CI has neither, and skips that test by name, so after a change to a
+view, run the suite on a machine that has loaded the mod. The repository holds the built bundles,
 since a page opened from a file cannot build them; `tests/test_lab_surfaces.sh` rebuilds
 them with the bun release CI pins (`bun-version` in
 `.github/workflows/test.yml`) and fails with a diff when a committed bundle is
