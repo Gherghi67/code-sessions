@@ -222,7 +222,8 @@ body.app .rail,body.app .head{display:none}
 #bd-hist button:hover{border-color:var(--line)}
 #bd-hist button.now{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
 #bd-hist button.ahead{opacity:.5}
-#bd-help{border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:14px 18px 16px;width:min(460px,92vw);box-shadow:0 12px 32px rgba(0,0,0,.18)}
+#bd-help{border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:0;width:min(460px,92vw);box-shadow:0 12px 32px rgba(0,0,0,.18)}
+#bd-help .dbody{padding:14px 18px 16px}
 #bd-help::backdrop{background:rgba(0,0,0,.18)}
 #bd-help .dhead{display:flex;align-items:center;justify-content:space-between;margin:0 0 4px}
 #bd-help .dhead button{font:inherit;font-size:18px;line-height:1;background:none;border:0;color:var(--fg2);cursor:pointer;min-width:28px;min-height:28px}
@@ -325,7 +326,7 @@ body.app .rail,body.app .head{display:none}
     <div id="bd-hist" role="tabpanel" aria-labelledby="bd-tab-history" hidden></div>
   </aside>
 </div>
-<dialog id="bd-help" aria-labelledby="bd-help-h">
+<dialog id="bd-help" aria-labelledby="bd-help-h"><div class="dbody">
   <div class="dhead"><h3 id="bd-help-h">Keyboard shortcuts</h3><button type="button" id="bd-help-close" aria-label="close">×</button></div>
   <p class="cap">The tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, built on the strip.</p>
   <table class="keys-table">
@@ -348,7 +349,7 @@ body.app .rail,body.app .head{display:none}
     <tr><td><kbd>0</kbd></td><td>zoom to fit</td></tr>
     <tr><td><kbd>?</kbd></td><td>this list</td></tr>
   </table>
-</dialog>
+</div></dialog>
 
 </section>
 <!-- ============================== SITES ============================== -->
@@ -1743,6 +1744,7 @@ function composeUI(){
   });
   $("bd-help-open").onclick=()=>$("bd-help").showModal();
   $("bd-help-close").onclick=()=>$("bd-help").close();
+  // .dbody fills the dialog's box, so a click on the dialog itself is on its backdrop.
   $("bd-help").addEventListener("click",e=>{ if(e.target===$("bd-help")) $("bd-help").close(); });
   $("bd-props").addEventListener("change",e=>{
     if(!e.target.dataset.prop||!bdDraft) return;
