@@ -553,8 +553,17 @@ are not prompts. The dots end in the line's last cell, so the actions at the
 left never move them while the line has room for every dot. At
 most `cs.bandBars` dots draw (10 by default), in what the line leaves after
 the inset and the words; the older prompts collapse into one dim `…N` run at
-the rail's start, a cell before the first dot, and a line too narrow for any
-dot draws no rail. Three cells before the dots, and three cells after any
+the rail's start, a cell before the first dot. The rail keeps its least:
+every prompt but the named one folded into `…N` before the named dot, and
+three cells before that. The words fit what that leaves, so the right edge's
+words drop and shorten and the keys lose their words before the rail goes:
+`⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ●`
+on a 75-column line with fourteen prompts, every action, the features word
+and `mail 1`: the mail word drops, the shared prefix goes and the features
+word shortens. The
+actions outrank the rail: where one would leave the line whole beside that
+least, the words take the whole line, the rail draws in what they leave, and
+a line too narrow for any dot draws no rail. Three cells before the dots, and three cells after any
 word before it, the band names its prompt, `#N` and its first line (up to 80
 characters),
 dim italic, cut with `…` when the line is narrower, counted in terminal cells
