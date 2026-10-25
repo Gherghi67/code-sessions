@@ -95,6 +95,12 @@ test('a pressable chevron draws as the bare glyph, dim like the one that cannot 
   await row.unmount()
 })
 
+test('a helper whose call is still in flight reads as running, one state', async ($, on) => {
+  session(on, WORK, () => [], NORMAL_VIEW)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  expect(await rowLines($, { ...TOOL, isRunning: true, tool_use_id: 'working', tool: 'Agent', input: { description: 'Read the notes' } })).toEqual(['Read the notes · running ›'])
+})
+
 test('UserMessage draws the terminal you margin and leaves the desktop engine body intact', async ($, on) => {
   session(on)
   let calls = 0
