@@ -247,9 +247,9 @@ export function workingLine(w: Working): RenderElement {
 // `Wn = 2000`, a breath out and back over two seconds; Ife draws
 // `wUe()[frame % 12]`, the mirrored twelve, whose first six are DIn()'s,
 // the darwin set off ghostty.
-export const BREATH = ['·', '✢', '✳', '✶', '✻', '✽'] as const
-export const BREATH_MS = 2000
-export function breathGlyph(clock: number): string {
+const BREATH = ['·', '✢', '✳', '✶', '✻', '✽'] as const
+const BREATH_MS = 2000
+function breathGlyph(clock: number): string {
   const eased = (1 - Math.cos(2 * Math.PI * clock / BREATH_MS)) / 2
   const glyph = BREATH[Math.round(eased * (BREATH.length - 1))]
   if (glyph === undefined) throw new Error(`breathGlyph: no glyph at clock ${clock}`)
@@ -259,7 +259,7 @@ export function breathGlyph(clock: number): string {
 // The working line's time, `un(et)`: whole seconds floored under a minute,
 // past it the hours, minutes and rounded seconds, a 60 carried up. (un's
 // days are left out: the lab plays no clock for a day.)
-export function engineDuration(ms: number): string {
+function engineDuration(ms: number): string {
   if (ms < 60000) return `${Math.floor(ms / 1000)}s`
   let h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000), s = Math.round(ms % 60000 / 1000)
   if (s === 60) s = 0, m++
