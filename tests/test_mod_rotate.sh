@@ -54,17 +54,21 @@ test_mod_force_default_matches_the_launch_notice() {
 }
 
 # The countdown's ramp paints the bar's own inks: the session palette, amber
-# and crit, each a literal in two languages (KEEP IN SYNC). Read out of _sgr's
+# and crit, each a literal in two languages (KEEP IN SYNC); cs-update's version
+# headings carry their own copy of the palette. Read out of _sgr's
 # truecolor arm, so a colour changed in the bar and not in the mod fails here.
 test_mod_ramp_inks_match_the_statusline() {
     local sl="$SCRIPT_DIR/../bin/cs-statusline" mod="$MOD/hooks/register.tsx"
-    local truecolor name sl_rgb mod_rgb
+    local update="$SCRIPT_DIR/../mods/cs-update/hooks/register.tsx"
+    local truecolor name sl_rgb mod_rgb update_rgb
     truecolor="$(sed -n '/^_sgr() {/,/^        256)/p' "$sl")"
     for name in red blue green yellow purple orange pink cyan; do
         sl_rgb="$(sed -n "s/^ *$name) *rgb=\"\([0-9;]*\)\" ;;.*/\1/p" <<< "$truecolor" | tr ';' ',')"
         mod_rgb="$(sed -n "s/.*[{ ]$name: '\([0-9,]*\)'.*/\1/p" "$mod")"
+        update_rgb="$(sed -n "s/.*[{ ]$name: '\([0-9,]*\)'.*/\1/p" "$update")"
         [ -n "$sl_rgb" ] || { echo "  FAIL: palette colour $name not found in _sgr"; return 1; }
         assert_eq "$sl_rgb" "$mod_rgb" "mod palette $name == statusline $name" || return 1
+        assert_eq "$sl_rgb" "$update_rgb" "cs-update palette $name == statusline $name" || return 1
     done
 
     local amber crit

@@ -13,6 +13,9 @@ All notable changes to cs are documented here. Release notes are also available 
 ### Changed
 - The release workflow refuses to build a tag whose commit has no green Test run: a first job looks up the Test workflow's push run on `main` for exactly the tagged commit and fails unless it completed with `success`, naming the commit and the status and conclusion it found (a pull request's run on the same commit does not count: it tested the merge commit). A tag pushed by hand, on a commit that never reached `main` or whose run is still going, publishes nothing. Reported in #15.
 
+### Fixed
+- The `cs-update` release-notes pane draws its version headings in the session colour again. It handed Claude Code the colour's name (`red`, `blue`), which the terminal does not paint, so every heading came out in the default ink; it now passes the same rgb the status line uses, and a colour outside the palette keeps the default ink.
+
 ### Removed
 - The iTerm2/WezTerm tab tint. A launch no longer colours its tab from the session name; the tab keeps its `cs: <name>` title, and the session colour stays inside the terminal, on the band's left rule, the status line and the session pill. The twelve-colour name hash, the escape passthrough and the reset at exit go with it; `cs -doctor`'s iTerm2 row now reads only the attention bounce.
 

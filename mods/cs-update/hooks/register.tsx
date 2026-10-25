@@ -196,11 +196,21 @@ async function isLead($: EngineInterface, cwd: string): Promise<boolean> {
   return lead !== undefined && lead === (await $.session.id())
 }
 
-// The session colour cs recorded, for the version headings; none is fine.
+// The /color palette as rgb, since the engine paints rgb() and theme keys but
+// draws a bare name like `red` in the default ink. KEEP IN SYNC with _sgr in
+// bin/cs-statusline (tests/test_mod_rotate.sh pins every value here against it).
+const SESSION_PALETTE: Record<string, string> = {
+  red: '220,38,38', blue: '106,155,204', green: '22,163,74', yellow: '202,138,4',
+  purple: '130,125,189', orange: '217,119,87', pink: '196,102,134', cyan: '8,145,178',
+}
+
+// The session colour cs recorded, for the version headings; none, or a name
+// outside the palette, draws them in the default ink.
 async function sessionColor($: EngineInterface, cwd: string): Promise<string | undefined> {
   try {
     const state = await $.fs.read(`${cwd}/${STATE}`)
-    return state.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
+    const name = state.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
+    return name !== undefined && Object.hasOwn(SESSION_PALETTE, name) ? `rgb(${SESSION_PALETTE[name]})` : undefined
   } catch { return undefined }
 }
 
