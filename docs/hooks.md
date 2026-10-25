@@ -506,7 +506,8 @@ dim, and each key's own last word stands beside its label in the session's
 colour: `⣿ ctrl+x 1 rotate   2 wrap   #4 say four   ╷╷╷┃` on the narrowest line
 that holds it. Chords that differ are spelled whole. In order, and each
 only when it applies, the actions are `rotate` (or `/clear now` once a
-handoff is armed, then `in Ns`, the armed handoff's count), `wrap`, `feed`
+handoff is armed, then `in Ns`, the armed handoff's count, which leaves the
+line before `/clear now` would shrink to its bare key), `wrap`, `feed`
 and the queue's start key, `▤ start N`; the right edge carries the features
 word, `finishing <task> · gate <elapsed>` while a `/finish` gate runs, and
 the two counts below. The band

@@ -3485,6 +3485,16 @@ test('while a clear counts down, the count follows its clear key and the right e
   expect(lineAt(counting, 120, { ...railOf(FOURTEEN), bars: 5 })).toBe(`  ⣿ ctrl+x 1 /clear now   in 18s${gap(44)}mail 1   #14 the band is too busy   …9 ╷╷╷╷┃`)
 })
 
+test('the countdown never stands beside a bare clear key: it leaves before `/clear now` would lose its word, and the line is fitted again', () => {
+  const counting = buildBandEntries({ ...quiet, rotating: true, armed: true, countdown: { seconds: 18, ink: OWN }, mail: 1 })
+  // The count is an action, so beside the rail's least it would have to leave: the words take the whole line.
+  expect(lineAt(counting, 30, { ...railOf(FOURTEEN), bars: 5 })).toBe('  ⣿ 1 /clear now   in 18s')
+  // A cell short of `1 /clear now   in 18s`, the count leaves and the prefix comes back.
+  expect(lineAt(counting, 24)).toBe('  ⣿ ctrl+x 1 /clear now')
+  expect(lineAt(counting, 21)).toBe('  ⣿ 1 /clear now')
+  expect(lineAt(counting, 14)).toBe('  ⣿ 1')
+})
+
 test('with no action to offer, what the session is still stands at the right edge, and the mark keeps the left', () => {
   const tree = drawBand(view({ entries: buildBandEntries({ ...quiet, queued: 2, mail: 1 }), bodyColumns: 120 }), EL)
   expect(bandLine(tree, 120)).toBe(`  ⣿ ${gap(98)}▤ queue 2   mail 1`)
@@ -3543,9 +3553,9 @@ test('every combination of entries at every width from 40 to 200 draws one row n
   }
   // 512 combinations at 161 widths, less the empty one at the 81 widths without a rail.
   expect(drawn).toBe(512 * 161 - 81)
-  // The rail is on at 80 widths; at 224 of their 40960 lines the actions
+  // The rail is on at 80 widths; at 416 of their 40960 lines the actions
   // cannot all stand beside its least, and there it may go.
-  expect(railKept).toBe(80 * 512 - 224)
+  expect(railKept).toBe(80 * 512 - 416)
 }, 60000)
 
 test('every entry the band never drops stays whole at the narrowest line that holds them, and the features word shortens a cell under it', () => {
@@ -3630,12 +3640,13 @@ test('the queue press never shortens past `▤…`: it leaves whole, and a line 
   expect(drawBand(view({ entries: queue, bodyColumns: 5 }), EL)).toBe(DRAWN)
 })
 
-test('the countdown is free text after its clear key: it outlasts the key\'s word, and leaves before the presses', () => {
+test('the countdown is free text after its clear key: it outlasts the feed key\'s word, and leaves before its own key loses its word', () => {
   const counting = buildBandEntries({ ...quiet, featured: { label: '3 features · fix-auth ready', onPress: noPress }, countdown: { seconds: 30, ink: OWN }, rotating: true, armed: true, feed: { on: true, color: OWN, onPress: noPress }, queued: 2, mail: 1 })
   expect(lineAt(counting, 100)).toBe(`  ⣿ ctrl+x 1 /clear now   in 30s   3 feed ✓${gap(9)}3 features · fix-auth ready   ▤ queue 2   mail 1`)
-  expect(lineAt(counting, 23)).toBe('  ⣿ 1   in 30s   3')
-  expect(lineAt(counting, 18)).toBe('  ⣿ 1   in 30s   3')
-  expect(lineAt(counting, 17)).toBe('  ⣿ 1   3')
+  expect(lineAt(counting, 29)).toBe('  ⣿ 1 /clear now   in 30s   3')
+  // A cell fewer would key the clear bare: the count leaves, and the feed key takes its word back.
+  expect(lineAt(counting, 28)).toBe('  ⣿ 1 /clear now   3 feed ✓')
+  expect(lineAt(counting, 19)).toBe('  ⣿ 1   3')
 })
 
 test('the band drops mail, the queue count, an unpressable features word, the gate word and then the chord prefix, in that order', () => {

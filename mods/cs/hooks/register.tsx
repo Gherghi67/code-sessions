@@ -789,7 +789,9 @@ const LEAVE_ORDER = ['cs-countdown', 'cs-features', 'cs-queue']
 // a chord left after one leaves takes its word back when it fits. A Button
 // that leaves the tree takes its chord with it, so the chords leave last. An
 // unbound chord has no key to fall back to: the last one cuts its word to end
-// in `…` before it leaves. The mark is never an entry, so it is never cut.
+// in `…` before it leaves. An entry that says nothing as fitted (mutedBy)
+// leaves first, overrun or not, and the line is fitted again without it. The
+// mark is never an entry, so it is never cut.
 export function fitBand(all: BandEntry[], chords: Record<string, string>, room: number): { entries: FittedEntry[]; prefixed: boolean } {
   const spelling = chordSpelling(all, chords)
   for (let kept = all; ;) {
@@ -814,16 +816,22 @@ export function fitBand(all: BandEntry[], chords: Record<string, string>, room: 
 
 // The entry a fitted line draws that says nothing, which leaves before the
 // line is fitted again: a status word cut shorter than its head, the words
-// before its first ` · `, and `…`, names nothing (`1…` of `1 feature ·
-// fix-auth ready`). `kept` holds each entry's whole label.
+// before its first ` · `, and `…`, which names nothing (`1…` of `1 feature ·
+// fix-auth ready`); then the countdown beside a clear key drawn bare (`1   in
+// 18s` counts down to nothing the line names, so it leaves before
+// `/clear now` loses its word). The cut word goes first: the cells it took
+// may be what bared the key. `kept` holds each entry's whole label.
 function mutedBy(fitted: FittedEntry[], kept: BandEntry[]): string | undefined {
-  return fitted.find(entry => {
+  const stub = fitted.find(entry => {
     if (ZONES.get(entry.key) !== 'status') return false
     const whole = kept.find(k => k.key === entry.key)?.label
     if (whole === undefined) throw new Error(`cs: the band fitted ${entry.key}, an entry it was not given`)
     const head = whole.split(' · ')[0] ?? whole
     return entry.label !== whole && cellWidth(entry.label) < cellWidth(head) + 1
-  })?.key
+  })
+  if (stub !== undefined) return stub.key
+  const bareClear = fitted.some(entry => entry.key === 'cs-rotate' && entry.keyOnly)
+  return bareClear && fitted.some(entry => entry.key === 'cs-countdown') ? 'cs-countdown' : undefined
 }
 
 // The entries of a line of `room` cells before any leaves whole: each step
