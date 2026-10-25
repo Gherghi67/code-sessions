@@ -962,6 +962,7 @@
   }
 
   // docs/surfaces/registry.ts
+  var TIMER_LENGTH = 5 * 60 * 1000;
   function elements() {
     const el = globalThis.LabElements;
     if (el === undefined)
@@ -1033,15 +1034,34 @@
     const el = elements();
     const dim = (s) => el.Text({ dimColor: true, children: s });
     return el.Box({ flexDirection: "column", children: [el.Box({ flexWrap: "wrap", marginTop: 1, children: [
-      el.Box({ width: 2, height: 1, children: [el.Text({ color: "claude", children: "✻" })] }),
+      el.Box({ width: 2, height: 1, children: [el.Text({ color: "claude", children: breathGlyph(w.clock) })] }),
       el.Text({ color: "claude", children: w.suffix === "…" && /(…|\.\.\.)$/.test(w.message) ? w.message : w.message + w.suffix }),
       el.Text({ children: " " }),
       dim("("),
-      dim(w.elapsed),
+      dim(engineDuration(w.elapsedMs)),
       dim(" · "),
       el.Box({ children: [el.Box({ width: 2, children: [dim("↓")] }), dim(`${w.tokens} tokens`)] }),
       dim(")")
     ] })] });
+  }
+  var BREATH = ["·", "✢", "✳", "✶", "✻", "✽"];
+  var BREATH_MS = 2000;
+  function breathGlyph(clock) {
+    const eased = (1 - Math.cos(2 * Math.PI * clock / BREATH_MS)) / 2;
+    const glyph = BREATH[Math.round(eased * (BREATH.length - 1))];
+    if (glyph === undefined)
+      throw new Error(`breathGlyph: no glyph at clock ${clock}`);
+    return glyph;
+  }
+  function engineDuration(ms) {
+    if (ms < 60000)
+      return `${Math.floor(ms / 1000)}s`;
+    let h2 = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000), s = Math.round(ms % 60000 / 1000);
+    if (s === 60)
+      s = 0, m++;
+    if (m === 60)
+      m = 0, h2++;
+    return h2 > 0 ? `${h2}h ${m}m ${s}s` : `${m}m ${s}s`;
   }
   function footerModes(modes, cols) {
     const el = elements();
@@ -1106,12 +1126,15 @@
     phase: "idle"
   });
   var PAD = 7;
-  var context = (cols, view, t) => ({ t, view, obs: observations(), opened: new Set, phase: "idle", agents: [], now: 0, surface: "terminal", clickable: false, room: cols - PAD });
+  var context = (cols, view, t, now = 0) => ({ t, view, obs: observations(), opened: new Set, phase: "idle", agents: [], now, surface: "terminal", clickable: false, room: cols - PAD });
   var pen = (cols, theme, over = {}) => {
-    const cx = context(cols, over.view ?? DEFAULT_VIEW, over.t ?? transcript);
+    const cx = context(cols, over.view ?? DEFAULT_VIEW, over.t ?? transcript, over.now);
     return { el: elements(), ink: inks(theme === "light"), room: cx.room, pad: over.pad ?? PAD, clickable: over.clickable ?? false, press: async () => {}, helpers: async () => {}, cx: { ...cx, clickable: over.clickable ?? false } };
   };
   var state = (id, name, draw) => ({ id, name, draw });
+  var moving = (id, name, tick, draw) => ({ id, name, draw, motion: { tick, duration: TIMER_LENGTH } });
+  var PULSE = 70;
+  var TICK = 1000;
   var PROMPT_AT = new Date(2026, 9, 25, 9, 41).getTime();
   var user = (v) => (cols, theme) => drawUser(v, pen(cols, theme));
   var CARD = { tone: "ok", status: "gate green", sub: "42 tests", target: "main", scores: [{ label: "suites", dots: ["ok", "ok", "ok", "bad"], pass: 3, of: 4 }], lists: [{ label: "findings", count: 2, first: "the band clips at 60 cols" }], report: "gate.md" };
@@ -1184,40 +1207,45 @@
     state("call-done", "skimming a finished call", call({ draw: "call", call: view(at(2)), filed: at(2), opened: false })),
     state("call-errored", "told a call failed", call({ draw: "call", call: view(at(4), { isErrored: true, output: "fatal: not a git repository" }), opened: false })),
     state("call-opened", "reading a finished call's output", call({ draw: "call", call: view(at(1)), filed: at(1), opened: true })),
-    ...["dispatched", "running", "finished", "failed", "stopped"].map((helper) => state(`helper-${helper}`, `watching a helper that is ${helper}`, call({ draw: "helper", call: view(at(7)), state: helper, elapsedMs: helper === "dispatched" ? undefined : 72000 }))),
+    state("helper-dispatched", "watching a helper that is dispatched", call({ draw: "helper", call: view(at(7)), state: "dispatched" })),
+    moving("helper-running", "watching a helper that is running", TICK, (cols, theme, t = 0) => drawCall({ draw: "helper", call: view(at(7)), state: "running", elapsedMs: 72000 + t }, pen(cols, theme))),
+    ...["finished", "failed", "stopped"].map((helper) => state(`helper-${helper}`, `watching a helper that is ${helper}`, call({ draw: "helper", call: view(at(7)), state: helper, elapsedMs: 72000 }))),
     state("question-asked", "asked a question in the chat", call({ draw: "question", call: QUESTION, opened: false })),
     state("question-ended", "left a question unanswered", call({ draw: "question", call: { ...QUESTION, isRunning: false }, opened: false }))
   ];
-  var batch = (states, opened = false) => ({
+  var batch = (states, opened = false, t = 0) => ({
     draw: "batch",
     key: `helpers-${id(7)}`,
     opened,
-    elapsedMs: 42000,
+    elapsedMs: 42000 + t,
     helpers: states.map((s, i) => ({ call: view(at(i % 2 === 0 ? 7 : 8)), kind: i < 2 ? "Explore" : "Plan", state: s }))
   });
   var group = (v) => (cols, theme) => drawGroup(v, pen(cols, theme));
+  var running = (states, opened = false) => (cols, theme, t = 0) => drawGroup(batch(states, opened, t), pen(cols, theme, { now: t }));
   var groupStates = [
     state("stack", "skimming a group of calls stacked one per line", group({ draw: "stack", calls: [{ draw: "call", call: view(at(2)), filed: at(2), opened: false }, { draw: "call", call: view(at(3)), filed: at(3), opened: false }] })),
-    state("batch-running", "watching a batch of helpers work", group(batch(["running", "finished", "running"]))),
+    moving("batch-running", "watching a batch of helpers work", PULSE, running(["running", "finished", "running"])),
     state("batch-done", "told every helper of a batch finished", group(batch(["finished", "finished", "finished"]))),
     state("batch-failed", "told a helper of a batch failed", group(batch(["finished", "failed", "finished"]))),
-    state("batch-opened", "reading a batch's helpers one per line", group(batch(["running", "finished", "running"], true)))
+    moving("batch-opened", "reading a batch's helpers one per line", PULSE, running(["running", "finished", "running"], true))
   ];
   var output = (text, isErrored) => (cols, theme) => drawCommandOutput({ text, isErrored }, pen(cols, theme));
   var outputStates = [
     state("text", "reading a command's answer", output("Chat view: clean. your messages, Claude's replies, and one line per turn for the work.", false)),
     state("errored", "reading a command's refusal", output("no feed change in this session: cs refused this session", true))
   ];
-  var band = (v, over = {}) => (cols, theme) => drawBand(v, elements().Box({}), 0, pen(cols, theme, over));
-  var HELPERS = { head: "3 helpers · 1 done · 2 running · 1m 12s", kinds: [{ kind: "Explore", cells: marks.working + marks.live, done: 1, n: 2 }, { kind: "Plan", cells: marks.working, done: 0, n: 1 }] };
+  var band = (v, over = {}) => (cols, theme, t = 0) => drawBand(v(t), elements().Box({}), Math.floor(t / PULSE), pen(cols, theme, { ...over, now: t }));
+  var KINDS2 = [{ kind: "Explore", cells: marks.working + marks.live, done: 1, n: 2 }, { kind: "Plan", cells: marks.working, done: 0, n: 1 }];
+  var helpers = (more) => (t) => ({ draw: "helpers", head: helperCounts(["finished", "running", "running"], 72000 + t), kinds: KINDS2, more, spinning: true });
+  var background = (words, isTest, more, typing) => (t) => ({ draw: "background", words, isTest, more, elapsedMs: 42000 + t, typing });
   var bandStates = [
-    state("helpers-running", "watching helpers work above the prompt", band({ draw: "helpers", ...HELPERS, more: 0, spinning: true })),
-    state("helpers-settled", "reading a batch of helpers that all finished", band({ draw: "helpers", head: "3 helpers · 3 done · 1m 12s", kinds: [{ kind: "Explore", cells: marks.live + marks.live, done: 2, n: 2 }, { kind: "Plan", cells: marks.live, done: 1, n: 1 }], more: 0, spinning: false })),
-    state("helpers-overflow", "watching more kinds of helper than the band has rows for", band({ draw: "helpers", ...HELPERS, more: 2, spinning: true })),
-    state("background", "typing while a shell command runs in the background", band({ draw: "background", words: "Building the docs", isTest: false, more: 0, elapsedMs: 42000, typing: true })),
-    state("background-test", "typing while the tests run in the background", band({ draw: "background", words: "bun test", isTest: true, more: 1, elapsedMs: 42000, typing: true })),
-    state("background-narrow", "running a background task in a narrow terminal, no tail", band({ draw: "background", words: "Building the docs", isTest: false, more: 0, elapsedMs: 42000, typing: false })),
-    state("desktop", "reading usage and pills on the desktop app", band({ draw: "desktop", usage: { fiveHour: 42, week: 17 }, pills: [{ kind: "helper", words: "Map the draw code", elapsedMs: 72000 }, { kind: "test", words: "bun test", elapsedMs: 12000 }] }, { pad: 0 }))
+    moving("helpers-running", "watching helpers work above the prompt", PULSE, band(helpers(0))),
+    moving("helpers-settled", "reading a batch of helpers that all finished", TICK, band((t) => ({ draw: "helpers", head: helperCounts(["finished", "finished", "finished"], 72000 + t), kinds: [{ kind: "Explore", cells: marks.live + marks.live, done: 2, n: 2 }, { kind: "Plan", cells: marks.live, done: 1, n: 1 }], more: 0, spinning: false }))),
+    moving("helpers-overflow", "watching more kinds of helper than the band has rows for", PULSE, band(helpers(2))),
+    moving("background", "typing while a shell command runs in the background", PULSE, band(background("Building the docs", false, 0, true))),
+    moving("background-test", "typing while the tests run in the background", PULSE, band(background("bun test", true, 1, true))),
+    moving("background-narrow", "running a background task in a narrow terminal, no tail", PULSE, band(background("Building the docs", false, 0, false))),
+    moving("desktop", "reading usage and pills on the desktop app", TICK, band((t) => ({ draw: "desktop", usage: { fiveHour: 42, week: 17 }, pills: [{ kind: "helper", words: "Map the draw code", elapsedMs: 72000 + t }, { kind: "test", words: "bun test", elapsedMs: 12000 + t }] }), { pad: 0 }))
   ];
   var PANE_CHROME = 4;
   var settings = (session) => (cols, theme) => drawSettingsPane(modeOf(session), session, { el: elements(), ink: inks(theme === "light"), room: cols - PANE_CHROME }, async () => {});
@@ -1231,13 +1259,14 @@
     state("every-other-value", "reading each setting at its other value", settings({ on: true, view: { group: !clean2.group, clear: !clean2.clear, keep: !clean2.keep, style: "line", commands: clean2.commands === "grouped" ? "each" : "grouped", after: clean2.after === "clear" ? "keep" : "clear", hide: [] } }))
   ];
   var helpersPane = (blocks) => (cols, theme) => drawHelpersPane(blocks, { el: elements(), ink: inks(theme === "light"), room: cols - PANE_CHROME });
-  var WORKING = { name: "Explore", status: "working", elapsedMs: 72000, now: "Reading draw.tsx", calls: ["Searched the code for drawBand", "Read words.ts"] };
+  var panesAt = (blocks) => (cols, theme, t = 0) => helpersPane(blocks(t))(cols, theme);
+  var WORKING = (t) => ({ name: "Explore", status: "working", elapsedMs: 72000 + t, now: "Reading draw.tsx", calls: ["Searched the code for drawBand", "Read words.ts"] });
   var helperStates = [
     state("none", "opening the pane before any helper ran", helpersPane([])),
-    state("working", "watching a helper work, call by call", helpersPane([WORKING])),
+    moving("working", "watching a helper work, call by call", TICK, panesAt((t) => [WORKING(t)])),
     state("finished", "reading what a finished helper did", helpersPane([{ name: "Plan", status: "finished", elapsedMs: 30000, calls: ["Read the brief"] }])),
     state("failed", "reading where a helper failed", helpersPane([{ name: "Plan", status: "failed", elapsedMs: 9000, calls: ["Ran the tests"] }])),
-    state("mixed", "reading several helpers, newest first", helpersPane([WORKING, { name: "Plan", status: "finished", elapsedMs: 30000, calls: [] }, { name: "general-purpose", status: "stopped", calls: ["Read app.py"] }]))
+    moving("mixed", "reading several helpers, newest first", TICK, panesAt((t) => [WORKING(t), { name: "Plan", status: "finished", elapsedMs: 30000, calls: [] }, { name: "general-purpose", status: "stopped", calls: ["Read app.py"] }]))
   ];
   var ON = { on: true, view: clean2 };
   var feedReply = (args) => () => commandReply("cs-feed", "feed", args, transition(parseFeedArgs(args), ON).reply);
@@ -1270,23 +1299,28 @@
     state("pulse-stopped", "watching the pulse stop when its write is refused", feedLog(logs.pulseStopped("cs-feed: $.state.set: pulse refused"))),
     state("helper-unread", "opening the Helpers pane when a helper's transcript cannot be read", feedLog(logs.helperUnread("checker", "no transcript for checker")))
   ];
+  var BREATH_START = 750;
+  var REQUESTING = 50;
+  var RESPONDING = 100;
+  var line = (message, suffix, tick, t) => workingLine({ message, suffix, elapsedMs: 24000 + t, clock: Math.floor((BREATH_START + t) / tick) * tick, tokens: "1.2k" });
   var RUNNING = id(9);
   var OPEN = { id: TURN, first: id(1), steps: [id(1), id(2), id(3)], runs: [RUN] };
-  var working = (open, over = {}) => (cols) => {
+  var working = (open, over = {}) => (cols, _theme, t = 0) => {
     const agents = Array.from({ length: over.agents ?? 0 }, (_, i) => ({ id: `helper-${i}`, type: "Explore", description: "Read the tests", status: "running" }));
-    const cx = { ...context(cols, clean2, over.t ?? transcript), open, agents };
-    const { verdict } = decideSpinner({ message: null, mode: over.mode ?? "requesting" }, cx);
-    return verdict.draw === "rewrite" ? workingLine({ message: verdict.message, suffix: verdict.suffix, elapsed: "24s", tokens: "1.2k" }) : workingLine({ message: "Working", suffix: "…", elapsed: "24s", tokens: "1.2k" });
+    const cx = { ...context(cols, clean2, over.t ?? transcript, t), open, agents };
+    const mode = over.mode ?? "requesting", tick = mode === "requesting" ? REQUESTING : RESPONDING;
+    const { verdict } = decideSpinner({ message: null, mode }, cx);
+    return verdict.draw === "rewrite" ? line(verdict.message, verdict.suffix, tick, t) : line("Working", "…", tick, t);
   };
   var withRunning = { ...transcript, calls: new Map([...transcript.calls, [RUNNING, filed(9, "Bash", { command: "bun test", description: "Run the tests" }, { state: "running" }, RUN)]]) };
   var spinnerStates = [
-    state("engine", "working with the feed off, the engine's own word", () => workingLine({ message: "Working", suffix: "…", elapsed: "24s", tokens: "1.2k" })),
-    state("engine-ellipsis", "working with the feed off on a todo whose active form ends in an ellipsis", () => workingLine({ message: "Running the suites…", suffix: "…", elapsed: "24s", tokens: "1.2k" })),
-    state("thinking", "waiting while Claude thinks before its first step", working({ steps: [], runs: [] })),
-    state("working", "waiting on a turn three steps in", working(OPEN)),
-    state("call", "waiting on a step that is running", working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),
-    state("writing", "watching Claude write its reply", working(OPEN, { mode: "responding" })),
-    state("helpers", "waiting while two helpers work", working(OPEN, { agents: 2 }))
+    moving("engine", "working with the feed off, the engine's own word", REQUESTING, (_cols, _theme, t = 0) => line("Working", "…", REQUESTING, t)),
+    moving("engine-ellipsis", "working with the feed off on a todo whose active form ends in an ellipsis", REQUESTING, (_cols, _theme, t = 0) => line("Running the suites…", "…", REQUESTING, t)),
+    moving("thinking", "waiting while Claude thinks before its first step", REQUESTING, working({ steps: [], runs: [] })),
+    moving("working", "waiting on a turn three steps in", REQUESTING, working(OPEN)),
+    moving("call", "waiting on a step that is running", REQUESTING, working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),
+    moving("writing", "watching Claude write its reply", RESPONDING, working(OPEN, { mode: "responding" })),
+    moving("helpers", "waiting while two helpers work", REQUESTING, working(OPEN, { agents: 2 }))
   ];
   var ENGINE_MODES = ["memory paused"];
   var modeStates = [

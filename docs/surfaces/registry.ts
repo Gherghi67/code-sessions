@@ -5,9 +5,20 @@ import type { EngineInterface, RenderElement } from 'claude-code'
 export type Elements = ReturnType<EngineInterface['ui']['resolve']>
 export type Theme = 'light' | 'dark'
 
+// A state that moves: `tick` is the step the mod's own clock redraws at, in
+// ms; `duration` how long the lab plays it, a countdown to its zero or a
+// clock that counts up for TIMER_LENGTH, holding there after; `count` the
+// words the scrubber reads beside t, where the state counts something down.
+export type Motion = { tick: number; duration: number; count?: (t: number) => string }
+
+// How long the lab plays a clock that only counts up.
+export const TIMER_LENGTH = 5 * 60 * 1000
+
 // One state, named for what a person is doing. `cols` is the terminal's
-// width; the draw function takes off what the engine reserves.
-export type State = { id: string; name: string; draw: (cols: number, theme: Theme) => RenderElement }
+// width; the draw function takes off what the engine reserves. `t` is the
+// moment, in ms since the state began: a moving state turns it into the
+// clock its mod reads, and a still state draws the same at every t.
+export type State = { id: string; name: string; draw: (cols: number, theme: Theme, t?: number) => RenderElement; motion?: Motion }
 
 // A reusable piece of a surface: a node of one state's tree, by its child
 // index path from the root.

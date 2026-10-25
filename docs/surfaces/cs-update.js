@@ -95,6 +95,7 @@
   var FEATURE_STATES = new Set(["ready", "staged", "locked", "dirty", "untracked", "vault-locked", "base-dirty", "merged"]);
 
   // docs/surfaces/registry.ts
+  var TIMER_LENGTH = 5 * 60 * 1000;
   function elements() {
     const el = globalThis.LabElements;
     if (el === undefined)

@@ -437,8 +437,14 @@ ${tail}`,
         return `finishing ${task}`;
     }
   }
+  function gateElapsed(secs) {
+    if (secs < 60)
+      return `${secs}s`;
+    return `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
+  }
 
   // docs/surfaces/registry.ts
+  var TIMER_LENGTH = 5 * 60 * 1000;
   function elements() {
     const el = globalThis.LabElements;
     if (el === undefined)
@@ -680,6 +686,26 @@ ${tail}`,
   function band(f, cols, theme) {
     return drawBand(viewOf(f, cols, theme), elements());
   }
+  var GATE = { task: "fix-auth", seconds: 72 };
+  var gateWord = (seconds) => `finishing ${GATE.task} · gate ${gateElapsed(seconds)}`;
+  function factsAt(f, t) {
+    const seconds = Math.floor(t / 1000);
+    if (f.gate !== undefined && f.gate !== gateWord(GATE.seconds))
+      throw new Error(`cs fixture: a gate word is GATE's, at its start; got ${JSON.stringify(f.gate)}`);
+    return {
+      ...f,
+      countdown: f.countdown && { seconds: Math.max(0, f.countdown.seconds - seconds) },
+      gate: f.gate === undefined ? undefined : gateWord(GATE.seconds + seconds)
+    };
+  }
+  function motionOf(f) {
+    const start = f.countdown?.seconds;
+    if (start !== undefined)
+      return { tick: 1000, duration: start * 1000, count: (t) => `${Math.max(0, start - Math.floor(t / 1000))}s left` };
+    if (f.gate !== undefined)
+      return { tick: 1000, duration: TIMER_LENGTH };
+    return;
+  }
   var feature = (state, ahead = 2) => ({ task: "fix-auth", ahead, state });
   var word = (records, pressable) => {
     const w = featuresWordOf(records);
@@ -709,7 +735,7 @@ ${tail}`,
     { id: "feed-on", name: "idle, the feed on", facts: facts({ feed: { on: true } }) },
     { id: "queue-waiting", name: "tasks queued, nothing running them", facts: facts({ waiting: 3 }) },
     { id: "queue-running", name: "the queue running its tasks", facts: facts({ queued: 3, queueRunning: true }) },
-    { id: "gate-running", name: "a /finish gate running", facts: facts({ gate: "finishing fix-auth · gate 1m 12s" }) },
+    { id: "gate-running", name: "a /finish gate running", facts: facts({ gate: gateWord(GATE.seconds) }) },
     { id: "mail", name: "mail from another session", facts: facts({ mail: 2 }) },
     { id: "features-ready", name: "a feature ready to finish", facts: facts({ featured: word([feature("ready"), feature("dirty"), feature("merged")], true) }) },
     { id: "everything", name: "every word an idle band can carry at once", facts: facts({
@@ -729,7 +755,7 @@ ${tail}`,
     { id: "armed-with-queue", name: "handoff armed with tasks queued", facts: facts({ rotating: true, armed: true, due: true, queued: 3 }) },
     { id: "due-midturn", name: "a turn running past the threshold, with mail", facts: facts({ due: true, mail: 2 }) },
     { id: "queued-blocked", name: "tasks queued while a turn runs", facts: facts({ queued: 3 }) },
-    { id: "survey-gate", name: "a survey up while a /finish gate runs", facts: facts({ survey: true, gate: "finishing fix-auth · gate 1m 12s" }) },
+    { id: "survey-gate", name: "a survey up while a /finish gate runs", facts: facts({ survey: true, gate: gateWord(GATE.seconds) }) },
     { id: "features-many-ready", name: "several features ready to finish", facts: facts({ featured: word([feature("ready"), feature("ready"), feature("dirty")], true) }) },
     ...ONE_FEATURE.map(([sid, record]) => ({ id: `features-one-${sid}`, name: sid === "ready" ? "one feature, ready to finish" : `one feature, not ready: ${sid.replace("-", " ")}`, facts: facts({ featured: word([record], true) }) })),
     { id: "features-none-ready", name: "several features, none ready", facts: facts({ featured: word([feature("dirty"), feature("locked"), feature("staged")], true) }) },
@@ -823,7 +849,10 @@ see /doctor`)) }
       source: "generated",
       global: "CsSurfaces",
       chrome: { kind: "above-prompt" },
-      states: STATES.map((s) => ({ id: s.id, name: s.name, draw: (cols, theme) => band(s.facts, cols, theme) })),
+      states: STATES.map((s) => {
+        const motion = motionOf(s.facts);
+        return { id: s.id, name: s.name, draw: (cols, theme, t = 0) => band(factsAt(s.facts, t), cols, theme), ...motion && { motion } };
+      }),
       parts: [
         { id: "band-mark", name: "band mark", state: "rotate-due", path: [1, 0, 0] },
         { id: "chord", name: "chord key", state: "rotate-due", path: [1, 0, 2] },
