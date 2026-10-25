@@ -1318,7 +1318,9 @@ const bdSelected=()=>{ const sel=bdDocNow().selection; return sel&&BandEditor.no
 // open draft first, so a field typed in but never left (a mousedown on the
 // strip keeps its focus) is a step of its own before what follows.
 function bdSettle(){ bdHist=BandEditor.commitDraft(bdHist,bdDraft); bdDraft=null; }
-function bdDispatch(action){ bdSettle(); bdRefusal=null; bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
+function bdDispatch(action){
+  if((action.type==="select"||action.type==="selectFrame")&&bdPreview.has(action.frame)) return bdRefuse(action.frame);
+  bdSettle(); bdRefusal=null; bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
 // Every edit of a frame's tree comes through here, so a reference frame is
 // refused in one place, with its reason drawn on the frame.
 const BD_TREE_EDITS=new Set(["setProp","move","insert","remove","setText","duplicateNode"]);
@@ -1327,12 +1329,14 @@ function bdEdit(action){
   if(BD_TREE_EDITS.has(action.type)&&sel&&bdReadOnly(sel.frame)) return bdRefuse(sel.frame);
   bdSettle(); bdRefusal=null; bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender();
 }
-// A reference frame is drawn by the mod and read, never edited: why, or null
-// for a frame the designer edits. The refusal last met, drawn on its frame.
+// A reference frame is drawn by the mod and read, never edited, and a frame
+// in preview is looked at, not edited: why, or null for a frame the designer
+// edits. The refusal last met, drawn on its frame.
 let bdRefusal=null;
 function bdReadOnly(frame){
   const f=bdFrame(frame);
-  return f.ref?`${f.name} is a reference frame: ${BandEditor.uneditable(BandEditor.toEngine(f.tree))}, which the designer does not edit`:null;
+  if(f.ref) return `${f.name} is a reference frame: ${BandEditor.uneditable(BandEditor.toEngine(f.tree))}, which the designer does not edit`;
+  return bdPreview.has(frame)?`${f.name} is in preview, drawn as under the pointer: turn preview off to edit it`:null;
 }
 function bdRefuse(frame){ bdRefusal={frame,text:bdReadOnly(frame)}; composeRender(); }
 
@@ -1355,7 +1359,8 @@ function cpFrameSummary(){
 }
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
-  if(bdReadOnly(bdDocNow().selection.frame)) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">Reference frame: drawn by the mod's code, read only.</p>`
+  const sel=bdDocNow().selection, ro=bdReadOnly(sel.frame);
+  if(ro) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
     +`<dl class="fsum">${Object.keys(n.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof n.props[k]==="object"?JSON.stringify(n.props[k]):String(n.props[k]))}</dd>`).join("")}</dl>`;
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
@@ -1537,7 +1542,7 @@ function bdFrameCard(f){
   const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
   const prompt=!surf||surf.chrome?.kind==="above-prompt";
   const room=bdRoom(f), measured=reach(ModLayout.layout(tree,room));
-  const ro=bdReadOnly(f.id), pv=bdPreview.has(f.id);
+  const ro=f.ref&&bdReadOnly(f.id), pv=bdPreview.has(f.id);
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}${pv?" preview":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
@@ -1724,7 +1729,12 @@ function bdFrameAct(el,frame){
   if(act==="export") return bdEdit({type:"exportFrame",frame});
   if(act==="duplicate") return bdEdit({type:"addFrame",from:frame});
   if(act==="remove") return bdEdit({type:"removeFrame",frame});
-  if(act==="preview"){ if(bdPreview.has(frame)) bdPreview.delete(frame); else bdPreview.set(frame,{hover:null,focus:null}); return composeRender(); }
+  if(act==="preview"){
+    bdPanelStale=true;
+    if(bdPreview.has(frame)){ bdPreview.delete(frame); return composeRender(); }
+    bdPreview.set(frame,{hover:null,focus:null});
+    return bdDocNow().selection?.frame===frame?bdDispatch({type:"deselect"}):composeRender();
+  }
 }
 
 // A click selects the node that drew the cell; a second click on the node
@@ -1944,6 +1954,7 @@ function composeUI(){
   const fieldValue=el=>el.dataset.kind==="bool"?el.checked:el.dataset.kind==="num"?(el.value===""?undefined:+el.value):el.value;
   $("bd-props").addEventListener("input",e=>{
     const el=e.target; if(!el.dataset.prop) return;
+    if(bdReadOnly(bdDocNow().selection.frame)) return bdRefuse(bdDocNow().selection.frame);
     bdDraft=BandEditor.apply(bdDocNow(),{type:"setProp",path:bdDocNow().selection.path,name:el.dataset.prop,value:fieldValue(el)});
     composeRender();
   });

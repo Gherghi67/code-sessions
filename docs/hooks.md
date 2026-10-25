@@ -849,7 +849,9 @@ or inserts by the selection. A frame's `preview` toggle draws it the way the
 terminal does under the pointer. The node under the pointer takes its hover
 props, through its hover scope or the keyed Box it sits in, and a click gives
 the Button under it the focus. A hovered or focused Button draws inverted.
-This is how the band's rail cards and a focused chord Button show. A state that holds a Markdown or a Code
+This is how the band's rail cards and a focused chord Button show. A frame in
+preview is only looked at: turning preview on drops a selection in it, and the
+lab refuses every edit of it and says why. A state that holds a Markdown or a Code
 node opens as a reference frame: you can select and inspect it, and the lab
 refuses every edit of it and says why.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
