@@ -1696,7 +1696,9 @@ function composeUI(){
   $("bd-state").addEventListener("input",e=>{ $("va-state").value=e.target.value; });
   $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
   $("bd-zoom").addEventListener("input",e=>{ bdZoom=e.target.value==="fit"?"fit":+e.target.value; });
-  new ResizeObserver(()=>{ if(bdZoom==="fit"&&$("p-compose").classList.contains("on")) composeRender(); }).observe($("bd-canvas").parentElement,{box:"border-box"});
+  // A render would tear down an open inline or rename field, and its blur
+  // would commit the half-typed words; closing the field renders at the new size.
+  new ResizeObserver(()=>{ if(bdZoom==="fit"&&$("p-compose").classList.contains("on")&&!$("p-compose").querySelector(".inline-edit,.fname-edit")) composeRender(); }).observe($("bd-canvas").parentElement,{box:"border-box"});
   document.fonts.ready.then(()=>composeRender());
   $("bd-theme").onclick=()=>{ $("theme").value=theme()==="light"?"dark":"light"; renderAll(); };
   document.querySelectorAll("[data-insert]").forEach(b=>b.onclick=()=>bdInsert(b.dataset.insert));
