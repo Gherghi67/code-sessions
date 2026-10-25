@@ -233,9 +233,9 @@ body.app .rail,body.app .head{display:none}
 .keys-table td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg2)}
 @media (max-width:900px){.designer{grid-template-columns:1fr;overflow:auto}.designer > *{overflow:visible}}
 .inspector .phead{font-size:13px;margin:0 0 8px}
+.inspector .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
 .fsum{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:12.5px}
 .fsum dt{color:var(--fg2)}.fsum dd{margin:0}.fsum dd.no{color:var(--error)}
-.inspector .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
 .frame{width:max-content;margin:0 auto 56px}
 .frame .strip{position:relative}
 .fhead{display:flex;gap:10px;align-items:center;min-height:26px;margin:0 0 4px;font-size:12px;color:var(--canvas-ink)}
@@ -300,8 +300,8 @@ body.app .rail,body.app .head{display:none}
   <div class="bar-r">
     <label title="The state a new frame is drawn in">State <select id="bd-state"></select></label>
     <label title="The band's width, for every frame">Cols <input id="bd-cols" type="number" min="40" max="200" value="80"></label>
-    <select id="bd-zoom" aria-label="zoom" title="Zoom (= in, − out, 0 fits)"><option value="fit">Fit</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select>
-    <button type="button" id="bd-theme"></button>
+    <select id="bd-zoom" aria-label="zoom" title="Zoom (= in, − out, 0 fits)"></select>
+    <button type="button" id="bd-theme" title="Theme (t)"></button>
     <span id="bd-fit" class="fit"></span>
     <button type="button" class="help" id="bd-help-open" title="Keyboard shortcuts (?)" aria-label="keyboard shortcuts">?</button>
   </div>
@@ -1258,8 +1258,8 @@ const CP_SCHEMA={
   },
 };
 const CP_GROUPS=["Layout","Appearance","Button","Text"];
-// The designer's document (docs/mods-band-editor.js) and, per frame, the
-// grid its strip was last painted from, which a click is looked up in.
+// The designer's document (docs/mods-band-editor.js) and, per frame on the
+// canvas, the grid its strip was last painted from, which a click is looked up in.
 // A text field types into a draft, drawn live, and commits it as one step
 // on blur or Enter; the history's present stays the state before the edit.
 let bdHist=null, bdDraft=null;
@@ -1290,7 +1290,7 @@ const bdShut=new Set();
 // With nothing selected the panel names the export frame and how it fits.
 function cpFrameSummary(){
   const f=bdFrame(bdDocNow().exportFrame), w=ModLayout.layout(BandEditor.toEngine(f.tree),cols()).w;
-  return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>exports</dt><dd>yes</dd><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>cols()?"no":""}">${esc(fitWords(w,cols()))}</dd></dl>`;
+  return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>cols()?"no":""}">${esc(fitWords(w,cols()))}</dd></dl>`;
 }
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
@@ -1344,12 +1344,17 @@ function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: clipped at 
 // A grid wider than the band, cut at the band's edge as the terminal cuts it.
 function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
 
-// Where a node's cells sit inside its strip, as an absolute box; the cells'
-// own rects, so it follows whatever size the strip is drawn at.
-function bdSpanBox(strip,s){
-  const at=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
-  const base=strip.getBoundingClientRect(), a=at(s.top,s.left), b=at(s.bottom,s.right);
-  return `left:${a.left-base.left}px;top:${a.top-base.top}px;width:${b.right-a.left}px;height:${b.bottom-a.top}px`;
+// A strip's cells as boxes relative to the strip, read from the cells' own
+// rects, so whatever is laid over them follows the size the strip is drawn at.
+function bdCellRect(strip){
+  const base=strip.getBoundingClientRect();
+  return (r,c)=>{ const b=strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect(); return {left:b.left-base.left,top:b.top-base.top,right:b.right-base.left,bottom:b.bottom-base.top}; };
+}
+// Where a node's cells sit inside its strip, as an absolute box, widened by a
+// CSS length when given.
+function bdSpanBox(strip,s,widen){
+  const at=bdCellRect(strip), a=at(s.top,s.left), b=at(s.bottom,s.right), w=b.right-a.left;
+  return `left:${a.left}px;top:${a.top}px;width:${widen?`calc(${w}px + ${widen})`:w+"px"};height:${b.bottom-a.top}px`;
 }
 // The outline and the type-and-key tag over the selected node's cells.
 function bdChrome(strip,g,path,node){
@@ -1439,9 +1444,10 @@ function composeRender(){
   const doc=bdDocNow();
   bdStates($("va-state")); bdStates($("bd-state")); $("bd-state").value=$("va-state").value;
   if(document.activeElement!==$("bd-cols")) $("bd-cols").value=cols();
-  $("bd-theme").textContent=theme(); $("bd-theme").setAttribute("aria-label",`theme: ${theme()}, switch to ${theme()==="light"?"dark":"light"}`); $("bd-theme").title="Theme (t)";
+  $("bd-theme").textContent=theme(); $("bd-theme").setAttribute("aria-label",`theme: ${theme()}, switch to ${theme()==="light"?"dark":"light"}`);
   $("bd-title").textContent=bdFrame(doc.exportFrame).name;
   if(!$("bd-seed").options.length) $("bd-seed").innerHTML=`<option value="">+ frame from…</option><option value="empty">an empty Box</option>`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("");
+  for(const id in bdGrids) delete bdGrids[id];
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const fs=bdFontSize(); $("bd-canvas").style.setProperty("--fs",fs+"px");
   $("bd-zoom").value=String(bdZoom); $("bd-zoom").options[0].textContent=`Fit (${Math.round(fs/15*100)}%)`;
@@ -1585,18 +1591,17 @@ function bdDropTarget(frame,from,cell){
 function bdIndicator(strip,t){
   strip.querySelector(".drop")?.remove();
   if(!t||!t.box) return;
-  const rect=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
-  const base=strip.getBoundingClientRect(), next=t.spans[t.index], prev=t.spans[t.index-1];
+  const rect=bdCellRect(strip), next=t.spans[t.index], prev=t.spans[t.index-1];
   let style;
   if(t.column){
     const y=next?rect(next.top,t.box.left).top:prev?rect(prev.bottom,t.box.left).bottom:rect(t.box.top,t.box.left).top;
     const l=rect(t.box.top,t.box.left), r=rect(t.box.top,t.box.right);
-    style=`left:${l.left-base.left}px;width:${r.right-l.left}px;top:${y-base.top-1}px;height:2px`;
+    style=`left:${l.left}px;width:${r.right-l.left}px;top:${y-1}px;height:2px`;
   } else {
     const lead=s=>t.reverse?rect(s.top,s.right).right:rect(s.top,s.left).left, trail=s=>t.reverse?rect(s.top,s.left).left:rect(s.top,s.right).right;
     const x=next?lead(next):prev?trail(prev):rect(t.box.top,t.box.left).left;
     const top=rect(t.box.top,t.box.left), bottom=rect(t.box.bottom,t.box.left);
-    style=`left:${x-base.left-1}px;width:2px;top:${top.top-base.top}px;height:${bottom.bottom-top.top}px`;
+    style=`left:${x-1}px;width:2px;top:${top.top}px;height:${bottom.bottom-top.top}px`;
   }
   strip.insertAdjacentHTML("beforeend",`<div class="drop" style="${style}"></div>`);
 }
@@ -1636,10 +1641,8 @@ function bdInline(frame,path){
   bdDispatch({type:"select",frame,path});
   const strip=$("bd-canvas").querySelector(`[data-frame="${frame}"] .strip`), span=BandEditor.spanOf(bdGrids[frame],path);
   if(!span) return;
-  const rect=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
-  const base=strip.getBoundingClientRect(), a=rect(span.top,span.left), b=rect(span.bottom,span.right);
   const words=node.type==="Text"?node.props.text||"":node.props.label||"";
-  strip.insertAdjacentHTML("beforeend",`<input class="inline-edit" name="inline-edit" aria-label="${node.type} words" style="left:${a.left-base.left}px;top:${a.top-base.top}px;width:calc(${b.right-a.left}px + 2ch);height:${b.bottom-a.top}px">`);
+  strip.insertAdjacentHTML("beforeend",`<input class="inline-edit" name="inline-edit" aria-label="${node.type} words" style="${bdSpanBox(strip,span,"2ch")}">`);
   const input=strip.querySelector(".inline-edit");
   input.value=words; input.focus(); input.select();
   let done=false;
@@ -1703,6 +1706,7 @@ function composeUI(){
   // Cols commits on change (Enter, leaving, a step arrow), not per keystroke,
   // which would lay the band out at 1, then 12, on the way to 120.
   $("bd-cols").addEventListener("change",e=>{ $("cols").value=e.target.value; renderAll(); e.target.value=cols(); });
+  $("bd-zoom").innerHTML=["fit",...BD_ZOOMS].map(z=>`<option value="${z}">${z==="fit"?"Fit":z*100+"%"}</option>`).join("");
   $("bd-zoom").addEventListener("input",e=>{ bdZoom=e.target.value==="fit"?"fit":+e.target.value; });
   // A render would tear down an open inline or rename field, and its blur
   // would commit the half-typed words; closing the field renders at the new size.
