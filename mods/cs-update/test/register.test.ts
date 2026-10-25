@@ -593,7 +593,7 @@ test('in a directory the sessions root does not name, session start never spawns
   expect(runs).toHaveLength(0)
 })
 
-// The design lab draws the pane by calling drawPane with a view it spells out
+// A design tool outside cs draws the pane by calling drawPane with a view it spells out
 // by hand. Each view here is that fixture for one state, and must draw the
 // tree the handler draws from the same state's facts.
 const NOTES = [

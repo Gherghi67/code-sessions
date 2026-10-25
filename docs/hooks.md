@@ -811,107 +811,15 @@ module state the forced mode keeps (the countdown, the conversation it is
 judging) is reset by a hot reload, which drops a running countdown and adopts
 the conversation it meets next unjudged.
 
-Design lab: `docs/mods-design-lab.html` (open it in a browser) shows every element, prop, render site and rule a mod can use, and the
-rotate capsule's presets and knobs, each state printing the
-JSX it maps to, in the status line's inks; the shipped capsule is its "Inked" preset.
-Its Band variants panel draws the shipped band and seven sketches of it (`docs/mods-band-variants.js`, pinned by `docs/test/band-variants.test.ts`) in each of fifteen states, so you can judge a direction against what ships before it reaches the mod. The shipped band there is the mod's own `drawBand`, not a copy of it.
-
-The lab draws each cs mod surface from the mod's own code. `docs/surfaces/build.sh`
-bundles each mod's exported draw functions with the lab's fixtures for them
-into one plain script per mod (`docs/surfaces/cs.js`, `cs-feed.js`,
-`cs-update.js`, `cs-mermaid.js`), which the page loads after
-`docs/surfaces/shim.js`, the stand-in for the engine's `h` and its elements.
-The fixtures are TypeScript typed against each mod's view types, and
-`tests/test_lab_surfaces.sh` typechecks them where Claude Code's
-engine-written types exist (`mods/cs/.claude-plugin/types/`, written when the
-engine first loads the mod, and gitignored) and npx finds a tsc: a dev
-machine. CI has neither, and skips that test by name, so after a change to a
-view, run the suite on a machine that has loaded the mod. The repository holds the built bundles,
-since a page opened from a file cannot build them; `tests/test_lab_surfaces.sh` rebuilds
-them with the bun release CI pins (`bun-version` in
-`.github/workflows/test.yml`) and fails with a diff when a committed bundle is
-stale. After a change to a mod's draw code, run
-`BUN=<a bun of that release> docs/surfaces/build.sh` and commit the bundles.
-
-The panel it opens on is the Band designer, where you build a band out of
-nested Box, Text and Button on the strip itself. Click a cell to select the
-node that drew it, drag it to reorder, double-click its words to retype them,
-and set its props in the panel beside the strip. The sketches hold a chord's
-key and its word as one group, so moving the group carries both; the shipped
-band, as the mod draws it, holds them side by side. Each frame on the canvas is
-one drawing, started empty, from any Band variants drawing in the picked
-state, or from any state of a mod surface, and the frame marked for export
-prints the JSX to paste into a mod. The Components tab beside Layers lists
-every surface by mod, with its states and its reusable parts: a state adds a
-frame drawn by the mod's code inside the chrome the engine draws round it (a
-pane's frame and tab, the band's `[-]` cells), and a part drags into a frame
-or inserts by the selection. A frame's `preview` toggle draws it the way the
-terminal does under the pointer. The node under the pointer takes its hover
-props, through its hover scope or the keyed Box it sits in, and a click gives
-the Button under it the focus. A hovered or focused Button draws inverted.
-This is how the band's rail cards and a focused chord Button show. A frame in
-preview is only looked at: turning preview on drops a selection in it, and the
-lab refuses every edit of it and says why. A state that holds a Markdown or a Code
-node opens as a reference frame: you can select and inspect it, and the lab
-refuses every edit of it and says why.
-
-A state that moves (a spinner, a breathing mark, a countdown, a timer) has a
-play button and a scrubber in its frame's head. The state's draw function
-takes the moment `t`, in milliseconds since the state began, and its fixture
-turns `t` into the clock the mod reads: `Context.now`, the band's frame,
-the countdown's seconds, an elapsed time. The state declares its `motion`:
-the step its mod redraws at (`tick`: 70 ms for cs-feed's spinner and
-breathing mark, 1 s for a countdown or a timer, 64 or 112 ms for the
-working line, whose 50 or 100 ms Claude Code rounds up to whole 16 ms
-frames) and how long the lab plays it (a countdown to its zero, a
-timer for five minutes rounded up to a whole tick). Play redraws only that
-frame, from the mod's code, at the state's tick, and holds the last moment
-at the end. Space plays or pauses the selected frame, and a press of play
-selects its frame. A frame scrubbed or played away from 0 is only looked
-at: the lab refuses an edit of it and says why, and the Inspector reads
-the selected node as the mod draws it at that moment. Nothing plays on
-load, and with reduced motion asked for, play moves one tick per press.
-The variants gallery stays still.
-
-Under each mod, after the surfaces it draws itself, the Components tab lists
-the rows Claude Code draws around the mod's words, under "Drawn by Claude
-Code": its toasts, the `$.ui.ask` dialog, a slash command's reply, its slash
-menu rows, its `$.ui.log` rows and, for cs-feed, the working line, the footer
-modes, the background hint and the turn line. `docs/surfaces/chrome.ts`
-redraws each row as Claude Code 2.1.310 draws it, read off its own
-components, and fills it with the words the mod exports: cs and cs-update
-keep every toast, dialog, notice, reply and menu row in tables in
-`register.tsx` (`TOASTS`, `ASKS`, `LOGS`, `REPLIES`, `COMMANDS`), and cs-feed
-keeps its own in `words.ts`. Each of these states opens as a reference
-frame, since a mod hands Claude Code only the words. A toast has two
-renderings, and the lab draws both. The fullscreen renderer draws a round
-box at the transcript's top right, the plugin's name dim on its own
-row and the words under it in at most three rows. The inline renderer draws
-one dim row at the right of the footer, `<plugin>: <words>`, cut with
-`…` where the footer ends; its states end in `-inline`. A toast, a notice and
-a command reply all reach the screen led by the plugin's name, which Claude
-Code adds, so the mods' lines never start with it.
-`tests/test_lab_surfaces.sh` fails when a call site writes such a line inline
-instead of naming its table. The fixtures key the toast and log states by
-their table's keys, so a line added to a table and not to the lab fails the
-fixtures' type-check; that check runs only where the engine's types exist, a
-dev machine that has loaded the mod, and CI skips it.
-Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
-localStorage. The editor's model lives in `docs/mods-band-editor.js`, pinned
-by `docs/test/band-editor.test.ts`. The layout engine behind it lives in
-`docs/mods-layout.js`, which the page loads as a plain script and
-`tests/test_mods_layout.sh` drives through bun. It follows the layout of
-Claude Code 2.1.310, read off its bundle. A row whose children overrun it
-shrinks each one by its flexShrink and its width, and each Text then wraps at
-its words, as Bun.wrapAnsi does, or truncates in the cells it keeps. A Button never
-shrinks. When the Buttons alone are wider than the band, the line runs past
-the edge, and the frame cuts it there and says so. An absolute child paints at
-its offsets over its parent, in the order the mod writes them, so
-cs-mermaid's chart draws its diagram. A Code node draws mermaid in the theme's
-plain code ink, as the engine does for a language its highlighter has no
-grammar for. The band under a survey shows the survey the engine draws. The
-lab still counts code points where the terminal counts cells, so a wide glyph
-draws one cell short.
+The mods hand Claude Code every toast, `$.ui.ask` dialog, `$.ui.log` notice,
+slash-command reply and command registration from tables they export: cs and
+cs-update in `register.tsx` (`TOASTS`, `ASKS`, `LOGS`, `REPLIES`, `COMMANDS`),
+cs-feed in `words.ts`. `tests/test_mod_tables.sh` fails when a call site writes
+such a line inline. Claude Code leads a toast, a notice and a command reply with
+the plugin's name, so no line starts with it. Exported functions draw the
+band, the cs-update pane and the cs-mermaid fence (`drawBand`, `drawPane`,
+`Drawing`, `drawFence`) from a view, so a tool outside cs can draw them from a
+fixture.
 
 The mod also registers `/queue`, marked immediate so it runs while a turn is
 in flight instead of waiting for it to end. `/queue <task>` runs

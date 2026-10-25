@@ -3273,7 +3273,7 @@ for (const [name, arrange, props] of bandScenes) {
   })
 }
 
-// The design lab draws the band by calling drawBand with a view it spells out
+// A design tool outside cs draws the band by calling drawBand with a view it spells out
 // by hand. Each view here is that fixture for one state, and must draw the
 // tree the handler draws from the same state's facts.
 const noPress = () => {}
