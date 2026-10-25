@@ -1448,7 +1448,7 @@ function composeRender(){
   $("bd-code-name").textContent=`${bdFrame(doc.exportFrame).name}, the frame that exports`;
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
   $("bd-fit").textContent=fitWords(fitW,cols()); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,cols())}`; $("bd-fit").classList.toggle("no",fitW>cols());
-  document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=(why||`Insert a ${b.dataset.insert}`)+` (${b.dataset.key})`; });
+  document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`Insert a ${b.dataset.insert} (${b.dataset.key})`; });
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
   $("bd-hist").innerHTML=bdHistory();
