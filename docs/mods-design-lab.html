@@ -160,7 +160,7 @@ body.app .rail,body.app .head{display:none}
 .appbar label{display:flex;gap:6px;align-items:center;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
 .appbar select,.appbar input{font-size:12px;padding:2px 4px;height:26px;text-transform:none;letter-spacing:0;max-width:150px}
 .appbar input[type=number]{width:58px}
-.appbar button,.appbar .back,.hist button{font:inherit;font-size:12px;background:none;color:var(--fg);border:1px solid transparent;border-radius:4px;padding:0 8px;height:26px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+.appbar button,.appbar .back{font:inherit;font-size:12px;background:none;color:var(--fg);border:1px solid transparent;border-radius:4px;padding:0 8px;height:26px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 .appbar button:hover:not(:disabled),.appbar .back:hover{background:var(--page);border-color:var(--line)}
 .appbar button:disabled{opacity:.45;cursor:default}
 .appbar button b{font-weight:600;color:var(--fg2);margin-left:4px;font-variant-numeric:tabular-nums}
@@ -168,7 +168,7 @@ body.app .rail,body.app .head{display:none}
 .appbar .fit{font-family:"JetBrains Mono",monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 .appbar .fit.no,p.why.no{color:var(--error)}
 .appbar :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.designer{display:grid;grid-template-columns:240px minmax(0,1fr) 340px;min-height:0}
+.designer{display:grid;grid-template-columns:240px minmax(0,1fr) 280px;min-height:0}
 .layers{background:var(--panel);border-right:1px solid var(--line);padding:4px 0 12px;font-size:12.5px}
 .pane-h{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);padding:10px 12px 4px}
 .frow,.lrow{display:flex;align-items:center;gap:7px;width:100%;min-height:26px;padding:0 10px 0 calc(12px + var(--d,0) * 14px);background:none;border:0;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
@@ -188,7 +188,33 @@ body.app .rail,body.app .head{display:none}
 .frame .hovl{position:absolute;outline:1px solid color-mix(in srgb,var(--accent) 50%,transparent);pointer-events:none}
 .designer > *{min-height:0;overflow:auto}
 .canvas-pane{padding:16px 20px}
-.designer .props{background:var(--panel);border-left:1px solid var(--line);padding:12px}
+/* Inspector: Design (the selected node's props, or the export frame's
+   summary), Code (its JSX) and History, one tab at a time. */
+.inspector{background:var(--panel);border-left:1px solid var(--line);font-size:12px}
+.itabs{position:sticky;top:0;z-index:1;display:flex;gap:2px;padding:6px 8px 0;background:var(--panel);border-bottom:1px solid var(--line)}
+.itabs button{font:inherit;font-size:12px;font-weight:500;background:none;border:0;border-bottom:2px solid transparent;color:var(--fg2);padding:0 8px;height:30px;cursor:pointer}
+.itabs button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
+.itabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+#bd-props,#bd-code,#bd-hist{padding:10px 12px 16px}
+.pgroup{border-top:1px solid var(--line);margin:0 -12px;padding:0 12px}
+.pgroup summary{list-style:none;display:flex;align-items:center;gap:6px;height:30px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2)}
+.pgroup summary::-webkit-details-marker{display:none}
+.pgroup summary::before{content:"";width:0;height:0;border:4px solid transparent;border-left:5px solid currentColor;border-right:0;transition:transform .12s ease-out}
+.pgroup[open] summary::before{transform:rotate(90deg)}
+.pgroup summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.pgroup > div{padding:0 0 8px}
+.prow{display:grid;grid-template-columns:minmax(0,1fr) 124px;align-items:center;gap:8px;min-height:28px}
+.prow .pk{color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prow input[type=text],.prow input[type=number],.prow select{width:100%;font-size:12px;padding:2px 6px;height:24px}
+.prow input[type=checkbox]{justify-self:start;margin:0;width:16px;height:16px}
+.prow:has(input[type=checkbox]){cursor:pointer}
+.code-h{font-size:12px;color:var(--fg2);margin:0 0 6px}
+#bd-code pre.spec{margin:0;font-size:11px;white-space:pre;overflow-x:auto;padding:36px 12px 12px}
+#bd-hist:not([hidden]){display:flex;flex-direction:column;gap:2px}
+#bd-hist button{font:inherit;font-size:12px;text-align:left;color:var(--fg);background:none;border:1px solid transparent;border-radius:3px;padding:3px 6px;cursor:pointer}
+#bd-hist button:hover{border-color:var(--line)}
+#bd-hist button.now{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
+#bd-hist button.ahead{opacity:.5}
 #bd-help{border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:14px 18px 16px;width:min(460px,92vw);box-shadow:0 12px 32px rgba(0,0,0,.18)}
 #bd-help::backdrop{background:rgba(0,0,0,.18)}
 #bd-help .dhead{display:flex;align-items:center;justify-content:space-between;margin:0 0 4px}
@@ -198,24 +224,12 @@ body.app .rail,body.app .head{display:none}
 .keys-table td{padding:4px 0;border-bottom:1px solid var(--line);vertical-align:top}
 .keys-table td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg2)}
 @media (max-width:900px){.designer{grid-template-columns:1fr;overflow:auto}.designer > *{overflow:visible}}
-.props .phead{font-size:13px;margin:0 0 8px}
+.inspector .phead{font-size:13px;margin:0 0 8px}
 .fsum{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:12.5px}
 .fsum dt{color:var(--fg2)}.fsum dd{margin:0}.fsum dd.no{color:var(--error)}
-.props .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
-.props fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:8px 0 10px}
-.props legend{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);padding:0 6px 0 0}
-.props .insp{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px 14px}
-.props .insp label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--fg2)}
-.props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
+.inspector .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
 .frame{margin:0 0 16px}
 .frame .strip{position:relative}
-.hist{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
-.hist .legend{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);margin:0 0 6px}
-#bd-hist{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto}
-.hist button{text-align:left;border-color:transparent;background:none;padding:2px 6px;height:auto}
-.hist button:hover{border-color:var(--line)}
-.hist button.now{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
-.hist button.ahead{opacity:.5}
 .frame{border:1px solid transparent;padding:6px}
 .frame.on{border-color:var(--accent)}
 .fhead{display:flex;gap:12px;align-items:center;margin:0 0 6px;font-size:12.5px}
@@ -286,8 +300,17 @@ body.app .rail,body.app .head{display:none}
     <div class="pane-h">Layers</div>
     <div id="bd-layers"></div>
   </aside>
-  <div class="canvas-pane"><p class="refuse" id="bd-note" hidden></p><div class="canvas" id="bd-canvas"></div><pre class="spec" id="cp-spec"></pre></div>
-  <aside class="props"><div id="bd-props"></div><div class="hist"><div class="legend">History</div><div id="bd-hist"></div></div></aside>
+  <div class="canvas-pane"><p class="refuse" id="bd-note" hidden></p><div class="canvas" id="bd-canvas"></div></div>
+  <aside class="inspector" aria-label="inspector">
+    <div class="itabs" role="tablist" aria-label="inspector">
+      <button type="button" role="tab" id="bd-tab-design" data-tab="design" aria-controls="bd-props" aria-selected="true">Design</button>
+      <button type="button" role="tab" id="bd-tab-code" data-tab="code" aria-controls="bd-code" aria-selected="false" tabindex="-1">Code</button>
+      <button type="button" role="tab" id="bd-tab-history" data-tab="history" aria-controls="bd-hist" aria-selected="false" tabindex="-1">History</button>
+    </div>
+    <div id="bd-props" role="tabpanel" aria-labelledby="bd-tab-design"></div>
+    <div id="bd-code" role="tabpanel" aria-labelledby="bd-tab-code" hidden><div class="code-h" id="bd-code-name"></div><pre class="spec" id="cp-spec"></pre></div>
+    <div id="bd-hist" role="tabpanel" aria-labelledby="bd-tab-history" hidden></div>
+  </aside>
 </div>
 <dialog id="bd-help" aria-labelledby="bd-help-h">
   <div class="dhead"><h3 id="bd-help-h">Keyboard shortcuts</h3><button type="button" id="bd-help-close" aria-label="close">×</button></div>
@@ -1235,14 +1258,18 @@ function bdSettle(){ bdHist=BandEditor.commitDraft(bdHist,bdDraft); bdDraft=null
 function bdDispatch(action){ bdSettle(); bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
 function bdEdit(action){ bdSettle(); bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
 
+// One prop as a row: its name on the left, its control on the right, both
+// one label so either takes the click.
 function cpField([name,kind,extra],v){
-  const hint=typeof extra==="string"?` title="${esc(extra)}"`:"";
-  if(kind==="bool") return `<label class="inline"${hint}><input type="checkbox" name="${name}" data-prop="${name}" data-kind="bool"${v?" checked":""}> ${name}</label>`;
-  if(kind==="num") return `<label${hint}>${name} <input type="number" name="${name}" data-prop="${name}" data-kind="num" value="${v===undefined?"":v}"></label>`;
-  if(kind==="color") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${cpColorOptions(v)}</select></label>`;
-  if(kind==="select") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${extra.map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select></label>`;
-  return `<label${hint}>${name} <input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}"></label>`;
+  const row=control=>`<label class="prow" title="${esc(typeof extra==="string"?`${name}: ${extra}`:name)}"><span class="pk">${name}</span>${control}</label>`;
+  if(kind==="bool") return row(`<input type="checkbox" name="${name}" data-prop="${name}" data-kind="bool"${v?" checked":""}>`);
+  if(kind==="num") return row(`<input type="number" name="${name}" data-prop="${name}" data-kind="num" value="${v===undefined?"":v}">`);
+  if(kind==="color") return row(`<select name="${name}" data-prop="${name}" data-kind="text">${cpColorOptions(v)}</select>`);
+  if(kind==="select") return row(`<select name="${name}" data-prop="${name}" data-kind="text">${extra.map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select>`);
+  return row(`<input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}">`);
 }
+// The groups folded shut, kept across selections.
+const bdShut=new Set();
 // With nothing selected the panel names the export frame and how it fits.
 function cpFrameSummary(){
   const f=bdFrame(bdDocNow().exportFrame), w=ModLayout.layout(BandEditor.toEngine(f.tree),cols()).w;
@@ -1252,7 +1279,7 @@ function cpInspector(n,path){
   if(!n) return cpFrameSummary();
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
-    +CP_GROUPS.filter(g=>groups[g]).map(g=>`<fieldset><legend>${g}</legend><div class="insp">${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></fieldset>`).join("");
+    +CP_GROUPS.filter(g=>groups[g]).map(g=>`<details class="pgroup" data-group="${g}"${bdShut.has(g)?"":" open"}><summary>${g}</summary><div>${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></details>`).join("");
 }
 function cpColorOptions(v){
   const raw=Object.keys(RAW);
@@ -1386,6 +1413,7 @@ function composeRender(){
   bdLayers(); bdHoverDraw();
   if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
+  $("bd-code-name").textContent=`${bdFrame(doc.exportFrame).name}, the frame that exports`;
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
   $("bd-fit").textContent=fitWords(fitW,cols()); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,cols())}`; $("bd-fit").classList.toggle("no",fitW>cols());
   document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=(why||`Insert a ${b.dataset.insert}`)+` (${b.dataset.key})`; });
@@ -1609,6 +1637,7 @@ function bdKeys(e){
   if(!$("p-compose").classList.contains("on")) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")||$("bd-help").open) return;
   if((e.key==="Enter"||e.key===" ")&&document.activeElement?.closest?.("button,a")) return;
+  if(document.activeElement?.closest?.("[role=tablist]")) return;
   if(e.key==="?"){ e.preventDefault(); e.stopImmediatePropagation(); return $("bd-help").showModal(); }
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
   if(!sel) return;
@@ -1656,6 +1685,13 @@ function composeUI(){
   $("bd-layers").addEventListener("click",e=>{ const row=e.target.closest(".lrow"); if(row) bdDispatch({type:"select",frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}); });
   $("bd-layers").addEventListener("mouseover",e=>{ const row=e.target.closest(".lrow"); bdHoverSet(row?{frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}:null); });
   $("bd-layers").addEventListener("mouseleave",()=>bdHoverSet(null));
+  $("bd-props").addEventListener("toggle",e=>{ const g=e.target.dataset?.group; if(g) e.target.open?bdShut.delete(g):bdShut.add(g); },true);
+  const tabs=[...document.querySelectorAll(".itabs [role=tab]")];
+  const pick=tab=>tabs.forEach(t=>{ const on=t===tab; t.setAttribute("aria-selected",on); t.tabIndex=on?0:-1; $(t.getAttribute("aria-controls")).hidden=!on; });
+  tabs.forEach((t,i)=>{
+    t.onclick=()=>pick(t);
+    t.onkeydown=e=>{ const d=e.key==="ArrowRight"?1:e.key==="ArrowLeft"?-1:0; if(!d) return; e.preventDefault(); const next=tabs[(i+d+tabs.length)%tabs.length]; pick(next); next.focus(); };
+  });
   $("bd-help-open").onclick=()=>$("bd-help").showModal();
   $("bd-help-close").onclick=()=>$("bd-help").close();
   $("bd-help").addEventListener("click",e=>{ if(e.target===$("bd-help")) $("bd-help").close(); });
