@@ -19,6 +19,10 @@ mods/cs-feed/hooks/draw.tsx
 mods/cs-feed/hooks/settings.ts
 mods/cs-feed/hooks/transcript.ts
 mods/cs-feed/hooks/words.ts
+mods/cs-mermaid/hooks/layout.ts
+mods/cs-mermaid/hooks/parse.ts
+mods/cs-mermaid/hooks/register.tsx
+mods/cs-mermaid/hooks/text.ts
 mods/cs-update/hooks/register.tsx
 "
 # shellcheck disable=SC2034 # read by run_all.sh --changed, which greps suites for a changed path

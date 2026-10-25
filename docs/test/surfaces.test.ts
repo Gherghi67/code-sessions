@@ -144,3 +144,24 @@ test('cs paints the mark, the keys, the feed check and the count in the mod\'s i
 test('cs draws nothing of its own when the band has nothing to say', () => {
   expect(layout(state('cs.AbovePrompt/idle').draw(80, 'light'), 80).h).toBe(0)
 })
+
+// register.tsx's fence branch: a fence fitSource refuses is its source in a
+// Code block, the reason under it, dim; one that fits is a relative canvas
+// of absolute runs and blocks one blank row above and below.
+test('cs-mermaid draws a refused fence as its source and the reason', () => {
+  expect(state('cs-mermaid.AssistantMessage/refused').draw(80, 'light')).toEqual({
+    type: 'Box', props: { flexDirection: 'column' }, children: [
+      { type: 'Code', props: { source: 'graph TD\n  subgraph one\n    A --> B\n  end', language: 'mermaid' }, children: [] },
+      { type: 'Text', props: { dimColor: true }, children: ['mermaid: ', 'subgraphs are not supported'] },
+    ],
+  })
+  expect(rows('cs-mermaid.AssistantMessage/too-wide', 80).at(-1)).toBe('mermaid: diagram is 128 columns wide, the transcript 74')
+})
+
+test('cs-mermaid draws a chart that fits as absolute blocks on a relative canvas', () => {
+  const tree = state('cs-mermaid.AssistantMessage/diagram').draw(80, 'light')
+  expect(tree.props).toEqual({ marginY: 1 })
+  expect(tree.children[0].props.position).toBe('relative')
+  const start = tree.children[0].children.find((n: any) => n.props.position === 'absolute' && n.children.some((t: any) => String(t.children[0]).trim() === 'Start'))
+  expect(start.children.map((t: any) => t.props.backgroundColor)).toEqual(['#D3F9D8', '#D3F9D8', '#D3F9D8'])
+})
