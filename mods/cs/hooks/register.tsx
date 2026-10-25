@@ -4,7 +4,7 @@
 // ABOUTME: cs mod: keys above the prompt, after a mark whose colour says what is due: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
-// ABOUTME: The band carries a rail: one dot per prompt on the transcript's live branch (read after each turn), the one being read filled; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
+// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read heavy; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
 import type { On, EngineInterface, PluginOptions, RenderElement, RenderSurface } from 'claude-code'
 
 declare const h: any
@@ -193,7 +193,7 @@ export const ASKS = {
 
 export const TOASTS = {
   queued: (task: string) => `queued: ${cutTask(task)}`,
-  bandOption: (problem: string) => `the band draws no prompt dots: ${problem}. Set it in /config.`,
+  bandOption: (problem: string) => `the band draws no prompt ticks: ${problem}. Set it in /config.`,
   promptNotDrawn: 'that prompt is not on screen yet',
   scrollRefused: (deny: string) => deny,
   transcriptTail: () => `the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`,
@@ -378,16 +378,16 @@ let denied = new Set<string>()
 let denySaid = false
 let notYetSaid = false
 let tailSaid = false
-// The prompt the band last drew filled, and whether a redraw for a moved read
+// The prompt the band last drew heavy, and whether a redraw for a moved read
 // prompt is already scheduled.
 let drawnRead = -1
 let redrawPending = false
 // The band's /config rows (plugin.json userConfig), as this activation got
-// them: whether it draws the prompt dots at all (off by default), the prompt
+// them: whether it draws the prompt ticks at all (off by default), the prompt
 // it names, `latest` (the newest) or `read` (the one being read), and the
-// most dots it draws before older prompts fold into `…N`. A
+// most ticks it draws before older prompts fold into `…N`. A
 // change reloads the plugin and register runs again. A stored value the band
-// cannot draw leaves it without dots (undefined), said once, and the rest of
+// cannot draw leaves it without ticks (undefined), said once, and the rest of
 // the mod running: a throw from register would unload all of it.
 const CS_PLUGIN = 'cs'
 type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
@@ -403,7 +403,7 @@ function bandOptionProblem(field: string, value: unknown): string | undefined {
   if (field === 'bandPrompts') return typeof value === 'boolean' ? undefined : `cs.bandPrompts is on or off; got ${String(value)}`
   if (field === 'bandPrompt') return value === 'latest' || value === 'read' ? undefined : `cs.bandPrompt is latest or read; got ${String(value)}`
   if (field === 'bandBars') {
-    return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most dots the band draws, a whole number of 1 or more; got ${String(value)}`
+    return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most ticks the band draws, a whole number of 1 or more; got ${String(value)}`
   }
   return undefined
 }
@@ -626,7 +626,7 @@ export function register(on: On, options: PluginOptions) {
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
     // The rail draws, once cs.bandPrompts turns it on, whenever the
     // conversation has two prompts to move between, a turn running or not,
-    // under the same ownership as the keys; its dots draw not at all while a
+    // under the same ownership as the keys; its ticks draw not at all while a
     // stored band row is bad, which the lead's band says once.
     const bars = bandOptions?.bars
     let railing = !e.props.hasSurvey && prompts.length > 1 && bandOptions?.prompts === true
@@ -844,7 +844,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // The line starts two cells in; the mark and the words share the rest.
   const room = v.bodyColumns - 2 - markCells
   // A rail keeps its least, every prompt but the named one folded into `…N`
-  // before the named dot, and the three cells before it: the words fit what
+  // before the named tick, and the three cells before it: the words fit what
   // that leaves, so the status words drop and the keys shorten before the
   // rail goes. The actions outrank the rail: where the words cannot keep
   // every action beside its least, they fit the whole line, and the rail
@@ -877,15 +877,16 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   }
   // What the words take, in cells, so the rail knows what the line leaves it.
   const wordCells = wordCellsOf(entries, chords, spelling, prefixed)
-  // The rail: one dot per prompt, flush at the line's right edge, `●` for
-  // the one the band names, `◌` for one a jump was refused, `○` otherwise
-  // (dots side by side stay apart, so each reads as a prompt of its own),
-  // each a Button (the named one a Text: a
+  // The rail: one ruler tick per prompt, flush at the line's right edge, `┃`
+  // for the one the band names, `╵` for one a jump was refused, `╷`
+  // otherwise. The named tick stands out by its height; the others are short
+  // stubs, which side by side read as separate ticks rather than a fence.
+  // Each is a Button (the named one a Text: a
   // Button takes no colour, and there is nowhere to jump). It draws at most
-  // cs.bandBars dots in what the line leaves after the inset, the gaps and
+  // cs.bandBars ticks in what the line leaves after the inset, the gaps and
   // the words; the older prompts collapse into one `…N` run, a cell before
-  // the first dot. The named dot is remembered so a report that moves it can
-  // redraw the band.
+  // the first tick. The named tick is remembered so a report that moves it
+  // can redraw the band.
   const budget = room - (wordCells > 0 ? GAP + wordCells : 0)
   const rail = v.rail
   const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
@@ -897,7 +898,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   const railCells = ticks === undefined ? 0 : foldCells(ticks.hidden) + ticks.prompts.length - ticks.hidden
   const labelRoom = ticks === undefined ? 0 : budget - railCells - GAP
   const labeled = labelRoom >= RAIL_LABEL_MIN
-  // A dot under the pointer swaps its prompt in over the named one, on the
+  // A tick under the pointer swaps its prompt in over the named one, on the
   // terminal only: the desktop app paints a card over a line without hiding
   // what is under it, so both prompts would show at once.
   const hovering = labeled && v.surface === 'terminal'
@@ -907,10 +908,10 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
     return `#${i + 1} ${p.text}`
   }
   // The name is as wide as the widest prompt it can show, the named one or a
-  // drawn dot's under the pointer, and no wider than the room: a name sized
+  // drawn tick's under the pointer, and no wider than the room: a name sized
   // to the one it shows would move the words before it whenever a swap shows
   // a longer or shorter one. It is padded on its left, so it hugs the gap
-  // before the dots.
+  // before the ticks.
   const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(i => i >= ticks.hidden) : [])]
     .map(i => cellWidth(name(ticks.prompts, i)))))
   // Each name fills the width, so a card over the named one paints every
@@ -922,7 +923,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // transcript, in two zones: at the left the actions, only the words that
   // need a key now, the keys in the session colour and the rest dim; at the
   // right edge what the session is, dim, then the prompt's name, then the
-  // rail, its last dot in the line's last cell. A spacer that grows
+  // rail, its last tick in the line's last cell. A spacer that grows
   // takes the line's free cells between them, so the rail stays put as the
   // actions come and go; the row is the line's whole width for it to grow
   // into, and a line with nothing at the right draws no spacer. The context
@@ -962,7 +963,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
               {ticks !== undefined && labeled && (
                 <Box width={labelCells} marginLeft={status.length > 0 ? GAP : 0}>
                   <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
-                  {/* a card for each drawn dot but the named one: a prompt folded into `…N` has no dot to hover */}
+                  {/* a card for each drawn tick but the named one: a prompt folded into `…N` has no tick to hover */}
                   {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
                     <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
                       <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
@@ -975,8 +976,8 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
                   {ticks.hidden > 0 && <Box marginRight={1}><Text dimColor>{`…${ticks.hidden}`}</Text></Box>}
                   {ticks.prompts.slice(ticks.hidden).map((p, j) => {
                     const i = ticks.hidden + j
-                    if (i === ticks.named) return own === undefined ? <Text bold>{'●'}</Text> : <Text bold color={own}>{'●'}</Text>
-                    return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '◌' : '○'}
+                    if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
+                    return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '╵' : '╷'}
                                    hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
                   })}
                 </Box>
@@ -1112,7 +1113,7 @@ async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean
 }
 
 // How many of `count` prompts fold into the rail's `…N` run so that at most
-// `most` dots draw and the rail fits `budget` cells; undefined when no dot fits.
+// `most` ticks draw and the rail fits `budget` cells; undefined when no tick fits.
 export function railTicks(count: number, budget: number, most: number): { hidden: number } | undefined {
   for (let hidden = Math.max(0, count - most); hidden < count; hidden++) {
     if (count - hidden + foldCells(hidden) <= budget) return { hidden }
@@ -1121,7 +1122,7 @@ export function railTicks(count: number, budget: number, most: number): { hidden
 }
 
 // The cells of the rail's `…N` run and the space between it and the first
-// dot; none when no prompt folds.
+// tick; none when no prompt folds.
 function foldCells(hidden: number): number {
   return hidden > 0 ? `\u2026${hidden}`.length + 1 : 0
 }
@@ -1217,7 +1218,7 @@ function firstLine(text: string): string {
 
 // Scrolls the transcript to prompt `i`'s row, from a press or a typed /cs,
 // which is when the engine lets a plugin move a transcript row. A refusal
-// marks the tick dotted and is toasted once a session; a prompt no row has
+// marks the tick as an upper stub and is toasted once a session; a prompt no row has
 // drawn since a resume is tried by its uuid, and a refusal for want of a
 // drawn row says so once instead.
 async function jumpTo($: EngineInterface, i: number) {
