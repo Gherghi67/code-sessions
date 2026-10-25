@@ -36,7 +36,7 @@ const VET_TIMEOUT_MS = 10000
 // lab draws each from these words.
 export const TOASTS = {
   declined: (version: string) => `cs ${version} is available · run cs -update to install it, or /cs-update for the notes`,
-  notRecorded: (err: string) => `cs-update: could not record the finished update: ${err}`,
+  notRecorded: (err: string) => `could not record the finished update: ${err}`,
 } as const
 
 export const REPLIES = {

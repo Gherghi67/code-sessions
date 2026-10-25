@@ -2,7 +2,7 @@
   // mods/cs-update/hooks/register.tsx
   var TOASTS = {
     declined: (version) => `cs ${version} is available · run cs -update to install it, or /cs-update for the notes`,
-    notRecorded: (err) => `cs-update: could not record the finished update: ${err}`
+    notRecorded: (err) => `could not record the finished update: ${err}`
   };
   var REPLIES = {
     notLead: "The release-notes pane belongs to the conversation cs launched.",

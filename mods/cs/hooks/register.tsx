@@ -180,8 +180,10 @@ export const QUEUE_KICK = 'The cs walk-away queue is started. Reply with one sho
 // Every line the mod hands the engine to draw on a surface of the engine's
 // own: its dialogs, toasts, transcript notices, slash command replies and
 // slash menu rows, one table per surface, so the design lab draws each from
-// these words. An error arrives as the text its site makes of it: some keep
-// the `Error: ` that String() gives, some only the message.
+// these words. Claude Code leads each toast, notice and reply with the
+// plugin's name, so no line names cs first; one that starts `cs <base>` or
+// `cs -queue` names a cs command. An error arrives as the text its site makes
+// of it: some keep the `Error: ` that String() gives, some only the message.
 export type Ask = { question: string; header: string; options: string[] }
 export const ASKS = {
   wrap: { question: WRAP_QUESTION, header: 'Wrap', options: [WRAP_YES, 'Not now'] },
@@ -190,38 +192,38 @@ export const ASKS = {
 } satisfies Record<string, Ask | ((...args: never[]) => Ask)>
 
 export const TOASTS = {
-  queued: (task: string) => `cs: queued: ${cutTask(task)}`,
-  bandOption: (problem: string) => `cs: the band draws no prompt bars: ${problem}. Set it in /config.`,
-  promptNotDrawn: 'cs: that prompt is not on screen yet',
-  scrollRefused: (deny: string) => `cs: ${deny}`,
-  transcriptTail: () => `cs: the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`,
-  forceBelowStart: (force: number, startPercent: number) => `cs: CS_ROTATE_FORCE_CTX=${force} is below this conversation's starting context (${startPercent}%); not forcing a rotation`,
-  rotateFailed: (err: string) => `cs: /rotate did not run: ${err}`,
-  clearFailed: (err: string) => `cs: /clear did not run: ${err}`,
-  nextStep: (line: string) => `cs: next step: ${line}`,
-  noRotation: (refusal: string) => `cs: no rotation in this session: ${refusal}`,
-  feedFailed: (err: string) => `cs: feed update failed: ${err}`,
-  finishFailed: (task: string, err: string) => `cs: /finish${task === '' ? '' : ` ${task}`} did not run: ${err}`,
-  pressedNotEmptied: (err: string) => `cs: could not empty ${PRESSED}: ${err}`,
-  wrapFailed: (err: string) => `cs: /wrap did not run: ${err}`,
-  queueNoBin: 'cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session',
-  queueModeUnknown: (how: string) => `cs: '${how}' is not a way to run the queue; it is not started`,
-  notCompacted: (reason: string) => `cs: the conversation was not compacted (${reason}); the queue is not started`,
-  queueStartFailed: (err: string) => `cs: cs -queue start did not run: ${err}`,
-  queueStartExited: (code: number, tail: string) => `cs: cs -queue start exited ${code}${tail === '' ? '' : `: ${tail}`}`,
-  queueKickFailed: (err: string) => `cs: the queue is armed, but its first turn did not start: ${err}`,
-  finishRecordUnread: (dir: string) => `cs: .cs/${dir}/${FINISH_RECORD} is not a record cs wrote; /finish progress is not shown`,
-  finishPidUnknown: (err: string) => `cs: cannot tell whether /finish is still running: ${err}`,
+  queued: (task: string) => `queued: ${cutTask(task)}`,
+  bandOption: (problem: string) => `the band draws no prompt bars: ${problem}. Set it in /config.`,
+  promptNotDrawn: 'that prompt is not on screen yet',
+  scrollRefused: (deny: string) => deny,
+  transcriptTail: () => `the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`,
+  forceBelowStart: (force: number, startPercent: number) => `CS_ROTATE_FORCE_CTX=${force} is below this conversation's starting context (${startPercent}%); not forcing a rotation`,
+  rotateFailed: (err: string) => `/rotate did not run: ${err}`,
+  clearFailed: (err: string) => `/clear did not run: ${err}`,
+  nextStep: (line: string) => `next step: ${line}`,
+  noRotation: (refusal: string) => `no rotation in this session: ${refusal}`,
+  feedFailed: (err: string) => `feed update failed: ${err}`,
+  finishFailed: (task: string, err: string) => `/finish${task === '' ? '' : ` ${task}`} did not run: ${err}`,
+  pressedNotEmptied: (err: string) => `could not empty ${PRESSED}: ${err}`,
+  wrapFailed: (err: string) => `/wrap did not run: ${err}`,
+  queueNoBin: 'the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session',
+  queueModeUnknown: (how: string) => `'${how}' is not a way to run the queue; it is not started`,
+  notCompacted: (reason: string) => `the conversation was not compacted (${reason}); the queue is not started`,
+  queueStartFailed: (err: string) => `cs -queue start did not run: ${err}`,
+  queueStartExited: (code: number, tail: string) => `cs -queue start exited ${code}${tail === '' ? '' : `: ${tail}`}`,
+  queueKickFailed: (err: string) => `the queue is armed, but its first turn did not start: ${err}`,
+  finishRecordUnread: (dir: string) => `.cs/${dir}/${FINISH_RECORD} is not a record cs wrote; /finish progress is not shown`,
+  finishPidUnknown: (err: string) => `cannot tell whether /finish is still running: ${err}`,
 } as const
 
 export const LOGS = {
-  featuresUnread: (err: string) => `cs: the features word could not be read: ${err}`,
+  featuresUnread: (err: string) => `the features word could not be read: ${err}`,
   featuresExited: (base: string, code: number, line: string) => `cs ${base} -features exited ${code}: ${line}`,
   featuresUnreadable: (base: string, record: string) => `cs ${base} -features gave a record the band cannot read: ${record}`,
   featuresNoAnswer: (base: string, err: string) => `cs ${base} -features did not answer: ${err}`,
-  transcriptUnread: (err: string) => `cs: the transcript could not be read: ${err}`,
-  colorFailed: (color: string, err: string) => `cs: /color ${color} did not run: ${err}`,
-  feedUnread: (message: string) => `cs: the feed setting could not be read: ${message}`,
+  transcriptUnread: (err: string) => `the transcript could not be read: ${err}`,
+  colorFailed: (color: string, err: string) => `/color ${color} did not run: ${err}`,
+  feedUnread: (message: string) => `the feed setting could not be read: ${message}`,
 } as const
 
 // `what` is the cs command a reply is about: `cs -queue add` or `cs -queue list`.
@@ -231,10 +233,10 @@ export const REPLIES = {
   queueExited: (what: string, code: number, tail: string) => tail === '' ? `${what} exited ${code}.` : `${what} exited ${code}.\n${tail}`,
   queued: (task: string) => `Queued: ${task}`,
   csUsage: 'usage: /cs next|prev|first|last|<n>',
-  railEmpty: 'cs: the rail has no prompts',
-  noneAfter: 'cs: no prompt after this one',
-  noneBefore: 'cs: no prompt before this one',
-  railCount: (count: number) => `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}`,
+  railEmpty: 'the rail has no prompts',
+  noneAfter: 'no prompt after this one',
+  noneBefore: 'no prompt before this one',
+  railCount: (count: number) => `the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}`,
 } as const
 
 export const COMMANDS = {
@@ -1989,10 +1991,10 @@ async function followFinish($: EngineInterface) {
 export function finishToast(record: FinishRecord): string {
   const task = cutTask(record.task)
   switch (record.step) {
-    case 'landed': return `cs: landed ${task} ${record.sha.slice(0, 7)} -> ${(record.result ?? '').slice(0, 7)}`
-    case 'refused': return `cs: /finish ${task} refused: ${record.reason ?? ''}`
-    case 'retired': return `cs: retired ${task}`
-    default: return `cs: finishing ${task}`
+    case 'landed': return `landed ${task} ${record.sha.slice(0, 7)} -> ${(record.result ?? '').slice(0, 7)}`
+    case 'refused': return `/finish ${task} refused: ${record.reason ?? ''}`
+    case 'retired': return `retired ${task}`
+    default: return `finishing ${task}`
   }
 }
 

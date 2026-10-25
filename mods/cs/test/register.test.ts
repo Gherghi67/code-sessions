@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, buildBandEntries, drawBand, type BandView, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
+import { register, buildBandEntries, drawBand, type BandView, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed, TOASTS, LOGS, REPLIES, finishToast } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -590,7 +590,7 @@ test('pressing the clear button asks cs about the session, and a tracked control
   await findButton(await band()).props.onPress()
   expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
   expect(ran).toEqual([])
-  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+  expect(toasts).toEqual([`no rotation in this session: ${TRACKED}`])
   // the band then draws the session as unarmed (below the threshold: nothing),
   // and the same refusal at the next turn's end is not said again
   expect(await band()).toBe(DRAWN)
@@ -692,8 +692,8 @@ test('when cs cannot answer, a press clears nothing and the band says why', asyn
   await turnComplete()
   expect(ran).toEqual([])
   expect(toasts).toEqual([
-    'cs: no rotation in this session: the launch did not say where cs is (CS_BIN)',
-    'cs: no rotation in this session: cs -vet-session did not run: spawn ENOENT',
+    'no rotation in this session: the launch did not say where cs is (CS_BIN)',
+    'no rotation in this session: cs -vet-session did not run: spawn ENOENT',
   ])
 })
 
@@ -719,7 +719,7 @@ test('a session whose control files git tracks gets no heartbeat', async () => {
   await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
   expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
   expect(written).toEqual({})
-  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+  expect(toasts).toEqual([`no rotation in this session: ${TRACKED}`])
 })
 
 test('outside a cs session no heartbeat is written', async () => {
@@ -853,7 +853,7 @@ test('a forced rotation runs once per conversation, and a failed /rotate is not 
   // the marker is written before the timer is scheduled, so a rejected run stays rejected
   $.command.run = async () => { throw new Error('unknown command') }
   await fireAfter()
-  expect(toasts).toEqual(['cs: /rotate did not run: Error: unknown command'])
+  expect(toasts).toEqual(['/rotate did not run: Error: unknown command'])
   await turnComplete()
   expect(timers).toHaveLength(1)
   $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
@@ -950,7 +950,7 @@ test('a press marker the turn end cannot empty is said, and the turn end goes on
   } finally {
     $.fs.write = write
   }
-  expect(toasts).toEqual(['cs: could not empty .cs/local/cs.pressed: Error: EACCES'])
+  expect(toasts).toEqual(['could not empty .cs/local/cs.pressed: Error: EACCES'])
   expect(files[PRESSED]).toBe('uuid-lead\n')
   expect(result).toEqual({ text: 'ok' })
   expect(timers.map(t => t.kind)).toEqual(['after'])
@@ -1105,7 +1105,7 @@ test('a rejected /clear at zero shows a toast and clears nothing else', async ()
   $.command.run = async () => { throw new Error('no session') }
   await tick(GRACE_SECONDS)
   $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
-  expect(toasts).toEqual(['cs: /clear did not run: Error: no session'])
+  expect(toasts).toEqual(['/clear did not run: Error: no session'])
   expect(ran).toEqual([])
 })
 
@@ -1148,7 +1148,7 @@ test('a conversation met at load is forced whatever it started at; one born of a
   percent = 71
   await turnComplete(); await turnComplete()
   expect(timers).toHaveLength(1)
-  expect(toasts).toEqual(['cs: CS_ROTATE_FORCE_CTX=70 is below this conversation\'s starting context (71%); not forcing a rotation'])
+  expect(toasts).toEqual(['CS_ROTATE_FORCE_CTX=70 is below this conversation\'s starting context (71%); not forcing a rotation'])
   // a teammate past the line is not the lead: no rotation, and no toast about one
   sessionId = 'uuid-teammate'
   percent = 90
@@ -1246,7 +1246,7 @@ test('a refused session color leaves the drawn tree intact and logs once', async
     $.command.run = run
   }
   expect(ran).toEqual([{ command: 'color', args: 'red' }])
-  expect(logs).toEqual(['cs: /color red did not run: Error: command refused'])
+  expect(logs).toEqual(['/color red did not run: Error: command refused'])
 })
 
 test('a pending session color leaves rendering and running-turn guards responsive', async () => {
@@ -1379,7 +1379,7 @@ test('a /clear the mod runs itself that is rejected leaves no birth behind: a la
   $.command.run = async () => { throw new Error('no session') }
   await tick(GRACE_SECONDS)
   $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
-  expect(toasts).toEqual(['cs: /clear did not run: Error: no session'])
+  expect(toasts).toEqual(['/clear did not run: Error: no session'])
   files = { '/work/.cs/local/state': 'claude_session_id: uuid-resumed\n' }
   sessionId = 'uuid-resumed'
   percent = 72
@@ -1445,7 +1445,7 @@ test('a /wrap the answer runs that the engine refuses is said once', async () =>
   $.command.run = async () => { throw new Error('no session') }
   await wrapButton(await band()).props.onPress()
   $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
-  expect(toasts).toEqual(['cs: /wrap did not run: Error: no session'])
+  expect(toasts).toEqual(['/wrap did not run: Error: no session'])
   expect(ran).toEqual([])
 })
 
@@ -1603,7 +1603,7 @@ test('the first count on an armed handoff toasts its next step once, from a time
   await startGrace()
   expect(toasts).toEqual([])
   await fireAfter()
-  expect(toasts).toEqual(['cs: next step: Run the secrets suites solo.'])
+  expect(toasts).toEqual(['next step: Run the secrets suites solo.'])
   await band(); await tick(2); await band()
   expect(toasts).toHaveLength(1)
   await promptSubmit()
@@ -1620,7 +1620,7 @@ test('a handoff armed after the /clear, in the same process, is toasted in its t
   sessionId = 'uuid-two'; percent = 10
   files['/work/.cs/local/state'] = 'claude_session_color: red\nclaude_session_id: uuid-two\n'
   await band(); await turnComplete(); await fireAfter()
-  expect(toasts).toEqual(['cs: next step: Run the secrets suites solo.', 'cs: next step: Ship it.'])
+  expect(toasts).toEqual(['next step: Run the secrets suites solo.', 'next step: Ship it.'])
 })
 
 test('a count that ends before its timer fires, or a handoff with no next step, toasts nothing', async () => {
@@ -1686,7 +1686,7 @@ test('/queue with a task runs cs -queue add with the task as one argument and sa
   const r = await queue('fix the flaky "rotate" test; then rerun it')
   expect(runs.map(x => x.argv)).toEqual([['/opt/cs/bin/cs', '-queue', 'add', 'fix the flaky "rotate" test; then rerun it']])
   expect(r).toEqual({ text: 'Queued: fix the flaky "rotate" test; then rerun it' })
-  expect(toasts).toEqual(['cs: queued: fix the flaky "rotate" test; then rerun it'])
+  expect(toasts).toEqual(['queued: fix the flaky "rotate" test; then rerun it'])
   await settle()
   expect(asks).toEqual([])
 })
@@ -1696,7 +1696,7 @@ test('/queue with a long task confirms it in a toast cut to 60 characters', asyn
   envVars.CS_BIN = '/opt/cs/bin/cs'
   const task = 'a'.repeat(59) + 'bc' + ' tail'
   await queue(`  ${task}  `)
-  expect(toasts).toEqual([`cs: queued: ${'a'.repeat(59)}b…`])
+  expect(toasts).toEqual([`queued: ${'a'.repeat(59)}b…`])
 })
 
 test('/queue with no task, or only spaces, prints cs -queue list', async () => {
@@ -1776,7 +1776,7 @@ test('an answer that is no mode starts nothing and says so', async () => {
   await queue('')
   await settle()
   expect(runs.map(x => x.argv[2])).toEqual(['list'])
-  expect(toasts).toEqual(["cs: 'in parallel please' is not a way to run the queue; it is not started"])
+  expect(toasts).toEqual(["'in parallel please' is not a way to run the queue; it is not started"])
 })
 
 test('Compact asks the mode before compacting, then starts in it', async () => {
@@ -1853,7 +1853,7 @@ test('a start cs refuses, or one that cannot run, says so and sends no prompt', 
   await settle()
   await queue('')
   await settle()
-  expect(toasts).toEqual(['cs: cs -queue start exited 1: Error: the queue is locked', 'cs: cs -queue start did not run: spawn ENOENT'])
+  expect(toasts).toEqual(['cs -queue start exited 1: Error: the queue is locked', 'cs -queue start did not run: spawn ENOENT'])
   expect(submitted).toEqual([])
 })
 
@@ -1868,7 +1868,7 @@ test('a prompt the engine refuses is shown, not dropped', async () => {
   } finally {
     $.prompt.submit = async (args: any) => { submitted.push(args); return {} }
   }
-  expect(toasts).toEqual(['cs: the queue is armed, but its first turn did not start: session closed'])
+  expect(toasts).toEqual(['the queue is armed, but its first turn did not start: session closed'])
 })
 
 // Compact frees the context the drain will need first: the conversation is
@@ -1895,7 +1895,7 @@ test('a compaction a hook vetoes leaves the queue unarmed and says why', async (
   await settle()
   expect(runs.map(x => x.argv[2])).toEqual(['list'])
   expect(submitted).toEqual([])
-  expect(toasts).toEqual(['cs: the conversation was not compacted (a PreCompact hook blocked it); the queue is not started'])
+  expect(toasts).toEqual(['the conversation was not compacted (a PreCompact hook blocked it); the queue is not started'])
 })
 
 // The engine refuses a compaction while a turn runs.
@@ -1908,7 +1908,7 @@ test('a compaction the engine refuses leaves the queue unarmed and says so', asy
   await settle()
   expect(runs.map(x => x.argv[2])).toEqual(['list'])
   expect(submitted).toEqual([])
-  expect(toasts).toEqual(['cs: the conversation was not compacted (a turn is running); the queue is not started'])
+  expect(toasts).toEqual(['the conversation was not compacted (a turn is running); the queue is not started'])
 })
 
 test('a dismissed offer runs nothing more', async () => {
@@ -2049,7 +2049,7 @@ test('without CS_BIN a press says where to start the queue, and runs nothing', a
   await settle()
   expect(asks).toEqual([])
   expect(runs).toEqual([])
-  expect(toasts).toEqual(['cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session'])
+  expect(toasts).toEqual(['the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session'])
 })
 
 // /finish progress: cs writes one record per step while it integrates and
@@ -2086,7 +2086,7 @@ test('a /finish that starts toasts its task once, however many steps follow', as
   await watchTick()
   record(running('fast-forward'))
   await watchTick()
-  expect(toasts).toEqual(['cs: finishing fix-auth'])
+  expect(toasts).toEqual(['finishing fix-auth'])
 })
 
 test('each outcome toasts once, in its own words, and not again on the next tick', async () => {
@@ -2101,9 +2101,9 @@ test('each outcome toasts once, in its own words, and not again on the next tick
   await watchTick()
   await watchTick()
   expect(toasts).toEqual([
-    'cs: landed fix-auth 1234567 -> 89abcde',
-    'cs: /finish fix-auth refused: Base /work moved during the gates (was abc, now def); re-run /finish fix-auth',
-    'cs: retired fix-auth',
+    'landed fix-auth 1234567 -> 89abcde',
+    '/finish fix-auth refused: Base /work moved during the gates (was abc, now def); re-run /finish fix-auth',
+    'retired fix-auth',
   ])
 })
 
@@ -2112,14 +2112,14 @@ test('a long task is cut in the toast as /queue cuts it', async () => {
   await startFinish()
   record(running('started', { task: 'a'.repeat(59) + 'bc tail' }))
   await watchTick()
-  expect(toasts).toEqual([`cs: finishing ${'a'.repeat(59)}b…`])
+  expect(toasts).toEqual([`finishing ${'a'.repeat(59)}b…`])
 })
 
 test('an encrypted session\'s record is read behind .cs/private', async () => {
   await startFinish()
   record({ id: '6161-1800000002', pid: 6161, task: 'fix-auth', sha: SHA, step: 'retired', ts: NOW }, '/work/.cs/private/finish-progress.json')
   await watchTick()
-  expect(toasts).toEqual(['cs: retired fix-auth'])
+  expect(toasts).toEqual(['retired fix-auth'])
 })
 
 test('while a gate runs under a live pid the band shows the task and the time since the gate started, even mid-turn', async () => {
@@ -2197,7 +2197,7 @@ test('the watch ends once the turn is over and nothing runs, and not while a ste
   expect(watches()[0].cancelled).toBe(false)
   record({ id: '6161-1800000002', pid: 6161, task: 'fix-auth', sha: SHA, step: 'retired', ts: NOW })
   await watchTick()
-  expect(toasts).toEqual(['cs: finishing fix-auth', 'cs: retired fix-auth'])
+  expect(toasts).toEqual(['finishing fix-auth', 'retired fix-auth'])
   expect(watches()[0].cancelled).toBe(true)
   // the next /finish watches afresh
   await startFinish()
@@ -2398,7 +2398,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await tickButtons(tree)[1].props.onPress()
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'r3' }, block: 'start' }, { to: { requestId: 'r3' }, block: 'start' }])
-  expect(toasts).toEqual(['cs: the window moved meanwhile'])
+  expect(toasts).toEqual(['the window moved meanwhile'])
   expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2506', '\u2502'])
 })
 
@@ -2410,14 +2410,14 @@ test('a prompt no row has drawn since a resume is dim, and its press says so onc
   await tickButtons(tree)[1].props.onPress()
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }, { to: { requestId: 'u2' }, block: 'start' }])
-  expect(toasts).toEqual(['cs: that prompt is not on screen yet'])
+  expect(toasts).toEqual(['that prompt is not on screen yet'])
   expect(rail(await band())).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
 })
 
 test('/cs next, prev, first, last and N move along the rail from the prompt being read', async () => {
   await sessionStart()
   expect(commands.find(c => c.name === 'cs')).toMatchObject({ immediate: true })
-  expect(await cs('next')).toEqual({ text: 'cs: the rail has no prompts' })
+  expect(await cs('next')).toEqual({ text: 'the rail has no prompts' })
   transcript(LINEAR)
   await turnComplete()
   for (const [id, text] of [['u1', 'say one'], ['u2', 'say two'], ['u3', 'say three\nwith a second line'], ['u4', '  say four  ']]) await drawRow(id, text, null)
@@ -2428,12 +2428,12 @@ test('/cs next, prev, first, last and N move along the rail from the prompt bein
   expect(await cs('last')).toEqual({})
   expect(await cs('3')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u3', 'u1', 'u1', 'u4', 'u3'])
-  expect(await cs('9')).toEqual({ text: 'cs: the rail has 4 prompts' })
+  expect(await cs('9')).toEqual({ text: 'the rail has 4 prompts' })
   expect(await cs('sideways')).toEqual({ text: 'usage: /cs next|prev|first|last|<n>' })
   await drawRow('u4', '  say four  ', { first: 0, last: 1, of: 2 })
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   await drawRow('u1', 'say one', { first: 4, last: 6, of: 7 })
-  expect(await cs('prev')).toEqual({ text: 'cs: no prompt before this one' })
+  expect(await cs('prev')).toEqual({ text: 'no prompt before this one' })
 })
 
 test('rows drawn where the band is not the lead\'s, or under a survey, redraw once at most: the read tick settles even when the rail is not drawn', async () => {
@@ -2513,7 +2513,7 @@ test('a /clear empties the rail: the next conversation draws none of the last on
   expect(await hooks['command.run:clear']($, e, async () => ({ text: '' }))).toEqual({ text: '' })
   expect(invalidated).toEqual(['ui.render'])
   expect(rail(await band())).toEqual([])
-  expect(await cs('next')).toEqual({ text: 'cs: the rail has no prompts' })
+  expect(await cs('next')).toEqual({ text: 'the rail has no prompts' })
   await turnComplete()
   expect(rail(await band())).toEqual(['│', '│', '│', '┃'])
 })
@@ -2876,7 +2876,7 @@ test('a /finish the engine refuses is toasted, not thrown', async () => {
   } finally {
     $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
   }
-  expect(toasts).toEqual(['cs: /finish fix-auth did not run: a turn is running'])
+  expect(toasts).toEqual(['/finish fix-auth did not run: a turn is running'])
 })
 
 test('a base with no feature asks cs nothing and runs no clock; the turn a feature is made in reads it', async () => {
@@ -3084,7 +3084,7 @@ test('a bad band value already stored draws no bars and says so once; the rest o
   expect(rail(tree)).toEqual([])
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
   await band()
-  expect(toasts).toEqual(['cs: the band draws no prompt bars: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
+  expect(toasts).toEqual(['the band draws no prompt bars: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
 })
 
 test('by plugin.json\'s defaults the band draws no prompt bars and names no prompt; its other words still draw', async () => {
@@ -3507,7 +3507,7 @@ test('a feed press refuses a session whose control files are tracked', async () 
   expect(files['/work/.cs/local/feed']).toBe('on\n')
   expect(written).toEqual({})
   expect(runs.map(run => run.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
-  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+  expect(toasts).toEqual([`no rotation in this session: ${TRACKED}`])
   expect(invalidated).toEqual(['ui.render'])
   runResult = VETTED
   await feedKey(await band()).props.onPress()
@@ -3573,7 +3573,7 @@ test('a torn feed write redraws its off state and allows another press', async (
     expect(invalidated).toEqual(['ui.render'])
     expect(feedKey(await band()).props.label).toBe('feed')
     expect(files['/work/.cs/local/feed']).toBe('')
-    expect(toasts).toEqual(['cs: feed update failed: EACCES /work/.cs/local/feed'])
+    expect(toasts).toEqual(['feed update failed: EACCES /work/.cs/local/feed'])
   } finally {
     $.fs.write = write
   }
@@ -3703,13 +3703,13 @@ test('an unreadable feed file leaves the band visible and reports each read erro
     for (let redraw = 0; redraw < 2; redraw++) {
       expect(buttons(await band()).map(button => button.props.label)).toEqual(['rotate', 'wrap', 'feed'])
     }
-    expect(logs).toEqual(['cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'])
+    expect(logs).toEqual(['the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES'])
     error = 'cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR'
     expect(feedKey(await band()).props.label).toBe('feed')
     expect(feedKey(await band()).props.label).toBe('feed')
     expect(logs).toEqual([
-      'cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES',
-      'cs: the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR',
+      'the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EACCES',
+      'the feed setting could not be read: cs: $.fs.read(/ENOENT/.cs/local/feed) failed: EISDIR',
     ])
     expect(toasts).toEqual([])
     expect(written).toEqual({})
@@ -3743,7 +3743,7 @@ test('a transcript past 4 MiB is read by its tail, and a toast says the rail lis
   runResult = { exitCode: 0, stdout: `${LINEAR.join('\n')}\n`, stderr: '' }
   await turnComplete({ reason: 'aborted' })
   expect(runs.map(r => r.argv[0])).toEqual(['tail'])
-  expect(toasts).toEqual(['cs: the transcript is over 4 MiB; the rail lists the prompts of its tail'])
+  expect(toasts).toEqual(['the transcript is over 4 MiB; the rail lists the prompts of its tail'])
 })
 
 test('a transcript that cannot be read is logged with the reason', async () => {
@@ -3755,7 +3755,7 @@ test('a transcript that cannot be read is logged with the reason', async () => {
   } finally {
     $.fs.read = read
   }
-  expect(logs).toEqual(['cs: the transcript could not be read: EACCES'])
+  expect(logs).toEqual(['the transcript could not be read: EACCES'])
 })
 
 test('a features reading that fails before cs is asked is logged with the reason', async () => {
@@ -3768,13 +3768,13 @@ test('a features reading that fails before cs is asked is logged with the reason
     $.clock.every = every
   }
   expect(featureRuns()).toEqual([])
-  expect(logs).toEqual(['cs: the features word could not be read: clock refused'])
+  expect(logs).toEqual(['the features word could not be read: clock refused'])
 })
 
 test('/cs next on the last prompt says there is none after it', async () => {
   transcript(LINEAR)
   await turnComplete()
-  expect(await cs('next')).toEqual({ text: 'cs: no prompt after this one' })
+  expect(await cs('next')).toEqual({ text: 'no prompt after this one' })
 })
 
 test('a /finish record cs did not write is toasted once, and the watch shows no progress', async () => {
@@ -3782,7 +3782,7 @@ test('a /finish record cs did not write is toasted once, and the watch shows no 
   files[RECORD] = '{"id": 1'
   await watchTick()
   await watchTick()
-  expect(toasts).toEqual(['cs: .cs/local/finish-progress.json is not a record cs wrote; /finish progress is not shown'])
+  expect(toasts).toEqual(['.cs/local/finish-progress.json is not a record cs wrote; /finish progress is not shown'])
 })
 
 test('a /finish whose pid cannot be checked is toasted once and counts as over', async () => {
@@ -3796,5 +3796,15 @@ test('a /finish whose pid cannot be checked is toasted once and counts as over',
   } finally {
     $.process.run = run
   }
-  expect(toasts).toEqual(['cs: finishing fix-auth', 'cs: cannot tell whether /finish is still running: spawn EPERM'])
+  expect(toasts).toEqual(['finishing fix-auth', 'cannot tell whether /finish is still running: spawn EPERM'])
+})
+
+// Claude Code leads every toast, transcript notice and command reply with the
+// name of the plugin that sent it, so a line that names cs itself reads
+// `cs: cs: ...`.
+test('no toast, notice or command reply the mod hands the engine starts with its own name', () => {
+  const lines = [...Object.values(TOASTS), ...Object.values(LOGS), ...Object.values(REPLIES)]
+    .map(entry => typeof entry === 'function' ? (entry as (...args: string[]) => string)('x', 'x', 'x') : entry)
+    .concat(['merging', 'landed', 'refused', 'retired'].map(step => finishToast({ id: 'x', pid: 1, task: 'x', sha: 'x', step })))
+  expect(lines.filter(line => line.startsWith('cs:'))).toEqual([])
 })

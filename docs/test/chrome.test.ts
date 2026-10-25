@@ -17,43 +17,44 @@ test('every chrome surface comes from a mod bundle and draws the words of that m
 })
 
 // JF: the box is min(cols - 2, 44) wide at most, its words wrapped at four
-// cells less; at 80 cols `cs: queued: fix the login redirect` (34 cells)
-// fits one row, so the box is 34 + 4 = 38 wide, at the right edge.
+// cells less; at 80 cols `queued: fix the login redirect` (30 cells) fits one
+// row, so the box is 30 + 4 = 34 wide, at the right edge.
 test('a short toast is a round dim box at the top right, the plugin name on its own row', () => {
-  const pad = ' '.repeat(42)
+  const pad = ' '.repeat(46)
   expect(screen('cs.toast/queued')).toEqual([
-    `${pad}╭${'─'.repeat(36)}╮`,
-    `${pad}│ ${'cs'.padEnd(34)} │`,
-    `${pad}│ cs: queued: fix the login redirect │`,
-    `${pad}╰${'─'.repeat(36)}╯`,
+    `${pad}╭${'─'.repeat(32)}╮`,
+    `${pad}│ ${'cs'.padEnd(30)} │`,
+    `${pad}│ queued: fix the login redirect │`,
+    `${pad}╰${'─'.repeat(32)}╯`,
   ])
   const g = grid('cs.toast/queued')
-  expect([g.rows[0][42].st.dim, g.rows[1][44].st.dim, g.rows[2][44].st.dim]).toEqual([true, true, false])
+  expect([g.rows[0][46].st.dim, g.rows[1][48].st.dim, g.rows[2][48].st.dim]).toEqual([true, true, false])
 })
 
-// wrap-ansi {trim:false, hard:true} at 40: `this` ends row one at exactly 40,
-// so the space before `conversation's` starts row two; `(75%);` leaves row
-// two at 39 and the space after it fits, ending the row at 40.
-test('a toast wrapped at forty cells keeps the space wrap-ansi carries, and its box is 44 wide', () => {
-  const pad = ' '.repeat(36)
-  expect(screen('cs.toast/force-below-start')).toEqual([
-    `${pad}╭${'─'.repeat(42)}╮`,
-    `${pad}│ ${'cs'.padEnd(40)} │`,
-    `${pad}│ cs: CS_ROTATE_FORCE_CTX=70 is below this │`,
-    `${pad}│  conversation's starting context (75%);  │`,
-    `${pad}│ ${'not forcing a rotation'.padEnd(40)} │`,
-    `${pad}╰${'─'.repeat(42)}╯`,
+// At 42 cols the box may be 40 wide and its words wrap at 36 (wrap-ansi
+// {trim:false, hard:true}): `this` ends row one at exactly 36, so the space
+// before `conversation's` starts row two; `context` leaves row two at 32 and
+// the space after it fits, ending the row at 33.
+test('a toast wrapped at a full row carries the space to the next, and its box is the terminal less two', () => {
+  const pad = ' '.repeat(2)
+  expect(screen('cs.toast/force-below-start', 42)).toEqual([
+    `${pad}╭${'─'.repeat(38)}╮`,
+    `${pad}│ ${'cs'.padEnd(36)} │`,
+    `${pad}│ CS_ROTATE_FORCE_CTX=70 is below this │`,
+    `${pad}│ ${" conversation's starting context ".padEnd(36)} │`,
+    `${pad}│ ${'(75%); not forcing a rotation'.padEnd(36)} │`,
+    `${pad}╰${'─'.repeat(38)}╯`,
   ])
 })
 
-// Four rows at 40: the third holds rows three and four joined by a space,
-// cut to 39 cells and `…`.
+// Four rows at 40, the box at its widest, 44: the third holds rows three and
+// four joined by a space, cut to 39 cells and `…`.
 test('a toast past three rows joins the rest into the third and cuts it', () => {
   const pad = ' '.repeat(36)
   expect(screen('cs.toast/band-option')).toEqual([
     `${pad}╭${'─'.repeat(42)}╮`,
     `${pad}│ ${'cs'.padEnd(40)} │`,
-    `${pad}│ ${'cs: the band draws no prompt bars: '.padEnd(40)} │`,
+    `${pad}│ ${'the band draws no prompt bars: '.padEnd(40)} │`,
     `${pad}│ ${'cs.bandBars is the most bars the band '.padEnd(40)} │`,
     `${pad}│ draws, a whole number of 1 or more; got… │`,
     `${pad}╰${'─'.repeat(42)}╯`,
@@ -90,12 +91,12 @@ test('the queue dialog says task or tasks by its count, and moving the focus mov
 
 // nl then Yn: the echo on the user-message ground, then `  ⎿  ` dim and the
 // reply in the default ink, led by the plugin's name, as A2n answers a
-// plugin's command (`we=Se?`${be}: ${Q.text}`:Q.text`): cs's own `cs:` doubles.
+// plugin's command (`we=Se?`${be}: ${Q.text}`:Q.text`).
 test('a command reply echoes the command and hangs the reply under the connector', () => {
   expect(screen('cs.command/queue-added')).toEqual(['❯ /queue fix the login redirect', '  ⎿  cs: Queued: fix the login redirect'])
   const g = grid('cs.command/queue-added')
   expect([g.rows[0][0].st.color, g.rows[0][0].st.bg, g.rows[0][79].st.bg, g.rows[1][2].st.dim, g.rows[1][5].st.dim]).toEqual(['inactive', 'userMessageBackground', 'userMessageBackground', true, false])
-  expect(screen('cs.command/rail-count')).toEqual(['❯ /cs 9', '  ⎿  cs: cs: the rail has 4 prompts'])
+  expect(screen('cs.command/rail-count')).toEqual(['❯ /cs 9', '  ⎿  cs: the rail has 4 prompts'])
 })
 
 // Ye: name column = longest `/name` + 5 = 11, so `/queue` gets 3 spaces and
@@ -121,9 +122,9 @@ test('a description past the room carries to a second row under the description 
 })
 
 // jg: the ⏺ mark in a two-cell column, then `<plugin>: <text>`, both
-// inactive. cs's own lines start with `cs:`, so the plugin name doubles.
+// inactive.
 test('a log row names the plugin before the text, in the inactive ink', () => {
-  expect(screen('cs.log/transcript-unread')).toEqual(['⏺ cs: cs: the transcript could not be read: EACCES'])
+  expect(screen('cs.log/transcript-unread')).toEqual(['⏺ cs: the transcript could not be read: EACCES'])
   expect(screen('cs-feed.log/clock-stopped')).toEqual(['⏺ cs-feed: clock stopped: cs-feed: $.state.set: tick refused'])
   expect(grid('cs.log/transcript-unread').rows[0][2].st.color).toBe('inactive')
 })
