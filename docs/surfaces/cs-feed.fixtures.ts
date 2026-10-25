@@ -234,6 +234,7 @@ const working = (open: Turn, over: { mode?: 'requesting' | 'responding'; agents?
 const withRunning: Transcript = { ...transcript, calls: new Map([...transcript.calls, [RUNNING, filed(9, 'Bash', { command: 'bun test', description: 'Run the tests' }, { state: 'running' }, RUN)]]) }
 const spinnerStates: State[] = [
   state('engine', "working with the feed off, the engine's own word", () => workingLine({ message: 'Working', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })),
+  state('engine-ellipsis', "working with the feed off on a todo whose active form ends in an ellipsis", () => workingLine({ message: 'Running the suites\u2026', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })),
   state('thinking', 'waiting while Claude thinks before its first step', working({ steps: [], runs: [] })),
   state('working', 'waiting on a turn three steps in', working(OPEN)),
   state('call', 'waiting on a step that is running', working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),

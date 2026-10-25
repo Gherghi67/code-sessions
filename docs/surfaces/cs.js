@@ -803,7 +803,7 @@ ${tail}`,
   var csLog = (text) => (cols) => logRow("cs", text, cols);
   var LOG_STATES = {
     featuresUnread: { name: "ending a turn when the features word cannot be read", draw: csLog(LOGS.featuresUnread("spawn ENOENT")) },
-    featuresExited: { name: "ending a turn when cs refuses to list the features", draw: csLog(LOGS.featuresExited("work", 2, "error: no such session")) },
+    featuresExited: { name: "ending a turn when cs refuses to list the features", draw: csLog(LOGS.featuresExited("api", 2, "error: the features index under .cs/local is locked by another cs process")) },
     featuresUnreadable: { name: "ending a turn when cs lists a feature the band cannot read", draw: csLog(LOGS.featuresUnreadable("work", "fix-auth")) },
     featuresNoAnswer: { name: "ending a turn when cs does not answer for the features", draw: csLog(LOGS.featuresNoAnswer("work", "spawn ENOENT")) },
     transcriptUnread: { name: "ending a turn when the transcript cannot be read", draw: csLog(LOGS.transcriptUnread("EACCES")) },

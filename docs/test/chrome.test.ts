@@ -142,6 +142,16 @@ test('a log row names the plugin before the text, in the inactive ink', () => {
   expect(grid('cs.log/transcript-unread').rows[0][2].st.color).toBe('inactive')
 })
 
+// jg wraps the row at `const W=M-10`, 70 cells at 80 cols: `under` ends at
+// 62 and its space at 63, so `.cs/local` (9 cells, to 72) starts row two,
+// under the text column.
+test('a log row wraps ten cells short of the terminal, under its text', () => {
+  expect(screen('cs.log/features-exited')).toEqual([
+    '⏺ cs: cs api -features exited 2: error: the features index under',
+    '  .cs/local is locked by another cs process',
+  ])
+})
+
 // Rn and nn: a blank row, the glyph in two cells, the message (cs-feed's,
 // with its suffix ''), a space, then `(24s · ↓ 1.2k tokens)` dim.
 test("the working line carries cs-feed's message in the engine's row, its time and tokens dim", () => {
@@ -150,6 +160,9 @@ test("the working line carries cs-feed's message in the engine's row, its time a
   expect(screen('cs-feed.Spinner/working')[1]).toBe('✻ Working · step 3 (24s · ↓ 1.2k tokens)')
   expect(screen('cs-feed.Spinner/writing')[1]).toBe('✻ Writing · step 3 (24s · ↓ 1.2k tokens)')
   expect(screen('cs-feed.Spinner/helpers')[1]).toBe('✻ Working · step 3 · 2 helpers working (24s · ↓ 1.2k tokens)')
+  // `At=L===$t&&Sit.test(ht)?ht:ht+L`, `Sit=/(\u2026|\.\.\.)$/`: a message
+  // that already ends in `…` gets no second one.
+  expect(screen('cs-feed.Spinner/engine-ellipsis')[1]).toBe('✻ Running the suites… (24s · ↓ 1.2k tokens)')
   const g = grid('cs-feed.Spinner/thinking')
   expect([g.rows[1][0].st.color, g.rows[1][2].st.color, g.rows[1][11].st.dim]).toEqual(['claude', 'claude', true])
 })
