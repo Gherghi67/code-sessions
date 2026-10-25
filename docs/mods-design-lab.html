@@ -1393,12 +1393,13 @@ function cpPaint(g){
 function bdPaint(g){
   return g.rows.map((row,r)=>row.map((c,x)=>`<span class="cell" data-r="${r}" data-c="${x}" style="${cellCss(c.st)}">${esc(c.ch)}</span>`).join("")).join("\n");
 }
-// How a tree's width sits in the band's, in the words every panel prints. A
-// band wider than the terminal is clipped, as the terminal clips it; Yoga
-// would shrink a Text to fit and the canvas does not, so it says so rather
-// than drawing a band that could never look like this.
-function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: clipped at the band's edge, where the engine would shrink a Text to fit`:""); }
-// A grid wider than the band, cut at the band's edge as the terminal cuts it.
+// How a tree's width sits in the band's, in the words every panel prints. The
+// engine never lets a row overrun its width: Box and Text default to
+// flexShrink 1, so each child of the row shrinks and its Text wraps or
+// truncates as its wrap says. The lab's engine does not shrink, so it clips
+// the row at the band's edge and says so.
+function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: the lab clips it at the band's edge, where the engine shrinks each child of the row and wraps or truncates its Text`:""); }
+// A grid wider than the band, cut at the band's edge.
 function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
 
 // A strip's cells as boxes relative to the strip, read from the cells' own
@@ -1474,7 +1475,8 @@ function bdPartNode(sid,part){
 }
 // The grid a frame paints, inside the chrome the engine draws round its
 // surface: AbovePrompt keeps five cells at the right of each row for its
-// `[-]`, which sits on the first row one cell in; a pane is framed with its
+// `[-]`, which sits on the first row one cell in, and the band is clipped to
+// the cells left of them; a pane is framed with its
 // tab and clipped to its rows; any other surface fills the terminal's row.
 // A frame of no surface is measured at its natural width, clipped at the band's edge.
 function bdGridOf(f,c){
@@ -1482,7 +1484,7 @@ function bdGridOf(f,c){
   if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
   if(chrome&&chrome.kind==="pane") return ModLayout.layoutPane(tree,{columns:c,rows:chrome.rows,title:chrome.title,titles:[chrome.title]});
   if(chrome&&chrome.kind==="above-prompt"){
-    const g=ModLayout.layoutScreen(tree,c-5);
+    const g=clipTo(ModLayout.layoutScreen(tree,c-5),c-5);
     if(!g.h) return g;
     const rows=g.rows.map(r=>r.concat(ModLayout.blanks(c-r.length,ModLayout.EMPTY,[])));
     const dim={...ModLayout.EMPTY,dim:true};

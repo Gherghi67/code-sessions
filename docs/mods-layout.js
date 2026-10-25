@@ -212,7 +212,8 @@
     var reverse = /-reverse$/.test(dir);
 
     // Every child measures against the full inner room; a row that overruns it
-    // overflows (the terminal clips) rather than starving its later children.
+    // overflows rather than starving its later children. The engine shrinks
+    // them instead (Box and Text default to flexShrink 1); this layout does not.
     // A child's path keeps its index among all the children, falsy ones too.
     var blocks = [];
     (node.children || []).forEach(function (kid, i) { if (kid) blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
