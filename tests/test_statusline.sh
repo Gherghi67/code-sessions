@@ -5199,19 +5199,38 @@ test_band_inks_on_a_dark_terminal() {
     assert_output_contains_f "$out" "${ESC_}[48;2;44;47;69;38;2;150;165;200;22m○" "a label is dim" || return 1
 }
 
-# The three band inks per theme, which no default item exercises all of.
+# The three band inks per theme, which no default item exercises all of. On a
+# light theme they are shades of the band's hue, here blue 106;155;204: 34%,
+# 44% and 56% of each channel.
 test_band_ink_roles_per_theme() {
     ( _load_sl_functions
       LEVEL=truecolor; SL_THEME=dark
+      _HUE_R=106; _HUE_G=155; _HUE_B=204
       _band_ink ink bold; assert_eq "38;2;255;255;255" "$_BAND_FG" "dark primary" || return 1
       _band_ink white "";  assert_eq "38;2;255;255;255" "$_BAND_FG" "white is the primary" || return 1
       _band_ink ink "";    assert_eq "38;2;214;222;240" "$_BAND_FG" "dark secondary" || return 1
       _band_ink ink2 "";   assert_eq "38;2;150;165;200" "$_BAND_FG" "dark dim" || return 1
       SL_THEME=light
-      _band_ink ink bold; assert_eq "38;2;20;20;30" "$_BAND_FG" "light primary" || return 1
-      _band_ink ink "";    assert_eq "38;2;40;44;60" "$_BAND_FG" "light secondary" || return 1
-      _band_ink ink2 "";   assert_eq "38;2;90;96;120" "$_BAND_FG" "light dim" || return 1
+      _band_ink ink bold; assert_eq "38;2;36;52;69" "$_BAND_FG" "light primary" || return 1
+      _band_ink white "";  assert_eq "38;2;36;52;69" "$_BAND_FG" "white is the light primary" || return 1
+      _band_ink ink "";    assert_eq "38;2;46;68;89" "$_BAND_FG" "light secondary" || return 1
+      _band_ink ink2 "";   assert_eq "38;2;59;86;114" "$_BAND_FG" "light dim" || return 1
       _band_ink periwinkle ""; assert_eq "38;2;76;29;149" "$_BAND_FG" "periwinkle keeps its colour" || return 1 )
+}
+
+# A light band's inks come from the raw hue, not the pale band it is pulled
+# to: blue gives the session name 36;52;69 and a label 59;86;114. The neutral
+# on cream, 223;216;197, gives 75;73;66 and 124;120;110.
+test_band_inks_on_a_light_terminal() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    local out
+    out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" ";38;2;36;52;69;1mm" "the session name is the blue primary" || return 1
+    assert_output_contains_f "$out" ";38;2;59;86;114;22m○" "a label is the blue dim" || return 1
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" ";38;2;75;73;66;1mm" "the session name is the neutral's primary" || return 1
+    assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
 }
 
 test_band_layout_unset_or_unknown_is_the_capsules() {
@@ -5283,6 +5302,7 @@ run_test test_band_colour_override_precedence
 run_test test_band_amber_reading_is_an_island
 run_test test_band_crit_group_is_one_red_island
 run_test test_band_inks_on_a_dark_terminal
+run_test test_band_inks_on_a_light_terminal
 run_test test_band_ink_roles_per_theme
 run_test test_band_layout_unset_or_unknown_is_the_capsules
 run_test test_band_plain_level_prints_the_plain_line
