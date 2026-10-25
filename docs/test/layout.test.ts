@@ -53,6 +53,8 @@ test('an absolute child takes no room in the flow and paints at its top and left
 test('an absolute child sits inside the border, by left and top or by right and bottom', () => {
   expect(toText(layout(B({ width: 6, height: 3, borderStyle: 'single', paddingLeft: 2 }, Abs({ top: 0, left: 0 }, T({}, 'X'))), 40))).toEqual(['\u250c\u2500\u2500\u2500\u2500\u2510', '\u2502X   \u2502', '\u2514\u2500\u2500\u2500\u2500\u2518'])
   expect(toText(layout(B({ width: 6, height: 3 }, Abs({ bottom: 0, right: 1 }, T({}, 'zz'))), 40))).toEqual(['      ', '      ', '   zz '])
+  // The far border counts too: x = 6 - 1 - 0 - 2 = 3, y = 3 - 1 - 0 - 1 = 1.
+  expect(toText(layout(B({ width: 6, height: 3, borderStyle: 'single' }, Abs({ bottom: 0, right: 0 }, T({}, 'zz'))), 40))).toEqual(['\u250c\u2500\u2500\u2500\u2500\u2510', '\u2502  zz\u2502', '\u2514\u2500\u2500\u2500\u2500\u2518'])
 })
 
 // Rx sizes the child apart from the flow: its own width, or what its left
@@ -61,6 +63,8 @@ test('an absolute child sits inside the border, by left and top or by right and 
 test('an absolute child takes its own width, or what its left and right leave, or its content\'s', () => {
   expect(toText(layout(B({ width: 3, height: 1 }, Abs({ top: 0, left: 1 }, T({}, 'abcdef'))), 40))).toEqual([' abcdef'])
   expect(toText(layout(B({ width: 6, height: 2 }, Abs({ top: 0, left: 1, right: 1 }, T({}, 'abc def'))), 40))).toEqual([' abc  ', ' def  '])
+  // 6 - 1 - 1 leaves 4 cells, so abcde breaks after abcd; 5 would hold it.
+  expect(toText(layout(B({ width: 6, height: 2 }, Abs({ top: 0, left: 1, right: 1 }, T({}, 'abcde'))), 40))).toEqual([' abcd ', ' e    '])
 })
 
 // An absolute Box with no background skips its own blit ("skipSelfBlit:G&&
@@ -349,6 +353,14 @@ test('a row shrinks the children that overrun it, each in proportion to its basi
   expect(toText(layout(B({ width: 10 }, T({}, 'aaa bbb ccc'), T({}, 'dd')), 40))).toEqual(['aaa bbb dd', 'ccc       '])
 })
 
+// Children whose flexShrink sums under 1 give up only that share of the
+// overrun ("if(K<0&&G>0){...if(Z<1){let V=H*Z;if(V>K)K=V}}"): two Boxes of
+// flexShrink 0.25 holding 5 cells each in 6 overrun by 4 and give up 4 x 0.5
+// = 2, one each, so each keeps 4 and the row draws 8 wide. Worked by hand.
+test('children whose flexShrink sums under 1 give up only that share of the overrun', () => {
+  expect(toText(layout(B({ width: 6 }, B({ flexShrink: 0.25 }, T({}, 'abcde')), B({ flexShrink: 0.25 }, T({}, 'fghij'))), 40))).toEqual(['abcdfghi', 'e   j   '])
+})
+
 // A Button never shrinks: the engine draws it in a Box of flexShrink 0
 // ("wc(s,{ref:h,flexShrink:0,alignSelf:"flex-start",..."), and so does a
 // child that sets flexShrink 0. The Text beside them takes all the overrun.
@@ -524,6 +536,10 @@ test('a hovered node lights its scope: every node of that scope merges its hover
     B({ display: 'none', hover: { scope: 's', display: 'flex' } }, T({}, 'card')))
   expect(toText(layout(interact(tree, { hover: null, focus: null }), 40))).toEqual(['│'])
   expect(toText(layout(interact(tree, { hover: [0], focus: null }), 40))).toEqual(['│card'])
+  // A Button's hover props spread after the engine's own ("{inverse:C,
+  // dimColor:W,...H}"), so a hover that dims it dims it while it inverts.
+  const dims = B({}, Bh({ key: 'bar', label: 'ab', hover: { scope: 's', dimColor: true } }))
+  expect(layout(interact(dims, { hover: [0], focus: null }), 40).rows[0][0].st).toMatchObject({ inverse: true, dim: true })
 })
 
 test('a keyed Box under the pointer merges its own hover, and the Text it holds merges a hover of no scope', () => {
