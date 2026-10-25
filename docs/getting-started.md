@@ -51,9 +51,11 @@ project, run:
 ccs research-notes --engine codex
 ```
 
-This creates a workspace under
-`~/.local/share/code-sessions/home/sessions/research-notes/` and
-starts Codex there. Running the same command later resumes that workspace.
+This creates a workspace and starts Codex there. If the former fork's session
+store exists, `ccs` uses
+`~/.local/share/code-sessions/home/sessions/research-notes/`. Fresh installations
+use `~/.claude-sessions/research-notes/`. Running the same command later resumes
+that workspace.
 
 ## Resume and switch engines
 
