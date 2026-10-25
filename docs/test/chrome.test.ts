@@ -123,6 +123,19 @@ test('the slash menu lists the mod commands with their descriptions in one colum
   expect([g.rows[0][2].st.color, g.rows[0][13].st.color, g.rows[1][4].st.dim, g.rows[1][13].st.dim]).toEqual(['suggestion', 'suggestion', true, true])
 })
 
+// ee and Ao: past 40% of the terminal the name column is that 40% plus the
+// pointer's two cells while the description keeps room. At 25 cols the
+// longest name plus five is 11, over 10, so the column is 12; the room is
+// 25 - 12 - 4 = 9, and Ue breaks each description at its last space in it.
+test('on a narrow terminal the name column is 40% of it and the pointer', () => {
+  expect(screen('cs.menu/queue-selected', 25)).toEqual([
+    '  ❯ /queue    Add a',
+    `${' '.repeat(14)}task to …`,
+    '    /cs       Scroll',
+    `${' '.repeat(14)}the tran…`,
+  ])
+})
+
 // /feed's description is 71 cells and the room is 80 - 13 - 4 = 63: Ue cuts
 // at 63, the rest starts with a space, and the second row sits under the
 // description column.

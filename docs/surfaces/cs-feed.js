@@ -986,7 +986,9 @@
   function menuRows(commands, selected, cols) {
     const el = elements();
     const widest = Math.max(...commands.map((c) => cells(`/${c.name}`))) + 5;
-    const column = widest > Math.floor(cols * 0.4) ? Math.floor(cols * 0.4) : widest;
+    const cap = Math.floor(cols * 0.4);
+    const lane = cols - cap - 4 - 1;
+    const column = widest > cap ? cap + (lane < 0 ? 2 : Math.min(2, lane)) : widest;
     const room = Math.max(0, cols - column - 4);
     return el.Box({ paddingX: 2, children: [el.Box({ flexDirection: "column", children: commands.flatMap((c, i) => {
       const on = i === selected;

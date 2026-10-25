@@ -155,17 +155,21 @@ export function commandReply(plugin: string, command: string, args: string, repl
 
 // Rows of the slash menu (RPe and Ye), two cells in: `❯ ` on the selected row
 // and two spaces on the others, the name, spaces to the name column (the
-// longest name listed plus five, held under 40% of the terminal), then the
-// description, cut where the terminal ends less four cells and carried to a
-// second row under the description column at its last space (Ue). The
-// selected row is in the suggestion ink, the others dim. A command a mod
-// registers is a local one: no `(plugin)` mark, no lane, and its argument
-// hint is not a menu column.
+// longest name listed plus five; past 40% of the terminal, that 40% plus the
+// pointer's two cells, fewer when the description lane is narrower: ee, Ao),
+// then the description, cut where the terminal ends less four cells and
+// carried to a second row under the description column at its last space
+// (Ue). The selected row is in the suggestion ink, the others dim. A command
+// a mod registers is a local one: no `(plugin)` mark, no lane, and its
+// argument hint is not a menu column. Claude Code cuts a name wider than its
+// column less four cells (`Ct=V-2-W`); the lab draws names whole.
 export type MenuCommand = { name: string; description: string }
 export function menuRows(commands: readonly MenuCommand[], selected: number, cols: number): RenderElement {
   const el = elements()
   const widest = Math.max(...commands.map(c => cells(`/${c.name}`))) + 5
-  const column = widest > Math.floor(cols * 0.4) ? Math.floor(cols * 0.4) : widest
+  const cap = Math.floor(cols * 0.4)
+  const lane = cols - cap - 4 - 1
+  const column = widest > cap ? cap + (lane < 0 ? 2 : Math.min(2, lane)) : widest
   const room = Math.max(0, cols - column - 4)
   return el.Box({ paddingX: 2, children: [el.Box({ flexDirection: 'column', children: commands.flatMap((c, i) => {
     const on = i === selected
