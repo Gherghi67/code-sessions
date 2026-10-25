@@ -85,8 +85,10 @@ export function helperNoteLine(headline: string, durationMs?: number): string {
   return `${marks.peer} ${joined(['helper', durationMs === undefined ? undefined : elapsed(durationMs), headline])}`
 }
 
+/** A dispatched helper's call is in flight while the helper works, so it reads `running` too. */
 export function helperLine(call: CallView, state: import('./verdict').HelperState, durationMs?: number): string {
-  return joined([callWords(call, state === 'running' || state === 'dispatched' ? 'present' : 'past'), state === 'dispatched' ? 'dispatched · running' : state, durationMs === undefined ? undefined : elapsed(durationMs)])
+  const working = state === 'running' || state === 'dispatched'
+  return joined([callWords(call, working ? 'present' : 'past'), working ? 'running' : state, durationMs === undefined ? undefined : elapsed(durationMs)])
 }
 
 export function outputLines(output: unknown): readonly string[] {

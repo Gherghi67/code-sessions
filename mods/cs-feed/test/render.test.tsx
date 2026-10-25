@@ -1,11 +1,12 @@
 // ABOUTME: Checks each feed painter's visible words through real mounted engine render chains.
 // ABOUTME: Test hooks supply recorded session inputs and retain an observable engine drawing beneath the feed.
 import { expect, mock, test } from 'claude-code/testing'
-import type { AgentInfo, On, PromptOrigin, SessionMessage } from 'claude-code'
+import type { AgentInfo, On, PromptOrigin, RenderPropsOf, SessionMessage } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 
-function session(on: On, rows: SessionMessage[] = [], agents: () => AgentInfo[] = () => []) {
+function session(on: On, rows: SessionMessage[] = [], agents: () => AgentInfo[] = () => [], view?: string) {
   on('session.cwd', () => ({ value: '/session' }))
-  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : { deny: 'ENOENT: no such file or directory' })
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : e.path.endsWith('/feed-view') && view !== undefined ? { value: view } : { deny: 'ENOENT: no such file or directory' })
   on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('session.messages', ($, e) => ({ value: e.as === 'api' ? [] : rows }))
@@ -13,6 +14,92 @@ function session(on: On, rows: SessionMessage[] = [], agents: () => AgentInfo[] 
   on('config.list', () => ({ value: [] }))
   return mock.clock(on)
 }
+
+type Drawn = { readonly type: string; readonly props?: Readonly<Record<string, unknown>>; readonly children?: readonly unknown[] }
+function isDrawn(value: unknown): value is Drawn {
+  return typeof value === 'object' && value !== null && 'type' in value && typeof value.type === 'string'
+}
+/**
+ * The lines a drawn tree shows on the 2.1.310 terminal, text only and without
+ * indents: a row's children `gap` cells apart (Ink's default gap is 0), a
+ * column one line per child, a plain Button its label (`hotkey: label` with a
+ * hotkey), any other Button `[ label ]`, as the bundle's Button draws them.
+ */
+function shown(node: unknown): string[] {
+  if (typeof node === 'string') return [node]
+  if (!isDrawn(node)) return []
+  const props = node.props ?? {}
+  const children = node.children ?? []
+  switch (node.type) {
+    case 'Text': return [children.flatMap(shown).join('')]
+    case 'Button': {
+      const label = String(props.label)
+      return [props.plain ? props.hotkey ? `${String(props.hotkey)}: ${label}` : label : `[ ${label} ]`]
+    }
+    case 'Box': {
+      if (props.flexDirection === 'column') return children.flatMap(shown)
+      const parts = children.map(child => {
+        const lines = shown(child)
+        if (lines.length > 1) throw new Error(`a row child draws ${lines.length} lines: ${JSON.stringify(child)}`)
+        return lines[0]
+      }).filter(part => part !== undefined)
+      return parts.length ? [parts.join(' '.repeat(Number(props.gap ?? 0)))] : []
+    }
+    default: throw new Error(`no text rule for a ${node.type}`)
+  }
+}
+
+const NORMAL_VIEW = '{"group":false,"clear":false,"keep":true,"style":"subtle","commands":"grouped","after":"keep","hide":[]}\n'
+const WORK: SessionMessage[] = [
+  { role: 'user', text: 'Look around', toolUses: [] },
+  { role: 'assistant', text: '', toolUses: [
+    { tool_use_id: 'tests', tool: 'Bash', input: { command: 'npm test' }, result: { stdout: 'ok\nok' } },
+    { tool_use_id: 'build', tool: 'Bash', input: { command: 'make' }, result: { stderr: 'broke' }, isError: true },
+    { tool_use_id: 'notes', tool: 'Read', input: { file_path: '/repo/notes.md' }, result: {}, text: 'notes' },
+    { tool_use_id: 'helper', tool: 'Agent', input: { description: 'Read the notes' }, result: {}, text: 'done', durationMs: 4000 },
+  ] },
+]
+const TOOL = { isRunning: false, isErrored: false, isInterrupted: false } as const
+const LOOSE_READ = { ...TOOL, tool_use_id: 'loose', tool: 'Read', input: { file_path: '/repo/notes.md' }, output: 'the notes' } as const
+
+async function rowLines($: Engine, props: RenderPropsOf['ToolUse'], isFullscreen = false): Promise<string[]> {
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolUse', requestId: props.tool_use_id, viewport: { columns: 80, rows: 24, isFullscreen }, props })
+  const lines = shown(await row.drawn())
+  await row.unmount()
+  return lines
+}
+
+test('a tool row draws its mark, words, each chip and its chevron one cell apart', async ($, on) => {
+  session(on, WORK, () => [], NORMAL_VIEW)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  expect(await rowLines($, { ...TOOL, tool_use_id: 'tests', tool: 'Bash', input: { command: 'npm test' }, output: 'ok\nok' })).toEqual(['○ Ran 2 shell commands · read 1 file 1 failed +4 lines ›'])
+  expect(await rowLines($, LOOSE_READ)).toEqual(['○ Read notes.md +1 line ›'])
+  expect(await rowLines($, { ...TOOL, tool_use_id: 'helper', tool: 'Agent', input: { description: 'Read the notes' }, output: 'done' })).toEqual(['Read the notes · finished · 4s ›'])
+})
+
+test('the steps line draws its chevron one cell after its words', async ($, on) => {
+  session(on, WORK)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  expect(await rowLines($, { ...TOOL, tool_use_id: 'tests', tool: 'Bash', input: { command: 'npm test' }, output: 'ok\nok' })).toEqual(['3 steps this turn ›'])
+})
+
+test('a pressable chevron draws as the bare glyph, dim like the one that cannot be pressed', async ($, on) => {
+  session(on, WORK, () => [], NORMAL_VIEW)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  expect(await rowLines($, LOOSE_READ, true)).toEqual(['○ Read notes.md +1 line ›'])
+  expect(await rowLines($, { ...TOOL, tool_use_id: 'helper', tool: 'Agent', input: { description: 'Read the notes' }, output: 'done' }, true)).toEqual(['Read the notes · finished · 4s ›'])
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolUse', viewport: { columns: 80, rows: 24, isFullscreen: true }, props: LOOSE_READ })
+  expect((await row.find({ type: 'Button' }))?.props.dimColor).toBe(true)
+  await $.ui.press({ plugin: 'cs-feed', key: 'loose' })
+  expect(shown(await row.drawn())).toEqual(['○ Read notes.md +1 line ⌄', 'the notes'])
+  await row.unmount()
+})
+
+test('a helper whose call is still in flight reads as running, one state', async ($, on) => {
+  session(on, WORK, () => [], NORMAL_VIEW)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  expect(await rowLines($, { ...TOOL, isRunning: true, tool_use_id: 'working', tool: 'Agent', input: { description: 'Read the notes' } })).toEqual(['Read the notes · running ›'])
+})
 
 test('UserMessage draws the terminal you margin and leaves the desktop engine body intact', async ($, on) => {
   session(on)
@@ -317,6 +404,7 @@ test('ToolGroup draws known helpers as a batch and opens their names without unf
   on('ui.render', { component: 'ToolGroup' }, ($, e) => { expanded.push(e.props.isExpanded); return $.ui.resolve(e).Text({ children: 'engine group' }) })
   const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolGroup', viewport: { columns: 80, rows: 24, isFullscreen: true }, props: { calls, isActive: true, isExpanded: false, isCallsOnly: true } })
   expect((await row.find({ type: 'Text', text: '2 helpers' }))?.text).toBe('2 helpers · 1 done · 1 running')
+  expect(shown(await row.drawn())[0]?.slice(2)).toBe('2 helpers · 1 done · 1 running ›')
   expect((await row.find({ type: 'Text', text: 'Explore' }))?.text).toBe('Explore')
   expect((await row.find({ type: 'Text', text: 'Plan' }))?.text).toBe('Plan')
   expect(await row.find({ type: 'Text', text: 'Read the notes' })).toBeUndefined()
@@ -423,3 +511,4 @@ test('the helpers pane shows the newest helpers first with their state, step and
   expect(logs).toEqual(["could not read helper checker's transcript: no transcript for checker"])
   await pane.unmount()
 })
+

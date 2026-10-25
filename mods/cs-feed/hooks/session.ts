@@ -152,7 +152,7 @@ export type Observations = {
   /**
    * Agent call id -> when agent.spawn said it started: a RUNNING helper's elapsed
    * time, the one helper fact no source carries. Everything else about a helper
-   * is derived (verdict.helperState). Lost: "dispatched · running" with no time (§7.1 pin).
+   * is derived (verdict.helperState). Lost: "running" with no time (§7.1 pin).
    */
   readonly helperStartedAt: Map<CallId, number>
   /** background call id -> first time this load saw it (§9.1 elapsed; the transcript has no timestamps). */
