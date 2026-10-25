@@ -700,7 +700,7 @@ none|start fresh</textarea></label>
 </section>
 <section class="panel" id="p-variants">
 <h2 id="variants">Band variants <span class="src">docs/mods-band-variants.js</span></h2>
-<p class="sub">The cs band in each of its states, as it ships and as seven sketches would draw it. Each strip is the engine tree the sketch returns, laid out at the page's columns and painted in the page's theme (the header's Theme and Columns; the slider here moves Columns). A strip wider than the band is clipped and says by how much; a tree the engine would refuse prints the refusal in red. The first row is the band that ships.</p>
+<p class="sub">The cs band in each of its states, as it ships and as seven sketches would draw it. Each strip is the engine tree the sketch returns, laid out at the page's columns and painted in the page's theme (the header's Theme and Columns; the slider here moves Columns). A strip whose Buttons alone are wider than the band runs past its edge, is cut there and says by how much; a tree the engine would refuse prints the refusal in red. The first row is the band that ships.</p>
 <div class="lab">
   <div class="controls">
     <label>State <select id="va-state"></select></label>
@@ -1344,7 +1344,7 @@ function cpField([name,kind,extra],v){
 const bdShut=new Set();
 // With nothing selected the panel names the export frame and how it fits.
 function cpFrameSummary(){
-  const f=bdFrame(bdDocNow().exportFrame), room=bdRoom(f), w=ModLayout.layout(BandEditor.toEngine(f.tree),room).w;
+  const f=bdFrame(bdDocNow().exportFrame), room=bdRoom(f), w=reach(ModLayout.layout(BandEditor.toEngine(f.tree),room));
   return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>room?"no":""}">${esc(fitWords(w,room))}</dd></dl>`;
 }
 function cpInspector(n,path){
@@ -1393,14 +1393,25 @@ function cpPaint(g){
 function bdPaint(g){
   return g.rows.map((row,r)=>row.map((c,x)=>`<span class="cell" data-r="${r}" data-c="${x}" style="${cellCss(c.st)}">${esc(c.ch)}</span>`).join("")).join("\n");
 }
-// How a tree's width sits in the band's, in the words every panel prints. The
-// engine never lets a row overrun its width: Box and Text default to
-// flexShrink 1, so each child of the row shrinks and its Text wraps or
-// truncates as its wrap says. The lab's engine does not shrink, so it clips
-// the row at the band's edge and says so.
-function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: the lab clips it at the band's edge, where the engine shrinks each child of the row and wraps or truncates its Text`:""); }
-// A grid wider than the band, cut at the band's edge.
-function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
+// How a tree's width sits in the band's, in the words every panel prints. A
+// row that overruns its width shrinks its children and each Text wraps or
+// truncates in what it is left (the engine's flexShrink 1), so a tree only
+// draws past the band when what cannot shrink, its Buttons and anything set
+// to flexShrink 0, is wider than the band; the lab cuts it at the edge.
+function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: its Buttons and whatever is set not to shrink are wider than the band, so the line runs past the edge, where the lab cuts it`:""); }
+// The cells a grid reaches: its own width, or further where a child that
+// cannot shrink draws past it.
+const reach=g=>g.rows.reduce((a,r)=>Math.max(a,r.length),g.w);
+// A grid cut at the band's edge.
+function clipTo(g,c){ return reach(g)>c?{w:Math.min(g.w,c),h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
+// A tree as the terminal lays it out in `c` cells. The root takes exactly
+// them, so the edge only ever cuts what draws past it, what cannot shrink: a
+// root laid out wider is a bug in the lab's engine, never the engine's drawing.
+function screenGrid(tree,c){
+  const g=ModLayout.layoutScreen(tree,c);
+  if(g.w>c) throw new Error(`the lab's engine laid a tree out ${g.w} cells wide in ${c}`);
+  return clipTo(g,c);
+}
 
 // A strip's cells as boxes relative to the strip, read from the cells' own
 // rects, so whatever is laid over them follows the size the strip is drawn at.
@@ -1488,14 +1499,14 @@ function bdGridOf(f,c){
   if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
   if(chrome&&chrome.kind==="pane") return ModLayout.layoutPane(tree,{columns:c,rows:chrome.rows,title:chrome.title,titles:[chrome.title]});
   if(chrome&&chrome.kind==="above-prompt"){
-    const g=clipTo(ModLayout.layoutScreen(tree,c-5),c-5);
+    const g=screenGrid(tree,c-5);
     if(!g.h) return g;
     const rows=g.rows.map(r=>r.concat(ModLayout.blanks(c-r.length,ModLayout.EMPTY,[])));
     const dim={...ModLayout.EMPTY,dim:true};
     [..."[-]"].forEach((ch,i)=>{ rows[0][c-4+i]={ch,st:dim,path:[]}; });
     return {w:c,h:rows.length,rows};
   }
-  return clipTo(ModLayout.layoutScreen(tree,c),c);
+  return screenGrid(tree,c);
 }
 // The cells a frame's tree is handed: the band, the terminal less AbovePrompt's
 // five `[-]` cells; anything else, the terminal's width.
@@ -1507,7 +1518,7 @@ function bdFrameCard(f){
   bdGrids[f.id]=g;
   const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
   const prompt=!surf||surf.chrome?.kind==="above-prompt";
-  const room=bdRoom(f), measured=ModLayout.layout(tree,room).w;
+  const room=bdRoom(f), measured=reach(ModLayout.layout(tree,room));
   const ro=bdReadOnly(f.id);
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
@@ -1598,7 +1609,7 @@ function composeRender(){
   if(bdPanelStale||!sel){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   $("bd-code-name").textContent=`${bdFrame(doc.exportFrame).name}, the frame that exports`;
-  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room).w;
+  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=reach(ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room));
   $("bd-fit").textContent=fitWords(fitW,room); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,room)}`; $("bd-fit").classList.toggle("no",fitW>room);
   document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`Insert a ${b.dataset.insert} (${b.dataset.key})`; });
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
@@ -1974,7 +1985,7 @@ function vaCell(v,s,c,th,named){
   return `<div class="vcell">${named?`<div class="name">${esc(s.id)}</div>`:""}`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +`<div class="term">${body}</div>`
-    +(g.w>c?`<p class="why no">${esc(fitWords(g.w,c))}</p>`:"")+`</div>`;
+    +(reach(g)>c?`<p class="why no">${esc(fitWords(reach(g),c))}</p>`:"")+`</div>`;
 }
 function variantsRender(){
   const {STATES,VARIANTS}=BandVariants, c=cols(), th=theme();

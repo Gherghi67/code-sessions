@@ -368,14 +368,14 @@
   }
 
   var VARIANTS = [
-    { id: "shipped", name: "Shipped", note: "The band the cs mod draws, from its own drawBand in the bundled docs/surfaces/cs.js, handed the terminal less the five [-] cells. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: cs.band },
+    { id: "shipped", name: "Shipped", note: "The band the cs mod draws, from its own drawBand in the bundled docs/surfaces/cs.js, handed the terminal less the five [-] cells. With every word at once its five Buttons alone take 60 cells: at 80 the rest shrink to a cell or none and wrap, six rows tall, and at 60 the Buttons run past the edge at 60. The line has no rule for what to drop.", draw: cs.band },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into …N, so it never overruns.", draw: drawQuiet },
-    { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
-    { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once clips at 60 and at 80.", draw: drawStatusFirst },
-    { id: "two-zone", name: "Two zones", note: "Actions on the left, the named prompt and the rail pushed to the right edge with space-between, so the rail always ends where the line does. Every word at once clips at 60 and at 80.", draw: drawTwoZone },
-    { id: "rail-first", name: "Rail first", note: "The rail leads at the inset and its named prompt grows into the room; the words fold compact to the right edge and the mark ends the line. Every word at once clips at 60 and at 80.", draw: drawRailFirst },
-    { id: "capsule", name: "Capsule", note: "The shipped words in a round border whose ink carries the state, for comparison with the rotate capsule presets: three rows for one line of words. Every word at once clips at 60 and at 80.", draw: drawCapsule },
-    { id: "stacked", name: "Stacked", note: "Two rows: the shipped words, then the rail under them with the whole width, so a long line of words no longer squeezes the rail out. The words' row still clips at 60 and at 80 with every word at once.", draw: drawStacked },
+    { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once shrinks the words into extra rows at 60 and at 80.", draw: drawKeysFirst },
+    { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once shrinks the words into extra rows at 60 and at 80.", draw: drawStatusFirst },
+    { id: "two-zone", name: "Two zones", note: "Actions on the left, the named prompt and the rail pushed to the right edge with space-between, so the rail always ends where the line does. Every word at once shrinks both zones into extra rows at 60 and at 80.", draw: drawTwoZone },
+    { id: "rail-first", name: "Rail first", note: "The rail leads at the inset and its named prompt grows into the room; the words fold compact to the right edge and the mark ends the line. Every word at once shrinks into extra rows at 80, and its Buttons run past the edge at 60.", draw: drawRailFirst },
+    { id: "capsule", name: "Capsule", note: "The shipped words in a round border whose ink carries the state, for comparison with the rotate capsule presets: three rows for one line of words. Every word at once shrinks into extra rows at 80, and its Buttons and border run past the edge at 60.", draw: drawCapsule },
+    { id: "stacked", name: "Stacked", note: "Two rows: the shipped words, then the rail under them with the whole width, so a long line of words no longer squeezes the rail out. With every word at once the words' row still shrinks into extra rows at 60 and at 80.", draw: drawStacked },
   ];
 
   var api = { STATES: STATES, VARIANTS: VARIANTS };

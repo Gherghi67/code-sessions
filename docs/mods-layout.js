@@ -191,20 +191,25 @@
     };
   }
 
-  // `fill`: the Box takes all of `availWidth` (Yoga's stretch), as the root
-  // does in the terminal and a Box does in a column; without it the tree is
-  // measured at its natural width.
+  // `fill`: the node takes exactly `availWidth` (Yoga's stretch, or the size
+  // a row's flex gave it), as the root does in the terminal and a Box does in
+  // a column, and draws past it what does not fit; without it the node is
+  // measured in at most `availWidth`, as Yoga measures a flex basis.
   function layout(node, availWidth, at, fill) {
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
     var path = at || [];
     if (!node) return grid([]);
-    if (node.type === "Text") return textGrid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
     if (node.type === "Button") return layoutButton(node, width, path);
     if (node.type === "Box") return layoutBox(node, width, path, !!fill);
-    if (node.type === "Markdown") return textGrid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
+    var text = null;
+    if (node.type === "Text") text = textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap);
+    if (node.type === "Markdown") text = textRows(markdownCells(String((node.props || {}).text || ""), path), width);
     // The lab draws no syntax colour: a Code node is its source, dim.
-    if (node.type === "Code") return textGrid(textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width));
-    return grid([]);
+    if (node.type === "Code") text = textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width);
+    if (!text) return grid([]);
+    var g = textGrid(text);
+    if (fill) g.w = width;
+    return g;
   }
   // The tree as the terminal draws it in a row `width` cells wide.
   function layoutScreen(node, width) { return layout(node, width, [], true); }
@@ -241,7 +246,8 @@
   // other is `[ label ]` bold, in suggestion for variant primary, and never
   // shows its hotkey. Children, when there are any, draw in the label's place
   // as inline runs (strings and Text), inside the brackets. The engine reads
-  // no colour or bold of a Button's own.
+  // no colour or bold of a Button's own. It draws the Button as one Text of
+  // the default wrap, so a label wider than the room wraps in it.
   function layoutButton(node, width, path) {
     var p = node.props || {};
     var st = styleOf(p.plain ? { dimColor: p.dimColor } : { dimColor: p.dimColor, bold: true, color: p.variant === "primary" ? "suggestion" : "" });
@@ -251,7 +257,7 @@
     if (!p.plain) cells = run("[ ", st, path).concat(body, run(" ]", st, path));
     else if (p.hotkey) cells = run(String(p.hotkey), mergeStyle(st, { color: "suggestion" }), path).concat(run(": ", st, path), body);
     else cells = body;
-    return grid([cells.slice(0, Math.max(0, width))]);
+    return textGrid(textRows(cells, width, "wrap"));
   }
 
   function layoutBox(node, width, path, fill) {
@@ -276,9 +282,8 @@
     var column = dir.indexOf("column") === 0;
     var reverse = /-reverse$/.test(dir);
 
-    // Every child measures against the full inner room; a row that overruns it
-    // overflows rather than starving its later children. The engine shrinks
-    // them instead (Box and Text default to flexShrink 1); this layout does not.
+    // Every child is measured in at most the inner room, its flex basis; a row
+    // then grows or shrinks them to fit (`placeRow`).
     // A child's path keeps its index among all the children, falsy ones too.
     // An absolute child takes no room in the flow, and the lab does not yet
     // draw it at its top and left, so it is left out.
@@ -294,8 +299,9 @@
 
     var body = column ? placeColumn(blocks, inner, gap, p, outer, least) : placeRow(blocks, inner, gap, p, outer, least);
 
-    // An explicit width holds the content open even when nothing in the flow fills it.
-    var w = outer ? Math.max(inner, body.w) : body.w;
+    // An explicit width, or a width the Box was handed whole, is the Box's
+    // width: what its children draw past it spills over its edge.
+    var w = outer || fill ? inner : body.w;
     // Height: an explicit height pads or (with overflow hidden) clips the body.
     var h = body.h;
     if (typeof p.height === "number") {
@@ -305,8 +311,7 @@
 
     // The Box's own cells: its margins, then its border, then the padding and
     // body its background fills; its children are painted over them in the
-    // order the mod wrote them. The body is cut at the width an explicit
-    // width gives it and at the height overflow hidden keeps.
+    // order the mod wrote them. Overflow hidden cuts them at the body's edge.
     var x0 = m.l + edge + pd.l, y0 = m.t + edge + pd.t;
     var iw = w + pd.l + pd.r, ih = h + pd.t + pd.b;
     var W = m.l + 2 * edge + iw + m.r, H = m.t + 2 * edge + ih + m.b;
@@ -322,8 +327,8 @@
       canvas[m.t + 1 + ih] = blanks(m.l, EMPTY, path).concat(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path), blanks(m.r, EMPTY, path));
       for (var r = m.t + 1; r <= m.t + ih; r++) { canvas[r][m.l] = { ch: g.l, st: edgeSt, path: path, ink: true }; canvas[r][m.l + 1 + iw] = { ch: g.r, st: edgeSt, path: path, ink: true }; }
     }
-    var cut = { right: outer ? x0 + inner : Infinity, bottom: y0 + h };
-    body.spots.forEach(function (s) { paint(canvas, s.g, x0 + s.x, y0 + s.y, cut); });
+    var cut = { right: p.overflow === "hidden" ? x0 + w : Infinity, bottom: y0 + h };
+    body.spots.forEach(function (s) { paint(canvas, s.g, x0 + s.x, y0 + s.y, cut, path); });
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
     if (p.backgroundColor) for (var by = m.t + edge; by < m.t + edge + ih; by++) {
@@ -337,13 +342,16 @@
   // nothing has been drawn, so a later sibling's room never erases what an
   // earlier one drew past its own cells.
   function inked(c) { return !!(c.ink || (c.st && c.st.bg)); }
-  function paint(canvas, g, x, y, cut) {
+  // What lands past the canvas's edge widens its row, the gap kept by the
+  // Box at `path`.
+  function paint(canvas, g, x, y, cut, path) {
     g.rows.forEach(function (r, dy) {
       var row = canvas[y + dy];
       if (!row || y + dy >= cut.bottom) return;
       r.forEach(function (c, dx) {
         var at = x + dx;
         if (at >= cut.right) return;
+        while (row.length < at) row.push({ ch: " ", st: EMPTY, path: path });
         if (at >= row.length || inked(c) || !inked(row[at])) row[at] = c;
       });
     });
@@ -378,29 +386,76 @@
     return align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
   }
 
-  // Each child's place in a row Box's body, and the body's size.
-  function placeRow(blocks, inner, gap, p, outer, least) {
-    var h = blocks.reduce(function (a, b) { return Math.max(a, b.g.h); }, 0) || (blocks.length ? 1 : 0);
-    var content = blocks.reduce(function (a, b) { return a + b.g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
-    var room = outer ? inner : Math.max(least, content);
-
-    // flexGrow shares the slack before justifyContent sees any of it.
-    var grows = blocks.map(function (b) { return num((b.node.props || {}).flexGrow); });
-    var total = grows.reduce(function (a, v) { return a + v; }, 0);
-    var free = Math.max(0, room - content);
-    var extra = blocks.map(function () { return 0; });
-    if (total > 0 && free > 0) {
-      var left = free;
-      grows.forEach(function (v, i) { var share = i === grows.length - 1 ? left : Math.floor(free * v / total); extra[i] = share; left -= share; });
-      free = 0;
+  // The main sizes Yoga gives a row's children (2.1.310's wx): `free` cells
+  // shared out by flexGrow, or, when they overrun the row, taken off each in
+  // proportion to its flexShrink times its basis; a child whose factor is 0
+  // keeps its basis, and one the share would take below 0 stops there while
+  // the rest share again. The sizes are rounded on their running sum, so they
+  // add up to what the row has.
+  function flexSizes(items, free) {
+    var n = items.length;
+    var frozen = items.map(function (it) { return free >= 0 ? it.grow === 0 : it.shrink === 0; });
+    var size = items.map(function (it) { return it.basis; });
+    for (var pass = 0; pass <= n; pass++) {
+      var left = free, grow = 0, weight = 0, factors = 0, live = 0;
+      items.forEach(function (it, i) {
+        if (frozen[i]) left -= size[i] - it.basis;
+        else { grow += it.grow; weight += it.shrink * it.basis; factors += it.shrink; live++; }
+      });
+      if (!live) break;
+      if (left > 0 && grow > 0 && grow < 1) left = Math.min(left, free * grow);
+      else if (left < 0 && weight > 0 && factors < 1) left = Math.max(left, free * factors);
+      var lost = 0, target = [];
+      items.forEach(function (it, i) {
+        if (frozen[i]) return;
+        var t = it.basis;
+        if (left > 0 && grow > 0) t += left * it.grow / grow;
+        else if (left < 0 && weight > 0) t += left * it.shrink * it.basis / weight;
+        target[i] = t;
+        size[i] = Math.max(0, t);
+        lost += size[i] - t;
+      });
+      if (lost === 0) break;
+      var stopped = false;
+      items.forEach(function (it, i) { if (!frozen[i] && (size[i] - target[i]) * lost > 0) { frozen[i] = true; stopped = true; } });
+      if (!stopped) break;
     }
-    var s = spread(p.justifyContent, free, blocks.length);
+    var sum = 0, edge = 0;
+    return size.map(function (v) { sum += v; var next = (sum + 0.5) | 0, out = next - edge; edge = next; return out; });
+  }
+
+  // A child's own margin cells along a row, which its grid carries.
+  function marginX(node) { if (node.type !== "Box") return 0; var m = margins(node.props || {}); return m.l + m.r; }
+
+  // Each child's place in a row Box's body, and the body's size. A row that
+  // is handed its width (`outer`, or `least` when stretched) grows its
+  // children into the slack; any row whose children overrun the room shrinks
+  // them; each child whose size moved is laid out again at exactly that size.
+  // A Button never shrinks or grows: the engine draws it in a Box of
+  // flexShrink 0 and no flexGrow.
+  function placeRow(blocks, inner, gap, p, outer, least) {
+    var items = blocks.map(function (b) {
+      var q = b.node.props || {}, button = b.node.type === "Button", mx = marginX(b.node);
+      return { basis: b.g.w - mx, margin: mx, grow: button ? 0 : num(q.flexGrow), shrink: button ? 0 : typeof q.flexShrink === "number" ? q.flexShrink : 1 };
+    });
+    var content = items.reduce(function (a, it) { return a + it.basis + it.margin; }, 0) + gap * Math.max(0, blocks.length - 1);
+    var room = outer ? inner : Math.max(least, Math.min(content, inner));
+    var sizes = flexSizes(items, room - content);
+    // A width the Box sets is only its basis: the size the row gives it wins.
+    var placed = blocks.map(function (b, i) {
+      if (sizes[i] === items[i].basis) return b.g;
+      var sized = b.node.type === "Box" ? { type: "Box", props: Object.assign({}, b.node.props, { width: sizes[i] }), children: b.node.children } : b.node;
+      return layout(sized, sizes[i] + items[i].margin, b.at, true);
+    });
+    var used = placed.reduce(function (a, g) { return a + g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
+    var s = spread(p.justifyContent, room - used, blocks.length);
+    var h = placed.reduce(function (a, g) { return Math.max(a, g.h); }, 0) || (blocks.length ? 1 : 0);
 
     var x = s.lead, spots = [];
-    blocks.forEach(function (b, i) {
+    placed.forEach(function (g, i) {
       if (i) x += gap + s.between;
-      spots.push({ g: b.g, x: x, y: alignAt(p.alignItems, b.g.h, h) });
-      x += b.g.w + extra[i];
+      spots.push({ g: g, x: x, y: alignAt(p.alignItems, g.h, h) });
+      x += g.w;
     });
     return { w: outer ? inner : Math.max(room, x), h: h, spots: spots };
   }

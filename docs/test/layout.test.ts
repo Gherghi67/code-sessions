@@ -287,12 +287,78 @@ test('a row Box stretches to the width of its column parent, so flexGrow takes t
   expect(toText(layout(B({ flexDirection: 'column', width: 8 }, B({}, B({ flexGrow: 1 }, T({}, 'a')), T({}, 'b'))), 40))).toEqual(['a      b'])
 })
 
-test('a column aligned flex-start does not stretch its children, and a stretched row still measures what overflows it', () => {
+test('a column aligned flex-start does not stretch its children', () => {
   const { layoutScreen } = require('../mods-layout.js')
   const g = layoutScreen(B({ flexDirection: 'column', alignItems: 'flex-start' }, B({}, B({ flexGrow: 1 }, T({}, 'a')), T({}, 'b'))), 10)
   expect(toText(g)).toEqual(['ab        '])
-  expect(layoutScreen(B({ flexDirection: 'column' }, B({}, T({}, 'abcde'), T({}, 'fghij'))), 5).w).toBe(10)
   expect(toText(layout(you2(), 40))).toEqual(['you09:41'])
+})
+
+// Box and Text default to flexShrink 1 in 2.1.310 ("var Ab={flexWrap:"nowrap",
+// flexDirection:"row",flexGrow:0,flexShrink:1,...}"), and Yoga gives a child
+// no minimum of its content's: a row whose children overrun it takes the
+// overrun off each in proportion to flexShrink times its basis ("ne+=K*
+// (J.flexShrink*ae)/G"), sizes rounded on their running sum ("_+=D[P];let
+// B=_+0.5|0"), then each Text wraps or truncates in what it is left.
+// Worked by hand.
+test('a row shrinks the children that overrun it, each in proportion to its basis', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  // abcde and fghij, 10 cells in 5: 2.5 each, rounded on the running sum to 3
+  // and 2; each wraps hard in its cells.
+  const g = layoutScreen(B({ flexDirection: 'column' }, B({}, T({}, 'abcde'), T({}, 'fghij'))), 5)
+  expect([g.w, toText(g)]).toEqual([5, ['abcfg', 'de hi', '   j ']])
+  // A truncate-end Text: 8 + 3 cells in 10 leaves 8 - 8/11 and 3 - 3/11,
+  // rounded to 7 and 3; abcdefgh truncates to abcdef and the mark.
+  expect(toText(layout(B({ width: 10 }, T({ wrap: 'truncate-end' }, 'abcdefgh'), T({}, 'xyz')), 40))).toEqual(['abcdef\u2026xyz'])
+  // A wrapping one: 11 + 2 cells in 10 leaves 8.46 and 1.54, rounded to 8 and
+  // 2; aaa bbb ccc wraps at its words in 8, dd fits its 2.
+  expect(toText(layout(B({ width: 10 }, T({}, 'aaa bbb ccc'), T({}, 'dd')), 40))).toEqual(['aaa bbb dd', 'ccc       '])
+})
+
+// A Button never shrinks: the engine draws it in a Box of flexShrink 0
+// ("wc(s,{ref:h,flexShrink:0,alignSelf:"flex-start",..."), and so does a
+// child that sets flexShrink 0. The Text beside them takes all the overrun.
+test('a Button and a child of flexShrink 0 keep their cells while the Text beside them shrinks', () => {
+  expect(toText(layout(B({ width: 8 }, { type: 'Button', props: { label: 'rotate', plain: true }, children: [] }, T({}, 'abcdef')), 40))).toEqual(['rotateab', '      cd', '      ef'])
+  expect(toText(layout(B({ width: 8 }, B({ flexShrink: 0 }, T({}, 'rotate')), T({}, 'abcdef')), 40))).toEqual(['rotateab', '      cd', '      ef'])
+})
+
+// A Box's own width is only its basis: a row that cannot hold it shrinks it
+// like any child (Yoga reads width as the flex basis, "let A=at(E.width,p);
+// if(A===A)return A>0?A:0"), and what the Box holds wraps in what is left.
+test('a Box of an explicit width shrinks in a row that cannot hold it', () => {
+  expect(toText(layout(B({ width: 6 }, B({ width: 8 }, T({}, 'abcdefgh'))), 40))).toEqual(['abcdef', 'gh    '])
+})
+
+// A Box of an explicit width is that wide whatever it holds: two Buttons of
+// 2 cells each keep their 4 in its 3 and the second draws past its edge, into
+// the margin of the Box after it, which draws nothing there; the renderer
+// paints children in order, so the margin's room never erases it.
+test('what a Box cannot shrink draws past its width, under the sibling after it', () => {
+  const Bt = (label: string) => ({ type: 'Button', props: { label, plain: true }, children: [] })
+  const g = layout(B({}, B({ width: 3 }, Bt('ab'), Bt('cd')), B({ marginLeft: 2 }, T({}, 'x'))), 40)
+  expect([g.w, toText(g)]).toEqual([6, ['abcd x']])
+  // The root takes the terminal's cells exactly, and draws past them too.
+  const { layoutScreen } = require('../mods-layout.js')
+  const root = layoutScreen(B({}, Bt('ab'), Bt('cd')), 3)
+  expect([root.w, toText(root)]).toEqual([3, ['abcd']])
+})
+
+// The Button is a Box of flexShrink 0 around one Text of the default wrap
+// ("z?wc(n,{inverse:C,dimColor:W,...H},B?"":wc(n,{color:"suggestion"},f),B?"":": ",...N)"),
+// so a label wider than the room wraps at its words like any Text.
+test('a Button whose label is wider than its room wraps it', () => {
+  expect(toText(layout({ type: 'Button', props: { label: 'abcdef', plain: true }, children: [] }, 3))).toEqual(['abc', 'def'])
+  const g = layout({ type: 'Button', props: { label: 'abcdef', hotkey: '1', plain: true }, children: [] }, 4)
+  expect(toText(g)).toEqual(['1: ', 'abcd', 'ef'])
+  expect(g.rows[0][0].st.color).toBe('suggestion')
+})
+
+// A child shrunk to no cells still draws: a wrapping Text given 0 cells
+// draws whole, so the mark paints into its Box's margin cell, under the
+// Button laid out after it.
+test('a child shrunk to no cells draws past them, under what is drawn after it', () => {
+  expect(toText(layout(B({ width: 5 }, B({ marginRight: 1 }, T({}, '\u25cf')), { type: 'Button', props: { label: 'abcd', plain: true }, children: [] }), 40))).toEqual(['\u25cfabcd'])
 })
 const you2 = () => B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({}, 'you')), T({}, '09:41')))
 

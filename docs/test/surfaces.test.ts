@@ -183,6 +183,44 @@ test('cs draws the rotate-due band as the mod does', () => {
   expect(rows('cs.AbovePrompt/rotate-due', 80)).toEqual(['', '  ● ctrl+x  1 rotate  ·  2 wrap'])
 })
 
+// Every word the band can show, 107 cells in the 73 bodyColumns 75 leaves
+// after the inset: the five Buttons keep their 60 cells, every other child
+// shrinks by 34/41 of its basis, so each separator, the prefix and the mail
+// word get 1 cell and wrap into the rows below, and the mark and the keys
+// get none and draw into the cell of their margin. Worked by hand row by row
+// (scratchpad everything-80.md); the band is 6 rows tall.
+test('cs draws the band of every word as the engine shrinks it into bodyColumns', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  const g = toText(layoutScreen(state('cs.AbovePrompt/everything').draw(80, 'light'), 75)).map((r: string) => r.replace(/\s+$/, ''))
+  const at = (cells: [number, string][]) => { const r = Array(75).fill(' '); for (const [x, ch] of cells) r[x] = ch; return r.join('').replace(/\s+$/, '') }
+  expect(g).toEqual([
+    '',
+    '  \u25cf3 features \u00b7 fix-auth ready c  1rotate 2wrap 3feed \u2713 \u25a4 queue 2 \u00b7 start m',
+    at([[31, 't'], [74, 'a']]),
+    at([[30, '\u00b7'], [31, 'r'], [41, '\u00b7'], [47, '\u00b7'], [55, '\u00b7'], [73, '\u00b7'], [74, 'i']]),
+    at([[31, 'l'], [74, 'l']]),
+    at([[31, '+']]),
+    at([[31, 'x'], [74, '1']]),
+  ])
+})
+
+// The frame cuts a tree at the edge of the cells it is handed. A row shrinks
+// what overruns it, so only what cannot shrink ever reaches the cut. At 80
+// cols one row does: the Chat view's Show row is eight Buttons, 88 cells and
+// 7 gaps, in the pane's 76; a Button never shrinks, so the row runs past the
+// pane, whose frame hides it (worked by hand from drawSettingsPane's kinds).
+test('only the Chat view\'s row of kind Buttons draws past the cells it is handed at 80 cols', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  const past: string[] = []
+  for (const s of SURFACES) for (const st of s.states) {
+    const room = s.chrome?.kind === 'above-prompt' ? 75 : s.chrome?.kind === 'pane' ? 76 : 80
+    const g = layoutScreen(st.draw(80, 'light'), room)
+    const reach = g.rows.reduce((a: number, r: any[]) => Math.max(a, r.length), g.w)
+    if (reach > room) past.push(`${s.id}/${st.id}: ${reach} of ${room}`)
+  }
+  expect(past).toEqual(['clean', 'normal', 'raw', 'custom', 'kinds-hidden', 'every-other-value'].map(id => `cs-feed.Pane.cs-feed/${id}: 95 of 76`))
+})
+
 // 14 prompts, cs.bandBars 10, no words: the budget is 75 - 2 - 2 = 71;
 // railTicks folds 14 - 10 = 4 and 10 bars + `…4` is 12 <= 71. The label
 // takes 71 - 12 - 2 = 57 cells, padded.
