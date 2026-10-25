@@ -219,6 +219,20 @@ test('cs-mermaid draws a refused fence as its source and the reason', () => {
   expect(rows('cs-mermaid.AssistantMessage/too-wide', 80).at(-1)).toBe('mermaid: diagram is 128 columns wide, the transcript 74')
 })
 
+// The lab cannot place absolute children yet, so a fitted chart draws as its
+// canvas's 20 by 16 blank cells between the fence's blank rows, never as rows.
+test('cs-mermaid leaves a fitted chart\'s canvas blank at its size', () => {
+  const g = toText(layout(state('cs-mermaid.AssistantMessage/diagram').draw(80, 'light'), 80))
+  expect([g.length, g.every((r: string) => r.trim() === ''), g[1].length]).toEqual([18, true, 20])
+})
+
+// drawFence's Code holds the source; the lab draws it as plain dim lines,
+// the reason under it.
+test('cs-mermaid draws a refused fence\'s source as plain dim lines over the reason', () => {
+  expect(rows('cs-mermaid.AssistantMessage/refused', 80)).toEqual(['graph TD', '  subgraph one', '    A --> B', '  end', 'mermaid: subgraphs are not supported'])
+  expect(layout(state('cs-mermaid.AssistantMessage/refused').draw(80, 'light'), 80).rows[0][0].st).toMatchObject({ dim: true })
+})
+
 test('cs-mermaid draws a chart that fits as absolute blocks on a relative canvas', () => {
   const tree = state('cs-mermaid.AssistantMessage/diagram').draw(80, 'light')
   expect(tree.props).toEqual({ marginY: 1 })

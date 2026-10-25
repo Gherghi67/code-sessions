@@ -140,6 +140,8 @@
     if (node.type === "Button") return layoutButton(node, width, path);
     if (node.type === "Box") return layoutBox(node, width, path, !!fill);
     if (node.type === "Markdown") return grid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
+    // The lab draws no syntax colour: a Code node is its source, dim.
+    if (node.type === "Code") return grid(textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width));
     return grid([]);
   }
   // The tree as the terminal draws it in a row `width` cells wide.
@@ -215,8 +217,10 @@
     // overflows rather than starving its later children. The engine shrinks
     // them instead (Box and Text default to flexShrink 1); this layout does not.
     // A child's path keeps its index among all the children, falsy ones too.
+    // An absolute child takes no room in the flow, and the lab does not yet
+    // draw it at its top and left, so it is left out.
     var blocks = [];
-    (node.children || []).forEach(function (kid, i) { if (kid) blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
+    (node.children || []).forEach(function (kid, i) { if (kid && (kid.props || {}).position !== "absolute") blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
     if (reverse) blocks.reverse();
     // A column stretches each Box it holds that sets no width of its own to
     // the column's width, unless the column aligns its items otherwise.
@@ -229,13 +233,14 @@
 
     // Height: an explicit height pads or (with overflow hidden) clips the body.
     var bodyRows = body.rows;
+    // An explicit width holds the content open even when nothing in the flow fills it.
+    var w = outer ? Math.max(inner, body.w) : body.w;
     if (typeof p.height === "number") {
       var room = Math.max(0, p.height - (border ? 2 : 0) - pd.t - pd.b);
       if (bodyRows.length > room && p.overflow === "hidden") bodyRows = bodyRows.slice(0, room);
-      while (bodyRows.length < room) bodyRows.push(blanks(body.w, EMPTY, path));
+      while (bodyRows.length < room) bodyRows.push(blanks(w, EMPTY, path));
     }
 
-    var w = body.w;
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
     if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w, EMPTY, path), p.backgroundColor); });

@@ -36,6 +36,20 @@ test('an explicit width holds a Box open, and clips it when overflow is hidden',
   expect(toText(layout(B({ width: 3, overflow: 'hidden' }, T({ wrap: 'end' }, 'abcdef')), 40))).toEqual(['ab…'])
 })
 
+// An absolute child takes no room in its parent's flow; the lab does not yet
+// draw it where its top and left put it, so its region stays blank.
+test('an absolute child takes no room in the flow and draws nothing yet', () => {
+  expect(toText(layout(B({}, T({}, 'a'), B({ position: 'absolute', top: 0, left: 0 }, T({}, 'zz')), T({}, 'b')), 40))).toEqual(['ab'])
+  expect(toText(layout(B({ width: 4, height: 2, position: 'relative' }, B({ position: 'absolute', top: 1, left: 1 }, T({}, 'zz'))), 40))).toEqual(['    ', '    '])
+})
+
+// The lab draws no syntax colour: a Code node is its source, line by line, dim.
+test('a Code node draws its source as plain dim lines', () => {
+  const g = layout({ type: 'Code', props: { source: 'graph TD\n  A --> B', language: 'mermaid' }, children: [] }, 40)
+  expect(toText(g).map((r: string) => r.replace(/\s+$/, ''))).toEqual(['graph TD', '  A --> B'])
+  expect(g.rows[1][2].st).toMatchObject({ dim: true, color: '' })
+})
+
 // Yoga sizes a Box by its width whatever it holds: an empty one has no rows
 // but still takes its cells in a row beside a sibling (cs-feed's name margin).
 test('an empty Box of an explicit width takes its cells in a row', () => {

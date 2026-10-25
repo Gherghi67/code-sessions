@@ -846,7 +846,9 @@ every surface by mod, with its states and its reusable parts: a state adds a
 frame drawn by the mod's code inside the chrome the engine draws round it (a
 pane's frame and tab, the band's `[-]` cells), and a part drags into a frame
 or inserts by the selection. A frame says what in it the lab cannot draw yet,
-such as cs-mermaid's absolute layout. A state that holds a Markdown or a Code
+such as cs-mermaid's absolute layout, and what it draws instead: an absolute
+child's region left blank at its size, a Code node's source as plain dim
+lines. A state that holds a Markdown or a Code
 node opens as a reference frame: you can select and inspect it, and the lab
 refuses every edit of it and says why.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's

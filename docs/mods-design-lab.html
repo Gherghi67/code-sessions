@@ -1465,7 +1465,11 @@ const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Erro
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
 // "a", "a or b", "a, b or c".
 const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
-const BD_NEEDS={"position=absolute":"position=absolute","Code":"a Code node","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
+const BD_NEEDS={"position=absolute":"position=absolute","Code":"a Code node's colours","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
+// What a frame draws in place of a need, where it draws anything.
+const BD_STANDINS={"position=absolute":"leaves an absolute child's region blank","Code":"draws a Code node's source as plain dim lines"};
+const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`
+  +(needs.some(n=>BD_STANDINS[n])?`: it ${needs.filter(n=>BD_STANDINS[n]).map(n=>esc(BD_STANDINS[n])).join(" and ")}`:"");
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
   let n=bdSurfaceState(sid,part.state).draw(cols(),theme());
@@ -1511,7 +1515,7 @@ function bdFrameCard(f){
     +(ro?`<span class="badge ref" title="${esc(ro)}">reference</span>`:"")
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
-    +(surf&&surf.needs.length?`<p class="needs">lab cannot draw ${bdList(surf.needs.map(n=>`<b>${esc(BD_NEEDS[n])}</b>`))} yet</p>`:"")
+    +(surf&&surf.needs.length?`<p class="needs">${bdNeedsWords(surf.needs,w=>`<b>${w}</b>`)}</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
     +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
@@ -1531,7 +1535,7 @@ function bdComponents(){
     }).join("");
     const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
     return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
-      +(s.needs.length?`<div class="needs">lab cannot draw ${bdList(s.needs.map(n=>esc(BD_NEEDS[n])))} yet</div>`:"")
+      +(s.needs.length?`<div class="needs">${bdNeedsWords(s.needs,w=>w)}</div>`:"")
       +(parts?`<div class="ckind">Parts</div>${parts}`:"")+`<div class="ckind">States</div>${states}</details>`;
   }).join("")+`</details>`).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
 }
