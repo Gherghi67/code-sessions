@@ -867,7 +867,8 @@ frames) and how long the lab plays it (a countdown to its zero, a
 timer for five minutes). Play redraws only that frame, from the mod's code,
 at the state's tick, and holds the last moment at the end. Space plays or
 pauses the selected frame. A frame scrubbed or played away from 0 is only
-looked at: the lab refuses an edit of it and says why. Nothing plays on
+looked at: the lab refuses an edit of it and says why, and the Inspector
+reads the selected node as the mod draws it at that moment. Nothing plays on
 load, and with reduced motion asked for, play moves one tick per press.
 The variants gallery stays still.
 

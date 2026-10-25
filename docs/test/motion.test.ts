@@ -3,6 +3,7 @@
 import { test, expect } from 'bun:test'
 import { SURFACES, state } from './surfaces.ts'
 const { layout, layoutScreen, toText } = require('../mods-layout.js')
+const { fromEngine } = require('../mods-band-editor.js')
 
 const rows = (id: string, t: number) => toText(layout(state(id).draw(80, 'light', t), 80)).map((r: string) => r.replace(/\s+$/, ''))
 const cell = (id: string, t: number, r: number, c: number) => layout(state(id).draw(80, 'light', t), 80).rows[r][c]
@@ -157,6 +158,19 @@ test('a still state ignores t, and a moving one moves within its length', () => 
   expect(wrong).toEqual([])
   expect(rows('cs.AbovePrompt/idle', 5000)).toEqual(rows('cs.AbovePrompt/idle', 0))
   expect(rows('cs-feed.ToolGroup/batch-done', 5000)).toEqual(rows('cs-feed.ToolGroup/batch-done', 0))
+})
+
+// The designer's Inspector reads the node a frame selected at 0 off the
+// mod's drawing at t, by the same path, so a moving state keeps its tree's
+// shape (each node's type and children) at every moment.
+test('a moving state keeps its tree the same shape at every moment', () => {
+  const shape = (n: any): any => [n.type, n.kids.map(shape)]
+  const changed: string[] = []
+  for (const s of SURFACES) for (const st of s.states) if (st.motion) {
+    const at0 = JSON.stringify(shape(fromEngine(st.draw(80, 'light', 0))))
+    for (const t of [st.motion.tick, 1000, 5000, 15000, 61000, st.motion.duration]) if (JSON.stringify(shape(fromEngine(st.draw(80, 'light', t)))) !== at0) changed.push(`${s.id}/${st.id} at ${t}`)
+  }
+  expect(changed).toEqual([])
 })
 
 // The count the scrubber reads beside t: the seconds left, where there is one.

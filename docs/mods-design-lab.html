@@ -1367,8 +1367,11 @@ function cpFrameSummary(){
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
   const sel=bdDocNow().selection, ro=bdReadOnly(sel.frame);
-  if(ro) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?bdDrawnByEngine(bdFrame(sel.frame))?"Reference frame: drawn by Claude Code around the mod's words, read only.":"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
-    +`<dl class="fsum">${Object.keys(n.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof n.props[k]==="object"?JSON.stringify(n.props[k]):String(n.props[k]))}</dd>`).join("")}</dl>`;
+  if(ro){
+    const shown=bdShownNode(sel);
+    return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?bdDrawnByEngine(bdFrame(sel.frame))?"Reference frame: drawn by Claude Code around the mod's words, read only.":"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
+      +`<dl class="fsum">${Object.keys(shown.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof shown.props[k]==="object"?JSON.stringify(shown.props[k]):String(shown.props[k]))}</dd>`).join("")}</dl>`;
+  }
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
     +CP_GROUPS.filter(g=>groups[g]).map(g=>`<details class="pgroup" data-group="${g}"${bdShut.has(g)?"":" open"}><summary>${g}</summary><div>${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></details>`).join("");
@@ -1560,6 +1563,13 @@ function bdShownTree(f){
   if(!at) return BandEditor.toEngine(f.tree);
   return BandEditor.toEngine(BandEditor.fromEngine(bdSurfaceState(f.source.surface,f.source.state).draw(cols(),theme(),at.t)));
 }
+// The selected node as its frame paints it: at a moment, the mod's drawing
+// then. A moving state keeps its tree's shape at every moment (motion.test.ts),
+// so the path selected at 0 names a node at any t.
+function bdShownNode(sel){
+  const f=bdFrame(sel.frame);
+  return BandEditor.nodeAt(bdMotion.has(f.id)?BandEditor.fromEngine(bdShownTree(f)):f.tree,sel.path);
+}
 const bdSeconds=t=>`${(t/1000).toFixed(2)} s`;
 const bdMoment=(f,m)=>{ const t=bdMotion.get(f.id)?.t??0; return bdSeconds(t)+(m.count?` · ${m.count(t)}`:""); };
 function bdStop(id){ const at=bdMotion.get(id); if(at) clearInterval(at.timer); bdMotion.delete(id); }
@@ -1602,7 +1612,10 @@ function bdRepaint(id){
   card.querySelector(".motion output").textContent=bdMoment(f,m);
   card.querySelectorAll(".sel").forEach(el=>el.remove());
   const sel=bdDocNow().selection;
-  if(sel&&sel.frame===id&&BandEditor.spanOf(g,sel.path)) bdChrome(card.querySelector(".strip"),g,sel.path,bdSelected());
+  if(sel&&sel.frame===id){
+    if(BandEditor.spanOf(g,sel.path)) bdChrome(card.querySelector(".strip"),g,sel.path,bdShownNode(sel));
+    $("bd-props").innerHTML=cpInspector(bdSelected(),sel.path);
+  }
   bdHoverDraw();
 }
 // The play button, the scrubber over the state's length at its tick, and the
@@ -1730,7 +1743,7 @@ function composeRender(){
   const fs=bdFontSize(); $("bd-canvas").style.setProperty("--fs",fs+"px");
   $("bd-zoom").value=String(bdZoom); $("bd-zoom").options[0].textContent=`Fit (${Math.round(fs/15*100)}%)`;
   const sel=doc.selection;
-  if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
+  if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdShownNode(sel));
   bdLayers(); bdHoverDraw();
   if(bdPanelStale||!sel){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
