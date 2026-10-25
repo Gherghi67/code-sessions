@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, buildBandEntries, drawBand, type BandView, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed, TOASTS, LOGS, REPLIES, finishToast } from '../hooks/register.tsx'
+import { register, buildBandEntries, drawBand, fitBand, type BandView, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed, TOASTS, LOGS, REPLIES, finishToast } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -2352,8 +2352,12 @@ test('past the width budget the oldest prompts collapse into one dim …N run at
   expect(bandLine(await band({ bodyColumns: 36 }), 36)).toBe('  \u28ff ctrl+x 1 rotate   2 wrap   \u202629 \u25cf')
   // Wide enough, every dot draws.
   expect(rail(await band({ bodyColumns: 110 }))).toHaveLength(30)
-  // No room at all: four cells hold no `…29`, its cell and a dot, so no rail.
-  expect(rail(await band({ bodyColumns: 35 }))).toEqual([])
+  // The rail keeps its least, `…29 ●` and the three cells before it: at 35
+  // columns the shared prefix goes first, and the dots take the cells it left.
+  expect(bandLine(await band({ bodyColumns: 35 }), 35)).toBe('  ⣿ 1 rotate   2 wrap   …23 ○○○○○○●')
+  // The actions outrank it: where even their keys cannot stand beside that
+  // least, they take the whole line and the rail goes.
+  expect(bandLine(await band({ bodyColumns: 16 }), 16)).toBe('  ⣿ 1 rotate   2')
 })
 
 test('the prompt being read is the on-screen row drawn highest, the earliest on ties; a first null report leaves nothing, a later one removes the report; placeholder is ignored', async () => {
@@ -3463,8 +3467,8 @@ test('a narrowing line cuts the name, then drops it, then folds the dots into �
   expect(lineAt(mail, 20, rail)).toBe('  ⣿ mail 1   …11 ○○●')
   expect(lineAt(mail, 19, rail)).toBe('  ⣿ mail 1   …12 ○●')
   expect(lineAt(mail, 18, rail)).toBe('  ⣿ mail 1   …13 ●')
-  // Four cells hold no `…13`, its cell and a dot: no rail, and the mail word takes the right edge.
-  expect(lineAt(mail, 17, rail)).toBe(`  ⣿ ${gap(7)}mail 1`)
+  // A cell fewer holds the mail word and `…13 ●` no more: the word leaves before the rail's least, and the rail takes the line.
+  expect(lineAt(mail, 17, rail)).toBe(`  ⣿ ${gap(5)}…9 ○○○○●`)
 })
 
 test('a dot under the pointer swaps its prompt into the whole name box, and the dots stay where they stand', () => {
@@ -3502,9 +3506,14 @@ test('an entry the band has no zone for is a programmer error, named', () => {
 // the band draws one row that fits the line, or nothing. The widths take
 // turns at the chords (shared, apart, unbound), the rail (on, off) and a
 // survey (which takes the mark), so each combination meets every variant.
-test('every combination of entries at every width from 40 to 200 draws one row no wider than the line', () => {
+// Where the rail is on and every action still fits a line that holds the
+// rail's least, `…13 ●` and the three cells before it, the named dot draws.
+const ACTION_KEYS = ['cs-rotate', 'cs-countdown', 'cs-wrap', 'cs-feed', 'cs-queue']
+const RAIL_LEAST = 8
+test('every combination of entries at every width from 40 to 200 draws one row no wider than the line, and keeps the rail whenever the actions leave it room', () => {
   const chordSets = [CHORDS, { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2', 'strip:jump3': 'alt+shift+f' }, {}]
   let drawn = 0
+  let railKept = 0
   for (let bits = 0; bits < 512; bits++) {
     const on = (i: number) => (bits & (1 << i)) !== 0
     const entries = buildBandEntries({
@@ -3517,15 +3526,26 @@ test('every combination of entries at every width from 40 to 200 draws one row n
     for (let bodyColumns = 40; bodyColumns <= 200; bodyColumns++) {
       const chords = chordSets[bodyColumns % 3]
       const rail = (bodyColumns >> 1) % 2 === 1 ? { ...railOf(FOURTEEN), bars: 5 } : undefined
-      const tree = drawBand(view({ entries, chords, rail, bodyColumns, hasSurvey: (bodyColumns >> 2) % 2 === 1 }), EL)
-      if (tree === DRAWN) continue
+      const hasSurvey = (bodyColumns >> 2) % 2 === 1
+      const tree = drawBand(view({ entries, chords, rail, bodyColumns, hasSurvey }), EL)
+      const kept = fitBand(entries, chords, bodyColumns - 2 - (hasSurvey ? 0 : 2) - RAIL_LEAST).entries.map(entry => entry.key)
+      const railOwed = rail !== undefined && entries.every(entry => !ACTION_KEYS.includes(entry.key) || kept.includes(entry.key))
+      if (railOwed) railKept++
+      if (tree === DRAWN) {
+        if (railOwed) throw new Error(`entries ${bits} at ${bodyColumns} columns drew nothing where the rail had room`)
+        continue
+      }
       const [row, ...more] = bandRows(tree, bodyColumns)
       if (row === undefined || more.length > 0 || [...row].length > bodyColumns) throw new Error(`entries ${bits} at ${bodyColumns} columns drew ${JSON.stringify([row, ...more])}`)
+      if (railOwed && !row.includes('\u25cf')) throw new Error(`entries ${bits} at ${bodyColumns} columns dropped the rail its actions left room for: ${row}`)
       drawn++
     }
   }
   // 512 combinations at 161 widths, less the empty one at the 81 widths without a rail.
   expect(drawn).toBe(512 * 161 - 81)
+  // The rail is on at 80 widths; at 312 of their 40960 lines the actions
+  // cannot all stand beside its least, and there it may go.
+  expect(railKept).toBe(80 * 512 - 312)
 }, 60000)
 
 test('every entry the band never drops stays whole at the narrowest line that holds them, and the features word shortens a cell under it', () => {
@@ -3540,6 +3560,26 @@ test('with every entry on, the band leaves out its lowest words, then shortens t
   expect(lineAt(everything, 75)).toBe(`  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(4)}3 features · fix-auth ready`)
   expect(lineAt(everything, 55)).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 featu…')
   expect(lineAt(everything, 35)).toBe('  ⣿ 1 rotate   2 wrap   3   ▤…   3…')
+})
+
+test('the rail keeps its least, `…N ●` three cells after the words, while the words can drop and shorten and still keep every action', () => {
+  // 80 columns (75 after the [-]): the actions and the mail word leave the rail room for its five dots.
+  expect(lineAt(typical, 75, REFUSED)).toBe(`  ⣿ ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(7)}mail 1   …9 ○○◌○●`)
+  // With the features press too, the mail word drops, the prefix goes and the press shortens, so `…13 ●` stays.
+  expect(lineAt(everything, 75, REFUSED)).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ●')
+  // 38 columns: both presses shorten to a cell and `…`, and the feed and wrap keys lose their words.
+  expect(lineAt(everything, 38, REFUSED)).toBe('  ⣿ 1 rotate   2   3   ▤…   3…   …13 ●')
+  // 40 columns (35 after the [-]): every key is bare, and the cells the words leave past the least go to dots.
+  expect(lineAt(everything, 35, REFUSED)).toBe(`  ⣿ 1   2   3   ▤…${gap(4)}3…   …9 ○○◌○●`)
+})
+
+test('the actions outrank the rail: where an action would leave whole beside its least, the words take the whole line and the rail what they leave', () => {
+  const differ = { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2', 'strip:jump3': 'alt+shift+f' }
+  const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: everything, bodyColumns, rail: REFUSED }), EL), bodyColumns)
+  // The keys bare (38 cells), three cells and `…13 ●` fill 50 columns.
+  expect(at(50)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…   …13 ●')
+  // Two fewer and the queue press would leave: it stays, the features press takes the cells back, and no dot fits.
+  expect(at(48)).toBe(`  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…${gap(4)}3…`)
 })
 
 test('a chord drawn as its key alone is still its Button, pressed by its action, the key in the session colour', () => {

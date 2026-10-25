@@ -842,7 +842,18 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // survey, which owns the band.
   const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
   // The line starts two cells in; the mark and the words share the rest.
-  const { entries, prefixed } = fitBand(v.entries, chords, v.bodyColumns - 2 - markCells)
+  const room = v.bodyColumns - 2 - markCells
+  // A rail keeps its least, every prompt but the named one folded into `…N`
+  // before the named dot, and the three cells before it: the words fit what
+  // that leaves, so the status words drop and the keys shorten before the
+  // rail goes. The actions outrank the rail: where the words cannot keep
+  // every action beside its least, they fit the whole line, and the rail
+  // takes what they leave, or nothing.
+  const reserved = v.rail === undefined ? 0 : foldCells(v.rail.prompts.length - 1) + 1 + GAP
+  const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.map(entry => entry.key)
+  const besideRail = fitBand(v.entries, chords, room - reserved)
+  const keptActions = actionKeys(besideRail.entries)
+  const { entries, prefixed } = actionKeys(v.entries).every(key => keptActions.includes(key)) ? besideRail : fitBand(v.entries, chords, room)
   // The Buttons carry no hotkey: a bare digit pressed them from an empty
   // composer, where a digit typed as the answer to a numbered question
   // belongs. A chord bound to each Button's action presses it instead, and
@@ -875,7 +886,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // the words; the older prompts collapse into one `…N` run, a cell before
   // the first dot. The named dot is remembered so a report that moves it can
   // redraw the band.
-  const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? GAP + wordCells : 0)
+  const budget = room - (wordCells > 0 ? GAP + wordCells : 0)
   const rail = v.rail
   const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
   const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
