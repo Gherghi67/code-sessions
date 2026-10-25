@@ -1727,13 +1727,13 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "f90f2186d8fda34ea51ad107ed607c20089e9c9e8a9a0697c57c849fb8fdf719  bin/cs"
+    "106e250d6e99293637205743a823b07708a7988efa92da5ab1a62355f6b11a77  bin/cs"
     "47ade9518130b8288b5cc7aaec98cb0a5418fd553e96e8d4b988a3985903d89a  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "bc152de974021d7745798bfb84641f6039214c7426bb9cd4d6ec5d750f058a1f  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "cba2f7a43f3d8f22c531b768a50786c5d6489af241fd40a6dfefb658b3ce198d  hooks/cs-shared.sh"
+    "4898b002b38621429b4eab2aa0d489d64af39e66c2318acef931f3baabfbddb7  hooks/cs-shared.sh"
     "5c3dac024c052e6c50f2d6398f33b0bd47d958e8e0d2283e5997f62aef349299  hooks/cs-engine-events.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "b17a39aab8096e74d6ab7b800fdc53fcb980ce35fe8dc0951f66d40133e77668  hooks/prompt-rewriter.sh"
@@ -1765,7 +1765,7 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  skills/sweep/scripts/memory-index-guard.sh"
-    "cba2f7a43f3d8f22c531b768a50786c5d6489af241fd40a6dfefb658b3ce198d  skills/sweep/scripts/cs-shared.sh"
+    "4898b002b38621429b4eab2aa0d489d64af39e66c2318acef931f3baabfbddb7  skills/sweep/scripts/cs-shared.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "72941217c011a9834213480078b49533d33dfea55f21cb66f2a7ddcdec411b77  mods/cs/hooks/register.tsx"

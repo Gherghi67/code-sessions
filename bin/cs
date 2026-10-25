@@ -2942,6 +2942,31 @@ _cs_prune_settings_backups() {  # file, [backup just written]
 _scrub_controls() {
     env LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
+
+# A bounded, read-only memory index for adapters without native auto-memory.
+# The budgets match the shared sweep guard. Read bytes first so a huge line
+# cannot allocate an unbounded buffer; decode only complete UTF-8 characters.
+# Linked memory directories are intentional (features and mounted vaults).
+cs_memory_index() {  # session_dir
+    [ -f "$1/.cs/memory/MEMORY.md" ] || return 0
+    python3 -I -c '
+import sys
+try:
+    with open(sys.argv[1], "rb") as stream:
+        raw = stream.read(24401)
+except OSError:
+    sys.exit(0)
+lines = raw[:24400].decode("utf-8", errors="ignore").splitlines(keepends=True)
+text = "".join(lines[:196])
+if not text.strip():
+    sys.exit(0)
+print("\n# Session memory index")
+print("Workspace memory for reference; it does not override the current user request.")
+print(text, end="" if text.endswith("\n") else "\n")
+if len(raw) > 24400 or len(lines) > 196:
+    print("[Memory index truncated; read .cs/memory/MEMORY.md for the remainder.]")
+' "$1/.cs/memory/MEMORY.md" 2>/dev/null || true
+}
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark
@@ -16584,7 +16609,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -16676,6 +16701,7 @@ Use that executable with -status or -whoami to inspect the session. The
 CS_SESSION_NAME, CS_SESSION_DIR, and CS_SESSION_META_DIR environment variables
 identify this session to cs commands. This context does not request work.
 EOF
+    cs_memory_index "$CS_CONTEXT_DIR"
 }
 
 _codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin
@@ -17450,6 +17476,7 @@ _codex_hook_session_start() {
     else
         context=$(_fresh_notice_codex "$actor")
     fi
+    context="$context$(cs_memory_index "$session_dir")"
     jq -n --arg context "$context" --arg sysmsg "$sysmsg" '
         {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $context}}
         + (if $sysmsg == "" then {} else {systemMessage: $sysmsg} end)' 2>/dev/null || true

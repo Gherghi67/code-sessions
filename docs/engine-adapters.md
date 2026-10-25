@@ -33,7 +33,7 @@ exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `spawn_brief`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
-`startup_context`, `feature_finish`, `rotation`, and `recovery_autosave`. These
+`startup_context`, `feature_finish`, `rotation`, `recovery_autosave`, `memory_index`. These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -269,8 +269,8 @@ its own inside the vault: main checks before the pre-open, and
 (`_codex_encrypted_refusal`).
 The shipped skills deploy to Claude and Codex alike. Each one reaches its
 helpers through its own directory and checks `cs -engine supports` before an
-adapter feature. Codex declares `rotation` and none of the other three, so under
-Codex `feature` refuses before writing anything.
+adapter feature. Codex declares `rotation` and `memory_index`.
+The feature skill still refuses until its spawn-brief integration is delivered.
 Codex ignores `disable-model-invocation`, so `finish` also ships
 `agents/openai.yaml` with `allow_implicit_invocation: false`, which keeps it out
 of the skill list Codex gives the model.

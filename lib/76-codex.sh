@@ -67,7 +67,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -159,6 +159,7 @@ Use that executable with -status or -whoami to inspect the session. The
 CS_SESSION_NAME, CS_SESSION_DIR, and CS_SESSION_META_DIR environment variables
 identify this session to cs commands. This context does not request work.
 EOF
+    cs_memory_index "$CS_CONTEXT_DIR"
 }
 
 _codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin

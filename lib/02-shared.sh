@@ -1292,3 +1292,28 @@ _cs_prune_settings_backups() {  # file, [backup just written]
 _scrub_controls() {
     env LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
+
+# A bounded, read-only memory index for adapters without native auto-memory.
+# The budgets match the shared sweep guard. Read bytes first so a huge line
+# cannot allocate an unbounded buffer; decode only complete UTF-8 characters.
+# Linked memory directories are intentional (features and mounted vaults).
+cs_memory_index() {  # session_dir
+    [ -f "$1/.cs/memory/MEMORY.md" ] || return 0
+    python3 -I -c '
+import sys
+try:
+    with open(sys.argv[1], "rb") as stream:
+        raw = stream.read(24401)
+except OSError:
+    sys.exit(0)
+lines = raw[:24400].decode("utf-8", errors="ignore").splitlines(keepends=True)
+text = "".join(lines[:196])
+if not text.strip():
+    sys.exit(0)
+print("\n# Session memory index")
+print("Workspace memory for reference; it does not override the current user request.")
+print(text, end="" if text.endswith("\n") else "\n")
+if len(raw) > 24400 or len(lines) > 196:
+    print("[Memory index truncated; read .cs/memory/MEMORY.md for the remainder.]")
+' "$1/.cs/memory/MEMORY.md" 2>/dev/null || true
+}

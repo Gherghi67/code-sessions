@@ -1003,6 +1003,18 @@ test_resume_disarms_an_armed_rotation() {
     assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
+test_startup_refreshes_the_memory_index_on_fresh_and_resume() {
+    mkdir -p "$CS_TEST_SESSION_DIR/.cs/memory"
+    printf 'memory at fresh start\n' > "$CS_TEST_SESSION_DIR/.cs/memory/MEMORY.md"
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'memory at fresh start' || return 1
+    printf 'memory after edit\n' > "$CS_TEST_SESSION_DIR/.cs/memory/MEMORY.md"
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'memory after edit' || return 1
+}
+
+run_test test_startup_refreshes_the_memory_index_on_fresh_and_resume
+
 echo 'Codex launch tests'
 run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
