@@ -271,6 +271,29 @@ CS_HOOKS+=(fixture-active-hook.sh)
         migration.migrate(self.home, True)
         self.assertEqual(target.read_text(), '{"id":1}\n{"id":2}\n')
 
+    def test_history_import_makes_an_existing_public_file_private(self):
+        source = self.put(self.profile, ".codex/history.jsonl", '{"private":1}\n')
+        source.chmod(0o600)
+        target = self.put(self.home, ".codex/history.jsonl", '{"normal":1}\n')
+        target.chmod(0o644)
+        target.parent.chmod(0o755)
+        previous = os.umask(0o022)
+        try:
+            self.assertEqual(migration.merge_jsonl(source, target, self.home, True), 1)
+        finally:
+            os.umask(previous)
+        self.assertEqual(target.read_text(), '{"normal":1}\n{"private":1}\n')
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(target.parent.stat().st_mode & 0o777, 0o755)
+
+    def test_history_dry_run_preserves_existing_file_permissions(self):
+        source = self.put(self.profile, ".codex/history.jsonl", '{"private":1}\n')
+        target = self.put(self.home, ".codex/history.jsonl", '{"normal":1}\n')
+        target.chmod(0o644)
+        self.assertEqual(migration.merge_jsonl(source, target, self.home, False), 1)
+        self.assertEqual(target.read_text(), '{"normal":1}\n')
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
     def history_process(self, source, target):
         script = """
 import importlib.util

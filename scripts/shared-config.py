@@ -224,6 +224,8 @@ def merge_jsonl(source, target, home, apply):
         # Codex holds this file lock through append and truncate/rewrite.
         # Read after acquisition so a completed compaction stays authoritative.
         fcntl.flock(stream, fcntl.LOCK_EX if apply else fcntl.LOCK_SH)
+        if apply:
+            os.fchmod(stream.fileno(), 0o600)
         stream.seek(0)
         return merge_jsonl_records(source, target, stream, apply)
 
