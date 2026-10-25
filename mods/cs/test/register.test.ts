@@ -3431,6 +3431,13 @@ test('with chords that differ, every chord outlives the features and queue press
   expect(at(40)).toBe('  ● ctrl+x 1 rotate  ·  ctrl+w 2 wrap')
 })
 
+test('an unbound chord has no key to fall back to: the last one cuts its word to end in `…`, its check gone, and leaves when not a cell of it fits', () => {
+  const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: {}, entries: buildBandEntries({ ...quiet, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress } }), bodyColumns }), EL))
+  expect(at(30)).toBe('  ● rotate  ·  wrap  ·  feed ✓')
+  expect(at(29)).toBe('  ● rotate  ·  wrap  ·  feed…')
+  expect(at(24)).toBe('  ● rotate  ·  wrap')
+})
+
 test('the rail takes what the line leaves once the band has dropped its words', () => {
   expect(lineAt(droppable, 116, railOf(FOUR))).toBe('  ● 3 features · none ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  finishing fix-auth · gate 3s  ·  ▤ queue 2   │││┃')
 })
