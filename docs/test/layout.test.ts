@@ -36,11 +36,38 @@ test('an explicit width holds a Box open, and clips it when overflow is hidden',
   expect(toText(layout(B({ width: 3, overflow: 'hidden' }, T({ wrap: 'end' }, 'abcdef')), 40))).toEqual(['ab…'])
 })
 
-// An absolute child takes no room in its parent's flow; the lab does not yet
-// draw it where its top and left put it, so its region stays blank.
-test('an absolute child takes no room in the flow and draws nothing yet', () => {
-  expect(toText(layout(B({}, T({}, 'a'), B({ position: 'absolute', top: 0, left: 0 }, T({}, 'zz')), T({}, 'b')), 40))).toEqual(['ab'])
-  expect(toText(layout(B({ width: 4, height: 2, position: 'relative' }, B({ position: 'absolute', top: 1, left: 1 }, T({}, 'zz'))), 40))).toEqual(['    ', '    '])
+// An absolute child takes no room in its parent's flow and paints at its
+// offsets over the parent's box, in the order the children are written
+// (2.1.310 paints childNodes in order; Rx places it). Worked by hand.
+const Abs = (props: any, ...children: any[]) => B({ position: 'absolute', ...props }, ...children)
+test('an absolute child takes no room in the flow and paints at its top and left, in child order', () => {
+  expect(toText(layout(B({}, T({}, 'a'), Abs({ top: 0, left: 0 }, T({}, 'zz')), T({}, 'b')), 40))).toEqual(['zb'])
+  expect(toText(layout(B({ width: 4, height: 2, position: 'relative' }, Abs({ top: 1, left: 1 }, T({}, 'zz'))), 40))).toEqual(['    ', ' zz '])
+  expect(toText(layout(B({ width: 5 }, T({}, 'abcde'), Abs({ top: 0, left: 1 }, T({}, 'XY'))), 40))).toEqual(['aXYde'])
+  expect(toText(layout(B({ width: 5 }, Abs({ top: 0, left: 1 }, T({}, 'XY')), T({}, 'abcde')), 40))).toEqual(['abcde'])
+})
+
+// Rx: "if(tt(_))fe=g[0]+_+q;else if(tt(I))fe=f-g[2]-I-Se-Z" and the same down
+// the column: left and top count from inside the border, the padding not
+// counted; right and bottom from the far border, less the child's size.
+test('an absolute child sits inside the border, by left and top or by right and bottom', () => {
+  expect(toText(layout(B({ width: 6, height: 3, borderStyle: 'single', paddingLeft: 2 }, Abs({ top: 0, left: 0 }, T({}, 'X'))), 40))).toEqual(['\u250c\u2500\u2500\u2500\u2500\u2510', '\u2502X   \u2502', '\u2514\u2500\u2500\u2500\u2500\u2518'])
+  expect(toText(layout(B({ width: 6, height: 3 }, Abs({ bottom: 0, right: 1 }, T({}, 'zz'))), 40))).toEqual(['      ', '      ', '   zz '])
+})
+
+// Rx sizes the child apart from the flow: its own width, or what its left
+// and right leave ("if(!tt(X)&&tt(_)&&tt(I))X=z-_-I"), else its content's,
+// unbounded (measure mode undefined), so a Text in it never wraps to the parent.
+test('an absolute child takes its own width, or what its left and right leave, or its content\'s', () => {
+  expect(toText(layout(B({ width: 3, height: 1 }, Abs({ top: 0, left: 1 }, T({}, 'abcdef'))), 40))).toEqual([' abcdef'])
+  expect(toText(layout(B({ width: 6, height: 2 }, Abs({ top: 0, left: 1, right: 1 }, T({}, 'abc def'))), 40))).toEqual([' abc  ', ' def  '])
+})
+
+// An absolute Box with no background skips its own blit ("skipSelfBlit:G&&
+// pe&&!ue.style.opaque&&ue.style.backgroundColor===void 0"): its padding is
+// transparent, and only what it draws lands.
+test('an absolute child\'s own room is transparent over what is under it', () => {
+  expect(toText(layout(B({ width: 5 }, T({}, 'abcde'), Abs({ top: 0, left: 0, paddingLeft: 2 }, T({}, 'X'))), 40))).toEqual(['abXde'])
 })
 
 // The lab draws no syntax colour: a Code node is its source, line by line, dim.

@@ -262,11 +262,31 @@ test('cs-mermaid draws a refused fence as its source and the reason', () => {
   expect(rows('cs-mermaid.AssistantMessage/too-wide', 80).at(-1)).toBe('mermaid: diagram is 128 columns wide, the transcript 74')
 })
 
-// The lab cannot place absolute children yet, so a fitted chart draws as its
-// canvas's 20 by 16 blank cells between the fence's blank rows, never as rows.
-test('cs-mermaid leaves a fitted chart\'s canvas blank at its size', () => {
-  const g = toText(layout(state('cs-mermaid.AssistantMessage/diagram').draw(80, 'light'), 80))
-  expect([g.length, g.every((r: string) => r.trim() === ''), g[1].length]).toEqual([18, true, 20])
+// A fitted chart is a 20 by 16 relative canvas between the fence's blank
+// rows; each run, block and label paints at its top and left on it. Worked
+// by hand from the coordinates fitSource gives this source: Start's block at
+// 1,5 (9 by 3, the label centred on its middle row), the arrow at 4,9 and
+// 5,9, Tests pass? at 6,2, the branches and their labels at rows 9 to 11,
+// Ship at 12,1 and Fix at 12,12.
+test('cs-mermaid draws a fitted chart\'s blocks, lines and labels where its layout puts them', () => {
+  const g = layout(state('cs-mermaid.AssistantMessage/diagram').draw(80, 'light'), 80)
+  expect(toText(g).map((r: string) => r.replace(/\s+$/, ''))).toEqual([
+    '', '', '',
+    '       Start',
+    '',
+    '         \u2502',
+    '         \u25bc',
+    '',
+    '    Tests pass?',
+    '',
+    '    \u2502 yes  \u2502 no',
+    '    \u2502      \u2514\u2500\u2500\u2500\u2510',
+    '    \u25bc          \u25bc',
+    '',
+    '   Ship       Fix',
+    '', '', '',
+  ])
+  expect([g.rows[2][5].st.bg, g.rows[3][7].st.bg, g.rows[2][4].st.bg]).toEqual(['#D3F9D8', '#D3F9D8', ''])
 })
 
 // drawFence's Code holds the source; the lab draws it as plain dim lines,

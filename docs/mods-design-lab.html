@@ -1476,9 +1476,9 @@ const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Erro
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
 // "a", "a or b", "a, b or c".
 const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
-const BD_NEEDS={"position=absolute":"position=absolute","Code":"a Code node's colours","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
+const BD_NEEDS={"Code":"a Code node's colours","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
 // What a frame draws in place of a need, where it draws anything.
-const BD_STANDINS={"position=absolute":"leaves an absolute child's region blank","Code":"draws a Code node's source as plain dim lines"};
+const BD_STANDINS={"Code":"draws a Code node's source as plain dim lines"};
 const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`
   +(needs.some(n=>BD_STANDINS[n])?`: it ${needs.filter(n=>BD_STANDINS[n]).map(n=>esc(BD_STANDINS[n])).join(" and ")}`:"");
 // A node of a state's engine tree, by its child index path.

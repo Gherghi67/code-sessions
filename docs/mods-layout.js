@@ -285,10 +285,13 @@
     // Every child is measured in at most the inner room, its flex basis; a row
     // then grows or shrinks them to fit (`placeRow`).
     // A child's path keeps its index among all the children, falsy ones too.
-    // An absolute child takes no room in the flow, and the lab does not yet
-    // draw it at its top and left, so it is left out.
-    var blocks = [];
-    (node.children || []).forEach(function (kid, i) { if (kid && (kid.props || {}).position !== "absolute") blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
+    // An absolute child takes no room in the flow (`placeAbsolute`).
+    var blocks = [], loose = [];
+    (node.children || []).forEach(function (kid, i) {
+      if (!kid) return;
+      if ((kid.props || {}).position === "absolute") loose.push({ node: kid, at: path.concat([i]), i: i });
+      else blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]), i: i });
+    });
     if (reverse) blocks.reverse();
     // A column stretches each Box it holds that sets no width of its own to
     // the column's width, unless the column aligns its items otherwise.
@@ -328,7 +331,10 @@
       for (var r = m.t + 1; r <= m.t + ih; r++) { canvas[r][m.l] = { ch: g.l, st: edgeSt, path: path, ink: true }; canvas[r][m.l + 1 + iw] = { ch: g.r, st: edgeSt, path: path, ink: true }; }
     }
     var cut = { right: p.overflow === "hidden" ? x0 + w : Infinity, bottom: y0 + h };
-    body.spots.forEach(function (s) { paint(canvas, s.g, x0 + s.x, y0 + s.y, cut, path); });
+    var spots = body.spots.map(function (s, k) { return { g: s.g, x: x0 + s.x, y: y0 + s.y, i: blocks[k].i }; });
+    var box = { x: m.l, y: m.t, w: 2 * edge + iw, h: 2 * edge + ih, edge: edge, pd: pd, column: column, p: p };
+    loose.forEach(function (a) { spots.push(placeAbsolute(a, box)); });
+    spots.sort(function (a, b) { return a.i - b.i; }).forEach(function (s) { paint(canvas, s.g, s.x, s.y, cut, path); });
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
     if (p.backgroundColor) for (var by = m.t + edge; by < m.t + edge + ih; by++) {
@@ -336,6 +342,36 @@
     }
     return { w: W, h: H, rows: canvas };
   }
+
+  // An absolute child as 2.1.310 places it (Rx), apart from the flow: its own
+  // width, or what its left and right leave of the Box inside the border,
+  // else its content's, unbounded; the same down the column. It sits at its
+  // left (or its right) and its top (or its bottom) counted from inside the
+  // border, the padding not counted, or, given neither, where the Box's
+  // justifyContent (along a row) or alignItems (across it) would put it.
+  // `box` is the parent's border box on its canvas.
+  function placeAbsolute(a, box) {
+    var q = a.node.props || {}, km = margins(q), e = box.edge;
+    var size = function (own, from, to, room) { return typeof own === "number" ? own : typeof from === "number" && typeof to === "number" ? Math.max(0, room - from - to) : null; };
+    var w = size(q.width, q.left, q.right, box.w - 2 * e), h = size(q.height, q.top, q.bottom, box.h - 2 * e);
+    var props = Object.assign({}, q, w === null ? {} : { width: w }, h === null ? {} : { height: h });
+    var g = layout({ type: a.node.type, props: props, children: a.node.children }, w === null ? UNBOUNDED : w + km.l + km.r, a.at, w !== null);
+    var at = function (lead, trail, extent, span, pad0, pad1, align) {
+      if (typeof lead === "number") return e + lead;
+      if (typeof trail === "number") return extent - e - trail - span;
+      var from = e + pad0, to = extent - e - pad1;
+      return align === "center" ? Math.round(from + (to - from - span) / 2) : align === "flex-end" ? to - span : from;
+    };
+    var rowAlign = box.column ? box.p.alignItems : box.p.justifyContent, colAlign = box.column ? box.p.justifyContent : box.p.alignItems;
+    return {
+      g: g, i: a.i,
+      x: box.x + at(q.left, q.right, box.w, g.w, box.pd.l, box.pd.r, rowAlign),
+      y: box.y + at(q.top, q.bottom, box.h, g.h, box.pd.t, box.pd.b, colAlign),
+    };
+  }
+  // The room an absolute child of no width of its own is measured in: its
+  // content's, whatever it is.
+  var UNBOUNDED = 1e6;
 
   // A cell a node drew (text, a border, a background) always lands; a cell a
   // Box only keeps room with (padding, gaps, margins, slack) lands only where
