@@ -1344,8 +1344,8 @@ function cpField([name,kind,extra],v){
 const bdShut=new Set();
 // With nothing selected the panel names the export frame and how it fits.
 function cpFrameSummary(){
-  const f=bdFrame(bdDocNow().exportFrame), w=ModLayout.layout(BandEditor.toEngine(f.tree),cols()).w;
-  return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>cols()?"no":""}">${esc(fitWords(w,cols()))}</dd></dl>`;
+  const f=bdFrame(bdDocNow().exportFrame), room=bdRoom(f), w=ModLayout.layout(BandEditor.toEngine(f.tree),room).w;
+  return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>room?"no":""}">${esc(fitWords(w,room))}</dd></dl>`;
 }
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
@@ -1491,14 +1491,17 @@ function bdGridOf(f,c){
   }
   return clipTo(ModLayout.layoutScreen(tree,c),c);
 }
+// The cells a frame's tree is handed: the band, the terminal less AbovePrompt's
+// five `[-]` cells; anything else, the terminal's width.
+const bdRoom=f=>f.source&&bdSurface(f.source.surface).chrome?.kind==="above-prompt"?cols()-5:cols();
 function bdFrameCard(f){
   const tree=BandEditor.toEngine(f.tree), c=cols();
   const refused=ModLayout.validate(tree);
   const g=bdGridOf(f,c);
   bdGrids[f.id]=g;
   const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
-  const band=surf&&surf.chrome?.kind==="above-prompt", prompt=!surf||band;
-  const room=band?c-5:c, measured=ModLayout.layout(tree,room).w;
+  const prompt=!surf||surf.chrome?.kind==="above-prompt";
+  const room=bdRoom(f), measured=ModLayout.layout(tree,room).w;
   const ro=bdReadOnly(f.id);
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
@@ -1589,8 +1592,8 @@ function composeRender(){
   if(bdPanelStale||!sel){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   $("bd-code-name").textContent=`${bdFrame(doc.exportFrame).name}, the frame that exports`;
-  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
-  $("bd-fit").textContent=fitWords(fitW,cols()); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,cols())}`; $("bd-fit").classList.toggle("no",fitW>cols());
+  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room).w;
+  $("bd-fit").textContent=fitWords(fitW,room); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,room)}`; $("bd-fit").classList.toggle("no",fitW>room);
   document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`Insert a ${b.dataset.insert} (${b.dataset.key})`; });
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;

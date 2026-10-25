@@ -120,6 +120,13 @@ test_fixtures_typecheck_against_the_mods() {
         SKIP_REASON="no engine-written types in mods/cs"
         return 77
     fi
+    # npx prints its own complaint, not a tsc error, when no tsc is installed,
+    # which would read as a clean check.
+    if ! npx --no-install tsc --version >/dev/null 2>&1; then
+        echo "    SKIP: no tsc for npx to run"
+        SKIP_REASON="no tsc"
+        return 77
+    fi
     local config out
     config="$(mktemp "$SURFACES/tsconfig.check.XXXXXX")" || { echo "  FAIL: could not write the check's tsconfig"; return 1; }
     printf '{"extends": "%s", "compilerOptions": {"allowImportingTsExtensions": true}, "include": ["*.ts"]}\n' "$types/tsconfig.json" > "$config"
