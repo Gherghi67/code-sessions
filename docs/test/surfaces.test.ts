@@ -80,3 +80,31 @@ test('cs-update parts name the hotkey Button and a release heading', () => {
   expect(at('update-key')).toMatchObject({ type: 'Button', props: { key: 'cs-update-now', hotkey: '1', label: 'update now' } })
   expect(at('release-heading')).toMatchObject({ type: 'Text', children: ['2026.10.25'] })
 })
+
+// drawUser and drawCall, read by hand: every row after the 7-cell margin
+// (paddingLeft pad), a nested peer 2 cells further; hookNotice and peerLine
+// prefix their glyphs; a call's chips are Texts beside its words, no gap.
+test('cs-feed draws its rows after the name margin', () => {
+  expect(rows('cs-feed.UserMessage/hook-text', 80)).toEqual(['       \u25cb cs: the band names prompt 4'])
+  expect(rows('cs-feed.UserMessage/peer-nested', 80)).toEqual(['         \u21c4 fix-auth \u00b7 gate green, ready to land'])
+  expect(rows('cs-feed.ToolUse/call-errored', 80)).toEqual(['       \u25cbShow the working tree1 failed+1 line\u203a'])
+  expect(rows('cs-feed.ToolGroup/batch-failed', 80)[0]).toBe('       \u2715 3 helpers \u00b7 2 done \u00b7 1 failed \u00b7 42s \u203a')
+})
+
+// words.ts errorLine: one head in its tone, then its follow-up lines dim.
+test('cs-feed draws a reply error as its head and dim follow-ups', () => {
+  expect(rows('cs-feed.AssistantMessage/error-usage-limit', 80)).toEqual(['       Usage limit reached', '       resets 5pm', '       nothing is lost', '       /model to switch'])
+  const g = layout(state('cs-feed.AssistantMessage/error-usage-limit').draw(80, 'light'), 80)
+  expect(g.rows[0][7].st).toMatchObject({ color: '#b42318', dim: false })
+  expect(g.rows[1][7].st).toMatchObject({ dim: true })
+})
+
+// drawSettingsPane: the header, the switch, then per FIELDS row its title
+// Button, its value, and the command that flips it after a dot.
+test('cs-feed draws the Chat view pane from the mod\'s FIELDS', () => {
+  const pane = rows('cs-feed.Pane.cs-feed/clean', 80)
+  expect(pane[0]).toBe('Chat view clean \u00b7 /feed clean \u00b7 /feed normal \u00b7 /feed raw \u00b7 /feed close')
+  expect(pane[2]).toBe('[ Group a turn into one line ] on \u00b7 /feed group off')
+  expect(rows('cs-feed.Pane.cs-feed/raw', 80)[1]).toBe('[ Feed ] off')
+  expect(rows('cs-feed.Pane.cs-feed/kinds-hidden', 80).at(-2)).toContain('[ \u25cb peer ]')
+})

@@ -10,12 +10,21 @@ SURFACES="$REPO/docs/surfaces"
 setup() { :; }
 teardown() { :; }
 
-# Every mod source a bundle carries. Named here so run_all.sh --changed picks
-# this suite when one of them changes; the last test holds the list to what
-# the bundles actually carry.
+# Every mod source a bundle carries, and the ones the fixtures only take
+# types from. Named here so run_all.sh --changed picks this suite when one of
+# them changes; a test holds the first list to what the bundles carry.
 MOD_SOURCES="
 mods/cs/hooks/register.tsx
+mods/cs-feed/hooks/draw.tsx
+mods/cs-feed/hooks/settings.ts
+mods/cs-feed/hooks/transcript.ts
+mods/cs-feed/hooks/words.ts
 mods/cs-update/hooks/register.tsx
+"
+# shellcheck disable=SC2034 # read by run_all.sh --changed, which greps suites for a changed path
+TYPED_SOURCES="
+mods/cs-feed/hooks/session.ts
+mods/cs-feed/hooks/verdict.ts
 "
 
 _entries() { (cd "$SURFACES" && ls ./*.entry.ts | sed 's|^\./||; s|\.entry\.ts$||'); }
