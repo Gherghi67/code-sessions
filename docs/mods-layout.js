@@ -109,15 +109,20 @@
     };
   }
 
-  function layout(node, availWidth, at) {
+  // `fill`: the Box takes all of `availWidth` (Yoga's stretch), as the root
+  // does in the terminal and a Box does in a column; without it the tree is
+  // measured at its natural width.
+  function layout(node, availWidth, at, fill) {
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
     var path = at || [];
     if (!node) return grid([]);
     if (node.type === "Text") return grid(wrapCells(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
     if (node.type === "Button") return layoutButton(node, width, path);
-    if (node.type === "Box") return layoutBox(node, width, path);
+    if (node.type === "Box") return layoutBox(node, width, path, !!fill);
     return grid([]);
   }
+  // The tree as the terminal draws it in a row `width` cells wide.
+  function layoutScreen(node, width) { return layout(node, width, [], true); }
 
   // A Button as the 2.1.310 terminal draws it: a plain one is its hotkey in
   // suggestion, `: `, then its label, or the label alone with no hotkey; any
@@ -137,7 +142,7 @@
     return grid([cells.slice(0, Math.max(0, width))]);
   }
 
-  function layoutBox(node, width, path) {
+  function layoutBox(node, width, path, fill) {
     var p = node.props || {};
     if (p.display === "none") return grid([]);
     var m = margins(p), pd = pads(p);
@@ -150,6 +155,8 @@
     // Room the children get: an explicit width fixes it, else what is left of
     // the band after this Box's own margins and chrome.
     var inner = outer ? Math.max(0, outer - chrome) : Math.max(0, width - m.l - m.r - chrome);
+    // The fewest cells a stretched Box's content takes: all it was given.
+    var least = !outer && fill ? inner : 0;
 
     var gap = num(p.gap);
     var dir = String(p.flexDirection || "row");
@@ -160,10 +167,16 @@
     // overflows (the terminal clips) rather than starving its later children.
     // A child's path keeps its index among all the children, falsy ones too.
     var blocks = [];
-    (node.children || []).forEach(function (kid, i) { if (kid) blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])) }); });
+    (node.children || []).forEach(function (kid, i) { if (kid) blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
     if (reverse) blocks.reverse();
+    // A column stretches each Box it holds that sets no width of its own to
+    // the column's width, unless the column aligns its items otherwise.
+    if (column && (p.alignItems === undefined || p.alignItems === "stretch")) {
+      var colWidth = outer ? inner : Math.max(least, blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0));
+      blocks.forEach(function (b) { if (b.node.type === "Box" && typeof (b.node.props || {}).width !== "number") b.g = layout(b.node, colWidth, b.at, true); });
+    }
 
-    var body = column ? stackColumn(blocks, inner, gap, p, outer, path) : stackRow(blocks, inner, gap, p, outer, path);
+    var body = column ? stackColumn(blocks, inner, gap, p, outer, path, least) : stackRow(blocks, inner, gap, p, outer, path, least);
 
     // Height: an explicit height pads or (with overflow hidden) clips the body.
     var bodyRows = body.rows;
@@ -227,12 +240,11 @@
     return grid(rows);
   }
 
-  function stackRow(blocks, inner, gap, p, outer, path) {
+  function stackRow(blocks, inner, gap, p, outer, path, least) {
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
     var h = blocks.reduce(function (a, b) { return Math.max(a, b.g.h); }, 0) || (blocks.length ? 1 : 0);
     var content = blocks.reduce(function (a, b) { return a + b.g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
-    var fixed = outer || (p.width === undefined && inner ? 0 : inner);
-    var room = outer ? inner : (fixed || content);
+    var room = outer ? inner : Math.max(least, content);
 
     // flexGrow shares the slack before justifyContent sees any of it.
     var grows = blocks.map(function (b) { return num((b.node.props || {}).flexGrow); });
@@ -260,10 +272,10 @@
     return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt, path) : padRow(r, w, fillSt, path); }));
   }
 
-  function stackColumn(blocks, inner, gap, p, outer, path) {
+  function stackColumn(blocks, inner, gap, p, outer, path, least) {
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
     var natural = blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
-    var w = outer ? inner : natural;
+    var w = outer ? inner : Math.max(least, natural);
     var rows = [];
     blocks.forEach(function (b, i) {
       if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt, path));
@@ -394,7 +406,7 @@
     return out;
   }
 
-  var api = { layout: layout, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
+  var api = { layout: layout, layoutScreen: layoutScreen, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ModLayout = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

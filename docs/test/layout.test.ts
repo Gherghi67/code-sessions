@@ -250,3 +250,25 @@ test('a dim Button draws dim, and a colour or bold set on a Button is not the en
   expect(layout(Btn({ label: 'x', plain: true, dimColor: true }), 40).rows[0][0].st.dim).toBe(true)
   expect(layout(Btn({ label: 'x', plain: true, color: 'claude', bold: true }), 40).rows[0][0].st).toMatchObject({ color: '', bold: false })
 })
+
+// Yoga's default alignItems is stretch: a Box in a column takes the column's
+// width, and the root takes the terminal's, so a flexGrow child gets the
+// slack (cs-feed's time column) and justifyContent has room (its desktop
+// band's flex-end). layoutScreen draws a tree as the terminal does, the root
+// filling the row; layout measures it at its natural width.
+test('a row Box stretches to the width of its column parent, so flexGrow takes the slack', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  const you = B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({}, 'you')), T({}, '09:41')))
+  expect(toText(layoutScreen(you, 20))).toEqual(['you            09:41'])
+  expect(toText(layoutScreen(B({ flexDirection: 'column' }, B({ justifyContent: 'flex-end', gap: 1 }, T({}, 'a'), T({}, 'b'))), 10))).toEqual(['       a b'])
+  expect(toText(layout(B({ flexDirection: 'column', width: 8 }, B({}, B({ flexGrow: 1 }, T({}, 'a')), T({}, 'b'))), 40))).toEqual(['a      b'])
+})
+
+test('a column aligned flex-start does not stretch its children, and a stretched row still measures what overflows it', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  const g = layoutScreen(B({ flexDirection: 'column', alignItems: 'flex-start' }, B({}, B({ flexGrow: 1 }, T({}, 'a')), T({}, 'b'))), 10)
+  expect(toText(g)).toEqual(['ab        '])
+  expect(layoutScreen(B({ flexDirection: 'column' }, B({}, T({}, 'abcde'), T({}, 'fghij'))), 5).w).toBe(10)
+  expect(toText(layout(you2(), 40))).toEqual(['you09:41'])
+})
+const you2 = () => B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({}, 'you')), T({}, '09:41')))

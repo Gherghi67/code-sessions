@@ -165,3 +165,14 @@ test('cs-mermaid draws a chart that fits as absolute blocks on a relative canvas
   const start = tree.children[0].children.find((n: any) => n.props.position === 'absolute' && n.children.some((t: any) => String(t.children[0]).trim() === 'Start'))
   expect(start.children.map((t: any) => t.props.backgroundColor)).toEqual(['#D3F9D8', '#D3F9D8', '#D3F9D8'])
 })
+
+// drawUser's you row: the 7-cell margin, the words in a flexGrow Box, then
+// the time, so the time ends the terminal's row; the desktop band is
+// justified flex-end, so its pills end it too.
+test('cs-feed\'s time column and desktop band reach the right edge of the row', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  const screen = (id: string) => toText(layoutScreen(state(id).draw(80, 'light'), 80))
+  expect(screen('cs-feed.UserMessage/you-at')[1]).toBe('you    fix the login redirect' + ' '.repeat(80 - 7 - 22 - 5) + '09:41')
+  expect(screen('cs-feed.AbovePrompt/desktop')[0].endsWith('⚗ Test · bun test · 12s')).toBe(true)
+  expect(screen('cs-feed.AbovePrompt/desktop')[0].length).toBe(80)
+})
