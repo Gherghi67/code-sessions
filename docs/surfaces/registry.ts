@@ -17,11 +17,17 @@ export type Part = { id: string; name: string; state: string; path: number[] }
 // the band's reserved `[-]` cells.
 export type Chrome = { kind: 'pane'; title: string; rows: number } | { kind: 'above-prompt' }
 
+// `generated`: the mod's own draw code builds the tree. `chrome`: Claude Code
+// draws the row around words the mod hands it (a toast, a dialog, a reply),
+// and the lab redraws that row from 2.1.310's components (chrome.ts) with the
+// mod's words.
+export type Source = 'generated' | 'chrome'
+
 export type Surface = {
   id: string
   mod: string
   slot: string
-  source: 'generated'
+  source: Source
   global: string
   chrome?: Chrome
   states: State[]

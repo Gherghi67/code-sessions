@@ -5,7 +5,7 @@ import { test, expect, beforeEach } from 'bun:test'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, drawPane, parseSpan, stripInline, PANE, OPTION, HEARTBEAT, DONE, type PaneView } from '../hooks/register.tsx'
+import { register, drawPane, parseSpan, stripInline, PANE, OPTION, HEARTBEAT, DONE, TOASTS, REPLIES, type PaneView } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -571,7 +571,7 @@ test('a failed write to the DONE marker toasts and the pane still shows done', a
     written[path] = text
   }
   await buttons(await draw())[0].props.onPress()
-  expect(toasts).toEqual(['cs-update: could not record the finished update: disk full'])
+  expect(toasts).toEqual(['could not record the finished update: disk full'])
   const words = texts(await draw()).join('\n')
   expect(words).toContain('Update finished. Takes effect on your next launch.')
 })
@@ -626,3 +626,10 @@ for (const [name, arrange, fixture] of paneViews) {
     expect(JSON.stringify(drawPane(fixture, { Box: 'Box', Text: 'Text', Button: 'Button' } as any, async () => {}))).toBe(drawn)
   })
 }
+
+// Claude Code leads every toast and command reply with the name of the plugin
+// that sent it, so a line that names cs-update itself reads `cs-update: cs-update: ...`.
+test('no toast or command reply the mod hands the engine starts with its own name', () => {
+  const lines = [...Object.values(TOASTS), ...Object.values(REPLIES)].map(entry => typeof entry === 'function' ? entry('x') : entry)
+  expect(lines.filter(line => line.startsWith('cs-update:'))).toEqual([])
+})

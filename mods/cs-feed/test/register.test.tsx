@@ -81,3 +81,20 @@ test('session start issues both command registrations before waiting', async ($,
   expect(await $.session.start({ cwd: '/session', surface: 'terminal', isInteractive: true })).toEqual({ cwd: '/session' })
   expect(calls).toEqual(['register feed', 'register helpers', 'engine start'])
 })
+
+test('session start registers /feed and /helpers with their menu words, and /helpers answers where the pane opens', async ($, on) => {
+  const specs: unknown[] = []
+  on('command.register', async ($, e) => { specs.push({ ...e }); return { value: { command: e.name } } })
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', () => ({ deny: 'ENOENT: no such file or directory' }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ cwd: '/session', surface: 'terminal', isInteractive: true })
+  expect(specs).toEqual([
+    { name: 'feed', description: 'Chat view for this session: on, off, clean, normal, raw, or one setting', argumentHint: 'on | off | clean | normal | raw | status | <setting> <value>', immediate: true },
+    { name: 'helpers', description: "Show each helper's own work, call by call", immediate: true },
+  ])
+  expect(await $.command.run({ command: 'helpers', args: '', origin: { kind: 'composer' }, presentation: { columns: 80, isFullscreen: false } })).toEqual({ text: 'Helpers open above the prompt.' })
+})

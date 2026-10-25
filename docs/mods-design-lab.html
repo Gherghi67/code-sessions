@@ -202,6 +202,7 @@ body.app .rail,body.app .head{display:none}
 #bd-comps .csurf > summary{padding-left:18px;font-weight:500}
 #bd-comps .csurf > summary .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #bd-comps .cnt{font-size:11px;color:var(--fg2);font-variant-numeric:tabular-nums}
+#bd-comps .cgroup{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2);padding:8px 10px 2px 18px;border-top:1px dashed var(--line);margin-top:4px}
 #bd-comps .ckind{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2);padding:4px 10px 2px 30px}
 #bd-comps .crow{display:flex;align-items:center;gap:7px;width:100%;min-height:24px;padding:0 10px 0 30px;background:none;border:0;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
 #bd-comps .crow:hover{background:var(--page)}
@@ -778,6 +779,7 @@ const PALETTE={
   suggestion:{light:"rgb(87,105,247)",dark:"rgb(177,185,249)",why:"a survey's hotkey digit, links to act on"},
   permission:{light:"rgb(87,105,247)",dark:"rgb(177,185,249)",why:"the permission dialog's border"},
   promptBorder:{light:"rgb(153,153,153)",dark:"rgb(136,136,136)",why:"the composer's frame"},
+  userMessageBackground:{light:"rgb(240,240,240)",dark:"rgb(55,55,55)",why:"the ground of your own row, a slash command's echo (2.1.310)"},
   success:{light:"rgb(44,122,57)",dark:"rgb(78,186,101)",why:"a done mark"},
   warning:{light:"rgb(150,108,30)",dark:"rgb(255,193,7)",why:"the amber band"},
   error:{light:"rgb(171,43,63)",dark:"rgb(255,107,128)",why:"the red band, a failed row"},
@@ -1336,7 +1338,7 @@ function bdEdit(action){
 let bdRefusal=null;
 function bdReadOnly(frame){
   const f=bdFrame(frame);
-  if(f.ref) return `${f.name} is a reference frame: ${BandEditor.uneditable(BandEditor.toEngine(f.tree))}, which the designer does not edit`;
+  if(f.ref) return `${f.name} is a reference frame: ${bdRefWhy(f.source&&bdSurface(f.source.surface),BandEditor.toEngine(f.tree))}, which the designer does not edit`;
   return bdPreview.has(frame)?`${f.name} is in preview, drawn as under the pointer: turn preview off to edit it`:null;
 }
 function bdRefuse(frame){ bdRefusal={frame,text:bdReadOnly(frame)}; composeRender(); }
@@ -1361,7 +1363,7 @@ function cpFrameSummary(){
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
   const sel=bdDocNow().selection, ro=bdReadOnly(sel.frame);
-  if(ro) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
+  if(ro) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?bdDrawnByEngine(bdFrame(sel.frame))?"Reference frame: drawn by Claude Code around the mod's words, read only.":"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
     +`<dl class="fsum">${Object.keys(n.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof n.props[k]==="object"?JSON.stringify(n.props[k]):String(n.props[k]))}</dd>`).join("")}</dl>`;
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
@@ -1485,6 +1487,11 @@ function bdLayers(){
 const bdRowPath=row=>row.dataset.path?row.dataset.path.split(",").map(Number):[];
 // ---- surfaces: every cs mod surface the bundles carry (docs/surfaces) ----
 const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Error(`no surface ${id} in docs/surfaces`); return s; };
+// Why a state of a surface opens as a reference frame, or null for one the
+// designer edits: Claude Code draws a chrome row around the mod's words, and
+// draws a Markdown or a Code node a mod's own tree holds.
+const bdRefWhy=(s,tree)=>s&&s.source==="chrome"?"Claude Code draws this row around the mod's words":BandEditor.uneditable(tree);
+const bdDrawnByEngine=f=>!!(f.source&&bdSurface(f.source.surface).source==="chrome");
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
@@ -1553,7 +1560,7 @@ function bdFrameCard(f){
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
-    +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
+    +(g.h?"":`<p class="why empty">${bdDrawnByEngine(f)?"draws nothing: the mod takes this row away":"draws nothing: the hook hands back the engine's own rows"}</p>`)
     +`<div class="strip"><div class="term">${bdPaint(g)}`+(prompt?`\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span>`:"")+`</div></div>`
     +(measured>room?`<p class="why no">${esc(fitWords(measured,room))}</p>`:"")
     +`</div>`;
@@ -1561,23 +1568,30 @@ function bdFrameCard(f){
 // The Components panel: each mod, its surfaces, and under each its states (a
 // press adds a frame drawn in that state) and its parts (a drag drops one in
 // a frame; a press inserts it by the selection).
+// The rows Claude Code draws around a mod's words come after the surfaces
+// the mod draws itself, under a heading of their own.
 function bdComponents(){
   const mods=[...new Set(SURFACES.map(s=>s.mod))];
-  return mods.map(m=>`<details class="cmod" open><summary>${esc(m)}</summary>`+SURFACES.filter(s=>s.mod===m).map(s=>{
+  const surf=s=>{
     const states=s.states.map(st=>{
-      const why=BandEditor.uneditable(st.draw(cols(),theme()));
+      const why=bdRefWhy(s,st.draw(cols(),theme()));
       return `<button type="button" class="crow" data-add="${esc(s.id)}/${esc(st.id)}" title="${esc(st.name)}${why?` (${esc(why)}: a reference frame)`:""}"><span class="lname">${esc(st.id)}</span>${why?`<span class="cnt">reference</span>`:""}</button>`;
     }).join("");
     const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
-    return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
+    return `<details class="csurf" data-surface="${esc(s.id)}" data-source="${esc(s.source)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
       +(parts?`<div class="ckind">Parts</div>${parts}`:"")+`<div class="ckind">States</div>${states}</details>`;
-  }).join("")+`</details>`).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
+  };
+  return mods.map(m=>{
+    const own=SURFACES.filter(s=>s.mod===m&&s.source!=="chrome"), chrome=SURFACES.filter(s=>s.mod===m&&s.source==="chrome");
+    return `<details class="cmod" open><summary>${esc(m)}</summary>${own.map(surf).join("")}`
+      +(chrome.length?`<div class="cgroup" title="Rows Claude Code draws with the words ${esc(m)} hands it: read only">Drawn by Claude Code</div>${chrome.map(surf).join("")}`:"")+`</details>`;
+  }).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
 }
 // A frame drawn by a surface's state, at the page's width and theme, named
 // `<mod>.<slot>/<state>`.
 function bdAddSurfaceFrame(key){
   const [sid,stid]=key.split("/"), tree=bdSurfaceState(sid,stid).draw(cols(),theme());
-  bdEdit({type:"addFrame",tree:BandEditor.fromEngine(tree),name:key,source:{surface:sid,state:stid},ref:!!BandEditor.uneditable(tree)});
+  bdEdit({type:"addFrame",tree:BandEditor.fromEngine(tree),name:key,source:{surface:sid,state:stid},ref:!!bdRefWhy(bdSurface(sid),tree)});
 }
 function bdCompsNote(text){ const n=$("bd-comps-note"); n.hidden=!text; n.textContent=text; }
 // A part pressed: inserted by the selection, as the + buttons insert.

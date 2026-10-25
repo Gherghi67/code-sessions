@@ -18,6 +18,7 @@ mods/cs/hooks/register.tsx
 mods/cs-feed/hooks/draw.tsx
 mods/cs-feed/hooks/settings.ts
 mods/cs-feed/hooks/transcript.ts
+mods/cs-feed/hooks/verdict.ts
 mods/cs-feed/hooks/words.ts
 mods/cs-mermaid/hooks/layout.ts
 mods/cs-mermaid/hooks/parse.ts
@@ -28,7 +29,6 @@ mods/cs-update/hooks/register.tsx
 # shellcheck disable=SC2034 # read by run_all.sh --changed, which greps suites for a changed path
 TYPED_SOURCES="
 mods/cs-feed/hooks/session.ts
-mods/cs-feed/hooks/verdict.ts
 "
 
 _entries() { (cd "$SURFACES" && ls ./*.entry.ts | sed 's|^\./||; s|\.entry\.ts$||'); }
@@ -139,11 +139,34 @@ test_fixtures_typecheck_against_the_mods() {
     assert_eq "" "$ours" "tsc reports nothing outside the mods' own files" || return 1
 }
 
+# The lab draws the toasts, dialogs, transcript notices, command replies and
+# slash menu rows the engine draws for a mod from the tables each mod exports
+# (cs and cs-update: register.tsx; cs-feed: words.ts). A line a call site
+# writes inline reaches the screen but never the lab, so every call site that
+# hands the engine one names its table instead. Comment lines are skipped.
+WORD_SITES="
+mods/cs/hooks/register.tsx
+mods/cs-update/hooks/register.tsx
+mods/cs-feed/hooks/register.tsx
+mods/cs-feed/hooks/session.ts
+"
+test_mods_hand_the_engine_their_lines_from_their_tables() {
+    local f inline=""
+    for f in $WORD_SITES; do
+        [ -f "$REPO/$f" ] || { echo "  FAIL: $f is gone; name the file that hands the engine its lines"; return 1; }
+        inline="$inline$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$REPO/$f" \
+            | grep -nE '\$\.ui\.(toast|log|ask)\([[:space:]]*[`'"'"'"]|\$\.command\.register\([[:space:]]*\{|return \{ text: [`'"'"'"]' \
+            | sed "s|^|$f:|")"
+    done
+    assert_eq "" "$inline" "no toast, log, dialog, reply or command registration is written inline" || return 1
+}
+
 run_test test_committed_bundles_are_what_a_rebuild_prints
 run_test test_every_bundle_has_its_entry
 run_test test_bundles_are_plain_scripts
 run_test test_lab_loads_the_shim_every_bundle_and_the_registry_in_order
 run_test test_mod_sources_named_here_are_the_ones_the_bundles_carry
 run_test test_fixtures_typecheck_against_the_mods
+run_test test_mods_hand_the_engine_their_lines_from_their_tables
 
 report_results

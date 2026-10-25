@@ -15,6 +15,28 @@ export function settingValue(value: boolean | string): string { return typeof va
 export function settingCommand(word: string, value: boolean | string): string { return `/feed ${word} ${settingValue(value)}` }
 export function kindChip(kind: string, shown: boolean): string { return `${shown ? marks.live : marks.idle} ${kind}` }
 
+// The lines the feed hands the engine to draw on surfaces of the engine's own:
+// its transcript notices (the engine leads each with `cs-feed: `), the
+// replies of /feed and /helpers that are not a setting's (settings.ts
+// transition holds those) and its slash menu rows.
+export const logs = {
+  viewUnusable: (path: string, reason: string) => `could not use ${path}: ${reason}; the feed draws its default view until /feed writes the file again`,
+  unread: (path: string, reason: string) => `could not read ${path}: ${reason}`,
+  feedOff: (refusal: string) => `the feed is off in this session: ${refusal}`,
+  clockStopped: (reason: string) => `clock stopped: ${reason}`,
+  pulseStopped: (reason: string) => `pulse stopped: ${reason}`,
+  helperUnread: (id: string, deny: string) => `could not read helper ${id}'s transcript: ${deny}`,
+} as const
+export const replies = {
+  notASession: 'this directory is not a cs session (no .cs/local), so nothing changed.',
+  refused: (refusal: string) => `no feed change in this session: ${refusal}`,
+  helpersOpen: 'Helpers open above the prompt.',
+} as const
+export const commands = {
+  feed: { name: 'feed', description: 'Chat view for this session: on, off, clean, normal, raw, or one setting', argumentHint: 'on | off | clean | normal | raw | status | <setting> <value>', immediate: true },
+  helpers: { name: 'helpers', description: "Show each helper's own work, call by call", immediate: true },
+} as const
+
 export function moreKinds(count: number): string { return `+${count} more ${count === 1 ? 'kind' : 'kinds'}` }
 
 export function helperCounts(states: readonly import('./verdict').HelperState[], durationMs?: number): string {

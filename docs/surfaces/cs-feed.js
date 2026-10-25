@@ -5,6 +5,7 @@
     clean: { fields: { group: true, clear: true, keep: false, style: "subtle", commands: "grouped", after: "clear" }, help: "your messages, Claude's replies, and one line per turn for the work" },
     normal: { fields: { group: false, clear: false, keep: true, style: "subtle", commands: "grouped", after: "keep" }, help: "each run of tool calls is one line with counts" }
   };
+  var RAW_HELP = "Claude Code's own drawing";
   var DEFAULT_VIEW = { ...PRESETS.clean.fields, hide: [] };
   var spoken = (value) => typeof value === "boolean" ? value ? "on" : "off" : value;
   var FIELDS = [
@@ -99,6 +100,34 @@
     const normalized = word === "yes" || word === "true" ? "on" : word === "no" || word === "false" ? "off" : word;
     return values.find((value) => spoken(value) === normalized);
   }
+  function transition(cmd, current) {
+    switch (cmd.kind) {
+      case "open":
+        return { pane: "open", reply: `Chat view: ${modeOf(current)}. Settings are open above the prompt; /feed close shuts them.` };
+      case "close":
+        return { pane: "close", reply: "Chat view settings closed." };
+      case "status":
+        return { reply: `${current.on ? "on" : "off"} · ${modeOf(current)}` };
+      case "usage":
+        return { reply: usageLine() };
+      case "switch":
+        return { session: { ...current, on: cmd.on }, reply: `Chat view: ${cmd.on ? "on" : "off"}.` };
+      case "preset":
+        return { session: cmd.to === "raw" ? { ...current, on: false } : { on: true, view: { ...PRESETS[cmd.to].fields, hide: current.view.hide } }, reply: `Chat view: ${cmd.to}. ${cmd.to === "raw" ? RAW_HELP : PRESETS[cmd.to].help}.` };
+      case "hide":
+      case "show": {
+        const hide = cmd.kind === "hide" ? [...new Set([...current.view.hide, cmd.what])] : current.view.hide.filter((kind) => kind !== cmd.what);
+        return { session: { on: true, view: { ...current.view, hide } }, reply: `Chat view: ${cmd.what} ${cmd.kind === "hide" ? "hidden" : "shown"}.` };
+      }
+      case "set": {
+        const view = { ...current.view, [cmd.field]: cmd.value };
+        return { session: { on: true, view }, reply: `Chat view: ${cmd.field} ${spoken(cmd.value)}.` };
+      }
+    }
+  }
+  function usageLine() {
+    return ["/feed opens the settings", "/feed on | off | status", "/feed clean | normal | raw", ...FIELDS.map((spec) => `/feed ${spec.word} ${spec.values.map(spoken).join("|")}`), "/feed hide|show <kind>", "/feed close"].join(" · ");
+  }
 
   // mods/cs-feed/hooks/words.ts
   var labels = { you: "you", claude: "claude", backgroundUpdate: "background task update", reportHint: "ctrl+o shows the whole report" };
@@ -116,6 +145,23 @@
   function kindChip(kind, shown) {
     return `${shown ? marks.live : marks.idle} ${kind}`;
   }
+  var logs = {
+    viewUnusable: (path, reason) => `could not use ${path}: ${reason}; the feed draws its default view until /feed writes the file again`,
+    unread: (path, reason) => `could not read ${path}: ${reason}`,
+    feedOff: (refusal) => `the feed is off in this session: ${refusal}`,
+    clockStopped: (reason) => `clock stopped: ${reason}`,
+    pulseStopped: (reason) => `pulse stopped: ${reason}`,
+    helperUnread: (id, deny) => `could not read helper ${id}'s transcript: ${deny}`
+  };
+  var replies = {
+    notASession: "this directory is not a cs session (no .cs/local), so nothing changed.",
+    refused: (refusal) => `no feed change in this session: ${refusal}`,
+    helpersOpen: "Helpers open above the prompt."
+  };
+  var commands = {
+    feed: { name: "feed", description: "Chat view for this session: on, off, clean, normal, raw, or one setting", argumentHint: "on | off | clean | normal | raw | status | <setting> <value>", immediate: true },
+    helpers: { name: "helpers", description: "Show each helper's own work, call by call", immediate: true }
+  };
   function moreKinds(count) {
     return `+${count} more ${count === 1 ? "kind" : "kinds"}`;
   }
@@ -900,12 +946,120 @@
   }
   var EMPTY = { calls: new Map, turns: [], byId: new Map, runs: new Map, background: [] };
 
+  // mods/cs-feed/hooks/verdict.ts
+  function decideSpinner(props, cx) {
+    if (props.message !== null || !cx.open)
+      return { verdict: { draw: "engine" }, live: false };
+    const steps = cx.open.steps.length;
+    const running = cx.open.steps.map((id) => cx.t.calls.get(id)).findLast((call) => call?.outcome.state === "running");
+    const words = cx.view.group && props.mode === "responding" ? "Writing" : cx.view.group && running ? callWords(running, "present") : steps ? "Working" : "Thinking";
+    const helpers = cx.agents.filter((agent) => !agent.parentId && (agent.status === "running" || agent.status === "pending")).length;
+    const message = words + (steps ? ` · step ${steps}` : "") + (helpers ? ` · ${helpers} ${helpers === 1 ? "helper" : "helpers"} working` : "");
+    return { verdict: { draw: "rewrite", message, suffix: "" }, live: true, clock: helpers ? "tick" : undefined };
+  }
+  function sessionModes(modes, view) {
+    return [...modes, `feed ${modeOf({ on: true, view })} · /feed to switch`];
+  }
+
   // docs/surfaces/registry.ts
   function elements() {
     const el = globalThis.LabElements;
     if (el === undefined)
       throw new Error("the lab shim (docs/surfaces/shim.js) is not loaded: LabElements is undefined");
     return el;
+  }
+
+  // docs/surfaces/chrome.ts
+  var cells = (s) => Array.from(s).length;
+  function commandReply(plugin, command, args, reply) {
+    const el = elements();
+    return el.Box({ flexDirection: "column", children: [
+      el.Box({ flexDirection: "column", backgroundColor: "userMessageBackground", paddingRight: 1, children: [
+        el.Text({ children: [el.Text({ color: "inactive", children: "❯" }), " ", el.Text({ color: "text", children: `/${[command, args].filter(Boolean).join(" ")}` })] })
+      ] }),
+      el.Box({ children: [
+        el.Text({ dimColor: true, children: "  ⎿  " }),
+        el.Box({ flexDirection: "column", flexGrow: 1, children: [el.Markdown({ text: `${plugin}: ${reply}` })] })
+      ] })
+    ] });
+  }
+  function menuRows(commands, selected, cols) {
+    const el = elements();
+    const widest = Math.max(...commands.map((c) => cells(`/${c.name}`))) + 5;
+    const cap = Math.floor(cols * 0.4);
+    const pointer = cells("❯ ");
+    const lane = cols - cap - 4 - 1;
+    const column = widest > cap ? cap + (lane < 0 ? pointer : Math.min(pointer, lane)) : widest;
+    const room = Math.max(0, cols - column - 4);
+    return el.Box({ paddingX: 2, children: [el.Box({ flexDirection: "column", children: commands.flatMap((c, i) => {
+      const on = i === selected;
+      const ink = on ? "suggestion" : undefined;
+      const name = `/${c.name}`;
+      const [first, rest] = firstRow(c.description, room);
+      const row = el.Text({ wrap: "truncate", children: [
+        el.Text({ color: ink, dimColor: !on, children: on ? "❯ " : "  " }),
+        el.Text({ color: ink, dimColor: !on, children: name }),
+        el.Text({ color: ink, dimColor: !on, children: " ".repeat(Math.max(0, column - cells(name) - 2)) }),
+        el.Text({ color: ink, dimColor: !on, children: first })
+      ] });
+      if (rest === "")
+        return [row];
+      return [row, el.Text({ wrap: "truncate", children: [" ".repeat(column), el.Text({ color: ink, dimColor: !on, children: cut(rest, Math.max(0, cols - column - 4)) })] })];
+    }) })] });
+  }
+  function firstRow(text, room) {
+    if (room <= 0 || cells(text) <= room)
+      return [text, ""];
+    const head = Array.from(text).slice(0, room).join("");
+    const after = Array.from(text).slice(room).join("");
+    if (after.startsWith(" "))
+      return [head, after.trimStart()];
+    const space = head.lastIndexOf(" ");
+    return space > 0 ? [head.slice(0, space), text.slice(space + 1)] : [head, after];
+  }
+  function cut(text, room) {
+    if (cells(text) <= room)
+      return text;
+    return room < 1 ? "" : Array.from(text).slice(0, room - 1).join("") + "…";
+  }
+  function logRow(plugin, text, cols) {
+    const el = elements();
+    return el.Box({ width: cols, children: [
+      el.Box({ minWidth: 2, children: [el.Text({ color: "inactive", children: "⏺" })] }),
+      el.Box({ flexDirection: "column", width: cols - 10, children: [el.Text({ color: "inactive", wrap: "wrap", children: `${plugin}: ${text}` })] })
+    ] });
+  }
+  function workingLine(w) {
+    const el = elements();
+    const dim = (s) => el.Text({ dimColor: true, children: s });
+    return el.Box({ flexDirection: "column", children: [el.Box({ flexWrap: "wrap", marginTop: 1, children: [
+      el.Box({ width: 2, height: 1, children: [el.Text({ color: "claude", children: "✻" })] }),
+      el.Text({ color: "claude", children: w.suffix === "…" && /(…|\.\.\.)$/.test(w.message) ? w.message : w.message + w.suffix }),
+      el.Text({ children: " " }),
+      dim("("),
+      dim(w.elapsed),
+      dim(" · "),
+      el.Box({ children: [el.Box({ width: 2, children: [dim("↓")] }), dim(`${w.tokens} tokens`)] }),
+      dim(")")
+    ] })] });
+  }
+  function footerModes(modes, cols) {
+    const el = elements();
+    return el.Box({ width: cols, paddingX: 2, justifyContent: "flex-end", children: modes.length === 0 ? [] : [el.Text({ dimColor: true, children: modes.join(" & ") })] });
+  }
+  function backgroundHint(hint) {
+    const el = elements();
+    return el.Box({ flexDirection: "column", children: hint === "" ? [] : [el.Box({ paddingLeft: 5, children: [el.Text({ dimColor: true, children: hint })] })] });
+  }
+  function turnLine(verb, duration, done) {
+    const el = elements();
+    return el.Box({ children: [
+      el.Box({ minWidth: 2, children: [el.Text({ dimColor: true, children: "✻" })] }),
+      el.Text({ children: [el.Text({ dimColor: true, children: `${verb} for ${duration} · done ${done}` })] })
+    ] });
+  }
+  function nothing() {
+    return elements().Box({});
   }
 
   // docs/surfaces/cs-feed.fixtures.ts
@@ -1085,6 +1239,63 @@
     state("failed", "reading where a helper failed", helpersPane([{ name: "Plan", status: "failed", elapsedMs: 9000, calls: ["Ran the tests"] }])),
     state("mixed", "reading several helpers, newest first", helpersPane([WORKING, { name: "Plan", status: "finished", elapsedMs: 30000, calls: [] }, { name: "general-purpose", status: "stopped", calls: ["Read app.py"] }]))
   ];
+  var ON = { on: true, view: clean2 };
+  var feedReply = (args) => () => commandReply("cs-feed", "feed", args, transition(parseFeedArgs(args), ON).reply);
+  var commandStates = [
+    state("open", "opening the Chat view settings with /feed", feedReply("")),
+    state("close", "closing the settings with /feed close", feedReply("close")),
+    state("status", "asking /feed status", feedReply("status")),
+    state("on", "turning the feed on", feedReply("on")),
+    state("off", "turning the feed off", feedReply("off")),
+    state("clean", "choosing the clean view", feedReply("clean")),
+    state("normal", "choosing the normal view", feedReply("normal")),
+    state("raw", "choosing Claude Code's own drawing", feedReply("raw")),
+    state("hide-kind", "hiding the peer rows", feedReply("hide peer")),
+    state("set-field", "setting one field", feedReply("style line")),
+    state("usage", "typing a /feed word it does not take", feedReply("loud")),
+    state("not-a-session", "running /feed outside a cs session", () => commandReply("cs-feed", "feed", "on", replies.notASession)),
+    state("refused", "running /feed in a session cs refuses", () => commandReply("cs-feed", "feed", "on", replies.refused(".cs/local is tracked by git"))),
+    state("helpers", "opening the Helpers pane with /helpers", () => commandReply("cs-feed", "helpers", "", replies.helpersOpen))
+  ];
+  var menuStates = [
+    state("feed-selected", "typing /f in the prompt", (cols) => menuRows([commands.feed, commands.helpers], 0, cols)),
+    state("helpers-selected", "moving to /helpers in the slash menu", (cols) => menuRows([commands.feed, commands.helpers], 1, cols))
+  ];
+  var feedLog = (text) => (cols) => logRow("cs-feed", text, cols);
+  var logStates = [
+    state("view-unusable", "loading a session whose feed-view file is torn", feedLog(logs.viewUnusable("/work/.cs/local/feed-view", "feed-view is torn: missing closing newline"))),
+    state("unread", "loading a session whose feed-view file cannot be read", feedLog(logs.unread("/work/.cs/local/feed-view", "cs-feed: $.fs.read: EACCES: permission denied"))),
+    state("feed-off", "working in a session cs refuses, with the feed planted on", feedLog(logs.feedOff(".cs/local is tracked by git"))),
+    state("clock-stopped", "watching the clock stop when its write is refused", feedLog(logs.clockStopped("cs-feed: $.state.set: tick refused"))),
+    state("pulse-stopped", "watching the pulse stop when its write is refused", feedLog(logs.pulseStopped("cs-feed: $.state.set: pulse refused"))),
+    state("helper-unread", "opening the Helpers pane when a helper's transcript cannot be read", feedLog(logs.helperUnread("checker", "no transcript for checker")))
+  ];
+  var RUNNING = id(9);
+  var OPEN = { id: TURN, first: id(1), steps: [id(1), id(2), id(3)], runs: [RUN] };
+  var working = (open, over = {}) => (cols) => {
+    const agents = Array.from({ length: over.agents ?? 0 }, (_, i) => ({ id: `helper-${i}`, type: "Explore", description: "Read the tests", status: "running" }));
+    const cx = { ...context(cols, clean2, over.t ?? transcript), open, agents };
+    const { verdict } = decideSpinner({ message: null, mode: over.mode ?? "requesting" }, cx);
+    return verdict.draw === "rewrite" ? workingLine({ message: verdict.message, suffix: verdict.suffix, elapsed: "24s", tokens: "1.2k" }) : workingLine({ message: "Working", suffix: "…", elapsed: "24s", tokens: "1.2k" });
+  };
+  var withRunning = { ...transcript, calls: new Map([...transcript.calls, [RUNNING, filed(9, "Bash", { command: "bun test", description: "Run the tests" }, { state: "running" }, RUN)]]) };
+  var spinnerStates = [
+    state("engine", "working with the feed off, the engine's own word", () => workingLine({ message: "Working", suffix: "…", elapsed: "24s", tokens: "1.2k" })),
+    state("engine-ellipsis", "working with the feed off on a todo whose active form ends in an ellipsis", () => workingLine({ message: "Running the suites…", suffix: "…", elapsed: "24s", tokens: "1.2k" })),
+    state("thinking", "waiting while Claude thinks before its first step", working({ steps: [], runs: [] })),
+    state("working", "waiting on a turn three steps in", working(OPEN)),
+    state("call", "waiting on a step that is running", working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),
+    state("writing", "watching Claude write its reply", working(OPEN, { mode: "responding" })),
+    state("helpers", "waiting while two helpers work", working(OPEN, { agents: 2 }))
+  ];
+  var ENGINE_MODES = ["memory paused"];
+  var modeStates = [
+    state("engine", "reading the footer with the feed off: the engine's modes alone", (cols) => footerModes(ENGINE_MODES, cols)),
+    state("clean", "reading the footer in the clean view", (cols) => footerModes(sessionModes(ENGINE_MODES, clean2), cols)),
+    state("normal", "reading the footer in the normal view", (cols) => footerModes(sessionModes(ENGINE_MODES, { ...PRESETS.normal.fields, hide: [] }), cols)),
+    state("custom", "reading the footer after changing one setting", (cols) => footerModes(sessionModes(ENGINE_MODES, { ...clean2, style: "expanded" }), cols))
+  ];
+  var chromeSurface = (slot, states) => ({ id: `cs-feed.${slot}`, mod: "cs-feed", slot, source: "chrome", global: "CsFeedSurfaces", states, parts: [] });
   var surface = (slot, states, parts, extra = {}) => ({ id: `cs-feed.${slot}`, mod: "cs-feed", slot, source: "generated", global: "CsFeedSurfaces", states, parts, ...extra });
   var surfaces = [
     surface("UserMessage", userStates, [
@@ -1115,7 +1326,20 @@
     ], { slot: "Pane", chrome: { kind: "pane", title: "Chat view", rows: 24 } }),
     surface("Pane.cs-feed-helpers", helperStates, [
       { id: "helper-head", name: "helper head", state: "working", path: [0, 0] }
-    ], { slot: "Pane", chrome: { kind: "pane", title: "Helpers", rows: 12 } })
+    ], { slot: "Pane", chrome: { kind: "pane", title: "Helpers", rows: 12 } }),
+    chromeSurface("command", commandStates),
+    chromeSurface("menu", menuStates),
+    chromeSurface("log", logStates),
+    chromeSurface("Spinner", spinnerStates),
+    chromeSurface("SessionMode", modeStates),
+    chromeSurface("ToolProgress", [
+      state("engine", "running a tool call with the feed off", () => backgroundHint("(ctrl+b to run in background)")),
+      state("feed-on", "running a tool call with the feed on, its hint taken away", () => backgroundHint(""))
+    ]),
+    chromeSurface("TurnDuration", [
+      state("engine", "reading how long the turn took, with the feed off", () => turnLine("Baked", "3s", "3:45 PM")),
+      state("feed-on", "ending a turn with the feed on, its time line taken away", () => nothing())
+    ])
   ];
 
   // docs/surfaces/cs-feed.entry.ts

@@ -11,6 +11,7 @@ import { callId } from './transcript'
 import type { CallView, Clock, Context } from './verdict'
 import { NOTHING, drawBand, drawCall, drawCommandOutput, drawGroup, drawHelpersPane, drawReply, drawSettingsPane, drawUser, inks } from './draw'
 import type { Pen } from './draw'
+import { commands, logs, replies } from './words'
 
 type $ = EngineInterface
 
@@ -98,8 +99,8 @@ async function performNow($: $, cmd: FeedCommand): Promise<Answer> {
   const changed = transition(cmd, current)
   if (changed.session) {
     const result = await writeFeed(load, $, changed.session)
-    if (result === 'no-session') return { text: 'this directory is not a cs session (no .cs/local), so nothing changed.', refused: true }
-    if (result !== 'written') return { text: `no feed change in this session: ${result.refused}`, refused: true }
+    if (result === 'no-session') return { text: replies.notASession, refused: true }
+    if (result !== 'written') return { text: replies.refused(result.refused), refused: true }
   }
   if (changed.pane === 'open') await $.ui.open({ id: PANE, title: 'Chat view', focus: true })
   if (changed.pane === 'close') await $.ui.close({ id: PANE })
@@ -131,8 +132,8 @@ function registerFeed(on: On) {
   // true reload. Whether the band's post-reload evaluation waits for this hook to
   // settle is not measured (open-measurements M24).
   on('session.start', async ($, e, next) => {
-    const feed = $.command.register({ name: 'feed', description: 'Chat view for this session: on, off, clean, normal, raw, or one setting', argumentHint: 'on | off | clean | normal | raw | status | <setting> <value>', immediate: true })
-    const helpers = $.command.register({ name: 'helpers', description: "Show each helper's own work, call by call", immediate: true })
+    const feed = $.command.register(commands.feed)
+    const helpers = $.command.register(commands.helpers)
     await Promise.all([feed, helpers])
     return next(e)
   })
@@ -143,7 +144,7 @@ function registerFeed(on: On) {
 
   on('command.run', { command: 'helpers' }, async ($) => {
     await $.ui.open({ id: HELPERS_PANE, title: 'Helpers', focus: true })
-    return { text: 'Helpers open above the prompt.' }
+    return { text: replies.helpersOpen }
   })
 
   // cs's band key (`ctrl+x 3 feed`, Button key `cs-feed`, action strip:jump3).
@@ -202,7 +203,7 @@ function registerFeed(on: On) {
     for (const agent of shown) {
       const rows = await $.session.messages({ agentId: agent.id })
       own.set(agent.id, Array.isArray(rows) ? rows : undefined)
-      if (!Array.isArray(rows)) await $.ui.log(`could not read helper ${agent.id}'s transcript: ${rows.deny}`)
+      if (!Array.isArray(rows)) await $.ui.log(logs.helperUnread(agent.id, rows.deny))
     }
     const blocks = decideHelpersPane(shown, t, own, load.obs, Date.now())
     if (blocks.some(block => block.status === 'working')) await readTick($)

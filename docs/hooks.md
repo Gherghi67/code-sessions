@@ -854,6 +854,30 @@ preview is only looked at: turning preview on drops a selection in it, and the
 lab refuses every edit of it and says why. A state that holds a Markdown or a Code
 node opens as a reference frame: you can select and inspect it, and the lab
 refuses every edit of it and says why.
+
+Under each mod, after the surfaces it draws itself, the Components tab lists
+the rows Claude Code draws around the mod's words, under "Drawn by Claude
+Code": its toasts, the `$.ui.ask` dialog, a slash command's reply, its slash
+menu rows, its `$.ui.log` rows and, for cs-feed, the working line, the footer
+modes, the background hint and the turn line. `docs/surfaces/chrome.ts`
+redraws each row as Claude Code 2.1.310 draws it, read off its own
+components, and fills it with the words the mod exports: cs and cs-update
+keep every toast, dialog, notice, reply and menu row in tables in
+`register.tsx` (`TOASTS`, `ASKS`, `LOGS`, `REPLIES`, `COMMANDS`), and cs-feed
+keeps its own in `words.ts`. Each of these states opens as a reference
+frame, since a mod hands Claude Code only the words. A toast has two
+renderings, and the lab draws both. The fullscreen renderer draws a round
+box at the transcript's top right, the plugin's name dim on its own
+row and the words under it in at most three rows. The inline renderer draws
+one dim row at the right of the footer, `<plugin>: <words>`, cut with
+`…` where the footer ends; its states end in `-inline`. A toast, a notice and
+a command reply all reach the screen led by the plugin's name, which Claude
+Code adds, so the mods' lines never start with it.
+`tests/test_lab_surfaces.sh` fails when a call site writes such a line inline
+instead of naming its table. The fixtures key the toast and log states by
+their table's keys, so a line added to a table and not to the lab fails the
+fixtures' type-check; that check runs only where the engine's types exist, a
+dev machine that has loaded the mod, and CI skips it.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
 localStorage. The editor's model lives in `docs/mods-band-editor.js`, pinned
 by `docs/test/band-editor.test.ts`. The layout engine behind it lives in

@@ -1,8 +1,9 @@
 // ABOUTME: The cs-update release-notes pane in each state, as PaneView fixtures handed to the mod's own drawPane.
 // ABOUTME: Typed against the mod's exports, so a change to PaneView breaks this file at type-check.
-import { drawPane, parseSpan, type PaneView } from '../../mods/cs-update/hooks/register.tsx'
+import { COMMANDS, REPLIES, TOASTS, drawPane, parseSpan, type PaneView } from '../../mods/cs-update/hooks/register.tsx'
 import { SESSION_PALETTE } from '../../mods/cs/hooks/register.tsx'
-import { elements, type Surface } from './registry.ts'
+import { commandReply, inlineToast, menuRows, toast } from './chrome.ts'
+import { elements, type State, type Surface } from './registry.ts'
 
 const NOTES = [
   '## 2026.10.25',
@@ -40,4 +41,22 @@ export const surfaces: Surface[] = [{
     { id: 'release-heading', name: 'release heading', state: 'idle-notes', path: [2, 0] },
     { id: 'note-line', name: 'note line', state: 'idle-notes', path: [2, 1] },
   ],
-}]
+},
+  chromeSurface('toast', [
+    { id: 'declined', name: 'launching after declining the update cs offered', draw: cols => toast('cs-update', TOASTS.declined('2026.11.2'), cols) },
+    { id: 'not-recorded', name: 'finishing an update whose outcome cannot be written down', draw: cols => toast('cs-update', TOASTS.notRecorded('ENOSPC: no space left on device'), cols) },
+    { id: 'declined-inline', name: 'launching after declining the update, outside the fullscreen renderer', draw: cols => inlineToast('cs-update', TOASTS.declined('2026.11.2'), cols) },
+  ]),
+  chromeSurface('command', [
+    { id: 'not-lead', name: 'running /cs-update in a teammate conversation', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.notLead) },
+    { id: 'nothing-pending', name: 'running /cs-update when this launch found no newer cs', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.nothingPending) },
+    { id: 'notes-open', name: 'running /cs-update to reopen the release notes', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.notesOpen) },
+  ]),
+  chromeSurface('menu', [
+    { id: 'selected', name: 'typing /cs-u in the prompt', draw: cols => menuRows([COMMANDS['cs-update']], 0, cols) },
+  ]),
+]
+
+function chromeSurface(slot: string, states: State[]): Surface {
+  return { id: `cs-update.${slot}`, mod: 'cs-update', slot, source: 'chrome', global: 'CsUpdateSurfaces', states, parts: [] }
+}
