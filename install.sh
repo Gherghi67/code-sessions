@@ -1727,13 +1727,13 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "106e250d6e99293637205743a823b07708a7988efa92da5ab1a62355f6b11a77  bin/cs"
+    "af1c135549f105eb58b425be4bc65e2c569d4a3bbc32778e9cda75048516f70c  bin/cs"
     "47ade9518130b8288b5cc7aaec98cb0a5418fd553e96e8d4b988a3985903d89a  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "bc152de974021d7745798bfb84641f6039214c7426bb9cd4d6ec5d750f058a1f  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "4898b002b38621429b4eab2aa0d489d64af39e66c2318acef931f3baabfbddb7  hooks/cs-shared.sh"
+    "c1087b6104f4528320ef45a8af0951c6b87425c9f26eab4f075f793c416e8050  hooks/cs-shared.sh"
     "5c3dac024c052e6c50f2d6398f33b0bd47d958e8e0d2283e5997f62aef349299  hooks/cs-engine-events.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "b17a39aab8096e74d6ab7b800fdc53fcb980ce35fe8dc0951f66d40133e77668  hooks/prompt-rewriter.sh"
@@ -1748,7 +1748,7 @@ CS_PAYLOAD_SHA256=(
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"
-    "e3bdc8bb1918e79becfc99cf089e385034ce17e3cd09714151920b77ba008092  hooks/scope-prompt.sh"
+    "bb4bc9cbb54d84207347a8cf654bdd32cdea9bb5dd72ddf6cbf182f5e3ff361f  hooks/scope-prompt.sh"
     "0254497096328ee6b7882ab2cb7177cad137544eb5332df3d1563bb70babb523  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "7e541f68e0f4b6bf0f604b3d03f865ea1764773dc4df451521813617b4023723  skills/rotate/SKILL.md"
@@ -1765,7 +1765,7 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  skills/sweep/scripts/memory-index-guard.sh"
-    "4898b002b38621429b4eab2aa0d489d64af39e66c2318acef931f3baabfbddb7  skills/sweep/scripts/cs-shared.sh"
+    "c1087b6104f4528320ef45a8af0951c6b87425c9f26eab4f075f793c416e8050  skills/sweep/scripts/cs-shared.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "72941217c011a9834213480078b49533d33dfea55f21cb66f2a7ddcdec411b77  mods/cs/hooks/register.tsx"

@@ -506,13 +506,31 @@ _codex_hook_stop() {
 # A message sent while the count runs stops it, and one sent while cs types
 # stops the rest of the keys. Any message does: the hook only removes, so a
 # prompt in another thread costs at most one count.
-_codex_hook_user_prompt_submit() {
+# Cancellation is independent of prompt context: permission hooks use it too.
+_codex_cancel_autoclear() {
     local run_dir
-    cat >/dev/null 2>&1 || true
-    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
-    [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
     rm -f "$(_codex_autoclear_file "$run_dir")" "$(_codex_typing_file "$run_dir")" 2>/dev/null || true
+}
+
+_codex_hook_user_prompt_submit() {
+    local input session_id bound private MAIL_DIGEST=""
+    input=$(cat) || input=""
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
+    _codex_cancel_autoclear
+    # Only the session's owning conversation gets its mailbox; native
+    # subagents inherit the environment but have their own thread IDs.
+    session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || return 0
+    _codex_thread_id_valid "$session_id" || return 0
+    cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
+    bound=$(cs_binding_read "$CS_SESSION_DIR" codex 2>/dev/null) || return 0
+    [ "$bound" = "$session_id" ] || return 0
+    private=$(cs_private_dir "$CS_SESSION_DIR/.cs") || return 0
+    cs_mail_digest "$private"
+    [ -n "$MAIL_DIGEST" ] || return 0
+    jq -n --arg c "$MAIL_DIGEST" \
+        '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null || true
     return 0
 }
 
@@ -525,7 +543,10 @@ _codex_hook_user_prompt_submit() {
 # output carries a decision only under hookSpecificOutput), on every path, and
 # exits 0, never 2, which Codex reads as a denial.
 _codex_hook_permission_request() {
-    _codex_hook_user_prompt_submit
+    cat >/dev/null 2>&1 || true
+    if [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+        _codex_cancel_autoclear
+    fi
     printf '{}\n'
     return 0
 }

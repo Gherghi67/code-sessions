@@ -310,3 +310,11 @@ Codex startup and resume refresh `.cs/memory/MEMORY.md` as reference context.
 The SessionStart hook refreshes it again after `/clear`, including a rotation.
 The shared reader includes at most 196 lines and 24,400 bytes, preserves UTF-8,
 labels truncation and skips missing or unreadable indexes.
+
+## Unread mail
+
+The owning thread's UserPromptSubmit hook shows the same bounded unread-mail
+preview as Claude: up to five messages with sender, kind and a 160-character
+body preview. Mail is labeled as text from other sessions. It remains unread
+until `cs -msg` consumes it. This is next-prompt delivery; it does not wake an
+idle Codex session. Permission hooks only cancel rotation typing.

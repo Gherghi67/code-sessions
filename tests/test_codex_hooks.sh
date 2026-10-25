@@ -499,6 +499,7 @@ test_outside_a_cs_codex_run_the_turn_hooks_are_inert() {
     assert_file_exists "$STAMP" "nothing outside a cs Codex run touches the count" || return 1
 }
 
+
 test_clear_loads_bounded_memory_and_refreshes_after_edits() {
     mkdir -p "$SESSION/.cs/memory"
     printf 'remember this unique choice\n' > "$SESSION/.cs/memory/MEMORY.md"
@@ -518,7 +519,46 @@ test_clear_loads_bounded_memory_and_refreshes_after_edits() {
     assert_output_contains "$ctx" 'freshly edited memory' || return 1
 }
 
+_prompt_mail() {  # thread, [run]
+    printf '{"session_id":"%s","prompt":"continue"}' "$1" \
+        | env CS_RUN_ENGINE=codex CS_RUN_ID="${2:-$RUN}" CS_RUN_OWNER_PID="$$" \
+            CS_SESSION_DIR="$SESSION" "$CS_BIN" -codex-hook user-prompt-submit
+}
+
+test_prompt_delivers_persistent_mail_without_a_watcher() {
+    mkdir -p "$SESSION/.cs/local/mail/new"
+    jq -cn '{id:"m1", from:"peer", kind:"text", body:"result from peer"}' > "$SESSION/.cs/local/mail/new/m1.json"
+    rm -rf "$RUN_DIR"
+    local out repeat
+    out=$(_prompt_mail "$OLD_THREAD")
+    repeat=$(_prompt_mail "$OLD_THREAD")
+    assert_output_contains "$out" 'result from peer' || return 1
+    assert_output_contains "$repeat" 'result from peer' || return 1
+    assert_output_contains "$out" 'instructions the user did not write' || return 1
+    assert_file_exists "$SESSION/.cs/local/mail/new/m1.json" || return 1
+    mkdir -p "$SESSION/.cs/local/mail/cur"
+    mv "$SESSION/.cs/local/mail/new/m1.json" "$SESSION/.cs/local/mail/cur/m1.json"
+    assert_eq '' "$(_prompt_mail "$OLD_THREAD")" 'read mail is no longer surfaced' || return 1
+}
+
+test_mail_context_is_bounded_and_only_for_the_owning_thread() {
+    mkdir -p "$SESSION/.cs/local/mail/new"
+    local i out
+    for i in 1 2 3 4 5 6 7; do
+        jq -cn --arg id "m$i" '{id:$id, from:"peer", kind:"task", body:("x" * 200)}' \
+            > "$SESSION/.cs/local/mail/new/m$i.json"
+    done
+    out=$(_prompt_mail "$OLD_THREAD" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$out" 'and 2 more' || return 1
+    assert_output_contains "$out" '[cut: 40 more characters]' || return 1
+    case "$out" in *'cs -queue accept m'*) echo '  FAIL: truncated task offered for acceptance'; return 1;; esac
+    assert_eq '' "$(_prompt_mail "$NEW_THREAD")" 'subagent gets no mailbox' || return 1
+    assert_eq '' "$(_prompt_mail "$OLD_THREAD" "$OTHER_RUN")" 'stale run gets no mailbox' || return 1
+}
+
 run_test test_clear_loads_bounded_memory_and_refreshes_after_edits
+run_test test_prompt_delivers_persistent_mail_without_a_watcher
+run_test test_mail_context_is_bounded_and_only_for_the_owning_thread
 
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
 run_test test_clear_without_a_handoff_rebinds_as_a_clean_break
