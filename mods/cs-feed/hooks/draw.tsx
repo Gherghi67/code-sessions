@@ -148,7 +148,7 @@ export function drawBand(v: Exclude<BandVerdict, { draw: 'engine' }>, beneath: R
   return <Box flexDirection="column">{ours}{beneath}</Box>
 }
 
-/** The "Chat view" pane (§2.3) for this session: header, an on/off row (FeedCommand `switch`), one row per FIELDS entry with its picture, the Show chips. Buttons are siblings of Texts, never inside one. */
+/** The "Chat view" pane (§2.3) for this session: header, an on/off row (FeedCommand `switch`), one row per FIELDS entry with its picture, the Show chips. Buttons are siblings of Texts, never inside one. A Button never shrinks, so the chips wrap onto another row when the pane is narrower than them; `columnGap`, not `gap`, which would also put a blank row between the two. */
 export function drawSettingsPane(mode: string, session: Session, pen: Pick<Pen, 'el' | 'ink' | 'room'>, onPress: (cmd: FeedCommand) => Promise<void>): RenderElement {
   const { Box, Text, Button } = pen.el
   return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Text bold>{settingsWords.title}</Text><Text color={pen.ink.accent}>{mode}</Text><Text dimColor>{settingsWords.shortcuts}</Text></Box><Box flexDirection="row" gap={1}><Button key="btn-feed" label={settingsWords.switch} onPress={() => onPress({ kind: 'switch', on: !session.on })} /><Text color={pen.ink.accent} bold>{settingValue(session.on)}</Text></Box>{FIELDS.map(spec => {
@@ -157,7 +157,7 @@ export function drawSettingsPane(mode: string, session: Session, pen: Pick<Pen, 
     if (next === undefined) throw new Error(`setting ${spec.field} has no next value`)
     const command = settingCommand(spec.word, next)
     return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`btn-${spec.field}`} label={spec.title} onPress={() => onPress(parseFeedArgs(command.slice(6)))} /><Text color={pen.ink.accent} bold>{settingValue(current)}</Text><Text dimColor>{`${marks.dot} ${command}`}</Text></Box><Box paddingLeft={2} flexDirection="column">{fieldPicture(spec, session.view).map(line => <Text dimColor>{fit(line, Math.max(1, pen.room - 4))}</Text>)}</Box></Box>
-  })}<Text bold>{settingsWords.show}</Text><Box flexDirection="row" gap={1}>{KINDS.map(kind => {
+  })}<Text bold>{settingsWords.show}</Text><Box flexDirection="row" flexWrap="wrap" columnGap={1}>{KINDS.map(kind => {
     const shown = !session.view.hide.includes(kind)
     return <Button key={`kind-${kind}`} label={kindChip(kind, shown)} onPress={() => onPress({ kind: shown ? 'hide' : 'show', what: kind })} />
   })}</Box><Text dimColor>{settingsWords.hideHelp}</Text></Box>
