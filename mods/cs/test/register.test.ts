@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, buildBandEntries, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
+import { register, buildBandEntries, drawBand, type BandView, parsePrompts, RAIL_TEXT_CHARS, DEFAULT_PERCENT, GRACE_SECONDS, NEXT_STEP_CHARS, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, nextStepLine, isUnconsumed } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -26,6 +26,8 @@ let existing: Set<string>
 let files: Record<string, string>
 let sessionId: string
 let envVars: Record<string, string | undefined>
+// Every name `$.env.get` was asked for, in order.
+let envReads: string[]
 // The conversation's working directory, and where each path lands as `$.fs.stat` resolves it
 // (a path absent here does not exist).
 let cwdPath: string
@@ -67,7 +69,7 @@ const timer = (kind: 'after' | 'every') => (ms: number, fn: () => void) => {
   return { cancel: () => { t.cancelled = true } }
 }
 const $ = {
-  env: { get: async (name: string) => envVars[name] },
+  env: { get: async (name: string) => { envReads.push(name); return envVars[name] } },
   session: {
     usage: async () => ({ context: { percent } }),
     cwd: async () => cwdPath,
@@ -168,6 +170,7 @@ beforeEach(() => {
   // /work sits under the default sessions root by its own name, and the launch
   // said where cs is, as every cs launch does.
   envVars = { HOME: '/home', CS_BIN: '/opt/cs/bin/cs' }
+  envReads = []
   cwdPath = '/work'
   realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
   files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
@@ -3269,6 +3272,61 @@ for (const [name, arrange, props] of bandScenes) {
     expect(JSON.stringify(bandSnapshot(await band(props)))).toMatchSnapshot()
   })
 }
+
+// The design lab draws the band by calling drawBand with a view it spells out
+// by hand. Each view here is that fixture for one state, and must draw the
+// tree the handler draws from the same state's facts.
+const noPress = () => {}
+const noJump = async () => {}
+const OWN = 'rgb(220,38,38)'
+const KEYED = { 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2', 'ctrl+x 3': 'strip:jump3' }
+const CHORDS = { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+x 2', 'strip:jump3': 'ctrl+x 3' }
+const quiet = { rotating: false, armed: false, wrapping: false, waiting: 0, queued: 0, mail: 0, rotate: noPress, wrap: noPress, queue: noPress }
+const FOUR = [{ uuid: 'u1', text: 'say one' }, { uuid: 'u2', text: 'say two' }, { uuid: 'u3', text: 'say three' }, { uuid: 'u4', text: 'say four' }]
+const THIRTY = Array.from({ length: 30 }, (_, i) => ({ uuid: `m${i + 1}`, text: `step ${i + 1}` }))
+const thirtyPrompts = () => transcript(THIRTY.flatMap((p, i) => [prompt(p.uuid, i === 0 ? null : `r${i}`, p.text), reply(`r${i + 1}`, p.uuid)]))
+const railOf = (prompts: { uuid: string; text: string }[]) => ({ prompts, named: prompts.length - 1, denied: new Set<string>(), bars: 10, jump: noJump })
+const view = (over: Partial<BandView>): BandView => ({ drawn: DRAWN as any, entries: [], chords: CHORDS, own: OWN, markColor: GREEN, hasSurvey: false, bodyColumns: 110, surface: 'terminal', ...over })
+const railViews = (name: string, arrange: () => Promise<void>, prompts: { uuid: string; text: string }[]) =>
+  [80, 60, 40].map(columns => [`${name} at ${columns}`, arrange, { bodyColumns: columns }, view({ bodyColumns: columns, rail: railOf(prompts) })] as const)
+
+const bandViews: (readonly [string, () => void | Promise<void>, { isWorking?: boolean; hasSurvey?: boolean; bodyColumns?: number }, BandView])[] = [
+  ['idle', () => {}, {}, view({})],
+  ['rotate due', () => { percent = 40 }, {}, view({ entries: buildBandEntries({ ...quiet, rotating: true, wrapping: true }), markColor: AMBER_ON_LIGHT })],
+  ['armed', () => { arm() }, {}, view({ entries: buildBandEntries({ ...quiet, rotating: true, armed: true }), markColor: AMBER_ON_LIGHT })],
+  ['countdown', async () => { arm(); await turnComplete() }, {}, view({ entries: buildBandEntries({ ...quiet, countdown: { seconds: GRACE_SECONDS, ink: OWN }, rotating: true, armed: true }), markColor: AMBER_ON_LIGHT })],
+  ['feed off', () => { enableFeed() }, {}, view({ entries: buildBandEntries({ ...quiet, feed: { on: false, color: OWN, onPress: noPress } }) })],
+  ['feed on', () => { enableFeed(); files['/work/.cs/local/feed'] = 'on\n' }, {}, view({ entries: buildBandEntries({ ...quiet, feed: { on: true, color: OWN, onPress: noPress } }) })],
+  ['queue', () => { queueTasks(2) }, {}, view({ entries: buildBandEntries({ ...quiet, waiting: 2 }) })],
+  ['running queue', () => { queueTasks(2); files['/work/.cs/local/queue.state'] = 'draining\n' }, {}, view({ entries: buildBandEntries({ ...quiet, queued: 2 }), markColor: BLUE })],
+  ['gate', async () => { await gateRuns() }, {}, view({ entries: buildBandEntries({ ...quiet, gate: 'finishing fix-auth · gate 3s' }), markColor: BLUE })],
+  ['mail', () => { files['/work/.cs/local/mail/new/one.json'] = '{}' }, {}, view({ entries: buildBandEntries({ ...quiet, mail: 1 }) })],
+  ['features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }, {}, view({ entries: buildBandEntries({ ...quiet, featured: { label: '1 feature · fix-auth ready', onPress: noPress } }) })],
+  ['survey', async () => { await gateRuns() }, { hasSurvey: true }, view({ entries: buildBandEntries({ ...quiet, gate: 'finishing fix-auth · gate 3s' }), markColor: BLUE, hasSurvey: true })],
+  ['no chords', () => { percent = 40; delete files[KEYS] }, {}, view({ chords: {}, entries: buildBandEntries({ ...quiet, rotating: true, wrapping: true }), markColor: AMBER_ON_LIGHT })],
+  ...railViews('rail of four', async () => { transcript(LINEAR); await turnComplete() }, FOUR),
+  ...railViews('rail of thirty', async () => { thirtyPrompts(); await turnComplete() }, THIRTY),
+  ['rail with no room for a tick', async () => { transcript(LINEAR); await turnComplete() }, { bodyColumns: 6 }, view({ bodyColumns: 6, rail: railOf(FOUR) })],
+]
+
+for (const [name, arrange, props, fixture] of bandViews) {
+  test(`drawBand draws the handler's band from a fixture view: ${name}`, async () => {
+    bindKeys(KEYED)
+    await arrange()
+    const drawn = JSON.stringify(bandSnapshot(await band(props)))
+    expect(JSON.stringify(bandSnapshot(drawBand(fixture, { Box: 'Box', Text: 'Text', Button: 'Button' } as any)))).toBe(drawn)
+  })
+}
+
+test('a band with no words and no room for a tick reads no terminal colours', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  envReads = []
+  expect(await band({ bodyColumns: 6 })).toBe(DRAWN)
+  expect(envReads.filter(name => name.startsWith('CS_TERM_'))).toEqual([])
+  expect(boxes(await band({ bodyColumns: 7 })).some((b: any) => b.props.key === 'cs-rail')).toBe(true)
+  expect(envReads.filter(name => name.startsWith('CS_TERM_'))).toEqual(['CS_TERM_BG_RGB', 'CS_TERM_THEME'])
+})
 
 test('band entries keep the drawn rotate and wrap labels in order', async () => {
   percent = 40

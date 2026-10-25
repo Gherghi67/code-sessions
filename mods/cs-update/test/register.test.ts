@@ -5,7 +5,7 @@ import { test, expect, beforeEach } from 'bun:test'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, parseSpan, stripInline, PANE, OPTION, HEARTBEAT, DONE } from '../hooks/register.tsx'
+import { register, drawPane, parseSpan, stripInline, PANE, OPTION, HEARTBEAT, DONE, type PaneView } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -592,3 +592,37 @@ test('in a directory the sessions root does not name, session start never spawns
   await hooks['session.start']($, { cwd: '/clone' }, async () => 'started')
   expect(runs).toHaveLength(0)
 })
+
+// The design lab draws the pane by calling drawPane with a view it spells out
+// by hand. Each view here is that fixture for one state, and must draw the
+// tree the handler draws from the same state's facts.
+const NOTES = [
+  { version: '2026.99.3', lines: ['One fix: the statusline is readable on light terminals.', '- Statusline: readable. The chiptext token was wrong in two places.', '  A continuation line.'] },
+  { version: '2026.99.2', lines: ['One change: the locked-session menu is single-keypress.', '- Menu: keypress. Cancel stays the default.'] },
+]
+const RED = 'rgb(220,38,38)'
+const pane = (over: Partial<PaneView>): PaneView => ({ version: '2026.99.3', sections: NOTES, accent: RED, phase: 'idle', outcome: '', ...over })
+const press = async () => { await buttons(await draw())[0].props.onPress() }
+const paneViews: [string, () => Promise<void>, PaneView][] = [
+  ['idle with notes', async () => { await start() }, pane({})],
+  ['no session colour', async () => { files['/work/.cs/local/state'] = 'claude_session_id: uuid-lead\n'; await start() }, pane({ accent: undefined })],
+  ['a colour outside the palette', async () => { files['/work/.cs/local/state'] = 'claude_session_color: chartreuse\nclaude_session_id: uuid-lead\n'; await start() }, pane({ accent: undefined })],
+  ['no notes', async () => { files['/home/u/.cache/cs/update-notes-full-2026.99.3'] = ''; await start() }, pane({ sections: [] })],
+  ['running', async () => {
+    await start()
+    ;($ as any).process.run = async (argv: string[]) => argv[1] === '-vet-session' ? { exitCode: 0, stdout: '', stderr: '' } : new Promise(() => {})
+    void buttons(await draw())[0].props.onPress()
+    await Promise.resolve()
+  }, pane({ phase: 'running' })],
+  ['failed with no cs path', async () => { delete envVars.CS_BIN; await start(); await press() }, pane({ phase: 'failed', outcome: 'The launch did not say where cs is; run `cs -update` from a shell.' })],
+  ['failed exit', async () => { await start(); runResult = { exitCode: 1, stdout: '', stderr: 'a\nb\nc\nd\ne\nf\nchecksum mismatch\n' }; await press() }, pane({ phase: 'failed', outcome: 'cs -update exited 1.\nc\nd\ne\nf\nchecksum mismatch' })],
+  ['done', async () => { await start(); await press() }, pane({ phase: 'done', outcome: 'Update finished. Takes effect on your next launch.' })],
+]
+
+for (const [name, arrange, fixture] of paneViews) {
+  test(`drawPane draws the handler's pane from a fixture view: ${name}`, async () => {
+    await arrange()
+    const drawn = JSON.stringify(await draw())
+    expect(JSON.stringify(drawPane(fixture, { Box: 'Box', Text: 'Text', Button: 'Button' } as any, async () => {}))).toBe(drawn)
+  })
+}
