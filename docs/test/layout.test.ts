@@ -146,6 +146,7 @@ test('a gap, a margin and justify slack belong to the Box that makes them', () =
 })
 
 test('every cell of every band the gallery draws names a node', () => {
+  require('./surfaces.ts')
   const { STATES, VARIANTS } = require('../mods-band-variants.js')
   const unnamed: string[] = []
   for (const v of VARIANTS) for (const st of STATES) for (const cols of [40, 80]) {

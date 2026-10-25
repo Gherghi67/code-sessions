@@ -103,6 +103,8 @@ const ONE_FEATURE: [string, FeatureRecord][] = [
 const DUE = { rotating: true, wrapping: true, due: true }
 
 export type BandState = { id: string; name: string; facts: Facts }
+// How many of STATES, from the first, the band variants gallery draws every sketch in.
+export const CATALOGUE = 15
 // The catalogue the gallery has always drawn, first and in its order; then
 // every other state the hook can hand drawBand.
 export const STATES: BandState[] = [

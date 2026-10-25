@@ -375,6 +375,7 @@
     ["merged", feature("merged")]
   ];
   var DUE = { rotating: true, wrapping: true, due: true };
+  var CATALOGUE = 15;
   var STATES = [
     { id: "idle", name: "nothing to say", facts: facts({}) },
     { id: "rotate-due", name: "context past the threshold", facts: facts(DUE) },
@@ -436,5 +437,5 @@
   }];
 
   // docs/surfaces/cs.entry.ts
-  globalThis.CsSurfaces = { surfaces, STATES, CHORDS, PROMPTS, band, countdownStep, facts };
+  globalThis.CsSurfaces = { surfaces, STATES, CATALOGUE, CHORDS, PROMPTS, band, countdownStep, facts };
 })();

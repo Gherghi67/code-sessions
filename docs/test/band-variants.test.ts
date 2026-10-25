@@ -1,6 +1,7 @@
 // ABOUTME: Tests for the band variants gallery in docs/mods-band-variants.js.
-// ABOUTME: Pins the state catalogue, the shipped band's port against register.tsx, and every sketch against the engine.
+// ABOUTME: Pins the state catalogue, the shipped band (the cs mod's own drawBand, bundled) against register.tsx read by hand, and every sketch against the engine.
 import { test, expect } from 'bun:test'
+import './surfaces.ts'
 const { STATES, VARIANTS } = require('../mods-band-variants.js')
 const { layout, toText, validate, toJsx } = require('../mods-layout.js')
 
@@ -20,7 +21,7 @@ test('the catalogue names every state the gallery draws, in order', () => {
 test('the catalogue carries the labels buildBandEntries and its producers write', () => {
   expect(state('features-ready').featured).toEqual({ label: '3 features · fix-auth ready', pressable: true })
   expect(state('gate-running').gate).toBe('finishing fix-auth · gate 1m 12s')
-  expect(state('countdown').countdown).toEqual({ seconds: 7, ink: 'amber' })
+  expect(state('countdown').countdown).toEqual({ seconds: 7 })
   expect(state('rail-few').rail.prompts.length).toBe(3)
   expect(state('rail-many').rail.prompts.length).toBe(14)
   expect(state('no-chords').chords).toEqual({})
@@ -76,41 +77,34 @@ test('shipped draws the rotate-due band register.tsx draws', () => {
   ])
 })
 
-// The inks the shipped band carries, cell by cell, on the light theme. The
+// The inks the shipped band carries, cell by cell, on the light theme, as
+// register.tsx's constants spell them: the mark amber (AMBER_LIGHT 180,83,9)
+// while a rotation is due, the keys and the feed check in the session colour
+// (the palette's orange, 217,119,87), a 7 s count amber and bold. The
 // columns are counted off the oracle lines: `  ● ctrl+x  1 rotate  ·  2 wrap`
 // puts the mark at 2 and the first key at 12; `  ● ctrl+x  3 feed ✓` puts the
 // check at 19; `  ● /clear in 7s  ·  ...` starts the countdown word at 4.
 const bandRow = (variantId: string, stateId: string) => layout(variant(variantId).draw(state(stateId), 80, 'light'), 80).rows[1]
 test('shipped paints the mark, the keys, the feed check and the countdown in their inks', () => {
-  expect(bandRow('shipped', 'rotate-due')[2]).toMatchObject({ ch: '\u25cf', st: { color: 'AMBER_L', dim: false } })
-  expect(bandRow('shipped', 'rotate-due')[12]).toMatchObject({ ch: '1', st: { color: 'claude', bold: true, dim: false } })
-  expect(bandRow('shipped', 'feed-on')[19]).toMatchObject({ ch: '\u2713', st: { color: 'claude', dim: false } })
-  expect(bandRow('shipped', 'countdown')[4]).toMatchObject({ ch: '/', st: { color: 'AMBER_L', bold: true, dim: false } })
+  expect(bandRow('shipped', 'rotate-due')[2]).toMatchObject({ ch: '\u25cf', st: { color: 'rgb(180,83,9)', dim: false } })
+  expect(bandRow('shipped', 'rotate-due')[12]).toMatchObject({ ch: '1', st: { color: 'rgb(217,119,87)', bold: true, dim: false } })
+  expect(bandRow('shipped', 'feed-on')[19]).toMatchObject({ ch: '\u2713', st: { color: 'rgb(217,119,87)', dim: false } })
+  expect(bandRow('shipped', 'countdown')[4]).toMatchObject({ ch: '/', st: { color: 'rgb(180,83,9)', bold: true, dim: false } })
 })
 
 test('shipped prints the feed chord with its coloured check as the Button children register.tsx writes', () => {
   const tree = variant('shipped').draw(state('feed-on'), 80, 'light')
-  expect(toJsx(tree)).toContain("<Button key=\"cs-feed\" action=\"strip:jump3\" plain label={'feed \\u2713'} onPress={press}>feed <Text color=\"claude\">{'\\u2713'}</Text></Button>")
+  expect(toJsx(tree)).toContain("<Button key=\"cs-feed\" action=\"strip:jump3\" plain label={'feed \\u2713'} onPress={press}>feed <Text color=\"rgb(217,119,87)\">{'\\u2713'}</Text></Button>")
 })
 
-test('shipped holds each chord\'s key and its Button in one group', () => {
-  expect(toJsx(variant('shipped').draw(state('rotate-due'), 80, 'light'))).toContain([
-    '      <Box key="cs-chord-rotate">',
-    '        <Box marginRight={1}>',
-    '          <Text color="claude" bold>1</Text>',
-    '        </Box>',
-    '        <Button key="cs-rotate" action="strip:jump1" plain label="rotate" onPress={press} />',
-    '      </Box>',
-  ].join('\n'))
-})
-
-// Every drawing that spells a chord's key beside its word holds the two in
+// Every sketch that spells a chord's key beside its word holds the two in
 // one Box keyed for the chord, so the designer moves them together. The
-// quiet line spells its keys apart from the words, in one trailing hint.
+// quiet line spells its keys apart from the words, in one trailing hint; the
+// shipped band is the mod's own, which draws the key and the Button side by side.
 const ROLES: Record<string, string> = { 'strip:jump1': 'rotate', 'strip:jump2': 'wrap', 'strip:jump3': 'feed' }
 test('every sketch with keys beside words groups each chord\'s key with its Button', () => {
   const loose: string[] = []
-  for (const v of VARIANTS.filter((x: any) => x.id !== 'quiet')) for (const s of STATES) {
+  for (const v of VARIANTS.filter((x: any) => x.id !== 'quiet' && x.id !== 'shipped')) for (const s of STATES) {
     const walk = (n: any, parent: any) => {
       if (!n || typeof n !== 'object') return
       const role = n.type === 'Button' && ROLES[n.props.action]
@@ -125,42 +119,45 @@ test('every sketch with keys beside words groups each chord\'s key with its Butt
   expect(loose).toEqual([])
 })
 
+// With nothing to say, drawBand hands back what the engine drew: nothing.
 test('shipped draws nothing when the band has nothing to say', () => {
-  expect(variant('shipped').draw(state('idle'), 80, 'light')).toBeNull()
+  expect(layout(variant('shipped').draw(state('idle'), 80, 'light'), 80).h).toBe(0)
 })
 
-// 14 prompts, cs.bandBars 10, no words at 80 cols: the budget is 80 - 2 - 2 =
-// 76; railTicks starts at hidden 14 - 10 = 4 and 10 bars + `…4` is 12 <= 76.
-// The label takes 76 - 12 - 2 = 62 cells.
+// The band is handed the terminal less the five `[-]` cells: at 80 cols
+// bodyColumns is 75. 14 prompts, cs.bandBars 10, no words: the budget is
+// 75 - 2 - 2 = 71; railTicks starts at hidden 14 - 10 = 4 and 10 bars + `…4`
+// is 12 <= 71. The label takes 71 - 12 - 2 = 57 cells.
 test('shipped folds the oldest four of fourteen prompts and names the newest', () => {
   const label = '#14 run the full suite and fix what fails'
-  expect(lines('shipped', 'rail-many', 80)[1]).toBe('  \u25cf \u20264\u2502\u2506\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2503  ' + label + ' '.repeat(62 - label.length))
+  expect(lines('shipped', 'rail-many', 80)[1]).toBe('  \u25cf \u20264\u2502\u2506\u2502\u2502\u2502\u2502\u2502\u2502\u2502\u2503  ' + label + ' '.repeat(57 - label.length))
 })
 
 // The fewest cells a named prompt gets. rail-few has no words, so under
-// shipped labelCells = cols - 2 (inset) - 2 (mark) - 3 (bars) - 2 (gap):
-// 19 cols leave 10, the minimum, and the label is cut to fit; 18 leave 9,
-// and no label is drawn.
+// shipped labelCells = cols - 5 ([-]) - 2 (inset) - 2 (mark) - 3 (bars) - 2
+// (gap): 24 cols leave 10, the minimum, and the label is cut to fit; 23
+// leave 9, and no label is drawn.
 test('shipped names the prompt when ten cells are left after the rail, and not at nine', () => {
-  expect(lines('shipped', 'rail-few', 19)).toEqual([' '.repeat(19), '  \u25cf \u2502\u2502\u2503  #3 why do\u2026'])
-  expect(lines('shipped', 'rail-few', 18)).toEqual([' '.repeat(7), '  \u25cf \u2502\u2502\u2503'])
+  expect(lines('shipped', 'rail-few', 24)).toEqual([' '.repeat(19), '  \u25cf \u2502\u2502\u2503  #3 why do\u2026'])
+  expect(lines('shipped', 'rail-few', 23)).toEqual([' '.repeat(7), '  \u25cf \u2502\u2502\u2503'])
 })
 
 // A wide glyph takes two cells, as register.tsx's cellWidth counts it. The
 // prompt `#3 translate the \u8a2d\u5b9a page` is 24 code points and 26 cells: at 80 cols
-// its 71-cell label pads with 45 spaces; at 29 cols the 20-cell label keeps
+// its 66-cell label pads with 40 spaces; at 34 cols the 20-cell label keeps
 // 17 cells, the first wide glyph (19) and the ellipsis. Read off the label's
-// Text, since the engine here pads its Box by code points.
+// Text (dim, where the hover cards beside it are not), since the engine here
+// pads its Box by code points.
 test('shipped measures and cuts a prompt with wide glyphs by cells, not code points', () => {
   const wide = { ...state('rail-few'), rail: { prompts: ['fix the login redirect', 'add a retry to the upload client', 'translate the \u8a2d\u5b9a page'], named: 2, refused: [] } }
   const label = (cols: number) => {
     const found: string[] = []
-    const walk = (n: any) => { if (n.type === 'Text' && n.props.italic) found.push(n.children[0]); (n.children || []).forEach((k: any) => k && typeof k === 'object' && walk(k)) }
+    const walk = (n: any) => { if (n.type === 'Text' && n.props.italic && n.props.dimColor) found.push(n.children[0]); (n.children || []).forEach((k: any) => k && typeof k === 'object' && walk(k)) }
     walk(variant('shipped').draw(wide, cols, 'light'))
     return found
   }
-  expect(label(80)).toEqual(['#3 translate the \u8a2d\u5b9a page' + ' '.repeat(45)])
-  expect(label(29)).toEqual(['#3 translate the \u8a2d\u2026'])
+  expect(label(80)).toEqual(['#3 translate the \u8a2d\u5b9a page' + ' '.repeat(40)])
+  expect(label(34)).toEqual(['#3 translate the \u8a2d\u2026'])
 })
 
 test('every variant that draws a rail folds fourteen prompts into \u20264 at 80 cols', () => {

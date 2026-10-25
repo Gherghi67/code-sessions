@@ -1,6 +1,7 @@
 // ABOUTME: Tests for the band designer's document model in docs/mods-band-editor.js.
 // ABOUTME: Pins the reducer action by action, the history, the cell-to-node lookup and the engine round trip.
 import { test, expect } from 'bun:test'
+import './surfaces.ts'
 const E = require('../mods-band-editor.js')
 const { layout, toText } = require('../mods-layout.js')
 const { STATES, VARIANTS } = require('../mods-band-variants.js')
@@ -9,22 +10,22 @@ const facts = (id: string) => STATES.find((s: any) => s.id === id).facts
 const drawn = (variantId: string, stateId: string, cols: number) =>
   layout(VARIANTS.find((v: any) => v.id === variantId).draw(facts(stateId), cols, 'light'), cols)
 
-// Paths read off the shipped band's tree: the column [] holds the blank-row
-// Box [0], which holds the band [0,0] at marginLeft 2; its children are the
-// mark Box [0,0,0], the prefix Box [0,0,1], the rotate chord's group
-// [0,0,2] (its key's Box [0,0,2,0], its Button [0,0,2,1]), the separator
-// [0,0,3] and the wrap chord's group [0,0,4]. On
-// `  ● ctrl+x  1 rotate  ·  2 wrap` (31 cells, 2 rows): col 2 is the mark's
-// Text, col 10 the prefix Box's 2-cell margin, col 13 the key's 1-cell
-// margin, col 14 the `r` of rotate, col 0 the band's inset.
+// Paths read off the shipped band's tree, the mod's own: the column []
+// holds what the engine drew, an empty Box [0], and the blank-row Box [1],
+// which holds the band [1,0] at marginLeft 2; its children are the mark Box
+// [1,0,0], the prefix Box [1,0,1], the rotate key's Box [1,0,2], its Button
+// [1,0,3], the separator [1,0,4], the wrap key's Box [1,0,5] and its Button
+// [1,0,6]. On `  ● ctrl+x  1 rotate  ·  2 wrap` (31 cells, 2 rows): col 2 is
+// the mark's Text, col 10 the prefix Box's 2-cell margin, col 13 the key's
+// 1-cell margin, col 14 the `r` of rotate, col 0 the band's inset.
 test('pathOfCell names the node under a cell of the shipped band', () => {
   const g = drawn('shipped', 'rotate-due', 80)
-  expect(E.pathOfCell(g, 1, 2)).toEqual([0, 0, 0, 0])
-  expect(E.pathOfCell(g, 1, 10)).toEqual([0, 0, 1])
-  expect(E.pathOfCell(g, 1, 13)).toEqual([0, 0, 2, 0])
-  expect(E.pathOfCell(g, 1, 14)).toEqual([0, 0, 2, 1])
-  expect(E.pathOfCell(g, 1, 0)).toEqual([0, 0])
-  expect(E.pathOfCell(g, 0, 5)).toEqual([0])
+  expect(E.pathOfCell(g, 1, 2)).toEqual([1, 0, 0, 0])
+  expect(E.pathOfCell(g, 1, 10)).toEqual([1, 0, 1])
+  expect(E.pathOfCell(g, 1, 13)).toEqual([1, 0, 2])
+  expect(E.pathOfCell(g, 1, 14)).toEqual([1, 0, 3])
+  expect(E.pathOfCell(g, 1, 0)).toEqual([1, 0])
+  expect(E.pathOfCell(g, 0, 5)).toEqual([1])
   expect(E.pathOfCell(g, 2, 0)).toBeNull()
   expect(E.pathOfCell(g, 1, 31)).toBeNull()
   expect(E.pathOfCell(g, -1, 0)).toBeNull()
@@ -41,40 +42,43 @@ test('pathOfCell gives a border cell to the Box it frames', () => {
 // The cells a node spans: its own and its descendants'. Rows and cols inclusive.
 test('spanOf covers a node and everything inside it', () => {
   const g = drawn('shipped', 'rotate-due', 80)
-  expect(E.spanOf(g, [0, 0, 2, 1])).toEqual({ top: 1, left: 14, bottom: 1, right: 19 })
-  expect(E.spanOf(g, [0, 0, 2])).toEqual({ top: 1, left: 12, bottom: 1, right: 19 })
-  expect(E.spanOf(g, [0, 0])).toEqual({ top: 1, left: 0, bottom: 1, right: 30 })
-  expect(E.spanOf(g, [0, 0, 9])).toBeNull()
+  expect(E.spanOf(g, [1, 0, 3])).toEqual({ top: 1, left: 14, bottom: 1, right: 19 })
+  expect(E.spanOf(g, [1, 0, 2])).toEqual({ top: 1, left: 12, bottom: 1, right: 13 })
+  expect(E.spanOf(g, [1, 0])).toEqual({ top: 1, left: 0, bottom: 1, right: 30 })
+  expect(E.spanOf(g, [1, 0, 9])).toBeNull()
 })
 
-// A chord's key and its word are one group, so a move carries both. The
-// separator is the band's own child and stays where it stood: moving the
-// wrap group to gap 2 puts it before the rotate group with the separator
-// trailing, and moving the separator to gap 3 puts it back between them.
+// A group moves whole. On the keys-first sketch's rotate-due band
+// `  ctrl+x  1 rotate  2 wrap`, the band [0,0] holds the prefix [0,0,0], the
+// rotate chord's group [0,0,1], the spacer [0,0,2] and the wrap group
+// [0,0,3]: moving the wrap group to gap 1 carries its key with its word and
+// leaves the spacer trailing, and moving the spacer to gap 2 puts it back
+// between them.
 test('moving a chord group carries its key with its word', () => {
-  const t = E.fromEngine(VARIANTS[0].draw(facts('rotate-due'), 80, 'light'))
-  const band = { frames: [{ id: 'f1', name: 'Band', tree: t }], selection: { frame: 'f1', path: [0, 0, 4] }, exportFrame: 'f1' }
+  const t = E.fromEngine(VARIANTS.find((v: any) => v.id === 'keys-first').draw(facts('rotate-due'), 80, 'light'))
+  const band = { frames: [{ id: 'f1', name: 'Band', tree: t }], selection: { frame: 'f1', path: [0, 0, 3] }, exportFrame: 'f1' }
   const row = (d: any) => toText(layout(E.toEngine(d.frames[0].tree), 80))[1]
-  const swapped = E.apply(band, { type: 'move', from: [0, 0, 4], to: { parentPath: [0, 0], index: 2 } })
-  expect(row(swapped)).toBe('  \u25cf ctrl+x  2 wrap1 rotate  \u00b7  ')
-  expect(row(E.apply(swapped, { type: 'move', from: [0, 0, 4], to: { parentPath: [0, 0], index: 3 } }))).toBe('  \u25cf ctrl+x  2 wrap  \u00b7  1 rotate')
+  const swapped = E.apply(band, { type: 'move', from: [0, 0, 3], to: { parentPath: [0, 0], index: 1 } })
+  expect(row(swapped)).toBe('  ctrl+x  2 wrap1 rotate  ')
+  expect(row(E.apply(swapped, { type: 'move', from: [0, 0, 3], to: { parentPath: [0, 0], index: 2 } }))).toBe('  ctrl+x  2 wrap  1 rotate')
 })
 
 // Where a drag lands, on the shipped rotate-due band
-// `  ● ctrl+x  1 rotate  ·  2 wrap`: the rotate group [0,0,2] spans cols
-// 12-19 (midpoint 15.5), the separator [0,0,3] cols 20-24 (22), the wrap
-// group [0,0,4] cols 25-30. A pointer anywhere inside a sibling reorders
-// among the siblings, before that sibling up to its midpoint and after it
-// past; a gap that would leave the node where it is gives no target.
+// `  ● ctrl+x  1 rotate  ·  2 wrap`: in the band [1,0] the mark spans cols
+// 2-3 (midpoint 2.5), the prefix 4-11 (7.5), the rotate key 12-13 (12.5),
+// the rotate Button 14-19 (16.5), the separator 20-24 (22), the wrap key
+// 25-26 (25.5) and the wrap Button 27-30. A pointer anywhere inside a sibling
+// reorders among the siblings, before the first whose midpoint is not before
+// it; a pointer inside the dragged node gives no target.
 test('dropTarget reorders a node among its siblings when the pointer is inside one', () => {
   const t = E.fromEngine(VARIANTS[0].draw(facts('rotate-due'), 80, 'light'))
   const g = layout(E.toEngine(t), 80)
-  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 14 })).toEqual({ parentPath: [0, 0], index: 2 })
-  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 18 })).toEqual({ parentPath: [0, 0], index: 3 })
-  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 20 })).toEqual({ parentPath: [0, 0], index: 3 })
-  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 24 })).toBeNull()
-  expect(E.dropTarget(t, g, [0, 0, 4], { r: 1, c: 28 })).toBeNull()
-  expect(E.dropTarget(t, g, [0, 0, 2], { r: 1, c: 28 })).toEqual({ parentPath: [0, 0], index: 5 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 14 })).toEqual({ parentPath: [1, 0], index: 3 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 18 })).toEqual({ parentPath: [1, 0], index: 4 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 20 })).toEqual({ parentPath: [1, 0], index: 4 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 24 })).toEqual({ parentPath: [1, 0], index: 5 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 28 })).toBeNull()
+  expect(E.dropTarget(t, g, [1, 0, 3], { r: 1, c: 28 })).toEqual({ parentPath: [1, 0], index: 6 })
 })
 
 // Outside the siblings the pointer's node takes the drop when it may hold

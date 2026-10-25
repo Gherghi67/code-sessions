@@ -1,49 +1,14 @@
 // ABOUTME: The cs band's states and the drawings proposed for it, as engine trees for docs/mods-design-lab.html.
-// ABOUTME: Loaded by the lab as a plain script and by bun tests through module.exports; draw functions are pure.
+// ABOUTME: The states and the shipped band come from the cs mod's bundle (docs/surfaces/cs.js), loaded first; the sketches are pure.
 (function (root) {
   "use strict";
 
-  // The keybindings the installer writes (CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh).
-  var CHORDS = { rotate: "ctrl+x 1", wrap: "ctrl+x 2", feed: "ctrl+x 3" };
-
-  var PROMPTS = [
-    "fix the login redirect", "add a retry to the upload client", "why does the cache miss on first load",
-    "rename the settings module", "write the migration for the orders table", "make the sidebar collapse on narrow screens",
-    "explain the session timeout", "drop the unused date helpers", "speed up the search index build",
-    "add a dark theme to the docs", "check the release notes for typos", "split the report into two pages",
-    "move the config loader out of main", "run the full suite and fix what fails",
-  ];
-
-  // A band's facts: register.tsx's BandFacts without the press callbacks.
-  // `featured.pressable` stands for an onPress; `countdown.ink` names the
-  // count's ramp step (session, amber, crit), which a drawing resolves for its
-  // theme; `rail` is what the prompt bars draw from; `chords` the bound keys.
-  function facts(over) {
-    var base = { rotating: false, armed: false, wrapping: false, waiting: 0, queued: 0, mail: 0, chords: CHORDS };
-    return Object.assign(base, over);
-  }
-
-  var STATES = [
-    { id: "idle", name: "nothing to say", facts: facts({}) },
-    { id: "rotate-due", name: "context past the threshold", facts: facts({ rotating: true, wrapping: true }) },
-    { id: "countdown", name: "handoff armed, counting down to the /clear", facts: facts({ countdown: { seconds: 7, ink: "amber" }, rotating: true, armed: true }) },
-    { id: "armed-clear-now", name: "handoff armed, waiting for a press", facts: facts({ rotating: true, armed: true }) },
-    { id: "feed-off", name: "idle, the feed mod installed and off", facts: facts({ feed: { on: false } }) },
-    { id: "feed-on", name: "idle, the feed on", facts: facts({ feed: { on: true } }) },
-    { id: "queue-waiting", name: "tasks queued, nothing running them", facts: facts({ waiting: 3 }) },
-    { id: "queue-running", name: "the queue running its tasks", facts: facts({ queued: 3 }) },
-    { id: "gate-running", name: "a /finish gate running", facts: facts({ gate: "finishing fix-auth · gate 1m 12s" }) },
-    { id: "mail", name: "mail from another session", facts: facts({ mail: 2 }) },
-    { id: "features-ready", name: "a feature ready to finish", facts: facts({ featured: { label: "3 features · fix-auth ready", pressable: true } }) },
-    // Every word an idle band can carry at once: the most a line is asked to hold.
-    { id: "everything", name: "every word an idle band can carry at once", facts: facts({
-      featured: { label: "3 features · fix-auth ready", pressable: true }, rotating: true, wrapping: true,
-      feed: { on: true }, waiting: 2, mail: 1, rail: { prompts: PROMPTS.slice(0, 6), named: 5, refused: [] },
-    }) },
-    { id: "rail-few", name: "three prompts on the rail", facts: facts({ rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
-    { id: "rail-many", name: "fourteen prompts, the oldest folded", facts: facts({ rail: { prompts: PROMPTS.slice(), named: 13, refused: [5] } }) },
-    { id: "no-chords", name: "context past the threshold, keybindings unbound", facts: facts({ rotating: true, wrapping: true, chords: {} }) },
-  ];
+  // The band's facts and the band itself, from the cs mod's own code: the
+  // catalogue is the first fifteen of the band surface's states, the ones
+  // every sketch is drawn in.
+  var cs = root.CsSurfaces;
+  if (!cs) throw new Error("the band variants need the cs mod's bundle (docs/surfaces/cs.js) loaded first");
+  var STATES = cs.STATES.slice(0, cs.CATALOGUE);
 
   // ---- the band's vocabulary, as register.tsx spells it ----
   // cs.bandBars' default (mods/cs/.claude-plugin/plugin.json) and the fewest
@@ -86,16 +51,16 @@
     var dark = theme === "dark";
     return { own: "claude", amber: dark ? "AMBER_D" : "AMBER_L", crit: dark ? "CRIT_D" : "CRIT_L", running: "suggestion", clear: "success" };
   }
-  function rampInk(step, theme) {
-    var ink = inks(theme);
+  function rampInk(seconds, theme) {
+    var ink = inks(theme), step = cs.countdownStep(seconds);
     return step === "session" ? ink.own : ink[step];
   }
 
-  // bandState over the facts a drawing has: the gate or the queue's own word
-  // means something runs, a rotate key means a rotation is due.
+  // The mark's state from the facts the band's own bandState reads: a gate or
+  // the queue running, else a rotation due, else nothing.
   function bandState(f) {
-    if (f.gate !== undefined || f.queued > 0) return "running";
-    return f.rotating ? "due" : "clear";
+    if (f.gate !== undefined || f.queueRunning) return "running";
+    return f.due ? "due" : "clear";
   }
   function markInk(f, theme) {
     var ink = inks(theme), state = bandState(f);
@@ -106,7 +71,7 @@
   function entriesOf(f) {
     var out = [];
     if (f.featured !== undefined) out.push({ key: "cs-features", kind: f.featured.pressable ? "press" : "word", label: f.featured.label });
-    if (f.countdown !== undefined) out.push({ key: "cs-countdown", kind: "word", label: "/clear in " + f.countdown.seconds + "s", ink: f.countdown.ink });
+    if (f.countdown !== undefined) out.push({ key: "cs-countdown", kind: "word", label: "/clear in " + f.countdown.seconds + "s", seconds: f.countdown.seconds });
     if (f.rotating) out.push({ key: "cs-rotate", kind: "chord", role: "rotate", label: f.armed ? "/clear now" : "rotate" });
     if (f.wrapping) out.push({ key: "cs-wrap", kind: "chord", role: "wrap", label: "wrap" });
     if (f.feed !== undefined) out.push({ key: "cs-feed", kind: "chord", role: "feed", label: f.feed.on ? "feed ✓" : "feed", check: f.feed.on });
@@ -148,10 +113,11 @@
     return fitted + " ".repeat(Math.max(0, width - cells(fitted)));
   }
 
-  // One entry as the shipped band draws it: a word dim (a ramp ink bold), a
-  // chord or a press a plain Button, the feed's check in the session colour.
+  // One entry as the shipped band draws it: a word dim (the count bold in its
+  // ramp ink), a chord or a press a plain Button, the feed's check in the
+  // session colour.
   function entryNode(e, theme, wordStyle) {
-    if (e.kind === "word") return e.ink === undefined ? T(wordStyle || { dimColor: true }, e.label) : T({ bold: true, color: rampInk(e.ink, theme) }, e.label);
+    if (e.kind === "word") return e.seconds === undefined ? T(wordStyle || { dimColor: true }, e.label) : T({ bold: true, color: rampInk(e.seconds, theme) }, e.label);
     if (e.kind === "press") return Btn({ key: e.key, plain: true, label: e.label });
     var props = { key: e.key, action: ACTIONS[e.role], plain: true, label: e.label };
     return e.check ? Btn(props, [e.label.slice(0, -1), T({ color: inks(theme).own }, "✓")]) : Btn(props);
@@ -223,18 +189,6 @@
     return Bx({ flexDirection: "column" }, [Bx({ marginTop: 1 }, [Bx({ key: "cs-rotate-band", marginLeft: 2 }, nodes)])]);
   }
 
-  // The band as the draw site composes it: a blank row, then at two cells in
-  // the mark, the words, the rail after a 3-cell gap, and the named prompt in
-  // what the line leaves. The hover cards that swap a prompt in under the
-  // pointer are left out: they draw nothing until a bar is hovered.
-  function drawShipped(f, cols, theme) {
-    var entries = entriesOf(f);
-    var words = actions(f, entries, theme, SEP);
-    var rail = railRun(f, cols - 2 - 2 - (words.cells > 0 ? 3 + words.cells : 0), inks(theme).own, words.cells > 0 ? 3 : 0);
-    if (entries.length === 0 && rail === undefined) return null;
-    return band([Bx({ key: "cs-mark", marginRight: 1 }, [T({ color: markInk(f, theme) }, MARK)])].concat(words.nodes, rail || []));
-  }
-
   // Words alone in the default ink, three cells apart: no mark, no key beside
   // its word; the bound chords trail as one dim hint (`ctrl+x 1 2`), in the
   // order of their words. A line too long drops the hint, then folds its last
@@ -287,7 +241,7 @@
         var button = Btn({ key: e.key, action: ACTIONS[e.role], plain: true, label: e.label });
         nodes.push(k === undefined ? button : chord(e, k, button, theme));
       } else if (e.kind === "press") nodes.push(Btn({ key: e.key, plain: true, label: e.label }));
-      else nodes.push(T(e.ink === undefined ? { dimColor: true } : { bold: true }, e.label));
+      else nodes.push(T(e.seconds === undefined ? { dimColor: true } : { bold: true }, e.label));
       text.push(e.label);
     });
     var wordCells = cells(text.join(""));
@@ -414,7 +368,7 @@
   }
 
   var VARIANTS = [
-    { id: "shipped", name: "Shipped", note: "The band register.tsx draws today. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: drawShipped },
+    { id: "shipped", name: "Shipped", note: "The band the cs mod draws, from its own drawBand in the bundled docs/surfaces/cs.js, handed the terminal less the five [-] cells. With every word at once it clips at 60 and at 80: the line has no rule for what to drop.", draw: cs.band },
     { id: "quiet", name: "Quiet line", note: "Words only, in the default ink; the chords trail as one dim hint. Past the width the hint goes first, then the last words fold into …N, so it never overruns.", draw: drawQuiet },
     { id: "keys-first", name: "Keys first", note: "The bound keys lead and their digits are the only colour on the line; the other words follow, dim, two cells apart. Every word at once clips at 60 and at 80.", draw: drawKeysFirst },
     { id: "status-first", name: "Status first", note: "A word for the state leads where the mark stood (due, armed, running gate, running queue, idle), in the mark's ink; the shipped words follow. It repeats the gate's own word, and every word at once clips at 60 and at 80.", draw: drawStatusFirst },

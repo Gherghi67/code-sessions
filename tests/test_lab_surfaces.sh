@@ -84,6 +84,21 @@ test_bundles_are_plain_scripts() {
     assert_eq "" "$bad" "no bundle keeps module syntax or a require" || return 1
 }
 
+# The page loads the shim first, then every bundle, then the registry that
+# reads their globals, then the variants that read the cs one, each a plain
+# script tag (file:// blocks a module).
+test_lab_loads_the_shim_every_bundle_and_the_registry_in_order() {
+    local html="$REPO/docs/mods-design-lab.html" want got mod
+    want="surfaces/shim.js"
+    for mod in cs cs-feed cs-update cs-mermaid; do want="$want surfaces/$mod.js"; done
+    want="$want surfaces/surfaces.js mods-band-variants.js"
+    got="$(grep -oE '^<script src="(surfaces/[^"]*|mods-band-variants\.js)"></script>$' "$html" | sed 's/^<script src="//; s/"><\/script>$//' | tr '\n' ' ' | sed 's/ $//')"
+    assert_eq "$want" "$got" "the lab's script tags, in order" || return 1
+    for mod in $(_entries); do
+        case " $want " in *" surfaces/$mod.js "*) ;; *) echo "  FAIL: the lab does not load surfaces/$mod.js"; return 1 ;; esac
+    done
+}
+
 test_mod_sources_named_here_are_the_ones_the_bundles_carry() {
     local carried named
     carried="$(for mod in $(_entries); do cat "$SURFACES/$mod.js"; done | sed -n 's|^  // \(mods/[^ ]*\)$|\1|p' | sort -u)"
@@ -118,6 +133,7 @@ test_fixtures_typecheck_against_the_mods() {
 run_test test_committed_bundles_are_what_a_rebuild_prints
 run_test test_every_bundle_has_its_entry
 run_test test_bundles_are_plain_scripts
+run_test test_lab_loads_the_shim_every_bundle_and_the_registry_in_order
 run_test test_mod_sources_named_here_are_the_ones_the_bundles_carry
 run_test test_fixtures_typecheck_against_the_mods
 
