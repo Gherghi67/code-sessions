@@ -301,8 +301,59 @@ const you2 = () => B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({},
 test('a Text breaks into rows at each newline, then wraps each row to the room', () => {
   expect(toText(layout(T({}, 'cs -update exited 3.\ndownload failed'), 40))).toEqual(['cs -update exited 3.', 'download failed'])
   expect(toText(layout(T({}, 'abcdef\ngh'), 4))).toEqual(['abcd', 'ef', 'gh'])
-  expect(toText(layout(T({ wrap: 'truncate-end' }, 'abcdef\ngh'), 4))).toEqual(['abc…', 'gh'])
   expect(toText(layout(T({}, 'a\n\nb'), 4))).toEqual(['a', '', 'b'])
+})
+
+// 2.1.310 wraps a Text in its render (gv) and its measure (s1) through Ip:
+// `wrap` is ku(n,u,{trim:!1,hard:!0}), the bundle's wrapper over
+// Bun.wrapAnsi, `wrap-trim` the same with trim. A word moves to the next row
+// whole and only a word wider than the row breaks; a row that starts with the
+// space the wrap carried over draws without it ("I=_.startsWith(" ")?
+// _.slice(1):_,P=vf(I)>0?I:_"), unless the space is all the row holds.
+// Worked by hand from wrap-ansi's rules, the ones Bun.wrapAnsi implements.
+test('a Text wraps at its words, as the engine wraps it', () => {
+  const rows = (s: string, w: number, wrap?: string) => toText(layout(T(wrap ? { wrap } : {}, s), w))
+  expect(rows('one two three', 7)).toEqual(['one two', 'three'])
+  expect(rows('abcdefghij klm', 4)).toEqual(['abcd', 'efgh', 'ij ', 'klm'])
+  expect(rows('  \u00b7  ', 1)).toEqual([' ', ' ', '\u00b7', ' ', ' '])
+  expect(rows('mail 1', 1)).toEqual(['m', 'a', 'i', 'l', ' ', '1'])
+  expect(rows('ab  cd', 3, 'wrap-trim')).toEqual(['ab', 'cd'])
+})
+
+// What a Text given no cells draws: ku returns the text unchanged for a
+// width that is not above 0 ("if(!(t>0))return e"), so a wrapping Text draws
+// whole; o1 returns "" below 1, so a truncating one draws nothing.
+test('a wrapping Text given no cells draws whole, a truncating one draws nothing', () => {
+  expect(toText(layout(T({}, 'ab'), 0))).toEqual(['ab'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'ab'), 0))).toEqual([''])
+})
+
+// A truncating Text is cut whole (gv hands Ip the text, newlines and all,
+// when the mode does not wrap): its widest line decides, and what follows
+// the cut, the rest of the lines included, is gone.
+test('a truncating Text is cut once across its lines', () => {
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'abcdef\ngh'), 4))).toEqual(['abc\u2026'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'ab\ncdefgh'), 4))).toEqual(['ab', 'c\u2026'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'ab\ncd'), 4))).toEqual(['ab', 'cd'])
+})
+
+// The engine's own wrap is the oracle: over a battery of texts and widths,
+// the lab's rows are Bun.wrapAnsi's (bun 1.4.4, the Bun 2.1.310 embeds) with
+// a carried space dropped from a continuation row, and the Text measures the
+// widest row Bun.wrapAnsi gives.
+test('a Text wraps as Bun.wrapAnsi does, over a battery of texts and widths', () => {
+  const texts = ['one two three', 'a  b', ' lead', 'trail  ', 'abcdefghij klm', 'x yy zzz wwww vvvvv', '  \u00b7  ', 'ctrl+x  1 rotate  \u00b7  2 wrap', 'a b c d e f g', 'word\nnext line here']
+  const misses: string[] = []
+  for (const s of texts) for (let w = 1; w <= 12; w++) {
+    const raw = Bun.wrapAnsi(s, w, { trim: false, hard: true }).split('\n')
+    const widest = Math.max(...s.split('\n').map(l => l.length))
+    const drawn = widest <= w ? s.split('\n') : s.split('\n').flatMap(l => Bun.wrapAnsi(l, w, { trim: false, hard: true }).split('\n').map((r, i) => i && r.startsWith(' ') && r.length > 1 ? r.slice(1) : r))
+    const g = layout(T({}, s), w)
+    const got = { rows: toText(g), w: g.w }
+    const want = { rows: drawn, w: widest <= w ? widest : Math.max(...raw.map(r => r.length)) }
+    if (JSON.stringify(got) !== JSON.stringify(want)) misses.push(`${JSON.stringify(s)} at ${w}: ${JSON.stringify(got)} != ${JSON.stringify(want)}`)
+  }
+  expect(misses).toEqual([])
 })
 
 // The 2.1.310 bundle's Markdown renderer: strong is bold, em italic, and a
@@ -316,7 +367,7 @@ test('a Markdown node draws its text with bold, italic and code styled, the mark
   expect(g.rows[0][4].st.bold).toBe(false)
   expect(g.rows[0][16].st).toMatchObject({ color: 'permission', bold: false })
   expect(g.rows[0][27].st.italic).toBe(true)
-  expect(toText(layout(md('one two three\nfour'), 7))).toEqual(['one two', ' three', 'four'])
+  expect(toText(layout(md('one two three\nfour'), 7))).toEqual(['one two', 'three', 'four'])
 })
 
 // A pane as the 2.1.310 bundle frames an inline one (Tle): a round border,

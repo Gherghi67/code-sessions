@@ -27,30 +27,89 @@
   function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path, ink: true }; }); }
   function blanks(n, st, path) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY, path: path }); return out; }
 
-  // Break `cells` into rows no wider than `room`, by the Text wrap mode. A
-  // truncation mark inherits the style of the run it lands in.
-  function wrapCells(cells, room, mode) {
-    if (room <= 0) return [[]];
-    var dots = function (i) { var from = cells[i] || cells[cells.length - 1]; return { ch: "\u2026", st: from.st, path: from.path }; };
-    if (!mode || mode === "wrap") {
-      var out = [];
-      for (var i = 0; i < cells.length; i += room) out.push(cells.slice(i, i + room));
-      return out.length ? out : [[]];
-    }
-    if (cells.length <= room) return [cells];
-    if (mode === "truncate-start") return [[dots(cells.length - room)].concat(cells.slice(cells.length - room + 1))];
+  // A truncated run no wider than `room`, by the Text wrap mode, its newlines
+  // taking no cells: the 2.1.310 renderer cuts a Text that does not wrap
+  // whole (o1), so the cut can fall past a newline and drops the lines after
+  // it. A truncation mark inherits the style of the run it lands in. Below
+  // one cell nothing is left.
+  function truncate(cells, room, mode) {
+    if (room < 1) return [];
+    var shown = cells.filter(function (c) { return c.ch !== "\n"; });
+    var dots = function (from) { return { ch: "…", st: from.st, path: from.path, ink: true }; };
+    if (room === 1) return [dots(shown[0])];
+    var head = function (n) { var out = [], seen = 0; for (var i = 0; i < cells.length && seen < n; i++) { out.push(cells[i]); if (cells[i].ch !== "\n") seen++; } return out; };
+    var tail = function (n) { var out = [], seen = 0; for (var i = cells.length - 1; i >= 0 && seen < n; i--) { out.unshift(cells[i]); if (cells[i].ch !== "\n") seen++; } return out; };
+    if (mode === "truncate-start") return [dots(shown[shown.length - room])].concat(tail(room - 1));
     if (mode === "middle" || mode === "truncate-middle") {
-      var head = Math.floor((room - 1) / 2);
-      return [cells.slice(0, head).concat([dots(head)], cells.slice(cells.length - (room - 1 - head)))];
+      var left = Math.floor((room - 1) / 2);
+      return head(left).concat([dots(shown[left])], tail(room - 1 - left));
     }
-    return [cells.slice(0, room - 1).concat([dots(room - 1)])];
+    return head(room - 1).concat([dots(shown[room - 1])]);
   }
 
-  // A Text's rows: broken at each newline, then each line wrapped to `room`.
+  // One line broken into rows no wider than `columns` as Bun.wrapAnsi breaks
+  // it with hard on, the 2.1.310 wrap (wrap-ansi's rules): a word that does
+  // not fit moves to a new row whole, one wider than a row breaks across rows,
+  // the space between two words stays at the end of a row or starts the
+  // next. `trim` drops the spaces each row starts and ends with.
+  function wordRows(line, columns, trim) {
+    if (trim && line.every(function (c) { return c.ch === " "; })) return [[]];
+    var words = [[]], spaces = [];
+    line.forEach(function (c) { if (c.ch === " ") { spaces.push(c); words.push([]); } else words[words.length - 1].push(c); });
+    var rows = [[]];
+    var last = function () { return rows[rows.length - 1]; };
+    words.forEach(function (word, i) {
+      if (trim) { var lead = 0; while (lead < last().length && last()[lead].ch === " ") lead++; rows[rows.length - 1] = last().slice(lead); }
+      var used = last().length;
+      if (i > 0) {
+        if (used >= columns && !trim) { rows.push([]); used = 0; }
+        if (used > 0 || !trim) { last().push(spaces[i - 1]); used++; }
+      }
+      if (word.length > columns) {
+        var thisRow = 1 + Math.floor((word.length - (columns - used) - 1) / columns);
+        var nextRow = Math.floor((word.length - 1) / columns);
+        if (nextRow < thisRow) rows.push([]);
+        var shown = last().length;
+        word.forEach(function (c, k) {
+          if (shown + 1 <= columns) last().push(c); else { rows.push([c]); shown = 0; }
+          shown++;
+          if (shown === columns && k < word.length - 1) { rows.push([]); shown = 0; }
+        });
+        return;
+      }
+      if (used + word.length > columns && used > 0 && word.length > 0) rows.push([]);
+      rows[rows.length - 1] = last().concat(word);
+    });
+    if (trim) rows = rows.map(function (r) { var end = r.length; while (end > 0 && r[end - 1].ch === " ") end--; return r.slice(0, end); });
+    return rows;
+  }
+
+  // A Text's rows in `room` cells, and the cells it measures, as the 2.1.310
+  // terminal draws and measures it (gv and s1). A Text whose widest line fits
+  // draws as written. A wrapping one is broken line by line; a row that
+  // starts with the space carried over from the row above draws without it,
+  // unless the space is all the row holds, but measures with it. Given no
+  // cells it draws whole. Any other mode is cut once (`truncate`).
   function textRows(cells, room, mode) {
     var lines = [[]];
     cells.forEach(function (c) { if (c.ch === "\n") lines.push([]); else lines[lines.length - 1].push(c); });
-    return lines.reduce(function (rows, line) { return rows.concat(wrapCells(line, room, mode)); }, []);
+    var widest = function (rows) { return rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0); };
+    var natural = widest(lines);
+    var wraps = !mode || mode === "wrap" || mode === "wrap-trim";
+    if (natural <= room || (wraps && room <= 0)) return { w: natural, rows: lines };
+    if (!wraps) {
+      var cut = truncate(cells, room, mode), rows = [[]];
+      cut.forEach(function (c) { if (c.ch === "\n") rows.push([]); else rows[rows.length - 1].push(c); });
+      return { w: widest(rows), rows: rows };
+    }
+    var measured = 0, drawn = [];
+    lines.forEach(function (line) {
+      wordRows(line, room, mode === "wrap-trim").forEach(function (r, i) {
+        measured = Math.max(measured, r.length);
+        drawn.push(i > 0 && r.length > 1 && r[0].ch === " " ? r.slice(1) : r);
+      });
+    });
+    return { w: measured, rows: drawn };
   }
 
   // A Markdown text as one inline run, as the 2.1.310 renderer styles it:
@@ -95,6 +154,9 @@
     var w = rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0);
     return { w: w, h: rows.length, rows: rows };
   }
+  // A Text's grid: the cells it measures, which can be more than its widest
+  // drawn row (`textRows`).
+  function textGrid(t) { return { w: t.w, h: t.rows.length, rows: t.rows }; }
 
   var BORDERS = {
     single: { tl: "\u250c", t: "\u2500", tr: "\u2510", r: "\u2502", br: "\u2518", b: "\u2500", bl: "\u2514", l: "\u2502" },
@@ -136,12 +198,12 @@
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
     var path = at || [];
     if (!node) return grid([]);
-    if (node.type === "Text") return grid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
+    if (node.type === "Text") return textGrid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
     if (node.type === "Button") return layoutButton(node, width, path);
     if (node.type === "Box") return layoutBox(node, width, path, !!fill);
-    if (node.type === "Markdown") return grid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
+    if (node.type === "Markdown") return textGrid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
     // The lab draws no syntax colour: a Code node is its source, dim.
-    if (node.type === "Code") return grid(textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width));
+    if (node.type === "Code") return textGrid(textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width));
     return grid([]);
   }
   // The tree as the terminal draws it in a row `width` cells wide.
