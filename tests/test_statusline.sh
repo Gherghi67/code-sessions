@@ -5220,16 +5220,19 @@ test_band_ink_roles_per_theme() {
 
 # A light band's inks come from the raw hue, not the pale band it is pulled
 # to: blue gives the session name 36;52;69 and a label 59;86;114. The neutral
-# on cream, 223;216;197, gives 75;73;66 and 124;120;110.
+# on cream, 223;216;197, gives 75;73;66 and 124;120;110. Nothing on a light
+# band is bold, the mark included.
 test_band_inks_on_a_light_terminal() {
     band_env
     export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
     local out
     out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" ";38;2;36;52;69;1mm" "the session name is the blue primary" || return 1
+    assert_output_contains_f "$out" ";38;2;36;52;69;22mm" "the session name is the blue primary, regular weight" || return 1
     assert_output_contains_f "$out" ";38;2;59;86;114;22m○" "a label is the blue dim" || return 1
+    assert_output_contains_f "$out" ";38;2;217;119;87;22m✳" "the mark is regular weight" || return 1
+    assert_output_not_contains_f "$out" ";1m" "no item is bold" || return 1
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" ";38;2;75;73;66;1mm" "the session name is the neutral's primary" || return 1
+    assert_output_contains_f "$out" ";38;2;75;73;66;22mm" "the session name is the neutral's primary" || return 1
     assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
 }
 

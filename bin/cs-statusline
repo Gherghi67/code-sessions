@@ -2492,7 +2492,7 @@ _render_band() {
                 continue
             fi
             weight=22
-            [ -n "${_SEG_BOLD[i]}" ] && weight=1
+            [ -n "${_SEG_BOLD[i]}" ] && [ "$SL_THEME" = "dark" ] && weight=1
             _band_ink "${_SEG_INK[i]}" "${_SEG_BOLD[i]}"
             _band_text "${_SEG_TEXT[i]}" "$_BAND_FG" "$weight"
         done
