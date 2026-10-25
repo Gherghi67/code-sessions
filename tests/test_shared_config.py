@@ -2,11 +2,14 @@
 """Regression coverage for the engine-profile migration, using temporary homes."""
 import importlib.util
 from contextlib import closing
+import errno
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("shared_config", Path(__file__).resolve().parents[1] / "scripts/shared-config.py")
 migration = importlib.util.module_from_spec(SPEC)
@@ -56,6 +59,64 @@ class SharedConfigTests(unittest.TestCase):
         self.assertEqual(source.read_text(), '{"source":1}\n')
         self.assertEqual(target.read_text(), '{"target":1}\n')
         self.assertEqual(len(result["conflicts_kept_in_profile"]), 1)
+
+    def test_competing_transcript_creation_is_preserved_and_reported(self):
+        self.put(self.profile, ".codex/sessions/rollout.jsonl", '{"old":1}\n')
+        target = self.home / ".codex/sessions/rollout.jsonl"
+        link = os.link
+
+        def competing_link(source, destination):
+            target.write_text('{"normal":1}\n')
+            return link(source, destination)
+
+        with mock.patch.object(migration.os, "link", side_effect=competing_link):
+            result = migration.migrate(self.home, True)
+        self.assertEqual(target.read_text(), '{"normal":1}\n')
+        self.assertEqual(result["imported"][".codex/sessions"], 0)
+        self.assertEqual(result["conflicts_kept_in_profile"], [".codex/sessions/rollout.jsonl"])
+
+    def test_cross_device_copy_does_not_replace_a_competing_transcript(self):
+        source = self.put(self.profile, ".codex/sessions/rollout.jsonl", '{"old":1}\n')
+        target = self.home / ".codex/sessions/rollout.jsonl"
+        link = os.link
+
+        def competing_link(src, dst):
+            if Path(src) == source:
+                target.write_text('{"normal":1}\n')
+                raise OSError(errno.EXDEV, "different filesystems")
+            return link(src, dst)
+
+        with mock.patch.object(migration.os, "link", side_effect=competing_link):
+            result = migration.migrate(self.home, True)
+        self.assertEqual(target.read_text(), '{"normal":1}\n')
+        self.assertEqual(result["imported"][".codex/sessions"], 0)
+        self.assertEqual(result["conflicts_kept_in_profile"], [".codex/sessions/rollout.jsonl"])
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_cross_device_transcript_copy_publishes_once(self):
+        source = self.put(self.profile, ".codex/sessions/rollout.jsonl", '{"old":1}\n')
+        target = self.home / ".codex/sessions/rollout.jsonl"
+        link = os.link
+
+        def cross_device_link(src, dst):
+            if Path(src) == source:
+                raise OSError(errno.EXDEV, "different filesystems")
+            return link(src, dst)
+
+        with mock.patch.object(migration.os, "link", side_effect=cross_device_link):
+            result = migration.migrate(self.home, True)
+        self.assertEqual(target.read_text(), '{"old":1}\n')
+        self.assertEqual(result["imported"][".codex/sessions"], 1)
+        self.assertEqual(result["conflicts_kept_in_profile"], [])
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_unexpected_link_failure_does_not_fall_back_to_copy(self):
+        self.put(self.profile, ".codex/sessions/rollout.jsonl", '{"old":1}\n')
+        target = self.home / ".codex/sessions/rollout.jsonl"
+        with mock.patch.object(migration.os, "link", side_effect=PermissionError(errno.EACCES, "denied")):
+            with self.assertRaises(PermissionError):
+                migration.migrate(self.home, True)
+        self.assertFalse(target.exists())
 
     def test_symlink_destination_cannot_escape_home(self):
         self.put(self.profile, ".claude/projects/project/thread.jsonl", '{}\n')

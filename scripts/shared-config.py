@@ -7,6 +7,7 @@ ABOUTME: Leaves credentials, user preferences, session folders and the old profi
 import argparse
 from contextlib import closing
 import datetime
+import errno
 import hashlib
 import json
 import os
@@ -62,6 +63,35 @@ def backup(home, checkout):
     return root
 
 
+def matching_import(source, target):
+    if os.path.samefile(source, target) or digest(source) == digest(target):
+        return True
+    # A transcript already in normal config can be ahead of the old copy.
+    if source.suffix == ".jsonl" and source.stat().st_size <= target.stat().st_size:
+        with target.open("rb") as stream:
+            return stream.read(source.stat().st_size) == source.read_bytes()
+    return False
+
+
+def publish_missing(source, target):
+    # Links preserve live appends, and fail rather than replace a competing file.
+    try:
+        os.link(source, target)
+        return
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+    # A cross-device copy is complete before its exclusive publication. Both
+    # names now live on the same filesystem, so linking cannot fail with EXDEV.
+    descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".shared-config-")
+    os.close(descriptor)
+    try:
+        shutil.copy2(source, temporary)
+        os.link(temporary, target)
+    finally:
+        os.unlink(temporary)
+
+
 def import_tree(source, target, home, apply, conflicts):
     count = 0
     if not source.is_dir():
@@ -75,27 +105,21 @@ def import_tree(source, target, home, apply, conflicts):
             dst = target / src.relative_to(source)
             safe_target(dst, home)
             if dst.exists():
-                if os.path.samefile(src, dst) or digest(src) == digest(dst):
+                if matching_import(src, dst):
                     continue
-                # A transcript already in normal config can be ahead of the old copy.
-                if src.suffix == ".jsonl":
-                    short, long = (src, dst) if src.stat().st_size <= dst.stat().st_size else (dst, src)
-                    with long.open("rb") as stream:
-                        extends = stream.read(short.stat().st_size) == short.read_bytes()
-                    if extends and short == src:
-                        continue
                 # Keep both divergent versions, without silently choosing one.
                 conflicts.append(str(dst.relative_to(home)))
                 continue
-            count += 1
             if apply:
                 dst.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                # An already-running session may still append to its old rollout.
-                # A link keeps those writes visible until that session is restarted.
                 try:
-                    os.link(src, dst)
-                except OSError:
-                    shutil.copy2(src, dst)
+                    publish_missing(src, dst)
+                except FileExistsError:
+                    safe_target(dst, home)
+                    if not matching_import(src, dst):
+                        conflicts.append(str(dst.relative_to(home)))
+                    continue
+            count += 1
     return count
 
 
