@@ -91,6 +91,47 @@ test('cs-feed draws its rows after the name margin', () => {
   expect(rows('cs-feed.ToolGroup/batch-failed', 80)[0]).toBe('       \u2715 3 helpers \u00b7 2 done \u00b7 1 failed \u00b7 42s \u203a')
 })
 
+// drawCommandOutput: the 7-cell margin, the dot dim in a 2-cell Box, then
+// the answer, red and not dim when the command refused.
+test('cs-feed draws a command\'s answer after a dim dot in two cells', () => {
+  expect(rows('cs-feed.CommandOutput/errored', 80)).toEqual(['       · no feed change in this session: cs refused this session'])
+  const g = layout(state('cs-feed.CommandOutput/errored').draw(80, 'light'), 80)
+  expect([g.rows[0][7].st.dim, g.rows[0][9].st]).toMatchObject([true, { color: '#b42318', dim: false }])
+})
+
+// drawHelpersPane: the mark and the head one cell apart, then the helper's
+// now line and its calls each 2 cells in, dim.
+test('cs-feed draws the Helpers pane\'s now line and calls two cells under the head', () => {
+  expect(rows('cs-feed.Pane.cs-feed-helpers/working', 80)).toEqual([
+    '● Explore · working · 1m 12s',
+    '  now: Reading draw.tsx',
+    '  Searched the code for drawBand',
+    '  Read words.ts',
+  ])
+  const g = layout(state('cs-feed.Pane.cs-feed-helpers/working').draw(80, 'light'), 80)
+  expect([g.rows[0][0].st, g.rows[1][2].st.dim]).toMatchObject([{ color: '#d97757', dim: false }, true])
+})
+
+// drawBand's helpers: the head after the 7-cell margin, then a row per kind,
+// one cell between the kind, each of its cells and its fraction.
+test('cs-feed draws the helpers above the prompt after the name margin', () => {
+  expect(rows('cs-feed.AbovePrompt/helpers-running', 80)).toEqual([
+    '       ⠋ 3 helpers · 1 done · 2 running · 1m 12s',
+    '       Explore ◐ ● 1/2',
+    '       Plan ◐ 0/1',
+  ])
+  const g = layout(state('cs-feed.AbovePrompt/helpers-running').draw(80, 'light'), 80)
+  expect([g.rows[0][7].st.color, g.rows[1][15].st.color, g.rows[1][17].st.color]).toEqual(['#5b3fb5', '#5b3fb5', '#1f7a4a'])
+})
+
+// drawReply: `claude` dim in the claude ink in a 7-cell Box, then the
+// engine's drawing of the reply.
+test('cs-feed draws the claude margin dim beside the reply', () => {
+  expect(rows('cs-feed.AssistantMessage/margin-and-reply', 80)).toEqual(['claude Fixed: the token now refreshes before fetch retries.'])
+  const g = layout(state('cs-feed.AssistantMessage/margin-and-reply').draw(80, 'light'), 80)
+  expect(g.rows[0][0].st).toMatchObject({ color: '#8a4a1f', dim: true })
+})
+
 // words.ts errorLine: one head in its tone, then its follow-up lines dim.
 test('cs-feed draws a reply error as its head and dim follow-ups', () => {
   expect(rows('cs-feed.AssistantMessage/error-usage-limit', 80)).toEqual(['       Usage limit reached', '       resets 5pm', '       nothing is lost', '       /model to switch'])
