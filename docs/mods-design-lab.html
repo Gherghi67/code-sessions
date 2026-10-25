@@ -1411,7 +1411,7 @@ function bdFrameCard(f){
 }
 // The props panel is rebuilt only when the present changes from outside it
 // (a selection, an edit on the canvas), so a field keeps its focus while it
-// is typed in.
+// is typed in. The frame summary has no field and is rebuilt on every render.
 let bdPanelStale=true;
 // Display scale of the strips: "fit" sizes the cells so the band's width
 // fills the canvas, a number scales the 15 px cell. Never part of History.
@@ -1444,7 +1444,7 @@ function composeRender(){
   const sel=doc.selection;
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
   bdLayers(); bdHoverDraw();
-  if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
+  if(bdPanelStale||!sel){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   $("bd-code-name").textContent=`${bdFrame(doc.exportFrame).name}, the frame that exports`;
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
