@@ -3318,6 +3318,82 @@ for (const [name, arrange, props, fixture] of bandViews) {
   })
 }
 
+// The band's line as the terminal draws it while nothing shrinks: the inset,
+// then each part in order, a Box's margins as blank cells, a Button its
+// children or else its label. Every glyph the band draws here is one cell.
+function bandLine(tree: any): string {
+  const part = (node: any): string => {
+    if (typeof node === 'string') return node
+    if (Array.isArray(node)) return node.map(part).join('')
+    if (!node || typeof node !== 'object') return ''
+    const inner = node.type === 'Button' && (node.children ?? []).flat(Infinity).filter(Boolean).length === 0 ? node.props.label : part(node.children ?? [])
+    return node.type === 'Box' ? `${' '.repeat(node.props.marginLeft ?? 0)}${inner}${' '.repeat(node.props.marginRight ?? 0)}` : inner
+  }
+  const row = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
+  if (row === undefined) throw new Error('the band drew no line')
+  return part(row)
+}
+const EL = { Box: 'Box', Text: 'Text', Button: 'Button' } as any
+const everything = buildBandEntries({ ...quiet, featured: { label: '3 features · fix-auth ready', onPress: noPress }, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress }, waiting: 2, mail: 1 })
+const droppable = buildBandEntries({ ...quiet, featured: { label: '3 features · none ready' }, rotating: true, wrapping: true, gate: 'finishing fix-auth · gate 3s', queued: 2, mail: 1 })
+const lineAt = (entries: any[], bodyColumns: number, rail?: BandView['rail']) => bandLine(drawBand(view({ entries, bodyColumns, rail }), EL))
+
+test('with every entry on, the band leaves out its lowest words, then shortens the free text before the actions, until it fits one line', () => {
+  const at = (bodyColumns: number) => {
+    const line = lineAt(everything, bodyColumns)
+    expect([...line].length).toBeLessThanOrEqual(bodyColumns)
+    return line
+  }
+  // 120, 80, 60 and 40 columns: the engine keeps five cells of each for the [-].
+  expect(at(115)).toBe('  ● 3 features · fix-auth ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start  ·  mail 1')
+  expect(at(75)).toBe('  ● 3 features …  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start')
+  expect(at(55)).toBe('  ● 3…  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queu…')
+  expect(at(35)).toBe('  ● 3…  ·  1  ·  2  ·  3  ·  ▤…')
+})
+
+test('every entry the band never drops stays whole at the narrowest line that holds them, and the features word shortens a cell under it', () => {
+  expect(lineAt(everything, 90)).toBe('  ● 3 features · fix-auth ready  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start')
+  expect(lineAt(everything, 89)).toBe('  ● 3 features · fix-auth rea…  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start')
+})
+
+test('a chord drawn as its key alone is still its Button, pressed by its action, the key in the session colour', () => {
+  const pressable = buttons(drawBand(view({ entries: everything, bodyColumns: 35 }), EL)).map((b: any) => [b.props.key, b.props.action, b.props.label, texts(b).map((t: any) => t.props)])
+  expect(pressable).toEqual([
+    ['cs-features', undefined, '3…', []],
+    ['cs-rotate', 'strip:jump1', '1', [{ bold: true, color: OWN }]],
+    ['cs-wrap', 'strip:jump2', '2', [{ bold: true, color: OWN }]],
+    ['cs-feed', 'strip:jump3', '3', [{ bold: true, color: OWN }]],
+    ['cs-queue', undefined, '▤…', []],
+  ])
+})
+
+test('when even the keys overrun, the band cuts the line from the right and keeps the mark', () => {
+  expect(lineAt(everything, 20)).toBe('  ● 3…  ·  1  ·  2')
+})
+
+test('the band drops mail, the queue count, an unpressable features word, the gate word and then the chord prefix, in that order', () => {
+  expect(lineAt(droppable, 117)).toBe('  ● 3 features · none ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  finishing fix-auth · gate 3s  ·  ▤ queue 2  ·  mail 1')
+  expect(lineAt(droppable, 116)).toBe('  ● 3 features · none ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  finishing fix-auth · gate 3s  ·  ▤ queue 2')
+  expect(lineAt(droppable, 105)).toBe('  ● 3 features · none ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  finishing fix-auth · gate 3s')
+  expect(lineAt(droppable, 91)).toBe('  ● ctrl+x  1 rotate  ·  2 wrap  ·  finishing fix-auth · gate 3s')
+  expect(lineAt(droppable, 63)).toBe('  ● ctrl+x  1 rotate  ·  2 wrap')
+  expect(lineAt(droppable, 30)).toBe('  ● 1 rotate  ·  2 wrap')
+  expect(lineAt(droppable, 22)).toBe('  ● 1 rotate  ·  2')
+})
+
+test('chords that differ fall back to their whole chord, right to left, and a cut that leaves one keeps it whole', () => {
+  const differ = { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2' }
+  const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: buildBandEntries({ ...quiet, rotating: true, wrapping: true }), bodyColumns }), EL))
+  expect(at(37)).toBe('  ● ctrl+x 1 rotate  ·  ctrl+w 2 wrap')
+  expect(at(32)).toBe('  ● ctrl+x 1 rotate  ·  ctrl+w 2')
+  expect(at(30)).toBe('  ● ctrl+x 1  ·  ctrl+w 2')
+  expect(at(16)).toBe('  ● ctrl+x 1')
+})
+
+test('the rail takes what the line leaves once the band has dropped its words', () => {
+  expect(lineAt(droppable, 116, railOf(FOUR))).toBe('  ● 3 features · none ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  finishing fix-auth · gate 3s  ·  ▤ queue 2   │││┃')
+})
+
 test('a band with no words and no room for a tick reads no terminal colours', async () => {
   transcript(LINEAR)
   await turnComplete()

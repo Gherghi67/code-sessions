@@ -633,9 +633,105 @@ export type BandView = {
 }
 export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'>
 
+// The words that leave an overrunning line first, first to last, each only as
+// a word: a features word that can be pressed is a press and stays. After
+// them the shared chord prefix goes; the mark, the countdown, the chords and
+// the presses never leave.
+const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
+const SEP = '  ·  '
+
+// The chords that share a prefix (`ctrl+x 1`, `ctrl+x 2`): the prefix, and
+// each chord's own key after it, or the chord whole when they differ.
+function chordSpelling(entries: BandEntry[], chords: Record<string, string>) {
+  const prefix = sharedPrefix(entries.flatMap(entry => entry.kind === 'chord' ? [chords[entry.action]] : []))
+  return {
+    prefix,
+    spelled: (action: string) => {
+      const chord = chords[action]
+      return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
+    },
+  }
+}
+
+const firstChordOf = (entries: BandEntry[], chords: Record<string, string>) =>
+  entries.findIndex(entry => entry.kind === 'chord' && chords[entry.action] !== undefined)
+
+// An entry as the fitted line draws it: a chord with no room for its word
+// draws as its key alone.
+export type FittedEntry = BandEntry & { keyOnly?: true }
+
+// What the words take, in cells, as the tree draws them: a separator between
+// entries, the prefix once before the first bound chord with its two-cell
+// margin, each chord's key with its one-cell margin, then the label.
+// `spelling` is the whole line's: a cut that leaves fewer chords keeps them
+// spelled as the full line spells them.
+type ChordSpelling = ReturnType<typeof chordSpelling>
+function wordCellsOf(entries: FittedEntry[], chords: Record<string, string>, { prefix, spelled }: ChordSpelling, prefixed: boolean): number {
+  const firstChord = firstChordOf(entries, chords)
+  return cellWidth(entries.map((entry, index) => {
+    const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
+    const keyed = chord === undefined ? entry.label : entry.keyOnly ? chord : `${chord} ${entry.label}`
+    return `${index === firstChord && prefixed && prefix !== undefined ? `${prefix}  ` : ''}${keyed}`
+  }).join(SEP))
+}
+
+// The keepers whose words are free text, shortened first to last before any
+// chord loses its word, each no shorter than one cell and `…`.
+const SHORTEN_ORDER = ['cs-features', 'cs-queue']
+const SHORTEST_CELLS = 2
+
+// The entries a line of `room` cells draws, and whether it spells the chord
+// prefix. The engine's Buttons never shrink, so a line wider than its room
+// would squeeze the band's Texts to a cell each and wrap them down: the band
+// draws one line, and each step below runs only while the line still
+// overruns. Words leave (DROP_ORDER, then the prefix); the features and queue
+// words shorten (SHORTEN_ORDER); chords fall back to their key alone, right to
+// left, so the actions outlive the free text; last, the line is cut from the
+// right: the last entry's label ends in `…`, and an entry with no cell left
+// for its label goes, the cut moving to the one before it. The mark is never
+// an entry, so it is never cut.
+export function fitBand(all: BandEntry[], chords: Record<string, string>, room: number): { entries: FittedEntry[]; prefixed: boolean } {
+  const spelling = chordSpelling(all, chords)
+  const over = (entries: FittedEntry[], prefixed: boolean) => wordCellsOf(entries, chords, spelling, prefixed) - room
+  let entries: FittedEntry[] = all
+  for (const key of DROP_ORDER) {
+    if (over(entries, true) <= 0) return { entries, prefixed: true }
+    entries = entries.filter(entry => entry.key !== key || entry.kind !== 'word')
+  }
+  if (over(entries, true) <= 0) return { entries, prefixed: true }
+  for (const key of SHORTEN_ORDER) {
+    const excess = over(entries, false)
+    if (excess <= 0) return { entries, prefixed: false }
+    entries = entries.map(entry => {
+      const cells = cellWidth(entry.label)
+      return entry.key !== key || cells <= SHORTEST_CELLS ? entry : { ...entry, label: cutToCells(entry.label, Math.max(SHORTEST_CELLS, cells - excess)) }
+    })
+  }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (over(entries, false) <= 0) return { entries, prefixed: false }
+    entries = entries.map((entry, j) => (j === i && entry.kind === 'chord' && spelling.spelled(entry.action) !== undefined ? { ...entry, keyOnly: true } : entry))
+  }
+  for (;;) {
+    const excess = over(entries, false)
+    const last = entries[entries.length - 1]
+    if (excess <= 0 || last === undefined) return { entries, prefixed: false }
+    const keep = (last.keyOnly ? 0 : cellWidth(last.label)) - excess
+    if (keep >= 1) {
+      const label = cutToCells(last.label, keep)
+      return { entries: [...entries.slice(0, -1), last.kind === 'chord' ? { ...last, label, ink: undefined } : { ...last, label }], prefixed: false }
+    }
+    entries = entries.slice(0, -1)
+  }
+}
+
 export function drawBand(v: BandView, el: BandElements): RenderElement {
   const { Box, Text, Button } = el
-  const { entries, chords, own } = v
+  const { chords, own } = v
+  // The mark and its space, first on every line the band draws but under a
+  // survey, which owns the band.
+  const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
+  // The line starts two cells in; the mark and the words share the rest.
+  const { entries, prefixed } = fitBand(v.entries, chords, v.bodyColumns - 2 - markCells)
   // The Buttons carry no hotkey: a bare digit pressed them from an empty
   // composer, where a digit typed as the answer to a numbered question
   // belongs. A chord bound to each Button's action presses it instead, and
@@ -643,27 +739,23 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // is spelled beside it, and only when keybindings.json binds one. Chords
   // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
   // each Button its own key; chords that differ are spelled whole.
-  const actions = entries.flatMap(entry => entry.kind === 'chord' ? [entry.action] : [])
-  const prefix = sharedPrefix(actions.map(action => chords[action]))
-  const firstChord = entries.findIndex(entry => entry.kind === 'chord' && chords[entry.action] !== undefined)
-  const spelled = (action: string) => {
-    const chord = chords[action]
-    return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
-  }
+  const spelling = chordSpelling(v.entries, chords)
+  const { spelled } = spelling
+  const prefix = prefixed ? spelling.prefix : undefined
+  const firstChord = firstChordOf(entries, chords)
   const key = (action: string) => {
     const text = spelled(action)
     return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
   }
+  // A chord with no room for its word is its key alone, still the Button its
+  // action presses; fitBand keys only a bound chord.
+  const keyButton = (entry: Extract<BandEntry, { kind: 'chord' }>) => {
+    const text = spelled(entry.action)
+    if (text === undefined) throw new Error(`cs: the band drew ${entry.key} as a key it has no chord for`)
+    return <Button key={entry.key} action={entry.action} plain label={text} onPress={entry.onPress}><Text bold color={own}>{text}</Text></Button>
+  }
   // What the words take, in cells, so the rail knows what the line leaves it.
-  const sep = '  ·  '
-  const wordText = entries.map((entry, index) => {
-    const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
-    return `${index === firstChord && prefix !== undefined ? `${prefix}  ` : ''}${chord === undefined ? '' : `${chord} `}${entry.label}`
-  }).join(sep)
-  const wordCells = cellWidth(wordText)
-  // The mark and its space, first on every line the band draws but under a
-  // survey, which owns the band.
-  const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
+  const wordCells = wordCellsOf(entries, chords, spelling, prefixed)
   // The rail: one upright bar per prompt after the words, `┃` for
   // the one the band names, `┆` for one a jump was refused, `│` otherwise
   // (side by side, flat ticks run together into one line), each a Button
@@ -708,13 +800,13 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
           {/* the mark: its colour says what is due (bandState) */}
           {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={v.markColor}>{MARK}</Text></Box>}
           {entries.flatMap((entry, index) => [
-            index > 0 && <Text dimColor>{sep}</Text>,
+            index > 0 && <Text dimColor>{SEP}</Text>,
             index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
-            entry.kind === 'chord' && key(entry.action),
+            entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
             entry.kind === 'word'
               ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
               : entry.kind === 'chord'
-                ? entry.ink === undefined
+                ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
                   ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
                   : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
                 : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
