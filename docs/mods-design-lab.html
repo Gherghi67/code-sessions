@@ -1549,6 +1549,9 @@ function bdPreviewPress(id,path){
 // began and, while it plays, the timer that moves t at the state's tick. A
 // frame with no entry draws its own tree and is edited as ever.
 const bdMotion=new Map();
+// With reduced motion asked for, nothing plays by itself: play steps one
+// tick per press, and the scrubber moves the moment as ever.
+const BD_STILL=matchMedia("(prefers-reduced-motion: reduce)");
 const bdMotionOf=f=>f.source?bdSurfaceState(f.source.surface,f.source.state).motion:undefined;
 // The tree a frame paints: the mod's drawing at the frame's moment, at the
 // page's width and theme, or the frame's own.
@@ -1570,6 +1573,7 @@ function bdPause(id){
 // its last moment; pressed while playing, it pauses.
 function bdPlay(id){
   const m=bdMotionOf(bdFrame(id)), now=bdMotion.get(id);
+  if(BD_STILL.matches) return bdSeek(id,now&&now.t<m.duration?Math.min(m.duration,now.t+m.tick):m.tick);
   if(now&&now.timer){ bdPause(id); return bdRepaint(id); }
   const from=now&&now.t<m.duration?now.t:0, start=performance.now(), at={t:from,timer:null};
   bdMotion.set(id,at);
@@ -1593,7 +1597,7 @@ function bdRepaint(id){
   bdGrids[id]=g;
   card.querySelector(".term").innerHTML=bdTerm(f,g,cols());
   const play=card.querySelector('[data-act="play"]'), scrub=card.querySelector('[data-act="scrub"]');
-  play.setAttribute("aria-pressed",String(!!(at&&at.timer))); play.textContent=at&&at.timer?"pause":"play";
+  if(!BD_STILL.matches){ play.setAttribute("aria-pressed",String(!!(at&&at.timer))); play.textContent=at&&at.timer?"pause":"play"; }
   scrub.value=String(at?at.t:0); scrub.setAttribute("aria-valuetext",bdMoment(f,m));
   card.querySelector(".motion output").textContent=bdMoment(f,m);
   card.querySelectorAll(".sel").forEach(el=>el.remove());
@@ -1605,10 +1609,16 @@ function bdRepaint(id){
 // moment it reads, for a frame whose state moves.
 function bdMotionHead(f){
   const m=bdMotionOf(f); if(!m) return "";
-  const at=bdMotion.get(f.id), playing=!!(at&&at.timer), t=at?at.t:0;
-  return `<span class="motion"><button type="button" data-act="play" aria-pressed="${playing}" aria-keyshortcuts="Space" title="Play the mod's own drawing of this state at its ${m.tick} ms step (Space)">${playing?"pause":"play"}</button>`
+  const t=bdMotion.get(f.id)?.t??0;
+  return `<span class="motion">${bdPlayButton(f,m)}`
     +`<input type="range" data-act="scrub" min="0" max="${m.duration}" step="${m.tick}" value="${t}" aria-label="${esc(f.name)}: the moment, ms since the state began" aria-valuetext="${esc(bdMoment(f,m))}">`
     +`<output>${esc(bdMoment(f,m))}</output></span>`;
+}
+// Play and pause, or under reduced motion a step a press.
+function bdPlayButton(f,m){
+  if(BD_STILL.matches) return `<button type="button" data-act="play" aria-keyshortcuts="Space" title="Step the mod's own drawing of this state on by ${m.tick} ms (Space); reduced motion is on, so nothing plays by itself">step</button>`;
+  const at=bdMotion.get(f.id), playing=!!(at&&at.timer);
+  return `<button type="button" data-act="play" aria-pressed="${playing}" aria-keyshortcuts="Space" title="Play the mod's own drawing of this state at its ${m.tick} ms step (Space)">${playing?"pause":"play"}</button>`;
 }
 // What a frame's terminal holds: the strip's cells, and under the band the
 // rule and the prompt it sits above.
@@ -2041,6 +2051,7 @@ function composeUI(){
   $("bd-canvas").addEventListener("dblclick",bdDoubleClick);
   $("bd-canvas").addEventListener("input",e=>{ const scrub=e.target.closest('[data-act="scrub"]'); if(scrub) bdSeek(scrub.closest("[data-frame]").dataset.frame,+scrub.value); });
   document.addEventListener("visibilitychange",()=>{ if(document.hidden) bdPauseAll(); });
+  BD_STILL.addEventListener("change",()=>{ bdPauseAll(); composeRender(); });
   document.addEventListener("mousemove",bdDragMove);
   document.addEventListener("mouseup",bdDragEnd);
   document.addEventListener("mousemove",bdPartDragMove);
