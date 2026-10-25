@@ -35,7 +35,6 @@ export type Surface = {
 
 // The element table the shim puts on the page.
 declare global {
-  // eslint-disable-next-line no-var
   var LabElements: Elements
 }
 export function elements(): Elements {

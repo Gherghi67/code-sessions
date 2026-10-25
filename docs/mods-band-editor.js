@@ -114,7 +114,6 @@
   // first element it holds that is not a Box, Text or Button, or a Text inside
   // a Text, whose words the editor holds as one string.
   function uneditable(e) {
-    if (!e || typeof e !== "object") return null;
     if (!TYPES[e.type]) return "it holds a " + e.type + " node";
     var kids = (e.children || []).filter(function (k) { return k && typeof k === "object"; });
     if (e.type === "Text" && kids.length) return "it holds a Text inside a Text";

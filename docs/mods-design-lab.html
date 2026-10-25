@@ -362,7 +362,7 @@ body.dragging{user-select:none;cursor:grabbing}
 </div>
 <dialog id="bd-help" aria-labelledby="bd-help-h"><div class="dbody">
   <div class="dhead"><h3 id="bd-help-h">Keyboard shortcuts</h3><button type="button" id="bd-help-close" aria-label="close">×</button></div>
-  <p class="cap">The tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, built on the strip.</p>
+  <p class="cap">The trees the cs mods' <code>ui.render</code> hooks return, built on the strip.</p>
   <table class="keys-table">
     <tr><td>Click a cell</td><td>select the node that drew it</td></tr>
     <tr><td>Click it again</td><td>select its parent</td></tr>
@@ -1462,6 +1462,8 @@ const bdRowPath=row=>row.dataset.path?row.dataset.path.split(",").map(Number):[]
 // ---- surfaces: every cs mod surface the bundles carry (docs/surfaces) ----
 const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Error(`no surface ${id} in docs/surfaces`); return s; };
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
+// "a", "a or b", "a, b or c".
+const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
 const BD_NEEDS={"position=absolute":"position=absolute","Code":"a Code node","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
@@ -1474,7 +1476,7 @@ function bdPartNode(sid,part){
 // surface: AbovePrompt keeps five cells at the right of each row for its
 // `[-]`, which sits on the first row one cell in; a pane is framed with its
 // tab and clipped to its rows; any other surface fills the terminal's row.
-// A frame of no surface is the band as the designer has always drawn it.
+// A frame of no surface is measured at its natural width, clipped at the band's edge.
 function bdGridOf(f,c){
   const tree=BandEditor.toEngine(f.tree), chrome=f.source&&bdSurface(f.source.surface).chrome;
   if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
@@ -1504,7 +1506,7 @@ function bdFrameCard(f){
     +(ro?`<span class="badge ref" title="${esc(ro)}">reference</span>`:"")
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
-    +(surf&&surf.needs.length?`<p class="needs">${surf.needs.map(n=>`lab cannot draw <b>${esc(BD_NEEDS[n])}</b> yet`).join(" · ")}</p>`:"")
+    +(surf&&surf.needs.length?`<p class="needs">lab cannot draw ${bdList(surf.needs.map(n=>`<b>${esc(BD_NEEDS[n])}</b>`))} yet</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
     +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
@@ -1524,7 +1526,7 @@ function bdComponents(){
     }).join("");
     const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
     return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
-      +(s.needs.length?`<div class="needs">lab cannot draw ${s.needs.map(n=>esc(BD_NEEDS[n])).join(", ")} yet</div>`:"")
+      +(s.needs.length?`<div class="needs">lab cannot draw ${bdList(s.needs.map(n=>esc(BD_NEEDS[n])))} yet</div>`:"")
       +(parts?`<div class="ckind">Parts</div>${parts}`:"")+`<div class="ckind">States</div>${states}</details>`;
   }).join("")+`</details>`).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
 }
@@ -1534,7 +1536,7 @@ function bdAddSurfaceFrame(key){
   const [sid,stid]=key.split("/"), tree=bdSurfaceState(sid,stid).draw(cols(),theme());
   bdEdit({type:"addFrame",tree:BandEditor.fromEngine(tree),name:key,source:{surface:sid,state:stid},ref:!!BandEditor.uneditable(tree)});
 }
-function bdCompsNote(text){ const n=$("bd-comps-note"); if(!n) return; n.hidden=!text; n.textContent=text; }
+function bdCompsNote(text){ const n=$("bd-comps-note"); n.hidden=!text; n.textContent=text; }
 // A part pressed: inserted by the selection, as the + buttons insert.
 function bdInsertPart(key){
   const [sid,pid]=key.split("#"), part=bdSurface(sid).parts.find(p=>p.id===pid), node=bdPartNode(sid,part);
@@ -1611,7 +1613,7 @@ const BD_FRESH={Box:()=>({type:"Box",props:{},kids:[]}),Text:()=>({type:"Text",p
 const BD_INSERT_KEYS={o:"Box",w:"Text",n:"Button"};
 function bdInsertRefusal(type){
   const sel=bdDocNow().selection; if(!sel) return "select a node to insert next to";
-  if(bdReadOnly(sel.frame)) return bdReadOnly(sel.frame);
+  const ro=bdReadOnly(sel.frame); if(ro) return ro;
   const tree=bdFrame(sel.frame).tree, at=BandEditor.insertPoint(tree,sel.path);
   return BandEditor.refusal(type,BandEditor.nodeAt(tree,at.parentPath));
 }

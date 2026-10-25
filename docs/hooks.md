@@ -814,16 +814,37 @@ the conversation it meets next unjudged.
 Design lab: `docs/mods-design-lab.html` (open it in a browser) shows every element, prop, render site and rule a mod can use, and the
 rotate capsule's presets and knobs, each state printing the
 JSX it maps to, in the status line's inks; the shipped capsule is its "Inked" preset.
-Its Band variants panel draws the shipped band and seven sketches of it (`docs/mods-band-variants.js`, pinned by `docs/test/band-variants.test.ts`) in each of fifteen states, so you can judge a direction against what ships before it reaches the mod.
+Its Band variants panel draws the shipped band and seven sketches of it (`docs/mods-band-variants.js`, pinned by `docs/test/band-variants.test.ts`) in each of fifteen states, so you can judge a direction against what ships before it reaches the mod. The shipped band there is the mod's own `drawBand`, not a copy of it.
+
+The lab draws each cs mod surface from the mod's own code. `docs/surfaces/build.sh`
+bundles each mod's exported draw functions with the lab's fixtures for them
+into one plain script per mod (`docs/surfaces/cs.js`, `cs-feed.js`,
+`cs-update.js`, `cs-mermaid.js`), which the page loads after
+`docs/surfaces/shim.js`, the stand-in for the engine's `h` and its elements.
+The fixtures are TypeScript typed against each mod's view types, so a change
+to a view breaks them at type-check. The repository holds the built bundles,
+since a page opened from a file cannot build them; `tests/test_lab_surfaces.sh` rebuilds
+them with the bun release CI pins (`bun-version` in
+`.github/workflows/test.yml`) and fails with a diff when a committed bundle is
+stale. After a change to a mod's draw code, run
+`BUN=<a bun of that release> docs/surfaces/build.sh` and commit the bundles.
 
 The panel it opens on is the Band designer, where you build a band out of
 nested Box, Text and Button on the strip itself. Click a cell to select the
 node that drew it, drag it to reorder, double-click its words to retype them,
-and set its props in the panel beside the strip. A chord's key and its word
-are one group on the strip, one level above the word, and moving the group
-carries both. Each frame on the canvas is
-one drawing, started empty or from any Band variants drawing in the picked
-state, and the frame marked for export prints the JSX to paste into a mod.
+and set its props in the panel beside the strip. The sketches hold a chord's
+key and its word as one group, so moving the group carries both; the shipped
+band, as the mod draws it, holds them side by side. Each frame on the canvas is
+one drawing, started empty, from any Band variants drawing in the picked
+state, or from any state of a mod surface, and the frame marked for export
+prints the JSX to paste into a mod. The Components tab beside Layers lists
+every surface by mod, with its states and its reusable parts: a state adds a
+frame drawn by the mod's code inside the chrome the engine draws round it (a
+pane's frame and tab, the band's `[-]` cells), and a part drags into a frame
+or inserts by the selection. A frame says what in it the lab cannot draw yet,
+such as cs-mermaid's absolute layout. A state that holds a Markdown or a Code
+node opens as a reference frame: you can select and inspect it, and the lab
+refuses every edit of it and says why.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
 localStorage. The editor's model lives in `docs/mods-band-editor.js`, pinned
 by `docs/test/band-editor.test.ts`. The layout engine behind it lives in
