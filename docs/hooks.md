@@ -861,8 +861,9 @@ takes the moment `t`, in milliseconds since the state began, and its fixture
 turns `t` into the clock the mod reads: `Context.now`, the band's frame,
 the countdown's seconds, an elapsed time. The state declares its `motion`:
 the step its mod redraws at (`tick`: 70 ms for cs-feed's spinner and
-breathing mark, 1 s for a countdown or a timer, 50 or 100 ms for the
-working line) and how long the lab plays it (a countdown to its zero, a
+breathing mark, 1 s for a countdown or a timer, 64 or 112 ms for the
+working line, whose 50 or 100 ms Claude Code rounds up to whole 16 ms
+frames) and how long the lab plays it (a countdown to its zero, a
 timer for five minutes). Play redraws only that frame, from the mod's code,
 at the state's tick, and holds the last moment at the end. Space plays or
 pauses the selected frame. A frame scrubbed or played away from 0 is only

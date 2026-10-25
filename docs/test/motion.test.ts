@@ -78,20 +78,29 @@ test("the /finish gate's word counts its time on, padded past a minute", () => {
 // 2.1.310's working line: `frame: Hn(T)`, `Hn(l) = Math.round(EUe(l, 2000) *
 // (DIn().length - 1))`, `EUe(r,t) = (1 - Math.cos(2*Math.PI*r/t)) / 2`, DIn()
 // = · ✢ ✳ ✶ ✻ ✽ off ghostty, Ife drawing `wUe()[frame % 12]`, the mirrored
-// twelve, so frame 0..5 is DIn's own glyph. T is the shared clock
-// (`Wa(requesting ? 50 : 100)`); the lab starts it 750 ms into a breath:
-// EUe(750, 2000) = (1 + cos 45°) / 2 = 0.854, x 5 = 4.27, frame 4, ✻.
+// twelve, so frame 0..5 is DIn's own glyph. T is the shared clock read on
+// a grid: `Wa(requesting ? 50 : 100)` asks for 50 or 100 ms and Wa rounds
+// it up to whole 16 ms frames, `Math.ceil(o / 16) * 16`, so T steps 64 ms
+// while requesting and 112 while responding, `Math.floor(now / h) * h`.
+// The lab's clock reads 750 ms at the state's start: T = 704 on the 64 ms
+// grid, EUe = (1 - cos 126.7°) / 2 = 0.799, x 5 = 4.00, frame 4, ✻.
 // The time is `un(elapsed)`: whole seconds floored under a minute, then
 // `${m}m ${Math.round(s)}s` with the 60 carried.
 test("the working line breathes its glyph over two seconds and counts its time as 2.1.310's un", () => {
   const line = (t: number) => screen('cs-feed.Spinner/thinking', t)[1]
   expect(line(0)).toBe('✻ Thinking (24s · ↓ 1.2k tokens)')
-  // T 1000: EUe = 1, frame 5.
+  // Clock 800, T 768: EUe = (1 - cos 138.2°) / 2 = 0.873, x 5 = 4.37, frame
+  // 4, ✻. A 50 ms grid would keep T at 800: EUe 0.905, x 5 = 4.52, ✽.
+  expect(line(50)).toBe('✻ Thinking (24s · ↓ 1.2k tokens)')
+  // Clock 1000, T 960: EUe = 0.996, x 5 = 4.98, frame 5.
   expect(line(250)).toBe('✽ Thinking (24s · ↓ 1.2k tokens)')
-  // T 2000: EUe = 0, frame 0; 25 s.
+  // Clock 2000, T 1984: EUe = 0.0006, frame 0; 25 s.
   expect(line(1250)).toBe('· Thinking (25s · ↓ 1.2k tokens)')
-  // T 1250: cos 225° = -0.707, the same 4.27 as at the start.
+  // Clock 1250, T 1216: EUe = 0.889, x 5 = 4.45, frame 4.
   expect(line(500)).toBe('✻ Thinking (24s · ↓ 1.2k tokens)')
+  // Writing, on the 112 ms grid: clock 800, T 784: EUe = 0.889, x 5 = 4.45,
+  // frame 4, ✻. A 100 ms grid would keep T at 800: ✽.
+  expect(screen('cs-feed.Spinner/writing', 50)[1]).toBe('✻ Writing · step 3 (24s · ↓ 1.2k tokens)')
   expect(line(35999).slice(1)).toBe(' Thinking (59s · ↓ 1.2k tokens)')
   expect(line(36000).slice(1)).toBe(' Thinking (1m 0s · ↓ 1.2k tokens)')
   // 119.5 s: Math.round(59.5) is 60, carried into the minutes.
@@ -99,8 +108,8 @@ test("the working line breathes its glyph over two seconds and counts its time a
 })
 
 // Every state that moves names the step its mod redraws at and how long the
-// lab plays it: the 70 ms pulse, the 1 s tick, the working line's 50 ms
-// clock (100 ms while Claude writes), and the countdown's own length.
+// lab plays it: the 70 ms pulse, the 1 s tick, the working line's 64 ms
+// clock (112 ms while Claude writes), and the countdown's own length.
 test('each moving state declares its tick and length, and every other state is still', () => {
   const moving = SURFACES.flatMap((s: any) => s.states.filter((st: any) => st.motion).map((st: any) => `${s.id}/${st.id} ${st.motion.tick} ${st.motion.duration}`))
   const pulse = 70, second = 1000, minutes = 300000
@@ -122,13 +131,13 @@ test('each moving state declares its tick and length, and every other state is s
     `cs-feed.AbovePrompt/desktop ${second} ${minutes}`,
     `cs-feed.Pane.cs-feed-helpers/working ${second} ${minutes}`,
     `cs-feed.Pane.cs-feed-helpers/mixed ${second} ${minutes}`,
-    `cs-feed.Spinner/engine 50 ${minutes}`,
-    `cs-feed.Spinner/engine-ellipsis 50 ${minutes}`,
-    `cs-feed.Spinner/thinking 50 ${minutes}`,
-    `cs-feed.Spinner/working 50 ${minutes}`,
-    `cs-feed.Spinner/call 50 ${minutes}`,
-    `cs-feed.Spinner/writing 100 ${minutes}`,
-    `cs-feed.Spinner/helpers 50 ${minutes}`,
+    `cs-feed.Spinner/engine 64 ${minutes}`,
+    `cs-feed.Spinner/engine-ellipsis 64 ${minutes}`,
+    `cs-feed.Spinner/thinking 64 ${minutes}`,
+    `cs-feed.Spinner/working 64 ${minutes}`,
+    `cs-feed.Spinner/call 64 ${minutes}`,
+    `cs-feed.Spinner/writing 112 ${minutes}`,
+    `cs-feed.Spinner/helpers 64 ${minutes}`,
   ])
 })
 

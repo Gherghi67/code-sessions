@@ -1300,8 +1300,9 @@
     state("helper-unread", "opening the Helpers pane when a helper's transcript cannot be read", feedLog(logs.helperUnread("checker", "no transcript for checker")))
   ];
   var BREATH_START = 750;
-  var REQUESTING = 50;
-  var RESPONDING = 100;
+  var onFrames = (ms) => Math.ceil(ms / 16) * 16;
+  var REQUESTING = onFrames(50);
+  var RESPONDING = onFrames(100);
   var line = (message, suffix, tick, t) => workingLine({ message, suffix, elapsedMs: 24000 + t, clock: Math.floor((BREATH_START + t) / tick) * tick, tokens: "1.2k" });
   var RUNNING = id(9);
   var OPEN = { id: TURN, first: id(1), steps: [id(1), id(2), id(3)], runs: [RUN] };
