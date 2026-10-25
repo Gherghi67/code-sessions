@@ -190,3 +190,15 @@ test('cs-feed draws a teammate report\'s lead as Markdown under its head', () =>
     '         +3 more lines · ctrl+o shows all',
   ])
 })
+
+// The pane does not scroll: framed in the 16 rows its chrome names, five
+// releases of notes lose what falls past row 14 of the body, and the keys
+// above them stay.
+test('cs-update\'s pane clips a long span of notes, its keys above them', () => {
+  const { layoutPane } = require('../mods-layout.js')
+  const s = surface('cs-update.Pane.cs-update')
+  const g = toText(layoutPane(state('cs-update.Pane.cs-update/several-sections').draw(80, 'light'), { columns: 80, rows: s.chrome.rows, title: s.chrome.title, titles: [s.chrome.title] })).map((r: string) => r.replace(/\s+│$/, ''))
+  expect(g.length).toBe(16)
+  expect(g[3]).toBe('│  1: update now   Esc: later')
+  expect(g[14]).toBe('│  2026.10.23')
+})

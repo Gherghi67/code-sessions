@@ -145,6 +145,33 @@
   // The tree as the terminal draws it in a row `width` cells wide.
   function layoutScreen(node, width) { return layout(node, width, [], true); }
 
+  // A pane's body framed as the 2.1.310 terminal frames an inline pane that is
+  // not focused: a round dim border, one cell of padding each side, a tab per
+  // open pane (`titles`, the shown one `title` bold, the rest dim) only when
+  // two or more are open, the body clipped to what `rows` leaves, and the dim
+  // close mark on the top border two cells in from the right. The frame's
+  // cells name the root, so a press on it lands on the body's root.
+  function layoutPane(node, o) {
+    var inner = Math.max(0, o.columns - 4), path = [];
+    var dim = styleOf({ dimColor: true });
+    var tabs = o.titles.length > 1;
+    var body = layoutScreen(node, inner).rows.slice(0, Math.max(0, o.rows - 2 - (tabs ? 1 : 0)));
+    if (tabs) {
+      var row = [];
+      o.titles.forEach(function (t, i) {
+        if (i) row = row.concat(blanks(1, EMPTY, path));
+        row = row.concat(run(t, styleOf(t === o.title ? { bold: true } : { dimColor: true }), path));
+      });
+      body.unshift(row);
+    }
+    var top = run("\u256d" + repeat("\u2500", inner + 2) + "\u256e", dim, path);
+    if (o.columns >= 4) top[o.columns - 3] = { ch: "\u2715", st: dim, path: path };
+    var rows = [top].concat(body.map(function (r) {
+      return [{ ch: "\u2502", st: dim, path: path }].concat(blanks(1, EMPTY, path), padRow(r, inner, EMPTY, path), blanks(1, EMPTY, path), [{ ch: "\u2502", st: dim, path: path }]);
+    }), [run("\u2570" + repeat("\u2500", inner + 2) + "\u256f", dim, path)]);
+    return grid(rows);
+  }
+
   // A Button as the 2.1.310 terminal draws it: a plain one is its hotkey in
   // suggestion, `: `, then its label, or the label alone with no hotkey; any
   // other is `[ label ]` bold, in suggestion for variant primary, and never
@@ -427,7 +454,7 @@
     return out;
   }
 
-  var api = { layout: layout, layoutScreen: layoutScreen, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
+  var api = { layout: layout, layoutScreen: layoutScreen, layoutPane: layoutPane, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ModLayout = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

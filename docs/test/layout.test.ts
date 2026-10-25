@@ -295,3 +295,27 @@ test('a Markdown node draws its text with bold, italic and code styled, the mark
   expect(g.rows[0][27].st.italic).toBe(true)
   expect(toText(layout(md('one two three\nfour'), 7))).toEqual(['one two', ' three', 'four'])
 })
+
+// A pane as the 2.1.310 bundle frames an inline one (Tle): a round border,
+// dim while the pane is not focused, one cell of padding each side, so the
+// body has the columns less 4; a tab per open pane on the first row only when
+// two or more are open; the body at most rows - 2 (and - 1 under tabs) tall,
+// clipped, since the frame hides its overflow; the close mark ✕ on the top
+// border, dim, two cells in from the right (CloseMark, right: 2).
+test('a pane draws its body in a round dim frame with the close mark on the top edge', () => {
+  const { layoutPane } = require('../mods-layout.js')
+  const g = layoutPane(T({}, 'hi'), { columns: 10, rows: 5, title: 'Notes', titles: ['Notes'] })
+  expect(toText(g)).toEqual(['╭──────✕─╮', '│ hi     │', '╰────────╯'])
+  expect(g.rows[0][0].st.dim).toBe(true)
+  expect(g.rows[0][7].st.dim).toBe(true)
+})
+
+test('a pane clips its body to its rows, and shows its tabs only beside another pane', () => {
+  const { layoutPane } = require('../mods-layout.js')
+  const body = B({ flexDirection: 'column' }, T({}, 'one'), T({}, 'two'), T({}, 'three'), T({}, 'four'))
+  expect(toText(layoutPane(body, { columns: 12, rows: 5, title: 'A', titles: ['A'] })).slice(1, -1)).toEqual(['│ one      │', '│ two      │', '│ three    │'])
+  const tabbed = layoutPane(body, { columns: 12, rows: 5, title: 'B', titles: ['A', 'B'] })
+  expect(toText(tabbed).slice(1, -1)).toEqual(['│ A B      │', '│ one      │', '│ two      │'])
+  expect(tabbed.rows[1][4].st.bold).toBe(true)
+  expect(tabbed.rows[1][2].st.dim).toBe(true)
+})
