@@ -8,6 +8,7 @@ import argparse
 from contextlib import closing
 import datetime
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -146,7 +147,24 @@ def merge_jsonl(source, target, home, apply):
     if not source.is_file():
         return 0
     safe_target(target, home)
-    seen = set(target.read_bytes().splitlines()) if target.exists() else set()
+    if apply:
+        private_directory(target.parent, home)
+        descriptor = os.open(target, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        stream = os.fdopen(descriptor, "a+b")
+    elif target.exists():
+        stream = target.open("rb")
+    else:
+        return merge_jsonl_records(source, target, None, False)
+    with stream:
+        # Codex holds this file lock through append and truncate/rewrite.
+        # Read after acquisition so a completed compaction stays authoritative.
+        fcntl.flock(stream, fcntl.LOCK_EX if apply else fcntl.LOCK_SH)
+        stream.seek(0)
+        return merge_jsonl_records(source, target, stream, apply)
+
+
+def merge_jsonl_records(source, target, stream, apply):
+    seen = set(stream.read().splitlines()) if stream is not None else set()
     additions = []
     for line in source.read_bytes().splitlines():
         if line in seen or not line.strip():
@@ -159,15 +177,12 @@ def merge_jsonl(source, target, home, apply):
         seen.add(line)
         additions.append(line)
     if apply and additions:
-        private_directory(target.parent, home)
-        descriptor = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        with os.fdopen(descriptor, "ab") as stream:
-            if target.stat().st_size:
-                with target.open("rb") as existing:
-                    existing.seek(-1, os.SEEK_END)
-                    if existing.read(1) != b"\n":
-                        raise ValueError(f"Incomplete destination record: {target}")
-            stream.write(b"\n".join(additions) + b"\n")
+        if stream.seek(0, os.SEEK_END):
+            stream.seek(-1, os.SEEK_END)
+            if stream.read(1) != b"\n":
+                raise ValueError(f"Incomplete destination record: {target}")
+        stream.write(b"\n".join(additions) + b"\n")
+        stream.flush()
     return len(additions)
 
 

@@ -3,10 +3,13 @@
 import importlib.util
 from contextlib import closing
 import errno
+import fcntl
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -178,6 +181,83 @@ class SharedConfigTests(unittest.TestCase):
         migration.migrate(self.home, True)
         migration.migrate(self.home, True)
         self.assertEqual(target.read_text(), '{"id":1}\n{"id":2}\n')
+
+    def history_process(self, source, target):
+        script = """
+import importlib.util
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location('migration', sys.argv[1])
+migration = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(migration)
+print('ready', flush=True)
+print(migration.merge_jsonl(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]), True))
+"""
+        return subprocess.Popen([sys.executable, "-B", "-c", script, str(SPEC.origin),
+                                 str(source), str(target), str(self.home)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_history_waits_for_native_lock_and_rereads_compacted_records(self):
+        source = self.put(self.profile, ".codex/history.jsonl", '{"id":2}\n')
+        target = self.put(self.home, ".codex/history.jsonl", '{"id":1}\n')
+        for retained, expected_count in [('{"native":1}\n', 1), ('{"id":2}\n', 0)]:
+            with self.subTest(retained=retained), target.open("r+b") as native:
+                fcntl.flock(native, fcntl.LOCK_EX)
+                child = self.history_process(source, target)
+                try:
+                    self.assertEqual(child.stdout.readline(), "ready\n")
+                    try:
+                        child.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        blocked = True
+                    else:
+                        blocked = False
+                    native.seek(0)
+                    native.truncate()
+                    native.write(retained.encode())
+                    native.flush()
+                    fcntl.flock(native, fcntl.LOCK_UN)
+                    output, errors = child.communicate(timeout=5)
+                    self.assertEqual(child.returncode, 0, errors)
+                    self.assertTrue(blocked, "history import ignored the native writer's file lock")
+                    self.assertEqual(int(output.strip()), expected_count)
+                    self.assertEqual(target.read_text(), retained + ('{"id":2}\n' if expected_count else ""))
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                        child.communicate()
+
+    def test_concurrent_history_imports_append_each_record_once(self):
+        source = self.put(self.profile, ".codex/history.jsonl", '{"id":2}\n')
+        target = self.put(self.home, ".codex/history.jsonl", '{"id":1}\n')
+        children = []
+        try:
+            with target.open("r+b") as native:
+                fcntl.flock(native, fcntl.LOCK_EX)
+                for _ in range(2):
+                    child = self.history_process(source, target)
+                    children.append(child)
+                    self.assertEqual(child.stdout.readline(), "ready\n")
+                fcntl.flock(native, fcntl.LOCK_UN)
+            counts = []
+            for child in children:
+                output, errors = child.communicate(timeout=5)
+                self.assertEqual(child.returncode, 0, errors)
+                counts.append(int(output.strip()))
+            self.assertEqual(sorted(counts), [0, 1])
+            self.assertEqual(target.read_text(), '{"id":1}\n{"id":2}\n')
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                    child.communicate()
+
+    def test_incomplete_destination_history_is_preserved_without_appending(self):
+        source = self.put(self.profile, ".codex/history.jsonl", '{"id":2}\n')
+        target = self.put(self.home, ".codex/history.jsonl", '{"incomplete":')
+        with self.assertRaisesRegex(ValueError, "Incomplete destination record"):
+            migration.merge_jsonl(source, target, self.home, True)
+        self.assertEqual(target.read_text(), '{"incomplete":')
 
     def database(self, root, rows):
         path = root / ".codex/state_5.sqlite"
