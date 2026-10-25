@@ -295,10 +295,14 @@
     // The fewest cells a stretched Box's content takes: all it was given.
     var least = !outer && fill ? inner : 0;
 
-    var gap = num(p.gap);
     var dir = String(p.flexDirection || "row");
     var column = dir.indexOf("column") === 0;
     var reverse = /-reverse$/.test(dir);
+    var gaps = { main: gutter(p, column ? "rowGap" : "columnGap"), cross: gutter(p, column ? "columnGap" : "rowGap") };
+    // A column wraps along a height it is given; without one Yoga has no
+    // main size to break it at ("if(!ce||!tt(J)||Se===0)").
+    var tall = typeof p.height === "number" ? Math.max(0, p.height - 2 * edge - pd.t - pd.b) : null;
+    var columnWraps = column && wraps(p) && tall !== null;
 
     // Every child is measured in at most the inner room, its flex basis; a row
     // then grows or shrinks them to fit (`placeRow`).
@@ -312,13 +316,14 @@
     });
     if (reverse) blocks.reverse();
     // A column stretches each Box it holds that sets no width of its own to
-    // the column's width, unless the column aligns its items otherwise.
-    if (column && (p.alignItems === undefined || p.alignItems === "stretch")) {
+    // the column's width, unless the column aligns its items otherwise; a
+    // wrapping column stretches them to their own line (`placeColumn`).
+    if (column && !columnWraps && stretches(p)) {
       var colWidth = outer ? inner : Math.max(least, blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0));
       blocks.forEach(function (b) { if (b.node.type === "Box" && typeof (b.node.props || {}).width !== "number") b.g = layout(b.node, colWidth, b.at, true); });
     }
 
-    var body = column ? placeColumn(blocks, inner, gap, p, outer, least) : placeRow(blocks, inner, gap, p, outer, least);
+    var body = column ? placeColumn(blocks, inner, gaps, p, outer, least, columnWraps ? tall : null) : placeRow(blocks, inner, gaps, p, outer, least);
 
     // An explicit width, or a width the Box was handed whole, is the Box's
     // width: what its children draw past it spills over its edge.
@@ -485,50 +490,106 @@
   // A child's own margin cells along a row, which its grid carries.
   function marginX(node) { if (node.type !== "Box") return 0; var m = margins(node.props || {}); return m.l + m.r; }
 
+  // A gutter as 2.1.310 reads it ("let m=n.gap,p=m[u];if(p.unit===0)p=m[2]"):
+  // the columnGap or rowGap the Box sets, else its gap.
+  function gutter(p, side) { return Math.max(0, typeof p[side] === "number" ? p[side] : num(p.gap)); }
+  function wraps(p) { return p.flexWrap === "wrap" || p.flexWrap === "wrap-reverse"; }
+  function stretches(p) { return p.alignItems === undefined || p.alignItems === "stretch"; }
+
+  // Items of these main sizes broken into lines of at most `room` as Yoga
+  // breaks them (vx, "if(_>D&&H+z+B>u)T.push(n.slice(D,_)),D=_,H=B;else
+  // H+=z+B"): an item starts a new line when the line holds one already and
+  // the gap and the item would carry it past the room. Each line is the
+  // index range [from, to).
+  function breakLines(sizes, room, gap) {
+    var lines = [], from = 0, used = 0;
+    sizes.forEach(function (size, i) {
+      var z = i > from ? gap : 0;
+      if (i > from && used + z + size > room) { lines.push({ from: from, to: i }); from = i; used = size; }
+      else used += z + size;
+    });
+    lines.push({ from: from, to: sizes.length });
+    return lines;
+  }
+
+  // Lines of these extents across the Box stacked `gap` apart: where each
+  // starts, and their total; under wrap-reverse the first line lies at the
+  // far edge ("li?kn-Zn-We:Zn").
+  function stackLines(extents, gap, reversed) {
+    var total = extents.reduce(function (a, h) { return a + h; }, 0) + gap * Math.max(0, extents.length - 1);
+    var at = 0;
+    var starts = extents.map(function (h) { var start = reversed ? total - at - h : at; at += h + gap; return start; });
+    return { total: total, starts: starts };
+  }
+
   // Each child's place in a row Box's body, and the body's size. A row that
-  // is handed its width (`outer`, or `least` when stretched) grows its
-  // children into the slack; any row whose children overrun the room shrinks
-  // them; each child whose size moved is laid out again at exactly that size.
-  // A Button never shrinks or grows: the engine draws it in a Box of
-  // flexShrink 0 and no flexGrow.
-  function placeRow(blocks, inner, gap, p, outer, least) {
+  // wraps breaks its children into lines first (`breakLines`); each line is
+  // then a row of its own. A row that is handed its width (`outer`, or
+  // `least` when stretched) grows a line's children into its slack; a line
+  // whose children overrun the room shrinks them; each child whose size moved
+  // is laid out again at exactly that size. A Button never shrinks or grows:
+  // the engine draws it in a Box of flexShrink 0 and no flexGrow.
+  function placeRow(blocks, inner, gaps, p, outer, least) {
     var items = blocks.map(function (b) {
       var q = b.node.props || {}, button = b.node.type === "Button", mx = marginX(b.node);
       return { basis: b.g.w - mx, margin: mx, min: b.node.type === "Box" ? num(q.minWidth) : 0, grow: button ? 0 : num(q.flexGrow), shrink: button ? 0 : typeof q.flexShrink === "number" ? q.flexShrink : 1 };
     });
-    var content = items.reduce(function (a, it) { return a + it.basis + it.margin; }, 0) + gap * Math.max(0, blocks.length - 1);
+    var lines = wraps(p) ? breakLines(items.map(function (it) { return it.basis + it.margin; }), inner, gaps.main) : [{ from: 0, to: blocks.length }];
+    var span = function (l) { var n = 0; for (var i = l.from; i < l.to; i++) n += items[i].basis + items[i].margin; return n + gaps.main * Math.max(0, l.to - l.from - 1); };
+    var content = lines.reduce(function (a, l) { return Math.max(a, span(l)); }, 0);
     var room = outer ? inner : Math.max(least, Math.min(content, inner));
-    var sizes = flexSizes(items, room - content);
-    // A width the Box sets is only its basis: the size the row gives it wins.
-    var placed = blocks.map(function (b, i) {
-      if (sizes[i] === items[i].basis) return b.g;
-      var sized = b.node.type === "Box" ? { type: "Box", props: Object.assign({}, b.node.props, { width: sizes[i] }), children: b.node.children } : b.node;
-      return layout(sized, sizes[i] + items[i].margin, b.at, true);
+    var w = room;
+    var laid = lines.map(function (l) {
+      var its = items.slice(l.from, l.to), bs = blocks.slice(l.from, l.to);
+      var sizes = flexSizes(its, room - span(l));
+      // A width the Box sets is only its basis: the size the row gives it wins.
+      var placed = bs.map(function (b, i) {
+        if (sizes[i] === its[i].basis) return b.g;
+        var sized = b.node.type === "Box" ? { type: "Box", props: Object.assign({}, b.node.props, { width: sizes[i] }), children: b.node.children } : b.node;
+        return layout(sized, sizes[i] + its[i].margin, b.at, true);
+      });
+      var used = placed.reduce(function (a, g) { return a + g.w; }, 0) + gaps.main * Math.max(0, bs.length - 1);
+      var s = spread(p.justifyContent, room - used, bs.length);
+      var h = placed.reduce(function (a, g) { return Math.max(a, g.h); }, 0) || (bs.length ? 1 : 0);
+      var x = s.lead, spots = [];
+      placed.forEach(function (g, i) {
+        if (i) x += gaps.main + s.between;
+        spots.push({ g: g, x: x, y: alignAt(p.alignItems, g.h, h) });
+        x += g.w;
+      });
+      w = Math.max(w, x);
+      return { h: h, spots: spots };
     });
-    var used = placed.reduce(function (a, g) { return a + g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
-    var s = spread(p.justifyContent, room - used, blocks.length);
-    var h = placed.reduce(function (a, g) { return Math.max(a, g.h); }, 0) || (blocks.length ? 1 : 0);
-
-    var x = s.lead, spots = [];
-    placed.forEach(function (g, i) {
-      if (i) x += gap + s.between;
-      spots.push({ g: g, x: x, y: alignAt(p.alignItems, g.h, h) });
-      x += g.w;
-    });
-    return { w: outer ? inner : Math.max(room, x), h: h, spots: spots };
+    var stack = stackLines(laid.map(function (l) { return l.h; }), gaps.cross, p.flexWrap === "wrap-reverse");
+    var spots = [];
+    laid.forEach(function (l, k) { l.spots.forEach(function (s) { spots.push({ g: s.g, x: s.x, y: stack.starts[k] + s.y }); }); });
+    return { w: outer ? inner : w, h: stack.total, spots: spots };
   }
 
-  // Each child's place in a column Box's body, and the body's size.
-  function placeColumn(blocks, inner, gap, p, outer, least) {
-    var natural = blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
-    var w = outer ? inner : Math.max(least, natural);
-    var y = 0, spots = [];
-    blocks.forEach(function (b, i) {
-      if (i) y += gap;
-      spots.push({ g: b.g, x: alignAt(p.alignItems, b.g.w, w), y: y });
-      y += b.g.h;
+  // Each child's place in a column Box's body, and the body's size. A column
+  // handed the rows it wraps at (`tall`) breaks its children into columns
+  // side by side, each as wide as its widest child, the Boxes in it that set
+  // no width stretched to that unless the column aligns its items otherwise.
+  function placeColumn(blocks, inner, gaps, p, outer, least, tall) {
+    var lines = tall === null ? [{ from: 0, to: blocks.length }] : breakLines(blocks.map(function (b) { return b.g.h; }), tall, gaps.main);
+    var laid = lines.map(function (l) {
+      var bs = blocks.slice(l.from, l.to);
+      var widest = bs.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
+      var lw = tall !== null ? widest : outer ? inner : Math.max(least, widest);
+      var gs = bs.map(function (b) { return tall !== null && stretches(p) && b.node.type === "Box" && typeof (b.node.props || {}).width !== "number" ? layout(b.node, lw, b.at, true) : b.g; });
+      var y = 0, spots = [];
+      gs.forEach(function (g, i) {
+        if (i) y += gaps.main;
+        spots.push({ g: g, x: alignAt(p.alignItems, g.w, lw), y: y });
+        y += g.h;
+      });
+      return { w: lw, h: y, spots: spots };
     });
-    return { w: w, h: y, spots: spots };
+    var stack = stackLines(laid.map(function (l) { return l.w; }), gaps.cross, p.flexWrap === "wrap-reverse");
+    var spots = [];
+    laid.forEach(function (l, k) { l.spots.forEach(function (s) { spots.push({ g: s.g, x: stack.starts[k] + s.x, y: s.y }); }); });
+    var h = laid.reduce(function (a, l) { return Math.max(a, l.h); }, 0);
+    return { w: outer ? inner : Math.max(least, stack.total), h: h, spots: spots };
   }
 
   // The tree as 2.1.310 draws it while the pointer is over the node at
@@ -577,7 +638,7 @@
   // the editor set them print the same.
   // The order the shipped mod spells them in (mods/cs/hooks/register.tsx):
   // layout, then the frame, then the ink, then what a Button is.
-  var PROP_ORDER = ["key", "flexDirection", "justifyContent", "alignItems", "flexWrap", "flexGrow", "gap",
+  var PROP_ORDER = ["key", "flexDirection", "justifyContent", "alignItems", "flexWrap", "flexGrow", "gap", "columnGap", "rowGap",
     "width", "height",
     "borderStyle", "borderColor", "borderDimColor",
     "padding", "paddingX", "paddingY", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight",

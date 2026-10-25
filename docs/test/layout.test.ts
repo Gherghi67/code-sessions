@@ -569,3 +569,56 @@ test('a Box takes at least its minWidth, and a row does not shrink it below that
   expect(toText(layout(B({}, B({ minWidth: 2 }, T({}, 'x')), T({}, 'y')), 40))).toEqual(['x y'])
   expect(toText(layout(B({ width: 4 }, B({ minWidth: 3 }, T({}, 'ab')), T({}, 'cdef')), 40))).toEqual(['ab c', '   d', '   e', '   f'])
 })
+
+// Gutters as 2.1.310 sets them ("if("gap"in u)n.setGap(2,u.gap);if("columnGap"
+// in u)n.setGap(0,u.columnGap);if("rowGap"in u)n.setGap(1,u.rowGap)") and reads
+// them ("let m=n.gap,p=m[u];if(p.unit===0)p=m[2]"): between a row's items the
+// columnGap, else the gap; rowGap only between lines, so a row on one line
+// never reads it.
+test('a row spaces its items by columnGap, else gap, and a row on one line ignores rowGap', () => {
+  expect(toText(layout(B({ columnGap: 2 }, T({}, 'ab'), T({}, 'cd')), 40))).toEqual(['ab  cd'])
+  expect(toText(layout(B({ gap: 3, columnGap: 1 }, T({}, 'ab'), T({}, 'cd')), 40))).toEqual(['ab cd'])
+  expect(toText(layout(B({ rowGap: 2 }, T({}, 'ab'), T({}, 'cd')), 40))).toEqual(['abcd'])
+})
+
+// A wrapping row breaks its items into lines as Yoga does ("if(_>D&&H+z+B>u)
+// T.push(n.slice(D,_)),D=_,H=B;else H+=z+B"): an item starts a new line when
+// the line holds one already and its basis and the gap would carry the line
+// past the room. aaa, bbb and cc in 7: 3 + 1 + 3 is 7 and fits exactly; 7 +
+// 1 + 2 does not, so cc starts the second line. The row is its widest line.
+test('a wrapping row breaks its items into lines, a line that fills the room exactly kept whole', () => {
+  const g = layout(B({ flexWrap: 'wrap', columnGap: 1 }, T({}, 'aaa'), T({}, 'bbb'), T({}, 'cc')), 7)
+  expect([g.w, toText(g)]).toEqual([7, ['aaa bbb', 'cc     ']])
+})
+
+// gap sets every gutter, so the lines of a wrapping row stand one row apart
+// ("let Pe=fe>1?pe*(fe-1):0;Te+=Pe").
+test('a wrapping row with gap leaves a blank row between its lines', () => {
+  expect(toText(layout(B({ flexWrap: 'wrap', gap: 1 }, T({}, 'aaa'), T({}, 'bbb'), T({}, 'cc')), 7))).toEqual(['aaa bbb', '       ', 'cc     '])
+  expect(toText(layout(B({ flexWrap: 'wrap', columnGap: 1, rowGap: 2 }, T({}, 'aaa'), T({}, 'bbb'), T({}, 'cc')), 7))).toEqual(['aaa bbb', '       ', '       ', 'cc     '])
+})
+
+// wrap-reverse ("case"wrap-reverse":return 2") places each line from the far
+// edge of the cross axis ("li=u.flexWrap===2 ... li?kn-Zn-We:Zn"): the first
+// line at the bottom.
+test('a wrap-reverse row stacks its lines from the bottom up', () => {
+  expect(toText(layout(B({ flexWrap: 'wrap-reverse', columnGap: 1 }, T({}, 'aaa'), T({}, 'bbb'), T({}, 'cc')), 7))).toEqual(['cc     ', 'aaa bbb'])
+})
+
+// Each line is a row of its own: justifyContent spreads that line's slack in
+// the row's width, and a Box of 9 cells alone on its line shrinks to the 6
+// of the room, its Text truncated there.
+test('each line of a wrapping row justifies its own slack and shrinks its own overrun', () => {
+  expect(toText(layout(B({ width: 7, flexWrap: 'wrap', columnGap: 1, justifyContent: 'flex-end' }, T({}, 'aaa'), T({}, 'bbb'), T({}, 'cc')), 40))).toEqual(['aaa bbb', '     cc'])
+  expect(toText(layout(B({ width: 6, flexWrap: 'wrap' }, T({}, 'ab'), B({ width: 9 }, T({ wrap: 'truncate-end' }, 'abcdefghij'))), 40))).toEqual(['ab    ', 'abcde…'])
+})
+
+// A column wraps only along a height it is given, its main axis: a, bb and c
+// one row each in 2 rows put c in a second column, one columnGap to the right
+// of the first column's widest item. A Box in the first column stretches to
+// that column's 2 cells, so its flex-end puts a one cell in.
+test('a wrapping column of a set height breaks its items into columns', () => {
+  expect(toText(layout(B({ flexDirection: 'column', height: 2, flexWrap: 'wrap', columnGap: 1 }, T({}, 'a'), T({}, 'bb'), T({}, 'c')), 40))).toEqual(['a  c', 'bb  '])
+  expect(toText(layout(B({ flexDirection: 'column', height: 2, flexWrap: 'wrap', columnGap: 1 }, B({ justifyContent: 'flex-end' }, T({}, 'a')), T({}, 'bb'), T({}, 'c')), 40))).toEqual([' a c', 'bb  '])
+  expect(toText(layout(B({ flexDirection: 'column', flexWrap: 'wrap' }, T({}, 'a'), T({}, 'bb'), T({}, 'c')), 40))).toEqual(['a ', 'bb', 'c '])
+})
