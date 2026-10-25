@@ -1846,7 +1846,16 @@ function bdFrameAct(el,frame){
   if(act==="export") return bdEdit({type:"exportFrame",frame});
   if(act==="duplicate") return bdEdit({type:"addFrame",from:frame});
   if(act==="remove") return bdEdit({type:"removeFrame",frame});
-  if(act==="play") return bdPlay(frame);
+  if(act==="play"){
+    // Play selects its frame, so Space after it plays or pauses that frame;
+    // a selection inside the frame stays, and a frame in preview takes none.
+    if(bdDocNow().selection?.frame!==frame&&!bdPreview.has(frame)){
+      const focused=document.activeElement===el;
+      bdDispatch({type:"selectFrame",frame});
+      if(focused) $("bd-canvas").querySelector(`[data-frame="${frame}"] [data-act="play"]`).focus();
+    }
+    return bdPlay(frame);
+  }
   if(act==="preview"){
     bdPanelStale=true;
     if(bdPreview.has(frame)){ bdPreview.delete(frame); return composeRender(); }
