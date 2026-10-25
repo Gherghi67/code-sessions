@@ -25,9 +25,11 @@ test('every state has a unique id, a name, and draws a tree the engine accepts, 
 
 // A state names what a person sees, so two states of one surface that draw
 // the same cells, character and ink, in both themes name one thing twice.
-// The one pair allowed differs only in what the lab cannot draw yet: the
-// rail's hover cards, absent on the desktop (cs.AbovePrompt needs hover; the
-// card count is pinned below).
+// Two pairs are allowed. The rail's hover cards, absent on the desktop,
+// are what the lab cannot draw yet (cs.AbovePrompt needs hover; the card
+// count is pinned below). A call's chevron in a fullscreen terminal is a
+// Button drawn as the bare dim mark the Text is, so the pair differs in what
+// a press does, pinned here.
 test('no two states of a surface draw the same screen at 80 cols, light and dark', () => {
   const { layoutScreen } = require('../mods-layout.js')
   const screen = (st: any) => ['light', 'dark'].map(theme => layoutScreen(st.draw(80, theme), 80).rows.map((r: any[]) => r.map(c => c.ch + JSON.stringify(c.st)).join('')).join('\n')).join('\n\n')
@@ -40,7 +42,9 @@ test('no two states of a surface draw the same screen at 80 cols, light and dark
       else twins.push(`${s.id}: ${first} == ${st.id}`)
     }
   }
-  expect(twins).toEqual(['cs.AbovePrompt: rail-few == rail-desktop'])
+  expect(twins).toEqual(['cs.AbovePrompt: rail-few == rail-desktop', 'cs-feed.ToolUse: call-running == call-running-clickable'])
+  const chevron = (id: string) => state(`cs-feed.ToolUse/${id}`).draw(80, 'light').children[0].children[2]
+  expect([chevron('call-running').type, chevron('call-running-clickable')]).toMatchObject(['Text', { type: 'Button', props: { key: 'toolu_01', label: '\u203a', plain: true } }])
 })
 
 // A node of a state's tree by child index path, as a layout cell names it.
@@ -103,11 +107,12 @@ test('cs-update parts name the hotkey Button and a release heading', () => {
 
 // drawUser and drawCall, read by hand: every row after the 7-cell margin
 // (paddingLeft pad), a nested peer 2 cells further; hookNotice and peerLine
-// prefix their glyphs; a call's chips are Texts beside its words, no gap.
+// prefix their glyphs; a call's mark, words, each chip and its chevron sit
+// one cell apart.
 test('cs-feed draws its rows after the name margin', () => {
   expect(rows('cs-feed.UserMessage/hook-text', 80)).toEqual(['       \u25cb cs: the band names prompt 4'])
   expect(rows('cs-feed.UserMessage/peer-nested', 80)).toEqual(['         \u21c4 fix-auth \u00b7 gate green, ready to land'])
-  expect(rows('cs-feed.ToolUse/call-errored', 80)).toEqual(['       \u25cbShow the working tree1 failed+1 line\u203a'])
+  expect(rows('cs-feed.ToolUse/call-errored', 80)).toEqual(['       \u25cb Show the working tree 1 failed +1 line \u203a'])
   expect(rows('cs-feed.ToolGroup/batch-failed', 80)[0]).toBe('       \u2715 3 helpers \u00b7 2 done \u00b7 1 failed \u00b7 42s \u203a')
 })
 

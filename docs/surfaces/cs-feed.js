@@ -14,7 +14,7 @@
       title: "Group a turn into one line",
       values: [true, false],
       spoken,
-      picture: (value) => value ? ["you   fix the login bug", "○ 6 steps this turn ›", "claude Fixed: the token now refreshes."] : ["you   fix the login bug", "○ Ran 3 shell commands · read 2 files ›", "○ Edited auth.ts", "claude Fixed: the token now refreshes."]
+      picture: (value) => value ? ["you   fix the login bug", "6 steps this turn ›", "claude Fixed: the token now refreshes."] : ["you   fix the login bug", "○ Ran 3 shell commands · read 2 files ›", "○ Edited auth.ts", "claude Fixed: the token now refreshes."]
     },
     {
       field: "clear",
@@ -170,7 +170,8 @@
     return `${marks.peer} ${joined(["helper", durationMs === undefined ? undefined : elapsed(durationMs), headline])}`;
   }
   function helperLine(call, state, durationMs) {
-    return joined([callWords(call, state === "running" || state === "dispatched" ? "present" : "past"), state === "dispatched" ? "dispatched · running" : state, durationMs === undefined ? undefined : elapsed(durationMs)]);
+    const working = state === "running" || state === "dispatched";
+    return joined([callWords(call, working ? "present" : "past"), working ? "running" : state, durationMs === undefined ? undefined : elapsed(durationMs)]);
   }
   function outputLines(output) {
     const text = typeof output === "string" ? output : output && typeof output === "object" && !Array.isArray(output) ? ["stdout", "stderr"].flatMap((key) => {
@@ -440,7 +441,8 @@
           flexDirection: "column"
         }, v.done > 0 ? /* @__PURE__ */ h(Box, {
           paddingLeft: pen.pad,
-          flexDirection: "row"
+          flexDirection: "row",
+          gap: 1
         }, /* @__PURE__ */ h(Text, {
           dimColor: true
         }, stepsLine(v.done)), chevron(`turn-${v.turn}`, v.opened, pen)) : null, v.opened ? /* @__PURE__ */ h(Box, {
@@ -455,7 +457,8 @@
           flexDirection: "column"
         }, /* @__PURE__ */ h(Box, {
           paddingLeft: pen.pad,
-          flexDirection: "row"
+          flexDirection: "row",
+          gap: 1
         }, /* @__PURE__ */ h(Text, {
           color: naming ? pen.ink.accent : undefined,
           dimColor: !naming
@@ -478,7 +481,8 @@
           flexDirection: "column"
         }, /* @__PURE__ */ h(Box, {
           paddingLeft: pen.pad,
-          flexDirection: "row"
+          flexDirection: "row",
+          gap: 1
         }, /* @__PURE__ */ h(Text, {
           color: v.call.isErrored ? pen.ink.red : v.call.isRunning ? pen.ink.accent : undefined,
           dimColor: !v.call.isRunning && !v.call.isErrored
@@ -494,12 +498,15 @@
       case "helper":
         return /* @__PURE__ */ h(Box, {
           paddingLeft: pen.pad,
-          flexDirection: "row"
+          flexDirection: "row",
+          gap: 1
         }, /* @__PURE__ */ h(Text, {
           color: v.state === "failed" || v.state === "stopped" ? pen.ink.red : pen.ink.peer
         }, helperLine(v.call, v.state, v.elapsedMs)), pen.clickable ? /* @__PURE__ */ h(Button, {
           key: `helper-${v.call.id ?? v.call.tool}`,
           label: marks.closed,
+          plain: true,
+          dimColor: true,
           onPress: pen.helpers
         }) : /* @__PURE__ */ h(Text, {
           dimColor: true
@@ -690,6 +697,8 @@
     return pen.clickable ? /* @__PURE__ */ h(Button, {
       key,
       label,
+      plain: true,
+      dimColor: true,
       onPress: () => pen.press(key)
     }) : /* @__PURE__ */ h(Text, {
       dimColor: true
