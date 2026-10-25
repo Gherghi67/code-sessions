@@ -10,6 +10,7 @@ import datetime
 import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -170,9 +171,15 @@ def matching_import(source, target):
     if os.path.samefile(source, target) or digest(source) == digest(target):
         return True
     # A transcript already in normal config can be ahead of the old copy.
-    if source.suffix == ".jsonl" and source.stat().st_size <= target.stat().st_size:
-        with target.open("rb") as stream:
-            return stream.read(source.stat().st_size) == source.read_bytes()
+    size = source.stat().st_size
+    if source.suffix == ".jsonl" and size <= target.stat().st_size:
+        with source.open("rb") as incoming, target.open("rb") as current:
+            while size:
+                block = incoming.read(min(size, 64 * 1024))
+                if not block or block != current.read(len(block)):
+                    return False
+                size -= len(block)
+            return True
     return False
 
 
@@ -251,27 +258,53 @@ def merge_jsonl(source, target, home, apply):
         return merge_jsonl_records(source, target, stream, apply)
 
 
+def binary_records(stream):
+    # Latin-1 round-trips every byte while universal newline handling preserves
+    # splitlines' CR/LF boundaries, including a CRLF split across read buffers.
+    reader = io.TextIOWrapper(stream, encoding="latin-1", newline=None)
+    try:
+        for line in reader:
+            yield (line[:-1] if line.endswith("\n") else line).encode("latin-1")
+    finally:
+        reader.detach()
+
+
 def merge_jsonl_records(source, target, stream, apply):
-    seen = set(stream.read().splitlines()) if stream is not None else set()
-    additions = []
-    for line in source.read_bytes().splitlines():
-        if line in seen or not line.strip():
-            continue
-        try:
-            json.loads(line)
-        except ValueError:
-            # The source can be in the middle of appending its last record.
-            continue
-        seen.add(line)
-        additions.append(line)
-    if apply and additions:
-        if stream.seek(0, os.SEEK_END):
-            stream.seek(-1, os.SEEK_END)
-            if stream.read(1) != b"\n":
-                raise ValueError(f"Incomplete destination record: {target}")
-        stream.write(b"\n".join(additions) + b"\n")
-        stream.flush()
-    return len(additions)
+    count = 0
+    # Exact BLOB keys keep deduplication semantics without retaining entire
+    # histories in memory. The index is private, disposable and disk-backed.
+    with tempfile.TemporaryDirectory(prefix="cs-history-index-") as directory:
+        descriptor, index_path = tempfile.mkstemp(dir=directory, suffix=".sqlite")
+        os.close(descriptor)
+        with closing(sqlite3.connect(index_path)) as index:
+            index.execute("PRAGMA journal_mode=OFF")
+            index.execute("PRAGMA synchronous=OFF")
+            index.execute("PRAGMA cache_size=-1024")
+            index.execute("CREATE TABLE seen(line BLOB PRIMARY KEY) WITHOUT ROWID")
+            insert = "INSERT OR IGNORE INTO seen VALUES (?)"
+            if stream is not None:
+                index.executemany(insert, ((line,) for line in binary_records(stream)))
+            with source.open("rb") as incoming:
+                for line in binary_records(incoming):
+                    if not line.strip():
+                        continue
+                    try:
+                        json.loads(line)
+                    except ValueError:
+                        # A live source may end with an incomplete record.
+                        continue
+                    if not index.execute(insert, (line,)).rowcount:
+                        continue
+                    if apply:
+                        if count == 0 and stream.seek(0, os.SEEK_END):
+                            stream.seek(-1, os.SEEK_END)
+                            if stream.read(1) != b"\n":
+                                raise ValueError(f"Incomplete destination record: {target}")
+                        stream.write(line + b"\n")
+                    count += 1
+            if apply and count:
+                stream.flush()
+    return count
 
 
 @contextmanager

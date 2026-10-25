@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from unittest import mock
 
@@ -247,6 +248,28 @@ CS_HOOKS+=(fixture-active-hook.sh)
         self.assertEqual(target.read_text(), '{}\n{"new":1}\n')
         self.assertEqual(result["conflicts_kept_in_profile"], [])
 
+    def test_large_transcript_prefix_comparison_preserves_longer_normal_copy_with_bounded_memory(self):
+        source = self.put(self.profile, ".claude/projects/project/thread.jsonl", "")
+        record = b'{"prompt":"' + b"x" * 1024 + b'"}\n'
+        with source.open("wb") as stream:
+            for _ in range(8000):
+                stream.write(record)
+        target = self.put(self.home, ".claude/projects/project/thread.jsonl", "")
+        migration.shutil.copyfile(source, target)
+        with target.open("ab") as stream:
+            stream.write(b'{"normal":true}\n')
+        conflicts = []
+        tracemalloc.start()
+        try:
+            count = migration.import_tree(source.parent, target.parent, self.home, False, conflicts)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(count, 0)
+        self.assertEqual(conflicts, [])
+        self.assertLess(peak, 4 * 1024 * 1024, f"prefix comparison allocated {peak} bytes")
+        self.assertEqual(target.stat().st_size, source.stat().st_size + len(b'{"normal":true}\n'))
+
     def test_divergent_transcripts_are_preserved_and_reported(self):
         source = self.put(self.profile, ".claude/projects/project/thread.jsonl", '{"source":1}\n')
         target = self.put(self.home, ".claude/projects/project/thread.jsonl", '{"target":1}\n')
@@ -373,6 +396,41 @@ CS_HOOKS+=(fixture-active-hook.sh)
         migration.migrate(self.home, True)
         migration.migrate(self.home, True)
         self.assertEqual(target.read_text(), '{"id":1}\n{"id":2}\n')
+
+    def test_large_history_import_deduplicates_with_bounded_memory(self):
+        source = self.put(self.profile, ".codex/history.jsonl", "")
+        target = self.put(self.home, ".codex/history.jsonl", "")
+        for path, start, end, copies in ((source, 0, 10000, 2), (target, 5000, 15000, 1)):
+            with path.open("wb") as stream:
+                for number in range(start, end):
+                    record = (json.dumps({"id": number, "prompt": "x" * 512}) + "\n").encode()
+                    for _ in range(copies):
+                        stream.write(record)
+        with source.open("ab") as stream:
+            stream.write(b'{"unfinished":')
+        original_size = target.stat().st_size
+        tracemalloc.start()
+        try:
+            self.assertEqual(migration.merge_jsonl(source, target, self.home, False), 5000)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(target.stat().st_size, original_size)
+        self.assertLess(peak, 4 * 1024 * 1024, f"history merge allocated {peak} bytes")
+        self.assertEqual(migration.merge_jsonl(source, target, self.home, True), 5000)
+        self.assertEqual(migration.merge_jsonl(source, target, self.home, True), 0)
+        with target.open() as stream:
+            identifiers = [json.loads(line)["id"] for line in stream]
+        self.assertEqual(len(identifiers), 15000)
+        self.assertEqual(set(identifiers), set(range(15000)))
+
+    def test_streamed_history_preserves_exact_byte_deduplication_and_line_endings(self):
+        source = self.profile / ".codex/history.jsonl"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'{"id":1}\r\n{"id":1}\r{"id": 1}\n{"text":"caf\xc3\xa9"}\r\ninvalid\n{"partial":')
+        target = self.put(self.home, ".codex/history.jsonl", '{"id":1}\n')
+        self.assertEqual(migration.merge_jsonl(source, target, self.home, True), 2)
+        self.assertEqual(target.read_bytes(), b'{"id":1}\n{"id": 1}\n{"text":"caf\xc3\xa9"}\n')
 
     def test_history_import_makes_an_existing_public_file_private(self):
         source = self.put(self.profile, ".codex/history.jsonl", '{"private":1}\n')
