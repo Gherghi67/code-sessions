@@ -5050,28 +5050,39 @@ band_session_colour() {
     printf 'claude_session_color: %s\n' "$1" > "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
 }
 
-# The first cell is the band colour pulled 30% toward the background, and the
-# last cell is the background itself. With no session and no override the
-# colour is neutral: the dark background 21;24;40 lifted to 61;64;90, pulled
-# to 49;52;75.
+# The first cell is the band colour, and the last cell is the background
+# itself. With no session and no override the colour is neutral, which takes
+# no pull: the dark background 21;24;40 lifted to 61;64;90.
 test_band_fades_from_the_band_colour_to_the_background() {
     band_env
     local out
     out=$(run_sl "$FIXTURE_DOCS")
     assert_eq "[0m" "$(printf '%s' "${out:0:4}" | tr -d '\033')" "the line opens with a reset" || return 1
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "the first cell is the neutral band colour" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "the first cell is the neutral band colour" || return 1
     local tail="${ESC_}[48;2;21;24;40m ${ESC_}[0m"
     assert_eq "$tail" "${out: -${#tail}}" "the last cell is the background" || return 1
 }
 
 # A light terminal's neutral is the background darkened 30 a channel:
-# 250;246;235 to 220;216;205, pulled to 229;225;214.
+# 250;246;235 to 220;216;205.
 test_band_neutral_darkens_a_light_background() {
     band_env
     export CS_TERM_THEME=light CS_TERM_BG_RGB="250;246;235"
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;229;225;214m" "$(band_first_cell "$out")" "a light neutral is a darker step" || return 1
+    assert_eq "[48;2;220;216;205m" "$(band_first_cell "$out")" "a light neutral is a darker step" || return 1
+}
+
+# On cream 253;246;227 the neutral is 223;216;197, asked for with `none` or
+# reached with no session colour, and still that colour at the first cell.
+test_band_neutral_on_cream_takes_no_pull() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    local out
+    out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "none on cream" || return 1
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "no session colour on cream" || return 1
 }
 
 # The session colour from the state file: blue 106;155;204 pulled toward
@@ -5089,10 +5100,10 @@ test_band_without_a_usable_session_colour_is_neutral() {
     local out
     band_session_colour magenta
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "a colour outside the palette is neutral" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a colour outside the palette is neutral" || return 1
     rm -f "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
 }
 
 # CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 pulls to
@@ -5118,7 +5129,7 @@ test_band_colour_override_precedence() {
     out=$(CS_STATUSLINE_BAND="300;0;0" run_sl "$FIXTURE_DOCS")
     assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
     assert_eq "" "$(CS_STATUSLINE_BAND=chartreuse run_sl_stderr "$FIXTURE_DOCS")" "an unusable override is silent" || return 1
 }
 
@@ -5135,28 +5146,28 @@ band_fixture() {
 # An amber reading is a solid island: its own fill and ink, bold, a fill space
 # each side. The gradient resumes after it where the cells put it: ctx 45 ends
 # at cell 44, and cell 45 (the dot joiner's first space) is 45/79 of the way
-# from 49;52;75 to 21;24;40, so 34;37;56, in the dim ink.
+# from 61;64;90 to 21;24;40, so 39;42;62, in the dim ink.
 test_band_amber_reading_is_an_island() {
     band_env
     local out
     out=$(run_sl "$(band_fixture 45 23.5 41.2)")
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;120;74;12;38;2;255;228;160;1m 45% ${ESC_}[48;2;34;37;56;38;2;150;165;200;22m " \
+        "${ESC_}[48;2;120;74;12;38;2;255;228;160;1m 45% ${ESC_}[48;2;39;42;62;38;2;150;165;200;22m " \
         "the ctx number at warn is an amber island, the gradient resuming after it" || return 1
     assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
 }
 
 # A crit group is one red island, its joiners inside it: 5h at crit takes wk
 # with it. The island ends at cell 67, and the fade runs on from cell 68 at
-# 25;28;45.
+# 27;30;47.
 test_band_crit_group_is_one_red_island() {
     band_env
     local out
     out=$(run_sl "$(band_fixture 8 95 60)")
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;255;69;58;38;2;255;255;255;1m ◷ 5h 95% ⋮ ◶ wk 60% ${ESC_}[48;2;25;28;45m    " \
+        "${ESC_}[48;2;255;69;58;38;2;255;255;255;1m ◷ 5h 95% ⋮ ◶ wk 60% ${ESC_}[48;2;27;30;47m    " \
         "the limits group at crit is one red island" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;33;36;55;38;2;150;165;200;22m ${ESC_}[48;2;255;69;58;" \
+    assert_output_contains_f "$out" "${ESC_}[48;2;38;41;61;38;2;150;165;200;22m ${ESC_}[48;2;255;69;58;" \
         "the dot before the island sits on the gradient, its last cell at 46" || return 1
     assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
 }
@@ -5169,10 +5180,10 @@ test_band_inks_on_a_dark_terminal() {
     band_env
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" "${ESC_}[48;2;49;52;75;38;2;217;119;87;1m✳" "the mark is brand coral" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;48;51;74;38;2;255;255;255;1mm" "the session name is primary" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;41;44;64;38;2;146;158;250;22mh" "the effort word keeps its colour" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;37;40;60;38;2;150;165;200;22m○" "a label is dim" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;61;64;90;38;2;217;119;87;1m✳" "the mark is brand coral" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;60;63;89;38;2;255;255;255;1mm" "the session name is primary" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;49;52;75;38;2;146;158;250;22mh" "the effort word keeps its colour" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;44;47;69;38;2;150;165;200;22m○" "a label is dim" || return 1
 }
 
 # The three band inks per theme, which no default item exercises all of.
@@ -5251,6 +5262,7 @@ run_test test_band_width_from_the_terminal_is_measured_once
 run_test test_band_render_writes_nothing_to_stderr
 run_test test_band_fades_from_the_band_colour_to_the_background
 run_test test_band_neutral_darkens_a_light_background
+run_test test_band_neutral_on_cream_takes_no_pull
 run_test test_band_takes_the_session_colour
 run_test test_band_without_a_usable_session_colour_is_neutral
 run_test test_band_colour_override_precedence

@@ -2302,8 +2302,10 @@ _band_from() {
 }
 
 # The neutral band colour in _R/_G/_B: the background lifted a step, lighter
-# on a dark terminal and darker on a light one.
+# on a dark terminal and darker on a light one. _BAND_NEUTRAL says it was
+# picked.
 _band_neutral() {
+    _BAND_NEUTRAL=1
     if [ "$SL_THEME" = "dark" ]; then
         _R=$((_BG_R + 40)); _G=$((_BG_G + 40)); _B=$((_BG_B + 50))
         [ "$_R" -le 255 ] || _R=255; [ "$_G" -le 255 ] || _G=255; [ "$_B" -le 255 ] || _B=255
@@ -2311,6 +2313,25 @@ _band_neutral() {
         _R=$((_BG_R - 30)); _G=$((_BG_G - 30)); _B=$((_BG_B - 30))
         [ "$_R" -ge 0 ] || _R=0; [ "$_G" -ge 0 ] || _G=0; [ "$_B" -ge 0 ] || _B=0
     fi
+}
+
+# _R/_G/_B moved $4 percent of the way toward $1;$2;$3.
+_band_toward() {  # r g b percent
+    _R=$((_R + ($1 - _R) * $4 / 100))
+    _G=$((_G + ($2 - _G) * $4 / 100))
+    _B=$((_B + ($3 - _B) * $4 / 100))
+}
+
+# The band's first cell in _FROM_R/_G/_B, and the colour it is made from in
+# _HUE_R/_G/_B. A hue is pulled 30% toward the background so ink reads on the
+# band's start; the neutral is already a step off the background and is used
+# as it is.
+_band_start() {
+    _BAND_NEUTRAL=""
+    _band_from
+    _HUE_R="$_R"; _HUE_G="$_G"; _HUE_B="$_B"
+    [ -n "$_BAND_NEUTRAL" ] || _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 30
+    _FROM_R="$_R"; _FROM_G="$_G"; _FROM_B="$_B"
 }
 
 # The foreground parameters for item ink $1 (weight $2, "bold" or empty) on the
@@ -2417,11 +2438,7 @@ _render_band() {
     _BAND_OUT=$'\033[0m'; _BAND_POS=0; _BAND_FLAT=""
     if [ "$LEVEL" = "truecolor" ]; then
         _band_bg
-        _band_from
-        # Pulled 30% toward the background, so ink reads on the band's start.
-        _FROM_R=$((_R + (_BG_R - _R) * 30 / 100))
-        _FROM_G=$((_G + (_BG_G - _G) * 30 / 100))
-        _FROM_B=$((_B + (_BG_B - _B) * 30 / 100))
+        _band_start
     else
         _sgr 48 surface; _BAND_FLAT="$_SGR"
     fi
