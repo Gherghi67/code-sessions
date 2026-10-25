@@ -1,7 +1,8 @@
 # Getting started with code-sessions
 
-code-sessions is a fork of cs with Claude and Codex support. Install this
-checkout with:
+code-sessions is a fork of cs with Claude and Codex support.
+
+## Install this checkout
 
 ```bash
 sh ./setup.sh

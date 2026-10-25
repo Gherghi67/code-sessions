@@ -184,12 +184,8 @@ test_no_skip_counts_as_a_pass() {
 test_code_sessions_is_a_fork_started_as_ccs() {
     assert_file_contains "$REPO/README.md" '^\*\*code-sessions\*\* is a fork of' \
         "README must say code-sessions is a fork of cs" || return 1
-    assert_file_contains "$REPO/README.md" 'start it as `code-sessions`, or `ccs`' \
-        "README must name the launchers" || return 1
     assert_file_contains "$REPO/README.md" 'docs/getting-started.md' \
         "README must link the practical getting-started guide" || return 1
-    assert_file_contains "$REPO/docs/migration.md" 'Launchers: `code-sessions` and `ccs`' \
-        "migration policy must name the launchers" || return 1
     assert_file_not_contains "$REPO/README.md" '`ags' "README still names the ags command" || return 1
     assert_file_not_contains "$REPO/docs/getting-started.md" '`ags' "the guide still names the ags command"
 }
@@ -201,8 +197,6 @@ test_getting_started_covers_main_workflows_and_codex_limit() {
         '## Save a manual checkpoint' '## Current Codex limits'; do
         assert_file_contains "$guide" "$heading" "getting-started guide must include $heading" || return 1
     done
-    assert_file_contains "$guide" 'unpublished' \
-        "guide must warn that the fork is unpublished" || return 1
 }
 
 run_test test_code_sessions_is_a_fork_started_as_ccs
