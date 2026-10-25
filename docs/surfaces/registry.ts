@@ -7,7 +7,7 @@ export type Theme = 'light' | 'dark'
 
 // What a surface draws that the lab's engine cannot draw yet. The frame
 // badges each one over what it can draw.
-export type Need = 'Code' | 'hover' | 'focus inverse' | 'engine drawing'
+export type Need = 'hover' | 'focus inverse' | 'engine drawing'
 
 // One state, named for what a person is doing. `cols` is the terminal's
 // width; the draw function takes off what the engine reserves.

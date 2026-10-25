@@ -791,7 +791,11 @@ const PALETTE={
   diffRemoved:{light:"rgb(255,168,180)",dark:"rgb(122,41,54)",why:"Code diff - background"},
 };
 const RAW={CORAL:"rgb(217,119,87)",AMBER_L:"rgb(180,83,9)",AMBER_D:"rgb(253,230,138)",CRIT_L:"rgb(215,0,21)",CRIT_D:"rgb(255,69,58)"};
-const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(RAW[k]) return RAW[k]; return k; };
+// Inks the engine draws in that are not a theme key a mod can name: a Code
+// node's plain ink, its highlighter's GitHub and Monokai Extended foreground
+// (2.1.310: light u(51,51,51), dark u(248,248,242)).
+const ENGINE_INK={codeForeground:{light:"rgb(51,51,51)",dark:"rgb(248,248,242)"}};
+const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(ENGINE_INK[k]) return ENGINE_INK[k][theme()]; if(RAW[k]) return RAW[k]; return k; };
 const colExpr=k=>!k?"":PALETTE[k]?`"${k}"`:RAW[k]?`{${k}}`:`"${k}"`;
 function fillColorPicks(){
   document.querySelectorAll("select.colorpick").forEach(s=>{
@@ -1476,11 +1480,8 @@ const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Erro
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
 // "a", "a or b", "a, b or c".
 const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
-const BD_NEEDS={"Code":"a Code node's colours","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
-// What a frame draws in place of a need, where it draws anything.
-const BD_STANDINS={"Code":"draws a Code node's source as plain dim lines"};
-const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`
-  +(needs.some(n=>BD_STANDINS[n])?`: it ${needs.filter(n=>BD_STANDINS[n]).map(n=>esc(BD_STANDINS[n])).join(" and ")}`:"");
+const BD_NEEDS={"hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
+const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`;
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
   let n=bdSurfaceState(sid,part.state).draw(cols(),theme());

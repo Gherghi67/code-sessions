@@ -289,11 +289,12 @@ test('cs-mermaid draws a fitted chart\'s blocks, lines and labels where its layo
   expect([g.rows[2][5].st.bg, g.rows[3][7].st.bg, g.rows[2][4].st.bg]).toEqual(['#D3F9D8', '#D3F9D8', ''])
 })
 
-// drawFence's Code holds the source; the lab draws it as plain dim lines,
-// the reason under it.
-test('cs-mermaid draws a refused fence\'s source as plain dim lines over the reason', () => {
+// drawFence's Code holds the source; mermaid has no grammar in the engine's
+// highlighter, so it draws in the plain code ink, the reason under it dim.
+test('cs-mermaid draws a refused fence\'s source in the plain code ink over the dim reason', () => {
   expect(rows('cs-mermaid.AssistantMessage/refused', 80)).toEqual(['graph TD', '  subgraph one', '    A --> B', '  end', 'mermaid: subgraphs are not supported'])
-  expect(layout(state('cs-mermaid.AssistantMessage/refused').draw(80, 'light'), 80).rows[0][0].st).toMatchObject({ dim: true })
+  const g = layout(state('cs-mermaid.AssistantMessage/refused').draw(80, 'light'), 80)
+  expect([g.rows[0][0].st, g.rows[4][0].st.dim]).toMatchObject([{ color: 'codeForeground', dim: false }, true])
 })
 
 test('cs-mermaid draws a chart that fits as absolute blocks on a relative canvas', () => {

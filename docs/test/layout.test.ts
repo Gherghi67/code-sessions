@@ -70,11 +70,18 @@ test('an absolute child\'s own room is transparent over what is under it', () =>
   expect(toText(layout(B({ width: 5 }, T({}, 'abcde'), Abs({ top: 0, left: 0, paddingLeft: 2 }, T({}, 'X'))), 40))).toEqual(['abXde'])
 })
 
-// The lab draws no syntax colour: a Code node is its source, line by line, dim.
-test('a Code node draws its source as plain dim lines', () => {
-  const g = layout({ type: 'Code', props: { source: 'graph TD\n  A --> B', language: 'mermaid' }, children: [] }, 40)
+// 2.1.310 draws a Code node (et -> LE) through its highlighter, which finds
+// a grammar by the language among highlight.js's 186 ("Z(this.filePath,o)",
+// filePath "source.${language}"); mermaid has none, so every line is the
+// theme's plain code ink ("if(!e.lang)return[[B(t),c]]", foreground
+// u(51,51,51) light, u(248,248,242) dark), not dim, broken at the width cell
+// by cell rather than at words (se), with a trailing newline dropped.
+test('a Code node draws its source in the plain code ink, broken cell by cell', () => {
+  const code = (source: string, w: number) => layout({ type: 'Code', props: { source, language: 'mermaid' }, children: [] }, w)
+  const g = code('graph TD\n  A --> B\n', 40)
   expect(toText(g).map((r: string) => r.replace(/\s+$/, ''))).toEqual(['graph TD', '  A --> B'])
-  expect(g.rows[1][2].st).toMatchObject({ dim: true, color: '' })
+  expect(g.rows[1][2].st).toMatchObject({ dim: false, color: 'codeForeground' })
+  expect(toText(code('ab cdef', 4))).toEqual(['ab c', 'def'])
 })
 
 // Yoga sizes a Box by its width whatever it holds: an empty one has no rows

@@ -112,6 +112,24 @@
     return { w: measured, rows: drawn };
   }
 
+  // A Code node as 2.1.310's highlighter draws a language it has no grammar
+  // for (mermaid, the one a mod draws): each line in the theme's plain code
+  // ink, `codeForeground` (the page resolves it per theme), broken at the
+  // width cell by cell, a trailing newline dropped. A language among its
+  // grammars draws in scope colours the lab does not reproduce; no mod
+  // surface hands it one.
+  function codeRows(source, width, path) {
+    var lines = source.split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    var ink = styleOf({ color: "codeForeground" }), room = Math.max(1, width), rows = [];
+    lines.forEach(function (line) {
+      var cells = run(line, ink, path);
+      if (!cells.length) rows.push([]);
+      for (var i = 0; i < cells.length; i += room) rows.push(cells.slice(i, i + room));
+    });
+    return { w: rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0), rows: rows };
+  }
+
   // A Markdown text as one inline run, as the 2.1.310 renderer styles it:
   // **strong** bold, *em* or _em_ italic, `code` in the theme's permission
   // ink, the marks dropped. Blocks (headings, lists, fences) draw as text.
@@ -204,8 +222,7 @@
     var text = null;
     if (node.type === "Text") text = textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap);
     if (node.type === "Markdown") text = textRows(markdownCells(String((node.props || {}).text || ""), path), width);
-    // The lab draws no syntax colour: a Code node is its source, dim.
-    if (node.type === "Code") text = textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width);
+    if (node.type === "Code") text = codeRows(String((node.props || {}).source || ""), width, path);
     if (!text) return grid([]);
     var g = textGrid(text);
     if (fill) g.w = width;
