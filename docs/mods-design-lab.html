@@ -1395,7 +1395,7 @@ function bdLayers(){
   walk(bdFrame(shown).tree,[]);
   $("bd-layers").innerHTML=rows.map(({n,path})=>{
     const on=sel&&sel.frame===shown&&samePath(sel.path,path);
-    return `<button type="button" class="lrow${on?" on":""}"${on?` aria-current="true"`:""} data-path="${path.join(",")}" style="--d:${path.length}" aria-label="${n.type} ${esc(bdLayerName(n))}"><span class="g g-${n.type}" aria-hidden="true"></span><span class="lname${n.type==="Text"?" words":""}">${esc(bdLayerName(n))}</span></button>`;
+    return `<button type="button" class="lrow${on?" on":""}"${on?` aria-current="true"`:""} data-path="${path.join(",")}" style="--d:${path.length}" aria-label="${n.type} ${esc(bdLayerName(n)).replace(/"/g,"&quot;")}"><span class="g g-${n.type}" aria-hidden="true"></span><span class="lname${n.type==="Text"?" words":""}">${esc(bdLayerName(n))}</span></button>`;
   }).join("");
   $("bd-layers").dataset.frame=shown;
   $("bd-layers").querySelector(".lrow.on")?.scrollIntoView({block:"nearest"});
