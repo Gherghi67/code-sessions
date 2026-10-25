@@ -245,8 +245,9 @@ export function workingLine(w: Working): RenderElement {
 // The working line's glyph at a clock reading: `Hn(l) = Math.round(EUe(l,
 // Wn) * (DIn().length - 1))`, `EUe(r,t) = (1 - Math.cos(2*Math.PI*r/t)) / 2`,
 // `Wn = 2000`, a breath out and back over two seconds; Ife draws
-// `wUe()[frame % 12]`, the mirrored twelve, whose first six are DIn()'s,
-// the darwin set off ghostty.
+// `wUe()[frame % 12]`, the mirrored twelve, whose first six are DIn()'s.
+// DIn() keys on TERM alone: this set wherever TERM is not xterm-ghostty,
+// and under ghostty `· ✢ ✳ ✶ ✻ ✻`, its last glyph ✻ again.
 const BREATH = ['·', '✢', '✳', '✶', '✻', '✽'] as const
 const BREATH_MS = 2000
 function breathGlyph(clock: number): string {
