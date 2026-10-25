@@ -5050,38 +5050,61 @@ band_session_colour() {
     printf 'claude_session_color: %s\n' "$1" > "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
 }
 
-# The first cell is the band colour pulled 30% toward the background, and the
-# last cell is the background itself. With no session and no override the
-# colour is neutral: the dark background 21;24;40 lifted to 61;64;90, pulled
-# to 49;52;75.
+# The first cell is the band colour, and the last cell is the background
+# itself. With no session and no override the colour is neutral, which takes
+# no pull: the dark background 21;24;40 lifted to 61;64;90.
 test_band_fades_from_the_band_colour_to_the_background() {
     band_env
     local out
     out=$(run_sl "$FIXTURE_DOCS")
     assert_eq "[0m" "$(printf '%s' "${out:0:4}" | tr -d '\033')" "the line opens with a reset" || return 1
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "the first cell is the neutral band colour" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "the first cell is the neutral band colour" || return 1
     local tail="${ESC_}[48;2;21;24;40m ${ESC_}[0m"
     assert_eq "$tail" "${out: -${#tail}}" "the last cell is the background" || return 1
 }
 
 # A light terminal's neutral is the background darkened 30 a channel:
-# 250;246;235 to 220;216;205, pulled to 229;225;214.
+# 250;246;235 to 220;216;205.
 test_band_neutral_darkens_a_light_background() {
     band_env
     export CS_TERM_THEME=light CS_TERM_BG_RGB="250;246;235"
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;229;225;214m" "$(band_first_cell "$out")" "a light neutral is a darker step" || return 1
+    assert_eq "[48;2;220;216;205m" "$(band_first_cell "$out")" "a light neutral is a darker step" || return 1
 }
 
-# The session colour from the state file: blue 106;155;204 pulled toward
-# 21;24;40 is 81;116;155.
+# On cream 253;246;227 the neutral is 223;216;197, asked for with `none` or
+# reached with no session colour, and still that colour at the first cell.
+test_band_neutral_on_cream_takes_no_pull() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    local out
+    out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "none on cream" || return 1
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "no session colour on cream" || return 1
+}
+
+# The session colour from the state file: blue 106;155;204, halfway to its
+# luminance 145 is 125;150;175, and 78% of the way from there to 21;24;40 is
+# 44;52;70.
 test_band_takes_the_session_colour() {
     band_env
     band_session_colour blue
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "the session colour starts the band" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "the session colour starts the band" || return 1
+}
+
+# The same desaturated blue 125;150;175 pulled 78% toward cream 253;246;227 is
+# 224;224;215, and toward the dark 21;24;40 is 44;52;70.
+test_band_hue_is_desaturated_and_pulled_per_theme() {
+    band_env
+    local out
+    out=$(CS_STATUSLINE_BAND=blue CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;224;224;215m" "$(band_first_cell "$out")" "blue on cream" || return 1
+    out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "blue on dark" || return 1
 }
 
 test_band_without_a_usable_session_colour_is_neutral() {
@@ -5089,36 +5112,37 @@ test_band_without_a_usable_session_colour_is_neutral() {
     local out
     band_session_colour magenta
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "a colour outside the palette is neutral" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a colour outside the palette is neutral" || return 1
     rm -f "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
 }
 
-# CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 pulls to
-# 161;34;38 (the -59.7 truncates to -59), the triplet 100;200;0 to 77;148;12,
-# brand 217;119;87 to 159;91;73. `session` and anything unusable fall to the
-# session colour (blue, 81;116;155); `none` is the neutral even with one set.
+# CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 desaturates to
+# 156;65;65 and pulls to 51;34;46 (the -31.98 truncates to -31), the triplet
+# 100;200;0 to 44;57;48, brand 217;119;87 to 57;48;57. `session` and anything
+# unusable fall to the session colour (blue, 44;52;70); `none` is the neutral
+# even with one set.
 test_band_colour_override_precedence() {
     band_env
     band_session_colour blue
     local out
     out=$(CS_STATUSLINE_BAND=red run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;161;34;38m" "$(band_first_cell "$out")" "a palette name" || return 1
+    assert_eq "[48;2;51;34;46m" "$(band_first_cell "$out")" "a palette name" || return 1
     out=$(CS_STATUSLINE_BAND="100;200;0" run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;77;148;12m" "$(band_first_cell "$out")" "an r;g;b triplet" || return 1
+    assert_eq "[48;2;44;57;48m" "$(band_first_cell "$out")" "an r;g;b triplet" || return 1
     out=$(CS_STATUSLINE_BAND=brand run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;159;91;73m" "$(band_first_cell "$out")" "the brand coral" || return 1
+    assert_eq "[48;2;57;48;57m" "$(band_first_cell "$out")" "the brand coral" || return 1
     out=$(CS_STATUSLINE_BAND=session run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "session names the session colour" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "session names the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=chartreuse run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
     out=$(CS_STATUSLINE_BAND="red blue" run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "two palette names are not one" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "two palette names are not one" || return 1
     out=$(CS_STATUSLINE_BAND="300;0;0" run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;49;52;75m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
     assert_eq "" "$(CS_STATUSLINE_BAND=chartreuse run_sl_stderr "$FIXTURE_DOCS")" "an unusable override is silent" || return 1
 }
 
@@ -5132,31 +5156,51 @@ band_fixture() {
          | .rate_limits.seven_day.used_percentage = $w' <<< "$FIXTURE_DOCS"
 }
 
-# An amber reading is a solid island: its own fill and ink, bold, a fill space
-# each side. The gradient resumes after it where the cells put it: ctx 45 ends
-# at cell 44, and cell 45 (the dot joiner's first space) is 45/79 of the way
-# from 49;52;75 to 21;24;40, so 34;37;56, in the dim ink.
-test_band_amber_reading_is_an_island() {
+# An amber reading is amber ink, bold, on the gradient, on either theme: ctx 45
+# starts at cell 40, 40/79 of the way from 61;64;90 to 21;24;40, so 41;44;65,
+# and the dot joiner's first space follows at cell 43, 40;43;63. On cream the
+# number is the light amber 180;83;9, and a crit group is still a red island.
+test_band_amber_reading_is_ink() {
     band_env
     local out
     out=$(run_sl "$(band_fixture 45 23.5 41.2)")
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;120;74;12;38;2;255;228;160;1m 45% ${ESC_}[48;2;34;37;56;38;2;150;165;200;22m " \
-        "the ctx number at warn is an amber island, the gradient resuming after it" || return 1
-    assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
+        "${ESC_}[48;2;41;44;65;38;2;253;230;138;1m4" "the ctx number at warn is amber ink on the gradient" || return 1
+    assert_output_contains_f "$out" \
+        "%${ESC_}[48;2;40;43;63;38;2;150;165;200;22m " "the joiner follows on the next cell" || return 1
+    assert_eq 80 "$(band_cells "$out")" "the amber cells are counted" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" ";38;2;180;83;9;1m4" "the ctx number on cream is light amber, bold" || return 1
+    assert_output_not_contains_f "$out" "48;2;251;232;196" "no amber fill on cream" || return 1
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" "${ESC_}[48;2;215;0;21;38;2;255;255;255;1m ◷ 5h 95% " "crit on cream is the red island" || return 1
+}
+
+# The amber island's tokens are gone: like any unknown name, they paint the
+# surface at every level.
+test_band_amber_island_tokens_are_unknown() {
+    ( _load_sl_functions
+      local level want
+      for level in truecolor 256 basic; do
+          LEVEL=$level; SL_THEME=light; _SURFACE_RGB=""
+          _sgr 48 surface; want="$_SGR"
+          _sgr 48 amberfill; assert_eq "$want" "$_SGR" "amberfill at $level is the surface" || return 1
+          _sgr 48 amberink;  assert_eq "$want" "$_SGR" "amberink at $level is the surface" || return 1
+      done )
 }
 
 # A crit group is one red island, its joiners inside it: 5h at crit takes wk
 # with it. The island ends at cell 67, and the fade runs on from cell 68 at
-# 25;28;45.
+# 27;30;47.
 test_band_crit_group_is_one_red_island() {
     band_env
     local out
     out=$(run_sl "$(band_fixture 8 95 60)")
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;255;69;58;38;2;255;255;255;1m ◷ 5h 95% ⋮ ◶ wk 60% ${ESC_}[48;2;25;28;45m    " \
+        "${ESC_}[48;2;255;69;58;38;2;255;255;255;1m ◷ 5h 95% ⋮ ◶ wk 60% ${ESC_}[48;2;27;30;47m    " \
         "the limits group at crit is one red island" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;33;36;55;38;2;150;165;200;22m ${ESC_}[48;2;255;69;58;" \
+    assert_output_contains_f "$out" "${ESC_}[48;2;38;41;61;38;2;150;165;200;22m ${ESC_}[48;2;255;69;58;" \
         "the dot before the island sits on the gradient, its last cell at 46" || return 1
     assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
 }
@@ -5169,25 +5213,47 @@ test_band_inks_on_a_dark_terminal() {
     band_env
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" "${ESC_}[48;2;49;52;75;38;2;217;119;87;1m✳" "the mark is brand coral" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;48;51;74;38;2;255;255;255;1mm" "the session name is primary" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;41;44;64;38;2;146;158;250;22mh" "the effort word keeps its colour" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;2;37;40;60;38;2;150;165;200;22m○" "a label is dim" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;61;64;90;38;2;217;119;87;1m✳" "the mark is brand coral" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;60;63;89;38;2;255;255;255;1mm" "the session name is primary" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;49;52;75;38;2;146;158;250;22mh" "the effort word keeps its colour" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;44;47;69;38;2;150;165;200;22m○" "a label is dim" || return 1
 }
 
-# The three band inks per theme, which no default item exercises all of.
+# The three band inks per theme, which no default item exercises all of. On a
+# light theme they are shades of the band's hue, here blue 106;155;204: 34%,
+# 44% and 56% of each channel.
 test_band_ink_roles_per_theme() {
     ( _load_sl_functions
       LEVEL=truecolor; SL_THEME=dark
+      _HUE_R=106; _HUE_G=155; _HUE_B=204
       _band_ink ink bold; assert_eq "38;2;255;255;255" "$_BAND_FG" "dark primary" || return 1
       _band_ink white "";  assert_eq "38;2;255;255;255" "$_BAND_FG" "white is the primary" || return 1
       _band_ink ink "";    assert_eq "38;2;214;222;240" "$_BAND_FG" "dark secondary" || return 1
       _band_ink ink2 "";   assert_eq "38;2;150;165;200" "$_BAND_FG" "dark dim" || return 1
       SL_THEME=light
-      _band_ink ink bold; assert_eq "38;2;20;20;30" "$_BAND_FG" "light primary" || return 1
-      _band_ink ink "";    assert_eq "38;2;40;44;60" "$_BAND_FG" "light secondary" || return 1
-      _band_ink ink2 "";   assert_eq "38;2;90;96;120" "$_BAND_FG" "light dim" || return 1
+      _band_ink ink bold; assert_eq "38;2;36;52;69" "$_BAND_FG" "light primary" || return 1
+      _band_ink white "";  assert_eq "38;2;36;52;69" "$_BAND_FG" "white is the light primary" || return 1
+      _band_ink ink "";    assert_eq "38;2;46;68;89" "$_BAND_FG" "light secondary" || return 1
+      _band_ink ink2 "";   assert_eq "38;2;59;86;114" "$_BAND_FG" "light dim" || return 1
       _band_ink periwinkle ""; assert_eq "38;2;76;29;149" "$_BAND_FG" "periwinkle keeps its colour" || return 1 )
+}
+
+# A light band's inks come from the raw hue, not the pale band it is pulled
+# to: blue gives the session name 36;52;69 and a label 59;86;114. The neutral
+# on cream, 223;216;197, gives 75;73;66 and 124;120;110. Nothing on a light
+# band is bold, the mark included.
+test_band_inks_on_a_light_terminal() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    local out
+    out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" ";38;2;36;52;69;22mm" "the session name is the blue primary, regular weight" || return 1
+    assert_output_contains_f "$out" ";38;2;59;86;114;22m○" "a label is the blue dim" || return 1
+    assert_output_contains_f "$out" ";38;2;217;119;87;22m✳" "the mark is regular weight" || return 1
+    assert_output_not_contains_f "$out" ";1m" "no item is bold" || return 1
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" ";38;2;75;73;66;22mm" "the session name is the neutral's primary" || return 1
+    assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
 }
 
 test_band_layout_unset_or_unknown_is_the_capsules() {
@@ -5210,8 +5276,8 @@ test_band_plain_level_prints_the_plain_line() {
     assert_eq "$want" "$out" "plain ignores the layout" || return 1
 }
 
-# Below truecolor the band is a flat surface fill, every cell, islands in the
-# level's own tokens.
+# Below truecolor the band is a flat surface fill, every cell, the amber ink
+# and the crit island in the level's own tokens.
 test_band_256_is_a_flat_fill() {
     band_env
     unset COLORTERM
@@ -5220,7 +5286,7 @@ test_band_256_is_a_flat_fill() {
     assert_eq 80 "$(band_cells "$out")" "a flat band is 80 cells" || return 1
     assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
     assert_eq "[48;5;237m" "$(band_first_cell "$out")" "the band is the 256 surface" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;5;94;38;5;223;1m 45% " "the amber island in 256 tokens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;221;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
     assert_output_contains_f "$out" "${ESC_}[48;5;203;38;5;231;1m ◷ 5h 95% ⋮ ◶ wk 60% " "the crit island in 256 tokens" || return 1
 }
 
@@ -5233,7 +5299,7 @@ test_band_basic_is_a_flat_fill() {
     assert_eq 80 "$(band_cells "$out")" "a basic band is 80 cells" || return 1
     assert_output_not_contains_f "$out" "48;" "no 256 or truecolor fill" || return 1
     assert_eq "[100m" "$(band_first_cell "$out")" "the band is the basic surface" || return 1
-    assert_output_contains_f "$out" "${ESC_}[43;30;1m 45% " "the amber island in basic tokens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[100;93;1m45%" "the amber number in basic tokens on the flat fill" || return 1
 }
 
 
@@ -5251,12 +5317,16 @@ run_test test_band_width_from_the_terminal_is_measured_once
 run_test test_band_render_writes_nothing_to_stderr
 run_test test_band_fades_from_the_band_colour_to_the_background
 run_test test_band_neutral_darkens_a_light_background
+run_test test_band_neutral_on_cream_takes_no_pull
 run_test test_band_takes_the_session_colour
+run_test test_band_hue_is_desaturated_and_pulled_per_theme
 run_test test_band_without_a_usable_session_colour_is_neutral
 run_test test_band_colour_override_precedence
-run_test test_band_amber_reading_is_an_island
+run_test test_band_amber_reading_is_ink
+run_test test_band_amber_island_tokens_are_unknown
 run_test test_band_crit_group_is_one_red_island
 run_test test_band_inks_on_a_dark_terminal
+run_test test_band_inks_on_a_light_terminal
 run_test test_band_ink_roles_per_theme
 run_test test_band_layout_unset_or_unknown_is_the_capsules
 run_test test_band_plain_level_prints_the_plain_line

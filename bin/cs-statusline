@@ -879,8 +879,7 @@ _sgr() {
                 # Inks. `amber` is a foreground: the hot number's colour on
                 # the neutral capsule, dark enough to hold contrast on cream and
                 # bright enough on a dark surface. Nothing paints amber as a
-                # fill; the band's amber island has its own pair, amberfill and
-                # amberink, below.
+                # fill.
                 # It pivots on the measured terminal background when there is
                 # one (the bar's surface is a shade of it, the agent rows sit on
                 # it directly) and on the theme flag only without a measurement:
@@ -925,11 +924,6 @@ _sgr() {
                 # White on the red fill whatever the theme: the fill is the
                 # same hue on both, so its ink is too.
                 critink) rgb="255;255;255" ;;
-                # The band's amber island: a solid fill under a hot reading,
-                # deep on a dark terminal and pale on a light one, its ink the
-                # other way round.
-                amberfill) [ "$SL_THEME" = "dark" ] && rgb="120;74;12" || rgb="251;232;196" ;;
-                amberink)  [ "$SL_THEME" = "dark" ] && rgb="255;228;160" || rgb="140;64;8" ;;
                 # The effort word wears Claude Code's own /effort picker
                 # colours (pixel-sampled from the light picker); on dark they
                 # are lifted a third of the way to white so they keep reading
@@ -988,8 +982,6 @@ _sgr() {
                 ink2)    [ "$SL_THEME" = "dark" ] && idx=250 || idx=241 ;;
                 crit)    [ "$SL_THEME" = "dark" ] && idx=203 || idx=160 ;;
                 critink) idx=231 ;;
-                amberfill) [ "$SL_THEME" = "dark" ] && idx=94 || idx=223 ;;
-                amberink)  [ "$SL_THEME" = "dark" ] && idx=223 || idx=94 ;;
                 effort-low)    [ "$SL_THEME" = "dark" ] && idx=179 || idx=136 ;;
                 effort-medium) [ "$SL_THEME" = "dark" ] && idx=71  || idx=28 ;;
                 effort-high)   [ "$SL_THEME" = "dark" ] && idx=105 || idx=63 ;;
@@ -1038,8 +1030,6 @@ _sgr() {
                 ink2)    [ "$SL_THEME" = "dark" ] && base=97 || base=37 ;;
                 crit)    base=31 ;;
                 critink) base=97 ;;
-                amberfill) base=33 ;;
-                amberink)  base=30 ;;
                 effort-low)    base=33 ;;
                 effort-medium) base=32 ;;
                 effort-high)   base=34 ;;
@@ -2302,8 +2292,10 @@ _band_from() {
 }
 
 # The neutral band colour in _R/_G/_B: the background lifted a step, lighter
-# on a dark terminal and darker on a light one.
+# on a dark terminal and darker on a light one. _BAND_NEUTRAL says it was
+# picked.
 _band_neutral() {
+    _BAND_NEUTRAL=1
     if [ "$SL_THEME" = "dark" ]; then
         _R=$((_BG_R + 40)); _G=$((_BG_G + 40)); _B=$((_BG_B + 50))
         [ "$_R" -le 255 ] || _R=255; [ "$_G" -le 255 ] || _G=255; [ "$_B" -le 255 ] || _B=255
@@ -2313,14 +2305,40 @@ _band_neutral() {
     fi
 }
 
+# _R/_G/_B moved $4 percent of the way toward $1;$2;$3.
+_band_toward() {  # r g b percent
+    _R=$((_R + ($1 - _R) * $4 / 100))
+    _G=$((_G + ($2 - _G) * $4 / 100))
+    _B=$((_B + ($3 - _B) * $4 / 100))
+}
+
+# The band's first cell in _FROM_R/_G/_B, and the colour it is made from in
+# _HUE_R/_G/_B. A hue is moved halfway to the grey of its own luminance, then
+# 78% of the way to the background, so the band is a tint of the terminal and
+# ink reads on its start; the neutral is already a step off the background and
+# is used as it is.
+_band_start() {
+    _BAND_NEUTRAL=""
+    _band_from
+    _HUE_R="$_R"; _HUE_G="$_G"; _HUE_B="$_B"
+    if [ -z "$_BAND_NEUTRAL" ]; then
+        local lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
+        _band_toward "$lum" "$lum" "$lum" 50
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 78
+    fi
+    _FROM_R="$_R"; _FROM_G="$_G"; _FROM_B="$_B"
+}
+
 # The foreground parameters for item ink $1 (weight $2, "bold" or empty) on the
 # band, in _BAND_FG. On truecolor the band has inks of its own, since it is
 # brighter than the capsule surface at one end and the terminal at the other:
 # a primary for bold text, a secondary for regular text, a dim one for labels
-# and joiners. Tokens with a colour of their own (the brand mark, the effort
-# word, the session palette) keep it. Other levels take the capsules' tokens.
+# and joiners. On a light theme they are dark shades of the band's hue
+# (_HUE_R/_G/_B), so the text carries the colour the pale band only hints at.
+# Tokens with a colour of their own (the brand mark, the effort word, the
+# session palette) keep it. Other levels take the capsules' tokens.
 _band_ink() {  # token bold
-    local role rgb
+    local role rgb pct=""
     if [ "$LEVEL" = "truecolor" ]; then
         case "$1" in
             white) role=primary ;;
@@ -2336,10 +2354,11 @@ _band_ink() {  # token bold
         dark:primary)    rgb="255;255;255" ;;
         dark:secondary)  rgb="214;222;240" ;;
         dark:dim)        rgb="150;165;200" ;;
-        *:primary)       rgb="20;20;30" ;;
-        *:secondary)     rgb="40;44;60" ;;
-        *:dim)           rgb="90;96;120" ;;
+        *:primary)       pct=34 ;;
+        *:secondary)     pct=44 ;;
+        *:dim)           pct=56 ;;
     esac
+    [ -z "$pct" ] || rgb="$((_HUE_R * pct / 100));$((_HUE_G * pct / 100));$((_HUE_B * pct / 100))"
     _BAND_FG="38;2;$rgb"
 }
 
@@ -2417,11 +2436,7 @@ _render_band() {
     _BAND_OUT=$'\033[0m'; _BAND_POS=0; _BAND_FLAT=""
     if [ "$LEVEL" = "truecolor" ]; then
         _band_bg
-        _band_from
-        # Pulled 30% toward the background, so ink reads on the band's start.
-        _FROM_R=$((_R + (_BG_R - _R) * 30 / 100))
-        _FROM_G=$((_G + (_BG_G - _G) * 30 / 100))
-        _FROM_B=$((_B + (_BG_B - _B) * 30 / 100))
+        _band_start
     else
         _sgr 48 surface; _BAND_FLAT="$_SGR"
     fi
@@ -2460,14 +2475,14 @@ _render_band() {
                 fi
             fi
             first=""
-            # An amber item is a solid island of its own.
+            # An amber item is amber ink, bold on either theme, as on the
+            # capsules.
             if [ "${_SEG_INK[i]}" = "amber" ]; then
-                _sgr 48 amberfill; fill="$_SGR"; _sgr 38 amberink
-                _band_island "$fill" "$_SGR" " ${_SEG_TEXT[i]} "
+                _sgr 38 amber; _band_text "${_SEG_TEXT[i]}" "$_SGR" 1
                 continue
             fi
             weight=22
-            [ -n "${_SEG_BOLD[i]}" ] && weight=1
+            [ -n "${_SEG_BOLD[i]}" ] && [ "$SL_THEME" = "dark" ] && weight=1
             _band_ink "${_SEG_INK[i]}" "${_SEG_BOLD[i]}"
             _band_text "${_SEG_TEXT[i]}" "$_BAND_FG" "$weight"
         done
