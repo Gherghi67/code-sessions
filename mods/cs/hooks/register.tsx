@@ -703,7 +703,8 @@ export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'B
 // The words that leave an overrunning line first, first to last, each only as
 // a word: a features word that can be pressed is a press and stays. After
 // them the shared chord prefix goes. The countdown, the presses and the
-// chords leave only whole and last (LEAVE_ORDER); the mark never leaves.
+// chords leave only whole: last (LEAVE_ORDER), or earlier where what the line
+// would draw of them says nothing (mutedBy); the mark never leaves.
 const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
 
 // Which side of the line each entry draws on: the actions, what a chord or a
