@@ -1312,8 +1312,23 @@ const bdSelected=()=>{ const sel=bdDocNow().selection; return sel&&BandEditor.no
 // open draft first, so a field typed in but never left (a mousedown on the
 // strip keeps its focus) is a step of its own before what follows.
 function bdSettle(){ bdHist=BandEditor.commitDraft(bdHist,bdDraft); bdDraft=null; }
-function bdDispatch(action){ bdSettle(); bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
-function bdEdit(action){ bdSettle(); bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
+function bdDispatch(action){ bdSettle(); bdRefusal=null; bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
+// Every edit of a frame's tree comes through here, so a reference frame is
+// refused in one place, with its reason drawn on the frame.
+const BD_TREE_EDITS=new Set(["setProp","move","insert","remove","setText","duplicateNode"]);
+function bdEdit(action){
+  const sel=bdDocNow().selection;
+  if(BD_TREE_EDITS.has(action.type)&&sel&&bdReadOnly(sel.frame)) return bdRefuse(sel.frame);
+  bdSettle(); bdRefusal=null; bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender();
+}
+// A reference frame is drawn by the mod and read, never edited: why, or null
+// for a frame the designer edits. The refusal last met, drawn on its frame.
+let bdRefusal=null;
+function bdReadOnly(frame){
+  const f=bdFrame(frame);
+  return f.ref?`${f.name} is a reference frame: ${BandEditor.uneditable(BandEditor.toEngine(f.tree))}, which the designer does not edit`:null;
+}
+function bdRefuse(frame){ bdRefusal={frame,text:bdReadOnly(frame)}; composeRender(); }
 
 // One prop as a row: its name on the left, its control on the right, both
 // one label so either takes the click.
@@ -1334,6 +1349,8 @@ function cpFrameSummary(){
 }
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
+  if(bdReadOnly(bdDocNow().selection.frame)) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">Reference frame: drawn by the mod's code, read only.</p>`
+    +`<dl class="fsum">${Object.keys(n.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof n.props[k]==="object"?JSON.stringify(n.props[k]):String(n.props[k]))}</dd>`).join("")}</dl>`;
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
     +CP_GROUPS.filter(g=>groups[g]).map(g=>`<details class="pgroup" data-group="${g}"${bdShut.has(g)?"":" open"}><summary>${g}</summary><div>${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></details>`).join("");
@@ -1480,13 +1497,16 @@ function bdFrameCard(f){
   const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
   const band=surf&&surf.chrome?.kind==="above-prompt", prompt=!surf||band;
   const room=band?c-5:c, measured=ModLayout.layout(tree,room).w;
-  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}" data-frame="${f.id}">`
+  const ro=bdReadOnly(f.id);
+  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
+    +(ro?`<span class="badge ref" title="${esc(ro)}">reference</span>`:"")
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
     +(surf&&surf.needs.length?`<p class="needs">${surf.needs.map(n=>`lab cannot draw <b>${esc(BD_NEEDS[n])}</b> yet`).join(" · ")}</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
+    +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
     +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
     +`<div class="strip"><div class="term">${bdPaint(g)}`+(prompt?`\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span>`:"")+`</div></div>`
     +(measured>room?`<p class="why no">${esc(fitWords(measured,room))}</p>`:"")
@@ -1500,7 +1520,7 @@ function bdComponents(){
   return mods.map(m=>`<details class="cmod" open><summary>${esc(m)}</summary>`+SURFACES.filter(s=>s.mod===m).map(s=>{
     const states=s.states.map(st=>{
       const why=BandEditor.uneditable(st.draw(cols(),theme()));
-      return `<button type="button" class="crow" data-add="${esc(s.id)}/${esc(st.id)}" title="${esc(st.name)}${why?` (${esc(why)}: a reference frame)`:""}"${why?` data-ref`:""}><span class="lname">${esc(st.id)}</span></button>`;
+      return `<button type="button" class="crow" data-add="${esc(s.id)}/${esc(st.id)}" title="${esc(st.name)}${why?` (${esc(why)}: a reference frame)`:""}"><span class="lname">${esc(st.id)}</span>${why?`<span class="cnt">reference</span>`:""}</button>`;
     }).join("");
     const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
     return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
@@ -1512,9 +1532,7 @@ function bdComponents(){
 // `<mod>.<slot>/<state>`.
 function bdAddSurfaceFrame(key){
   const [sid,stid]=key.split("/"), tree=bdSurfaceState(sid,stid).draw(cols(),theme());
-  const why=BandEditor.uneditable(tree);
-  if(why) return bdCompsNote(`${key} is not editable: ${why}`);
-  bdEdit({type:"addFrame",tree:BandEditor.fromEngine(tree),name:key,source:{surface:sid,state:stid}});
+  bdEdit({type:"addFrame",tree:BandEditor.fromEngine(tree),name:key,source:{surface:sid,state:stid},ref:!!BandEditor.uneditable(tree)});
 }
 function bdCompsNote(text){ const n=$("bd-comps-note"); if(!n) return; n.hidden=!text; n.textContent=text; }
 // A part pressed: inserted by the selection, as the + buttons insert.
@@ -1593,6 +1611,7 @@ const BD_FRESH={Box:()=>({type:"Box",props:{},kids:[]}),Text:()=>({type:"Text",p
 const BD_INSERT_KEYS={o:"Box",w:"Text",n:"Button"};
 function bdInsertRefusal(type){
   const sel=bdDocNow().selection; if(!sel) return "select a node to insert next to";
+  if(bdReadOnly(sel.frame)) return bdReadOnly(sel.frame);
   const tree=bdFrame(sel.frame).tree, at=BandEditor.insertPoint(tree,sel.path);
   return BandEditor.refusal(type,BandEditor.nodeAt(tree,at.parentPath));
 }
@@ -1770,7 +1789,7 @@ function bdPartDragMove(e){
   const cell=document.elementFromPoint(e.clientX,e.clientY)?.closest("[data-r]"), frame=cell?.closest("[data-frame]")?.dataset.frame||null;
   if(d.frame&&d.frame!==frame) bdStrip(d.frame)?.querySelector(".drop")?.remove();
   d.frame=frame;
-  const t=frame&&BandEditor.insertTarget(bdFrame(frame).tree,bdGrids[frame],d.node.type,{r:+cell.dataset.r,c:+cell.dataset.c});
+  const t=frame&&!bdReadOnly(frame)&&BandEditor.insertTarget(bdFrame(frame).tree,bdGrids[frame],d.node.type,{r:+cell.dataset.r,c:+cell.dataset.c});
   d.target=t?bdDecorate(frame,t):null;
   if(frame) bdIndicator(bdStrip(frame),d.target);
 }
@@ -1778,6 +1797,7 @@ function bdPartDragEnd(){
   const d=bdPartDrag; if(!d) return;
   bdPartDrag=null; document.body.classList.remove("dragging");
   if(d.moved){ bdDragged=true; setTimeout(()=>{ bdDragged=false; }); }
+  if(d.frame&&bdReadOnly(d.frame)) return bdRefuse(d.frame);
   if(!d.target) return d.frame&&bdStrip(d.frame)?.querySelector(".drop")?.remove();
   bdDispatch({type:"selectFrame",frame:d.frame});
   bdEdit({type:"insert",parentPath:d.target.parentPath,index:d.target.index,node:BandEditor.fromEngine(d.node)});
@@ -1788,6 +1808,7 @@ function bdPartDragEnd(){
 // them, prefilled with the words. Enter or leaving the field commits, Esc
 // drops it, Tab and Shift+Tab commit and move to the next or previous words.
 function bdInline(frame,path){
+  if(bdReadOnly(frame)){ bdDispatch({type:"select",frame,path}); return bdRefuse(frame); }
   const tree=bdFrame(frame).tree, node=BandEditor.nodeAt(tree,path);
   if(node.type!=="Text"&&node.type!=="Button") return;
   bdDispatch({type:"select",frame,path});
@@ -1846,7 +1867,7 @@ function bdKeys(e){
   else if(e.key==="ArrowRight"||e.key==="ArrowDown") act=nudge(1);
   else if((e.key==="Delete"||e.key==="Backspace")&&sel.path.length) act={edit:{type:"remove",path:sel.path}};
   else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="d"&&sel.path.length) act={edit:{type:"duplicateNode",path:sel.path}};
-  else if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&BD_INSERT_KEYS[e.key]){ const type=BD_INSERT_KEYS[e.key]; e.preventDefault(); e.stopImmediatePropagation(); if(!bdInsertRefusal(type)) bdInsert(type); return; }
+  else if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&BD_INSERT_KEYS[e.key]){ const type=BD_INSERT_KEYS[e.key]; e.preventDefault(); e.stopImmediatePropagation(); if(bdReadOnly(sel.frame)) return bdRefuse(sel.frame); if(!bdInsertRefusal(type)) bdInsert(type); return; }
   if(!act) return;
   e.preventDefault(); e.stopImmediatePropagation();
   if(act.select) bdDispatch(act.select);
