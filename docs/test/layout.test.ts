@@ -320,3 +320,8 @@ test('a pane clips its body to its rows, and shows its tabs only beside another 
   expect(tabbed.rows[1][4].st.bold).toBe(true)
   expect(tabbed.rows[1][2].st.dim).toBe(true)
 })
+
+test('toJsx prints a Markdown or a Code node as the element the mod writes', () => {
+  expect(toJsx({ type: 'Markdown', props: { text: 'Gate **green**' }, children: [] })).toBe('<Markdown text="Gate **green**" />')
+  expect(toJsx(B({}, { type: 'Code', props: { source: 'graph TD', language: 'mermaid' }, children: [] }))).toBe('<Box>\n  <Code source="graph TD" language="mermaid" />\n</Box>')
+})

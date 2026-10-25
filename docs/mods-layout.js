@@ -431,6 +431,7 @@
       if (!kidsB.length) return pad + "<Box" + attrs(node.props) + " />";
       return [open].concat(kidsB.map(function (k) { return toJsx(k, pad + "  "); }), pad + "</Box>").join("\n");
     }
+    if (node.type === "Markdown" || node.type === "Code") return pad + "<" + node.type + attrs(node.props) + " />";
     return "";
   }
 

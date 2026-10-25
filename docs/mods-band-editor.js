@@ -5,8 +5,11 @@
 
   // An editor node is { type: "Box" | "Text" | "Button", props, kids }: a
   // Text's words are its `text` prop, so only a Box or a Button has kids. A
-  // node is addressed by its index path from the frame's root.
-  // Doc = { frames: [{ id, name, tree }], selection: { frame, path } | null,
+  // node is addressed by its index path from the frame's root. A frame drawn
+  // from a mod surface's state names it as `source`, and one whose tree holds
+  // a node the designer cannot edit (Markdown, Code) is a reference frame,
+  // `ref`, read but never edited.
+  // Doc = { frames: [{ id, name, tree, source?, ref? }], selection: { frame, path } | null,
   //         exportFrame: the frame the JSX pane prints,
   //         edit: what the last edit did, as the history lists it }.
 
@@ -76,6 +79,7 @@
   // The editor tree's props are the engine's, plus the ones only the editor
   // spells: `text` (a Text's words) and the two hover colours a field sets.
   function toEngine(n) {
+    if (LEAVES[n.type]) return { type: n.type, props: Object.assign({}, n.props), children: [] };
     var p = Object.assign({}, n.props);
     var text = p.text || ""; delete p.text;
     var hb = p.hoverBorderColor, hg = p.hoverBackgroundColor;
@@ -102,13 +106,30 @@
     return Object.assign({}, tree, { kids: kids });
   }
 
+  // What a reference frame holds besides Box, Text and Button: elements with
+  // no children the engine draws from their props.
+  var LEAVES = { Markdown: true, Code: true };
+
+  // Why the designer cannot edit an engine tree, or null when it can: the
+  // first element it holds that is not a Box, Text or Button, or a Text inside
+  // a Text, whose words the editor holds as one string.
+  function uneditable(e) {
+    if (!e || typeof e !== "object") return null;
+    if (!TYPES[e.type]) return "it holds a " + e.type + " node";
+    var kids = (e.children || []).filter(function (k) { return k && typeof k === "object"; });
+    if (e.type === "Text" && kids.length) return "it holds a Text inside a Text";
+    for (var i = 0; i < kids.length; i++) { var why = uneditable(kids[i]); if (why) return why; }
+    return null;
+  }
+
   // A copy of `doc` with the selected frame's tree changed. `change(tree)`
   // returns the new tree, `edit` (the words the history lists it by) and,
   // when the edit moves the selection, `select`, the path now selected.
   function editTree(doc, verb, change) {
     if (!doc.selection) throw new Error(verb + " needs a selected frame");
-    var id = doc.selection.frame;
-    var out = change(frameOf(doc, id).tree);
+    var id = doc.selection.frame, edited = frameOf(doc, id);
+    if (edited.ref) throw new Error(edited.name + " is a reference frame, drawn by the mod: the designer does not edit it");
+    var out = change(edited.tree);
     return Object.assign({}, doc, {
       frames: doc.frames.map(function (f) { return f.id === id ? Object.assign({}, f, { tree: out.tree }) : f; }),
       selection: out.select ? { frame: id, path: out.select } : doc.selection,
@@ -144,17 +165,35 @@
     var p = at.length > parent.length && within(at, parent) ? parent : at;
     while (p && (nodeAt(tree, p).type === "Text" || canDrop(tree, from, p) !== null)) p = p.length ? p.slice(0, -1) : null;
     if (!p) return null;
+    var index = gapAt(tree, grid, p, cell);
+    if (show(p) === show(parent) && (index === i || index === i + 1)) return null;
+    return { parentPath: p, index: index };
+  }
+
+  // Where a node of `type` from outside the frame lands when dropped on the
+  // grid's cell, or null off the drawing: the node under the pointer when it
+  // may hold one, else the nearest container above that may, at the gap
+  // dropTarget would pick.
+  function insertTarget(tree, grid, type, cell) {
+    var p = pathOfCell(grid, cell.r, cell.c);
+    while (p && (nodeAt(tree, p).type === "Text" || refusal(type, nodeAt(tree, p)) !== null)) p = p.length ? p.slice(0, -1) : null;
+    if (!p) return null;
+    return { parentPath: p, index: gapAt(tree, grid, p, cell) };
+  }
+
+  // The gap among the children of the Box at `p` before the first drawn child
+  // whose midpoint along the Box's direction is not before the cell.
+  function gapAt(tree, grid, p, cell) {
     var dir = String(nodeAt(tree, p).props.flexDirection || "row");
     var column = /^column/.test(dir), reverse = /-reverse$/.test(dir), pos = column ? cell.r : cell.c;
-    var kids = nodeAt(tree, p).kids, index = kids.length;
+    var kids = nodeAt(tree, p).kids;
     for (var k = 0; k < kids.length; k++) {
       var s = spanOf(grid, p.concat([k]));
       if (!s) continue;
       var mid = column ? (s.top + s.bottom) / 2 : (s.left + s.right) / 2;
-      if (reverse ? mid <= pos : mid >= pos) { index = k; break; }
+      if (reverse ? mid <= pos : mid >= pos) return k;
     }
-    if (show(p) === show(parent) && (index === i || index === i + 1)) return null;
-    return { parentPath: p, index: index };
+    return kids.length;
   }
 
   // Where a new node goes for the node at `path`: a Box takes it as its
@@ -294,7 +333,11 @@
       var source = a.from !== undefined ? frameOf(doc, a.from) : null;
       var name = source ? source.name + " copy" : a.name || "Frame " + (doc.frames.length + 1);
       var tree = source ? clone(source.tree) : a.tree ? clone(a.tree) : { type: "Box", props: {}, kids: [] };
-      return Object.assign({}, doc, { frames: doc.frames.concat([{ id: id, name: name, tree: tree }]), selection: { frame: id, path: [] }, edit: "add frame " + name });
+      var added = { id: id, name: name, tree: tree };
+      var from = source ? source.source : a.source;
+      if (from) added.source = { surface: from.surface, state: from.state };
+      if (source ? source.ref : a.ref) added.ref = true;
+      return Object.assign({}, doc, { frames: doc.frames.concat([added]), selection: { frame: id, path: [] }, edit: "add frame " + name });
     },
     renameFrame: function (doc, a) {
       if (!String(a.name).trim()) throw new Error("a frame needs a name");
@@ -367,12 +410,13 @@
   // localStorage is outside the page's control: a saved document is checked
   // field by field and refused with the reason, never patched up.
   var TYPES = { Box: true, Text: true, Button: true };
-  function readTree(n) {
+  // `ref`: the node is a reference frame's, which may also be a Markdown or Code.
+  function readTree(n, ref) {
     if (!n || typeof n !== "object") throw new Error("a saved node is not an object");
-    if (!TYPES[n.type]) throw new Error("a saved node is a " + n.type + ", not a Box, Text or Button");
+    if (!TYPES[n.type] && !(ref && LEAVES[n.type])) throw new Error("a saved node is a " + n.type + ", not a Box, Text or Button");
     if (!n.props || typeof n.props !== "object") throw new Error("a saved " + n.type + " has no props");
     if (!Array.isArray(n.kids)) throw new Error("a saved " + n.type + " has no kids list");
-    var kids = n.kids.map(readTree);
+    var kids = n.kids.map(function (k) { return readTree(k, ref); });
     kids.forEach(function (k) { var why = refusal(k.type, n); if (why) throw new Error("a saved tree is refused: " + why); });
     return { type: n.type, props: n.props, kids: kids };
   }
@@ -380,7 +424,13 @@
     if (!d || !Array.isArray(d.frames) || d.frames.length === 0) throw new Error("a saved document has no frames");
     var frames = d.frames.map(function (f) {
       if (typeof f.id !== "string" || typeof f.name !== "string") throw new Error("a saved frame has no id or no name");
-      return { id: f.id, name: f.name, tree: readTree(f.tree) };
+      var frame = { id: f.id, name: f.name, tree: readTree(f.tree, f.ref === true) };
+      if (f.source !== undefined) {
+        if (!f.source || typeof f.source.surface !== "string" || typeof f.source.state !== "string") throw new Error("a saved frame names a source with no surface and state");
+        frame.source = { surface: f.source.surface, state: f.source.state };
+      }
+      if (f.ref === true) frame.ref = true;
+      return frame;
     });
     frames.forEach(function (f, i) {
       if (frames.findIndex(function (g) { return g.id === f.id; }) !== i) throw new Error("a saved document has two frames with the id " + f.id);
@@ -392,7 +442,7 @@
     return doc;
   }
 
-  var api = { history: history, commit: commit, commitDraft: commitDraft, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, dropTarget: dropTarget, refusal: refusal, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
+  var api = { history: history, commit: commit, commitDraft: commitDraft, replace: replace, undo: undo, redo: redo, jump: jump, readDoc: readDoc, readTree: readTree, apply: apply, canDrop: canDrop, dropTarget: dropTarget, refusal: refusal, insertTarget: insertTarget, uneditable: uneditable, insertPoint: insertPoint, wordPaths: wordPaths, nodeAt: nodeAt, parentOf: parentOf, pathOfCell: pathOfCell, spanOf: spanOf, toEngine: toEngine, fromEngine: fromEngine };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BandEditor = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

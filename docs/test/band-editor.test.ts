@@ -381,3 +381,59 @@ test('insertPoint is the selected Box\'s end, or the gap after a selected leaf',
   expect(E.insertPoint(tree(), [1, 0])).toEqual({ parentPath: [1], index: 1 })
   expect(E.insertPoint(tree(), [2])).toEqual({ parentPath: [], index: 3 })
 })
+
+// A frame drawn from a mod surface's state names it (`source`); one whose
+// tree holds a node the designer cannot edit, Markdown or Code, is a
+// reference frame (`ref`): selectable and inspectable, never edited.
+const md = (text: string) => ({ type: 'Markdown', props: { text }, kids: [] })
+const refDoc = () => E.apply(doc(), { type: 'addFrame', tree: box({ flexDirection: 'column' }, md('Gate **green**'), text('x')), name: 'cs-feed.UserMessage/frames-text', source: { surface: 'cs-feed.UserMessage', state: 'frames-text' }, ref: true })
+
+test('addFrame keeps a surface frame\'s source and whether it is a reference, and a copy keeps both', () => {
+  const d = refDoc()
+  expect(d.frames[1]).toEqual({ id: 'f2', name: 'cs-feed.UserMessage/frames-text', tree: box({ flexDirection: 'column' }, md('Gate **green**'), text('x')), source: { surface: 'cs-feed.UserMessage', state: 'frames-text' }, ref: true })
+  expect(E.apply(d, { type: 'addFrame', from: 'f2' }).frames[2]).toMatchObject({ name: 'cs-feed.UserMessage/frames-text copy', source: { surface: 'cs-feed.UserMessage', state: 'frames-text' }, ref: true })
+  expect(E.apply(d, { type: 'select', frame: 'f2', path: [0] }).selection).toEqual({ frame: 'f2', path: [0] })
+})
+
+test('a reference frame refuses every edit of its tree, by name, and still renames, exports and goes', () => {
+  const d = E.apply(refDoc(), { type: 'select', frame: 'f2', path: [1] })
+  const refused = 'cs-feed.UserMessage/frames-text is a reference frame, drawn by the mod: the designer does not edit it'
+  for (const action of [{ type: 'setText', path: [1], text: 'y' }, { type: 'setProp', path: [1], name: 'bold', value: true }, { type: 'remove', path: [1] }, { type: 'duplicateNode', path: [1] }, { type: 'insert', parentPath: [], index: 0, node: text('z') }, { type: 'move', from: [1], to: { parentPath: [], index: 0 } }]) {
+    expect(() => E.apply(d, action)).toThrow(refused)
+  }
+  expect(E.apply(d, { type: 'renameFrame', frame: 'f2', name: 'lead' }).frames[1].name).toBe('lead')
+  expect(E.apply(d, { type: 'exportFrame', frame: 'f2' }).exportFrame).toBe('f2')
+  expect(E.apply(d, { type: 'removeFrame', frame: 'f2' }).frames.length).toBe(1)
+})
+
+test('uneditable names the first node a tree holds that the designer cannot edit', () => {
+  expect(E.uneditable({ type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: ['a'] }] })).toBeNull()
+  expect(E.uneditable({ type: 'Box', props: {}, children: [{ type: 'Box', props: {}, children: [{ type: 'Code', props: { source: 'x' }, children: [] }] }] })).toBe('it holds a Code node')
+  expect(E.uneditable({ type: 'Text', props: {}, children: ['a', { type: 'Text', props: {}, children: ['b'] }] })).toBe('it holds a Text inside a Text')
+})
+
+test('a reference frame round-trips through the engine tree, Markdown and Code kept', () => {
+  const engine = { type: 'Box', props: { flexDirection: 'column' }, children: [{ type: 'Code', props: { source: 'graph TD', language: 'mermaid' }, children: [] }, { type: 'Markdown', props: { text: '**x**' }, children: [] }] }
+  expect(E.toEngine(E.fromEngine(engine))).toEqual(engine)
+})
+
+test('readDoc keeps a surface frame\'s source and a reference frame\'s Markdown, and refuses Markdown elsewhere', () => {
+  const saved = JSON.parse(JSON.stringify({ ...refDoc(), selection: null }))
+  expect(E.readDoc(saved)).toEqual({ ...saved, edit: saved.edit })
+  const loose = { ...saved, frames: [saved.frames[0], { ...saved.frames[1], ref: false }] }
+  expect(() => E.readDoc(loose)).toThrow('a saved node is a Markdown, not a Box, Text or Button')
+  expect(() => E.readDoc({ ...saved, frames: [saved.frames[0], { ...saved.frames[1], source: { surface: 'x' } }] })).toThrow('a saved frame names a source with no surface and state')
+})
+
+// Where a node from elsewhere (a Components part) lands under the pointer:
+// the node under it when that may hold it, else the nearest container above
+// that may, at the gap of the first drawn child whose midpoint is not before
+// the pointer. On the shipped rotate-due band a pointer on the `r` of rotate
+// (col 14, the Button [1,0,3]) puts it in the band [1,0] before that Button.
+test('insertTarget places a node from outside the frame under the pointer', () => {
+  const t = E.fromEngine(VARIANTS[0].draw(facts('rotate-due'), 80, 'light'))
+  const g = layout(E.toEngine(t), 80)
+  expect(E.insertTarget(t, g, 'Box', { r: 1, c: 14 })).toEqual({ parentPath: [1, 0], index: 3 })
+  expect(E.insertTarget(t, g, 'Box', { r: 1, c: 2 })).toEqual({ parentPath: [1, 0, 0], index: 0 })
+  expect(E.insertTarget(t, g, 'Text', { r: 1, c: 40 })).toBeNull()
+})

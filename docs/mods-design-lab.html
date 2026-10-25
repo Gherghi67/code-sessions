@@ -188,6 +188,28 @@ body.app .rail,body.app .head{display:none}
 .g-Box{border:1.5px solid currentColor;border-radius:1px}
 .g-Text::before{content:"T";font:700 11px/1 "IBM Plex Sans",sans-serif}
 .g-Button{width:13px;height:9px;border:1.5px solid currentColor;border-radius:5px}
+.g-Markdown::before{content:"M";font:700 10px/1 "IBM Plex Sans",sans-serif}
+.g-Code::before{content:"{}";font:700 9px/1 "JetBrains Mono",monospace}
+/* Components: each mod's surfaces, each surface's states (a click adds a
+   frame) and its parts (a drag drops one into a frame, a click inserts it
+   by the selection). */
+#bd-comps{padding:0 0 12px}
+#bd-comps .cmod{border-bottom:1px solid var(--line)}
+#bd-comps summary{list-style:none;display:flex;align-items:center;gap:6px;min-height:28px;padding:0 10px;cursor:pointer}
+#bd-comps summary::-webkit-details-marker{display:none}
+#bd-comps summary:focus-visible,#bd-comps .crow:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+#bd-comps .cmod > summary{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2)}
+#bd-comps .csurf > summary{padding-left:18px;font-weight:500}
+#bd-comps .csurf > summary .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#bd-comps .cnt{font-size:11px;color:var(--fg2);font-variant-numeric:tabular-nums}
+#bd-comps .ckind{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2);padding:4px 10px 2px 30px}
+#bd-comps .needs{font-size:11px;color:var(--fg2);padding:0 10px 2px 30px}
+#bd-comps .crow{display:flex;align-items:center;gap:7px;width:100%;min-height:24px;padding:0 10px 0 30px;background:none;border:0;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
+#bd-comps .crow:hover{background:var(--page)}
+#bd-comps .crow.part{cursor:grab}
+#bd-comps .crow .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#bd-comps .note{margin:6px 10px;font-size:12px;color:var(--error)}
+body.dragging{user-select:none;cursor:grabbing}
 .frame .hovl{position:absolute;outline:1px solid color-mix(in srgb,var(--accent) 50%,transparent);pointer-events:none}
 .designer > *{min-height:0;overflow:auto}
 /* The canvas: a neutral backdrop, each frame an artboard drawn as the
@@ -245,6 +267,11 @@ body.app .rail,body.app .head{display:none}
 .fhead .fname{font-weight:500;color:var(--canvas-ink);padding:0 2px}
 .frame.on .fhead .fname{color:var(--accent-ink)}
 .fhead .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-ink)}
+.fhead .badge.ref{color:var(--canvas-ink);border:1px solid currentColor;border-radius:3px;padding:0 4px}
+.frame .needs{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
+.frame .needs b{font-weight:600}
+.frame .why.empty{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
+.ronote{font-size:12px;color:var(--fg2);margin:0 0 8px}
 .fhead .quiet{display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .12s ease-out}
 .frame:hover .quiet,.frame.on .quiet,.frame:focus-within .quiet{opacity:1}
 .fhead label.inline{display:flex;gap:4px;align-items:center;min-height:24px;cursor:pointer}
@@ -307,12 +334,19 @@ body.app .rail,body.app .head{display:none}
   </div>
 </header>
 <div class="designer">
-  <aside class="layers" aria-label="layers">
-    <div class="pane-h">Frames</div>
-    <div id="bd-frames"></div>
-    <div class="seed" title="A frame is one drawing: start one empty or from a Band variants drawing in the picked state"><select id="bd-seed" aria-label="new frame from"></select></div>
-    <div class="pane-h">Layers</div>
-    <div id="bd-layers"></div>
+  <aside class="layers" aria-label="layers and components">
+    <div class="itabs" role="tablist" aria-label="left pane">
+      <button type="button" role="tab" id="bd-tab-layers" aria-controls="bd-left-layers" aria-selected="true">Layers</button>
+      <button type="button" role="tab" id="bd-tab-comps" aria-controls="bd-comps" aria-selected="false" tabindex="-1">Components</button>
+    </div>
+    <div id="bd-left-layers" role="tabpanel" aria-labelledby="bd-tab-layers">
+      <div class="pane-h">Frames</div>
+      <div id="bd-frames"></div>
+      <div class="seed" title="A frame is one drawing: start one empty, from a mod surface's state, or from a Band variants drawing in the picked state"><select id="bd-seed" aria-label="new frame from"></select></div>
+      <div class="pane-h">Layers</div>
+      <div id="bd-layers"></div>
+    </div>
+    <div id="bd-comps" role="tabpanel" aria-labelledby="bd-tab-comps" hidden></div>
   </aside>
   <div class="canvas-pane"><p class="refuse" id="bd-note" hidden></p><div class="canvas" id="bd-canvas"></div><span class="cell" id="bd-ch" aria-hidden="true">0</span></div>
   <aside class="inspector" aria-label="inspector">
@@ -1390,7 +1424,8 @@ function bdHoverSet(h){
 // order, indented by depth. The shown frame is the selection's, else the
 // export frame.
 function bdLayerName(n){
-  if(n.type==="Text") return n.props.text||"";
+  if(n.type==="Text"||n.type==="Markdown") return n.props.text||"";
+  if(n.type==="Code") return n.props.language||"Code";
   if(n.type==="Button") return n.props.key||n.props.label||"Button";
   return n.props.key||n.props.flexDirection||"row";
 }
@@ -1407,22 +1442,91 @@ function bdLayers(){
   $("bd-layers").querySelector(".lrow.on")?.scrollIntoView({block:"nearest"});
 }
 const bdRowPath=row=>row.dataset.path?row.dataset.path.split(",").map(Number):[];
+// ---- surfaces: every cs mod surface the bundles carry (docs/surfaces) ----
+const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Error(`no surface ${id} in docs/surfaces`); return s; };
+const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
+const BD_NEEDS={"position=absolute":"position=absolute","Code":"a Code node","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
+// A node of a state's engine tree, by its child index path.
+function bdPartNode(sid,part){
+  let n=bdSurfaceState(sid,part.state).draw(cols(),theme());
+  for(const i of part.path){ n=n&&typeof n==="object"?n.children[i]:undefined; }
+  if(!n||typeof n!=="object") throw new Error(`part ${part.id} of ${sid} names no element at ${JSON.stringify(part.path)}`);
+  return n;
+}
+// The grid a frame paints, inside the chrome the engine draws round its
+// surface: AbovePrompt keeps five cells at the right of each row for its
+// `[-]`, which sits on the first row one cell in; a pane is framed with its
+// tab and clipped to its rows; any other surface fills the terminal's row.
+// A frame of no surface is the band as the designer has always drawn it.
+function bdGridOf(f,c){
+  const tree=BandEditor.toEngine(f.tree), chrome=f.source&&bdSurface(f.source.surface).chrome;
+  if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
+  if(chrome&&chrome.kind==="pane") return ModLayout.layoutPane(tree,{columns:c,rows:chrome.rows,title:chrome.title,titles:[chrome.title]});
+  if(chrome&&chrome.kind==="above-prompt"){
+    const g=ModLayout.layoutScreen(tree,c-5);
+    if(!g.h) return g;
+    const rows=g.rows.map(r=>r.concat(ModLayout.blanks(c-r.length,ModLayout.EMPTY,[])));
+    const dim={...ModLayout.EMPTY,dim:true};
+    [..."[-]"].forEach((ch,i)=>{ rows[0][c-4+i]={ch,st:dim,path:[]}; });
+    return {w:c,h:rows.length,rows};
+  }
+  return clipTo(ModLayout.layoutScreen(tree,c),c);
+}
 function bdFrameCard(f){
   const tree=BandEditor.toEngine(f.tree), c=cols();
   const refused=ModLayout.validate(tree);
-  const g=clipTo(ModLayout.layout(tree,c),c);
-  const measured=ModLayout.layout(tree,c).w;
+  const g=bdGridOf(f,c);
   bdGrids[f.id]=g;
-  const doc=bdDocNow(), only=doc.frames.length===1;
+  const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
+  const band=surf&&surf.chrome?.kind==="above-prompt", prompt=!surf||band;
+  const room=band?c-5:c, measured=ModLayout.layout(tree,room).w;
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
+    +(surf&&surf.needs.length?`<p class="needs">${surf.needs.map(n=>`lab cannot draw <b>${esc(BD_NEEDS[n])}</b> yet`).join(" · ")}</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
-    +`<div class="strip"><div class="term">${bdPaint(g)}\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span></div></div>`
-    +(measured>c?`<p class="why no">${esc(fitWords(measured,c))}</p>`:"")
+    +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
+    +`<div class="strip"><div class="term">${bdPaint(g)}`+(prompt?`\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span>`:"")+`</div></div>`
+    +(measured>room?`<p class="why no">${esc(fitWords(measured,room))}</p>`:"")
     +`</div>`;
+}
+// The Components panel: each mod, its surfaces, and under each its states (a
+// press adds a frame drawn in that state) and its parts (a drag drops one in
+// a frame; a press inserts it by the selection).
+function bdComponents(){
+  const mods=[...new Set(SURFACES.map(s=>s.mod))];
+  return mods.map(m=>`<details class="cmod" open><summary>${esc(m)}</summary>`+SURFACES.filter(s=>s.mod===m).map(s=>{
+    const states=s.states.map(st=>{
+      const why=BandEditor.uneditable(st.draw(cols(),theme()));
+      return `<button type="button" class="crow" data-add="${esc(s.id)}/${esc(st.id)}" title="${esc(st.name)}${why?` (${esc(why)}: a reference frame)`:""}"${why?` data-ref`:""}><span class="lname">${esc(st.id)}</span></button>`;
+    }).join("");
+    const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
+    return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
+      +(s.needs.length?`<div class="needs">lab cannot draw ${s.needs.map(n=>esc(BD_NEEDS[n])).join(", ")} yet</div>`:"")
+      +(parts?`<div class="ckind">Parts</div>${parts}`:"")+`<div class="ckind">States</div>${states}</details>`;
+  }).join("")+`</details>`).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
+}
+// A frame drawn by a surface's state, at the page's width and theme, named
+// `<mod>.<slot>/<state>`.
+function bdAddSurfaceFrame(key){
+  const [sid,stid]=key.split("/"), tree=bdSurfaceState(sid,stid).draw(cols(),theme());
+  const why=BandEditor.uneditable(tree);
+  if(why) return bdCompsNote(`${key} is not editable: ${why}`);
+  bdEdit({type:"addFrame",tree:BandEditor.fromEngine(tree),name:key,source:{surface:sid,state:stid}});
+}
+function bdCompsNote(text){ const n=$("bd-comps-note"); if(!n) return; n.hidden=!text; n.textContent=text; }
+// A part pressed: inserted by the selection, as the + buttons insert.
+function bdInsertPart(key){
+  const [sid,pid]=key.split("#"), part=bdSurface(sid).parts.find(p=>p.id===pid), node=bdPartNode(sid,part);
+  const sel=bdDocNow().selection;
+  if(!sel) return bdCompsNote("select a node in a frame to insert the part next to, or drag it onto a frame");
+  const why=BandEditor.uneditable(node)||bdInsertRefusal(node.type);
+  if(why) return bdCompsNote(why);
+  bdCompsNote("");
+  const at=BandEditor.insertPoint(bdFrame(sel.frame).tree,sel.path);
+  bdEdit({type:"insert",parentPath:at.parentPath,index:at.index,node:BandEditor.fromEngine(node)});
 }
 // The props panel is rebuilt only when the present changes from outside it
 // (a selection, an edit on the canvas), so a field keeps its focus while it
@@ -1452,7 +1556,9 @@ function composeRender(){
   if(document.activeElement!==$("bd-cols")) $("bd-cols").value=cols();
   $("bd-theme").textContent=theme(); $("bd-theme").setAttribute("aria-label",`theme: ${theme()}, switch to ${theme()==="light"?"dark":"light"}`);
   $("bd-title").textContent=bdFrame(doc.exportFrame).name;
-  if(!$("bd-seed").options.length) $("bd-seed").innerHTML=`<option value="">+ frame from…</option><option value="empty">an empty Box</option>`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("");
+  if(!$("bd-seed").options.length) $("bd-seed").innerHTML=`<option value="">+ frame from…</option><option value="empty">an empty Box</option>`
+    +[...new Set(SURFACES.map(x=>x.mod))].map(m=>`<optgroup label="${esc(m)}">`+SURFACES.filter(x=>x.mod===m).flatMap(x=>x.states.map(st=>`<option value="s:${esc(x.id)}/${esc(st.id)}">${esc(x.id)}/${esc(st.id)}</option>`)).join("")+`</optgroup>`).join("")
+    +`<optgroup label="Band variants, in the picked state">`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("")+`</optgroup>`;
   for(const id in bdGrids) delete bdGrids[id];
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const fs=bdFontSize(); $("bd-canvas").style.setProperty("--fs",fs+"px");
@@ -1514,7 +1620,7 @@ function bdOpen(){
   if(!store) return bdShipped();
   const unreadable=(key,raw,err)=>{ store.setItem(BD_KEY+".unreadable",raw); bdNote=`The saved designer under ${key} could not be read (${err.message}); it is kept under ${BD_KEY}.unreadable and the designer starts from the shipped band.`; return bdShipped(); };
   const raw=store.getItem(BD_KEY);
-  if(raw!==null){ try{ return BandEditor.readDoc(JSON.parse(raw)); }catch(err){ return unreadable(BD_KEY,raw,err); } }
+  if(raw!==null){ try{ return bdSourcesKnown(BandEditor.readDoc(JSON.parse(raw))); }catch(err){ return unreadable(BD_KEY,raw,err); } }
   const composed=store.getItem(COMPOSE_KEY);
   if(composed===null) return bdShipped();
   let doc;
@@ -1523,6 +1629,8 @@ function bdOpen(){
   store.setItem(BD_KEY,JSON.stringify(doc)); store.removeItem(COMPOSE_KEY);
   return doc;
 }
+// A saved frame drawn from a surface names one the bundles still carry.
+function bdSourcesKnown(doc){ doc.frames.forEach(f=>{ if(f.source) bdSurfaceState(f.source.surface,f.source.state); }); return doc; }
 function bdSave(){
   const store=bdStore(); if(!store) return;
   try{ store.setItem(BD_KEY,JSON.stringify(bdHist.present)); }
@@ -1535,6 +1643,7 @@ function bdStates(pick){ if(!pick.options.length) pick.innerHTML=BandVariants.ST
 // theme; a variant that draws nothing in that state starts an empty column.
 function bdSeed(id){
   if(id==="empty") return bdEdit({type:"addFrame"});
+  if(id.startsWith("s:")) return bdAddSurfaceFrame(id.slice(2));
   const v=BandVariants.VARIANTS.find(x=>x.id===id), st=BandVariants.STATES.find(x=>x.id===$("va-state").value);
   const drawn=v.draw(st.facts,cols(),theme());
   bdEdit({type:"addFrame",tree:drawn?BandEditor.fromEngine(drawn):{type:"Box",props:{flexDirection:"column"},kids:[]},name:`${v.name} · ${st.id}`});
@@ -1586,8 +1695,12 @@ function bdCellAt(x,y,frame){
   return el&&el.closest("[data-frame]")?.dataset.frame===frame?{r:+el.dataset.r,c:+el.dataset.c}:null;
 }
 function bdDropTarget(frame,from,cell){
-  const tree=bdFrame(frame).tree, g=bdGrids[frame], t=BandEditor.dropTarget(tree,g,from,cell);
-  if(!t) return null;
+  const t=BandEditor.dropTarget(bdFrame(frame).tree,bdGrids[frame],from,cell);
+  return t&&bdDecorate(frame,t);
+}
+// A gap in a frame with what the drop bar needs to draw it.
+function bdDecorate(frame,t){
+  const tree=bdFrame(frame).tree, g=bdGrids[frame];
   const p=t.parentPath, dir=String(BandEditor.nodeAt(tree,p).props.flexDirection||"row");
   const spans=BandEditor.nodeAt(tree,p).kids.map((k,i)=>BandEditor.spanOf(g,p.concat([i])));
   return {...t,column:/^column/.test(dir),reverse:/-reverse$/.test(dir),spans,box:BandEditor.spanOf(g,p)};
@@ -1635,6 +1748,39 @@ function bdDragEnd(){
   // sends the click and the double-click to them after this mouseup.
   if(!target) return strip.querySelector(".drop")?.remove();
   bdEdit({type:"move",from,to:{parentPath:target.parentPath,index:target.index}});
+}
+
+// ---- drag a part in from Components ----
+// The part the pointer took hold of, the frame under the pointer and the gap
+// the part would land in there (BandEditor.insertTarget). A press that never
+// moves is the part's click, which inserts it by the selection.
+let bdPartDrag=null;
+const bdStrip=frame=>$("bd-canvas").querySelector(`[data-frame="${frame}"] .strip`);
+function bdPartDragStart(e){
+  const row=e.target.closest("[data-part]");
+  if(e.button!==0||!row) return;
+  e.preventDefault();
+  const [sid,pid]=row.dataset.part.split("#");
+  bdPartDrag={node:bdPartNode(sid,bdSurface(sid).parts.find(p=>p.id===pid)),x:e.clientX,y:e.clientY,moved:false,frame:null,target:null};
+}
+function bdPartDragMove(e){
+  const d=bdPartDrag; if(!d) return;
+  if(!d.moved&&Math.hypot(e.clientX-d.x,e.clientY-d.y)<4) return;
+  d.moved=true; document.body.classList.add("dragging");
+  const cell=document.elementFromPoint(e.clientX,e.clientY)?.closest("[data-r]"), frame=cell?.closest("[data-frame]")?.dataset.frame||null;
+  if(d.frame&&d.frame!==frame) bdStrip(d.frame)?.querySelector(".drop")?.remove();
+  d.frame=frame;
+  const t=frame&&BandEditor.insertTarget(bdFrame(frame).tree,bdGrids[frame],d.node.type,{r:+cell.dataset.r,c:+cell.dataset.c});
+  d.target=t?bdDecorate(frame,t):null;
+  if(frame) bdIndicator(bdStrip(frame),d.target);
+}
+function bdPartDragEnd(){
+  const d=bdPartDrag; if(!d) return;
+  bdPartDrag=null; document.body.classList.remove("dragging");
+  if(d.moved){ bdDragged=true; setTimeout(()=>{ bdDragged=false; }); }
+  if(!d.target) return d.frame&&bdStrip(d.frame)?.querySelector(".drop")?.remove();
+  bdDispatch({type:"selectFrame",frame:d.frame});
+  bdEdit({type:"insert",parentPath:d.target.parentPath,index:d.target.index,node:BandEditor.fromEngine(d.node)});
 }
 
 // ---- inline edit ----
@@ -1727,6 +1873,8 @@ function composeUI(){
   $("bd-canvas").addEventListener("dblclick",bdDoubleClick);
   document.addEventListener("mousemove",bdDragMove);
   document.addEventListener("mouseup",bdDragEnd);
+  document.addEventListener("mousemove",bdPartDragMove);
+  document.addEventListener("mouseup",bdPartDragEnd);
   document.addEventListener("keydown",bdKeys,true);
   // Every keystroke redraws the strip from a draft; the field's change
   // (blur or Enter for text, at once for a select or a checkbox) commits it.
@@ -1748,12 +1896,23 @@ function composeUI(){
   });
   $("bd-canvas").parentElement.addEventListener("mouseleave",()=>bdHoverSet(null));
   $("bd-props").addEventListener("toggle",e=>{ const g=e.target.dataset?.group; if(g) e.target.open?bdShut.delete(g):bdShut.add(g); },true);
-  const tabs=[...document.querySelectorAll(".itabs [role=tab]")];
-  const pick=tab=>tabs.forEach(t=>{ const on=t===tab; t.setAttribute("aria-selected",on); t.tabIndex=on?0:-1; $(t.getAttribute("aria-controls")).hidden=!on; });
-  tabs.forEach((t,i)=>{
-    t.onclick=()=>pick(t);
-    t.onkeydown=e=>{ const d=e.key==="ArrowRight"?1:e.key==="ArrowLeft"?-1:0; if(!d) return; e.preventDefault(); const next=tabs[(i+d+tabs.length)%tabs.length]; pick(next); next.focus(); };
+  document.querySelectorAll(".itabs").forEach(list=>{
+    const tabs=[...list.querySelectorAll("[role=tab]")];
+    const pick=tab=>tabs.forEach(t=>{ const on=t===tab; t.setAttribute("aria-selected",on); t.tabIndex=on?0:-1; $(t.getAttribute("aria-controls")).hidden=!on; });
+    tabs.forEach((t,i)=>{
+      t.onclick=()=>pick(t);
+      t.onkeydown=e=>{ const d=e.key==="ArrowRight"?1:e.key==="ArrowLeft"?-1:0; if(!d) return; e.preventDefault(); const next=tabs[(i+d+tabs.length)%tabs.length]; pick(next); next.focus(); };
+    });
   });
+  // The panel is built once: its folds stay as they were left.
+  $("bd-comps").innerHTML=bdComponents();
+  $("bd-comps").addEventListener("click",e=>{
+    if(bdDragged){ bdDragged=false; return; }
+    const add=e.target.closest("[data-add]"), part=e.target.closest("[data-part]");
+    if(add) bdAddSurfaceFrame(add.dataset.add);
+    else if(part) bdInsertPart(part.dataset.part);
+  });
+  $("bd-comps").addEventListener("mousedown",bdPartDragStart);
   $("bd-help-open").onclick=()=>$("bd-help").showModal();
   $("bd-help-close").onclick=()=>$("bd-help").close();
   // .dbody fills the dialog's box, so a click on the dialog itself is on its backdrop.
