@@ -116,7 +116,7 @@ test("the working line breathes its glyph over two seconds and counts its time a
 // 300032, 2679 x 112 = 300048.
 test('each moving state declares its tick and length, and every other state is still', () => {
   const moving = SURFACES.flatMap((s: any) => s.states.filter((st: any) => st.motion).map((st: any) => `${s.id}/${st.id} ${st.motion.tick} ${st.motion.duration}`))
-  const pulse = '70 300020', second = 1000, minutes = 300000
+  const pulse = 70, second = 1000, minutes = 300000
   expect(moving).toEqual([
     `cs.AbovePrompt/countdown ${second} 7000`,
     `cs.AbovePrompt/gate-running ${second} ${minutes}`,
@@ -124,14 +124,14 @@ test('each moving state declares its tick and length, and every other state is s
     `cs.AbovePrompt/countdown-crit ${second} 3000`,
     `cs.AbovePrompt/survey-gate ${second} ${minutes}`,
     `cs-feed.ToolUse/helper-running ${second} ${minutes}`,
-    `cs-feed.ToolGroup/batch-running ${pulse}`,
-    `cs-feed.ToolGroup/batch-opened ${pulse}`,
-    `cs-feed.AbovePrompt/helpers-running ${pulse}`,
+    `cs-feed.ToolGroup/batch-running ${pulse} 300020`,
+    `cs-feed.ToolGroup/batch-opened ${pulse} 300020`,
+    `cs-feed.AbovePrompt/helpers-running ${pulse} 300020`,
     `cs-feed.AbovePrompt/helpers-settled ${second} ${minutes}`,
-    `cs-feed.AbovePrompt/helpers-overflow ${pulse}`,
-    `cs-feed.AbovePrompt/background ${pulse}`,
-    `cs-feed.AbovePrompt/background-test ${pulse}`,
-    `cs-feed.AbovePrompt/background-narrow ${pulse}`,
+    `cs-feed.AbovePrompt/helpers-overflow ${pulse} 300020`,
+    `cs-feed.AbovePrompt/background ${pulse} 300020`,
+    `cs-feed.AbovePrompt/background-test ${pulse} 300020`,
+    `cs-feed.AbovePrompt/background-narrow ${pulse} 300020`,
     `cs-feed.AbovePrompt/desktop ${second} ${minutes}`,
     `cs-feed.Pane.cs-feed-helpers/working ${second} ${minutes}`,
     `cs-feed.Pane.cs-feed-helpers/mixed ${second} ${minutes}`,

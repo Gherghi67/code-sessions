@@ -244,10 +244,11 @@ const logStates: State[] = [
 // done steps, or the engine's own word (its fallback verb, `Working`) when
 // the hook leaves the row alone. The engine's animation clock is shared and
 // read on a grid: the line asks for 50 ms while it requests, else 100
-// (`Wa(l==="requesting"&&!S?50:100)`), and Wa rounds that up to whole 16 ms
-// frames (`Math.ceil(kUe(o)/bh)*bh`, `bh=16`), reading `Math.floor(r.now()/h)
-// *h`: 64 ms and 112. (Under CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT, kUe raises
-// either to 480; the lab draws the default.) The lab starts the clock 750 ms
+// (`Wa(t?null:l==="requesting"&&!S?50:100)`), and Wa rounds that up to
+// whole 16 ms frames (`Math.ceil(kUe(o)/bh)*bh`, `bh=16`), reading
+// `Math.floor(r.now()/h)*h`: 64 ms and 112. (Under
+// CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT, kUe raises either to 480; the lab
+// draws the default.) The lab starts the clock 750 ms
 // into a breath, which the 64 ms grid reads as 704, (1 - cos 126.7°) / 2 x 5
 // = 4.00, frame 4, `✻`, so a still frame reads as the line at work.
 const BREATH_START = 750
