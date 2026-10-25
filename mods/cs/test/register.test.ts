@@ -2207,7 +2207,7 @@ test('the watch ends once the turn is over and nothing runs, and not while a ste
 })
 
 // ---------------------------------------------------------------------------
-// The rail: one tick per prompt on the transcript's live branch.
+// The rail: one dot per prompt on the transcript's live branch.
 
 // The session's transcript: Claude Code keeps it under ~/.claude/projects/<slug>/<id>.jsonl,
 // the slug the cwd with every character outside [A-Za-z0-9] made `-`.
@@ -2229,12 +2229,12 @@ const sessionStart = () => hooks['session.start']($, { cwd: '/work', surface: 't
 const drawRow = (requestId: string, text: string, onScreen: any) =>
   hooks['ui.render:UserMessage']($, { requestId, component: 'UserMessage', surface: 'terminal', props: { text, origin: { kind: 'composer' }, isExpanded: false, onScreen } }, async (e: any) => e)
 const cs = (args: string) => hooks['command.run:cs']($, { command: 'cs', args }, async () => ({ text: 'unhandled' }))
-// The rail's glyphs in order: each tick's label (a Button, or the Text the read prompt's tick is) and the `…N` run.
+// The rail's glyphs in order: the `…N` run (a Text in the Box that holds the cell after it), then each dot's label (a Button, or the Text the named prompt's dot is).
 const rail = (tree: any): string[] => {
   const box = boxes(tree).find((b: any) => b.props.key === 'cs-rail')
   if (box === undefined) return []
   return (box.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
-    .map((c: any) => (c.type === 'Button' ? c.props.label : textOf(c)))
+    .map((c: any) => (c.type === 'Button' ? c.props.label : c.type === 'Box' ? c.children.map(textOf).join('') : textOf(c)))
 }
 const tickButtons = (tree: any) => buttons(tree).filter((b: any) => /^cs-rail-\d+$/.test(b.props.key))
 
@@ -2275,21 +2275,21 @@ test('tool results, command echoes, meta rows, sidechains, system-origin rows an
   expect(parsePrompts(noisy.join('\n')).map(p => p.text)).toEqual(['say one', 'say two'])
 })
 
-test('after a turn ends the band draws one tick per prompt, the newest thick while no row has reported', async () => {
+test('after a turn ends the band draws one dot per prompt, the newest filled while no row has reported', async () => {
   transcript(LINEAR)
   await turnComplete()
   expect(invalidated).toContain('ui.render')
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
+  expect(rail(tree)).toEqual(['\u25cb', '\u25cb', '\u25cb', '\u25cf'])
   expect(tickButtons(tree).map((b: any) => b.props.key)).toEqual(['cs-rail-0', 'cs-rail-1', 'cs-rail-2'])
   for (const b of tickButtons(tree)) expect(b.props).toMatchObject({ plain: true, dimColor: true })
   expect(tickButtons(tree).some((b: any) => b.props.hotkey !== undefined)).toBe(false)
   expect(buttonsUnderText(tree)).toBe(0)
-  expect(texts(tree).find((t: any) => textOf(t) === '\u2503').props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
-  // Below the threshold the rail still draws, with no key words, at the right edge with the read prompt a cell
-  // after it; the name holds the widest prompt a bar can swap in, `#3 say three`.
-  expect(restingWords(tree)).toEqual(['\u25cf', '\u2503', '#4 say four '])
-  expect(bandLine(tree, 110)).toBe(`  \u25cf ${' '.repeat(89)}\u2502\u2502\u2502\u2503 #4 say four `)
+  expect(texts(boxes(tree).find((b: any) => b.props.key === 'cs-rail')).find((t: any) => textOf(t) === '\u25cf').props).toEqual({ bold: true, color: 'rgb(220,38,38)' })
+  // Below the threshold the rail still draws, with no key words, its last dot in the line's last cell and the
+  // read prompt three cells before it; the name holds the widest prompt a dot can swap in, `#3 say three`.
+  expect(restingWords(tree)).toEqual(['\u25cf', ' #4 say four', '\u25cf'])
+  expect(bandLine(tree, 110)).toBe(`  \u25cf ${' '.repeat(88)}#4 say four   \u25cb\u25cb\u25cb\u25cf`)
 })
 
 test('a conversation with one prompt draws no rail', async () => {
@@ -2341,16 +2341,19 @@ test('past the width budget the oldest prompts collapse into one dim …N run at
   for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
   transcript(many)
   await turnComplete()
-  // The two-column inset + `● ` (2) + `ctrl+x 1 rotate   2 wrap` (24) + `   ` (3) + rail: 36 columns leave 5 cells
-  // for 30 ticks, so 28 collapse into `…28` and two ticks follow.
-  const glyphs = rail(await band({ bodyColumns: 36 }))
-  expect(glyphs).toEqual(['\u202628', '\u2502', '\u2503'])
-  expect(tickButtons(await band({ bodyColumns: 36 })).map((b: any) => b.props.key)).toEqual(['cs-rail-28'])
-  expect(texts(await band({ bodyColumns: 36 })).find((t: any) => textOf(t) === '\u202628').props).toEqual({ dimColor: true })
-  // Wide enough, every tick draws.
+  // The two-column inset + `● ` (2) + `ctrl+x 1 rotate   2 wrap` (24) + `   ` (3) + rail: 37 columns leave 6 cells
+  // for 30 dots, so 28 collapse into `…28`, a cell, and two dots follow.
+  const glyphs = rail(await band({ bodyColumns: 37 }))
+  expect(glyphs).toEqual(['\u202628', '\u25cb', '\u25cf'])
+  expect(tickButtons(await band({ bodyColumns: 37 })).map((b: any) => b.props.key)).toEqual(['cs-rail-28'])
+  expect(texts(await band({ bodyColumns: 37 })).find((t: any) => textOf(t) === '\u202628').props).toEqual({ dimColor: true })
+  expect(bandLine(await band({ bodyColumns: 37 }), 37)).toBe('  \u25cf ctrl+x 1 rotate   2 wrap   \u202628 \u25cb\u25cf')
+  // A cell fewer folds one more: the cell after the run is the run's to keep.
+  expect(bandLine(await band({ bodyColumns: 36 }), 36)).toBe('  \u25cf ctrl+x 1 rotate   2 wrap   \u202629 \u25cf')
+  // Wide enough, every dot draws.
   expect(rail(await band({ bodyColumns: 110 }))).toHaveLength(30)
-  // No room at all: three cells hold no `…29` and a tick, so no rail.
-  expect(rail(await band({ bodyColumns: 34 }))).toEqual([])
+  // No room at all: four cells hold no `…29`, its cell and a dot, so no rail.
+  expect(rail(await band({ bodyColumns: 35 }))).toEqual([])
 })
 
 test('the prompt being read is the on-screen row drawn highest, the earliest on ties; a first null report leaves nothing, a later one removes the report; placeholder is ignored', async () => {
@@ -2362,17 +2365,17 @@ test('the prompt being read is the on-screen row drawn highest, the earliest on 
   await drawRow('u2', 'say two', { first: 3, last: 5, of: 6 })
   // A row's first render reports null before it is laid out: nothing changes.
   await drawRow('r3', 'say three\nwith a second line', null)
-  expect(rail(await band())).toEqual(['\u2502', '\u2503', '\u2502', '\u2502'])
+  expect(rail(await band())).toEqual(['\u25cb', '\u25cf', '\u25cb', '\u25cb'])
   // A null after a report is the row scrolled out of view: its report goes.
   await drawRow('u2', 'say two', null)
-  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
+  expect(rail(await band())).toEqual(['\u25cf', '\u25cb', '\u25cb', '\u25cb'])
   // Everything visible reports 0: the topmost, the earliest of them, is being read.
   await drawRow('u2', 'say two', { first: 0, last: 5, of: 6 })
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
-  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
+  expect(rail(await band())).toEqual(['\u25cf', '\u25cb', '\u25cb', '\u25cb'])
   // The person scrolled up: the first prompt's row is now the one cut at the top.
   await drawRow('u1', 'say one', { first: 2, last: 4, of: 6 })
-  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
+  expect(rail(await band())).toEqual(['\u25cf', '\u25cb', '\u25cb', '\u25cb'])
 })
 
 test('a report that moves the read prompt redraws the band from a timer, never from the render itself', async () => {
@@ -2395,7 +2398,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
   // Both rows whole: the topmost, the first prompt, is being read, so its tick is no Button.
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
+  expect(rail(tree)).toEqual(['\u25cf', '\u25cb', '\u25cb', '\u25cb'])
   await tickButtons(tree)[0].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }])
   scrollResult = { deny: 'the window moved meanwhile' }
@@ -2403,7 +2406,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'r3' }, block: 'start' }, { to: { requestId: 'r3' }, block: 'start' }])
   expect(toasts).toEqual(['the window moved meanwhile'])
-  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2506', '\u2502'])
+  expect(rail(await band())).toEqual(['\u25cf', '\u25cb', '\u25cc', '\u25cb'])
 })
 
 test('a prompt no row has drawn since a resume is dim, and its press says so once', async () => {
@@ -2415,7 +2418,7 @@ test('a prompt no row has drawn since a resume is dim, and its press says so onc
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }, { to: { requestId: 'u2' }, block: 'start' }])
   expect(toasts).toEqual(['that prompt is not on screen yet'])
-  expect(rail(await band())).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
+  expect(rail(await band())).toEqual(['\u25cb', '\u25cb', '\u25cb', '\u25cf'])
 })
 
 test('/cs next, prev, first, last and N move along the rail from the prompt being read', async () => {
@@ -2470,10 +2473,10 @@ test('with no prompt row left in the viewport, the read tick stays on the prompt
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   await fireAfter()
-  expect(rail(await band())).toEqual(['│', '┃', '│', '│'])
+  expect(rail(await band())).toEqual(['○', '●', '○', '○'])
   await drawRow('u2', 'say two', null)
   await fireAfter()
-  expect(rail(await band())).toEqual(['│', '┃', '│', '│'])
+  expect(rail(await band())).toEqual(['○', '●', '○', '○'])
   expect(await cs('prev')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u1'])
 })
@@ -2490,7 +2493,7 @@ test('a prompt whose row has not been drawn is matched by its text only when tha
   await drawRow('u3', 'continue', { first: 0, last: 1, of: 2 })
   await drawRow('row-of-u4', 'say four', null)
   await fireAfter()
-  expect(rail(await band())).toEqual(['│', '│', '┃', '│'])
+  expect(rail(await band())).toEqual(['○', '○', '●', '○'])
   expect(await cs('1')).toEqual({})
   expect(await cs('4')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u1', 'row-of-u4'])
@@ -2519,7 +2522,7 @@ test('a /clear empties the rail: the next conversation draws none of the last on
   expect(rail(await band())).toEqual([])
   expect(await cs('next')).toEqual({ text: 'the rail has no prompts' })
   await turnComplete()
-  expect(rail(await band())).toEqual(['│', '│', '│', '┃'])
+  expect(rail(await band())).toEqual(['○', '○', '○', '●'])
 })
 
 test('a line too narrow for any tick, with nothing else to say, draws nothing', async () => {
@@ -2528,21 +2531,21 @@ test('a line too narrow for any tick, with nothing else to say, draws nothing', 
   expect(await band({ bodyColumns: 4 })).toBe(DRAWN)
 })
 
-test('the rail sits at the line\'s right edge across the spacer from the words, as upright bars, and the read prompt follows the rail', async () => {
+test('the rail ends in the line\'s last cell across the spacer from the words, as dots, and the read prompt stands before it', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   transcript(LINEAR)
   percent = 80
   await turnComplete()
   const tree = await band()
   const kids = bandBody(tree)
-  expect(kids.slice(-3).map((k: any) => k.props.key ?? 'label')).toEqual(['cs-spacer', 'cs-rail', 'label'])
-  expect(texts(kids[kids.length - 1]).includes(gapLabel(tree))).toBe(true)
+  expect(kids.slice(-3).map((k: any) => k.props.key ?? 'label')).toEqual(['cs-spacer', 'label', 'cs-rail'])
+  expect(texts(kids[kids.length - 2]).includes(gapLabel(tree))).toBe(true)
   expect(boxes(tree).filter((b: any) => b.props.flexGrow !== undefined).map((b: any) => b.props)).toEqual([{ key: 'cs-spacer', flexGrow: 1 }])
-  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
-  // 108 cells after the inset: `● ` (2), `ctrl+x 1 rotate   2 wrap` (24), the bars (4), a cell and the
-  // name sized to `#3 say three` (12) leave 65 between the words and the bars.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
-  expect(bandLine(tree, 110)).toBe(`  ● ctrl+x 1 rotate   2 wrap${' '.repeat(65)}│││┃ #4 say four `)
+  expect(rail(tree)).toEqual(['○', '○', '○', '●'])
+  // 108 cells after the inset: `● ` (2), `ctrl+x 1 rotate   2 wrap` (24), three cells, the name sized to
+  // `#3 say three` (12), three cells and the dots (4) leave 60 between the zones; the name is padded on its left.
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
+  expect(bandLine(tree, 110)).toBe(`  ● ctrl+x 1 rotate   2 wrap${' '.repeat(64)}#4 say four   ○○○●`)
 })
 
 test('the focus ring never lands on a rail tick: the keyboard route is /cs', async () => {
@@ -2551,71 +2554,78 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
   expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rotate'), async () => ({ moved: true }))).toEqual({ moved: true })
 })
 
-// After the rail the band names a prompt: the one being read, dim italic; a
-// bar under the pointer swaps in its own.
+// Before the rail the band names a prompt: the one being read, dim italic; a
+// dot under the pointer swaps in its own.
 const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
 
-test('after the bars the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
+test('before the dots the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
   register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
-  // A cell after the bars, as wide as the widest prompt a bar can swap in, `#3 say three` (12).
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
+  // Three cells before the dots, as wide as the widest prompt a dot can swap in, `#3 say three` (12), padded on its left.
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
   const kids = bandBody(tree)
-  expect(kids.slice(-2).map((k: any) => k.props.key ?? 'label')).toEqual(['cs-rail', 'label'])
-  expect(kids[kids.length - 1].props).toEqual({ width: 12, marginLeft: 1 })
-  expect(texts(kids[kids.length - 1]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual(['#4 say four '])
-  // A row reporting moves the label with the read bar, and the bars stay in their column.
-  expect(bandLine(tree, 110)).toBe(`  ● ${' '.repeat(89)}│││┃ #4 say four `)
+  expect(kids.slice(-2).map((k: any) => k.props.key ?? 'label')).toEqual(['label', 'cs-rail'])
+  expect(kids[kids.length - 2].props).toEqual({ width: 12, marginLeft: 0 })
+  expect(kids[kids.length - 1].props).toEqual({ key: 'cs-rail', marginLeft: 3 })
+  expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual([' #4 say four'])
+  // A row reporting moves the name with the read dot, and the dots stay in their column.
+  expect(bandLine(tree, 110)).toBe(`  ● ${' '.repeat(88)}#4 say four   ○○○●`)
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   const moved = await band()
-  expect(textOf(gapLabel(moved))).toBe('#2 say two  ')
-  expect(bandLine(moved, 110)).toBe(`  ● ${' '.repeat(89)}│┃││ #2 say two  `)
-  // A word on the left leaves the bars and the prompt where they stand: 108 cells less `● ` (2), `▤ start 1`
-  // (9), the bars (4), a cell and the name (12) leave 80 between them.
+  expect(textOf(gapLabel(moved))).toBe('  #2 say two')
+  expect(bandLine(moved, 110)).toBe(`  ● ${' '.repeat(89)}#2 say two   ○●○○`)
+  // A word on the left leaves the dots and the prompt where they stand: 108 cells less `● ` (2), `▤ start 1`
+  // (9), three cells, the name (12), three cells and the dots (4) leave 75 between them.
   queueTasks(1)
   const queued = await band()
-  expect(textOf(gapLabel(queued))).toBe('#2 say two  ')
-  expect(bandLine(queued, 110)).toBe(`  ● ▤ start 1${' '.repeat(80)}│┃││ #2 say two  `)
+  expect(textOf(gapLabel(queued))).toBe('  #2 say two')
+  expect(bandLine(queued, 110)).toBe(`  ● ▤ start 1${' '.repeat(80)}#2 say two   ○●○○`)
 })
 
-test('each bar under the pointer swaps its own prompt into the gap, italic, covering the read one', async () => {
+test('each dot under the pointer swaps its own prompt into the gap, italic, covering the read one, and the dots hold still', async () => {
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
-  // Bar i heats group cs-rail-<i>; the read bar is a Text the label already names.
+  // Dot i heats group cs-rail-<i>; the read dot is a Text the label already names.
   expect(tickButtons(tree).map((b: any) => b.props.hover)).toEqual([0, 1, 2].map(i => ({ scope: `cs-rail-${i}`, dimColor: false })))
   const cards = boxes(tree).filter((b: any) => b.props.display === 'none')
   expect(cards.map((c: any) => c.props)).toEqual([0, 1, 2].map(i => ({
     position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
   })))
   expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
-    [['#1 say one  ', { italic: true, wrap: 'truncate-end' }]],
-    [['#2 say two  ', { italic: true, wrap: 'truncate-end' }]],
+    [['  #1 say one', { italic: true, wrap: 'truncate-end' }]],
+    [['  #2 say two', { italic: true, wrap: 'truncate-end' }]],
     [['#3 say three', { italic: true, wrap: 'truncate-end' }]],
   ])
   // The cards sit in the label's own Box, as wide as the widest of them, so a card covers the read
   // prompt cell for cell and a swap moves nothing.
   const labelBox = boxes(tree).find((b: any) => b.props.width === 12)
   expect(boxes(labelBox).filter((b: any) => b.props.display === 'none')).toHaveLength(3)
+  // The row as drawn at rest and with the pointer on each dot: only the name's cells change.
+  expect(bandRows(tree, 110)).toEqual([`  ● ${' '.repeat(88)}#4 say four   ○○○●`])
+  expect(bandRows(tree, 110, 'cs-rail-0')).toEqual([`  ● ${' '.repeat(89)}#1 say one   ○○○●`])
+  expect(bandRows(tree, 110, 'cs-rail-2')).toEqual([`  ● ${' '.repeat(87)}#3 say three   ○○○●`])
 })
 
-test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cells names none and the bars heat nothing', async () => {
+test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cells names none and the dots heat nothing', async () => {
   transcript([...LINEAR, prompt('u5', 'a4', 'x'.repeat(40))])
   await turnComplete()
-  // 29 columns: 27 after the inset, 25 after the mark, five bars and the one-cell gap leave 19.
+  // 29 columns: 27 after the inset, 25 after the mark, three cells and five dots leave 17.
   const cut = await band({ bodyColumns: 29 })
-  expect(textOf(gapLabel(cut))).toBe(`#5 ${'x'.repeat(15)}…`)
-  expect(texts(boxes(cut).find((b: any) => b.props.hover?.scope === 'cs-rail-0')).map(textOf)).toEqual(['#1 say one'.padEnd(19)])
-  // 20 columns leave exactly ten.
-  expect(textOf(gapLabel(await band({ bodyColumns: 20 })))).toBe(`#5 ${'x'.repeat(6)}…`)
-  // 19 leave nine: the bars alone, no card, no hover group.
-  const bare = await band({ bodyColumns: 19 })
+  expect(textOf(gapLabel(cut))).toBe(`#5 ${'x'.repeat(13)}…`)
+  expect(texts(boxes(cut).find((b: any) => b.props.hover?.scope === 'cs-rail-0')).map(textOf)).toEqual(['#1 say one'.padStart(17)])
+  expect(bandLine(cut, 29)).toBe(`  ● #5 ${'x'.repeat(13)}…   ○○○○●`)
+  // 22 columns leave exactly ten.
+  expect(textOf(gapLabel(await band({ bodyColumns: 22 })))).toBe(`#5 ${'x'.repeat(6)}…`)
+  // 21 leave nine: the dots alone at the right edge, no card, no hover group.
+  const bare = await band({ bodyColumns: 21 })
+  expect(bandLine(bare, 21)).toBe(`  ● ${' '.repeat(12)}○○○○●`)
   expect(gapLabel(bare)).toBeUndefined()
   expect(boxes(bare).filter((b: any) => b.props.display === 'none')).toEqual([])
   expect(tickButtons(bare).map((b: any) => b.props.hover)).toEqual([undefined, undefined, undefined, undefined])
-  expect(rail(bare)).toEqual(['│', '│', '│', '│', '┃'])
+  expect(rail(bare)).toEqual(['○', '○', '○', '○', '●'])
 })
 
 test('a rail past its budget takes the whole gap: no prompt is named beside a collapsed run', async () => {
@@ -2624,16 +2634,17 @@ test('a rail past its budget takes the whole gap: no prompt is named beside a co
   for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
   transcript(many)
   await turnComplete()
-  // 29 columns leave 25 cells after the mark for 30 bars: `…7` and 23 bars, no gap.
+  // 29 columns leave 25 cells after the mark for 30 dots: `…8`, its cell and 22 dots, no gap.
   const tree = await band({ bodyColumns: 29 })
-  expect(rail(tree)[0]).toBe('…7')
+  expect(rail(tree)[0]).toBe('…8')
+  expect(bandLine(tree, 29)).toBe(`  ● …8 ${'○'.repeat(21)}●`)
   expect(gapLabel(tree)).toBeUndefined()
   expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toEqual([])
-  // 40 leave 36: every bar, the one-cell gap and five cells, under ten, so none either.
+  // 40 leave 36: every dot, the three-cell gap and three cells, under ten, so none either.
   expect(gapLabel(await band({ bodyColumns: 40 }))).toBeUndefined()
-  // 45 leave ten, and the name takes the seven its widest prompt needs; 44 leave nine.
-  expect(textOf(gapLabel(await band({ bodyColumns: 45 })))).toBe('#30 p30')
-  expect(gapLabel(await band({ bodyColumns: 44 }))).toBeUndefined()
+  // 47 leave ten, and the name takes the seven its widest prompt needs; 46 leave nine.
+  expect(textOf(gapLabel(await band({ bodyColumns: 47 })))).toBe('#30 p30')
+  expect(gapLabel(await band({ bodyColumns: 46 }))).toBeUndefined()
 })
 
 // The desktop app paints a card over the line without hiding what is under it
@@ -2655,19 +2666,19 @@ test('off the terminal the gap names the prompt being read and draws no hover ca
 test('the gap\'s prompt is measured and cut in cells: wide characters take two, an emoji is never split', async () => {
   transcript([...LINEAR, prompt('u5', 'a4', '\u4e00'.repeat(60))])
   await turnComplete()
-  // Five bars and the cell after them leave 100: `#5 ` and 48 two-cell characters are 99, a 49th would pass the 99 left before `…`.
-  expect(textOf(gapLabel(await band()))).toBe(`#5 ${'\u4e00'.repeat(48)}\u2026`)
+  // Five dots and the three cells before them leave 98: `#5 ` and 47 two-cell characters are 97, a 48th would pass the 97 left before `…`.
+  expect(textOf(gapLabel(await band()))).toBe(`#5 ${'\u4e00'.repeat(47)}\u2026`)
   transcript([...LINEAR, prompt('u5', 'a4', `${'x'.repeat(13)}\u{1F600}tail`)], 2)
   await turnComplete()
-  // 18 cells: `#5 ` and 13 x are 16, the emoji would pass the 17 left before `…`.
-  const cut = textOf(gapLabel(await band({ bodyColumns: 28 })))
-  expect(cut).toBe(`#5 ${'x'.repeat(13)}\u2026 `)
+  // 18 cells: `#5 ` and 13 x are 16, the emoji would pass the 17 left before `…`, and the cell left over pads the left.
+  const cut = textOf(gapLabel(await band({ bodyColumns: 30 })))
+  expect(cut).toBe(` #5 ${'x'.repeat(13)}\u2026`)
   expect(cut.isWellFormed()).toBe(true)
   // A Text the engine measures wider than this count would wrap the band onto a second line.
   expect(gapLabel(await band()).props.wrap).toBe('truncate-end')
 })
 
-test('the right edge keeps its margins: three cells after the actions, three between the status words and the bars, one after the bars', async () => {
+test('the right edge keeps its margins: three cells after the actions, three between the status words and the name, three between the name and the dots', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   transcript(LINEAR)
   await turnComplete()
@@ -2675,16 +2686,17 @@ test('the right edge keeps its margins: three cells after the actions, three bet
     const statusBox = boxes(tree).find((b: any) => b.props.key === 'cs-status')
     const railBox = boxes(tree).find((b: any) => b.props.key === 'cs-rail')
     const labelBox = boxes(tree).find((b: any) => (b.children ?? []).flat(Infinity).includes(gapLabel(tree)))
-    return [statusBox.props.marginLeft, railBox.props.marginLeft, labelBox?.props.marginLeft]
+    return [statusBox.props.marginLeft, labelBox?.props.marginLeft, railBox.props.marginLeft]
   }
-  expect(margins(await band())).toEqual([0, 0, 1])
+  expect(margins(await band())).toEqual([0, 0, 3])
   percent = 80
-  expect(margins(await band())).toEqual([3, 0, 1])
+  expect(margins(await band())).toEqual([3, 0, 3])
   files['/work/.cs/local/mail/new/one.json'] = '{}'
-  expect(margins(await band())).toEqual([3, 3, 1])
+  expect(margins(await band())).toEqual([3, 3, 3])
   delete files['/work/.cs/local/mail/new/one.json']
-  // No room to name a prompt: the bars alone, three cells after the actions.
-  expect(margins(await band({ bodyColumns: 42 }))).toEqual([3, 0, undefined])
+  // No room to name a prompt: the dots alone, three cells after the actions.
+  expect(margins(await band({ bodyColumns: 42 }))).toEqual([3, undefined, 0])
+  expect(bandLine(await band({ bodyColumns: 42 }), 42)).toBe(`  ● ctrl+x 1 rotate   2 wrap${' '.repeat(10)}○○○●`)
 })
 
 // ---------------------------------------------------------------------------
@@ -2762,7 +2774,7 @@ test('a feature session draws no features word and asks cs nothing: /finish land
   expect(rail(await band())).toHaveLength(4)
   expect(featureRuns()).toEqual([])
   expect(timers.filter(t => t.kind === 'every' && t.ms === 30000)).toEqual([])
-  expect(restingWords(await band())).toEqual(['\u25cf', '\u2503', '#4 say four '])
+  expect(restingWords(await band())).toEqual(['\u25cf', ' #4 say four', '\u25cf'])
 })
 
 test('a cs that fails, cannot start, or prints a record the band cannot read draws no word and is logged once each', async () => {
@@ -2796,18 +2808,18 @@ test('the features word leads the right edge before the rail, yields to a runnin
   porcelain(feature('fix-auth', 3, 'ready'))
   transcript(LINEAR)
   await featuresTurn()
-  // 108 cells after the inset less `● ` (2), the word (26), three cells, the bars (4), a cell and the name
-  // sized to `#3 say three` (12) leave the spacer 60.
+  // 108 cells after the inset less `● ` (2), the word (26), three cells, the name sized to `#3 say three`
+  // (12), three cells and the dots (4) leave the spacer 58.
   let tree = await band()
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
-  expect(bandLine(tree, 110)).toBe(`  ● ${' '.repeat(60)}1 feature · fix-auth ready   │││┃ #4 say four `)
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
+  expect(bandLine(tree, 110)).toBe(`  ● ${' '.repeat(58)}1 feature · fix-auth ready    #4 say four   ○○○●`)
   percent = 80
   tree = await band()
   const order = bandBody(tree).map((k: any) => k.type === 'Button' ? k.props.key : k.type === 'Text' ? textOf(k) : texts(k).map(textOf).join(''))
   expect(order.slice(0, 9)).toEqual(['\u25cf', 'ctrl+x', '1', 'cs-rotate', '   ', '2', 'cs-wrap', '', 'cs-features'])
-  // `ctrl+x 1 rotate   2 wrap` (24) and three cells come out of the spacer's 60: the bars stay in their column.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
-  expect(bandLine(tree, 110)).toBe(`  ● ctrl+x 1 rotate   2 wrap${' '.repeat(36)}1 feature · fix-auth ready   │││┃ #4 say four `)
+  // `ctrl+x 1 rotate   2 wrap` (24) and three cells come out of the spacer's 58: the dots stay in their column.
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
+  expect(bandLine(tree, 110)).toBe(`  ● ctrl+x 1 rotate   2 wrap${' '.repeat(34)}1 feature · fix-auth ready    #4 say four   ○○○●`)
   percent = undefined
   queueTasks(1)
   tree = await band()
@@ -3020,16 +3032,16 @@ test('the queue and mail words stand before the rail at the right edge, and the 
   files['/work/.cs/local/queue.state'] = 'armed\n'
   files[`${MAIL}/new/1-a.json`] = '{}'
   const tree = await band()
-  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
-  // 108 cells after the inset less `● ` (2), `▤ queue 2   mail 1` (18), three cells, the bars (4), a cell and
-  // the name sized to `#3 say three` (12) leave the spacer 68.
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
-  expect(bandLine(tree, 110)).toBe(`  ● ${' '.repeat(68)}▤ queue 2   mail 1   │││┃ #4 say four `)
+  expect(rail(tree)).toEqual(['○', '○', '○', '●'])
+  // 108 cells after the inset less `● ` (2), `▤ queue 2   mail 1` (18), three cells, the name sized to
+  // `#3 say three` (12), three cells and the dots (4) leave the spacer 66.
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
+  expect(bandLine(tree, 110)).toBe(`  ● ${' '.repeat(66)}▤ queue 2   mail 1    #4 say four   ○○○●`)
   percent = 80
   // No chord bound: `rotate   wrap` (13) and its three cells come out of the spacer.
   const keyed = await band()
-  expect(textOf(gapLabel(keyed))).toBe('#4 say four ')
-  expect(bandLine(keyed, 110)).toBe(`  ● rotate   wrap${' '.repeat(55)}▤ queue 2   mail 1   │││┃ #4 say four `)
+  expect(textOf(gapLabel(keyed))).toBe(' #4 say four')
+  expect(bandLine(keyed, 110)).toBe(`  ● rotate   wrap${' '.repeat(53)}▤ queue 2   mail 1    #4 say four   ○○○●`)
 })
 
 test('the mail word counts neither a stray file nor a directory in new/', async () => {
@@ -3043,7 +3055,7 @@ test('the mail word counts neither a stray file nor a directory in new/', async 
 // The band's /config rows: cs.bandPrompt picks the prompt it names (the newest,
 // or the one being read), cs.bandBars the most bars before older prompts fold.
 
-test('by default the band names the newest prompt and draws its bar thick, wherever the reader is; a scroll redraws nothing', async () => {
+test('by default the band names the newest prompt and draws its dot filled, wherever the reader is; a scroll redraws nothing', async () => {
   transcript(LINEAR)
   await turnComplete()
   await band()
@@ -3052,18 +3064,18 @@ test('by default the band names the newest prompt and draws its bar thick, where
   await fireAfter()
   expect(invalidated).toEqual([])
   const tree = await band()
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
-  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
+  expect(rail(tree)).toEqual(['○', '○', '○', '●'])
 })
 
-test('with cs.bandPrompt read the band names the prompt being read and draws its bar thick', async () => {
+test('with cs.bandPrompt read the band names the prompt being read and draws its dot filled', async () => {
   register(on as any, { ...OPTIONS, bandPrompt: 'read' })
   transcript(LINEAR)
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   const tree = await band()
-  expect(textOf(gapLabel(tree))).toBe('#2 say two  ')
-  expect(rail(tree)).toEqual(['│', '┃', '│', '│'])
+  expect(textOf(gapLabel(tree))).toBe('  #2 say two')
+  expect(rail(tree)).toEqual(['○', '●', '○', '○'])
 })
 
 test('at most cs.bandBars bars draw; older prompts fold into …N and the prompt is still named', async () => {
@@ -3072,16 +3084,16 @@ test('at most cs.bandBars bars draw; older prompts fold into …N and the prompt
   transcript(many)
   await turnComplete()
   let tree = await band()
-  expect(rail(tree)).toEqual(['…20', ...Array(9).fill('│'), '┃'])
-  // `…20` and ten bars are 13 cells; the name is as wide as the widest prompt a drawn bar can swap in.
+  expect(rail(tree)).toEqual(['…20', ...Array(9).fill('○'), '●'])
+  // `…20`, its cell and ten dots are 14 cells; the name is as wide as the widest prompt a drawn dot can swap in.
   expect(textOf(gapLabel(tree))).toBe('#30 p30')
   expect(boxes(tree).find((b: any) => (b.children ?? []).flat(Infinity).includes(gapLabel(tree))).props.width).toBe(7)
   register(on as any, { ...OPTIONS, bandBars: 3 })
   transcript(many, 2)
   await turnComplete()
   tree = await band()
-  expect(rail(tree)).toEqual(['…27', '│', '│', '┃'])
-  // A folded prompt has no bar to hover, so no card either.
+  expect(rail(tree)).toEqual(['…27', '○', '○', '●'])
+  // A folded prompt has no dot to hover, so no card either.
   expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toHaveLength(2)
 })
 
@@ -3252,18 +3264,19 @@ test('under a survey the band draws no mark, even beside the gate word it still 
   expect(JSON.stringify(tree)).not.toContain('●')
 })
 
-test('the mark takes two cells from the line: the bars move over and the named prompt gives them up', async () => {
+test('the mark takes two cells from the line: the named prompt gives them up, and the dots keep the right edge', async () => {
   transcript(LINEAR)
   await turnComplete()
   // A rail alone, at the right edge across the spacer from the mark.
   const tree = await band()
-  expect(bandBody(tree).map((c: any) => c.props.key ?? c.type)).toEqual(['cs-mark', 'cs-spacer', 'cs-rail', 'Box'])
-  expect(textOf(gapLabel(tree))).toBe('#4 say four ')
-  // 20 columns: 18 after the inset, the mark, four bars and the cell after them leave 11, the named prompt whole.
-  expect(textOf(gapLabel(await band({ bodyColumns: 20 })))).toBe('#4 say four')
-  // 19 leave ten, cut; 18 nine: the bars alone.
-  expect(textOf(gapLabel(await band({ bodyColumns: 19 })))).toBe('#4 say fo…')
-  expect(gapLabel(await band({ bodyColumns: 18 }))).toBeUndefined()
+  expect(bandBody(tree).map((c: any) => c.props.key ?? c.type)).toEqual(['cs-mark', 'cs-spacer', 'Box', 'cs-rail'])
+  expect(textOf(gapLabel(tree))).toBe(' #4 say four')
+  // 22 columns: 20 after the inset, the mark, three cells and four dots leave 11, the named prompt whole.
+  expect(bandLine(await band({ bodyColumns: 22 }), 22)).toBe('  ● #4 say four   ○○○●')
+  // 21 leave ten, cut; 20 nine: the dots alone.
+  expect(bandLine(await band({ bodyColumns: 21 }), 21)).toBe('  ● #4 say fo…   ○○○●')
+  expect(bandLine(await band({ bodyColumns: 20 }), 20)).toBe(`  ● ${' '.repeat(12)}○○○●`)
+  expect(gapLabel(await band({ bodyColumns: 20 }))).toBeUndefined()
 })
 
 // The engine flattens child lists and drops conditional empty children; the
@@ -3290,7 +3303,7 @@ const bandScenes: [string, () => void | Promise<void>, { isWorking?: boolean; ha
   ['features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }],
   ['working features', async () => { featureDir('fix-auth'); porcelain(feature('fix-auth', 3, 'ready')); await featuresTurn() }, { isWorking: true }],
   ['rail', async () => { transcript(LINEAR); await turnComplete() }],
-  ['narrow rail', async () => { transcript(LINEAR); await turnComplete() }, { bodyColumns: 19 }],
+  ['narrow rail', async () => { transcript(LINEAR); await turnComplete() }, { bodyColumns: 21 }],
   ['mixed row', async () => { percent = 40; queueTasks(2); files['/work/.cs/local/mail/new/one.json'] = '{}'; transcript(LINEAR); await featuresTurn() }],
   ['unbound', () => { percent = 40; delete files[KEYS] }],
   ['different prefixes', () => { percent = 40; bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+w 2': 'strip:jump2' }) }],
@@ -3353,23 +3366,36 @@ for (const [name, arrange, props, fixture] of bandViews) {
 // inset, then each part in order, a Box's margins as blank cells and its
 // `width` as the cells it holds, a Button its children or else its label, a
 // hidden or absolute Box nothing (it takes no room in the row), and the band
-// row's flexGrow child taking what the row's width leaves. Parts that need
-// more cells than the row has are what Claude Code draws over several rows
-// (it squeezes each Text to a cell and wraps it down); that overrun draws
-// here as the line cut into rows of the room, not as the squeeze itself.
-// Every glyph the band draws here is one cell.
-function bandRows(tree: any, bodyColumns: number): string[] {
+// row's flexGrow child taking what the row's width leaves. With the pointer
+// on the `hovered` scope, each part of that scope takes its hover props, and
+// an absolute Box shown so paints over its parent's cells from its `left`.
+// Parts that need more cells than the row has are what Claude Code draws
+// over several rows (it squeezes each Text to a cell and wraps it down);
+// that overrun draws here as the line cut into rows of the room, not as the
+// squeeze itself. Every glyph the band draws here is one cell.
+function bandRows(tree: any, bodyColumns: number, hovered?: string): string[] {
   const cells = (text: string) => [...text].length
+  const propsOf = (node: any) => (hovered !== undefined && node.props.hover?.scope === hovered ? { ...node.props, ...node.props.hover } : node.props)
   const part = (node: any): string => {
     if (typeof node === 'string') return node
     if (Array.isArray(node)) return node.map(part).join('')
     if (!node || typeof node !== 'object') return ''
-    if (node.props.display === 'none' || node.props.position === 'absolute') return ''
-    const inner = node.type === 'Button' && (node.children ?? []).flat(Infinity).filter(Boolean).length === 0 ? node.props.label : part(node.children ?? [])
+    const props = propsOf(node)
+    if (props.display === 'none' || props.position === 'absolute') return ''
+    const inner = node.type === 'Button' && (node.children ?? []).flat(Infinity).filter(Boolean).length === 0 ? props.label : part(node.children ?? [])
     if (node.type !== 'Box') return inner
-    const { marginLeft = 0, marginRight = 0, width } = node.props
+    const { marginLeft = 0, marginRight = 0, width } = props
     if (width !== undefined && cells(inner) > width) throw new Error(`a Box ${width} cells wide holds ${cells(inner)}: ${inner}`)
-    return `${' '.repeat(marginLeft)}${inner}${' '.repeat(width === undefined ? 0 : width - cells(inner))}${' '.repeat(marginRight)}`
+    const held = [...`${inner}${' '.repeat(width === undefined ? 0 : width - cells(inner))}`]
+    for (const card of (node.children ?? []).flat(Infinity)) {
+      if (!card || typeof card !== 'object' || card.type !== 'Box') continue
+      const shown = propsOf(card)
+      if (shown.position !== 'absolute' || shown.display === 'none') continue
+      const over = [...part(card.children ?? [])]
+      if ((shown.left ?? 0) + over.length > held.length) throw new Error(`a card ${over.length} cells wide overruns a Box of ${held.length}: ${over.join('')}`)
+      held.splice(shown.left ?? 0, over.length, ...over)
+    }
+    return `${' '.repeat(marginLeft)}${held.join('')}${' '.repeat(marginRight)}`
   }
   const row = boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band')
   if (row === undefined) throw new Error('the band drew no line')
@@ -3406,18 +3432,53 @@ const gap = (n: number) => ' '.repeat(n)
 const FOURTEEN = Array.from({ length: 14 }, (_, i) => ({ uuid: `t${i + 1}`, text: i === 13 ? 'the band is too busy' : `step ${i + 1}` }))
 const typical = buildBandEntries({ ...quiet, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress }, waiting: 2, mail: 1 })
 
-test('the band draws the actions at the left and the mail and the rail at the right edge, the name of the prompt a cell after the bars', () => {
+// The rail at 120 columns: fourteen prompts, five dots, and the jump to the
+// twelfth refused.
+const REFUSED = { ...railOf(FOURTEEN), bars: 5, denied: new Set(['t12']) }
+
+test('the band draws the actions at the left, and at the right edge the mail, the prompt\'s name, and the dots in the last cells', () => {
   // 118 cells after the inset: `● ` 2, the actions 47, `mail 1` 6, three
-  // cells, `…9││││┃` 7, one cell and the name 24 leave 28 between the zones.
-  expect(lineAt(typical, 120, { ...railOf(FOURTEEN), bars: 5 })).toBe(`  ● ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(28)}mail 1   …9││││┃ #14 the band is too busy`)
+  // cells, the name 24, three cells, `…9 ` 3 and five dots leave 25 between the zones.
+  expect(lineAt(typical, 120, REFUSED)).toBe(`  ● ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(25)}mail 1   #14 the band is too busy   …9 ○○◌○●`)
   // With the rail off the mail word alone holds the right edge: 118 less 2, 47 and 6 leave 63.
   expect(lineAt(typical, 120)).toBe(`  ● ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(63)}mail 1`)
 })
 
+test('with no actions the rail still ends in the line\'s last cell, the status words and the name before it', () => {
+  // The rail alone: 118 less 2, the name 24, three cells, `…9 ` 3 and five dots leave 81.
+  expect(lineAt([], 120, REFUSED)).toBe(`  ● ${gap(81)}#14 the band is too busy   …9 ○○◌○●`)
+  // `mail 1` and its three cells come out of the spacer.
+  const mail = buildBandEntries({ ...quiet, mail: 1 })
+  expect(lineAt(mail, 120, REFUSED)).toBe(`  ● ${gap(72)}mail 1   #14 the band is too busy   …9 ○○◌○●`)
+})
+
+test('a narrowing line cuts the name, then drops it, then folds the dots into …N, and the dots end in the last cell throughout', () => {
+  const mail = buildBandEntries({ ...quiet, mail: 1 })
+  const rail = { ...railOf(FOURTEEN), bars: 5 }
+  // 34 columns leave the name ten cells, cut; 33 leave it nine, and none is named.
+  expect(lineAt(mail, 34, rail)).toBe('  ● mail 1   #14 the b…   …9 ○○○○●')
+  expect(lineAt(mail, 33, rail)).toBe(`  ● ${gap(12)}mail 1   …9 ○○○○●`)
+  // 21 columns hold `…9 ` and five dots in the eight cells after the mail word; each cell fewer folds one more.
+  expect(lineAt(mail, 21, rail)).toBe('  ● mail 1   …9 ○○○○●')
+  expect(lineAt(mail, 20, rail)).toBe('  ● mail 1   …11 ○○●')
+  expect(lineAt(mail, 19, rail)).toBe('  ● mail 1   …12 ○●')
+  expect(lineAt(mail, 18, rail)).toBe('  ● mail 1   …13 ●')
+  // Four cells hold no `…13`, its cell and a dot: no rail, and the mail word takes the right edge.
+  expect(lineAt(mail, 17, rail)).toBe(`  ● ${gap(7)}mail 1`)
+})
+
+test('a dot under the pointer swaps its prompt into the whole name box, and the dots stay where they stand', () => {
+  const tree = drawBand(view({ entries: typical, bodyColumns: 120, rail: REFUSED }), EL)
+  expect(bandRows(tree, 120, 'cs-rail-9')).toEqual([`  ● ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(25)}mail 1   ${gap(13)}#10 step 10   …9 ○○◌○●`])
+  // The refused dot hovers as any other; the named one is a Text with no hover, so nothing swaps.
+  expect(bandRows(tree, 120, 'cs-rail-11')).toEqual([`  ● ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(25)}mail 1   ${gap(13)}#12 step 12   …9 ○○◌○●`])
+  expect(bandRows(tree, 120, 'cs-rail-13')).toEqual([`  ● ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(25)}mail 1   #14 the band is too busy   …9 ○○◌○●`])
+})
+
 test('while a clear counts down, the count follows its clear key and the right edge stays where it was', () => {
   const counting = buildBandEntries({ ...quiet, rotating: true, armed: true, countdown: { seconds: 18, ink: OWN }, mail: 1 })
-  // `ctrl+x 1 /clear now   in 18s` (28) leaves 47 between the zones.
-  expect(lineAt(counting, 120, { ...railOf(FOURTEEN), bars: 5 })).toBe(`  ● ctrl+x 1 /clear now   in 18s${gap(47)}mail 1   …9││││┃ #14 the band is too busy`)
+  // `ctrl+x 1 /clear now   in 18s` (28) leaves 44 between the zones.
+  expect(lineAt(counting, 120, { ...railOf(FOURTEEN), bars: 5 })).toBe(`  ● ctrl+x 1 /clear now   in 18s${gap(44)}mail 1   #14 the band is too busy   …9 ○○○○●`)
 })
 
 test('with no action to offer, what the session is still stands at the right edge, and the mark keeps the left', () => {
@@ -3494,8 +3555,8 @@ test('a chord drawn as its key alone is still its Button, pressed by its action,
 
 test('a cut that lands after a space drops the space before the ellipsis, in the band\'s words and the rail\'s prompt alike', () => {
   const shop = [{ uuid: 'u1', text: 'say one' }, { uuid: 'u2', text: 'go to the shop' }]
-  // 17 cells leave the named prompt 10: `#2 go to ` and `…`, the space dropped and the cell padded.
-  expect(textOf(gapLabel(drawBand(view({ bodyColumns: 17, rail: railOf(shop) }), EL)))).toBe('#2 go to… ')
+  // 19 cells leave the named prompt 10: `#2 go to ` and `…`, the space dropped and the cell padded.
+  expect(textOf(gapLabel(drawBand(view({ bodyColumns: 19, rail: railOf(shop) }), EL)))).toBe(' #2 go to…')
 })
 
 test('when even the keys overrun, the features press and then the queue press leave whole, then the chords right to left, and the mark stays', () => {
@@ -3574,17 +3635,18 @@ test('an unbound chord has no key to fall back to: the last one cuts its word to
 })
 
 test('the rail takes what the line leaves once the band has fitted its words', () => {
-  // Every word holds at 116, and the seven cells left after them and the three before the bars hold four bars and no name.
-  expect(lineAt(droppable, 116, railOf(FOUR))).toBe(`  ● ctrl+x 1 rotate   2 wrap${gap(6)}3 features · none ready   finishing fix-auth · gate 3s   ▤ queue 2   mail 1   │││┃`)
+  // Every word holds at 116, and the seven cells left after them and the three before the dots hold four dots and no name.
+  expect(lineAt(droppable, 116, railOf(FOUR))).toBe(`  ● ctrl+x 1 rotate   2 wrap${gap(6)}3 features · none ready   finishing fix-auth · gate 3s   ▤ queue 2   mail 1   ○○○●`)
 })
 
 test('a band with no words and no room for a tick reads no terminal colours', async () => {
   transcript(LINEAR)
   await turnComplete()
   envReads = []
-  expect(await band({ bodyColumns: 6 })).toBe(DRAWN)
+  // Seven columns leave three cells after the mark, and `…3`, its cell and a dot take four.
+  expect(await band({ bodyColumns: 7 })).toBe(DRAWN)
   expect(envReads.filter(name => name.startsWith('CS_TERM_'))).toEqual([])
-  expect(boxes(await band({ bodyColumns: 7 })).some((b: any) => b.props.key === 'cs-rail')).toBe(true)
+  expect(boxes(await band({ bodyColumns: 8 })).some((b: any) => b.props.key === 'cs-rail')).toBe(true)
   expect(envReads.filter(name => name.startsWith('CS_TERM_'))).toEqual(['CS_TERM_BG_RGB', 'CS_TERM_THEME'])
 })
 

@@ -4,7 +4,7 @@
 // ABOUTME: cs mod: keys above the prompt, after a mark whose colour says what is due: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
-// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
+// ABOUTME: The band carries a rail: one dot per prompt on the transcript's live branch (read after each turn), the one being read filled; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
 import type { On, EngineInterface, PluginOptions, RenderElement, RenderSurface } from 'claude-code'
 
 declare const h: any
@@ -359,7 +359,7 @@ let featuresComplaint: string | undefined
 export type Prompt = { uuid: string; text: string }
 // How much of a prompt's first line a tick carries as its text.
 export const RAIL_TEXT_CHARS = 80
-// The fewest cells after the rail that name a prompt.
+// The fewest cells before the rail that name a prompt.
 const RAIL_LABEL_MIN = 10
 // `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
 const READ_CAP = 4 * 1024 * 1024
@@ -378,7 +378,7 @@ let denied = new Set<string>()
 let denySaid = false
 let notYetSaid = false
 let tailSaid = false
-// The prompt the band last drew thick, and whether a redraw for a moved read
+// The prompt the band last drew filled, and whether a redraw for a moved read
 // prompt is already scheduled.
 let drawnRead = -1
 let redrawPending = false
@@ -866,25 +866,27 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   }
   // What the words take, in cells, so the rail knows what the line leaves it.
   const wordCells = wordCellsOf(entries, chords, spelling, prefixed)
-  // The rail: one upright bar per prompt at the line's right edge, `┃` for
-  // the one the band names, `┆` for one a jump was refused, `│` otherwise
-  // (side by side, flat ticks run together into one line), each a Button
-  // (the named one a Text: a
+  // The rail: one dot per prompt, flush at the line's right edge, `●` for
+  // the one the band names, `◌` for one a jump was refused, `○` otherwise
+  // (dots side by side stay apart, so each reads as a prompt of its own),
+  // each a Button (the named one a Text: a
   // Button takes no colour, and there is nowhere to jump). It draws at most
-  // cs.bandBars bars in what the line leaves after the inset, the gaps and
-  // the words; the older prompts collapse into one `…N` run. The named tick
-  // is remembered so a report that moves it can redraw the band.
+  // cs.bandBars dots in what the line leaves after the inset, the gaps and
+  // the words; the older prompts collapse into one `…N` run, a cell before
+  // the first dot. The named dot is remembered so a report that moves it can
+  // redraw the band.
   const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? GAP + wordCells : 0)
   const rail = v.rail
   const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
   const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
-  // A cell after the bars the band names a prompt in what the line leaves:
+  // Left of the rail, GAP cells before it so the `…N` run never reads as
+  // the cut name's own `…`, the band names a prompt in what the line leaves:
   // the newest or the one being read (cs.bandPrompt), or the one under the
   // pointer. Too little left to name one names none.
-  const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `…${ticks.hidden}`.length : 0) + ticks.prompts.length - ticks.hidden
-  const labelRoom = ticks === undefined ? 0 : budget - railCells - 1
+  const railCells = ticks === undefined ? 0 : foldCells(ticks.hidden) + ticks.prompts.length - ticks.hidden
+  const labelRoom = ticks === undefined ? 0 : budget - railCells - GAP
   const labeled = labelRoom >= RAIL_LABEL_MIN
-  // A bar under the pointer swaps its prompt in over the named one, on the
+  // A dot under the pointer swaps its prompt in over the named one, on the
   // terminal only: the desktop app paints a card over a line without hiding
   // what is under it, so both prompts would show at once.
   const hovering = labeled && v.surface === 'terminal'
@@ -894,20 +896,22 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
     return `#${i + 1} ${p.text}`
   }
   // The name is as wide as the widest prompt it can show, the named one or a
-  // drawn bar's under the pointer, and no wider than the room: the rail sits
-  // at the line's right edge, so a name sized to the one it shows would move
-  // the bars whenever a swap shows a longer or shorter one.
+  // drawn dot's under the pointer, and no wider than the room: a name sized
+  // to the one it shows would move the words before it whenever a swap shows
+  // a longer or shorter one. It is padded on its left, so it hugs the gap
+  // before the dots.
   const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(i => i >= ticks.hidden) : [])]
     .map(i => cellWidth(name(ticks.prompts, i)))))
   // Each name fills the width, so a card over the named one paints every
-  // cell of it: a shorter one would leave the named one's tail showing.
-  const label = (prompts: Prompt[], i: number) => fitLeft(name(prompts, i), labelCells)
+  // cell of it: a shorter one would leave the named one's head showing.
+  const label = (prompts: Prompt[], i: number) => fitRight(name(prompts, i), labelCells)
   // A line too narrow for any tick, with nothing else to say, draws nothing.
   if (entries.length === 0 && ticks === undefined) return v.drawn
   // One thin line, a blank line above it so it reads apart from the
   // transcript, in two zones: at the left the actions, only the words that
   // need a key now, the keys in the session colour and the rest dim; at the
-  // right edge what the session is, dim, then the rail. A spacer that grows
+  // right edge what the session is, dim, then the prompt's name, then the
+  // rail, its last dot in the line's last cell. A spacer that grows
   // takes the line's free cells between them, so the rail stays put as the
   // actions come and go; the row is the line's whole width for it to grow
   // into, and a line with nothing at the right draws no spacer. The context
@@ -944,26 +948,26 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
           {right && (
             <Box key="cs-status" marginLeft={actions.length > 0 ? GAP : 0}>
               {drawZone(status)}
-              {ticks !== undefined && (
-                <Box key="cs-rail" marginLeft={status.length > 0 ? GAP : 0}>
-                  {ticks.hidden > 0 && <Text dimColor>{`…${ticks.hidden}`}</Text>}
-                  {ticks.prompts.slice(ticks.hidden).map((p, j) => {
-                    const i = ticks.hidden + j
-                    if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
-                    return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
-                                   hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
-                  })}
-                </Box>
-              )}
               {ticks !== undefined && labeled && (
-                <Box width={labelCells} marginLeft={1}>
+                <Box width={labelCells} marginLeft={status.length > 0 ? GAP : 0}>
                   <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
-                  {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
+                  {/* a card for each drawn dot but the named one: a prompt folded into `…N` has no dot to hover */}
                   {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
                     <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
                       <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
                     </Box>
                   ))}
+                </Box>
+              )}
+              {ticks !== undefined && (
+                <Box key="cs-rail" marginLeft={status.length > 0 || labeled ? GAP : 0}>
+                  {ticks.hidden > 0 && <Box marginRight={1}><Text dimColor>{`…${ticks.hidden}`}</Text></Box>}
+                  {ticks.prompts.slice(ticks.hidden).map((p, j) => {
+                    const i = ticks.hidden + j
+                    if (i === ticks.named) return own === undefined ? <Text bold>{'●'}</Text> : <Text bold color={own}>{'●'}</Text>
+                    return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '◌' : '○'}
+                                   hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
+                  })}
                 </Box>
               )}
             </Box>
@@ -988,8 +992,6 @@ export function sharedPrefix(chords: (string | undefined)[]): string | undefined
   return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined
 }
 
-// How many of `count` ticks fit in `budget` cells: all of them, or the newest
-// after a `…N` run naming the rest; undefined when not even that fits.
 // One `-features --porcelain` record, as _feature_readiness prints it.
 export type FeatureRecord = { task: string; ahead: number; state: string }
 // Every state _feature_readiness prints (lib/30-worktree.sh).
@@ -1099,12 +1101,18 @@ async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean
 }
 
 // How many of `count` prompts fold into the rail's `…N` run so that at most
-// `most` bars draw and the rail fits `budget` cells; undefined when no bar fits.
+// `most` dots draw and the rail fits `budget` cells; undefined when no dot fits.
 export function railTicks(count: number, budget: number, most: number): { hidden: number } | undefined {
   for (let hidden = Math.max(0, count - most); hidden < count; hidden++) {
-    if (count - hidden + (hidden > 0 ? `\u2026${hidden}`.length : 0) <= budget) return { hidden }
+    if (count - hidden + foldCells(hidden) <= budget) return { hidden }
   }
   return undefined
+}
+
+// The cells of the rail's `…N` run and the space between it and the first
+// dot; none when no prompt folds.
+function foldCells(hidden: number): number {
+  return hidden > 0 ? `\u2026${hidden}`.length + 1 : 0
 }
 
 // The prompt the band names: the newest, or the one being read (cs.bandPrompt).
@@ -1185,10 +1193,10 @@ function cutToCells(text: string, width: number): string {
   return `${fitted.trimEnd()}\u2026`
 }
 
-// `text` cut to `width` cells, with spaces after it to fill `width`.
-function fitLeft(text: string, width: number): string {
+// `text` cut to `width` cells, with spaces before it to fill `width`.
+function fitRight(text: string, width: number): string {
   const fitted = cutToCells(text, width)
-  return fitted + ' '.repeat(Math.max(0, width - cellWidth(fitted)))
+  return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
 }
 
 function firstLine(text: string): string {
