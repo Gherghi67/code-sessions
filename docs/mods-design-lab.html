@@ -151,14 +151,27 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 body.app{overflow:hidden}
 body.app .rail,body.app .head{display:none}
 #p-compose.on{position:fixed;inset:0;z-index:6;background:var(--page);display:grid;grid-template-rows:auto minmax(0,1fr);animation:none}
-#p-compose .toolbar{margin:0;padding:6px 12px;border-bottom:1px solid var(--line)}
+/* One slim row: tools left, the export frame's name centred, view right. */
+.appbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;height:40px;padding:0 8px;border-bottom:1px solid var(--line);background:var(--panel);font-size:12px;color:var(--fg2)}
+.appbar > div{display:flex;align-items:center;gap:10px;min-width:0}
+.appbar .bar-r{justify-content:flex-end}
+.appbar .bar-c{font-weight:600;font-size:13px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:32vw}
+.appbar .tools{display:flex;gap:2px}
+.appbar label{display:flex;gap:6px;align-items:center;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.appbar select,.appbar input{font-size:12px;padding:2px 4px;height:26px;text-transform:none;letter-spacing:0;max-width:150px}
+.appbar input[type=number]{width:58px}
+.appbar button,.appbar .back,.hist button{font:inherit;font-size:12px;background:none;color:var(--fg);border:1px solid transparent;border-radius:4px;padding:0 8px;height:26px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+.appbar button:hover:not(:disabled),.appbar .back:hover{background:var(--page);border-color:var(--line)}
+.appbar button:disabled{opacity:.45;cursor:default}
+.appbar button b{font-weight:600;color:var(--fg2);margin-left:4px;font-variant-numeric:tabular-nums}
+.appbar .help{width:26px;justify-content:center;border-color:var(--line);border-radius:50%;padding:0}
+.appbar .fit{font-family:"JetBrains Mono",monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.appbar .fit.no,p.why.no{color:var(--error)}
+.appbar :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .designer{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:0}
 .designer > *{min-height:0;overflow:auto}
 .canvas-pane{padding:16px 20px}
 .designer .props{background:var(--panel);border-left:1px solid var(--line);padding:12px}
-.toolbar .back{color:var(--fg);text-decoration:none;font-size:13px;padding:3px 8px;border:1px solid transparent;border-radius:3px}
-.toolbar .back:hover{border-color:var(--line)}
-.toolbar .help{min-width:26px;border-radius:50%}
 #bd-help{border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:14px 18px 16px;width:min(460px,92vw);box-shadow:0 12px 32px rgba(0,0,0,.18)}
 #bd-help::backdrop{background:rgba(0,0,0,.18)}
 #bd-help .dhead{display:flex;align-items:center;justify-content:space-between;margin:0 0 4px}
@@ -179,22 +192,13 @@ body.app .rail,body.app .head{display:none}
 .props .insp label.inline{flex-direction:row;align-items:center;gap:6px}
 .frame{margin:0 0 16px}
 .frame .strip{position:relative}
-.toolbar .tools{display:flex;gap:6px}
-.toolbar .fit{margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:11.5px;text-transform:none;letter-spacing:0}
-.toolbar .fit.no,p.why.no{color:var(--error)}
-.toolbar button,.hist button{font:inherit;font-size:12px;background:var(--page);color:var(--fg);border:1px solid var(--line);padding:3px 9px;cursor:pointer}
-.toolbar button:disabled{opacity:.45;cursor:default}
-.toolbar button b{font-weight:600;color:var(--fg2);margin-left:2px}
 .hist{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
 .hist .legend{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);margin:0 0 6px}
 #bd-hist{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto}
-.hist button{text-align:left;border-color:transparent;background:none;padding:2px 6px}
+.hist button{text-align:left;border-color:transparent;background:none;padding:2px 6px;height:auto}
 .hist button:hover{border-color:var(--line)}
 .hist button.now{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
 .hist button.ahead{opacity:.5}
-.toolbar{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:0 0 12px;font-size:12px;color:var(--fg2)}
-.toolbar label{display:flex;gap:6px;align-items:center;text-transform:uppercase;letter-spacing:.06em}
-.toolbar select,.toolbar input{text-transform:none;letter-spacing:0}
 .frame{border:1px solid transparent;padding:6px}
 .frame.on{border-color:var(--accent)}
 .fhead{display:flex;gap:12px;align-items:center;margin:0 0 6px;font-size:12.5px}
@@ -242,16 +246,22 @@ body.app .rail,body.app .head{display:none}
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
 <h2 id="compose" class="vh">Band designer</h2>
-<div class="toolbar" id="bd-tools">
-  <a class="back" id="bd-back" href="#sites" title="Back to the lab" aria-label="back to the lab">‹ Lab</a>
-  <span class="tools add"><button type="button" data-insert="Box">+ Box</button><button type="button" data-insert="Text">+ Text</button><button type="button" data-insert="Button">+ Button</button></span>
-  <label title="The state a new frame is drawn in">State <select id="bd-state"></select></label>
-  <label title="The band's width, for every frame">Width <span id="bd-colsv"></span><input id="bd-cols" type="range" min="40" max="120" value="80"></label>
-  <label title="A frame is one drawing: start one empty or from a Band variants drawing in the picked state">New frame from <select id="bd-seed"></select></label>
-  <span id="bd-fit" class="fit"></span>
-  <span class="tools"><button type="button" id="bd-undo" title="Undo (⌘/Ctrl+Z)">undo <b></b></button><button type="button" id="bd-redo" title="Redo (Shift+⌘/Ctrl+Z)">redo <b></b></button></span>
-  <button type="button" class="help" id="bd-help-open" title="Keyboard shortcuts (?)" aria-label="keyboard shortcuts">?</button>
-</div>
+<header class="appbar" id="bd-tools">
+  <div class="bar-l">
+    <a class="back" id="bd-back" href="#sites" title="Back to the lab" aria-label="back to the lab">‹ Lab</a>
+    <span class="tools" role="group" aria-label="insert"><button type="button" data-insert="Box" data-key="o">+ Box</button><button type="button" data-insert="Text" data-key="w">+ Text</button><button type="button" data-insert="Button" data-key="n">+ Button</button></span>
+    <span class="tools" role="group" aria-label="history"><button type="button" id="bd-undo" title="Undo (⌘/Ctrl+Z)">undo <b></b></button><button type="button" id="bd-redo" title="Redo (Shift+⌘/Ctrl+Z)">redo <b></b></button></span>
+  </div>
+  <div class="bar-c" id="bd-title" title="The frame that exports"></div>
+  <div class="bar-r">
+    <label title="A frame is one drawing: start one empty or from a Band variants drawing in the picked state"><span class="vh">new frame from</span><select id="bd-seed"></select></label>
+    <label title="The state a new frame is drawn in">State <select id="bd-state"></select></label>
+    <label title="The band's width, for every frame">Cols <input id="bd-cols" type="number" min="40" max="200" value="80"></label>
+    <button type="button" id="bd-theme"></button>
+    <span id="bd-fit" class="fit"></span>
+    <button type="button" class="help" id="bd-help-open" title="Keyboard shortcuts (?)" aria-label="keyboard shortcuts">?</button>
+  </div>
+</header>
 <div class="designer">
   <div class="canvas-pane"><p class="refuse" id="bd-note" hidden></p><div class="canvas" id="bd-canvas"></div><pre class="spec" id="cp-spec"></pre></div>
   <aside class="props"><div id="bd-props"></div><div class="hist"><div class="legend">History</div><div id="bd-hist"></div></div></aside>
@@ -269,6 +279,8 @@ body.app .rail,body.app .head{display:none}
     <tr><td><kbd>←</kbd> <kbd>↑</kbd> / <kbd>→</kbd> <kbd>↓</kbd></td><td>move it earlier / later</td></tr>
     <tr><td><kbd>Delete</kbd></td><td>remove it</td></tr>
     <tr><td><kbd>⌘/Ctrl</kbd> <kbd>D</kbd></td><td>duplicate it</td></tr>
+    <tr><td><kbd>o</kbd> <kbd>w</kbd> <kbd>n</kbd></td><td>insert a Box, Text or Button by the selection</td></tr>
+    <tr><td><kbd>t</kbd></td><td>switch the theme</td></tr>
     <tr><td>Double-click words</td><td>retype them</td></tr>
     <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd> <kbd>Tab</kbd></td><td>while retyping: the next / previous words</td></tr>
     <tr><td><kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>undo</td></tr>
@@ -1297,16 +1309,18 @@ function composeRender(){
   if(!bdHist) bdHist=BandEditor.history(bdOpen());
   const doc=bdDocNow();
   bdStates($("va-state")); bdStates($("bd-state")); $("bd-state").value=$("va-state").value;
-  $("bd-cols").value=Math.min(120,cols()); $("bd-colsv").textContent=cols()+" cols";
-  if(!$("bd-seed").options.length) $("bd-seed").innerHTML=`<option value="">…</option><option value="empty">an empty Box</option>`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("");
+  if(document.activeElement!==$("bd-cols")) $("bd-cols").value=cols();
+  $("bd-theme").textContent=theme(); $("bd-theme").setAttribute("aria-label",`theme: ${theme()}, switch to ${theme()==="light"?"dark":"light"}`); $("bd-theme").title="Theme (t)";
+  $("bd-title").textContent=bdFrame(doc.exportFrame).name;
+  if(!$("bd-seed").options.length) $("bd-seed").innerHTML=`<option value="">+ frame from…</option><option value="empty">an empty Box</option>`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("");
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const sel=doc.selection;
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
   if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
-  $("bd-fit").textContent=`${fitFrame.name} ${fitWords(fitW,cols())}`; $("bd-fit").classList.toggle("no",fitW>cols());
-  document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`insert a ${b.dataset.insert}`; });
+  $("bd-fit").textContent=fitWords(fitW,cols()); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,cols())}`; $("bd-fit").classList.toggle("no",fitW>cols());
+  document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=(why||`Insert a ${b.dataset.insert}`)+` (${b.dataset.key})`; });
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
   $("bd-hist").innerHTML=bdHistory();
@@ -1323,6 +1337,9 @@ function bdHistory(){
 }
 // The + buttons insert into a selected Box, or after any other selected node.
 const BD_FRESH={Box:()=>({type:"Box",props:{},kids:[]}),Text:()=>({type:"Text",props:{text:"new text"},kids:[]}),Button:()=>({type:"Button",props:{label:"press me",plain:true},kids:[]})};
+// Their letters, live only while a node is selected (an insert needs one), so
+// the lab's own letter keys keep their panels the rest of the time.
+const BD_INSERT_KEYS={o:"Box",w:"Text",n:"Button"};
 function bdInsertRefusal(type){
   const sel=bdDocNow().selection; if(!sel) return "select a node to insert next to";
   const tree=bdFrame(sel.frame).tree, at=BandEditor.insertPoint(tree,sel.path);
@@ -1537,6 +1554,7 @@ function bdKeys(e){
   else if(e.key==="ArrowRight"||e.key==="ArrowDown") act=nudge(1);
   else if((e.key==="Delete"||e.key==="Backspace")&&sel.path.length) act={edit:{type:"remove",path:sel.path}};
   else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="d"&&sel.path.length) act={edit:{type:"duplicateNode",path:sel.path}};
+  else if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&BD_INSERT_KEYS[e.key]){ const type=BD_INSERT_KEYS[e.key]; e.preventDefault(); e.stopImmediatePropagation(); if(!bdInsertRefusal(type)) bdInsert(type); return; }
   if(!act) return;
   e.preventDefault(); e.stopImmediatePropagation();
   if(act.select) bdDispatch(act.select);
@@ -1546,6 +1564,7 @@ function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
   $("bd-state").addEventListener("input",e=>{ $("va-state").value=e.target.value; });
   $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
+  $("bd-theme").onclick=()=>{ $("theme").value=theme()==="light"?"dark":"light"; renderAll(); };
   document.querySelectorAll("[data-insert]").forEach(b=>b.onclick=()=>bdInsert(b.dataset.insert));
   $("bd-undo").onclick=()=>bdTravel(-1); $("bd-redo").onclick=()=>bdTravel(1);
   $("bd-hist").addEventListener("click",e=>{ const b=e.target.closest("[data-jump]"); if(b) bdTravel(+b.dataset.jump); });
