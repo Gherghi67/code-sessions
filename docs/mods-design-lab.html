@@ -1607,7 +1607,7 @@ function bdRepaint(id){
   bdGrids[id]=g;
   card.querySelector(".term").innerHTML=bdTerm(f,g,cols());
   const play=card.querySelector('[data-act="play"]'), scrub=card.querySelector('[data-act="scrub"]');
-  if(!BD_STILL.matches){ play.setAttribute("aria-pressed",String(!!(at&&at.timer))); play.textContent=at&&at.timer?"pause":"play"; }
+  if(!BD_STILL.matches) play.setAttribute("aria-pressed",String(!!(at&&at.timer)));
   scrub.value=String(at?at.t:0); scrub.setAttribute("aria-valuetext",bdMoment(f,m));
   card.querySelector(".motion output").textContent=bdMoment(f,m);
   card.querySelectorAll(".sel").forEach(el=>el.remove());
@@ -1627,11 +1627,12 @@ function bdMotionHead(f){
     +`<input type="range" data-act="scrub" min="0" max="${m.duration}" step="${m.tick}" value="${t}" aria-label="${esc(f.name)}: the moment, ms since the state began" aria-valuetext="${esc(bdMoment(f,m))}">`
     +`<output>${esc(bdMoment(f,m))}</output></span>`;
 }
-// Play and pause, or under reduced motion a step a press.
+// A toggle whose label stays play while aria-pressed says whether it plays,
+// or under reduced motion a step a press.
 function bdPlayButton(f,m){
   if(BD_STILL.matches) return `<button type="button" data-act="play" aria-keyshortcuts="Space" title="Step the mod's own drawing of this state on by ${m.tick} ms (Space); reduced motion is on, so nothing plays by itself">step</button>`;
   const at=bdMotion.get(f.id), playing=!!(at&&at.timer);
-  return `<button type="button" data-act="play" aria-pressed="${playing}" aria-keyshortcuts="Space" title="Play the mod's own drawing of this state at its ${m.tick} ms step (Space)">${playing?"pause":"play"}</button>`;
+  return `<button type="button" data-act="play" aria-pressed="${playing}" aria-keyshortcuts="Space" title="Play the mod's own drawing of this state at its ${m.tick} ms step, or pause it (Space)">play</button>`;
 }
 // What a frame's terminal holds: the strip's cells, and under the band the
 // rule and the prompt it sits above.
