@@ -415,7 +415,7 @@ one toast; the rest of the mod runs.
 
 ### Spinner tip
 
-Claude Code's spinner tips say how to turn on the prompt bars and the feed. The installer
+Claude Code's spinner tips say how to turn on the prompt dots and the feed. The installer
 names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
 
 ```json

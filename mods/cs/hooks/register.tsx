@@ -193,7 +193,7 @@ export const ASKS = {
 
 export const TOASTS = {
   queued: (task: string) => `queued: ${cutTask(task)}`,
-  bandOption: (problem: string) => `the band draws no prompt bars: ${problem}. Set it in /config.`,
+  bandOption: (problem: string) => `the band draws no prompt dots: ${problem}. Set it in /config.`,
   promptNotDrawn: 'that prompt is not on screen yet',
   scrollRefused: (deny: string) => deny,
   transcriptTail: () => `the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`,
@@ -383,11 +383,11 @@ let tailSaid = false
 let drawnRead = -1
 let redrawPending = false
 // The band's /config rows (plugin.json userConfig), as this activation got
-// them: whether it draws the prompt bars at all (off by default), the prompt
+// them: whether it draws the prompt dots at all (off by default), the prompt
 // it names, `latest` (the newest) or `read` (the one being read), and the
-// most bars it draws before older prompts fold into `…N`. A
+// most dots it draws before older prompts fold into `…N`. A
 // change reloads the plugin and register runs again. A stored value the band
-// cannot draw leaves it without bars (undefined), said once, and the rest of
+// cannot draw leaves it without dots (undefined), said once, and the rest of
 // the mod running: a throw from register would unload all of it.
 const CS_PLUGIN = 'cs'
 type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
@@ -403,7 +403,7 @@ function bandOptionProblem(field: string, value: unknown): string | undefined {
   if (field === 'bandPrompts') return typeof value === 'boolean' ? undefined : `cs.bandPrompts is on or off; got ${String(value)}`
   if (field === 'bandPrompt') return value === 'latest' || value === 'read' ? undefined : `cs.bandPrompt is latest or read; got ${String(value)}`
   if (field === 'bandBars') {
-    return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${String(value)}`
+    return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? undefined : `cs.bandBars is the most dots the band draws, a whole number of 1 or more; got ${String(value)}`
   }
   return undefined
 }
@@ -626,7 +626,7 @@ export function register(on: On, options: PluginOptions) {
     let mail = e.props.hasSurvey ? 0 : await unreadMail($)
     // The rail draws, once cs.bandPrompts turns it on, whenever the
     // conversation has two prompts to move between, a turn running or not,
-    // under the same ownership as the keys; its bars draw not at all while a
+    // under the same ownership as the keys; its dots draw not at all while a
     // stored band row is bad, which the lead's band says once.
     const bars = bandOptions?.bars
     let railing = !e.props.hasSurvey && prompts.length > 1 && bandOptions?.prompts === true

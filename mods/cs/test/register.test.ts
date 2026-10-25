@@ -138,10 +138,10 @@ const $ = {
   },
 }
 
-// The options the engine hands register, with the prompt bars turned on, as
+// The options the engine hands register, with the prompt dots turned on, as
 // most tests here are about them; plugin.json's defaults leave them off.
 const OPTIONS = { bandPrompts: true, bandPrompt: 'latest', bandBars: 10 }
-// The band following the reader's scroll, and drawing every bar that fits.
+// The band following the reader's scroll, and drawing every dot that fits.
 const READING = { ...OPTIONS, bandPrompt: 'read' }
 const UNCAPPED = { ...OPTIONS, bandBars: 100 }
 const DRAWN = { type: 'Survey', props: {}, children: [] }
@@ -3057,7 +3057,7 @@ test('the mail word counts neither a stray file nor a directory in new/', async 
 
 // ---------------------------------------------------------------------------
 // The band's /config rows: cs.bandPrompt picks the prompt it names (the newest,
-// or the one being read), cs.bandBars the most bars before older prompts fold.
+// or the one being read), cs.bandBars the most dots before older prompts fold.
 
 test('by default the band names the newest prompt and draws its dot filled, wherever the reader is; a scroll redraws nothing', async () => {
   transcript(LINEAR)
@@ -3082,7 +3082,7 @@ test('with cs.bandPrompt read the band names the prompt being read and draws its
   expect(rail(tree)).toEqual(['○', '●', '○', '○'])
 })
 
-test('at most cs.bandBars bars draw; older prompts fold into …N and the prompt is still named', async () => {
+test('at most cs.bandBars dots draw; older prompts fold into …N and the prompt is still named', async () => {
   const many = [prompt('u1', null, 'p1')]
   for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
   transcript(many)
@@ -3106,7 +3106,7 @@ test('/config refuses a band value the band cannot draw, where it is typed, and 
     { key, value, previous: 10, provider: { plugin, tier: 'user' }, origin: { kind: 'composer' } },
     async (e: any) => ({ value: e.value }))
   for (const value of [0, -2, 2.5]) {
-    expect(await set('cs.bandBars', value)).toEqual({ deny: `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${value}` })
+    expect(await set('cs.bandBars', value)).toEqual({ deny: `cs.bandBars is the most dots the band draws, a whole number of 1 or more; got ${value}` })
   }
   expect(await set('cs.bandPrompt', 'first')).toEqual({ deny: 'cs.bandPrompt is latest or read; got first' })
   expect(await set('cs.bandPrompts', 'yes')).toEqual({ deny: 'cs.bandPrompts is on or off; got yes' })
@@ -3117,7 +3117,7 @@ test('/config refuses a band value the band cannot draw, where it is typed, and 
   expect(await set('theme', 'dark', 'engine')).toEqual({ value: 'dark' })
 })
 
-test('a bad band value already stored draws no bars and says so once; the rest of the mod still runs', async () => {
+test('a bad band value already stored draws no dots and says so once; the rest of the mod still runs', async () => {
   expect(() => register(on as any, { ...OPTIONS, bandBars: 0 })).not.toThrow()
   transcript(LINEAR)
   await turnComplete()
@@ -3131,10 +3131,10 @@ test('a bad band value already stored draws no bars and says so once; the rest o
   expect(rail(tree)).toEqual([])
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
   await band()
-  expect(toasts).toEqual(['the band draws no prompt bars: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
+  expect(toasts).toEqual(['the band draws no prompt dots: cs.bandBars is the most dots the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
 })
 
-test('by plugin.json\'s defaults the band draws no prompt bars and names no prompt; its other words still draw', async () => {
+test('by plugin.json\'s defaults the band draws no prompt dots and names no prompt; its other words still draw', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'))
   const defaults = Object.fromEntries(Object.entries(manifest.userConfig).map(([field, spec]: [string, any]) => [field, spec.default]))
   expect(defaults).toEqual({ bandPrompts: false, bandPrompt: 'latest', bandBars: 10 })
@@ -3150,7 +3150,7 @@ test('by plugin.json\'s defaults the band draws no prompt bars and names no prom
   expect(toasts).toEqual([])
 })
 
-test('with the prompt bars off, a scroll redraws nothing, whichever prompt the band would name', async () => {
+test('with the prompt dots off, a scroll redraws nothing, whichever prompt the band would name', async () => {
   register(on as any, { ...READING, bandPrompts: false })
   transcript(LINEAR)
   await turnComplete()
