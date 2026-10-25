@@ -404,18 +404,18 @@ prompt (the cs plugin's `userConfig`, stored by Claude Code in
 
 | Row | Values | Default | What it does |
 |-----|--------|---------|--------------|
-| `cs.bandPrompts` | on, off | off | Draws the rail: a dot per prompt and the name of one prompt before the dots; a press on a dot scrolls to its prompt. The band's other words draw either way. |
-| `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its dot as `●`. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
-| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt dots the band draws; older prompts fold into one `…N` run. |
+| `cs.bandPrompts` | on, off | off | Draws the rail: a tick per prompt and the name of one prompt before the ticks; a press on a tick scrolls to its prompt. The band's other words draw either way. |
+| `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its tick as `┃`. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
+| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt ticks the band draws; older prompts fold into one `…N` run. |
 
-`/config` refuses a value the band cannot draw (a dot count under 1 or not
+`/config` refuses a value the band cannot draw (a tick count under 1 or not
 whole), naming the row beside it. A bad value stored some other way, such
 as by editing `settings.json`, leaves the band without the rail and says so in
 one toast; the rest of the mod runs.
 
 ### Spinner tip
 
-Claude Code's spinner tips say how to turn on the prompt dots and the feed. The installer
+Claude Code's spinner tips say how to turn on the prompt ticks and the feed. The installer
 names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
 
 ```json

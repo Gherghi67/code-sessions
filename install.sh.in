@@ -1078,7 +1078,7 @@ else
         fi
     fi
     # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
-    # on the band's prompt dots. It is named in settings.json only while no
+    # on the band's prompt ticks. It is named in settings.json only while no
     # file is named there, the deployed tips file is a regular file (Claude
     # Code refuses a link), and the record allows it: "named" once cs named
     # it, "declined" once the person took it out, so cs -update never puts it
@@ -1123,7 +1123,7 @@ else
     _tips_name=""
     case "$_tips_record:$_tips_state" in
         *:foreign)
-            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt dots in /config) is left out"
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt ticks in /config) is left out"
             ;;
         *:not-object)
             warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"

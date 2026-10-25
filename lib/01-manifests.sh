@@ -167,7 +167,7 @@ CS_MOD_FILES=(
 
 # The cs tips file as install.sh names it in settings.json's
 # spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
-# tips, and cs's says how to turn on the band's prompt dots. Deployed with the
+# tips, and cs's says how to turn on the band's prompt ticks. Deployed with the
 # cs mod as cs/tips.json under ~/.claude/skills.
 # shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
 CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
