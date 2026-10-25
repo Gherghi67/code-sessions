@@ -134,6 +134,11 @@ expect {
 }
 EXPECT
     expect -f "$exp" >/dev/null 2>&1 || true
+    # Read the transcript as the screen shows it: the band layout colours
+    # every cell on its own, so a word's letters sit between colour escapes.
+    local esc; esc=$(printf '\033')
+    sed "s/${esc}\[[0-9;:]*m//g" "$out" > "$out.plain"
+    out="$out.plain"
     # A sample renders, and it renders BEFORE the question.
     local sample_line prompt_line
     sample_line=$(grep -n 'ctx' "$out" | head -1 | cut -d: -f1)
