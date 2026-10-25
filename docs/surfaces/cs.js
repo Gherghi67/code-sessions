@@ -546,7 +546,7 @@ ${tail}`,
       ] })
     ] });
   }
-  function commandReply(command, args, reply, errored = false) {
+  function commandReply(command, args, reply) {
     const el = elements();
     return el.Box({ flexDirection: "column", children: [
       el.Box({ flexDirection: "column", backgroundColor: "userMessageBackground", paddingRight: 1, children: [
@@ -554,7 +554,7 @@ ${tail}`,
       ] }),
       el.Box({ children: [
         el.Text({ dimColor: true, children: "  ⎿  " }),
-        el.Box({ flexDirection: "column", flexGrow: 1, children: [errored ? el.Text({ color: "error", wrap: "wrap", children: reply }) : el.Markdown({ text: reply })] })
+        el.Box({ flexDirection: "column", flexGrow: 1, children: [el.Markdown({ text: reply })] })
       ] })
     ] });
   }
@@ -732,7 +732,7 @@ ${tail}`,
     { id: "rail-desktop", name: "the rail on the desktop app, no hover cards", facts: facts({ surface: "desktop", rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) }
   ];
   var kebab = (key) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
-  var chromeStates = (lines) => Object.keys(lines).map((key) => ({ id: kebab(key), name: lines[key].name, draw: (cols) => lines[key].draw(cols) }));
+  var chromeStates = (lines) => Object.keys(lines).map((key) => ({ id: kebab(key), name: lines[key].name, draw: lines[key].draw }));
   var csToast = (text) => (cols) => toast("cs", text, cols);
   var TOAST_STATES = {
     queued: { name: "queuing a task with /queue", draw: csToast(TOASTS.queued("fix the login redirect")) },

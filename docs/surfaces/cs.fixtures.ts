@@ -166,11 +166,12 @@ export const STATES: BandState[] = [
 // person meets it with. Keyed by the tables' own keys, so a line added to a
 // table and not here fails the type-check.
 const kebab = (key: string) => key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)
-const chromeStates = <K extends string>(lines: Record<K, { name: string; draw: (cols: number) => RenderElement }>): State[] =>
-  (Object.keys(lines) as K[]).map(key => ({ id: kebab(key), name: lines[key].name, draw: (cols: number) => lines[key].draw(cols) }))
+type Line = { name: string; draw: (cols: number) => RenderElement }
+const chromeStates = <K extends string>(lines: Record<K, Line>): State[] =>
+  (Object.keys(lines) as K[]).map(key => ({ id: kebab(key), name: lines[key].name, draw: lines[key].draw }))
 
 const csToast = (text: string) => (cols: number) => toast('cs', text, cols)
-const TOAST_STATES: Record<keyof typeof TOASTS, { name: string; draw: (cols: number) => RenderElement }> = {
+const TOAST_STATES: Record<keyof typeof TOASTS, Line> = {
   queued: { name: 'queuing a task with /queue', draw: csToast(TOASTS.queued('fix the login redirect')) },
   bandOption: { name: 'loading the band with a /config value it cannot draw', draw: csToast(TOASTS.bandOption('cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0')) },
   promptNotDrawn: { name: 'jumping to a prompt no row has drawn since a resume', draw: csToast(TOASTS.promptNotDrawn) },
@@ -230,7 +231,7 @@ const MENU_STATES: State[] = [
 ]
 
 const csLog = (text: string) => (cols: number) => logRow('cs', text, cols)
-const LOG_STATES: Record<keyof typeof LOGS, { name: string; draw: (cols: number) => RenderElement }> = {
+const LOG_STATES: Record<keyof typeof LOGS, Line> = {
   featuresUnread: { name: 'ending a turn when the features word cannot be read', draw: csLog(LOGS.featuresUnread('spawn ENOENT')) },
   featuresExited: { name: 'ending a turn when cs refuses to list the features', draw: csLog(LOGS.featuresExited('work', 2, 'error: no such session')) },
   featuresUnreadable: { name: 'ending a turn when cs lists a feature the band cannot read', draw: csLog(LOGS.featuresUnreadable('work', 'fix-auth')) },

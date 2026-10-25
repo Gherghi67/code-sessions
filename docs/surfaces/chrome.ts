@@ -50,7 +50,7 @@ export function wrapRows(line: string, width: number): string[] {
 // wider than 44 cells or the terminal less two (UIe, ate), and no wider than
 // its widest row and the four cells of frame (jIe). Drawn at rest: the slide
 // in from the right edge and the leaving fade are motion.
-export const TOAST_WIDEST = 44
+const TOAST_WIDEST = 44
 const TOAST_FRAME = 4
 const TOAST_ROWS = 3
 export function toast(plugin: string, text: string, cols: number): RenderElement {
@@ -116,8 +116,9 @@ export function askDialog(dialog: Dialog, cols: number, focus = 0): RenderElemen
 // A slash command and its reply in the transcript: the command echoed as the
 // person's row (nl: `❯ /name args` on the user-message ground), then the
 // reply under the `  ⎿  ` connector, the connector dim and the reply drawn as
-// Markdown in the default ink, or wrapped in the error ink when it failed (Yn).
-export function commandReply(command: string, args: string, reply: string, errored = false): RenderElement {
+// Markdown in the default ink (Yn). A mod's command answers with text alone,
+// never as an error, so the error ink Yn also has is not drawn here.
+export function commandReply(command: string, args: string, reply: string): RenderElement {
   const el = elements()
   return el.Box({ flexDirection: 'column', children: [
     el.Box({ flexDirection: 'column', backgroundColor: 'userMessageBackground', paddingRight: 1, children: [
@@ -125,7 +126,7 @@ export function commandReply(command: string, args: string, reply: string, error
     ] }),
     el.Box({ children: [
       el.Text({ dimColor: true, children: '  ⎿  ' }),
-      el.Box({ flexDirection: 'column', flexGrow: 1, children: [errored ? el.Text({ color: 'error', wrap: 'wrap', children: reply }) : el.Markdown({ text: reply })] }),
+      el.Box({ flexDirection: 'column', flexGrow: 1, children: [el.Markdown({ text: reply })] }),
     ] }),
   ] })
 }

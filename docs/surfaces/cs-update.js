@@ -167,7 +167,7 @@
       ] })
     ] });
   }
-  function commandReply(command, args, reply, errored = false) {
+  function commandReply(command, args, reply) {
     const el = elements();
     return el.Box({ flexDirection: "column", children: [
       el.Box({ flexDirection: "column", backgroundColor: "userMessageBackground", paddingRight: 1, children: [
@@ -175,7 +175,7 @@
       ] }),
       el.Box({ children: [
         el.Text({ dimColor: true, children: "  ⎿  " }),
-        el.Box({ flexDirection: "column", flexGrow: 1, children: [errored ? el.Text({ color: "error", wrap: "wrap", children: reply }) : el.Markdown({ text: reply })] })
+        el.Box({ flexDirection: "column", flexGrow: 1, children: [el.Markdown({ text: reply })] })
       ] })
     ] });
   }
