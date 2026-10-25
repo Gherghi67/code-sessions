@@ -3346,7 +3346,7 @@ test('with every entry on, the band leaves out its lowest words, then shortens t
   }
   // 120, 80, 60 and 40 columns: the engine keeps five cells of each for the [-].
   expect(at(115)).toBe('  ● 3 features · fix-auth ready  ·  ctrl+x  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start  ·  mail 1')
-  expect(at(75)).toBe('  ● 3 features …  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start')
+  expect(at(75)).toBe('  ● 3 features…  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start')
   expect(at(55)).toBe('  ● 3…  ·  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queu…')
   expect(at(35)).toBe('  ● 3…  ·  1  ·  2  ·  3  ·  ▤…')
 })
@@ -3365,6 +3365,12 @@ test('a chord drawn as its key alone is still its Button, pressed by its action,
     ['cs-feed', 'strip:jump3', '3', [{ bold: true, color: OWN }]],
     ['cs-queue', undefined, '▤…', []],
   ])
+})
+
+test('a cut that lands after a space drops the space before the ellipsis, in the band\'s words and the rail\'s prompt alike', () => {
+  const shop = [{ uuid: 'u1', text: 'say one' }, { uuid: 'u2', text: 'go to the shop' }]
+  // 18 cells leave the named prompt 10: `#2 go to ` and `…`, the space dropped and the cell padded.
+  expect(textOf(gapLabel(drawBand(view({ bodyColumns: 18, rail: railOf(shop) }), EL)))).toBe('#2 go to… ')
 })
 
 test('when even the keys overrun, the band cuts the line from the right and keeps the mark', () => {

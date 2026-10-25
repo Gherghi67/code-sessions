@@ -1035,7 +1035,8 @@ function cellWidth(text: string): number {
   return graphemes(text).reduce((sum, grapheme) => sum + cellsOf(grapheme), 0)
 }
 
-// `text` at most `width` cells wide, ending in `…` when anything was cut.
+// `text` at most `width` cells wide, ending in `…` when anything was cut; a
+// cut that lands after a space drops the space, so the `…` sits on the word.
 function cutToCells(text: string, width: number): string {
   if (cellWidth(text) <= width) return text
   let fitted = ''
@@ -1046,7 +1047,7 @@ function cutToCells(text: string, width: number): string {
     fitted += grapheme
     used += cells
   }
-  return `${fitted}\u2026`
+  return `${fitted.trimEnd()}\u2026`
 }
 
 // `text` cut to `width` cells, with spaces after it to fill `width`.
