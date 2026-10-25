@@ -875,13 +875,16 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // into `…N ` before it and the newer into ` M…` after it, and the three
   // cells before it: the words fit what that leaves, so the status words drop
   // and the keys shorten before the rail goes. The actions outrank the rail:
-  // where the words cannot keep every action beside its least, they fit the
-  // whole line, and the rail takes what they leave, or nothing.
+  // where the words beside its least lose an action the whole line would
+  // keep, they fit the whole line, and the rail takes what they leave, or
+  // nothing. An action the whole line drops too (the count beside a bare
+  // clear key) is no reason for the rail to go.
   const reserved = v.rail === undefined ? 0 : railCells(v.rail.prompts.length, leastWindow(v.rail.named)) + GAP
   const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.map(entry => entry.key)
   const besideRail = fitBand(v.entries, chords, room - reserved)
   const keptActions = actionKeys(besideRail.entries)
-  const { entries, prefixed } = actionKeys(v.entries).every(key => keptActions.includes(key)) ? besideRail : fitBand(v.entries, chords, room)
+  const wholeLine = fitBand(v.entries, chords, room)
+  const { entries, prefixed } = actionKeys(wholeLine.entries).every(key => keptActions.includes(key)) ? besideRail : wholeLine
   // The Buttons carry no hotkey: a bare digit pressed them from an empty
   // composer, where a digit typed as the answer to a numbered question
   // belongs. A chord bound to each Button's action presses it instead, and

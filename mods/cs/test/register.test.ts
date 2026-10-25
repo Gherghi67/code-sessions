@@ -3493,6 +3493,9 @@ test('the countdown never stands beside a bare clear key: it leaves before `/cle
   expect(lineAt(counting, 24)).toBe('  ⣿ ctrl+x 1 /clear now')
   expect(lineAt(counting, 21)).toBe('  ⣿ 1 /clear now')
   expect(lineAt(counting, 14)).toBe('  ⣿ 1')
+  // A count that leaves for its key's sake is no action the rail can be owed:
+  // the line keeps the same actions either way, so the rail keeps its least.
+  expect(lineAt(counting, 24, { ...railOf(FOURTEEN), bars: 5 })).toBe('  ⣿ 1 /clear now   …13 ┃')
 })
 
 test('with no action to offer, what the session is still stands at the right edge, and the mark keeps the left', () => {
@@ -3539,7 +3542,8 @@ test('every combination of entries at every width from 40 to 200 draws one row n
       const hasSurvey = (bodyColumns >> 2) % 2 === 1
       const tree = drawBand(view({ entries, chords, rail, bodyColumns, hasSurvey }), EL)
       const kept = fitBand(entries, chords, bodyColumns - 2 - (hasSurvey ? 0 : 2) - RAIL_LEAST).entries.map(entry => entry.key)
-      const railOwed = rail !== undefined && entries.every(entry => !ACTION_KEYS.includes(entry.key) || kept.includes(entry.key))
+      const keptWhole = fitBand(entries, chords, bodyColumns - 2 - (hasSurvey ? 0 : 2)).entries.map(entry => entry.key)
+      const railOwed = rail !== undefined && keptWhole.every(key => !ACTION_KEYS.includes(key) || kept.includes(key))
       if (railOwed) railKept++
       if (tree === DRAWN) {
         if (railOwed) throw new Error(`entries ${bits} at ${bodyColumns} columns drew nothing where the rail had room`)
@@ -3553,9 +3557,9 @@ test('every combination of entries at every width from 40 to 200 draws one row n
   }
   // 512 combinations at 161 widths, less the empty one at the 81 widths without a rail.
   expect(drawn).toBe(512 * 161 - 81)
-  // The rail is on at 80 widths; at 416 of their 40960 lines the actions
-  // cannot all stand beside its least, and there it may go.
-  expect(railKept).toBe(80 * 512 - 416)
+  // The rail is on at 80 widths; at 304 of their 40960 lines beside its
+  // least the words lose an action the whole line keeps, and there it may go.
+  expect(railKept).toBe(80 * 512 - 304)
 }, 60000)
 
 // The same lines with cs.bandPrompt read, the named prompt anywhere: wherever
