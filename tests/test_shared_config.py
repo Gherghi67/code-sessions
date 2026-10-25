@@ -155,6 +155,41 @@ class SharedConfigTests(unittest.TestCase):
                              str(self.home / ".codex/sessions/new.jsonl"))
         self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 0)
 
+    def test_competing_database_creation_merges_without_losing_normal_threads(self):
+        src = self.database(self.profile, [("legacy-thread", str(self.profile / ".codex/sessions/old.jsonl"), "old"),
+                                            ("same", "/old/same", "old title")])
+        dst = self.home / ".codex/state_5.sqlite"
+        is_file = Path.is_file
+        created = False
+
+        def competing_creation(path):
+            nonlocal created
+            if path == dst and not created:
+                created = True
+                self.database(self.home, [("normal-thread", "/normal/thread", "normal"),
+                                           ("same", "/normal/same", "normal title")])
+                return False
+            return is_file(path)
+
+        with mock.patch.object(Path, "is_file", competing_creation):
+            count = migration.merge_threads(src, dst, self.home, True, None)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(dict(db.execute("SELECT id, title FROM threads")),
+                             {"normal-thread": "normal", "same": "normal title", "legacy-thread": "old"})
+            self.assertEqual(db.execute("SELECT rollout_path FROM threads WHERE id='legacy-thread'").fetchone()[0],
+                             str(self.home / ".codex/sessions/old.jsonl"))
+        self.assertEqual(count, 1)
+        self.assertEqual(list(dst.parent.iterdir()), [dst])
+
+    def test_first_database_publication_rewrites_paths_and_cleans_private_copy(self):
+        src = self.database(self.profile, [("legacy-thread", str(self.profile / ".codex/sessions/old.jsonl"), "old")])
+        dst = self.home / ".codex/state_5.sqlite"
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT rollout_path FROM threads").fetchone()[0],
+                             str(self.home / ".codex/sessions/old.jsonl"))
+        self.assertEqual(list(dst.parent.iterdir()), [dst])
+
     def test_schema_mismatch_rolls_back(self):
         src = self.database(self.profile, [("new", "/rollout", "source")])
         dst = self.database(self.home, [])

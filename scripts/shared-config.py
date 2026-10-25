@@ -191,17 +191,32 @@ def merge_threads(source, target, home, apply, backup_dir):
         return 0
     safe_target(target, home)
     if not target.is_file():
-        if apply:
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src, closing(sqlite3.connect(target)) as dst:
+        if not apply:
+            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src:
+                return src.execute("SELECT count(*) FROM threads").fetchone()[0]
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".shared-state-")
+        os.close(descriptor)
+        try:
+            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src, \
+                    closing(sqlite3.connect(temporary)) as dst:
                 src.backup(dst)
                 old = str(source.parent) + "/"
                 new = str(target.parent) + "/"
                 dst.execute("UPDATE threads SET rollout_path = ? || substr(rollout_path, ?) WHERE substr(rollout_path, 1, ?) = ?",
                             (new, len(old) + 1, len(old), old))
                 dst.commit()
-        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src:
-            return src.execute("SELECT count(*) FROM threads").fetchone()[0]
+                count = dst.execute("SELECT count(*) FROM threads").fetchone()[0]
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                # A native process created its database while the copy was made.
+                # Keep it authoritative and use the ordinary merge below.
+                safe_target(target, home)
+            else:
+                return count
+        finally:
+            os.unlink(temporary)
     with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src, \
             closing(sqlite3.connect(target.as_uri() + ("?mode=rw" if apply else "?mode=ro"), uri=True, timeout=30)) as dst:
         incoming = {r[0] for r in src.execute("SELECT id FROM threads")} - {r[0] for r in dst.execute("SELECT id FROM threads")}
