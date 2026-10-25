@@ -1696,7 +1696,9 @@ function bdKeys(e){
 function composeUI(){
   $("bd-canvas").addEventListener("click",bdClick);
   $("bd-state").addEventListener("input",e=>{ $("va-state").value=e.target.value; });
-  $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
+  // Cols commits on change (Enter, leaving, a step arrow), not per keystroke,
+  // which would lay the band out at 1, then 12, on the way to 120.
+  $("bd-cols").addEventListener("change",e=>{ $("cols").value=e.target.value; renderAll(); e.target.value=cols(); });
   $("bd-zoom").addEventListener("input",e=>{ bdZoom=e.target.value==="fit"?"fit":+e.target.value; });
   // A render would tear down an open inline or rename field, and its blur
   // would commit the half-typed words; closing the field renders at the new size.
@@ -1879,7 +1881,7 @@ function renderAll(){
 }
 sitesUI(); composeUI(); variantsUI(); buildRail(); buildIndex(); finderUI();
 const headH=()=>document.documentElement.style.setProperty("--head-h",document.querySelector(".head").offsetHeight+"px"); new ResizeObserver(headH).observe(document.querySelector(".head")); headH();
-document.querySelectorAll("input,select,textarea").forEach(el=>el.addEventListener("input",()=>{ renderAll(); tick(el.closest(".lab")?.querySelector(".term")); }));
+document.querySelectorAll("input:not(#bd-cols),select,textarea").forEach(el=>el.addEventListener("input",()=>{ renderAll(); tick(el.closest(".lab")?.querySelector(".term")); }));
 renderAll(); copyButtons();
 show(location.hash.slice(1)||"compose",false);
 </script>
