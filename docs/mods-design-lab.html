@@ -25,6 +25,7 @@
   --warning:#F0C349; --error:#FF6B6B; --texttok:#E6E1DA;
   --canvas:#111110;
 }
+:root[data-theme="dark"]{color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--fg);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding-block:28px;padding-inline:clamp(16px,4vw,48px)}
 h1{font-size:22px;font-weight:600;margin:0 0 4px;letter-spacing:-.01em}
@@ -154,7 +155,6 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 body.app{overflow:hidden}
 body.app .rail,body.app .head{display:none}
 #p-compose.on{position:fixed;inset:0;z-index:6;background:var(--page);display:grid;grid-template-rows:auto minmax(0,1fr);animation:none}
-/* One slim row: tools left, the export frame's name centred, view right. */
 .appbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;height:40px;padding:0 8px;border-bottom:1px solid var(--line);background:var(--panel);font-size:12px;color:var(--fg2)}
 .appbar > div{display:flex;align-items:center;gap:10px;min-width:0}
 .appbar .bar-r{justify-content:flex-end}
@@ -196,8 +196,6 @@ body.app .rail,body.app .head{display:none}
 .canvas-pane #bd-note{margin:12px 16px 0}
 #bd-canvas{min-height:100%;padding:48px 48px 64px}
 #bd-ch{position:absolute;visibility:hidden;font:100px "JetBrains Mono",ui-monospace,Menlo,monospace}
-/* Inspector: Design (the selected node's props, or the export frame's
-   summary), Code (its JSX) and History, one tab at a time. */
 .inspector{background:var(--panel);border-left:1px solid var(--line);font-size:12px}
 .itabs{position:sticky;top:0;z-index:1;display:flex;gap:2px;padding:6px 8px 0;background:var(--panel);border-bottom:1px solid var(--line)}
 .itabs button{font:inherit;font-size:12px;font-weight:500;background:none;border:0;border-bottom:2px solid transparent;color:var(--fg2);padding:0 8px;height:30px;cursor:pointer}
@@ -250,7 +248,7 @@ body.app .rail,body.app .head{display:none}
 .fhead label.inline{display:flex;gap:4px;align-items:center;min-height:24px;cursor:pointer}
 .fhead .fname-edit{font:500 12px "IBM Plex Sans",sans-serif;padding:1px 4px}
 .fhead :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.frame .term{cursor:default;user-select:none;font-size:var(--fs,15px);padding:.9em 1.2em .7em;overflow:visible;border:0;box-shadow:0 0 0 1px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.08),0 6px 20px rgba(0,0,0,.08)}
+.frame .term{cursor:default;user-select:none;font-size:var(--fs,15px);padding:.9em 1.2em .7em;overflow:visible;border:0;box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 10%,transparent),0 1px 2px rgba(0,0,0,.08),0 6px 20px rgba(0,0,0,.08)}
 @media (prefers-reduced-motion:reduce){.fhead .quiet{transition:none}}
 .frame .sel{position:absolute;outline:1px solid var(--accent);pointer-events:none}
 .frame .inline-edit{position:absolute;margin:0;padding:0 1px;border:0;outline:1px solid var(--accent);background:var(--term);color:var(--term-fg);font:inherit;font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:var(--fs,15px);line-height:1.35}
@@ -1283,7 +1281,7 @@ function cpField([name,kind,extra],v){
   if(kind==="select") return row(`<select name="${name}" data-prop="${name}" data-kind="text">${extra.map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select>`);
   return row(`<input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}">`);
 }
-// The groups folded shut, kept across selections.
+// The groups folded shut stay shut across selections.
 const bdShut=new Set();
 // With nothing selected the panel names the export frame and how it fits.
 function cpFrameSummary(){
@@ -1670,8 +1668,8 @@ function bdKeys(e){
   const doc=bdDocNow(), sel=doc.selection;
   if(!$("p-compose").classList.contains("on")) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")||$("bd-help").open) return;
-  if((e.key==="Enter"||e.key===" ")&&document.activeElement?.closest?.("button,a")) return;
-  if(document.activeElement?.closest?.("[role=tablist]")) return;
+  if((e.key==="Enter"||e.key===" ")&&document.activeElement?.closest("button,a")) return;
+  if(document.activeElement?.closest("[role=tablist]")) return;
   if(e.key==="?"){ e.preventDefault(); e.stopImmediatePropagation(); return $("bd-help").showModal(); }
   if((e.metaKey||e.ctrlKey)&&(e.key==="="||e.key==="+"||e.key==="-"||e.key==="0")){ e.preventDefault(); e.stopImmediatePropagation(); if(e.key==="0"){ bdZoom="fit"; return composeRender(); } return bdZoomBy(e.key==="-"?-1:1); }
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
@@ -1699,7 +1697,7 @@ function composeUI(){
   $("bd-cols").addEventListener("input",e=>{ $("cols").value=e.target.value; });
   $("bd-zoom").addEventListener("input",e=>{ bdZoom=e.target.value==="fit"?"fit":+e.target.value; });
   new ResizeObserver(()=>{ if(bdZoom==="fit"&&$("p-compose").classList.contains("on")) composeRender(); }).observe($("bd-canvas").parentElement,{box:"border-box"});
-  document.fonts?.ready.then(()=>composeRender());
+  document.fonts.ready.then(()=>composeRender());
   $("bd-theme").onclick=()=>{ $("theme").value=theme()==="light"?"dark":"light"; renderAll(); };
   document.querySelectorAll("[data-insert]").forEach(b=>b.onclick=()=>bdInsert(b.dataset.insert));
   $("bd-undo").onclick=()=>bdTravel(-1); $("bd-redo").onclick=()=>bdTravel(1);
