@@ -119,19 +119,21 @@
     return grid([]);
   }
 
-  // A Button draws its label; `plain` drops the engine's brackets. The hotkey
-  // is the engine's own prefix, not part of the label. Children, when there
-  // are any, draw in the label's place as inline runs (strings and Text), and
-  // the label only names the control.
+  // A Button as the 2.1.310 terminal draws it: a plain one is its hotkey in
+  // suggestion, `: `, then its label, or the label alone with no hotkey; any
+  // other is `[ label ]` bold, in suggestion for variant primary, and never
+  // shows its hotkey. Children, when there are any, draw in the label's place
+  // as inline runs (strings and Text), inside the brackets. The engine reads
+  // no colour or bold of a Button's own.
   function layoutButton(node, width, path) {
     var p = node.props || {};
-    var st = styleOf({ color: p.color, dimColor: p.dimColor, bold: p.bold });
+    var st = styleOf(p.plain ? { dimColor: p.dimColor } : { dimColor: p.dimColor, bold: true, color: p.variant === "primary" ? "suggestion" : "" });
     var drawn = (node.children || []).some(function (k) { return k != null && k !== false && k !== ""; });
     var body = drawn ? textCells({ props: {}, children: node.children }, st, path) : run(p.label == null ? "" : String(p.label), st, path);
-    if (!p.plain) body = run("[ ", st, path).concat(body, run(" ]", st, path));
-    var cells = [];
-    if (p.hotkey) cells = cells.concat(run(String(p.hotkey) + ": ", { color: "suggestion", bold: true, bg: "", dim: false, italic: false, underline: false, strikethrough: false, inverse: false }, path));
-    cells = cells.concat(body);
+    var cells;
+    if (!p.plain) cells = run("[ ", st, path).concat(body, run(" ]", st, path));
+    else if (p.hotkey) cells = run(String(p.hotkey), mergeStyle(st, { color: "suggestion" }), path).concat(run(": ", st, path), body);
+    else cells = body;
     return grid([cells.slice(0, Math.max(0, width))]);
   }
 

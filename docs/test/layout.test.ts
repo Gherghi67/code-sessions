@@ -215,3 +215,38 @@ test('a row Box with gaps and justify slack paints the whole band', () => {
   expect(toText(g)).toEqual(['a        b'])
   expect(g.rows[0].every((c: any) => c.st.bg === 'rgb(9,9,9)')).toBe(true)
 })
+
+// Button chrome as the 2.1.310 bundle's terminal Button draws it (function
+// `rr`): plain is a Text of `{hotkey in suggestion}: ` then the label, or the
+// label alone with no hotkey; any other Button is one bold Text `[ label ]`
+// that never shows its hotkey, in suggestion only for variant primary.
+// Children replace the label, inside the brackets when not plain.
+const Btn = (props: any, ...children: any[]) => ({ type: 'Button', props, children })
+test('a Button that is not plain draws [ label ] bold and never its hotkey', () => {
+  const g = layout(Btn({ label: 'Feed', hotkey: '1' }), 40)
+  expect(toText(g)).toEqual(['[ Feed ]'])
+  expect(g.rows[0].every((c: any) => c.st.bold === true)).toBe(true)
+  expect(g.rows[0][2].st.color).toBe('')
+  expect(layout(Btn({ label: 'go', variant: 'primary' }), 40).rows[0][2].st).toMatchObject({ color: 'suggestion', bold: true })
+})
+
+test('a plain Button draws hotkey: label with the hotkey in suggestion, or the label alone', () => {
+  const g = layout(Btn({ label: 'update now', hotkey: '1', plain: true }), 40)
+  expect(toText(g)).toEqual(['1: update now'])
+  expect(g.rows[0][0].st).toMatchObject({ color: 'suggestion', bold: false })
+  expect(g.rows[0][1].st).toMatchObject({ color: '', bold: false })
+  expect(toText(layout(Btn({ label: 'rotate', plain: true }), 40))).toEqual(['rotate'])
+})
+
+test('a Button\'s children replace its label, inside the brackets when it is not plain', () => {
+  const kids = ['feed ', T({ color: 'claude' }, '✓')]
+  expect(toText(layout(Btn({ label: 'feed ✓' }, ...kids), 40))).toEqual(['[ feed ✓ ]'])
+  const g = layout(Btn({ label: 'feed ✓', plain: true }, ...kids), 40)
+  expect(toText(g)).toEqual(['feed ✓'])
+  expect(g.rows[0][5].st.color).toBe('claude')
+})
+
+test('a dim Button draws dim, and a colour or bold set on a Button is not the engine\'s to read', () => {
+  expect(layout(Btn({ label: 'x', plain: true, dimColor: true }), 40).rows[0][0].st.dim).toBe(true)
+  expect(layout(Btn({ label: 'x', plain: true, color: 'claude', bold: true }), 40).rows[0][0].st).toMatchObject({ color: '', bold: false })
+})
