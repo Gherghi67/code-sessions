@@ -1,0 +1,82 @@
+// ABOUTME: Tests for the lab's surface registry: each bundled mod surface, its states drawn by the mod's own code, and its parts.
+// ABOUTME: Expected rows are read off the mods' draw code by hand, never off the lab's own output.
+import { test, expect } from 'bun:test'
+import { SURFACES, state, surface } from './surfaces.ts'
+const { layout, toText, validate } = require('../mods-layout.js')
+
+const rows = (id: string, cols: number, width = cols) => toText(layout(state(id).draw(cols, 'light'), width)).map((r: string) => r.replace(/\s+$/, ''))
+
+test('every surface is named <mod>.<slot> and comes from a generated bundle', () => {
+  for (const s of SURFACES) {
+    expect({ id: s.id, prefix: s.id.startsWith(`${s.mod}.${s.slot}`), source: s.source }).toEqual({ id: s.id, prefix: true, source: 'generated' })
+  }
+  expect(new Set(SURFACES.map((s: any) => s.id)).size).toBe(SURFACES.length)
+})
+
+test('every state has a unique id, a name, and draws a tree the engine accepts, light and dark', () => {
+  for (const s of SURFACES) {
+    expect({ surface: s.id, unique: new Set(s.states.map((x: any) => x.id)).size === s.states.length }).toEqual({ surface: s.id, unique: true })
+    for (const st of s.states) for (const theme of ['light', 'dark']) {
+      const tree = st.draw(80, theme)
+      expect({ frame: `${s.id}/${st.id}/${theme}`, named: st.name.length > 0, refused: validate(tree) }).toEqual({ frame: `${s.id}/${st.id}/${theme}`, named: true, refused: [] })
+    }
+  }
+})
+
+// A node of a state's tree by child index path, as a layout cell names it.
+const partNode = (surfaceId: string, part: any) => {
+  let n = state(`${surfaceId}/${part.state}`).draw(80, 'light')
+  for (const i of part.path) n = n && typeof n === 'object' ? n.children[i] : undefined
+  return n
+}
+test('every part names an element of its state', () => {
+  for (const s of SURFACES) for (const p of s.parts) {
+    const n = partNode(s.id, p)
+    expect({ part: `${s.id}#${p.id}`, element: !!n && typeof n === 'object' }).toEqual({ part: `${s.id}#${p.id}`, element: true })
+  }
+})
+
+// drawPane: a column padded one cell each side; the title, a blank row, the
+// phase lines, then each section after a blank row: its version, then each
+// kept line verbatim (parseSpan strips the marks and keeps a continuation's indent).
+test('cs-update draws the pane with its notes, keys above them', () => {
+  expect(rows('cs-update.Pane.cs-update/idle-notes', 80)).toEqual([
+    ' cs 2026.10.25 is available',
+    '',
+    ' 1: update now   Esc: later',
+    ' Installs in place; the new files take effect on your next launch.',
+    '',
+    ' 2026.10.25',
+    " - The band's mark keeps its colour",
+    ' - cs -update checks the signature',
+    '   before it installs',
+    '',
+    ' 2026.10.20',
+    ' - A link survives as text',
+  ])
+})
+
+test('cs-update says the notes were not fetched, and names the version', () => {
+  expect(rows('cs-update.Pane.cs-update/idle-no-notes', 80).slice(-1)).toEqual([' Release notes could not be fetched at launch; the update is 2026.10.25.'])
+})
+
+test('cs-update retires the key once the update is done, and keeps it after a failure', () => {
+  expect(rows('cs-update.Pane.cs-update/done', 80).slice(2, 4)).toEqual([' Update finished. Takes effect on your next launch.', ' Esc: close'])
+  expect(rows('cs-update.Pane.cs-update/failed-no-bin', 80).slice(2, 4)).toEqual([' The launch did not say where cs is; run `cs -update` from a shell.', ' 1: update now   Esc: later'])
+  expect(rows('cs-update.Pane.cs-update/running', 80)[2]).toBe(' updating… running cs -update 2026.10.25')
+})
+
+// The version heading is bold in the session colour as rgb (SESSION_PALETTE
+// blue, 106,155,204), and in the default ink for a session with none.
+test('cs-update paints the release heading in the session colour', () => {
+  const heading = (id: string) => layout(state(id).draw(80, 'light'), 80).rows[5][1].st
+  expect(heading('cs-update.Pane.cs-update/idle-notes')).toMatchObject({ color: 'rgb(106,155,204)', bold: true })
+  expect(heading('cs-update.Pane.cs-update/idle-no-colour')).toMatchObject({ color: '', bold: true })
+})
+
+test('cs-update parts name the hotkey Button and a release heading', () => {
+  const s = surface('cs-update.Pane.cs-update')
+  const at = (id: string) => partNode(s.id, s.parts.find((x: any) => x.id === id))
+  expect(at('update-key')).toMatchObject({ type: 'Button', props: { key: 'cs-update-now', hotkey: '1', label: 'update now' } })
+  expect(at('release-heading')).toMatchObject({ type: 'Text', children: ['2026.10.25'] })
+})
