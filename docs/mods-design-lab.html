@@ -9,21 +9,21 @@
   --term:#F6F2EA; --term-fg:#2E2A26; --surface:#E3DCD2; --ink:#4F4A44; --ink2:#7D766E;
   --coral:#D97757; --amber:#B45309; --crit:#D70015; --hot:#5769F7; --neutral:#2E2A26;
   --claude:#D97757; --warning:#B8860B; --error:#C62828; --texttok:#2E2A26;
-  --canvas:#DEDDDA;
+  --canvas:#DEDDDA; --canvas-ink:#635B52; --accent-ink:#3B4CC9; --canvas-error:#B01E1E;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
   --page:#1B1917; --panel:#232019; --line:#3A352F; --fg:#EDE7DF; --fg2:#A39A8F;
   --term:#1E1B18; --term-fg:#E6E1DA; --surface:#8C847A; --ink:#F2EEE8; --ink2:#DCD6CE;
   --amber:#FDE68A; --crit:#FF453A; --hot:#929EFA; --neutral:#E6E1DA;
   --warning:#F0C349; --error:#FF6B6B; --texttok:#E6E1DA;
-  --canvas:#111110;
+  --canvas:#111110; --canvas-ink:#A39A8F; --accent-ink:#929EFA; --canvas-error:#FF6B6B;
 }}
 :root[data-theme="dark"]{
   --page:#1B1917; --panel:#232019; --line:#3A352F; --fg:#EDE7DF; --fg2:#A39A8F;
   --term:#1E1B18; --term-fg:#E6E1DA; --surface:#8C847A; --ink:#F2EEE8; --ink2:#DCD6CE;
   --amber:#FDE68A; --crit:#FF453A; --hot:#929EFA; --neutral:#E6E1DA;
   --warning:#F0C349; --error:#FF6B6B; --texttok:#E6E1DA;
-  --canvas:#111110;
+  --canvas:#111110; --canvas-ink:#A39A8F; --accent-ink:#929EFA; --canvas-error:#FF6B6B;
 }
 :root[data-theme="dark"]{color-scheme:dark}
 *{box-sizing:border-box}
@@ -180,7 +180,7 @@ body.app .rail,body.app .head{display:none}
 .frow:focus-visible,.lrow:focus-visible,.seed select:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .frow .lname,.lrow .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lrow .lname.words{font-family:"JetBrains Mono",monospace;font-size:11.5px}
-.frow .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+.frow .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-ink)}
 #bd-frames .fname-edit{width:calc(100% - 20px);margin:1px 10px;font:inherit;padding:2px 4px}
 .seed{padding:4px 12px 2px}
 .seed select{width:100%;font-size:12px;padding:3px 4px}
@@ -236,13 +236,13 @@ body.app .rail,body.app .head{display:none}
 .inspector .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
 .frame{width:max-content;margin:0 auto 56px}
 .frame .strip{position:relative}
-.fhead{display:flex;gap:10px;align-items:center;min-height:26px;margin:0 0 4px;font-size:12px;color:var(--fg2)}
-.fhead button{font:inherit;font-size:12px;background:none;color:var(--fg2);border:1px solid transparent;border-radius:3px;padding:0 6px;height:24px;cursor:pointer}
+.fhead{display:flex;gap:10px;align-items:center;min-height:26px;margin:0 0 4px;font-size:12px;color:var(--canvas-ink)}
+.fhead button{font:inherit;font-size:12px;background:none;color:var(--canvas-ink);border:1px solid transparent;border-radius:3px;padding:0 6px;height:24px;cursor:pointer}
 .fhead button:hover:not(:disabled){color:var(--fg);border-color:var(--line)}
 .fhead button:disabled{opacity:.45;cursor:default}
-.fhead .fname{font-weight:500;color:var(--fg2);padding:0 2px}
-.frame.on .fhead .fname{color:var(--accent)}
-.fhead .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+.fhead .fname{font-weight:500;color:var(--canvas-ink);padding:0 2px}
+.frame.on .fhead .fname{color:var(--accent-ink)}
+.fhead .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-ink)}
 .fhead .quiet{display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .12s ease-out}
 .frame:hover .quiet,.frame.on .quiet,.frame:focus-within .quiet{opacity:1}
 .fhead label.inline{display:flex;gap:4px;align-items:center;min-height:24px;cursor:pointer}
@@ -255,6 +255,7 @@ body.app .rail,body.app .head{display:none}
 .frame .drop{position:absolute;background:var(--accent);pointer-events:none}
 .frame .sel .tag{position:absolute;bottom:100%;left:-1px;margin-bottom:2px;font:10.5px/1.4 "IBM Plex Sans",sans-serif;background:var(--accent);color:#fff;padding:0 5px;white-space:nowrap}
 #bd-note,.frame .refuse,.vcell .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
+.canvas-pane #bd-note,.frame .refuse,.frame p.why.no{color:var(--canvas-error)}
 /* ---- band variants ---- */
 .vrow{margin:0 0 26px}
 .vrow > .why{color:var(--fg2);font-size:12.5px;margin:0 0 8px;max-width:90ch}
