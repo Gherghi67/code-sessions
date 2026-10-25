@@ -3,11 +3,11 @@
 import type { RenderElement } from 'claude-code'
 import {
   AMBER_AT, ASKS, COMMANDS, CRIT_AT, FEED_ACTION, LOGS, MARK_INK, REPLIES, ROTATE_ACTION, TOASTS, WRAP_ACTION,
-  bandState, buildBandEntries, countdownColor, drawBand, featuresWordOf, finishToast, paletteColor,
+  bandState, buildBandEntries, countdownColor, drawBand, featuresWordOf, finishToast, gateElapsed, paletteColor,
   type BandView, type FeatureRecord, type FinishRecord,
 } from '../../mods/cs/hooks/register.tsx'
 import { askDialog, commandReply, inlineToast, logRow, menuRows, toast } from './chrome.ts'
-import { elements, type State, type Surface, type Theme } from './registry.ts'
+import { elements, timer, type Motion, type State, type Surface, type Theme } from './registry.ts'
 
 // What the AbovePrompt hook has read by the time it builds the band: its
 // buildBandEntries facts without the presses, and what else drawBand is
@@ -104,6 +104,35 @@ export function band(f: Facts, cols: number, theme: Theme): RenderElement {
   return drawBand(viewOf(f, cols, theme), elements())
 }
 
+// The /finish gate the band's states show, run for 72 s when the state
+// begins. Its word is gateWord's (register.tsx), which reads the clock
+// through the engine and is not exported: `finishing <task> · gate <time>`,
+// the task short enough that cutTask leaves it whole.
+const GATE = { task: 'fix-auth', seconds: 72 }
+const gateWord = (seconds: number) => `finishing ${GATE.task} \u00b7 gate ${gateElapsed(seconds)}`
+
+// The facts `t` ms after the state begins, as the hook reads them then: the
+// count a second down per second (startCountdown's `left -= 1`), holding at
+// zero, and the gate's time a second on per second.
+function factsAt(f: Facts, t: number): Facts {
+  const seconds = Math.floor(t / 1000)
+  if (f.gate !== undefined && f.gate !== gateWord(GATE.seconds)) throw new Error(`cs fixture: a gate word is GATE's, at its start; got ${JSON.stringify(f.gate)}`)
+  return {
+    ...f,
+    countdown: f.countdown && { seconds: Math.max(0, f.countdown.seconds - seconds) },
+    gate: f.gate === undefined ? undefined : gateWord(GATE.seconds + seconds),
+  }
+}
+
+// How a band state moves: a countdown to its zero, a gate's time for as long
+// as the lab plays a clock that counts up; both redraw once a second.
+function motionOf(f: Facts): Motion | undefined {
+  const start = f.countdown?.seconds
+  if (start !== undefined) return { tick: 1000, duration: start * 1000, count: t => `${Math.max(0, start - Math.floor(t / 1000))}s left` }
+  if (f.gate !== undefined) return timer(1000)
+  return undefined
+}
+
 const feature = (state: string, ahead = 2): FeatureRecord => ({ task: 'fix-auth', ahead, state })
 const word = (records: FeatureRecord[], pressable: boolean) => {
   const w = featuresWordOf(records)
@@ -132,7 +161,7 @@ export const STATES: BandState[] = [
   { id: 'feed-on', name: 'idle, the feed on', facts: facts({ feed: { on: true } }) },
   { id: 'queue-waiting', name: 'tasks queued, nothing running them', facts: facts({ waiting: 3 }) },
   { id: 'queue-running', name: 'the queue running its tasks', facts: facts({ queued: 3, queueRunning: true }) },
-  { id: 'gate-running', name: 'a /finish gate running', facts: facts({ gate: 'finishing fix-auth · gate 1m 12s' }) },
+  { id: 'gate-running', name: 'a /finish gate running', facts: facts({ gate: gateWord(GATE.seconds) }) },
   { id: 'mail', name: 'mail from another session', facts: facts({ mail: 2 }) },
   { id: 'features-ready', name: 'a feature ready to finish', facts: facts({ featured: word([feature('ready'), feature('dirty'), feature('merged')], true) }) },
   // Every word an idle band can carry at once: the most a line is asked to hold.
@@ -149,7 +178,7 @@ export const STATES: BandState[] = [
   { id: 'armed-with-queue', name: 'handoff armed with tasks queued', facts: facts({ rotating: true, armed: true, due: true, queued: 3 }) },
   { id: 'due-midturn', name: 'a turn running past the threshold, with mail', facts: facts({ due: true, mail: 2 }) },
   { id: 'queued-blocked', name: 'tasks queued while a turn runs', facts: facts({ queued: 3 }) },
-  { id: 'survey-gate', name: 'a survey up while a /finish gate runs', facts: facts({ survey: true, gate: 'finishing fix-auth · gate 1m 12s' }) },
+  { id: 'survey-gate', name: 'a survey up while a /finish gate runs', facts: facts({ survey: true, gate: gateWord(GATE.seconds) }) },
   { id: 'features-many-ready', name: 'several features ready to finish', facts: facts({ featured: word([feature('ready'), feature('ready'), feature('dirty')], true) }) },
   ...ONE_FEATURE.map(([sid, record]): BandState => ({ id: `features-one-${sid}`, name: sid === 'ready' ? 'one feature, ready to finish' : `one feature, not ready: ${sid.replace('-', ' ')}`, facts: facts({ featured: word([record], true) }) })),
   { id: 'features-none-ready', name: 'several features, none ready', facts: facts({ featured: word([feature('dirty'), feature('locked'), feature('staged')], true) }) },
@@ -258,7 +287,10 @@ export const surfaces: Surface[] = [{
   source: 'generated',
   global: 'CsSurfaces',
   chrome: { kind: 'above-prompt' },
-  states: STATES.map(s => ({ id: s.id, name: s.name, draw: (cols: number, theme: Theme) => band(s.facts, cols, theme) })),
+  states: STATES.map((s): State => {
+    const motion = motionOf(s.facts)
+    return { id: s.id, name: s.name, draw: (cols, theme, t = 0) => band(factsAt(s.facts, t), cols, theme), ...(motion && { motion }) }
+  }),
   parts: [
     { id: 'band-mark', name: 'band mark', state: 'rotate-due', path: [1, 0, 0] },
     { id: 'chord', name: 'chord key', state: 'rotate-due', path: [1, 0, 2] },

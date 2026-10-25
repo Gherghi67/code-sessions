@@ -855,6 +855,24 @@ lab refuses every edit of it and says why. A state that holds a Markdown or a Co
 node opens as a reference frame: you can select and inspect it, and the lab
 refuses every edit of it and says why.
 
+A state that moves (a spinner, a breathing mark, a countdown, a timer) has a
+play button and a scrubber in its frame's head. The state's draw function
+takes the moment `t`, in milliseconds since the state began, and its fixture
+turns `t` into the clock the mod reads: `Context.now`, the band's frame,
+the countdown's seconds, an elapsed time. The state declares its `motion`:
+the step its mod redraws at (`tick`: 70 ms for cs-feed's spinner and
+breathing mark, 1 s for a countdown or a timer, 64 or 112 ms for the
+working line, whose 50 or 100 ms Claude Code rounds up to whole 16 ms
+frames) and how long the lab plays it (a countdown to its zero, a
+timer for five minutes rounded up to a whole tick). Play redraws only that
+frame, from the mod's code, at the state's tick, and holds the last moment
+at the end. Space plays or pauses the selected frame, and a press of play
+selects its frame. A frame scrubbed or played away from 0 is only looked
+at: the lab refuses an edit of it and says why, and the Inspector reads
+the selected node as the mod draws it at that moment. Nothing plays on
+load, and with reduced motion asked for, play moves one tick per press.
+The variants gallery stays still.
+
 Under each mod, after the surfaces it draws itself, the Components tab lists
 the rows Claude Code draws around the mod's words, under "Drawn by Claude
 Code": its toasts, the `$.ui.ask` dialog, a slash command's reply, its slash

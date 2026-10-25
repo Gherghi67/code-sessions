@@ -6,9 +6,9 @@ import type { Observations } from '../../mods/cs-feed/hooks/session.ts'
 import { DEFAULT_VIEW, PRESETS, modeOf, parseFeedArgs, transition, type Session, type View } from '../../mods/cs-feed/hooks/settings.ts'
 import { callId, type CallId, type FiledCall, type Outcome, type Run, type Transcript, type Turn } from '../../mods/cs-feed/hooks/transcript.ts'
 import { decideSpinner, sessionModes, type BandVerdict, type CallVerdict, type CallView, type Context, type GroupVerdict, type HelperBlock, type ReplyVerdict, type UserVerdict } from '../../mods/cs-feed/hooks/verdict.ts'
-import { commands, errorLine, logs, marks, replies } from '../../mods/cs-feed/hooks/words.ts'
+import { commands, errorLine, helperCounts, logs, marks, replies } from '../../mods/cs-feed/hooks/words.ts'
 import { backgroundHint, commandReply, footerModes, logRow, menuRows, nothing, turnLine, workingLine } from './chrome.ts'
-import { elements, type State, type Surface, type Theme } from './registry.ts'
+import { elements, timer, type State, type Surface, type Theme } from './registry.ts'
 
 // ---- one turn's transcript: three shell commands and a read, one refused run, a helper ----
 const id = (n: number): CallId => callId(`toolu_${String(n).padStart(2, '0')}`)
@@ -43,13 +43,18 @@ const observations = (): Observations => ({
 
 // The terminal's name margin is 7 cells, and a row's text has the rest.
 const PAD = 7
-const context = (cols: number, view: View, t: Transcript): Context => ({ t, view, obs: observations(), opened: new Set(), phase: 'idle', agents: [], now: 0, surface: 'terminal', clickable: false, room: cols - PAD })
-const pen = (cols: number, theme: Theme, over: { clickable?: boolean; view?: View; pad?: number; t?: Transcript } = {}): Pen => {
-  const cx = context(cols, over.view ?? DEFAULT_VIEW, over.t ?? transcript)
+const context = (cols: number, view: View, t: Transcript, now = 0): Context => ({ t, view, obs: observations(), opened: new Set(), phase: 'idle', agents: [], now, surface: 'terminal', clickable: false, room: cols - PAD })
+const pen = (cols: number, theme: Theme, over: { clickable?: boolean; view?: View; pad?: number; t?: Transcript; now?: number } = {}): Pen => {
+  const cx = context(cols, over.view ?? DEFAULT_VIEW, over.t ?? transcript, over.now)
   return { el: elements(), ink: inks(theme === 'light'), room: cx.room, pad: over.pad ?? PAD, clickable: over.clickable ?? false, press: async () => {}, helpers: async () => {}, cx: { ...cx, clickable: over.clickable ?? false } }
 }
-type Draw = (cols: number, theme: Theme) => RenderElement
+type Draw = (cols: number, theme: Theme, t?: number) => RenderElement
 const state = (id: string, name: string, draw: Draw): State => ({ id, name, draw })
+// A state whose clock runs: `draw` reads `t` as the ms since it began, as
+// the hook reads Date.now(), and the mod redraws it every `tick` ms.
+const moving = (id: string, name: string, tick: number, draw: Draw): State => ({ id, name, draw, motion: timer(tick) })
+// The pulse (session.ts PULSE: an animation frame, 70 ms) and the tick (1 s).
+const PULSE = 70, TICK = 1000
 
 // ---- UserMessage ----
 const PROMPT_AT = new Date(2026, 9, 25, 9, 41).getTime()
@@ -120,23 +125,28 @@ const toolStates: State[] = [
   state('call-done', 'skimming a finished call', call({ draw: 'call', call: view(at(2)), filed: at(2), opened: false })),
   state('call-errored', 'told a call failed', call({ draw: 'call', call: view(at(4), { isErrored: true, output: 'fatal: not a git repository' }), opened: false })),
   state('call-opened', "reading a finished call's output", call({ draw: 'call', call: view(at(1)), filed: at(1), opened: true })),
-  ...(['dispatched', 'running', 'finished', 'failed', 'stopped'] as const).map(helper => state(`helper-${helper}`, `watching a helper that is ${helper}`, call({ draw: 'helper', call: view(at(7)), state: helper, elapsedMs: helper === 'dispatched' ? undefined : 72000 }))),
+  state('helper-dispatched', 'watching a helper that is dispatched', call({ draw: 'helper', call: view(at(7)), state: 'dispatched' })),
+  // A running helper's time is now less its start (verdict.ts:146).
+  moving('helper-running', 'watching a helper that is running', TICK, (cols, theme, t = 0) => drawCall({ draw: 'helper', call: view(at(7)), state: 'running', elapsedMs: 72000 + t }, pen(cols, theme))),
+  ...(['finished', 'failed', 'stopped'] as const).map(helper => state(`helper-${helper}`, `watching a helper that is ${helper}`, call({ draw: 'helper', call: view(at(7)), state: helper, elapsedMs: 72000 }))),
   state('question-asked', 'asked a question in the chat', call({ draw: 'question', call: QUESTION, opened: false })),
   state('question-ended', 'left a question unanswered', call({ draw: 'question', call: { ...QUESTION, isRunning: false }, opened: false })),
 ]
 
 // ---- ToolGroup ----
-const batch = (states: ('running' | 'finished' | 'failed')[], opened = false): Exclude<GroupVerdict, { draw: 'engine' }> => ({
-  draw: 'batch', key: `helpers-${id(7)}`, opened, elapsedMs: 42000,
+// A running batch's time runs to now (verdict.ts:245); a settled one's ends at its last helper.
+const batch = (states: ('running' | 'finished' | 'failed')[], opened = false, t = 0): Exclude<GroupVerdict, { draw: 'engine' }> => ({
+  draw: 'batch', key: `helpers-${id(7)}`, opened, elapsedMs: 42000 + t,
   helpers: states.map((s, i) => ({ call: view(at(i % 2 === 0 ? 7 : 8)), kind: i < 2 ? 'Explore' : 'Plan', state: s })),
 })
 const group = (v: Exclude<GroupVerdict, { draw: 'engine' }>): Draw => (cols, theme) => drawGroup(v, pen(cols, theme))
+const running = (states: ('running' | 'finished' | 'failed')[], opened = false): Draw => (cols, theme, t = 0) => drawGroup(batch(states, opened, t), pen(cols, theme, { now: t }))
 const groupStates: State[] = [
   state('stack', 'skimming a group of calls stacked one per line', group({ draw: 'stack', calls: [{ draw: 'call', call: view(at(2)), filed: at(2), opened: false }, { draw: 'call', call: view(at(3)), filed: at(3), opened: false }] })),
-  state('batch-running', 'watching a batch of helpers work', group(batch(['running', 'finished', 'running']))),
+  moving('batch-running', 'watching a batch of helpers work', PULSE, running(['running', 'finished', 'running'])),
   state('batch-done', 'told every helper of a batch finished', group(batch(['finished', 'finished', 'finished']))),
   state('batch-failed', 'told a helper of a batch failed', group(batch(['finished', 'failed', 'finished']))),
-  state('batch-opened', "reading a batch's helpers one per line", group(batch(['running', 'finished', 'running'], true))),
+  moving('batch-opened', "reading a batch's helpers one per line", PULSE, running(['running', 'finished', 'running'], true)),
 ]
 
 // ---- CommandOutput ----
@@ -147,16 +157,22 @@ const outputStates: State[] = [
 ]
 
 // ---- AbovePrompt: ours above what cs or the engine drew, here nothing ----
-const band = (v: Exclude<BandVerdict, { draw: 'engine' }>, over: { pad?: number } = {}): Draw => (cols, theme) => drawBand(v, elements().Box({}), 0, pen(cols, theme, over))
-const HELPERS = { head: '3 helpers · 1 done · 2 running · 1m 12s', kinds: [{ kind: 'Explore', cells: marks.working + marks.live, done: 1, n: 2 }, { kind: 'Plan', cells: marks.working, done: 0, n: 1 }] }
+// The hook hands drawBand the frame `Math.floor(cx.now / 70)` (register.tsx:412).
+type BandAt = (t: number) => Exclude<BandVerdict, { draw: 'engine' }>
+const band = (v: BandAt, over: { pad?: number } = {}): Draw => (cols, theme, t = 0) => drawBand(v(t), elements().Box({}), Math.floor(t / PULSE), pen(cols, theme, { ...over, now: t }))
+// The helpers' head is decideBand's (verdict.ts:508): the counts, then the
+// time since the batch began, in helperCounts' order and words.
+const KINDS = [{ kind: 'Explore', cells: marks.working + marks.live, done: 1, n: 2 }, { kind: 'Plan', cells: marks.working, done: 0, n: 1 }]
+const helpers = (more: number): BandAt => t => ({ draw: 'helpers', head: helperCounts(['finished', 'running', 'running'], 72000 + t), kinds: KINDS, more, spinning: true })
+const background = (words: string, isTest: boolean, more: number, typing: boolean): BandAt => t => ({ draw: 'background', words, isTest, more, elapsedMs: 42000 + t, typing })
 const bandStates: State[] = [
-  state('helpers-running', 'watching helpers work above the prompt', band({ draw: 'helpers', ...HELPERS, more: 0, spinning: true })),
-  state('helpers-settled', 'reading a batch of helpers that all finished', band({ draw: 'helpers', head: '3 helpers · 3 done · 1m 12s', kinds: [{ kind: 'Explore', cells: marks.live + marks.live, done: 2, n: 2 }, { kind: 'Plan', cells: marks.live, done: 1, n: 1 }], more: 0, spinning: false })),
-  state('helpers-overflow', 'watching more kinds of helper than the band has rows for', band({ draw: 'helpers', ...HELPERS, more: 2, spinning: true })),
-  state('background', 'typing while a shell command runs in the background', band({ draw: 'background', words: 'Building the docs', isTest: false, more: 0, elapsedMs: 42000, typing: true })),
-  state('background-test', 'typing while the tests run in the background', band({ draw: 'background', words: 'bun test', isTest: true, more: 1, elapsedMs: 42000, typing: true })),
-  state('background-narrow', 'running a background task in a narrow terminal, no tail', band({ draw: 'background', words: 'Building the docs', isTest: false, more: 0, elapsedMs: 42000, typing: false })),
-  state('desktop', 'reading usage and pills on the desktop app', band({ draw: 'desktop', usage: { fiveHour: 42, week: 17 }, pills: [{ kind: 'helper', words: 'Map the draw code', elapsedMs: 72000 }, { kind: 'test', words: 'bun test', elapsedMs: 12000 }] }, { pad: 0 })),
+  moving('helpers-running', 'watching helpers work above the prompt', PULSE, band(helpers(0))),
+  moving('helpers-settled', 'reading a batch of helpers that all finished', TICK, band(t => ({ draw: 'helpers', head: helperCounts(['finished', 'finished', 'finished'], 72000 + t), kinds: [{ kind: 'Explore', cells: marks.live + marks.live, done: 2, n: 2 }, { kind: 'Plan', cells: marks.live, done: 1, n: 1 }], more: 0, spinning: false }))),
+  moving('helpers-overflow', 'watching more kinds of helper than the band has rows for', PULSE, band(helpers(2))),
+  moving('background', 'typing while a shell command runs in the background', PULSE, band(background('Building the docs', false, 0, true))),
+  moving('background-test', 'typing while the tests run in the background', PULSE, band(background('bun test', true, 1, true))),
+  moving('background-narrow', 'running a background task in a narrow terminal, no tail', PULSE, band(background('Building the docs', false, 0, false))),
+  moving('desktop', 'reading usage and pills on the desktop app', TICK, band(t => ({ draw: 'desktop', usage: { fiveHour: 42, week: 17 }, pills: [{ kind: 'helper', words: 'Map the draw code', elapsedMs: 72000 + t }, { kind: 'test', words: 'bun test', elapsedMs: 12000 + t }] }), { pad: 0 })),
 ]
 
 // ---- the Chat view pane, its body as wide as the pane leaves ----
@@ -174,13 +190,16 @@ const settingsStates: State[] = [
 
 // ---- the Helpers pane ----
 const helpersPane = (blocks: readonly HelperBlock[]): Draw => (cols, theme) => drawHelpersPane(blocks, { el: elements(), ink: inks(theme === 'light'), room: cols - PANE_CHROME })
-const WORKING: HelperBlock = { name: 'Explore', status: 'working', elapsedMs: 72000, now: 'Reading draw.tsx', calls: ['Searched the code for drawBand', 'Read words.ts'] }
+// A working helper's time is now less its start (verdict.ts:543); the
+// others' is the time they took.
+const panesAt = (blocks: (t: number) => readonly HelperBlock[]): Draw => (cols, theme, t = 0) => helpersPane(blocks(t))(cols, theme)
+const WORKING = (t: number): HelperBlock => ({ name: 'Explore', status: 'working', elapsedMs: 72000 + t, now: 'Reading draw.tsx', calls: ['Searched the code for drawBand', 'Read words.ts'] })
 const helperStates: State[] = [
   state('none', 'opening the pane before any helper ran', helpersPane([])),
-  state('working', 'watching a helper work, call by call', helpersPane([WORKING])),
+  moving('working', 'watching a helper work, call by call', TICK, panesAt(t => [WORKING(t)])),
   state('finished', 'reading what a finished helper did', helpersPane([{ name: 'Plan', status: 'finished', elapsedMs: 30000, calls: ['Read the brief'] }])),
   state('failed', 'reading where a helper failed', helpersPane([{ name: 'Plan', status: 'failed', elapsedMs: 9000, calls: ['Ran the tests'] }])),
-  state('mixed', 'reading several helpers, newest first', helpersPane([WORKING, { name: 'Plan', status: 'finished', elapsedMs: 30000, calls: [] }, { name: 'general-purpose', status: 'stopped', calls: ['Read app.py'] }])),
+  moving('mixed', 'reading several helpers, newest first', TICK, panesAt(t => [WORKING(t), { name: 'Plan', status: 'finished', elapsedMs: 30000, calls: [] }, { name: 'general-purpose', status: 'stopped', calls: ['Read app.py'] }])),
 ]
 
 // ---- the rows Claude Code draws around cs-feed's words ----
@@ -220,26 +239,41 @@ const logStates: State[] = [
   state('helper-unread', "opening the Helpers pane when a helper's transcript cannot be read", feedLog(logs.helperUnread('checker', 'no transcript for checker'))),
 ]
 
-// The working line's time and tokens are the engine's; the message is
-// decideSpinner's for an open turn of three done steps, or the engine's own
-// word (its fallback verb, `Working`) when the hook leaves the row alone.
+// The working line's tokens are the engine's; its time runs from 24 s at
+// the state's start; the message is decideSpinner's for an open turn of three
+// done steps, or the engine's own word (its fallback verb, `Working`) when
+// the hook leaves the row alone. The engine's animation clock is shared and
+// read on a grid: the line asks for 50 ms while it requests, else 100
+// (`Wa(t?null:l==="requesting"&&!S?50:100)`), and Wa rounds that up to
+// whole 16 ms frames (`Math.ceil(kUe(o)/bh)*bh`, `bh=16`), reading
+// `Math.floor(r.now()/h)*h`: 64 ms and 112. (Under
+// CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT, kUe raises either to 480; the lab
+// draws the default.) The lab starts the clock 750 ms
+// into a breath, which the 64 ms grid reads as 704, (1 - cos 126.7°) / 2 x 5
+// = 4.00, frame 4, `✻`, so a still frame reads as the line at work.
+const BREATH_START = 750
+const onFrames = (ms: number) => Math.ceil(ms / 16) * 16
+const REQUESTING = onFrames(50), RESPONDING = onFrames(100)
+const line = (message: string, suffix: string, tick: number, t: number) =>
+  workingLine({ message, suffix, elapsedMs: 24000 + t, clock: Math.floor((BREATH_START + t) / tick) * tick, tokens: '1.2k' })
 const RUNNING = id(9)
 const OPEN: Turn = { id: TURN, first: id(1), steps: [id(1), id(2), id(3)], runs: [RUN] }
-const working = (open: Turn, over: { mode?: 'requesting' | 'responding'; agents?: number; t?: Transcript } = {}): Draw => cols => {
+const working = (open: Turn, over: { mode?: 'requesting' | 'responding'; agents?: number; t?: Transcript } = {}): Draw => (cols, _theme, t = 0) => {
   const agents = Array.from({ length: over.agents ?? 0 }, (_, i) => ({ id: `helper-${i}`, type: 'Explore', description: 'Read the tests', status: 'running' as const }))
-  const cx: Context = { ...context(cols, clean, over.t ?? transcript), open, agents }
-  const { verdict } = decideSpinner({ message: null, mode: over.mode ?? 'requesting' }, cx)
-  return verdict.draw === 'rewrite' ? workingLine({ message: verdict.message, suffix: verdict.suffix, elapsed: '24s', tokens: '1.2k' }) : workingLine({ message: 'Working', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })
+  const cx: Context = { ...context(cols, clean, over.t ?? transcript, t), open, agents }
+  const mode = over.mode ?? 'requesting', tick = mode === 'requesting' ? REQUESTING : RESPONDING
+  const { verdict } = decideSpinner({ message: null, mode }, cx)
+  return verdict.draw === 'rewrite' ? line(verdict.message, verdict.suffix, tick, t) : line('Working', '\u2026', tick, t)
 }
 const withRunning: Transcript = { ...transcript, calls: new Map([...transcript.calls, [RUNNING, filed(9, 'Bash', { command: 'bun test', description: 'Run the tests' }, { state: 'running' }, RUN)]]) }
 const spinnerStates: State[] = [
-  state('engine', "working with the feed off, the engine's own word", () => workingLine({ message: 'Working', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })),
-  state('engine-ellipsis', "working with the feed off on a todo whose active form ends in an ellipsis", () => workingLine({ message: 'Running the suites\u2026', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })),
-  state('thinking', 'waiting while Claude thinks before its first step', working({ steps: [], runs: [] })),
-  state('working', 'waiting on a turn three steps in', working(OPEN)),
-  state('call', 'waiting on a step that is running', working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),
-  state('writing', 'watching Claude write its reply', working(OPEN, { mode: 'responding' })),
-  state('helpers', 'waiting while two helpers work', working(OPEN, { agents: 2 })),
+  moving('engine', "working with the feed off, the engine's own word", REQUESTING, (_cols, _theme, t = 0) => line('Working', '\u2026', REQUESTING, t)),
+  moving('engine-ellipsis', "working with the feed off on a todo whose active form ends in an ellipsis", REQUESTING, (_cols, _theme, t = 0) => line('Running the suites\u2026', '\u2026', REQUESTING, t)),
+  moving('thinking', 'waiting while Claude thinks before its first step', REQUESTING, working({ steps: [], runs: [] })),
+  moving('working', 'waiting on a turn three steps in', REQUESTING, working(OPEN)),
+  moving('call', 'waiting on a step that is running', REQUESTING, working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),
+  moving('writing', 'watching Claude write its reply', RESPONDING, working(OPEN, { mode: 'responding' })),
+  moving('helpers', 'waiting while two helpers work', REQUESTING, working(OPEN, { agents: 2 })),
 ]
 
 const ENGINE_MODES = ['memory paused']

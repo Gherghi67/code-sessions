@@ -225,20 +225,47 @@ export function logRow(plugin: string, text: string, cols: number): RenderElemen
 // otherwise, and none after a message that ends in `…` or `...`) in the
 // claude ink, then the dim tail in parentheses, its parts joined by ` · `:
 // the time, and `↓` and the tokens in a two-cell column.
-// Drawn still: the glyph is one frame (`✻`) and the shimmer that runs along
-// the message is not drawn.
-export type Working = { message: string; suffix: string; elapsed: string; tokens: string }
+// `clock` is the engine's shared animation clock (`Wa`), the glyph's
+// breath; `elapsedMs` the turn's time. The shimmer that runs along the
+// message is not drawn.
+export type Working = { message: string; suffix: string; elapsedMs: number; clock: number; tokens: string }
 export function workingLine(w: Working): RenderElement {
   const el = elements()
   const dim = (s: string) => el.Text({ dimColor: true, children: s })
   return el.Box({ flexDirection: 'column', children: [el.Box({ flexWrap: 'wrap', marginTop: 1, children: [
-    el.Box({ width: 2, height: 1, children: [el.Text({ color: 'claude', children: '✻' })] }),
+    el.Box({ width: 2, height: 1, children: [el.Text({ color: 'claude', children: breathGlyph(w.clock) })] }),
     el.Text({ color: 'claude', children: w.suffix === '…' && /(…|\.\.\.)$/.test(w.message) ? w.message : w.message + w.suffix }),
     el.Text({ children: ' ' }),
-    dim('('), dim(w.elapsed), dim(' · '),
+    dim('('), dim(engineDuration(w.elapsedMs)), dim(' · '),
     el.Box({ children: [el.Box({ width: 2, children: [dim('↓')] }), dim(`${w.tokens} tokens`)] }),
     dim(')'),
   ] })] })
+}
+
+// The working line's glyph at a clock reading: `Hn(l) = Math.round(EUe(l,
+// Wn) * (DIn().length - 1))`, `EUe(r,t) = (1 - Math.cos(2*Math.PI*r/t)) / 2`,
+// `Wn = 2000`, a breath out and back over two seconds; Ife draws
+// `wUe()[frame % 12]`, the mirrored twelve, whose first six are DIn()'s.
+// DIn() keys on TERM alone: this set wherever TERM is not xterm-ghostty,
+// and under ghostty `· ✢ ✳ ✶ ✻ ✻`, its last glyph ✻ again.
+const BREATH = ['·', '✢', '✳', '✶', '✻', '✽'] as const
+const BREATH_MS = 2000
+function breathGlyph(clock: number): string {
+  const eased = (1 - Math.cos(2 * Math.PI * clock / BREATH_MS)) / 2
+  const glyph = BREATH[Math.round(eased * (BREATH.length - 1))]
+  if (glyph === undefined) throw new Error(`breathGlyph: no glyph at clock ${clock}`)
+  return glyph
+}
+
+// The working line's time, `un(et)`: whole seconds floored under a minute,
+// past it the hours, minutes and rounded seconds, a 60 carried up. (un's
+// days are left out: the lab plays no clock for a day.)
+function engineDuration(ms: number): string {
+  if (ms < 60000) return `${Math.floor(ms / 1000)}s`
+  let h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000), s = Math.round(ms % 60000 / 1000)
+  if (s === 60) s = 0, m++
+  if (m === 60) m = 0, h++
+  return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`
 }
 
 // The footer's modes (vj, inside the right-hand column uhe, its row two

@@ -276,6 +276,9 @@ body.dragging{user-select:none;cursor:grabbing}
 .fhead label.inline{display:flex;gap:4px;align-items:center;min-height:24px;cursor:pointer}
 .fhead .fname-edit{font:500 12px "IBM Plex Sans",sans-serif;padding:1px 4px}
 .fhead :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.fhead .motion{display:flex;gap:6px;align-items:center}
+.fhead .motion input[type=range]{width:160px;height:24px;margin:0;accent-color:var(--accent)}
+.fhead .motion output{min-width:12ch;font-variant-numeric:tabular-nums;white-space:nowrap}
 .frame .term{cursor:default;user-select:none;font-size:var(--fs,15px);padding:.9em 1.2em .7em;overflow:visible;border:0;box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 10%,transparent),0 1px 2px rgba(0,0,0,.08),0 6px 20px rgba(0,0,0,.08)}
 @media (prefers-reduced-motion:reduce){.fhead .quiet{transition:none}}
 .frame .sel{position:absolute;outline:1px solid var(--accent);pointer-events:none}
@@ -1339,6 +1342,7 @@ let bdRefusal=null;
 function bdReadOnly(frame){
   const f=bdFrame(frame);
   if(f.ref) return `${f.name} is a reference frame: ${bdRefWhy(f.source&&bdSurface(f.source.surface),BandEditor.toEngine(f.tree))}, which the designer does not edit`;
+  if(bdMotion.has(frame)) return `${f.name} is shown ${bdSeconds(bdMotion.get(frame).t)} into its state, as the mod draws it then: scrub it back to 0 to edit it`;
   return bdPreview.has(frame)?`${f.name} is in preview, drawn as under the pointer: turn preview off to edit it`:null;
 }
 function bdRefuse(frame){ bdRefusal={frame,text:bdReadOnly(frame)}; composeRender(); }
@@ -1363,8 +1367,11 @@ function cpFrameSummary(){
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
   const sel=bdDocNow().selection, ro=bdReadOnly(sel.frame);
-  if(ro) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?bdDrawnByEngine(bdFrame(sel.frame))?"Reference frame: drawn by Claude Code around the mod's words, read only.":"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
-    +`<dl class="fsum">${Object.keys(n.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof n.props[k]==="object"?JSON.stringify(n.props[k]):String(n.props[k]))}</dd>`).join("")}</dl>`;
+  if(ro){
+    const shown=bdShownNode(sel);
+    return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?bdDrawnByEngine(bdFrame(sel.frame))?"Reference frame: drawn by Claude Code around the mod's words, read only.":"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
+      +`<dl class="fsum">${Object.keys(shown.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof shown.props[k]==="object"?JSON.stringify(shown.props[k]):String(shown.props[k]))}</dd>`).join("")}</dl>`;
+  }
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
     +CP_GROUPS.filter(g=>groups[g]).map(g=>`<details class="pgroup" data-group="${g}"${bdShut.has(g)?"":" open"}><summary>${g}</summary><div>${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></details>`).join("");
@@ -1509,7 +1516,7 @@ const bdPreview=new Map();
 // tab and clipped to its rows; any other surface fills the terminal's row.
 // A frame of no surface is measured at its natural width, clipped at the band's edge.
 function bdGridOf(f,c){
-  const pv=bdPreview.get(f.id), drawn=BandEditor.toEngine(f.tree), tree=pv?ModLayout.interact(drawn,pv):drawn, chrome=f.source&&bdSurface(f.source.surface).chrome;
+  const pv=bdPreview.get(f.id), drawn=bdShownTree(f), tree=pv?ModLayout.interact(drawn,pv):drawn, chrome=f.source&&bdSurface(f.source.surface).chrome;
   if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
   if(chrome&&chrome.kind==="pane") return ModLayout.layoutPane(tree,{columns:c,rows:chrome.rows,title:chrome.title,titles:[chrome.title]});
   if(chrome&&chrome.kind==="above-prompt"){
@@ -1539,29 +1546,123 @@ function bdPreviewPress(id,path){
   pv.focus=button&&!(pv.focus&&samePath(pv.focus,path))?path:null;
   composeRender();
 }
+// Motion: a frame from a state that moves plays the mod's own drawing of it.
+// Per frame and not saved, as preview is: a frame shown at a moment other
+// than the one it was added at has an entry here, `t` in ms since its state
+// began and, while it plays, the timer that moves t at the state's tick. A
+// frame with no entry draws its own tree and is edited as ever.
+const bdMotion=new Map();
+// With reduced motion asked for, nothing plays by itself: play steps one
+// tick per press, and the scrubber moves the moment as ever.
+const BD_STILL=matchMedia("(prefers-reduced-motion: reduce)");
+const bdMotionOf=f=>f.source?bdSurfaceState(f.source.surface,f.source.state).motion:undefined;
+// The tree a frame paints: the mod's drawing at the frame's moment, at the
+// page's width and theme, or the frame's own.
+function bdShownTree(f){
+  const at=bdMotion.get(f.id);
+  if(!at) return BandEditor.toEngine(f.tree);
+  return BandEditor.toEngine(BandEditor.fromEngine(bdSurfaceState(f.source.surface,f.source.state).draw(cols(),theme(),at.t)));
+}
+// The selected node as its frame paints it: at a moment, the mod's drawing
+// then. A moving state keeps its tree's shape at every moment (motion.test.ts),
+// so the path selected at 0 names a node at any t.
+function bdShownNode(sel){
+  const f=bdFrame(sel.frame);
+  return BandEditor.nodeAt(bdMotion.has(f.id)?BandEditor.fromEngine(bdShownTree(f)):f.tree,sel.path);
+}
+const bdSeconds=t=>`${(t/1000).toFixed(2)} s`;
+const bdMoment=(f,m)=>{ const t=bdMotion.get(f.id)?.t??0; return bdSeconds(t)+(m.count?` · ${m.count(t)}`:""); };
+function bdStop(id){ const at=bdMotion.get(id); if(at) clearInterval(at.timer); bdMotion.delete(id); }
+function bdPause(id){
+  const at=bdMotion.get(id); if(!at) return;
+  clearInterval(at.timer); at.timer=null;
+  if(at.t===0) bdMotion.delete(id);
+}
+// Play runs on the browser's clock from where the frame stands (from the
+// start again once it reached its end) and stops at the state's end, holding
+// its last moment; pressed while playing, it pauses.
+function bdPlay(id){
+  const m=bdMotionOf(bdFrame(id)), now=bdMotion.get(id);
+  if(BD_STILL.matches) return bdSeek(id,now&&now.t<m.duration?Math.min(m.duration,now.t+m.tick):m.tick);
+  if(now&&now.timer){ bdPause(id); return bdRepaint(id); }
+  const from=now&&now.t<m.duration?now.t:0, start=performance.now(), at={t:from,timer:null};
+  bdMotion.set(id,at);
+  at.timer=setInterval(()=>{
+    at.t=Math.min(m.duration,from+Math.floor((performance.now()-start)/m.tick)*m.tick);
+    if(at.t>=m.duration) bdPause(id);
+    bdRepaint(id);
+  },m.tick);
+  bdRepaint(id);
+}
+function bdSeek(id,t){ bdStop(id); if(t>0) bdMotion.set(id,{t,timer:null}); bdRepaint(id); }
+// Every playing frame stops where it stands: the designer left the screen.
+function bdPauseAll(){ for(const [id,at] of bdMotion) if(at.timer){ bdPause(id); bdRepaint(id); } }
+// One frame redrawn in place at its moment: its strip, its scrubber and its
+// play button, and the selection's outline over the cells it now draws; the
+// rest of the canvas, the panels and the saved document are left alone.
+function bdRepaint(id){
+  const card=$("bd-canvas").querySelector(`[data-frame="${id}"]`), f=bdFrame(id);
+  if(!card) return;
+  const g=bdGridOf(f,cols()), at=bdMotion.get(id), m=bdMotionOf(f);
+  bdGrids[id]=g;
+  card.querySelector(".term").innerHTML=bdTerm(f,g,cols());
+  const play=card.querySelector('[data-act="play"]'), scrub=card.querySelector('[data-act="scrub"]');
+  if(!BD_STILL.matches) play.setAttribute("aria-pressed",String(!!(at&&at.timer)));
+  scrub.value=String(at?at.t:0); scrub.setAttribute("aria-valuetext",bdMoment(f,m));
+  card.querySelector(".motion output").textContent=bdMoment(f,m);
+  card.querySelectorAll(".sel").forEach(el=>el.remove());
+  const sel=bdDocNow().selection;
+  if(sel&&sel.frame===id){
+    if(BandEditor.spanOf(g,sel.path)) bdChrome(card.querySelector(".strip"),g,sel.path,bdShownNode(sel));
+    $("bd-props").innerHTML=cpInspector(bdSelected(),sel.path);
+  }
+  bdHoverDraw();
+}
+// The play button, the scrubber over the state's length at its tick, and the
+// moment it reads, for a frame whose state moves.
+function bdMotionHead(f){
+  const m=bdMotionOf(f); if(!m) return "";
+  const t=bdMotion.get(f.id)?.t??0;
+  return `<span class="motion">${bdPlayButton(f,m)}`
+    +`<input type="range" data-act="scrub" min="0" max="${m.duration}" step="${m.tick}" value="${t}" aria-label="${esc(f.name)}: the moment, ms since the state began" aria-valuetext="${esc(bdMoment(f,m))}">`
+    +`<output>${esc(bdMoment(f,m))}</output></span>`;
+}
+// A toggle whose label stays play while aria-pressed says whether it plays,
+// or under reduced motion a step a press.
+function bdPlayButton(f,m){
+  if(BD_STILL.matches) return `<button type="button" data-act="play" aria-keyshortcuts="Space" title="Step the mod's own drawing of this state on by ${m.tick} ms (Space); reduced motion is on, so nothing plays by itself">step</button>`;
+  const at=bdMotion.get(f.id), playing=!!(at&&at.timer);
+  return `<button type="button" data-act="play" aria-pressed="${playing}" aria-keyshortcuts="Space" title="Play the mod's own drawing of this state at its ${m.tick} ms step, or pause it (Space)">play</button>`;
+}
+// What a frame's terminal holds: the strip's cells, and under the band the
+// rule and the prompt it sits above.
+function bdTerm(f,g,c){
+  const surf=f.source&&bdSurface(f.source.surface), prompt=!surf||surf.chrome?.kind==="above-prompt";
+  return bdPaint(g)+(prompt?`\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span>`:"");
+}
 // The cells a frame's tree is handed: the band, the terminal less AbovePrompt's
 // five `[-]` cells; anything else, the terminal's width.
 const bdRoom=f=>f.source&&bdSurface(f.source.surface).chrome?.kind==="above-prompt"?cols()-5:cols();
 function bdFrameCard(f){
-  const tree=BandEditor.toEngine(f.tree), c=cols();
+  const tree=bdShownTree(f), c=cols();
   const refused=ModLayout.validate(tree);
   const g=bdGridOf(f,c);
   bdGrids[f.id]=g;
-  const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
-  const prompt=!surf||surf.chrome?.kind==="above-prompt";
+  const doc=bdDocNow(), only=doc.frames.length===1;
   const room=bdRoom(f), measured=reach(ModLayout.layout(tree,room));
   const ro=f.ref&&bdReadOnly(f.id), pv=bdPreview.has(f.id);
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}${pv?" preview":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
     +(ro?`<span class="badge ref" title="${esc(ro)}">reference</span>`:"")
+    +bdMotionHead(f)
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="preview" aria-pressed="${pv}" title="Draw it under the pointer: hover a node, click a Button to give it the focus">preview</button>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
     +(g.h?"":`<p class="why empty">${bdDrawnByEngine(f)?"draws nothing: the mod takes this row away":"draws nothing: the hook hands back the engine's own rows"}</p>`)
-    +`<div class="strip"><div class="term">${bdPaint(g)}`+(prompt?`\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span>`:"")+`</div></div>`
+    +`<div class="strip"><div class="term">${bdTerm(f,g,c)}</div></div>`
     +(measured>room?`<p class="why no">${esc(fitWords(measured,room))}</p>`:"")
     +`</div>`;
 }
@@ -1638,11 +1739,12 @@ function composeRender(){
     +`<optgroup label="Band variants, in the picked state">`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("")+`</optgroup>`;
   for(const id in bdGrids) delete bdGrids[id];
   for(const id of [...bdPreview.keys()]) if(!doc.frames.some(f=>f.id===id)) bdPreview.delete(id);
+  for(const id of [...bdMotion.keys()]) if(!doc.frames.some(f=>f.id===id)) bdStop(id);
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const fs=bdFontSize(); $("bd-canvas").style.setProperty("--fs",fs+"px");
   $("bd-zoom").value=String(bdZoom); $("bd-zoom").options[0].textContent=`Fit (${Math.round(fs/15*100)}%)`;
   const sel=doc.selection;
-  if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
+  if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdShownNode(sel));
   bdLayers(); bdHoverDraw();
   if(bdPanelStale||!sel){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
@@ -1650,6 +1752,11 @@ function composeRender(){
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=reach(ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room));
   $("bd-fit").textContent=fitWords(fitW,room); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,room)}`; $("bd-fit").classList.toggle("no",fitW>room);
   document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`Insert a ${b.dataset.insert} (${b.dataset.key})`; });
+  bdHistoryRender();
+}
+// What a step changes beyond the canvas: the undo and redo counts, the
+// History tab and the stored document.
+function bdHistoryRender(){
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
   $("bd-hist").innerHTML=bdHistory();
@@ -1744,6 +1851,16 @@ function bdFrameAct(el,frame){
   if(act==="export") return bdEdit({type:"exportFrame",frame});
   if(act==="duplicate") return bdEdit({type:"addFrame",from:frame});
   if(act==="remove") return bdEdit({type:"removeFrame",frame});
+  if(act==="play"){
+    // Play selects its frame, so Space after it plays or pauses that frame;
+    // a selection inside the frame stays, and a frame in preview takes none.
+    if(bdDocNow().selection?.frame!==frame&&!bdPreview.has(frame)){
+      const focused=document.activeElement===el;
+      bdDispatch({type:"selectFrame",frame});
+      if(focused) $("bd-canvas").querySelector(`[data-frame="${frame}"] [data-act="play"]`).focus();
+    }
+    return bdPlay(frame);
+  }
   if(act==="preview"){
     bdPanelStale=true;
     if(bdPreview.has(frame)){ bdPreview.delete(frame); return composeRender(); }
@@ -1922,6 +2039,7 @@ function bdKeys(e){
   if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&/^[-=+0]$/.test(e.key)){ e.preventDefault(); e.stopImmediatePropagation(); if(e.key==="0"){ bdZoom="fit"; return composeRender(); } return bdZoomBy(e.key==="-"?-1:1); }
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
   if(document.activeElement?.closest("[role=tablist]")) return;
+  if(e.key===" "&&!e.metaKey&&!e.ctrlKey&&!e.altKey&&sel&&bdMotionOf(bdFrame(sel.frame))){ e.preventDefault(); e.stopImmediatePropagation(); return bdPlay(sel.frame); }
   if(!sel) return;
   const node=bdSelected(), parent=sel.path.length?BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path.slice(0,-1)):null;
   const i=sel.path[sel.path.length-1];
@@ -1959,6 +2077,9 @@ function composeUI(){
   $("bd-seed").addEventListener("change",e=>{ const id=e.target.value; e.target.value=""; if(id) bdSeed(id); });
   $("bd-canvas").addEventListener("mousedown",bdDragStart);
   $("bd-canvas").addEventListener("dblclick",bdDoubleClick);
+  $("bd-canvas").addEventListener("input",e=>{ const scrub=e.target.closest('[data-act="scrub"]'); if(scrub) bdSeek(scrub.closest("[data-frame]").dataset.frame,+scrub.value); });
+  document.addEventListener("visibilitychange",()=>{ if(document.hidden) bdPauseAll(); });
+  BD_STILL.addEventListener("change",()=>{ bdPauseAll(); composeRender(); });
   document.addEventListener("mousemove",bdDragMove);
   document.addEventListener("mouseup",bdDragEnd);
   document.addEventListener("mousemove",bdPartDragMove);
@@ -2009,8 +2130,11 @@ function composeUI(){
   $("bd-help").addEventListener("click",e=>{ if(e.target===$("bd-help")) $("bd-help").close(); });
   $("bd-props").addEventListener("change",e=>{
     if(!e.target.dataset.prop||!bdDraft) return;
+    // Every panel already draws the draft. Redrawing them here, in the blur of
+    // a press elsewhere, would replace the pressed control, and the browser
+    // sends no click to a removed one.
     bdSettle();
-    composeRender();
+    bdHistoryRender();
   });
 }
 
@@ -2071,7 +2195,7 @@ function buildRail(){
 let labPanel="sites";
 function show(id,push=true){
   if(!PANELS.some(p=>p.id===id)) id="compose";
-  if(id!=="compose") labPanel=id;
+  if(id!=="compose"){ labPanel=id; bdPauseAll(); }
   $("bd-back").href="#"+labPanel;
   document.body.classList.toggle("app",id==="compose");
   document.title=id==="compose"?"Band designer · Mods Design Lab":"Mods Design Lab";
