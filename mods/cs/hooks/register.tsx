@@ -303,7 +303,7 @@ let finishShown = new Set<string>()
 let finishGate: { task: string; since: number } | undefined
 let finishProblemShown = false
 
-// The features word: what the band's left says of the session's feature
+// The features word: what the band's right edge says of the session's feature
 // worktrees, as cs last answered, and the task a press finishes ('' for bare
 // /finish, which lists them and asks; absent, no press). One reading at a
 // time; the idle clock that reads again; the last complaint logged.
@@ -874,7 +874,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // cs.bandBars bars in what the line leaves after the inset, the gaps and
   // the words; the older prompts collapse into one `…N` run. The named tick
   // is remembered so a report that moves it can redraw the band.
-  const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? 3 + wordCells : 0)
+  const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? GAP + wordCells : 0)
   const rail = v.rail
   const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
   const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
@@ -899,7 +899,9 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // the bars whenever a swap shows a longer or shorter one.
   const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(i => i >= ticks.hidden) : [])]
     .map(i => cellWidth(name(ticks.prompts, i)))))
-  const label = (prompts: Prompt[], i: number) => cutToCells(name(prompts, i), labelCells)
+  // Each name fills the width, so a card over the named one paints every
+  // cell of it: a shorter one would leave the named one's tail showing.
+  const label = (prompts: Prompt[], i: number) => fitLeft(name(prompts, i), labelCells)
   // A line too narrow for any tick, with nothing else to say, draws nothing.
   if (entries.length === 0 && ticks === undefined) return v.drawn
   // One thin line, a blank line above it so it reads apart from the
@@ -1181,6 +1183,12 @@ function cutToCells(text: string, width: number): string {
     used += cells
   }
   return `${fitted.trimEnd()}\u2026`
+}
+
+// `text` cut to `width` cells, with spaces after it to fill `width`.
+function fitLeft(text: string, width: number): string {
+  const fitted = cutToCells(text, width)
+  return fitted + ' '.repeat(Math.max(0, width - cellWidth(fitted)))
 }
 
 function firstLine(text: string): string {
