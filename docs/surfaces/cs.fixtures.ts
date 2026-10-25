@@ -143,7 +143,6 @@ export const STATES: BandState[] = [
   { id: 'rail-no-label', name: 'the words leaving the rail no room to name a prompt', facts: facts({ ...DUE, feed: { on: true }, waiting: 2, rail: { prompts: PROMPTS.slice(0, 6), named: 5, refused: [] } }) },
   { id: 'rail-uncoloured', name: 'the rail in a session with no colour', facts: facts({ colour: null, rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
   { id: 'rail-desktop', name: 'the rail on the desktop app, no hover cards', facts: facts({ surface: 'desktop', rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
-  { id: 'absent-teammate', name: 'in a teammate conversation while a gate runs', facts: facts({ gate: 'finishing fix-auth · gate 1m 12s' }) },
 ]
 
 export const surfaces: Surface[] = [{

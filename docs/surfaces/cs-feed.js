@@ -942,9 +942,9 @@
     phase: "idle"
   });
   var PAD = 7;
-  var context = (cols, view) => ({ t: transcript, view, obs: observations(), opened: new Set, phase: "idle", agents: [], now: 0, surface: "terminal", clickable: false, room: cols - PAD });
+  var context = (cols, view, t) => ({ t, view, obs: observations(), opened: new Set, phase: "idle", agents: [], now: 0, surface: "terminal", clickable: false, room: cols - PAD });
   var pen = (cols, theme, over = {}) => {
-    const cx = context(cols, over.view ?? DEFAULT_VIEW);
+    const cx = context(cols, over.view ?? DEFAULT_VIEW, over.t ?? transcript);
     return { el: elements(), ink: inks(theme === "light"), room: cx.room, pad: over.pad ?? PAD, clickable: over.clickable ?? false, press: async () => {}, helpers: async () => {}, cx: { ...cx, clickable: over.clickable ?? false } };
   };
   var state = (id, name, draw) => ({ id, name, draw });
@@ -1005,11 +1005,12 @@
     return call;
   };
   var call = (v, over = {}) => (cols, theme) => drawCall(v, pen(cols, theme, over));
+  var LIVE = { ...transcript, calls: new Map([[id(1), at(1)], [id(2), { ...at(2), outcome: { state: "running" } }]]) };
   var QUESTION = { id: id(9), tool: "AskUserQuestion", input: { questions: [{ question: "Land the branch now? It is green." }] }, isRunning: true, isErrored: false, isInterrupted: false };
   var toolStates = [
     state("turn-closed", "skimming a turn's steps folded into one line", call(stepsClosed)),
     state("turn-opened", "reading a turn's steps opened", call(stepsOpened)),
-    state("run-live", "watching a run while its call works", call({ draw: "run", run: SHELL_RUN, naming: id(1), opened: false })),
+    state("run-live", "watching a run while its second call works", call({ draw: "run", run: SHELL_RUN, naming: id(2), opened: false }, { t: LIVE })),
     state("run-done", "skimming a finished run as counts", call({ draw: "run", run: SHELL_RUN, opened: false })),
     state("run-line-style", "skimming a finished run in the line style, no chips", call({ draw: "run", run: SHELL_RUN, opened: false }, { view: { ...DEFAULT_VIEW, style: "line" } })),
     state("run-refused", "told every step of a run was refused by a hook", call({ draw: "run", run: REFUSED_RUN, opened: false })),

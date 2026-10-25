@@ -36,6 +36,14 @@ test('an explicit width holds a Box open, and clips it when overflow is hidden',
   expect(toText(layout(B({ width: 3, overflow: 'hidden' }, T({ wrap: 'end' }, 'abcdef')), 40))).toEqual(['ab…'])
 })
 
+// Yoga sizes a Box by its width whatever it holds: an empty one has no rows
+// but still takes its cells in a row beside a sibling (cs-feed's name margin).
+test('an empty Box of an explicit width takes its cells in a row', () => {
+  const g = layout(B({}, B({ width: 3 }), T({}, 'ab')), 40)
+  expect(toText(g)).toEqual(['   ab'])
+  expect(layout(B({ width: 3 }), 40)).toMatchObject({ w: 3, h: 0 })
+})
+
 test('padding and a border grow the Box around its content', () => {
   const g = layout(B({ borderStyle: 'round', paddingX: 1 }, T({}, 'hi')), 40)
   expect(toText(g)).toEqual(['╭────╮', '│ hi │', '╰────╯'])

@@ -42,9 +42,9 @@ const observations = (): Observations => ({
 
 // The terminal's name margin is 7 cells, and a row's text has the rest.
 const PAD = 7
-const context = (cols: number, view: View): Context => ({ t: transcript, view, obs: observations(), opened: new Set(), phase: 'idle', agents: [], now: 0, surface: 'terminal', clickable: false, room: cols - PAD })
-const pen = (cols: number, theme: Theme, over: { clickable?: boolean; view?: View; pad?: number } = {}): Pen => {
-  const cx = context(cols, over.view ?? DEFAULT_VIEW)
+const context = (cols: number, view: View, t: Transcript): Context => ({ t, view, obs: observations(), opened: new Set(), phase: 'idle', agents: [], now: 0, surface: 'terminal', clickable: false, room: cols - PAD })
+const pen = (cols: number, theme: Theme, over: { clickable?: boolean; view?: View; pad?: number; t?: Transcript } = {}): Pen => {
+  const cx = context(cols, over.view ?? DEFAULT_VIEW, over.t ?? transcript)
   return { el: elements(), ink: inks(theme === 'light'), room: cx.room, pad: over.pad ?? PAD, clickable: over.clickable ?? false, press: async () => {}, helpers: async () => {}, cx: { ...cx, clickable: over.clickable ?? false } }
 }
 type Draw = (cols: number, theme: Theme) => RenderElement
@@ -102,12 +102,14 @@ const replyStates: State[] = [
 // ---- ToolUse ----
 const view = (call: FiledCall, over: Partial<CallView> = {}): CallView => ({ id: call.id, tool: call.tool, input: call.input, isRunning: call.outcome.state === 'running', isErrored: call.outcome.state === 'done' && call.outcome.errored, isInterrupted: false, output: call.outcome.state === 'done' ? call.outcome.output : undefined, ...over })
 const at = (n: number): FiledCall => { const call = transcript.calls.get(id(n)); if (call === undefined) throw new Error(`cs-feed fixture: no call ${n}`); return call }
-const call = (v: CallVerdict, over: { clickable?: boolean; view?: View } = {}): Draw => (cols, theme) => drawCall(v, pen(cols, theme, over))
+const call = (v: CallVerdict, over: { clickable?: boolean; view?: View; t?: Transcript } = {}): Draw => (cols, theme) => drawCall(v, pen(cols, theme, over))
+// The same turn while the run's second call works: the first is done, the rest not yet filed.
+const LIVE: Transcript = { ...transcript, calls: new Map([[id(1), at(1)], [id(2), { ...at(2), outcome: { state: 'running' } }]]) }
 const QUESTION: CallView = { id: id(9), tool: 'AskUserQuestion', input: { questions: [{ question: 'Land the branch now? It is green.' }] }, isRunning: true, isErrored: false, isInterrupted: false }
 const toolStates: State[] = [
   state('turn-closed', "skimming a turn's steps folded into one line", call(stepsClosed)),
   state('turn-opened', "reading a turn's steps opened", call(stepsOpened)),
-  state('run-live', 'watching a run while its call works', call({ draw: 'run', run: SHELL_RUN, naming: id(1), opened: false })),
+  state('run-live', 'watching a run while its second call works', call({ draw: 'run', run: SHELL_RUN, naming: id(2), opened: false }, { t: LIVE })),
   state('run-done', 'skimming a finished run as counts', call({ draw: 'run', run: SHELL_RUN, opened: false })),
   state('run-line-style', 'skimming a finished run in the line style, no chips', call({ draw: 'run', run: SHELL_RUN, opened: false }, { view: { ...DEFAULT_VIEW, style: 'line' } })),
   state('run-refused', 'told every step of a run was refused by a hook', call({ draw: 'run', run: REFUSED_RUN, opened: false })),

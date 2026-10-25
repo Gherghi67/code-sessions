@@ -254,7 +254,10 @@
     var mw = rows.length ? rows[0].length : 0;
     for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw, EMPTY, path));
     for (var b = 0; b < m.b; b++) rows.push(blanks(mw, EMPTY, path));
-    return grid(rows);
+    var out = grid(rows);
+    // A Box with no rows still takes its explicit width, as Yoga sizes it.
+    if (!rows.length && outer) out.w = outer + m.l + m.r;
+    return out;
   }
 
   function underpaint(row, bg) {

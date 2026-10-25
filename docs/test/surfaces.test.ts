@@ -23,6 +23,26 @@ test('every state has a unique id, a name, and draws a tree the engine accepts, 
   }
 })
 
+// A state names what a person sees, so two states of one surface that draw
+// the same cells, character and ink, in both themes name one thing twice.
+// The one pair allowed differs only in what the lab cannot draw yet: the
+// rail's hover cards, absent on the desktop (cs.AbovePrompt needs hover; the
+// card count is pinned below).
+test('no two states of a surface draw the same screen at 80 cols, light and dark', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  const screen = (st: any) => ['light', 'dark'].map(theme => layoutScreen(st.draw(80, theme), 80).rows.map((r: any[]) => r.map(c => c.ch + JSON.stringify(c.st)).join('')).join('\n')).join('\n\n')
+  const twins: string[] = []
+  for (const s of SURFACES) {
+    const seen = new Map<string, string>()
+    for (const st of s.states) {
+      const key = screen(st), first = seen.get(key)
+      if (first === undefined) seen.set(key, st.id)
+      else twins.push(`${s.id}: ${first} == ${st.id}`)
+    }
+  }
+  expect(twins).toEqual(['cs.AbovePrompt: rail-few == rail-desktop'])
+})
+
 // A node of a state's tree by child index path, as a layout cell names it.
 const partNode = (surfaceId: string, part: any) => {
   let n = state(`${surfaceId}/${part.state}`).draw(80, 'light')
@@ -273,7 +293,6 @@ test('cs gives a survey the band: no mark, the gate word alone under the survey'
   const lines = bandLine('survey-gate')
   expect(lines.length).toBe(3)
   expect(lines[2]).toBe('  finishing fix-auth · gate 1m 12s')
-  expect(bandLine('absent-teammate')[1]).toBe('  ● finishing fix-auth · gate 1m 12s')
 })
 
 // featuresWordOf: one feature names its task and its state word, `no
