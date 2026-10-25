@@ -482,6 +482,235 @@ print(migration.merge_jsonl(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[
             db.executemany("INSERT INTO threads VALUES (?,?,?)", rows)
         return path
 
+    def relational_database(self, root):
+        path = root / ".codex/state_5.sqlite"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # The native project, section, attachment and receipt constraints;
+        # receipts intentionally survive absent/rebuilt thread metadata.
+        schema = """
+CREATE TABLE thread_sections(id TEXT PRIMARY KEY, name TEXT NOT NULL, appearance TEXT);
+CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}',
+    position INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+CREATE TABLE project_roots(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY(project_id, position));
+CREATE TABLE project_idempotency_keys(key TEXT PRIMARY KEY, project_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL, source TEXT NOT NULL, model_provider TEXT NOT NULL, cwd TEXT NOT NULL,
+    title TEXT NOT NULL, sandbox_policy TEXT NOT NULL, approval_mode TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0, has_user_event INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0, archived_at INTEGER, git_sha TEXT, git_branch TEXT, git_origin_url TEXT,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    thread_section_id TEXT REFERENCES thread_sections(id) ON DELETE SET NULL);
+CREATE TABLE thread_dynamic_tools(thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, input_schema TEXT NOT NULL,
+    PRIMARY KEY(thread_id, position));
+CREATE TABLE thread_spawn_edges(parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY,
+    status TEXT NOT NULL);
+CREATE TABLE thread_attachments(id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    attachment_type TEXT NOT NULL, identity_key TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+    UNIQUE(thread_id, attachment_type, identity_key));
+CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unread_turn TEXT,
+    revision TEXT NOT NULL, last_published_turn TEXT);
+"""
+        with closing(sqlite3.connect(path)) as db, db:
+            db.executescript(schema)
+            db.execute("PRAGMA journal_mode=WAL")
+        return path
+
+    def relational_thread(self, db, name, project=None, section=None):
+        db.execute("""INSERT INTO threads(id,rollout_path,created_at,updated_at,source,model_provider,cwd,
+                   title,sandbox_policy,approval_mode,project_id,thread_section_id)
+                   VALUES(?,?,1,1,'cli','openai','/project',?,'read-only','on-request',?,?)""",
+                   (name, str(self.profile / ".codex/sessions" / (name + ".jsonl")), name, project, section))
+
+    def test_sqlite_related_records_preserve_normal_project_roots_sections_and_receipts(self):
+        src, dst = self.relational_database(self.profile), self.relational_database(self.home)
+        with closing(sqlite3.connect(src)) as db, db:
+            db.execute("INSERT INTO projects VALUES('shared','old name','{}',0,1,1)")
+            db.execute("INSERT INTO projects VALUES('new-project','another','{}',1,1,1)")
+            db.execute("INSERT INTO thread_sections VALUES('section','old section',NULL)")
+            db.executemany("INSERT INTO project_roots VALUES(?,?,?)", [("shared", 0, "/old"), ("shared", 1, "/extra"),
+                                                                       ("new-project", 0, "/new")])
+            db.execute("INSERT INTO project_idempotency_keys VALUES('key','shared',1)")
+            self.relational_thread(db, "incoming", "shared", "section")
+            self.relational_thread(db, "other", "new-project")
+            db.execute("INSERT INTO thread_dynamic_tools VALUES('incoming',0,'tool','description','{}')")
+            db.execute("INSERT INTO thread_spawn_edges VALUES('parent','incoming','running')")
+            db.execute("INSERT INTO thread_attachments VALUES('attachment','incoming','file','identity','payload',1)")
+            db.execute("INSERT INTO thread_read_receipts VALUES('incoming','old','old',NULL)")
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("INSERT INTO projects VALUES('shared','normal name','{}',9,2,2)")
+            db.execute("INSERT INTO thread_sections VALUES('section','normal section','normal appearance')")
+            db.execute("INSERT INTO project_roots VALUES('shared',0,'/normal')")
+            db.execute("INSERT INTO project_idempotency_keys VALUES('key','shared',2)")
+            db.execute("INSERT INTO thread_read_receipts VALUES('incoming',NULL,'normal','native-turn')")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 2)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(db.execute("SELECT name FROM projects WHERE id='shared'").fetchone()[0], "normal name")
+            self.assertEqual(db.execute("SELECT path FROM project_roots WHERE project_id='shared'").fetchall(), [("/normal",)])
+            self.assertEqual(db.execute("SELECT path FROM project_roots WHERE project_id='new-project'").fetchall(), [("/new",)])
+            self.assertEqual(db.execute("SELECT name,appearance FROM thread_sections").fetchone(),
+                             ("normal section", "normal appearance"))
+            self.assertEqual(db.execute("SELECT revision FROM thread_read_receipts").fetchone()[0], "normal")
+            self.assertEqual(db.execute("SELECT name FROM thread_dynamic_tools").fetchone()[0], "tool")
+            self.assertEqual(db.execute("SELECT parent_thread_id FROM thread_spawn_edges").fetchone()[0], "parent")
+            self.assertEqual(db.execute("SELECT payload FROM thread_attachments").fetchone()[0], "payload")
+
+    def test_sqlite_source_reads_share_one_snapshot_during_wal_writes(self):
+        src, dst = self.relational_database(self.profile), self.relational_database(self.home)
+        connect = sqlite3.connect
+        with closing(connect(src)) as db, db:
+            db.execute("INSERT INTO projects VALUES('before','before','{}',0,1,1)")
+            self.relational_thread(db, "incoming", "before")
+        injected = []
+
+        class SourceConnection(sqlite3.Connection):
+            def execute(connection, sql, *args, **options):
+                if not injected and sql == 'PRAGMA table_info("threads")':
+                    injected.append(True)
+                    with closing(connect(src)) as writer, writer:
+                        writer.execute("INSERT INTO projects VALUES('after','after','{}',1,1,1)")
+                        writer.execute("UPDATE threads SET project_id='after' WHERE id='incoming'")
+                return super().execute(sql, *args, **options)
+
+        def open_database(path, *args, **options):
+            if isinstance(path, str) and path.startswith(src.as_uri()):
+                options["factory"] = SourceConnection
+            return connect(path, *args, **options)
+
+        with mock.patch.object(migration.sqlite3, "connect", open_database):
+            self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        self.assertTrue(injected)
+        with closing(connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT project_id FROM threads").fetchone()[0], "before")
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_sqlite_write_lock_precedes_incoming_id_selection(self):
+        src = self.database(self.profile, [("incoming", "/old/rollout", "old")])
+        dst = self.database(self.home, [])
+        connect = sqlite3.connect
+        with closing(connect(dst)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+        attempts = []
+
+        class DestinationConnection(sqlite3.Connection):
+            def execute(connection, sql, *args, **options):
+                result = super().execute(sql, *args, **options)
+                if not attempts and sql == "SELECT id FROM threads":
+                    try:
+                        with closing(connect(dst, timeout=0)) as writer, writer:
+                            writer.execute("INSERT INTO threads VALUES('incoming','/normal/rollout','native')")
+                    except sqlite3.OperationalError as error:
+                        if "locked" not in str(error):
+                            raise
+                        attempts.append("locked")
+                    else:
+                        attempts.append("inserted")
+                return result
+
+        def open_database(path, *args, **options):
+            if isinstance(path, str) and path.startswith(dst.as_uri()):
+                options["factory"] = DestinationConnection
+            return connect(path, *args, **options)
+
+        with mock.patch.object(migration.sqlite3, "connect", open_database):
+            self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        self.assertEqual(attempts, ["locked"])
+        with closing(connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT title FROM threads").fetchone()[0], "old")
+
+    def test_sqlite_identity_conflicts_roll_back_the_whole_import(self):
+        for conflict in ("idempotency", "attachment_id", "attachment_identity", "check"):
+            with self.subTest(conflict=conflict):
+                source_root, target_root = self.profile / conflict, self.home / conflict
+                src, dst = self.relational_database(source_root), self.relational_database(target_root)
+                with closing(sqlite3.connect(src)) as db, db:
+                    db.execute("INSERT INTO projects VALUES('incoming-project','incoming','{}',0,1,1)")
+                    db.execute("INSERT INTO project_idempotency_keys VALUES('key','incoming-project',1)")
+                    self.relational_thread(db, "incoming", "incoming-project")
+                    db.execute("INSERT INTO thread_attachments VALUES('collision','incoming','file','identity','incoming',1)")
+                with closing(sqlite3.connect(dst)) as db, db:
+                    db.execute("INSERT INTO projects VALUES('normal-project','normal','{}',0,1,1)")
+                    if conflict == "idempotency":
+                        db.execute("INSERT INTO project_idempotency_keys VALUES('key','normal-project',1)")
+                    elif conflict == "attachment_id":
+                        self.relational_thread(db, "normal", "normal-project")
+                        db.execute("INSERT INTO thread_attachments VALUES('collision','normal','file','identity','normal',1)")
+                    elif conflict == "attachment_identity":
+                        db.execute("PRAGMA foreign_keys=OFF")
+                        db.execute("INSERT INTO thread_attachments VALUES('normal-id','incoming','file','identity','normal',1)")
+                    else:
+                        db.execute("""CREATE TRIGGER reject_attachment BEFORE INSERT ON thread_attachments
+                                   BEGIN SELECT RAISE(ABORT, 'native attachment constraint'); END""")
+                with closing(sqlite3.connect(dst)) as db:
+                    before = {table: db.execute('SELECT * FROM "' + table + '"').fetchall()
+                              for table in ("projects", "threads", "project_idempotency_keys", "thread_attachments")}
+                with self.assertRaises((ValueError, sqlite3.IntegrityError)) as failure:
+                    migration.merge_threads(src, dst, self.home, True, None)
+                self.assertIsInstance(failure.exception, ValueError)
+                self.assertRegex(str(failure.exception), "Codex.*conflict")
+                with closing(sqlite3.connect(dst)) as db:
+                    after = {table: db.execute('SELECT * FROM "' + table + '"').fetchall() for table in before}
+                self.assertEqual(after, before)
+
+    def test_first_database_with_broken_relationships_is_not_published(self):
+        src = self.relational_database(self.profile)
+        dst = self.home / ".codex/state_5.sqlite"
+        with closing(sqlite3.connect(src)) as db, db:
+            self.relational_thread(db, "incoming", "missing-project")
+        with self.assertRaisesRegex(ValueError, "Codex.*foreign key"):
+            migration.merge_threads(src, dst, self.home, True, None)
+        self.assertFalse(dst.exists())
+        self.assertEqual(list(dst.parent.iterdir()), [])
+
+    def test_database_backups_are_unique_private_and_taken_before_each_import(self):
+        src = self.database(self.profile, [("first", "/first", "first")])
+        dst = self.database(self.home, [])
+        backups = self.home / "backups"
+        backups.mkdir()
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, backups), 1)
+        with closing(sqlite3.connect(src)) as db, db:
+            db.execute("INSERT INTO threads VALUES('second','/second','second')")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, backups), 1)
+        files = list(backups.glob("*.sqlite"))
+        self.assertEqual(len(files), 2)
+        counts = []
+        for path in files:
+            self.assertIn("state_5", path.name)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with closing(sqlite3.connect(path)) as db:
+                counts.append(db.execute("SELECT count(*) FROM threads").fetchone()[0])
+        self.assertEqual(sorted(counts), [0, 1])
+
+    def test_competing_database_already_containing_the_thread_imports_zero_records(self):
+        src = self.database(self.profile, [("same", "/old/rollout", "old")])
+        dst = self.home / ".codex/state_5.sqlite"
+        is_file = Path.is_file
+        created = []
+
+        def competing_creation(path):
+            if path == dst and not created:
+                created.append(True)
+                self.database(self.home, [("same", "/normal/rollout", "normal")])
+                return False
+            return is_file(path)
+
+        with mock.patch.object(Path, "is_file", competing_creation):
+            self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 0)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT * FROM threads").fetchall(), [("same", "/normal/rollout", "normal")])
+
+    def test_same_database_columns_with_different_unique_constraints_are_refused(self):
+        src = self.database(self.profile, [("incoming", "/old/rollout", "incoming")])
+        dst = self.database(self.home, [])
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("CREATE UNIQUE INDEX unique_title ON threads(title)")
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+            migration.merge_threads(src, dst, self.home, True, None)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+
     def test_sqlite_import_keeps_existing_threads_and_rewrites_only_rollout_path(self):
         src = self.database(self.profile, [("new", str(self.profile / ".codex/sessions/new.jsonl"), "source"),
                                             ("same", "/old/rollout", "do not replace")])

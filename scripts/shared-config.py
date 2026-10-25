@@ -364,6 +364,129 @@ def merge_project_settings(profile, home, apply):
     return len(missing)
 
 
+def quoted_identifier(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def check_foreign_keys(database):
+    violation = database.execute("PRAGMA foreign_key_check").fetchone()
+    if violation:
+        raise ValueError(f"Codex database foreign key conflict in {violation[0]}; no thread metadata imported")
+
+
+def thread_schemas(source, target):
+    tables = ("thread_sections", "projects", "project_roots", "project_idempotency_keys", "threads",
+              "thread_dynamic_tools", "thread_spawn_edges", "thread_attachments", "thread_read_receipts")
+    schemas = {}
+
+    def unique_indexes(database, table):
+        indexes = []
+        for index in database.execute(f'PRAGMA index_list("{table}")'):
+            if index[2]:
+                columns = tuple(row[2:5] for row in database.execute(
+                    f"PRAGMA index_xinfo({quoted_identifier(index[1])})") if row[5])
+                indexes.append((columns, index[4]))
+        return sorted(indexes)
+
+    for table in tables:
+        incoming = list(source.execute(f'PRAGMA table_info("{table}")'))
+        current = list(target.execute(f'PRAGMA table_info("{table}")'))
+        if not incoming and not current:
+            continue
+        if incoming != current or list(source.execute(f'PRAGMA foreign_key_list("{table}")')) != \
+                list(target.execute(f'PRAGMA foreign_key_list("{table}")')) or \
+                unique_indexes(source, table) != unique_indexes(target, table):
+            raise ValueError(f"Codex database schema differs for {table}; no thread metadata imported")
+        schemas[table] = ([row[1] for row in incoming],
+                          [row[1] for row in sorted(incoming, key=lambda row: row[5]) if row[5]])
+    return schemas
+
+
+def database_rows(database, table, columns):
+    names = ",".join(quoted_identifier(column) for column in columns)
+    for row in database.execute(f'SELECT {names} FROM "{table}"'):
+        yield dict(zip(columns, row))
+
+
+def insert_thread_metadata(database, table, schema, row, immutable=()):
+    columns, primary = schema
+    names = ",".join(quoted_identifier(column) for column in columns)
+    condition = " AND ".join(f"{quoted_identifier(column)} IS ?" for column in primary)
+    existing = database.execute(f'SELECT {names} FROM "{table}" WHERE {condition}',
+                                [row[column] for column in primary]).fetchone()
+    if existing is not None:
+        current = dict(zip(columns, existing))
+        if any(current[column] != row[column] for column in immutable):
+            raise ValueError(f"Codex metadata conflict in {table}; existing identity has different ownership")
+        return 0
+    try:
+        cursor = database.execute(f'INSERT INTO "{table}" ({names}) VALUES ({",".join("?" for _ in columns)})',
+                                  [row[column] for column in columns])
+    except sqlite3.IntegrityError as error:
+        raise ValueError(f"Codex metadata conflict in {table}: {error}; no thread metadata imported") from error
+    return cursor.rowcount
+
+
+def backup_thread_database(target, backup_dir):
+    descriptor, saved_path = tempfile.mkstemp(dir=backup_dir, prefix=f"codex-{target.stem}-", suffix=".sqlite")
+    os.close(descriptor)
+    try:
+        # The importing connection already holds BEGIN IMMEDIATE. Backing up
+        # that connection would wait on its own write transaction indefinitely.
+        with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as current, \
+                closing(sqlite3.connect(saved_path)) as saved:
+            current.backup(saved)
+    except BaseException:
+        os.unlink(saved_path)
+        raise
+
+
+def merge_thread_records(source, target, src, dst, incoming, schemas):
+    columns = schemas["threads"][0]
+    threads = [row for row in database_rows(src, "threads", columns) if row["id"] in incoming]
+    projects = {row.get("project_id") for row in threads} - {None}
+    sections = {row.get("thread_section_id") for row in threads} - {None}
+    new_projects = set()
+    count = 0
+    for table, schema in schemas.items():
+        for row in threads if table == "threads" else database_rows(src, table, schema[0]):
+            immutable = ()
+            if table in ("projects", "thread_sections"):
+                if row["id"] not in (projects if table == "projects" else sections):
+                    continue
+            elif table == "project_roots":
+                if row["project_id"] not in new_projects:
+                    continue
+                immutable = tuple(schema[0])
+            elif table == "project_idempotency_keys":
+                if row["project_id"] not in projects:
+                    continue
+                immutable = ("project_id",)
+            elif table == "threads":
+                prefix = str(source.parent) + "/"
+                if row["rollout_path"].startswith(prefix):
+                    row["rollout_path"] = str(target.parent) + "/" + row["rollout_path"][len(prefix):]
+                immutable = tuple(schema[0])
+            else:
+                thread = row.get("thread_id", row.get("child_thread_id"))
+                if thread not in incoming:
+                    continue
+                if table == "thread_dynamic_tools":
+                    immutable = tuple(schema[0])
+                elif table == "thread_spawn_edges":
+                    immutable = ("parent_thread_id", "child_thread_id")
+                elif table == "thread_attachments":
+                    immutable = ("thread_id", "attachment_type", "identity_key")
+                # Existing receipts remain authoritative even when a thread's
+                # rebuildable metadata was absent before this import.
+            inserted = insert_thread_metadata(dst, table, schema, row, immutable)
+            if table == "projects" and inserted:
+                new_projects.add(row["id"])
+            elif table == "threads":
+                count += inserted
+    return count
+
+
 def merge_threads(source, target, home, apply, backup_dir):
     if not source.is_file():
         return 0
@@ -378,7 +501,10 @@ def merge_threads(source, target, home, apply, backup_dir):
         try:
             with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src, \
                     closing(sqlite3.connect(temporary)) as dst:
+                src.execute("BEGIN")
                 src.backup(dst)
+                dst.execute("PRAGMA foreign_keys=ON")
+                check_foreign_keys(dst)
                 old = str(source.parent) + "/"
                 new = str(target.parent) + "/"
                 dst.execute("UPDATE threads SET rollout_path = ? || substr(rollout_path, ?) WHERE substr(rollout_path, 1, ?) = ?",
@@ -397,37 +523,20 @@ def merge_threads(source, target, home, apply, backup_dir):
             os.unlink(temporary)
     with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src, \
             closing(sqlite3.connect(target.as_uri() + ("?mode=rw" if apply else "?mode=ro"), uri=True, timeout=30)) as dst:
-        incoming = {r[0] for r in src.execute("SELECT id FROM threads")} - {r[0] for r in dst.execute("SELECT id FROM threads")}
-        if not apply or not incoming:
-            return len(incoming)
-        if backup_dir:
-            descriptor = os.open(backup_dir / "codex-state.sqlite", os.O_WRONLY | os.O_CREAT, 0o600)
-            os.close(descriptor)
-            with closing(sqlite3.connect(backup_dir / "codex-state.sqlite")) as saved:
-                dst.backup(saved)
-        tables = ("thread_sections", "projects", "project_roots", "project_idempotency_keys", "threads",
-                  "thread_dynamic_tools", "thread_spawn_edges", "thread_attachments", "thread_read_receipts")
-        available = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        src.execute("BEGIN")
+        dst.execute("PRAGMA foreign_keys=ON")
         with dst:
-            for table in tables:
-                if table not in available:
-                    continue
-                columns = [r[1] for r in src.execute(f'PRAGMA table_info("{table}")')]
-                if columns != [r[1] for r in dst.execute(f'PRAGMA table_info("{table}")')]:
-                    raise ValueError(f"Codex database schema differs for {table}; no thread metadata imported")
-                keys = ",".join('"' + c + '"' for c in columns)
-                for raw in src.execute(f'SELECT {keys} FROM "{table}"'):
-                    row = dict(zip(columns, raw))
-                    thread = row.get("thread_id", row.get("child_thread_id", row.get("id") if table == "threads" else None))
-                    if thread is not None and thread not in incoming:
-                        continue
-                    if table == "threads":
-                        old = str(source.parent) + "/"
-                        if row["rollout_path"].startswith(old):
-                            row["rollout_path"] = str(target.parent) + "/" + row["rollout_path"][len(old):]
-                    dst.execute(f'INSERT OR IGNORE INTO "{table}" ({keys}) VALUES ({",".join("?" for _ in columns)})',
-                                [row[c] for c in columns])
-        return len(incoming)
+            dst.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
+            incoming = {r[0] for r in src.execute("SELECT id FROM threads")} - {r[0] for r in dst.execute("SELECT id FROM threads")}
+            if not apply or not incoming:
+                return len(incoming)
+            schemas = thread_schemas(src, dst)
+            check_foreign_keys(src)
+            if backup_dir:
+                backup_thread_database(target, backup_dir)
+            count = merge_thread_records(source, target, src, dst, incoming, schemas)
+            check_foreign_keys(dst)
+            return count
 
 
 def migrate(home, apply=False, backup_dir=None):
