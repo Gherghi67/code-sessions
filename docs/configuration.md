@@ -462,8 +462,8 @@ process and its hooks can find the session:
 - `CLAUDE_CODE_TASK_LIST_ID` - Set to the session name for task list persistence; a feature worktree gets its own list under its `base@task` name, not the base's
 - `CLAUDE_CODE_AUTO_MEMORY_PATH` / `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` - Redirect [Claude Code auto memory](https://code.claude.com/docs/en/memory) into `<session>/.cs/memory/`. Claude Code owns the memory-file format and cs owns the storage path. See [memory records](session-layout.md#shared-files).
 - `CS_BIN` - Exported by every cs launch, never set by hand: the absolute path of the running cs, replacing any value inherited from a parent launch. The mods run cs through it (`cs -update`, `/queue`), since the claude process's `PATH` is not the launching shell's
-- `CODE_SESSIONS_HOME` - Exported by the code-sessions launcher, never set by hand: the profile's path. It tells a cs run, and tools such as branch-out, that the fork is the one running. With it set, `cs -update` and `cs -uninstall` refuse: the fork updates from its checkout with `sh setup.sh`, and its release URLs are the original cs's
-- `CODE_SESSIONS_ORIGINAL_ROOT` - Exported by the code-sessions launcher, never set by hand: the original cs's sessions root, as the shell that ran the launcher named it. Inside a profile session `CS_SESSIONS_ROOT` is the profile's, so `ccs .`, `ccs -adopt`, `-checkpoint` and `-narrative` run from there look up the original's sessions through this. Without it, every `.cs` above the current directory keeps the profile out
+- `CODE_SESSIONS_HOME` - Legacy private-profile marker, retained for already-running sessions. The shared-config launcher unsets it. The fork's compiled `CS_FORK` marker prevents upstream updates regardless of this variable.
+- `CODE_SESSIONS_ORIGINAL_ROOT` - Legacy containment-guard input. The shared-config launcher unsets it; both session stores now use the same installed manager.
 - `CS_UPDATE_AVAILABLE` - Exported by a cs launch, never set by hand: the version a newer cs was found at. The cs-update mod reads it to draw the release-notes pane. Absent when nothing is pending
 
 ## Adapter installation
@@ -480,114 +480,24 @@ See [Migration](migration.md) for the compatibility policy.
 sets it for the profile, whose launcher keeps the user's HOME: a tilde there
 would run the stable install's hooks.
 
-## Your own setup in the code-sessions profile
+## Standard engine configuration
 
-Claude subscription authentication uses your usual Keychain credential entry.
-The launcher sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` to an empty value while
-keeping transcripts, settings and sessions in the code-sessions profile. cs
-sets the same empty value when a launch reaches it without one, such as a
-feature or tmux window opened from a session an older launcher started. A
-value you set yourself stays. The
-Agents sidebar updates that profile's account metadata during manual and
-automatic subscription switches, including mounted encrypted session configs.
-Each Claude reopen refreshes only account metadata, preserving local projects
-and preferences. Codex retains its separate profile authentication.
+Setup installs the fork into `~/.local/bin` and its engine integrations into
+`~/.claude` and `~/.codex`. These are the same settings, extensions, MCP logins
+and native credentials used by ordinary Claude and Codex launches. The
+upstream Agents sidebar can switch the usual Claude login directly.
 
-A Claude session started without that value keeps its login in the profile's
-own Keychain entry, which a switch never writes. It stays on the old account,
-and keeps hitting that account's limits, until you reopen it. Reopen older
-running Claude sessions after updating so they use this shared login. On
-macOS, where the sidebar runs, this lists the process ids of code-sessions
-Claude sessions started without the variable:
+Setup backs up the previous installation under
+`~/.local/share/code-sessions/backups/<timestamp>`. The former private engine
+profile is retained. Missing conversations and Codex thread metadata are
+imported; existing divergent records are kept and reported. Profile
+credentials and preferences do not replace the standard configuration.
 
-```bash
-for p in $(pgrep -x claude); do e=$(ps eww -o command= -p "$p")
-  case "$e" in *CODE_SESSIONS_HOME=*) case "$e" in
-    *" CLAUDE_SECURESTORAGE_CONFIG_DIR="*) ;; *) echo "$p" ;; esac ;; esac; done
-```
+Existing fork session folders, vaults, secrets and tmux state stay in place.
+The `ccs` launcher keeps their manager data selectors while discarding engine
+configuration overrides inherited from the old profile. Explicit custom
+engine configuration outside that profile remains supported. Fresh installs
+use the normal session store. There is no carry-over step on reinstall.
 
-setup.sh ends by running `scripts/carry-over.sh`, which brings your own
-Claude and Codex setup from `~/.claude`, `~/.claude.json` and `~/.codex` into
-the profile at `~/.local/share/code-sessions/home`. It reads those and writes
-only inside the profile. Every path comes from `HOME`: inside a code-sessions session
-`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the `CS_*` variables name the profile.
-
-- **Linked**, one symlink per entry, so an edit in `~/.claude` or `~/.codex`
-  shows in code-sessions at once: `CLAUDE.md`, `keybindings.json`, and the entries of
-  `agents/`, `commands/`, `skills/`, `workflows/`, `themes/` and
-  `output-styles/`; for Codex, `AGENTS.md` and the entries of `skills/` and
-  `agents/`. A skill directory holding `.claude-plugin/`, such as the Agents
-  sidebar's, loads there as a plugin too.
-- **Skipped**: every name the install puts there itself, read from the installer's own
-  lists (the skills, mods, retired skills and retired commands that uninstall
-  removes), Claude Code's `skills/synced`, dot entries, and backups
-  (`*.pre-*`, `*.before-*`).
-- **Merged** into the profile's own files, adding what is missing and never
-  replacing or removing what the profile has: hooks in `settings.json` (except
-  cs's own under `~/.claude/hooks/cs/`), `enabledPlugins`,
-  `extraKnownMarketplaces`, `permissions` (lists are joined), `modelSettings`,
-  `env` and your other preference keys; `mcpServers` in the profile's
-  `.claude.json`; for Codex, `hooks.json`, the `[mcp_servers.*]` tables and
-  `[sandbox_workspace_write]` in `config.toml`. A profile value of another
-  shape than yours (a string where you have a list) stays as it is. A Codex
-  MCP server you defined inline (`mcp_servers.x = {...}`) cannot be copied as
-  a table; every run names it so you can copy it by hand.
-- **Hooks** are told apart by event, matcher and command, so one command under
-  two matchers is two hooks. The hooks a run adds are listed in
-  `.carried-hooks.json` beside `settings.json` and `hooks.json`. One you
-  later change or remove in `~/.claude` or `~/.codex` leaves the profile on
-  the next run, so an old and a new version never both run. A hook the profile
-  had before is never removed.
-- **Left as the profile's**: `model`, `theme`, `tui` (setup carries that once
-  itself), `statusLine`, `subagentStatusLine`, `disableAllHooks`, the login
-  helpers (`apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`,
-  `gcpAuthRefresh`, `otelHeadersHelper`, `forceLoginMethod`,
-  `forceLoginOrgUUID`), project-scoped MCP servers and plugins, and Codex's
-  top-level keys and other tables.
-- **Plugins**: each enabled plugin you installed at user scope is copied from
-  `~/.claude/plugins/cache` into the profile's cache (a clone on APFS, so it
-  takes no space), with its marketplace when the profile lacks it, and recorded
-  in the profile's `installed_plugins.json`. Nothing is downloaded, and the
-  profile updates them on its own from then on.
-- **Codex hooks** are added after cs's own and trusted in the profile's
-  `config.toml` only when `~/.codex/config.toml` trusts the definition the
-  profile holds. One you never reviewed stays untrusted, and Codex skips it
-  until you do. Codex keys trust by a hook's position, so when a carried hook
-  leaves, the trust of the hooks after it moves with them. `hooks.json` is
-  written only together with a `config.toml` that parses.
-- **The Agents sidebar**: when your `statusLine` is the sidebar's
-  `statusline-bridge.sh`, the profile's status line moves inside the bridge
-  too, and the profile's own line (`cs-statusline`) is kept in
-  `agents-sidebar-status/original-statusline` inside the profile's `.claude`.
-  A profile-aware bridge draws that line when `CLAUDE_CONFIG_DIR` or
-  `CODE_SESSIONS_HOME` names the profile; a bridge
-  without that check draws the line `~/.claude` displaced instead. The wrap
-  happens once: a status line you give the profile later stays (answer `y`
-  when setup offers cs-statusline, or run `cs -statusline enable`); delete
-  that file to wrap it again.
-
-A rerun adds what is new and changes nothing else: a file whose content would
-not change is not rewritten, and the first change to each profile file leaves a
-copy at `<file>.pre-carry-over`. A link or a carried hook whose entry you
-removed from `~/.claude` or `~/.codex` goes with it. An MCP server, plugin or
-preference you remove or change there stays in the profile as it was; change
-it in the profile by hand.
-
-Remote MCP servers sign in per configuration directory, so one you authorised in
-`~/.claude` or `~/.codex` asks again in the profile: `/mcp` in a code-sessions
-Claude session, or `CODEX_HOME=~/.local/share/code-sessions/home/.codex codex mcp login <name>`
-for Codex. Run the carry-over with no code-sessions Claude session open: a running
-session can save its own copy of `.claude.json` over the merged servers, and a
-rerun puts them back.
-
-```bash
-bash scripts/carry-over.sh --dry-run   # what it would change; writes nothing
-bash scripts/carry-over.sh                 # run it alone, without reinstalling
-sh ./setup.sh --no-carry-over              # install without it; or CS_CARRY_OVER=0
-```
-
-Before it installs, setup.sh also runs `scripts/carry-over.sh --prune`,
-with or without the opt-out. It removes the carried links that dangle, or that
-a name the install now puts there shadows, so the install never copies cs's files
-through a link into your own directories.
-- `CS_LIVE_LOCK_PID` - Set only for `.cs/local/pre-open`, never by hand: the pid in `.cs/session.lock` when that pid is a running process, empty otherwise. A pre-open reads it to tell whether the session is running instead of reading the lock (see [session-layout.md](session-layout.md))
+Restart an already-running agent to adopt the standard engine configuration.
+The old profile and installation backups remain available for recovery.

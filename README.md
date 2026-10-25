@@ -4,10 +4,11 @@
 for [Claude Code](https://github.com/anthropics/claude-code) and
 [Codex CLI](https://github.com/openai/codex), shared notes, memory, and local Git history.
 
-In a terminal, start it as `code-sessions`, or `ccs`. Inside its sessions the
-command is `cs`, as in the examples below. Setup keeps the fork's configuration,
-sessions, secrets, and tmux server under its own profile at
-`~/.local/share/code-sessions/home/`.
+Start it as `cs`, `code-sessions`, or `ccs`. Setup installs the fork with your
+normal `~/.claude` and `~/.codex` configuration, after backing up the replaced
+cs installation. It imports conversations from the former private profile.
+Existing fork projects and secrets stay in place; `ccs` continues to use their
+session store, while `cs` uses the usual `~/.claude-sessions` store.
 
 ## Install this checkout
 
@@ -23,7 +24,7 @@ Codex also requires Python 3. Shared run ownership uses `lockf` on macOS or
 Claude's Mermaid mod requires Claude Code 2.1.300+, and remote control requires
 2.1.299+.
 
-Follow [Getting started](docs/getting-started.md) for profile setup, adopting
+Follow [Getting started](docs/getting-started.md) for setup, adopting
 projects, engine switching, and worktrees. See [Codex sessions](docs/codex.md)
 for runtime compatibility and [Migration](docs/migration.md) for copying sessions
 between the original cs and this fork.

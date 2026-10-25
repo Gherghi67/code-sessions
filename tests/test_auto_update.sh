@@ -5,6 +5,17 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 
+# The inherited update/checksum cases exercise the upstream updater. Give
+# them an explicitly unmarked build; real fork cases use FORK_BIN below.
+FORK_BIN="$CS_BIN"
+eval "$(declare -f setup | sed '1s/setup/_upstream_test_setup/')"
+setup() {
+    _upstream_test_setup
+    mkdir -p "$TEST_TMPDIR/upstream/bin"
+    sed 's/^CS_FORK="code-sessions"$/CS_FORK=""/' "$FORK_BIN" > "$TEST_TMPDIR/upstream/bin/cs"
+    chmod +x "$TEST_TMPDIR/upstream/bin/cs"
+    CS_BIN="$TEST_TMPDIR/upstream/bin/cs"
+}
 
 # ============================================================================
 # Help text tests
@@ -740,6 +751,7 @@ echo ""
 # code-sessions' release URLs are the original cs's: run inside its profile,
 # -update would install the original over it, -uninstall take its commands.
 test_code_sessions_refuses_update_and_uninstall() {
+    local CS_BIN="$FORK_BIN"
     local out status verb
     for verb in -update -uninstall; do
         status=0
@@ -758,11 +770,18 @@ test_without_code_sessions_home_update_is_not_refused() {
     assert_output_contains "$out" "Unknown option: --bogus" "the update verb runs as upstream's" || return 1
 }
 
+test_shared_config_fork_refuses_upstream_updates_without_a_profile_marker() {
+    local out status=0
+    out=$(env -u CODE_SESSIONS_HOME "$FORK_BIN" -update --check 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$out" 'code-sessions updates from its checkout'
+}
+
 _stage_upstream_check() {
     local profile="$HOME/.local/share/code-sessions/home"
-    mkdir -p "$HOME/.local/bin" "$profile/.local/bin" "$profile/.codex" "$TEST_TMPDIR/upstream-tools"
+    mkdir -p "$HOME/.local/bin" "$profile/sessions" "$HOME/.codex" "$TEST_TMPDIR/upstream-tools"
     cp "$SCRIPT_DIR/../scripts/code-sessions-profile.sh" "$HOME/.local/bin/ccs"
-    cp "$CS_BIN" "$profile/.local/bin/cs"
+    cp "$FORK_BIN" "$HOME/.local/bin/cs"
     chmod +x "$HOME/.local/bin/ccs"
     cat > "$TEST_TMPDIR/upstream-tools/claude" <<'SCRIPT'
 #!/bin/sh
@@ -783,7 +802,7 @@ _launch_upstream_check() {
 
 test_code_sessions_launcher_checks_upstream_and_caches_the_result() {
     _stage_upstream_check
-    local out cache="$HOME/.local/share/code-sessions/home/.cache/cs" calls
+    local out cache="$HOME/.cache/cs" calls
     out=$(_launch_upstream_check upstream-first) || { echo "$out"; return 1; }
     assert_output_contains "$out" "Upstream cs 2026.99.3 available" || return 1
     assert_output_contains "$out" "fork includes cs" || return 1
@@ -792,7 +811,7 @@ test_code_sessions_launcher_checks_upstream_and_caches_the_result() {
     assert_output_contains "$out" "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3" "release notes stay accessible" || return 1
     assert_output_contains "$out" "MOD_UPDATE=unset" "the install mod gets no upstream verdict, including an inherited one" || return 1
     assert_file_exists "$cache/update-check" || return 1
-    assert_not_exists "$HOME/.cache/cs/update-check" "the original cs's cache stays independent" || return 1
+    assert_not_exists "$HOME/.local/share/code-sessions/home/.cache/cs/update-check" "engine migration uses the normal manager cache" || return 1
     calls=$(wc -l < "$TEST_TMPDIR/upstream-curl.log" | tr -d ' ')
     assert_eq 1 "$calls" "only the version probe runs" || return 1
     out=$(_launch_upstream_check upstream-second) || { echo "$out"; return 1; }
@@ -816,7 +835,7 @@ test_code_sessions_launcher_honours_update_check_opt_out() {
         "$HOME/.local/bin/ccs" upstream-opt-out --engine claude < /dev/null 2>&1) || { echo "$out"; return 1; }
     assert_output_not_contains "$out" "Upstream cs" || return 1
     assert_eq '' "$(cat "$TEST_TMPDIR/upstream-curl.log")" "opting out makes no requests" || return 1
-    assert_not_exists "$HOME/.local/share/code-sessions/home/.cache/cs/update-check"
+    assert_not_exists "$HOME/.cache/cs/update-check"
 }
 
 test_code_sessions_codex_launch_shows_the_upstream_notice() {
@@ -851,7 +870,7 @@ test_code_sessions_launcher_opens_when_upstream_is_unreachable() {
 
 test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache() {
     _stage_upstream_check
-    local cache="$HOME/.local/share/code-sessions/home/.cache/cs/update-check" out status=0
+    local cache="$HOME/.cache/cs/update-check" out status=0
     mkdir -p "$(dirname "$cache")"
     _deny_file_write "$cache" || return 77
     chmod 600 "$cache"
@@ -867,7 +886,7 @@ test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache() {
 
 test_code_sessions_launcher_opens_when_update_cache_directory_cannot_be_created() {
     _stage_upstream_check
-    local parent="$HOME/.local/share/code-sessions/home/.cache" out status=0
+    local parent="$HOME/.cache" out status=0
     mkdir -p "$parent"
     _deny_writes "$parent" || return 77
     out=$(_launch_upstream_check upstream-no-cache-directory) || status=$?
@@ -909,6 +928,7 @@ run_test test_launch_banner_card_yields_to_the_mod
 run_test test_launch_exports_update_verdict_to_the_mod
 run_test test_code_sessions_refuses_update_and_uninstall
 run_test test_without_code_sessions_home_update_is_not_refused
+run_test test_shared_config_fork_refuses_upstream_updates_without_a_profile_marker
 run_test test_code_sessions_launcher_checks_upstream_and_caches_the_result
 run_test test_code_sessions_launcher_honours_update_check_opt_out
 run_test test_code_sessions_codex_launch_shows_the_upstream_notice

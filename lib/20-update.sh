@@ -248,12 +248,11 @@ fetch_remote_changelog() {
 
 # Check for updates
 # code-sessions updates from its checkout (setup.sh). Its release URLs are the
-# original cs's, so `cs -update` inside its profile would install the original
-# over it, and -uninstall would take the profile's commands. The launcher
-# exports CODE_SESSIONS_HOME; with it set both refuse.
+# original cs's, so the fork must never install an upstream release over
+# itself. Older private-profile launches also refuse uninstall.
 refuse_in_code_sessions() {  # verb
-    [ -n "${CODE_SESSIONS_HOME:-}" ] || return 0
-    error "code-sessions updates from its checkout: rerun sh setup.sh there. cs $1 here would act as the original cs."
+    [ -n "${CODE_SESSIONS_HOME:-}" ] || { [ "$1" = -update ] && [ "${CS_FORK:-}" = code-sessions ]; } || return 0
+    error "code-sessions updates from its checkout: rerun sh setup.sh there. The fork does not support cs $1."
 }
 
 check_update() {
@@ -427,7 +426,7 @@ check_update_notify() {
     # The fork checks upstream for both adapters, but never offers the original
     # cs installer's replacement of the running binary. Keep this notice brief;
     # release summaries can be whole pages and the fork merges them by hand.
-    if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+    if [ "${CS_FORK:-}" = code-sessions ] || [ -n "${CODE_SESSIONS_HOME:-}" ]; then
         if [ -n "$UPDATE_AVAILABLE" ]; then
             printf '\n%bUpstream cs %s available%b (fork includes cs %s)\n' "$GREEN" "$UPDATE_AVAILABLE" "$NC" "$VERSION"
             printf '  Release notes: %s/tag/v%s\n' "$RELEASES_BASE" "$UPDATE_AVAILABLE"

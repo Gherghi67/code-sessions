@@ -708,7 +708,7 @@ _launch_claude_bound() {
     # parent's verdict. The fork reports upstream releases before either adapter:
     # the mod's install action is only for the original cs.
     unset CS_UPDATE_AVAILABLE
-    if [ -n "$UPDATE_AVAILABLE" ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
+    if [ -n "$UPDATE_AVAILABLE" ] && [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
     fi
 
@@ -1020,7 +1020,7 @@ _launch_claude_bound() {
         echo -e "${bars[$((bar_idx < ${#bars[@]} ? bar_idx : ${#bars[@]} - 1))]}${NC} ${_row}"; ((++bar_idx))
     fi
 
-    if [ -n "$UPDATE_AVAILABLE" ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
+    if [ -n "$UPDATE_AVAILABLE" ] && [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
         # The update block continues the card's bar stack rather than starting
         # its own column: same bar, same one-space gutter, so it reads as the
         # last fact about this session and not as a separate widget.

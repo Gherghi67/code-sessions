@@ -6,9 +6,9 @@ set -euo pipefail
 
 # Configuration
 VERSION="2026.10.10"
-# This build is code-sessions, a fork of cs. It runs as cs inside its own
-# profile; outside, the code-sessions (ccs) launcher starts it and cs is the
-# original. install.sh greps this line to tell its own build from the original.
+# This build is code-sessions, a fork of cs, installed with the user's normal
+# engine configuration. install.sh uses this marker to identify the fork;
+# update checks use it to avoid replacing the fork with an upstream release.
 # shellcheck disable=SC2034  # read by cs -version in lib/99-main.sh
 CS_FORK="code-sessions"
 # A relative CS_SESSIONS_ROOT names a directory under the one cs started in.
@@ -4240,12 +4240,11 @@ fetch_remote_changelog() {
 
 # Check for updates
 # code-sessions updates from its checkout (setup.sh). Its release URLs are the
-# original cs's, so `cs -update` inside its profile would install the original
-# over it, and -uninstall would take the profile's commands. The launcher
-# exports CODE_SESSIONS_HOME; with it set both refuse.
+# original cs's, so the fork must never install an upstream release over
+# itself. Older private-profile launches also refuse uninstall.
 refuse_in_code_sessions() {  # verb
-    [ -n "${CODE_SESSIONS_HOME:-}" ] || return 0
-    error "code-sessions updates from its checkout: rerun sh setup.sh there. cs $1 here would act as the original cs."
+    [ -n "${CODE_SESSIONS_HOME:-}" ] || { [ "$1" = -update ] && [ "${CS_FORK:-}" = code-sessions ]; } || return 0
+    error "code-sessions updates from its checkout: rerun sh setup.sh there. The fork does not support cs $1."
 }
 
 check_update() {
@@ -4419,7 +4418,7 @@ check_update_notify() {
     # The fork checks upstream for both adapters, but never offers the original
     # cs installer's replacement of the running binary. Keep this notice brief;
     # release summaries can be whole pages and the fork merges them by hand.
-    if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+    if [ "${CS_FORK:-}" = code-sessions ] || [ -n "${CODE_SESSIONS_HOME:-}" ]; then
         if [ -n "$UPDATE_AVAILABLE" ]; then
             printf '\n%bUpstream cs %s available%b (fork includes cs %s)\n' "$GREEN" "$UPDATE_AVAILABLE" "$NC" "$VERSION"
             printf '  Release notes: %s/tag/v%s\n' "$RELEASES_BASE" "$UPDATE_AVAILABLE"
@@ -15769,7 +15768,7 @@ _launch_claude_bound() {
     # parent's verdict. The fork reports upstream releases before either adapter:
     # the mod's install action is only for the original cs.
     unset CS_UPDATE_AVAILABLE
-    if [ -n "$UPDATE_AVAILABLE" ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
+    if [ -n "$UPDATE_AVAILABLE" ] && [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
     fi
 
@@ -16081,7 +16080,7 @@ _launch_claude_bound() {
         echo -e "${bars[$((bar_idx < ${#bars[@]} ? bar_idx : ${#bars[@]} - 1))]}${NC} ${_row}"; ((++bar_idx))
     fi
 
-    if [ -n "$UPDATE_AVAILABLE" ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
+    if [ -n "$UPDATE_AVAILABLE" ] && [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
         # The update block continues the card's bar stack rather than starting
         # its own column: same bar, same one-space gutter, so it reads as the
         # last fact about this session and not as a separate widget.
@@ -19957,16 +19956,18 @@ main() {
             return 0
             ;;
         -update)
-            refuse_in_code_sessions -update
             local update_arg="${2:-}"
             case "$update_arg" in
                 --check|-c)
+                    refuse_in_code_sessions -update
                     check_update
                     ;;
                 --force|-f)
+                    refuse_in_code_sessions -update
                     do_update "true"
                     ;;
                 "")
+                    refuse_in_code_sessions -update
                     do_update
                     ;;
                 *)

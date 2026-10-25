@@ -169,16 +169,18 @@ main() {
             return 0
             ;;
         -update)
-            refuse_in_code_sessions -update
             local update_arg="${2:-}"
             case "$update_arg" in
                 --check|-c)
+                    refuse_in_code_sessions -update
                     check_update
                     ;;
                 --force|-f)
+                    refuse_in_code_sessions -update
                     do_update "true"
                     ;;
                 "")
+                    refuse_in_code_sessions -update
                     do_update
                     ;;
                 *)

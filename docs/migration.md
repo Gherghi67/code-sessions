@@ -1,44 +1,43 @@
 # code-sessions migration and compatibility
 
-**code-sessions** is a fork of `claude-sessions` (cs), a persistent workspace
-manager, with first-party Claude and Codex adapters. It keeps cs's names: the
-command is `cs` inside its sessions, and its messages, skills and mods say cs.
-In a terminal it starts as `code-sessions`, or `ccs` for short, so `cs` there
-stays the original. The upstream GitHub repository and release/download URLs
-remain `hex/claude-sessions`; the fork is not published.
+**code-sessions** keeps the fork's Claude and Codex features while using the
+normal native configuration directories.
 
-## Deliberate compatibility policy
+## Moving from the private engine profile
 
-`setup.sh` keeps the original global `cs` installation and deploys the fork
-under `~/.local/share/code-sessions/home/`. Only the `code-sessions` and `ccs`
-launchers are exposed globally. Existing sessions are not migrated. Native CLI
-login is separate in the profile. Setup carries the user's own Claude and Codex
-setup in without writing to `~/.claude` or `~/.codex`: instructions, agents,
-skills and commands by link, hooks, plugins, MCP servers and preferences by
-merge (see [Your own setup in the code-sessions
-profile](configuration.md#your-own-setup-in-the-code-sessions-profile)), and it
-copies the Claude display mode (`tui`) from `~/.claude/settings.json` when the
-profile has none. Direct `install.sh` refuses to replace a `cs` executable that
-is not code-sessions' own build; use `setup.sh`.
+Run `sh setup.sh` from this checkout. Setup backs up the existing cs binaries,
+managed integrations and configuration files under
+`~/.local/share/code-sessions/backups/<timestamp>`, then installs this fork as
+`cs`, `ccs` and `code-sessions`.
 
-| Surface | Current policy |
-| --- | --- |
-| Public executable | Launchers: `code-sessions` and `ccs` in `~/.local/bin`; inside the profile the command is `cs`. The global original `cs` stays independent. |
-| Companion executables/package | Upstream's names, inside the profile only: `cs-secrets`, `cs-codex-thread`, `cs-statusline`, `cs-subagent-statusline`, and `cs-tui`. |
-| Workspace records | Keep `.cs/`, machine-local `.cs/local/`, and tracked-versus-local rules. |
-| Default discovery root | The source default remains `~/.claude-sessions/`. Setup's launcher keeps HOME as the user's own (macOS finds the login keychain through it, and `~/.ssh` and the other credentials stay visible) and points each tool at the profile through its own directory variable: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CS_SESSIONS_ROOT`, `CS_INSTALL_DIR`, `CS_CONFIG_DIR`, `CS_CACHE_DIR`, `CS_DATA_DIR` (where `cs -encrypt` makes its containers; the original install's stay in `~/.local/share/cs/vaults`, and so do any the profile made before it had its own, which keep opening from there because each session records its container's path) and `CS_SECRETS_DIR`. For the same reason the profile's `settings.json` registers hook commands by absolute path (`CS_HOOK_PATHS=absolute` at install time) rather than `~/.claude/hooks/cs/...`, which would resolve to the original install's hooks. The launcher also sets `CS_TMUX_SOCKET=code-sessions` and `CS_TMUX_SESSION=code-sessions`, so `cs -spawn` opens its windows in session `code-sessions` on a tmux server of its own (`tmux -L code-sessions attach -t code-sessions`). A tmux window runs with its server's environment, not the spawner's: on the default server a spawned window would run with the original install's directories, and a server the fork started would hand the profile's variables to the original's `cs -spawn` windows. Secrets go to the macOS keychain, as in the original install, but the launcher's `CS_SECRETS_KEYCHAIN_PREFIX=code-sessions` names the profile's items `code-sessions:<session>:<name>` beside the original's `cs:<session>:<name>`, so a session both installs have keeps two separate sets, and `cs -list` and the picker count each install's own. The launcher drops a `CS_SECRETS_BACKEND` inherited from the calling shell; where there is no keychain, the encrypted store lives in the profile's `.cs-secrets/`. Setup moves secrets an earlier profile kept in `.cs-secrets/<session>.enc` into the keychain, once per file: never onto an item the keychain already has, and not while that session or one of its features is open (rerun setup.sh after closing it). The profile's sessions root is `sessions/`, since it holds Claude and Codex sessions alike; rerunning setup.sh moves an earlier profile's `.claude-sessions/` there once. The move renames the Claude transcript folders, the Claude and Codex trusted-folder entries and the git worktree links of the session directories that moved (a symlinked session keeps its paths), and it waits until no profile command is running. |
-| Engine choice | Explicit `--engine`, saved session choice, `CS_DEFAULT_ENGINE`, sole installed Codex adapter, then Claude. Legacy and dual-adapter installs retain Claude by default. |
-| Session environment | `CS_SESSION_NAME`, `CS_SESSION_DIR`, `CS_SESSION_META_DIR` are canonical. Shared commands and secrets accept legacy `CLAUDE_SESSION_*` callers. Launches refresh both sets together. |
-| Fork marker | The launcher exports `CODE_SESSIONS_HOME`, the profile's path. With it set, `cs -update` and `cs -uninstall` refuse, since the fork's release address is the original cs's; tools such as branch-out read it to tell the fork from the original. `CS_BIN` is the launch-time path of the profile's `cs`. |
-| Native bindings | Preserve independent Claude UUID and Codex thread ID through the shared binding API over existing local formats. Switching engines never converts native transcripts. |
-| Other compatibility namespaces | Keep Keychain/secret identifiers, recovery refs, configuration/cache paths, hook sentinels, native Claude command names, and native mod IDs such as `cs` and `cs-update`. |
-| Version output | `cs -version` prints `cs <version> (code-sessions, a fork of cs)`, and help names the `ccs` launcher. The version is upstream's release the fork last merged. |
+The installed integrations use `~/.claude` and `~/.codex`. Native credentials
+and personal settings already there remain authoritative. Upstream
+agents-sidebar works without the former profile-account patch.
 
-No session migration command is needed. Use `ccs <name>` to resume an existing
-workspace; use `ccs <name> --engine codex` to select Codex. The engine
-preference is recorded only when startup preparation succeeds. Return with
-`--engine claude`. Both engines read the shared notes, but their native
-histories remain independent.
+Missing Claude conversation files, file history, Codex rollouts, prompt history
+and Codex thread metadata are imported from the old engine profile. A
+divergent existing file is preserved and reported. The old profile stays
+available; imported rollout files share their inode where possible so an
+already-running agent's appends remain visible after import.
+
+Project directories, worktree paths, session secrets and encrypted vaults stay
+in place. `ccs` continues using the old fork session store when it exists,
+including its secrets namespace and tmux socket. `cs` uses the normal
+`~/.claude-sessions` store. Both commands run this fork, with the same normal
+Claude and Codex settings. On a fresh installation all commands use the
+normal session store.
+
+Restart running agents to adopt the new configuration. To inspect or repeat
+the history import:
+
+```bash
+python3 scripts/shared-config.py
+python3 scripts/shared-config.py --apply
+```
+
+The following older session-copy tools remain available for moving project
+copies between the two session stores. They are not needed to share engine
+configuration.
 
 ## Provider-specific preparation
 
@@ -67,55 +66,17 @@ CS_INSTALL_ENGINES=claude sh ./setup.sh         # core and Claude integrations
 CS_INSTALL_ENGINES=claude,codex sh ./setup.sh    # both (fresh-install default)
 ```
 
-A fresh Codex-only install leaves the profile's `.claude/` untouched. Setup
-always preserves the user's original `~/.claude/`. Inside the profile, the installer records
-installed adapters in `.local/bin/.cs-install-engines` (the directory `CS_INSTALL_DIR` names at run time) and
-reuses that record when no selection is supplied. Rerun `setup.sh` to update;
-inside the profile `cs -update` and `cs -uninstall` refuse.
-Selections add or refresh adapters; they do not uninstall previously deployed
-adapters. The record retains their union so later updates maintain them.
-`cs -uninstall` uses the record to remove deployed integration (inside the
-profile's launcher it refuses, as said above); a Codex-only record leaves Claude
-settings and integrations alone. Old installations with no record follow the
-existing uninstall behavior.
+Setup remembers installed adapters in `~/.local/bin/.cs-install-engines`.
+Selections add or refresh adapters; they do not uninstall existing adapters.
+The fork updates from its checkout; `cs -update` refuses upstream releases
+because they would replace the fork. Rerun `setup.sh` to install changes.
+Tests use isolated homes and do not install globally.
 
-The selection controls packaged integrations, not access to executables: the
-core registry still knows both first-party adapters. A Claude-only install
-needs a Codex-enabled reinstall before launching Codex, since the bootstrap
-helper is required. Native runtime installation/authentication remains the
-user's configuration. Nothing is installed globally by the development tests.
+## Older ags profiles
 
-The fork is unpublished. Upstream releases install the original cs; that is why
-`cs -update` refuses inside the profile, where it would replace this local
-build with the upstream release.
-
-## Moving an ags profile
-
-Before it was called code-sessions the fork was `ags` (agent-sessions), with
-its profile in `~/.local/share/agent-sessions/home/` and `ags` launchers in
-`~/.local/bin`. The first `sh setup.sh` of code-sessions moves that profile
-over once, after the build and before the install:
-
-- The profile directory moves to `~/.local/share/code-sessions/home/`, with its
-  sessions, Claude and Codex logins, history and secrets. The emptied
-  `agent-sessions` folder goes.
-- The commands named ags inside the profile (`ags`, `ags-statusline` and the
-  rest, and their `cs` links) are removed, and the install writes the `cs` ones
-  in their place. Settings, hooks, trust and history files that name the old
-  profile by its path, or a helper by its ags name, are rewritten, under both
-  the physical path and the one setup was given. The Claude transcript folders
-  named after a session inside the profile are renamed, and worktree sessions
-  are repaired with `git worktree repair`.
-- Each session's `CLAUDE.local.md`, a linked one in its own folder too, has its
-  protocol reworded from `ags` to `cs` (`ags -secrets` becomes `cs -secrets`,
-  and so on). Text above the protocol's first `<!-- cs:` sentinel is left as it is.
-- The `ags` launchers in `~/.local/bin` are removed, but only those that name
-  `share/agent-sessions/home`; a file of yours that merely starts with `ags-`
-  stays. The `agent-sessions PATH` block in a shell startup file counts as the
-  `code-sessions` one.
-
-Setup refuses while a process runs from the old profile's bin (close every ags
-session first) and when both profiles exist.
+The automatic ags-to-private-profile rename belonged to the old isolated
+installer. Preserve any remaining `~/.local/share/agent-sessions/home` before
+moving its session data; current setup does not move or delete it.
 
 ## Copying a cs session into code-sessions
 
