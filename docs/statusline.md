@@ -1,6 +1,6 @@
 # Status line
 
-`cs-statusline` is the Claude Code status line shipped with cs. It reads the JSON Claude Code pipes to the registered `statusLine.command` on every render and prints exactly one line of rounded capsules on the terminal's own background.
+`cs-statusline` is the Claude Code status line shipped with cs. It reads the JSON Claude Code pipes to the registered `statusLine.command` on every render and prints exactly one line: by default the [band](#band-layout), a full-width row fading from the session's colour into the terminal; with `CS_STATUSLINE_LAYOUT=capsules`, the rounded capsules on the terminal's own background described next.
 
 ```
 ✳ claude-sessions  ·  ⎇ main↑1 +2!1  ·  ✦ Fable 5.1 medium  ◑ ctx 42%  ◷ 5h 31% ⋮ ◶ wk 84% · 5d16h
@@ -8,7 +8,7 @@
 
 One capsule carries identity — the Claude mark, the session, the branch, the model — and one carries the context gauge. The quota capsule (5h, joined by a vertical ellipsis to wk once wk reaches 50) is always there; the Fable window gets its own capsule at 50. Colour is state: bold amber ink on a number past its warn threshold, and the capsule inverts to red at crit, its text white on the red. The plain form (`NO_COLOR=1`) is `claude-sessions · ⎇ main↑1 +2!1 · ✦ Fable 5.1 medium > ◑ ctx 42% > ◷ 5h 31% ⋮ ◶ wk 84% · 5d16h`.
 
-Capsules are one of two layouts; the other, the [band](#band-layout), draws the same items on one full-width row that fades from the session's color into the terminal background.
+The capsules are the second of two layouts; the default, the [band](#band-layout), draws the same items on one full-width row that fades from the session's color into the terminal background. The segment table below holds for both.
 
 ## Segments
 
@@ -189,7 +189,7 @@ Inside tmux, Claude Code mutes its own branding and any truecolor status line to
 
 ## Band layout
 
-`CS_STATUSLINE_LAYOUT=band` draws the same items as the capsules on one full-width band instead. The band's fill fades, cell by cell, from the band color at the left edge to the terminal background at the right: a strip of the session's color that dissolves into the terminal. The capsule layout is the default; `capsules`, an empty value and any value other than `band` all draw capsules.
+`CS_STATUSLINE_LAYOUT=band` draws the same items as the capsules on one full-width band instead. The band's fill fades, cell by cell, from the band color at the left edge to the terminal background at the right: a strip of the session's color that dissolves into the terminal. The band is the default layout: an unset `CS_STATUSLINE_LAYOUT`, an empty value, `band` and any other value all draw the band; only `capsules` draws the capsules.
 
 ```
  ✳ my-session  ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%
@@ -302,8 +302,8 @@ export CS_SUBAGENT_STATUSLINE_DISABLE=1
 # Choose and order segments
 export CS_STATUSLINE_SEGMENTS="session,ctx,git,limits"
 
-# The layout: capsules (the default) or band (see Band layout)
-export CS_STATUSLINE_LAYOUT="band"
+# The layout: band (the default, see Band layout) or capsules
+export CS_STATUSLINE_LAYOUT="capsules"
 
 # The band's color: a session-palette name, brand, periwinkle, an r;g;b
 # triplet, session (the session's own color, the default) or none (neutral)

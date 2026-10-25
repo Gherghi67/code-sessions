@@ -2195,7 +2195,7 @@ _render() {
 
 # --- band layout -------------------------------------------------------------
 #
-# The second layout (CS_STATUSLINE_LAYOUT=band): the same items as the
+# The default layout (CS_STATUSLINE_LAYOUT unset or band): the same items as the
 # capsules, on one row W cells wide whose fill fades from the band colour at
 # cell 0 to the terminal background at cell W-1. Items start at cell 1, groups
 # are joined by the dot joiner, and blank fill carries the fade to the end.
@@ -2537,8 +2537,10 @@ main() {
         esac
     done
 
-    # The band needs colour to draw; plain prints what the capsules print.
-    if [ "${CS_STATUSLINE_LAYOUT:-}" = "band" ] && [ "$LEVEL" != "plain" ]; then
+    # The band is the layout unless CS_STATUSLINE_LAYOUT asks for the
+    # capsules; the band needs colour to draw, so plain prints what the
+    # capsules print.
+    if [ "${CS_STATUSLINE_LAYOUT:-band}" != "capsules" ] && [ "$LEVEL" != "plain" ]; then
         _render_band
     else
         _render

@@ -61,6 +61,9 @@ setup() {
     export XDG_CONFIG_HOME="$TEST_TMPDIR/xdg"
     mkdir -p "$XDG_CONFIG_HOME/cs"
     printf 'on\n' > "$XDG_CONFIG_HOME/cs/statusline-caps"
+    # The capsule pins below predate the band, which is the default layout
+    # now; the band tests export the band for themselves in band_env.
+    export CS_STATUSLINE_LAYOUT=capsules
 }
 
 teardown() {
@@ -5256,15 +5259,20 @@ test_band_inks_on_a_light_terminal() {
     assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
 }
 
-test_band_layout_unset_or_unknown_is_the_capsules() {
+test_band_layout_unset_or_unknown_is_the_band() {
     band_env
     local want out
-    want=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$want" "$CAPL" "the default layout draws capsules" || return 1
-    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "capsules is the default layout" || return 1
+    want=$(run_sl "$FIXTURE_DOCS")
+    assert_output_not_contains "$want" "$CAPL" "the band draws no capsule cap" || return 1
+    out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an empty layout is the band" || return 1
+    unset CS_STATUSLINE_LAYOUT
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unset layout is the band" || return 1
     out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an unknown layout is the capsules" || return 1
+    assert_eq "$want" "$out" "an unknown layout is the band" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "$CAPL" "capsules draws the capsules" || return 1
 }
 
 test_band_plain_level_prints_the_plain_line() {
@@ -5328,7 +5336,7 @@ run_test test_band_crit_group_is_one_red_island
 run_test test_band_inks_on_a_dark_terminal
 run_test test_band_inks_on_a_light_terminal
 run_test test_band_ink_roles_per_theme
-run_test test_band_layout_unset_or_unknown_is_the_capsules
+run_test test_band_layout_unset_or_unknown_is_the_band
 run_test test_band_plain_level_prints_the_plain_line
 run_test test_band_256_is_a_flat_fill
 run_test test_band_basic_is_a_flat_fill
