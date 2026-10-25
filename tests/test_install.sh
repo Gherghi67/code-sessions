@@ -3727,7 +3727,7 @@ test_install_refuses_to_replace_the_original_cs() {
     local status=0 output
     output=$(HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" bash "$INSTALL_SH" 2>&1) || status=$?
     assert_eq 1 "$status" "a direct install must leave the original cs alone" || return 1
-    assert_output_contains "$output" 'run sh setup.sh' || return 1
+    assert_output_contains "$output" 'sh setup.sh' || return 1
     for name in cs cs-secrets cs-codex-thread; do
         assert_eq $'#!/bin/sh\nexit 0' "$(cat "$fake_home/.local/bin/$name")" || return 1
     done

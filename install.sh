@@ -70,10 +70,10 @@ show_banner() {
 # Configuration
 INSTALL_DIR="${HOME}/.local/bin"
 # A cs already here that is not a code-sessions build is the original cs, and
-# its install is not this installer's to replace. setup.sh deploys code-sessions
-# into its own profile HOME, where the only cs is code-sessions' own.
-if [ -f "$INSTALL_DIR/cs" ] && ! grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null; then
-    error "The original cs is installed in $INSTALL_DIR. code-sessions installs into its own profile: run sh setup.sh from its checkout."
+# its install is replaced only through setup.sh, which backs it up first.
+if [ -f "$INSTALL_DIR/cs" ] && ! grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null \
+    && [ "${CS_REPLACE_ORIGINAL:-0}" != 1 ]; then
+    error "The original cs is installed in $INSTALL_DIR. Run sh setup.sh from this checkout to back it up and replace it."
 fi
 HOOKS_PARENT_DIR="${HOME}/.claude/hooks"
 HOOKS_DIR="${HOOKS_PARENT_DIR}/cs"
@@ -1727,7 +1727,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "1187871d6937e65877562be7447fa28f94bc9462657de05d5cc6db437fa4ae43  bin/cs"
+    "f90f2186d8fda34ea51ad107ed607c20089e9c9e8a9a0697c57c849fb8fdf719  bin/cs"
     "47ade9518130b8288b5cc7aaec98cb0a5418fd553e96e8d4b988a3985903d89a  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "bc152de974021d7745798bfb84641f6039214c7426bb9cd4d6ec5d750f058a1f  bin/cs-statusline"

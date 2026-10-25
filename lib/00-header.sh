@@ -6,9 +6,9 @@ set -euo pipefail
 
 # Configuration
 VERSION="2026.10.10"
-# This build is code-sessions, a fork of cs. It runs as cs inside its own
-# profile; outside, the code-sessions (ccs) launcher starts it and cs is the
-# original. install.sh greps this line to tell its own build from the original.
+# This build is code-sessions, a fork of cs, installed with the user's normal
+# engine configuration. install.sh uses this marker to identify the fork;
+# update checks use it to avoid replacing the fork with an upstream release.
 # shellcheck disable=SC2034  # read by cs -version in lib/99-main.sh
 CS_FORK="code-sessions"
 # A relative CS_SESSIONS_ROOT names a directory under the one cs started in.

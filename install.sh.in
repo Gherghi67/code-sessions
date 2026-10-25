@@ -69,10 +69,10 @@ show_banner() {
 # Configuration
 INSTALL_DIR="${HOME}/.local/bin"
 # A cs already here that is not a code-sessions build is the original cs, and
-# its install is not this installer's to replace. setup.sh deploys code-sessions
-# into its own profile HOME, where the only cs is code-sessions' own.
-if [ -f "$INSTALL_DIR/cs" ] && ! grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null; then
-    error "The original cs is installed in $INSTALL_DIR. code-sessions installs into its own profile: run sh setup.sh from its checkout."
+# its install is replaced only through setup.sh, which backs it up first.
+if [ -f "$INSTALL_DIR/cs" ] && ! grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null \
+    && [ "${CS_REPLACE_ORIGINAL:-0}" != 1 ]; then
+    error "The original cs is installed in $INSTALL_DIR. Run sh setup.sh from this checkout to back it up and replace it."
 fi
 HOOKS_PARENT_DIR="${HOME}/.claude/hooks"
 HOOKS_DIR="${HOOKS_PARENT_DIR}/cs"
