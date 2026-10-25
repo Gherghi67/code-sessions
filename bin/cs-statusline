@@ -2323,14 +2323,19 @@ _band_toward() {  # r g b percent
 }
 
 # The band's first cell in _FROM_R/_G/_B, and the colour it is made from in
-# _HUE_R/_G/_B. A hue is pulled 30% toward the background so ink reads on the
-# band's start; the neutral is already a step off the background and is used
-# as it is.
+# _HUE_R/_G/_B. A hue is moved halfway to the grey of its own luminance, then
+# 78% of the way to the background, so the band is a tint of the terminal and
+# ink reads on its start; the neutral is already a step off the background and
+# is used as it is.
 _band_start() {
     _BAND_NEUTRAL=""
     _band_from
     _HUE_R="$_R"; _HUE_G="$_G"; _HUE_B="$_B"
-    [ -n "$_BAND_NEUTRAL" ] || _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 30
+    if [ -z "$_BAND_NEUTRAL" ]; then
+        local lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
+        _band_toward "$lum" "$lum" "$lum" 50
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 78
+    fi
     _FROM_R="$_R"; _FROM_G="$_G"; _FROM_B="$_B"
 }
 

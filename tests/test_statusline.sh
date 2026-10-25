@@ -5085,14 +5085,26 @@ test_band_neutral_on_cream_takes_no_pull() {
     assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "no session colour on cream" || return 1
 }
 
-# The session colour from the state file: blue 106;155;204 pulled toward
-# 21;24;40 is 81;116;155.
+# The session colour from the state file: blue 106;155;204, halfway to its
+# luminance 145 is 125;150;175, and 78% of the way from there to 21;24;40 is
+# 44;52;70.
 test_band_takes_the_session_colour() {
     band_env
     band_session_colour blue
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "the session colour starts the band" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "the session colour starts the band" || return 1
+}
+
+# The same desaturated blue 125;150;175 pulled 78% toward cream 253;246;227 is
+# 224;224;215, and toward the dark 21;24;40 is 44;52;70.
+test_band_hue_is_desaturated_and_pulled_per_theme() {
+    band_env
+    local out
+    out=$(CS_STATUSLINE_BAND=blue CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;224;224;215m" "$(band_first_cell "$out")" "blue on cream" || return 1
+    out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "blue on dark" || return 1
 }
 
 test_band_without_a_usable_session_colour_is_neutral() {
@@ -5106,28 +5118,29 @@ test_band_without_a_usable_session_colour_is_neutral() {
     assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
 }
 
-# CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 pulls to
-# 161;34;38 (the -59.7 truncates to -59), the triplet 100;200;0 to 77;148;12,
-# brand 217;119;87 to 159;91;73. `session` and anything unusable fall to the
-# session colour (blue, 81;116;155); `none` is the neutral even with one set.
+# CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 desaturates to
+# 156;65;65 and pulls to 51;34;46 (the -31.98 truncates to -31), the triplet
+# 100;200;0 to 44;57;48, brand 217;119;87 to 57;48;57. `session` and anything
+# unusable fall to the session colour (blue, 44;52;70); `none` is the neutral
+# even with one set.
 test_band_colour_override_precedence() {
     band_env
     band_session_colour blue
     local out
     out=$(CS_STATUSLINE_BAND=red run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;161;34;38m" "$(band_first_cell "$out")" "a palette name" || return 1
+    assert_eq "[48;2;51;34;46m" "$(band_first_cell "$out")" "a palette name" || return 1
     out=$(CS_STATUSLINE_BAND="100;200;0" run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;77;148;12m" "$(band_first_cell "$out")" "an r;g;b triplet" || return 1
+    assert_eq "[48;2;44;57;48m" "$(band_first_cell "$out")" "an r;g;b triplet" || return 1
     out=$(CS_STATUSLINE_BAND=brand run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;159;91;73m" "$(band_first_cell "$out")" "the brand coral" || return 1
+    assert_eq "[48;2;57;48;57m" "$(band_first_cell "$out")" "the brand coral" || return 1
     out=$(CS_STATUSLINE_BAND=session run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "session names the session colour" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "session names the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=chartreuse run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
     out=$(CS_STATUSLINE_BAND="red blue" run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "two palette names are not one" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "two palette names are not one" || return 1
     out=$(CS_STATUSLINE_BAND="300;0;0" run_sl "$FIXTURE_DOCS")
-    assert_eq "[48;2;81;116;155m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
     out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
     assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
     assert_eq "" "$(CS_STATUSLINE_BAND=chartreuse run_sl_stderr "$FIXTURE_DOCS")" "an unusable override is silent" || return 1
@@ -5264,6 +5277,7 @@ run_test test_band_fades_from_the_band_colour_to_the_background
 run_test test_band_neutral_darkens_a_light_background
 run_test test_band_neutral_on_cream_takes_no_pull
 run_test test_band_takes_the_session_colour
+run_test test_band_hue_is_desaturated_and_pulled_per_theme
 run_test test_band_without_a_usable_session_colour_is_neutral
 run_test test_band_colour_override_precedence
 run_test test_band_amber_reading_is_an_island
