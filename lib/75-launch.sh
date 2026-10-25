@@ -241,12 +241,18 @@ _export_session_claude_config() {  # session_dir
 # extensions by symlink, so hooks, skills and plugins behave as they do
 # anywhere else. Only these names are shared: everything else Claude Code
 # writes (projects/, history.jsonl, backups/, todos/) is born in the session's
-# config dir and stays behind the vault. An entry already there is the
-# session's own and is left alone.
+# config dir and stays behind the vault. Recognized profile links follow the
+# selected shell configuration; the session's own overrides stay in place.
 _link_shared_claude_config() {  # session_config_dir, shell_config_dir
-    local name
+    local name legacy="$HOME/.local/share/code-sessions/home/.claude"
     for name in settings.json settings.local.json CLAUDE.md AGENTS.md rules skills \
         commands agents hooks plugins output-styles keybindings.json vale; do
+        if [ "$2" != "$legacy" ] && [ -L "$1/$name" ] && [ "$(readlink "$1/$name")" = "$legacy/$name" ]; then
+            # Retarget missing targets too, so old profile settings cannot
+            # reappear when the selected config has no corresponding entry.
+            ln -sfn "$2/$name" "$1/$name" || error "could not relink $1/$name to $2/$name."
+            continue
+        fi
         [ -e "$2/$name" ] || continue
         [ -e "$1/$name" ] || [ -L "$1/$name" ] && continue
         ln -s "$2/$name" "$1/$name" || error "could not link $1/$name to $2/$name."

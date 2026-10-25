@@ -15,6 +15,73 @@ setup() {
 
 teardown() { rm -rf "$TEST_TMPDIR"; }
 
+test_vault_reopen_retargets_managed_profile_links_to_normal_config() (
+    export HOME="$TEST_TMPDIR/home"
+    unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODE_SESSIONS_HOME
+    local session="$TEST_TMPDIR/session" vault="$TEST_TMPDIR/vault/claude-config"
+    local normal="$HOME/.claude" legacy="$HOME/.local/share/code-sessions/home/.claude" name
+    mkdir -p "$session/.cs" "$vault/projects/own" "$normal" "$legacy"
+    ln -s "$vault" "$session/.cs/claude-config"
+    printf '%s\n' '{"theme":"normal"}' > "$normal/settings.json"
+    printf '%s\n' '{"theme":"old-profile"}' > "$legacy/settings.json"
+    ln -s "$legacy/settings.json" "$vault/settings.json"
+    for name in hooks skills plugins; do
+        mkdir -p "$normal/$name" "$legacy/$name"
+        printf '%s\n' normal > "$normal/$name/marker"
+        printf '%s\n' old-profile > "$legacy/$name/marker"
+        ln -s "$legacy/$name" "$vault/$name"
+    done
+    printf '%s\n' '{"private-thread":1}' > "$vault/projects/own/thread.jsonl"
+    printf '%s\n' '{"private-history":1}' > "$vault/history.jsonl"
+    _export_session_claude_config "$session" || return 1
+    assert_eq "$normal/settings.json" "$(readlink "$vault/settings.json")" || return 1
+    assert_eq normal "$(jq -r .theme "$vault/settings.json")" || return 1
+    for name in hooks skills plugins; do
+        assert_eq "$normal/$name" "$(readlink "$vault/$name")" || return 1
+        assert_eq normal "$(cat "$vault/$name/marker")" || return 1
+        assert_eq old-profile "$(cat "$legacy/$name/marker")" || return 1
+    done
+    assert_eq "$session/.cs/claude-config" "$CLAUDE_CONFIG_DIR" || return 1
+    assert_eq "$vault" "$(readlink "$session/.cs/claude-config")" || return 1
+    assert_eq '{"private-thread":1}' "$(cat "$vault/projects/own/thread.jsonl")" || return 1
+    assert_eq '{"private-history":1}' "$(cat "$vault/history.jsonl")" || return 1
+    assert_not_exists "$normal/projects" || return 1
+    assert_not_exists "$normal/history.jsonl"
+)
+
+test_vault_retargets_broken_managed_links_even_without_normal_targets() (
+    export HOME="$TEST_TMPDIR/home"
+    local normal="$TEST_TMPDIR/custom ' config" legacy="$HOME/.local/share/code-sessions/home/.claude"
+    mkdir -p "$normal" "$legacy"
+    printf '%s\n' old-profile > "$legacy/settings.json"
+    ln -s "$legacy/settings.json" "$TEST_TMPDIR/config/settings.json"
+    ln -s "$legacy/plugins" "$TEST_TMPDIR/config/plugins"
+    _link_shared_claude_config "$TEST_TMPDIR/config" "$normal" || return 1
+    assert_eq "$normal/settings.json" "$(readlink "$TEST_TMPDIR/config/settings.json")" || return 1
+    assert_eq "$normal/plugins" "$(readlink "$TEST_TMPDIR/config/plugins")" || return 1
+    assert_not_exists "$TEST_TMPDIR/config/settings.json" || return 1
+    assert_not_exists "$TEST_TMPDIR/config/plugins" || return 1
+    assert_eq old-profile "$(cat "$legacy/settings.json")"
+)
+
+test_vault_preserves_session_overrides_and_unrelated_links() (
+    export HOME="$TEST_TMPDIR/home"
+    local normal="$HOME/.claude"
+    mkdir -p "$normal/hooks" "$normal/plugins" "$TEST_TMPDIR/config/plugins" "$TEST_TMPDIR/override-hooks"
+    printf '%s\n' normal > "$normal/settings.json"
+    printf '%s\n' session > "$TEST_TMPDIR/config/settings.json"
+    printf '%s\n' custom > "$TEST_TMPDIR/override-hooks/marker"
+    printf '%s\n' session-plugin > "$TEST_TMPDIR/config/plugins/marker"
+    ln -s ../override-hooks "$TEST_TMPDIR/config/hooks"
+    _link_shared_claude_config "$TEST_TMPDIR/config" "$normal" || return 1
+    assert_eq session "$(cat "$TEST_TMPDIR/config/settings.json")" || return 1
+    [ ! -L "$TEST_TMPDIR/config/settings.json" ] || return 1
+    assert_eq ../override-hooks "$(readlink "$TEST_TMPDIR/config/hooks")" || return 1
+    assert_eq custom "$(cat "$TEST_TMPDIR/config/hooks/marker")" || return 1
+    assert_eq session-plugin "$(cat "$TEST_TMPDIR/config/plugins/marker")" || return 1
+    [ ! -L "$TEST_TMPDIR/config/plugins" ]
+)
+
 test_login_refresh_preserves_session_projects_and_preferences() {
     local source="$TEST_TMPDIR/shell.json" dest="$TEST_TMPDIR/config/.claude.json"
     printf '%s\n' '{"oauthAccount":{"accountUuid":"new"},"theme":"shell","projects":{"secret":1}}' > "$source"
@@ -249,6 +316,9 @@ test_lost_login_lock_aborts_write_and_keeps_successor_lock() {
 }
 
 echo 'Launch options and login synchronization tests'
+run_test test_vault_reopen_retargets_managed_profile_links_to_normal_config
+run_test test_vault_retargets_broken_managed_links_even_without_normal_targets
+run_test test_vault_preserves_session_overrides_and_unrelated_links
 run_test test_login_refresh_preserves_session_projects_and_preferences
 run_test test_native_writer_lock_is_never_reclaimed
 run_test test_corrupt_login_json_preserves_existing_config
