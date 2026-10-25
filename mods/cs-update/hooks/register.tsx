@@ -196,8 +196,8 @@ async function isLead($: EngineInterface, cwd: string): Promise<boolean> {
   return lead !== undefined && lead === (await $.session.id())
 }
 
-// The /color palette as rgb, since the engine paints rgb() and theme keys but
-// draws a bare name like `red` in the default ink. KEEP IN SYNC with _sgr in
+// The /color palette as rgb, since the engine paints rgb(), #hex, ansi256(),
+// ansi: and theme keys but draws a bare name like `red` in the default ink. KEEP IN SYNC with _sgr in
 // bin/cs-statusline (tests/test_mod_rotate.sh pins every value here against it).
 const SESSION_PALETTE: Record<string, string> = {
   red: '220,38,38', blue: '106,155,204', green: '22,163,74', yellow: '202,138,4',

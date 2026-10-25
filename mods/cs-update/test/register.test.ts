@@ -321,7 +321,7 @@ test('the pane draws the title, every version in the session colour, its lines, 
   const words = texts(tree).join('\n')
   // A lone pane draws no title of its own, so the body carries it.
   expect(words).toContain('cs 2026.99.3 is available')
-  // The engine paints rgb(), #hex, ansi256() and theme keys; a bare `red` is
+  // The engine paints rgb(), #hex, ansi256(), ansi: and theme keys; a bare `red` is
   // none of them and draws in the default ink, so the name goes through the palette.
   expect(headings(tree).map(t => [t.props.color, texts(t).join('')])).toEqual([['rgb(220,38,38)', '2026.99.3'], ['rgb(220,38,38)', '2026.99.2']])
   expect(words).toContain('One fix: the statusline is readable on light terminals.')
