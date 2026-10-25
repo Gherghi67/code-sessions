@@ -71,7 +71,7 @@ export const MARK_INK: Record<BandState, (bg: string | undefined, theme: string 
   due: amberColor,
   clear: () => `rgb(${SESSION_PALETTE.green})`,
 }
-const MARK = '\u25cf'
+const MARK = '\u28ff'
 
 // A session colour name as an rgb() the engine paints, or undefined for a name
 // outside the palette (state hand-edited, or from a newer Claude Code).

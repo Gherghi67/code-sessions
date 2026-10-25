@@ -503,7 +503,7 @@ cells fall between the zones, never fewer than three, so the right edge holds
 still while the actions come and go. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `● ctrl+x 1 rotate   2 wrap   #4 say four   ○○○●` on the narrowest line
+colour: `⣿ ctrl+x 1 rotate   2 wrap   #4 say four   ○○○●` on the narrowest line
 that holds it. Chords that differ are spelled whole. In order, and each
 only when it applies, the actions are `rotate` (or `/clear now` once a
 handoff is armed, then `in Ns`, the armed handoff's count), `wrap`, `feed`
@@ -515,7 +515,7 @@ caps answer; only the amber of the count and of the mark still reads the
 measurement. The percentage itself stays on the status bar: the band does not
 repeat it.
 
-The mark is one `●` whose colour says what is due. Blue says a `/finish`
+The mark is one `⣿` whose colour says what is due. Blue says a `/finish`
 gate runs, or the cs queue holds tasks and is armed or draining. Amber says a
 rotation is due: the context is at or past the band's threshold, even while a
 turn runs and the keys wait for it to end, or a handoff is armed. Green says
@@ -600,7 +600,7 @@ stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
 draws. Every word takes its terminal cells from what the prompt's name is
-left: `● ▤ queue 2   mail 1   #4 say four   ○○○●` on the narrowest line that
+left: `⣿ ▤ queue 2   mail 1   #4 say four   ○○○●` on the narrowest line that
 holds it; a wider line puts its free cells between the mark and the counts.
 The task in progress is
 Claude Code's own task list's to show, above the band; the band does not
@@ -627,9 +627,9 @@ It draws after wrap when cs-feed advertises `/feed`, while the lead session
 is idle, with no survey or armed handoff. The installer always installs and
 registers cs-feed, with no global install switch. The band reads the command list without running
 a status command. With all three chords bound, the shared prefix draws once:
-`● ctrl+x 1 rotate   2 wrap   3 feed`. If the feed chord is unbound,
+`⣿ ctrl+x 1 rotate   2 wrap   3 feed`. If the feed chord is unbound,
 its label still draws and the other keys keep their shared prefix:
-`● ctrl+x 1 rotate   2 wrap   feed`. With a recorded yes to keybindings,
+`⣿ ctrl+x 1 rotate   2 wrap   feed`. With a recorded yes to keybindings,
 `cs -update` binds the third chord without another prompt. A recorded no
 keeps the keys unbound. To change that answer, remove `~/.config/cs/option-keys`
 and run `cs -update` in a terminal, as described in
