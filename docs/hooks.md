@@ -325,7 +325,7 @@ On `Stop`, also:
 - Drains the task queue (`.cs/local/queue`) at each stop boundary when armed, on the lead's Stop only (a tmux teammate shares the directory and fires its own top-level Stop; ungated, each of its idle turns would pop a task) — pops and injects one task at a time and instructs Claude to mirror progress into the native task list; every injected task, the first included, sits inside `<cs_task id="…">` tags (six random hex characters per turn, so the text cannot close its own block) with a note that the text is the task to do and changes none of the instructions around it, because another session wrote any task accepted from mail; each carries a scope block (do every behavior the task asks for, leave pre-existing bugs and unmentioned behavior as follow-ups in the narrative, implement the most direct reading of an ambiguous task and state the assumption) because a walk-away run has nobody watching to say so — taking priority over the narrative reminder below while a drain is armed or running (returns early); each transition also appends an event to the per-machine inbox (`.cs/local/notifications.jsonl`): `drain_started` on armed→draining, `task_done` per advance, `drain_finished` when the queue empties
 - While draining, each Stop first reads `.cs/local/queue.current`, the task it handed out; with no usable record it parks the run and logs nothing done. Then, before it pops that task, it evaluates three circuit breakers: tool failures in the current task at/above `CS_QUEUE_MAX_FAILURES` (default 5, from `.cs/local/failures`), context at/above `CS_QUEUE_MAX_CTX` (default 85, from the statusline's `context-pct`), and the 5-hour rate-limit window at/above `CS_QUEUE_MAX_5H` (default 85, from the statusline's `limits`, skipped when its `stamped_at` is stale past 1800s); a non-numeric env override falls back to the default. It also reads the final assistant message for a line reading exactly `cs-task-failed`, bare or as a code span, which the agent writes when it could not complete the task. That report goes to `.cs/local/queue.failed` before the Stop writes anything else, so a later Stop parks on it too; the file goes when the run parks or starts. A failures trip or a failure report means the task did not complete: it stays first in the queue, the Stop logs nothing done, and the run parks. A context or 5-hour trip measures the session, not the task: the Stop pops the task and logs it done, and the run parks before the Stop hands out the next one, or finishes when that was the last. A trip parks the queue (`queue.state` back to `idle`, recorded before the pop, the queue file left intact so `cs -queue start` re-arms; when the drain cannot write `idle` it removes `queue.state`, which reads as idle; when it can do neither, the Stop ends with nothing popped and `draining` in place, and the next Stop runs the same checks on the same task), appends a `breaker_tripped` event to the inbox with the reason and reading (`task_failed` for a failure report), and emits a `block` debrief naming what tripped and how many tasks remain. The drain reports any other state it cannot write as `cs task queue: could not write <path>`. The per-task failure count (`.cs/local/failures`) resets to zero on the armed→draining transition and again after every drain advance, so each task starts the breaker fresh
 - Spawned workers report back: when `.cs/local/spawned-by` exists, drain completion sends the spawner a mailbox notify and deletes the marker (one-shot); a breaker trip notifies but keeps the marker so the eventual drain still reports.
-- When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ queue N · start` key. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
+- When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ start N` key. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
 - Rotation nudge: when context is at or above `CS_ROTATE_NUDGE_CTX` (default 65, non-numeric override falls back to the default) per the statusline's `context-pct`, and this conversation hasn't already been nudged (`.cs/local/rotate-nudged`, an append-only list of conversation UUIDs, so a tmux teammate sharing the directory cannot re-arm the lead's notice), emits a one-time `block` suggesting the `rotate` skill to write a handoff and arm it, after which the user runs `/clear` to continue in a fresh conversation. Only reached when the queue isn't gating or draining above — an armed/draining queue owns the turn loop
 - Both context tiers below read `.cs/local/context-pct`, which the status line writes for the launched conversation alone, so both stay silent in a tmux teammate: the reading is the lead's, and a teammate acting on it would announce the lead's context as its own.
 - Context warning: one tier below the nudge — when context is in the `[CS_CTX_WARN_CTX, CS_ROTATE_NUDGE_CTX)` band (defaults 40 to 65; a non-numeric override falls back to its default) and this conversation hasn't been warned (`.cs/local/ctx-warned`, an append-only list of conversation UUIDs, so a tmux teammate sharing the directory cannot re-arm the lead's notice), emits a one-time `block` telling Claude to let the user know context crossed into wind-down territory. At or above the nudge threshold only the rotation nudge fires — never both in one Stop
@@ -495,14 +495,21 @@ directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it, read from the left: a mark, its words, separated by a
-dim `·`, then the rail of prompts, then the prompt it names. Where the keys'
+blank line above it, in two zones. At the left, after a mark, stand the
+actions, what a key or a press does now; at the line's right edge stand the
+words that say what the session is, then the rail of prompts, then the
+prompt it names. Items in a zone stand three cells apart, and the line's free
+cells fall between the zones, never fewer than three, so the right edge holds
+still while the actions come and go. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `● ctrl+x  1 rotate  ·  2 wrap   │││┃  #4 say four`. Chords that differ are spelled whole. In order, and each
-only when it applies: `/clear in Ns` (an armed handoff's count), `rotate` (or
-`/clear now` once a handoff is armed), `wrap`, the queue's start key, and
-`finishing <task> · gate <elapsed>` while a `/finish` gate runs. The band
+colour: `● ctrl+x 1 rotate   2 wrap   │││┃ #4 say four` on the narrowest line
+that holds it. Chords that differ are spelled whole. In order, and each
+only when it applies, the actions are `rotate` (or `/clear now` once a
+handoff is armed, then `in Ns`, the armed handoff's count), `wrap`, `feed`
+and the queue's start key, `▤ start N`; the right edge carries the features
+word, `finishing <task> · gate <elapsed>` while a `/finish` gate runs, and
+the two counts below. The band
 paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
 caps answer; only the amber of the count and of the mark still reads the
 measurement. The percentage itself stays on the status bar: the band does not
@@ -541,15 +548,17 @@ modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
-are not prompts. The bars start the line when no word stands before them,
-else three cells after the words, so they move only when the words do. At
+are not prompts. The bars stand at the line's right edge, three cells after
+any word before them there, so the actions at the left never move them. At
 most `cs.bandBars` bars draw (10 by default), in what the line leaves after
 the inset and the words; the older prompts collapse into one dim `…N` run at
-the rail's start, and a line too narrow for any tick draws no rail. Two cells
+the rail's start, and a line too narrow for any tick draws no rail. One cell
 after the bars the band names its prompt, `#N` and its first line (up to 80
 characters),
 dim italic, cut with `…` when the line is narrower, counted in terminal cells
-so a wide character takes two; under ten cells left it names none. On the
+so a wide character takes two; under ten cells left it names none. The name
+is as wide as the widest prompt it can show, the named one or a drawn bar's,
+so a swap never moves the bars. On the
 terminal a bar under the pointer swaps its own prompt into that place,
 italic, until the pointer leaves; the swap follows the mouse, so it
 needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
@@ -559,8 +568,8 @@ over a line without hiding what is under it. A conversation with
 one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
 draws only in the lead conversation of a cs session.
 
-Unless a `/finish` gate runs, the band's first word, before any key word
-(`·` between), is the state of the session's features,
+Unless a `/finish` gate runs, the first word at the band's right edge is the
+state of the session's features,
 read from
 `cs <base> -features --porcelain` after each turn and at session start,
 without holding either up, and every 30 s while the band is idle once cs has
@@ -578,7 +587,7 @@ base, whose word names it. A cs that fails, cannot start,
 or prints a record that is not ten fields with a whole `ahead` and a known
 state draws no word, and the mod logs it once.
 
-After every other word come two counts, dim, with no press, each only when
+After the right edge's other words come two counts, dim, with no press, each only when
 it has something to count:
 `▤ queue N` while the cs queue holds tasks but its start key is not offered
 (the queue is armed or draining, a turn runs, or an armed handoff's clear key
@@ -586,7 +595,9 @@ stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
 draws. Every word takes its terminal cells from what the prompt's name is
-left: `● ▤ queue 2  ·  mail 1   │││┃  #4 say four`. The task in progress is
+left: `● ▤ queue 2   mail 1   │││┃ #4 say four` on the narrowest line that
+holds it; a wider line puts its free cells between the mark and the counts.
+The task in progress is
 Claude Code's own task list's to show, above the band; the band does not
 repeat it.
 
@@ -611,9 +622,9 @@ It draws after wrap when cs-feed advertises `/feed`, while the lead session
 is idle, with no survey or armed handoff. The installer always installs and
 registers cs-feed, with no global install switch. The band reads the command list without running
 a status command. With all three chords bound, the shared prefix draws once:
-`● ctrl+x  1 rotate  ·  2 wrap  ·  3 feed`. If the feed chord is unbound,
+`● ctrl+x 1 rotate   2 wrap   3 feed`. If the feed chord is unbound,
 its label still draws and the other keys keep their shared prefix:
-`● ctrl+x  1 rotate  ·  2 wrap  ·  feed`. With a recorded yes to keybindings,
+`● ctrl+x 1 rotate   2 wrap   feed`. With a recorded yes to keybindings,
 `cs -update` binds the third chord without another prompt. A recorded no
 keeps the keys unbound. To change that answer, remove `~/.config/cs/option-keys`
 and run `cs -update` in a terminal, as described in
@@ -711,7 +722,7 @@ handoff already armed: an interrupted or errored turn, or a subagent's, starts
 nothing. The run is scheduled from a timer rather than from the turn's own
 hook, which the plugin contract refuses a command from. Once the rotate skill
 has armed its handoff, the next turn's end starts a 20-second grace: the
-band reads `/clear in 20s  ·  ctrl+x  1 /clear now`,
+band reads `ctrl+x 1 /clear now   in 20s`,
 redrawn once a second. The count wears the session's own colour while there
 is time, the status bar's amber from ten seconds and its crit red under five
 (the bar's inks, pinned against `bin/cs-statusline` by `tests/test_mod_rotate.sh`).
