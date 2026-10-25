@@ -834,7 +834,8 @@
       bold: true
     }, settingsWords.show), /* @__PURE__ */ h(Box, {
       flexDirection: "row",
-      gap: 1
+      flexWrap: "wrap",
+      columnGap: 1
     }, KINDS.map((kind) => {
       const shown = !session.view.hide.includes(kind);
       return /* @__PURE__ */ h(Button, {

@@ -83,16 +83,84 @@
   var drawnRows = new Map;
   var shown = new Map;
   var denied = new Set;
+  var DROP_ORDER = ["cs-mail", "cs-queued", "cs-features", "cs-gate"];
+  var SEP = "  ·  ";
+  function chordSpelling(entries, chords) {
+    const prefix = sharedPrefix(entries.flatMap((entry) => entry.kind === "chord" ? [chords[entry.action]] : []));
+    return {
+      prefix,
+      spelled: (action) => {
+        const chord = chords[action];
+        return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1);
+      }
+    };
+  }
+  var firstChordOf = (entries, chords) => entries.findIndex((entry) => entry.kind === "chord" && chords[entry.action] !== undefined);
+  function wordCellsOf(entries, chords, { prefix, spelled }, prefixed) {
+    const firstChord = firstChordOf(entries, chords);
+    return cellWidth(entries.map((entry, index) => {
+      const chord = entry.kind === "chord" ? spelled(entry.action) : undefined;
+      const keyed = chord === undefined ? entry.label : entry.keyOnly ? chord : `${chord} ${entry.label}`;
+      return `${index === firstChord && prefixed && prefix !== undefined ? `${prefix}  ` : ""}${keyed}`;
+    }).join(SEP));
+  }
+  var SHORTEN_ORDER = ["cs-features", "cs-queue"];
+  var SHORTEST_CELLS = 2;
+  var LEAVE_ORDER = ["cs-countdown", "cs-features", "cs-queue"];
+  function fitBand(all, chords, room) {
+    const spelling = chordSpelling(all, chords);
+    for (let kept = all;; ) {
+      const fitted = shortenBand(kept, chords, spelling, room);
+      const excess = wordCellsOf(fitted.entries, chords, spelling, fitted.prefixed) - room;
+      const last = fitted.entries[fitted.entries.length - 1];
+      if (excess <= 0 || last === undefined)
+        return fitted;
+      const leaving = LEAVE_ORDER.find((key) => fitted.entries.some((entry) => entry.key === key));
+      if (leaving === undefined) {
+        if (last.kind !== "chord")
+          throw new Error(`cs: the band left ${last.key} for last, where only chords stay`);
+        const keep = (last.keyOnly ? 0 : cellWidth(last.label)) - excess;
+        if (keep >= 1)
+          return { entries: [...fitted.entries.slice(0, -1), { ...last, label: cutToCells(last.label, keep), ink: undefined }], prefixed: false };
+      }
+      kept = kept.filter((entry) => entry.key !== (leaving ?? last.key));
+    }
+  }
+  function shortenBand(all, chords, spelling, room) {
+    const over = (entries, prefixed) => wordCellsOf(entries, chords, spelling, prefixed) - room;
+    let entries = all;
+    for (const key of DROP_ORDER) {
+      if (over(entries, true) <= 0)
+        return { entries, prefixed: true };
+      entries = entries.filter((entry) => entry.key !== key || entry.kind !== "word");
+    }
+    if (over(entries, true) <= 0)
+      return { entries, prefixed: true };
+    for (const key of SHORTEN_ORDER) {
+      const excess = over(entries, false);
+      if (excess <= 0)
+        return { entries, prefixed: false };
+      entries = entries.map((entry) => {
+        const cells = cellWidth(entry.label);
+        return entry.key !== key || cells <= SHORTEST_CELLS ? entry : { ...entry, label: cutToCells(entry.label, Math.max(SHORTEST_CELLS, cells - excess)) };
+      });
+    }
+    for (let i = entries.length - 1;i >= 0; i--) {
+      if (over(entries, false) <= 0)
+        return { entries, prefixed: false };
+      entries = entries.map((entry, j) => j === i && entry.kind === "chord" && spelling.spelled(entry.action) !== undefined ? { ...entry, keyOnly: true } : entry);
+    }
+    return { entries, prefixed: false };
+  }
   function drawBand(v, el) {
     const { Box, Text, Button } = el;
-    const { entries, chords, own } = v;
-    const actions = entries.flatMap((entry) => entry.kind === "chord" ? [entry.action] : []);
-    const prefix = sharedPrefix(actions.map((action) => chords[action]));
-    const firstChord = entries.findIndex((entry) => entry.kind === "chord" && chords[entry.action] !== undefined);
-    const spelled = (action) => {
-      const chord = chords[action];
-      return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1);
-    };
+    const { chords, own } = v;
+    const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1;
+    const { entries, prefixed } = fitBand(v.entries, chords, v.bodyColumns - 2 - markCells);
+    const spelling = chordSpelling(v.entries, chords);
+    const { spelled } = spelling;
+    const prefix = prefixed ? spelling.prefix : undefined;
+    const firstChord = firstChordOf(entries, chords);
     const key = (action) => {
       const text = spelled(action);
       return text !== undefined && /* @__PURE__ */ h(Box, {
@@ -102,13 +170,22 @@
         color: own
       }, text));
     };
-    const sep = "  ·  ";
-    const wordText = entries.map((entry, index) => {
-      const chord = entry.kind === "chord" ? spelled(entry.action) : undefined;
-      return `${index === firstChord && prefix !== undefined ? `${prefix}  ` : ""}${chord === undefined ? "" : `${chord} `}${entry.label}`;
-    }).join(sep);
-    const wordCells = cellWidth(wordText);
-    const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1;
+    const keyButton = (entry) => {
+      const text = spelled(entry.action);
+      if (text === undefined)
+        throw new Error(`cs: the band drew ${entry.key} as a key it has no chord for`);
+      return /* @__PURE__ */ h(Button, {
+        key: entry.key,
+        action: entry.action,
+        plain: true,
+        label: text,
+        onPress: entry.onPress
+      }, /* @__PURE__ */ h(Text, {
+        bold: true,
+        color: own
+      }, text));
+    };
+    const wordCells = wordCellsOf(entries, chords, spelling, prefixed);
     const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? 3 + wordCells : 0);
     const rail = v.rail;
     const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars);
@@ -140,19 +217,19 @@
     }, MARK)), entries.flatMap((entry, index) => [
       index > 0 && /* @__PURE__ */ h(Text, {
         dimColor: true
-      }, sep),
+      }, SEP),
       index === firstChord && prefix !== undefined && /* @__PURE__ */ h(Box, {
         marginRight: 2
       }, /* @__PURE__ */ h(Text, {
         dimColor: true
       }, prefix)),
-      entry.kind === "chord" && key(entry.action),
+      entry.kind === "chord" && !entry.keyOnly && key(entry.action),
       entry.kind === "word" ? entry.ink === undefined ? /* @__PURE__ */ h(Text, {
         dimColor: true
       }, entry.label) : /* @__PURE__ */ h(Text, {
         bold: true,
         color: entry.ink.color
-      }, entry.label) : entry.kind === "chord" ? entry.ink === undefined ? /* @__PURE__ */ h(Button, {
+      }, entry.label) : entry.kind === "chord" ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined ? /* @__PURE__ */ h(Button, {
         key: entry.key,
         action: entry.action,
         plain: true,
@@ -277,7 +354,7 @@
       fitted += grapheme;
       used += cells;
     }
-    return `${fitted}…`;
+    return `${fitted.trimEnd()}…`;
   }
   function fitLeft(text, width) {
     const fitted = cutToCells(text, width);
