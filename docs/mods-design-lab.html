@@ -297,7 +297,7 @@ body.app .rail,body.app .head{display:none}
   <div class="bar-r">
     <label title="The state a new frame is drawn in">State <select id="bd-state"></select></label>
     <label title="The band's width, for every frame">Cols <input id="bd-cols" type="number" min="40" max="200" value="80"></label>
-    <select id="bd-zoom" aria-label="zoom" title="Zoom (⌘/Ctrl + and −, ⌘/Ctrl 0 fits)"><option value="fit">Fit</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select>
+    <select id="bd-zoom" aria-label="zoom" title="Zoom (= in, − out, 0 fits)"><option value="fit">Fit</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select>
     <button type="button" id="bd-theme"></button>
     <span id="bd-fit" class="fit"></span>
     <button type="button" class="help" id="bd-help-open" title="Keyboard shortcuts (?)" aria-label="keyboard shortcuts">?</button>
@@ -342,8 +342,8 @@ body.app .rail,body.app .head{display:none}
     <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd> <kbd>Tab</kbd></td><td>while retyping: the next / previous words</td></tr>
     <tr><td><kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>undo</td></tr>
     <tr><td><kbd>Shift</kbd> <kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>redo</td></tr>
-    <tr><td><kbd>⌘/Ctrl</kbd> <kbd>+</kbd> / <kbd>−</kbd></td><td>zoom in / out</td></tr>
-    <tr><td><kbd>⌘/Ctrl</kbd> <kbd>0</kbd></td><td>zoom to fit</td></tr>
+    <tr><td><kbd>=</kbd> / <kbd>−</kbd></td><td>zoom in / out</td></tr>
+    <tr><td><kbd>0</kbd></td><td>zoom to fit</td></tr>
     <tr><td><kbd>?</kbd></td><td>this list</td></tr>
   </table>
 </dialog>
@@ -1426,8 +1426,9 @@ function bdFontSize(){
 }
 function bdZoomBy(d){
   const now=bdFontSize()/15;
-  bdZoom=d>0?BD_ZOOMS.find(z=>z>now+0.001)||BD_ZOOMS[BD_ZOOMS.length-1]:[...BD_ZOOMS].reverse().find(z=>z<now-0.001)||BD_ZOOMS[0];
-  composeRender();
+  const next=d>0?BD_ZOOMS.find(z=>z>now+0.001):[...BD_ZOOMS].reverse().find(z=>z<now-0.001);
+  if(!next) return;
+  bdZoom=next; composeRender();
 }
 function composeRender(){
   if(!bdHist) bdHist=BandEditor.history(bdOpen());
@@ -1669,10 +1670,11 @@ function bdKeys(e){
   if(!$("p-compose").classList.contains("on")) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")||$("bd-help").open) return;
   if((e.key==="Enter"||e.key===" ")&&document.activeElement?.closest("button,a")) return;
-  if(document.activeElement?.closest("[role=tablist]")) return;
   if(e.key==="?"){ e.preventDefault(); e.stopImmediatePropagation(); return $("bd-help").showModal(); }
-  if((e.metaKey||e.ctrlKey)&&(e.key==="="||e.key==="+"||e.key==="-"||e.key==="0")){ e.preventDefault(); e.stopImmediatePropagation(); if(e.key==="0"){ bdZoom="fit"; return composeRender(); } return bdZoomBy(e.key==="-"?-1:1); }
+  // Bare keys: the browser keeps Cmd/Ctrl + and - for its own zoom.
+  if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&/^[-=+0]$/.test(e.key)){ e.preventDefault(); e.stopImmediatePropagation(); if(e.key==="0"){ bdZoom="fit"; return composeRender(); } return bdZoomBy(e.key==="-"?-1:1); }
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
+  if(document.activeElement?.closest("[role=tablist]")) return;
   if(!sel) return;
   const node=bdSelected(), parent=sel.path.length?BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path.slice(0,-1)):null;
   const i=sel.path[sel.path.length-1];
