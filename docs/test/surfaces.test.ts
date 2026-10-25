@@ -180,3 +180,13 @@ test('cs-feed\'s time column and desktop band reach the right edge of the row', 
 test('cs-update prints a failed update\'s stderr tail under its exit line', () => {
   expect(rows('cs-update.Pane.cs-update/failed-exit', 80).slice(2, 6)).toEqual([' cs -update exited 3.', ' download failed', ' checksum mismatch', ' 1: update now   Esc: later'])
 })
+
+// drawUser's frames: the head, then under it, 2 cells in, the lead as
+// Markdown and the folded-lines hint.
+test('cs-feed draws a teammate report\'s lead as Markdown under its head', () => {
+  expect(rows('cs-feed.UserMessage/frames-text', 80)).toEqual([
+    '       ⇄ fix-auth · waiting · 09:41',
+    '         Gate green; run /finish to land.',
+    '         +3 more lines · ctrl+o shows all',
+  ])
+})

@@ -281,3 +281,17 @@ test('a Text breaks into rows at each newline, then wraps each row to the room',
   expect(toText(layout(T({ wrap: 'truncate-end' }, 'abcdef\ngh'), 4))).toEqual(['abc…', 'gh'])
   expect(toText(layout(T({}, 'a\n\nb'), 4))).toEqual(['a', '', 'b'])
 })
+
+// The 2.1.310 bundle's Markdown renderer: strong is bold, em italic, and a
+// codespan is its text in the theme's permission ink, no backticks; the lab
+// draws a Markdown node as that one styled run, broken and wrapped as a Text.
+test('a Markdown node draws its text with bold, italic and code styled, the marks gone', () => {
+  const md = (text: string) => ({ type: 'Markdown', props: { text }, children: [] })
+  const g = layout(md('Gate **green**; run `/finish` to *land*.'), 40)
+  expect(toText(g)).toEqual(['Gate green; run /finish to land.'])
+  expect(g.rows[0][5].st).toMatchObject({ bold: true, color: '' })
+  expect(g.rows[0][4].st.bold).toBe(false)
+  expect(g.rows[0][16].st).toMatchObject({ color: 'permission', bold: false })
+  expect(g.rows[0][27].st.italic).toBe(true)
+  expect(toText(layout(md('one two three\nfour'), 7))).toEqual(['one two', ' three', 'four'])
+})

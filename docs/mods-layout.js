@@ -53,6 +53,19 @@
     return lines.reduce(function (rows, line) { return rows.concat(wrapCells(line, room, mode)); }, []);
   }
 
+  // A Markdown text as one inline run, as the 2.1.310 renderer styles it:
+  // **strong** bold, *em* or _em_ italic, `code` in the theme's permission
+  // ink, the marks dropped. Blocks (headings, lists, fences) draw as text.
+  var MD_INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_)/;
+  function markdownCells(text, path) {
+    return text.split(MD_INLINE).reduce(function (cells, piece, i) {
+      if (i % 2 === 0) return cells.concat(run(piece, EMPTY, path));
+      if (piece.indexOf("**") === 0) return cells.concat(run(piece.slice(2, -2), styleOf({ bold: true }), path));
+      if (piece.charAt(0) === "`") return cells.concat(run(piece.slice(1, -1), styleOf({ color: "permission" }), path));
+      return cells.concat(run(piece.slice(1, -1), styleOf({ italic: true }), path));
+    }, []);
+  }
+
   // A Text child of a Text is an inline run: it inherits what it does not set.
   function mergeStyle(parent, props) {
     var p = props || {}, st = {};
@@ -126,6 +139,7 @@
     if (node.type === "Text") return grid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
     if (node.type === "Button") return layoutButton(node, width, path);
     if (node.type === "Box") return layoutBox(node, width, path, !!fill);
+    if (node.type === "Markdown") return grid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
     return grid([]);
   }
   // The tree as the terminal draws it in a row `width` cells wide.
