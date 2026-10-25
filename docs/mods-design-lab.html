@@ -342,6 +342,7 @@ body.app .rail,body.app .head{display:none}
     <tr><td><kbd>o</kbd> <kbd>w</kbd> <kbd>n</kbd></td><td>insert a Box, Text or Button by the selection</td></tr>
     <tr><td><kbd>t</kbd></td><td>switch the theme</td></tr>
     <tr><td>Double-click words</td><td>retype them</td></tr>
+    <tr><td><kbd>Enter</kbd> / <kbd>F2</kbd> on a frame row</td><td>rename it</td></tr>
     <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd> <kbd>Tab</kbd></td><td>while retyping: the next / previous words</td></tr>
     <tr><td><kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>undo</td></tr>
     <tr><td><kbd>Shift</kbd> <kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>redo</td></tr>
@@ -1384,7 +1385,7 @@ function bdLayerName(n){
 }
 function bdLayers(){
   const doc=bdDocNow(), sel=doc.selection, shown=sel?sel.frame:doc.exportFrame;
-  $("bd-frames").innerHTML=doc.frames.map(f=>`<button type="button" class="frow${f.id===shown?" on":""}" data-frame-row="${f.id}" title="Double-click to rename"><span class="lname">${esc(f.name)}</span>${f.id===doc.exportFrame?`<span class="badge">export</span>`:""}</button>`).join("");
+  $("bd-frames").innerHTML=doc.frames.map(f=>`<button type="button" class="frow${f.id===shown?" on":""}" data-frame-row="${f.id}" title="Rename: double-click, Enter or F2"><span class="lname">${esc(f.name)}</span>${f.id===doc.exportFrame?`<span class="badge">export</span>`:""}</button>`).join("");
   const rows=[], walk=(n,path)=>{ rows.push({n,path}); n.kids.forEach((k,i)=>walk(k,path.concat([i]))); };
   walk(bdFrame(shown).tree,[]);
   $("bd-layers").innerHTML=rows.map(({n,path})=>{
@@ -1727,6 +1728,7 @@ function composeUI(){
   });
   $("bd-frames").addEventListener("click",e=>{ const row=e.target.closest("[data-frame-row]"); if(row&&e.detail<2) bdDispatch({type:"selectFrame",frame:row.dataset.frameRow}); });
   $("bd-frames").addEventListener("dblclick",e=>{ const row=e.target.closest("[data-frame-row]"); if(row) bdRename(row.dataset.frameRow,row); });
+  $("bd-frames").addEventListener("keydown",e=>{ const row=e.target.closest("[data-frame-row]"); if(row&&(e.key==="Enter"||e.key==="F2")){ e.preventDefault(); bdRename(row.dataset.frameRow,row); } });
   $("bd-layers").addEventListener("click",e=>{ const row=e.target.closest(".lrow"); if(row) bdDispatch({type:"select",frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}); });
   $("bd-layers").addEventListener("mouseover",e=>{ const row=e.target.closest(".lrow"); bdHoverSet(row?{frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}:null); });
   $("bd-layers").addEventListener("mouseleave",()=>bdHoverSet(null));
