@@ -24,26 +24,38 @@ function isDrawn(value: unknown): value is Drawn {
  * indents: a row's children `gap` cells apart (Ink's default gap is 0), a
  * column one line per child, a plain Button its label (`hotkey: label` with a
  * hotkey), any other Button `[ label ]`, as the bundle's Button draws them.
+ * A `flexWrap: 'wrap'` row in `columns` cells packs its children onto as
+ * many lines as it needs, `columnGap` (else `gap`) cells apart and `rowGap`
+ * (else `gap`) blank lines between, as Yoga packs a wrapping row. Every glyph
+ * drawn here is one cell.
  */
-function shown(node: unknown): string[] {
+function shown(node: unknown, columns = Infinity): string[] {
   if (typeof node === 'string') return [node]
   if (!isDrawn(node)) return []
   const props = node.props ?? {}
   const children = node.children ?? []
   switch (node.type) {
-    case 'Text': return [children.flatMap(shown).join('')]
+    case 'Text': return [children.flatMap(child => shown(child, columns)).join('')]
     case 'Button': {
       const label = String(props.label)
       return [props.plain ? props.hotkey ? `${String(props.hotkey)}: ${label}` : label : `[ ${label} ]`]
     }
     case 'Box': {
-      if (props.flexDirection === 'column') return children.flatMap(shown)
+      if (props.flexDirection === 'column') return children.flatMap(child => shown(child, columns))
       const parts = children.map(child => {
-        const lines = shown(child)
+        const lines = shown(child, columns)
         if (lines.length > 1) throw new Error(`a row child draws ${lines.length} lines: ${JSON.stringify(child)}`)
         return lines[0]
       }).filter(part => part !== undefined)
-      return parts.length ? [parts.join(' '.repeat(Number(props.gap ?? 0)))] : []
+      const between = ' '.repeat(Number(props.columnGap ?? props.gap ?? 0))
+      if (props.flexWrap !== 'wrap') return parts.length ? [parts.join(between)] : []
+      const rows: string[] = []
+      for (const part of parts) {
+        const last = rows[rows.length - 1]
+        if (last !== undefined && [...last].length + between.length + [...part].length <= columns) rows[rows.length - 1] = last + between + part
+        else rows.push(part)
+      }
+      return rows.flatMap((row, i) => i === 0 ? [row] : [...Array.from({ length: Number(props.rowGap ?? props.gap ?? 0) }, () => ''), row])
     }
     default: throw new Error(`no text rule for a ${node.type}`)
   }
@@ -438,6 +450,25 @@ test('the settings pane stays usable while off and pressing group enables this s
   expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":false,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')
   expect((await pane.find({ type: 'Text', text: 'custom' }))?.text).toBe('custom')
   await pane.unmount()
+})
+
+test('the settings pane draws every Show chip, on two rows in an 80-column pane and on one at 120', async ($, on) => {
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', () => ({ deny: 'ENOENT: no such file or directory' }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('ui.render', { component: 'Pane' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine pane' }))
+  // Inside the frame: 76 cells at 80 columns, 116 at 120.
+  const chips = async (bodyColumns: number) => {
+    const pane = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'Pane', requestId: 'cs-feed', props: { title: 'Chat view', isFocused: true, placement: 'inline', bodyColumns, scroll: { offset: 0, bodyRows: 24 }, view: {} } })
+    const lines = shown(await pane.drawn(), bodyColumns)
+    await pane.unmount()
+    const show = lines.indexOf('Show')
+    return lines.slice(show + 1, lines.findIndex((line, i) => i > show && line.startsWith('/feed hide')))
+  }
+  expect(await chips(76)).toEqual(['[ ● you ] [ ● said ] [ ● tool ] [ ● agent ] [ ● question ] [ ● peer ]', '[ ● helper ] [ ● search ]'])
+  expect(await chips(116)).toEqual(['[ ● you ] [ ● said ] [ ● tool ] [ ● agent ] [ ● question ] [ ● peer ] [ ● helper ] [ ● search ]'])
 })
 
 test('a refused settings-pane press writes nothing and logs the refusal once without the plugin name', async ($, on) => {
