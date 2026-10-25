@@ -176,3 +176,7 @@ test('cs-feed\'s time column and desktop band reach the right edge of the row', 
   expect(screen('cs-feed.AbovePrompt/desktop')[0].endsWith('⚗ Test · bun test · 12s')).toBe(true)
   expect(screen('cs-feed.AbovePrompt/desktop')[0].length).toBe(80)
 })
+
+test('cs-update prints a failed update\'s stderr tail under its exit line', () => {
+  expect(rows('cs-update.Pane.cs-update/failed-exit', 80).slice(2, 6)).toEqual([' cs -update exited 3.', ' download failed', ' checksum mismatch', ' 1: update now   Esc: later'])
+})

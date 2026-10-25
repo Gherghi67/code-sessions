@@ -46,6 +46,13 @@
     return [cells.slice(0, room - 1).concat([dots(room - 1)])];
   }
 
+  // A Text's rows: broken at each newline, then each line wrapped to `room`.
+  function textRows(cells, room, mode) {
+    var lines = [[]];
+    cells.forEach(function (c) { if (c.ch === "\n") lines.push([]); else lines[lines.length - 1].push(c); });
+    return lines.reduce(function (rows, line) { return rows.concat(wrapCells(line, room, mode)); }, []);
+  }
+
   // A Text child of a Text is an inline run: it inherits what it does not set.
   function mergeStyle(parent, props) {
     var p = props || {}, st = {};
@@ -116,7 +123,7 @@
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
     var path = at || [];
     if (!node) return grid([]);
-    if (node.type === "Text") return grid(wrapCells(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
+    if (node.type === "Text") return grid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
     if (node.type === "Button") return layoutButton(node, width, path);
     if (node.type === "Box") return layoutBox(node, width, path, !!fill);
     return grid([]);

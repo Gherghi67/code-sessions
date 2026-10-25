@@ -272,3 +272,12 @@ test('a column aligned flex-start does not stretch its children, and a stretched
   expect(toText(layout(you2(), 40))).toEqual(['you09:41'])
 })
 const you2 = () => B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({}, 'you')), T({}, '09:41')))
+
+// Ink breaks a Text at each newline before it wraps what is left of a line
+// to the room (cs-update's failed exit prints cs -update's stderr under it).
+test('a Text breaks into rows at each newline, then wraps each row to the room', () => {
+  expect(toText(layout(T({}, 'cs -update exited 3.\ndownload failed'), 40))).toEqual(['cs -update exited 3.', 'download failed'])
+  expect(toText(layout(T({}, 'abcdef\ngh'), 4))).toEqual(['abcd', 'ef', 'gh'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'abcdef\ngh'), 4))).toEqual(['abc…', 'gh'])
+  expect(toText(layout(T({}, 'a\n\nb'), 4))).toEqual(['a', '', 'b'])
+})
