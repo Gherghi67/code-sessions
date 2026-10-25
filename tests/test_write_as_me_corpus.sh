@@ -325,10 +325,10 @@ test_cs_launch_kicks_dropped() {
     assert_file_contains "$SCRIPT_DIR/../lib/42-claude-state.sh" \
         'handoff_arg="Continue from the pending rotation handoff\."' \
         "encrypted rotation kick wording moved; update the corpus filter" || return 1
-    assert_file_contains "$SCRIPT_DIR/../lib/75-launch.sh" \
+    assert_file_contains "$SCRIPT_DIR/../lib/52-spawn.sh" \
         'spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg ' \
         "spawn kick wording moved; update the corpus filter" || return 1
-    assert_file_contains "$SCRIPT_DIR/../lib/75-launch.sh" \
+    assert_file_contains "$SCRIPT_DIR/../lib/52-spawn.sh" \
         '_work="Your brief is .cs/brief.md: read it first."' \
         "brief kick wording moved; update the corpus filter" || return 1
 }

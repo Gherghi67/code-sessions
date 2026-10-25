@@ -12,6 +12,8 @@ source "$SCRIPT_DIR/../lib/24-engine-adapters.sh"
 source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/40-state.sh"
 source "$SCRIPT_DIR/../lib/41-bindings.sh"
+source "$SCRIPT_DIR/../lib/52-spawn.sh"
+source "$SCRIPT_DIR/../lib/55-queue.sh"
 source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
@@ -42,7 +44,7 @@ setup() {
     unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
-    export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0
+    export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0 CS_HELPER_TURN_FAIL_ONCE=0
     export CS_HELPER_PROJECT_CONFIG='{}' CS_HELPER_PROJECT_EXIT=0
     export CODEX_BIN="$TEST_TMPDIR/codex with spaces"
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/cs-codex-thread"
@@ -80,6 +82,9 @@ CODEX
 case " $* " in
     *' --latest-turn '*)
         printf '%s\n' "$*" >> "$CS_HELPER_TURN_CALLS"
+        if [ "$CS_HELPER_TURN_FAIL_ONCE" = 1 ] && [ "$(wc -l < "$CS_HELPER_TURN_CALLS")" -eq 1 ]; then
+            exit 1
+        fi
         # From the CS_HELPER_TURN_FAIL_FROM-th read on, the history cannot be read.
         [ "$CS_HELPER_TURN_FAIL_FROM" -eq 0 ] \
             || [ "$(wc -l < "$CS_HELPER_TURN_CALLS")" -lt "$CS_HELPER_TURN_FAIL_FROM" ] || exit 1
@@ -109,8 +114,9 @@ teardown() {
     unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
+    unset CS_HELPER_TURN_FAIL_ONCE
     unset CS_HELPER_PROJECT_CONFIG CS_HELPER_PROJECT_EXIT
-    unset CS_TEST_PROBE
+    unset CS_TEST_PROBE SESSIONS_ROOT CS_SPAWN_TOKEN
 }
 
 # Unsupported builds must be rejected before native preparation changes the
@@ -1003,6 +1009,7 @@ test_resume_disarms_an_armed_rotation() {
     assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
+
 test_startup_refreshes_the_memory_index_on_fresh_and_resume() {
     mkdir -p "$CS_TEST_SESSION_DIR/.cs/memory"
     printf 'memory at fresh start\n' > "$CS_TEST_SESSION_DIR/.cs/memory/MEMORY.md"
@@ -1013,7 +1020,103 @@ test_startup_refreshes_the_memory_index_on_fresh_and_resume() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'memory after edit' || return 1
 }
 
+_codex_brief_seed() {
+    SESSIONS_ROOT="$TEST_TMPDIR/sessions"
+    mkdir -p "$SESSIONS_ROOT/.spawn"
+    export CS_SPAWN_TOKEN=0123456789abcdef0123456789abcdef
+    printf '%s\n\n%s\n%s\n' "$CS_SPAWN_TOKEN" "$SPAWN_BRIEF_MARK" 'Implement the test feature' \
+        > "$SESSIONS_ROOT/.spawn/demo.seed"
+}
+
+test_codex_spawn_acknowledges_a_started_brief_and_never_replays_it() {
+    _codex_brief_seed
+    export CS_CODEX_TURN=1
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/brief.md" 'Implement the test feature' || return 1
+    assert_output_contains "$(cat "$CS_CODEX_LOG")" 'Your brief is .cs/brief.md: read it first.' || return 1
+    assert_not_exists "$SESSIONS_ROOT/.spawn/demo.seed" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" 'native turn acknowledges kickoff' || return 1
+    export CS_CODEX_TURN=0
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" 'reopen has no kickoff' || return 1
+}
+
+test_failed_codex_spawn_retains_the_kickoff_until_a_turn_starts() {
+    _codex_brief_seed
+    export CS_CODEX_EXIT=9
+    local status=0
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || status=$?
+    assert_eq 9 "$status" || return 1
+    assert_file_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+    export CS_CODEX_EXIT=0 CS_CODEX_TURN=1
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null || return 1
+    assert_output_contains "$(cat "$CS_CODEX_LOG")" 'Your brief is .cs/brief.md: read it first.' || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+}
+
+test_a_brief_that_started_before_failure_is_not_replayed() {
+    _codex_brief_seed
+    export CS_CODEX_EXIT=9 CS_CODEX_TURN=1
+    local status=0
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || status=$?
+    assert_eq 9 "$status" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+    export CS_CODEX_EXIT=0 CS_CODEX_TURN=0
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" || return 1
+}
+
+test_ambiguous_spawn_history_stops_replay_and_keeps_the_receipt() {
+    _codex_brief_seed
+    export CS_CODEX_EXIT=9 CS_HELPER_TURN_FAIL_FROM=2
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || true
+    assert_file_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+    rm -f "$CS_CODEX_LOG"
+    local status=0 out
+    out=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$out" 'Cannot confirm whether the spawn brief started' || return 1
+    assert_not_exists "$CS_CODEX_LOG" 'ambiguous kickoff never reaches CLI' || return 1
+}
+
+test_spawn_receipt_recovers_after_an_interrupted_launcher() {
+    printf '%s\n' "$CS_THREAD_ID" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    jq -cn --arg thread "$CS_THREAD_ID" '{prompt:"read brief and begin", attempted:true, thread:$thread, turn_before:"turn "}' \
+        > "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json"
+    printf 'turn-from-interrupted-launch\n' > "$CS_CODEX_TURNS"
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" || return 1
+}
+
 run_test test_startup_refreshes_the_memory_index_on_fresh_and_resume
+run_test test_codex_spawn_acknowledges_a_started_brief_and_never_replays_it
+run_test test_failed_codex_spawn_retains_the_kickoff_until_a_turn_starts
+run_test test_a_brief_that_started_before_failure_is_not_replayed
+run_test test_ambiguous_spawn_history_stops_replay_and_keeps_the_receipt
+run_test test_spawn_receipt_recovers_after_an_interrupted_launcher
+
+test_an_owned_codex_spawn_bypasses_the_interactive_resume_menu() (
+    _codex_brief_seed
+    printf '%s\n' "$CS_THREAD_ID" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    cs_interactive() { return 0; }
+    local out status=0
+    out=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false </dev/null 2>&1) || status=$?
+    assert_eq 0 "$status" "spawn must not wait on the resume menu: $out" || return 1
+    assert_output_contains "$(cat "$CS_CODEX_LOG")" 'Your brief is .cs/brief.md' || return 1
+)
+
+run_test test_an_owned_codex_spawn_bypasses_the_interactive_resume_menu
+
+test_spawn_retries_one_transient_native_history_read() {
+    _codex_brief_seed
+    export CS_CODEX_TURN=1 CS_HELPER_TURN_FAIL_ONCE=1
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+    assert_eq 3 "$(wc -l < "$CS_HELPER_TURN_CALLS" | tr -d ' ')" 'one retry, then acknowledgement' || return 1
+}
+
+run_test test_spawn_retries_one_transient_native_history_read
 
 echo 'Codex launch tests'
 run_test test_unsupported_codex_first_open_does_not_prepare_a_thread

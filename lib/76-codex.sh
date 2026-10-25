@@ -67,7 +67,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index mail_delivery
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index mail_delivery spawn_brief
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -229,6 +229,35 @@ _codex_encrypted_refusal() {  # session_name, intent
         "$1" "${CODEX_HOME:-$HOME/.codex}" "$again"
 }
 
+# Reconcile the durable kickoff against native history before retrying.
+# Unknown history is ambiguous: preserve the receipt and stop, never replay.
+# A newly persisted native thread can briefly be absent from the next
+# app-server reader. Retry the read once; two failures remain ambiguous and
+# never authorize a launch or discard a receipt.
+_codex_spawn_turn_mark() {
+    _codex_turn_mark "$@" || _codex_turn_mark "$@"
+}
+
+_codex_spawn_reconcile() {  # session_dir, helper, codex_bin
+    local pending="$1/.cs/local/spawn-kick.json" thread before after
+    [ ! -L "$pending" ] && [ ! -d "$pending" ] || {
+        _codex_launch_error "Spawn kickoff is a link or directory: $pending"; return 1;
+    }
+    [ -f "$pending" ] || return 0
+    jq -e 'type == "object" and (.prompt | type == "string" and length > 0)
+        and (.attempted | type == "boolean")' "$pending" >/dev/null \
+        || { _codex_launch_error "Unreadable spawn kickoff: $pending; inspect it before reopening."; return 1; }
+    [ "$(jq -r '.attempted' "$pending")" = true ] || return 0
+    thread=$(jq -r '.thread // ""' "$pending") || return 1
+    before=$(jq -r '.turn_before // ""' "$pending") || return 1
+    _codex_thread_id_valid "$thread" && [ -n "$before" ] || return 1
+    after=$(_codex_spawn_turn_mark "$2" "$3" "$1" "$thread") || {
+        _codex_launch_error "Cannot confirm whether the spawn brief started; kickoff retained at $pending. Retry when thread history is available."
+        return 1
+    }
+    [ "$after" = "$before" ] || rm -f "$pending"
+}
+
 # The actual cs process owns session.lock, so terminating that PID runs these
 # traps and can stop its Codex child before releasing the lock.
 _launch_codex_bound() {
@@ -331,7 +360,8 @@ _launch_codex_bound() {
         rotation_handoff=$(basename "$pending_handoff")
         rotation_origin=$(_switch_handoff_origin "$pending_handoff" "$session_dir")
         intent=fresh
-    elif [ "$intent" = auto ] && cs_interactive && { [ -n "$recorded_id" ] || [ -n "$pending_handoff" ]; }; then
+    elif [ "$intent" = auto ] && cs_interactive \
+        && ! _spawn_launch_is_owned "$session_name" "$session_dir" && { [ -n "$recorded_id" ] || [ -n "$pending_handoff" ]; }; then
         local response=""
         if [ -n "$pending_handoff" ]; then
             local origin=""
@@ -532,6 +562,27 @@ _launch_codex_bound() {
     local CS_RUN_APPROVAL=auto
     [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
     export CS_RUN_APPROVAL
+    # shellcheck disable=SC2034 # shared seed delivery returns this dynamically
+    local spawn_kick="" spawn_pending="$local_dir/spawn-kick.json" spawn_attempt=0 spawn_before=""
+    _codex_spawn_reconcile "$session_dir" "$helper" "$codex_bin" || return 1
+    if [ -z "$kick" ]; then
+        # Reconcile an older receipt before taking a new seed. A pending kick
+        # wins over a newer seed, which stays staged for a later open.
+        if [ ! -f "$spawn_pending" ] && [ -n "${SESSIONS_ROOT:-}" ] \
+            && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
+            _spawn_prepare_launch "$session_name" "$session_dir"
+        fi
+        if [ -f "$spawn_pending" ]; then
+            kick=$(jq -r '.prompt' "$spawn_pending") || return 1
+            spawn_before=$(_codex_spawn_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || {
+                _codex_launch_error "Cannot record thread history before spawn kickoff; receipt retained for retry."
+                return 1
+            }
+            cs_write_atomic "$spawn_pending" jq --arg thread "$thread_id" --arg before "$spawn_before" \
+                '. + {attempted: true, thread: $thread, turn_before: $before}' "$spawn_pending" || return 1
+            spawn_attempt=1
+        fi
+    fi
     # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
     # this terminal, so its watcher runs only where one is attached and will
     # take simulated input, which is asked once here, and only with a private
@@ -576,6 +627,13 @@ _launch_codex_bound() {
         if cs_run_with_lease "$meta_dir" _restore_launch_handoff "$session_dir" \
             "$rotation_handoff" "$thread_id" "$rotation_starts" "${_cs_switch_ran:-}"; then
             printf 'Codex did not start; handoff %s restored for retry.\n' "$rotation_handoff" >&2
+        fi
+    fi
+    if [ "$spawn_attempt" = 1 ]; then
+        if ! _codex_spawn_reconcile "$session_dir" "$helper" "$codex_bin"; then
+            [ "$status" -ne 0 ] || status=1
+        elif [ -f "$spawn_pending" ]; then
+            warn "Spawn brief has not started; kickoff retained for the next open."
         fi
     fi
     return "$status"

@@ -16,7 +16,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -narrative rotate` | Archives the oldest narrative sections past the size budget. `cs <name> -narrative rotate` targets a named session. |
 | `cs -queue add "<task>"` | Adds a task. Other actions are `accept <id>`, `list`, `start [subagents\|workflow]`, `rm <n>`, `clear`, and `log`. |
 | `cs -msg <session> "note"` | Sends mail. Bare `cs -msg` reads unread mail. Use `log`, `thread <id>`, or `--reply <thread> "note"` for history and replies. |
-| `cs -spawn <name> [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. |
+| `cs -spawn <name> [--engine claude|codex] [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. |
 | `cs -conversations` | Shows the conversation chain. `cs <name> -conversations` targets another session. |
 | `cs -tag add\|rm <tag>` | Edits README frontmatter tags. Use `-tag list` or `cs <name> -tag ...` to inspect or target another session. |
 | `cs -archive <name>...`, `cs -unarchive <name>...` | Hides or restores sessions. Opening an archived session restores it. |
