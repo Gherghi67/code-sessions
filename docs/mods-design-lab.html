@@ -145,10 +145,32 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 @media (prefers-reduced-motion:reduce){.panel.on,.finder.on{animation:none}.term,.rail a,.copy{transition:none}}
 /* ---- band designer ---- */
 :root{--accent:var(--hot)}
-.designer{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
-@media (max-width:1100px){.designer{grid-template-columns:1fr}}
-.designer .props{background:var(--panel);border:1px solid var(--line);padding:12px;position:sticky;top:calc(var(--head-h,96px) + 12px);max-height:calc(100vh - var(--head-h,96px) - 24px);overflow-y:auto}
+/* The designer is the whole window: the lab's rail and header step aside,
+   the page never scrolls, each pane scrolls on its own. */
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+body.app{overflow:hidden}
+body.app .rail,body.app .head{display:none}
+#p-compose.on{position:fixed;inset:0;z-index:6;background:var(--page);display:grid;grid-template-rows:auto minmax(0,1fr);animation:none}
+#p-compose .toolbar{margin:0;padding:6px 12px;border-bottom:1px solid var(--line)}
+.designer{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:0}
+.designer > *{min-height:0;overflow:auto}
+.canvas-pane{padding:16px 20px}
+.designer .props{background:var(--panel);border-left:1px solid var(--line);padding:12px}
+.toolbar .back{color:var(--fg);text-decoration:none;font-size:13px;padding:3px 8px;border:1px solid transparent;border-radius:3px}
+.toolbar .back:hover{border-color:var(--line)}
+.toolbar .help{min-width:26px;border-radius:50%}
+#bd-help{border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:14px 18px 16px;width:min(460px,92vw);box-shadow:0 12px 32px rgba(0,0,0,.18)}
+#bd-help::backdrop{background:rgba(0,0,0,.18)}
+#bd-help .dhead{display:flex;align-items:center;justify-content:space-between;margin:0 0 4px}
+#bd-help .dhead button{font:inherit;font-size:18px;line-height:1;background:none;border:0;color:var(--fg2);cursor:pointer;min-width:28px;min-height:28px}
+#bd-help .cap{font-size:12px;color:var(--fg2);margin:0 0 10px}
+.keys-table{border-collapse:collapse;width:100%;font-size:12.5px}
+.keys-table td{padding:4px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.keys-table td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg2)}
+@media (max-width:900px){.designer{grid-template-columns:1fr;overflow:auto}.designer > *{overflow:visible}}
 .props .phead{font-size:13px;margin:0 0 8px}
+.fsum{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:12.5px}
+.fsum dt{color:var(--fg2)}.fsum dd{margin:0}.fsum dd.no{color:var(--error)}
 .props .phead code{font:11.5px "JetBrains Mono",monospace;color:var(--fg2)}
 .props fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:8px 0 10px}
 .props legend{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);padding:0 6px 0 0}
@@ -219,22 +241,41 @@ kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px soli
 
 <!-- ============================== COMPOSE ============================== -->
 <section class="panel" id="p-compose">
-<h2 id="compose">Band designer <span class="src">Box · Text · Button</span></h2>
-<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, on the strip itself. Click a cell to select the node that drew it; click it again for its parent; <kbd>Enter</kbd> goes to the first child, <kbd>Shift</kbd>+<kbd>Enter</kbd> to the parent, <kbd>Esc</kbd> lets go. Drag a selected node to reorder it, or nudge it with the arrows; <kbd>Delete</kbd> removes it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates it, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes. Double-click words to retype them; <kbd>Tab</kbd> moves to the next. Each frame is one drawing; the state and width apply to all of them, and a new frame can start from any drawing in the Band variants panel, in the state picked. The JSX underneath is the frame marked for export, what you paste into the mod.</p>
+<h2 id="compose" class="vh">Band designer</h2>
 <div class="toolbar" id="bd-tools">
+  <a class="back" id="bd-back" href="#sites" title="Back to the lab" aria-label="back to the lab">‹ Lab</a>
   <span class="tools add"><button type="button" data-insert="Box">+ Box</button><button type="button" data-insert="Text">+ Text</button><button type="button" data-insert="Button">+ Button</button></span>
-  <label>State <select id="bd-state"></select></label>
-  <label>Width <span id="bd-colsv"></span><input id="bd-cols" type="range" min="40" max="120" value="80"></label>
-  <label>New frame from <select id="bd-seed"></select></label>
+  <label title="The state a new frame is drawn in">State <select id="bd-state"></select></label>
+  <label title="The band's width, for every frame">Width <span id="bd-colsv"></span><input id="bd-cols" type="range" min="40" max="120" value="80"></label>
+  <label title="A frame is one drawing: start one empty or from a Band variants drawing in the picked state">New frame from <select id="bd-seed"></select></label>
   <span id="bd-fit" class="fit"></span>
-  <span class="tools"><button type="button" id="bd-undo" title="⌘/Ctrl+Z">undo <b></b></button><button type="button" id="bd-redo" title="Shift+⌘/Ctrl+Z">redo <b></b></button></span>
+  <span class="tools"><button type="button" id="bd-undo" title="Undo (⌘/Ctrl+Z)">undo <b></b></button><button type="button" id="bd-redo" title="Redo (Shift+⌘/Ctrl+Z)">redo <b></b></button></span>
+  <button type="button" class="help" id="bd-help-open" title="Keyboard shortcuts (?)" aria-label="keyboard shortcuts">?</button>
 </div>
-<p class="refuse" id="bd-note" hidden></p>
 <div class="designer">
-  <div class="canvas" id="bd-canvas"></div>
+  <div class="canvas-pane"><p class="refuse" id="bd-note" hidden></p><div class="canvas" id="bd-canvas"></div><pre class="spec" id="cp-spec"></pre></div>
   <aside class="props"><div id="bd-props"></div><div class="hist"><div class="legend">History</div><div id="bd-hist"></div></div></aside>
 </div>
-<pre class="spec" id="cp-spec"></pre>
+<dialog id="bd-help" aria-labelledby="bd-help-h">
+  <div class="dhead"><h3 id="bd-help-h">Keyboard shortcuts</h3><button type="button" id="bd-help-close" aria-label="close">×</button></div>
+  <p class="cap">The tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>, built on the strip.</p>
+  <table class="keys-table">
+    <tr><td>Click a cell</td><td>select the node that drew it</td></tr>
+    <tr><td>Click it again</td><td>select its parent</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>select the first child</td></tr>
+    <tr><td><kbd>Shift</kbd> <kbd>Enter</kbd></td><td>select the parent</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>deselect</td></tr>
+    <tr><td>Drag a selected node</td><td>reorder it</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>↑</kbd> / <kbd>→</kbd> <kbd>↓</kbd></td><td>move it earlier / later</td></tr>
+    <tr><td><kbd>Delete</kbd></td><td>remove it</td></tr>
+    <tr><td><kbd>⌘/Ctrl</kbd> <kbd>D</kbd></td><td>duplicate it</td></tr>
+    <tr><td>Double-click words</td><td>retype them</td></tr>
+    <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd> <kbd>Tab</kbd></td><td>while retyping: the next / previous words</td></tr>
+    <tr><td><kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>undo</td></tr>
+    <tr><td><kbd>Shift</kbd> <kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></td><td>redo</td></tr>
+    <tr><td><kbd>?</kbd></td><td>this list</td></tr>
+  </table>
+</dialog>
 
 </section>
 <!-- ============================== SITES ============================== -->
@@ -1167,8 +1208,13 @@ function cpField([name,kind,extra],v){
   if(kind==="select") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${extra.map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select></label>`;
   return `<label${hint}>${name} <input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}"></label>`;
 }
+// With nothing selected the panel names the export frame and how it fits.
+function cpFrameSummary(){
+  const f=bdFrame(bdDocNow().exportFrame), w=ModLayout.layout(BandEditor.toEngine(f.tree),cols()).w;
+  return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>exports</dt><dd>yes</dd><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>cols()?"no":""}">${esc(fitWords(w,cols()))}</dd></dl>`;
+}
 function cpInspector(n,path){
-  if(!n) return `<p class="why">Click a cell on the strip to select the node that drew it.</p>`;
+  if(!n) return cpFrameSummary();
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
     +CP_GROUPS.filter(g=>groups[g]).map(g=>`<fieldset><legend>${g}</legend><div class="insp">${groups[g].map(row=>cpField(row,n.props[row[0]])).join("")}</div></fieldset>`).join("");
@@ -1476,7 +1522,8 @@ function bdDoubleClick(e){
 function bdKeys(e){
   const doc=bdDocNow(), sel=doc.selection;
   if(!$("p-compose").classList.contains("on")) return;
-  if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")) return;
+  if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")||$("bd-help").open) return;
+  if(e.key==="?"){ e.preventDefault(); e.stopImmediatePropagation(); return $("bd-help").showModal(); }
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
   if(!sel) return;
   const node=bdSelected(), parent=sel.path.length?BandEditor.nodeAt(bdFrame(sel.frame).tree,sel.path.slice(0,-1)):null;
@@ -1516,6 +1563,9 @@ function composeUI(){
     bdDraft=BandEditor.apply(bdDocNow(),{type:"setProp",path:bdDocNow().selection.path,name:el.dataset.prop,value:fieldValue(el)});
     composeRender();
   });
+  $("bd-help-open").onclick=()=>$("bd-help").showModal();
+  $("bd-help-close").onclick=()=>$("bd-help").close();
+  $("bd-help").addEventListener("click",e=>{ if(e.target===$("bd-help")) $("bd-help").close(); });
   $("bd-props").addEventListener("change",e=>{
     if(!e.target.dataset.prop||!bdDraft) return;
     bdSettle();
@@ -1576,8 +1626,14 @@ function buildRail(){
   NAV.forEach(n=>{ if(n.grp){ r.insertAdjacentHTML("beforeend",`<div class="grp">${n.grp}</div>`); return; }
     r.insertAdjacentHTML("beforeend",`<a href="#${n.id}" data-id="${n.id}"><span class="hk">${n.hk}</span>${n.label}${n.cnt?`<span class="cnt">${n.cnt}</span>`:""}</a>`); });
 }
+// The designer takes the window; its back link returns to the last lab panel.
+let labPanel="sites";
 function show(id,push=true){
   if(!PANELS.some(p=>p.id===id)) id="compose";
+  if(id!=="compose") labPanel=id;
+  $("bd-back").href="#"+labPanel;
+  document.body.classList.toggle("app",id==="compose");
+  document.title=id==="compose"?"Band designer · Mods Design Lab":"Mods Design Lab";
   document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("on",p.id==="p-"+id));
   document.querySelectorAll(".rail a").forEach(a=>a.classList.toggle("on",a.dataset.id===id));
   if(push&&location.hash!=="#"+id) history.replaceState(null,"","#"+id);
