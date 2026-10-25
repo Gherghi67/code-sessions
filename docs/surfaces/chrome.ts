@@ -97,7 +97,12 @@ const rule = (cols: number): RenderElement => elements().Text({ color: 'inactive
 // `❯ 1. label`, the pointer and the label in the suggestion ink on the row
 // that has the focus; the row Claude Code adds for typed text (`Type
 // something.`); a rule; `Chat about this`; and the keys under it. The
-// numbers count the typed-text row, and Chat about this comes after it.
+// numbers count the typed-text row, and Chat about this comes after it. Each
+// key is a hint (q: `[d," to ",s]`) and ve joins them with a dim ` · `
+// (`a>0&&e(n,{dimColor:!0,children:" \xB7 "})`). This is the dialog without
+// a screen reader: with one (`uo=rt()`), Chat about this is an option of the
+// list (`Qr=uo&&!D.multiSelect?[{type:"text",value:"__chat__",label:"Chat
+// about this"}]:[]`) and the rule and the keys are not drawn (`Rs=!uo&&...`).
 export type Dialog = { question: string; header: string; options: readonly string[] }
 export function askDialog(dialog: Dialog, cols: number, focus = 0): RenderElement {
   const el = elements()
