@@ -535,3 +535,11 @@ test('a keyed Box under the pointer merges its own hover, and the Text it holds 
   // An unkeyed Box under the pointer gives the Text in it nothing to merge.
   expect(layout(interact(B({}, T({ hover: { color: 'claude' } }, 'x')), { hover: [0], focus: null }), 40).rows[0][0].st.color).toBe('')
 })
+
+// Yoga holds a Box to its minWidth ("if(u===1){if(E<m)E=m}" in Dx): the
+// engine's survey mark is one cell in a Box of minWidth 2, so its question
+// starts two cells in; a row's shrink stops a child there too.
+test('a Box takes at least its minWidth, and a row does not shrink it below that', () => {
+  expect(toText(layout(B({}, B({ minWidth: 2 }, T({}, 'x')), T({}, 'y')), 40))).toEqual(['x y'])
+  expect(toText(layout(B({ width: 4 }, B({ minWidth: 3 }, T({}, 'ab')), T({}, 'cdef')), 40))).toEqual(['ab c', '   d', '   e', '   f'])
+})

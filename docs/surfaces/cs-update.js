@@ -110,7 +110,6 @@
     slot: "Pane",
     source: "generated",
     global: "CsUpdateSurfaces",
-    needs: [],
     chrome: { kind: "pane", title: "cs 2026.10.25 is available", rows: 16 },
     states: [
       { id: "idle-notes", name: "reading the notes before installing", draw: pane({}) },

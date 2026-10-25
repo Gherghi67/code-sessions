@@ -1058,7 +1058,6 @@ ${source}`;
     slot: "AssistantMessage",
     source: "generated",
     global: "CsMermaidSurfaces",
-    needs: [],
     states: [
       state("diagram", "reading a flowchart drawn in the reply", lines("graph TD", "  A[Start] --> B{Tests pass?}", "  B -->|yes| C[Ship]", "  B -->|no| D[Fix]")),
       state("turned", "reading a left-to-right chart turned top-down to fit", lines("graph LR", "  A[Open the branch] --> B[Run the gate] --> C[Review the diff] --> D[Land it on main] --> E[Tag the release]")),

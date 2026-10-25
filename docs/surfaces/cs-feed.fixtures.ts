@@ -183,7 +183,7 @@ const helperStates: State[] = [
 ]
 
 const surface = (slot: string, states: State[], parts: Surface['parts'], extra: Partial<Surface> = {}): Surface =>
-  ({ id: `cs-feed.${slot}`, mod: 'cs-feed', slot, source: 'generated', global: 'CsFeedSurfaces', needs: [], states, parts, ...extra })
+  ({ id: `cs-feed.${slot}`, mod: 'cs-feed', slot, source: 'generated', global: 'CsFeedSurfaces', states, parts, ...extra })
 
 export const surfaces: Surface[] = [
   surface('UserMessage', userStates, [

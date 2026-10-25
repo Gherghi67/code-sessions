@@ -5,10 +5,6 @@ import type { EngineInterface, RenderElement } from 'claude-code'
 export type Elements = ReturnType<EngineInterface['ui']['resolve']>
 export type Theme = 'light' | 'dark'
 
-// What a surface draws that the lab's engine cannot draw yet. The frame
-// badges each one over what it can draw.
-export type Need = 'engine drawing'
-
 // One state, named for what a person is doing. `cols` is the terminal's
 // width; the draw function takes off what the engine reserves.
 export type State = { id: string; name: string; draw: (cols: number, theme: Theme) => RenderElement }
@@ -27,7 +23,6 @@ export type Surface = {
   slot: string
   source: 'generated'
   global: string
-  needs: Need[]
   chrome?: Chrome
   states: State[]
   parts: Part[]

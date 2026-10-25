@@ -203,7 +203,6 @@ body.app .rail,body.app .head{display:none}
 #bd-comps .csurf > summary .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #bd-comps .cnt{font-size:11px;color:var(--fg2);font-variant-numeric:tabular-nums}
 #bd-comps .ckind{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2);padding:4px 10px 2px 30px}
-#bd-comps .needs{font-size:11px;color:var(--fg2);padding:0 10px 2px 30px}
 #bd-comps .crow{display:flex;align-items:center;gap:7px;width:100%;min-height:24px;padding:0 10px 0 30px;background:none;border:0;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
 #bd-comps .crow:hover{background:var(--page)}
 #bd-comps .crow.part{cursor:grab}
@@ -268,8 +267,6 @@ body.dragging{user-select:none;cursor:grabbing}
 .frame.on .fhead .fname{color:var(--accent-ink)}
 .fhead .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-ink)}
 .fhead .badge.ref{color:var(--canvas-ink);border:1px solid currentColor;border-radius:3px;padding:0 4px}
-.frame .needs{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
-.frame .needs b{font-weight:600}
 .frame .why.empty{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
 .ronote{font-size:12px;color:var(--fg2);margin:0 0 8px}
 .fhead .quiet{display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .12s ease-out}
@@ -796,7 +793,11 @@ const RAW={CORAL:"rgb(217,119,87)",AMBER_L:"rgb(180,83,9)",AMBER_D:"rgb(253,230,
 // node's plain ink, its highlighter's GitHub and Monokai Extended foreground
 // (2.1.310: light u(51,51,51), dark u(248,248,242)).
 const ENGINE_INK={codeForeground:{light:"rgb(51,51,51)",dark:"rgb(248,248,242)"}};
-const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(ENGINE_INK[k]) return ENGINE_INK[k][theme()]; if(RAW[k]) return RAW[k]; return k; };
+// An `ansi:` colour is the terminal's own palette entry, so the terminal
+// picks it; the lab shows xterm's defaults (the engine's survey mark is
+// ansi:cyan).
+const ANSI={black:"rgb(0,0,0)",red:"rgb(205,0,0)",green:"rgb(0,205,0)",yellow:"rgb(205,205,0)",blue:"rgb(0,0,238)",magenta:"rgb(205,0,205)",cyan:"rgb(0,205,205)",white:"rgb(229,229,229)"};
+const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(ENGINE_INK[k]) return ENGINE_INK[k][theme()]; if(RAW[k]) return RAW[k]; if(k.startsWith("ansi:")&&ANSI[k.slice(5)]) return ANSI[k.slice(5)]; return k; };
 const colExpr=k=>!k?"":PALETTE[k]?`"${k}"`:RAW[k]?`{${k}}`:`"${k}"`;
 function fillColorPicks(){
   document.querySelectorAll("select.colorpick").forEach(s=>{
@@ -1479,10 +1480,6 @@ const bdRowPath=row=>row.dataset.path?row.dataset.path.split(",").map(Number):[]
 // ---- surfaces: every cs mod surface the bundles carry (docs/surfaces) ----
 const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Error(`no surface ${id} in docs/surfaces`); return s; };
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
-// "a", "a or b", "a, b or c".
-const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
-const BD_NEEDS={"engine drawing":"the engine's own drawing beside it"};
-const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`;
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
   let n=bdSurfaceState(sid,part.state).draw(cols(),theme());
@@ -1490,7 +1487,7 @@ function bdPartNode(sid,part){
   if(!n||typeof n!=="object") throw new Error(`part ${part.id} of ${sid} names no element at ${JSON.stringify(part.path)}`);
   return n;
 }
-// The frames in preview, by id, and what the pointer and the focus are on (bdPreviewHover).
+// The frames in preview, by id, each with the node the pointer is over and the Button that has the focus.
 const bdPreview=new Map();
 // The grid a frame paints, inside the chrome the engine draws round its
 // surface: AbovePrompt keeps five cells at the right of each row for its
@@ -1548,7 +1545,6 @@ function bdFrameCard(f){
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="preview" aria-pressed="${pv}" title="Draw it under the pointer: hover a node, click a Button to give it the focus">preview</button>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
-    +(surf&&surf.needs.length?`<p class="needs">${bdNeedsWords(surf.needs,w=>`<b>${w}</b>`)}</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
     +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
@@ -1568,7 +1564,6 @@ function bdComponents(){
     }).join("");
     const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
     return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
-      +(s.needs.length?`<div class="needs">${bdNeedsWords(s.needs,w=>w)}</div>`:"")
       +(parts?`<div class="ckind">Parts</div>${parts}`:"")+`<div class="ckind">States</div>${states}</details>`;
   }).join("")+`</details>`).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
 }

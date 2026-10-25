@@ -403,10 +403,20 @@ test('cs inks the count by its ramp and the mark by what is due, not by the word
   expect(ink('queued-blocked', 2).color).toBe('rgb(22,163,74)')
 })
 
-test('cs gives a survey the band: no mark, the gate word alone under the survey', () => {
-  const lines = bandLine('survey-gate')
-  expect(lines.length).toBe(3)
-  expect(lines[2]).toBe('  finishing fix-auth · gate 1m 12s')
+// The survey is the engine's own drawing (2.1.310's cL): a blank row, the
+// cyan mark in a Box of minWidth 2 and the question bold, then each answer
+// in a 10-cell Box two cells in ("e(s,{width:B9e,...})", B9e=10), its key
+// cyan. drawBand gives it the band: no mark, the gate word alone under it.
+test('cs gives a survey the band: no mark, the gate word alone under the survey the engine draws', () => {
+  expect(bandLine('survey-gate')).toEqual([
+    '',
+    '\u25cf How is Claude doing this session? (optional)',
+    '  1: Bad' + ' '.repeat(4) + '2: Fine' + ' '.repeat(3) + '3: Good' + ' '.repeat(3) + '0: Dismiss',
+    '',
+    '  finishing fix-auth \u00b7 gate 1m 12s',
+  ])
+  const g = layout(state('cs.AbovePrompt/survey-gate').draw(80, 'light'), 80)
+  expect([g.rows[1][0].st.color, g.rows[1][2].st.bold, g.rows[2][2].st.color, g.rows[2][3].st.color]).toEqual(['ansi:cyan', true, 'ansi:cyan', ''])
 })
 
 // featuresWordOf: one feature names its task and its state word, `no

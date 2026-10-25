@@ -323,6 +323,8 @@
     // An explicit width, or a width the Box was handed whole, is the Box's
     // width: what its children draw past it spills over its edge.
     var w = outer || fill ? inner : body.w;
+    // Yoga holds a Box to its minWidth, whatever it was handed.
+    if (typeof p.minWidth === "number") w = Math.max(w, p.minWidth - chrome);
     // Height: an explicit height pads or (with overflow hidden) clips the body.
     var h = body.h;
     if (typeof p.height === "number") {
@@ -443,9 +445,9 @@
   // The main sizes Yoga gives a row's children (2.1.310's wx): `free` cells
   // shared out by flexGrow, or, when they overrun the row, taken off each in
   // proportion to its flexShrink times its basis; a child whose factor is 0
-  // keeps its basis, and one the share would take below 0 stops there while
-  // the rest share again. The sizes are rounded on their running sum, so they
-  // add up to what the row has.
+  // keeps its basis, and one the share would take below its minimum (its
+  // minWidth, else 0) stops there while the rest share again. The sizes are
+  // rounded on their running sum, so they add up to what the row has.
   function flexSizes(items, free) {
     var n = items.length;
     var frozen = items.map(function (it) { return free >= 0 ? it.grow === 0 : it.shrink === 0; });
@@ -466,7 +468,7 @@
         if (left > 0 && grow > 0) t += left * it.grow / grow;
         else if (left < 0 && weight > 0) t += left * it.shrink * it.basis / weight;
         target[i] = t;
-        size[i] = Math.max(0, t);
+        size[i] = Math.max(it.min, t);
         lost += size[i] - t;
       });
       if (lost === 0) break;
@@ -490,7 +492,7 @@
   function placeRow(blocks, inner, gap, p, outer, least) {
     var items = blocks.map(function (b) {
       var q = b.node.props || {}, button = b.node.type === "Button", mx = marginX(b.node);
-      return { basis: b.g.w - mx, margin: mx, grow: button ? 0 : num(q.flexGrow), shrink: button ? 0 : typeof q.flexShrink === "number" ? q.flexShrink : 1 };
+      return { basis: b.g.w - mx, margin: mx, min: b.node.type === "Box" ? num(q.minWidth) : 0, grow: button ? 0 : num(q.flexGrow), shrink: button ? 0 : typeof q.flexShrink === "number" ? q.flexShrink : 1 };
     });
     var content = items.reduce(function (a, it) { return a + it.basis + it.margin; }, 0) + gap * Math.max(0, blocks.length - 1);
     var room = outer ? inner : Math.max(least, Math.min(content, inner));
