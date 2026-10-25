@@ -879,8 +879,7 @@ _sgr() {
                 # Inks. `amber` is a foreground: the hot number's colour on
                 # the neutral capsule, dark enough to hold contrast on cream and
                 # bright enough on a dark surface. Nothing paints amber as a
-                # fill; the band's amber island has its own pair, amberfill and
-                # amberink, below.
+                # fill.
                 # It pivots on the measured terminal background when there is
                 # one (the bar's surface is a shade of it, the agent rows sit on
                 # it directly) and on the theme flag only without a measurement:
@@ -925,11 +924,6 @@ _sgr() {
                 # White on the red fill whatever the theme: the fill is the
                 # same hue on both, so its ink is too.
                 critink) rgb="255;255;255" ;;
-                # The band's amber island: a solid fill under a hot reading,
-                # deep on a dark terminal and pale on a light one, its ink the
-                # other way round.
-                amberfill) [ "$SL_THEME" = "dark" ] && rgb="120;74;12" || rgb="251;232;196" ;;
-                amberink)  [ "$SL_THEME" = "dark" ] && rgb="255;228;160" || rgb="140;64;8" ;;
                 # The effort word wears Claude Code's own /effort picker
                 # colours (pixel-sampled from the light picker); on dark they
                 # are lifted a third of the way to white so they keep reading
@@ -988,8 +982,6 @@ _sgr() {
                 ink2)    [ "$SL_THEME" = "dark" ] && idx=250 || idx=241 ;;
                 crit)    [ "$SL_THEME" = "dark" ] && idx=203 || idx=160 ;;
                 critink) idx=231 ;;
-                amberfill) [ "$SL_THEME" = "dark" ] && idx=94 || idx=223 ;;
-                amberink)  [ "$SL_THEME" = "dark" ] && idx=223 || idx=94 ;;
                 effort-low)    [ "$SL_THEME" = "dark" ] && idx=179 || idx=136 ;;
                 effort-medium) [ "$SL_THEME" = "dark" ] && idx=71  || idx=28 ;;
                 effort-high)   [ "$SL_THEME" = "dark" ] && idx=105 || idx=63 ;;
@@ -1038,8 +1030,6 @@ _sgr() {
                 ink2)    [ "$SL_THEME" = "dark" ] && base=97 || base=37 ;;
                 crit)    base=31 ;;
                 critink) base=97 ;;
-                amberfill) base=33 ;;
-                amberink)  base=30 ;;
                 effort-low)    base=33 ;;
                 effort-medium) base=32 ;;
                 effort-high)   base=34 ;;
@@ -2485,10 +2475,10 @@ _render_band() {
                 fi
             fi
             first=""
-            # An amber item is a solid island of its own.
+            # An amber item is amber ink, bold on either theme, as on the
+            # capsules.
             if [ "${_SEG_INK[i]}" = "amber" ]; then
-                _sgr 48 amberfill; fill="$_SGR"; _sgr 38 amberink
-                _band_island "$fill" "$_SGR" " ${_SEG_TEXT[i]} "
+                _sgr 38 amber; _band_text "${_SEG_TEXT[i]}" "$_SGR" 1
                 continue
             fi
             weight=22

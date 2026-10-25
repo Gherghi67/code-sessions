@@ -5156,18 +5156,38 @@ band_fixture() {
          | .rate_limits.seven_day.used_percentage = $w' <<< "$FIXTURE_DOCS"
 }
 
-# An amber reading is a solid island: its own fill and ink, bold, a fill space
-# each side. The gradient resumes after it where the cells put it: ctx 45 ends
-# at cell 44, and cell 45 (the dot joiner's first space) is 45/79 of the way
-# from 61;64;90 to 21;24;40, so 39;42;62, in the dim ink.
-test_band_amber_reading_is_an_island() {
+# An amber reading is amber ink, bold, on the gradient, on either theme: ctx 45
+# starts at cell 40, 40/79 of the way from 61;64;90 to 21;24;40, so 41;44;65,
+# and the dot joiner's first space follows at cell 43, 40;43;63. On cream the
+# number is the light amber 180;83;9, and a crit group is still a red island.
+test_band_amber_reading_is_ink() {
     band_env
     local out
     out=$(run_sl "$(band_fixture 45 23.5 41.2)")
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;120;74;12;38;2;255;228;160;1m 45% ${ESC_}[48;2;39;42;62;38;2;150;165;200;22m " \
-        "the ctx number at warn is an amber island, the gradient resuming after it" || return 1
-    assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
+        "${ESC_}[48;2;41;44;65;38;2;253;230;138;1m4" "the ctx number at warn is amber ink on the gradient" || return 1
+    assert_output_contains_f "$out" \
+        "%${ESC_}[48;2;40;43;63;38;2;150;165;200;22m " "the joiner follows on the next cell" || return 1
+    assert_eq 80 "$(band_cells "$out")" "the amber cells are counted" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" ";38;2;180;83;9;1m4" "the ctx number on cream is light amber, bold" || return 1
+    assert_output_not_contains_f "$out" "48;2;251;232;196" "no amber fill on cream" || return 1
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" "${ESC_}[48;2;215;0;21;38;2;255;255;255;1m ◷ 5h 95% " "crit on cream is the red island" || return 1
+}
+
+# The amber island's tokens are gone: like any unknown name, they paint the
+# surface at every level.
+test_band_amber_island_tokens_are_unknown() {
+    ( _load_sl_functions
+      local level want
+      for level in truecolor 256 basic; do
+          LEVEL=$level; SL_THEME=light; _SURFACE_RGB=""
+          _sgr 48 surface; want="$_SGR"
+          _sgr 48 amberfill; assert_eq "$want" "$_SGR" "amberfill at $level is the surface" || return 1
+          _sgr 48 amberink;  assert_eq "$want" "$_SGR" "amberink at $level is the surface" || return 1
+      done )
 }
 
 # A crit group is one red island, its joiners inside it: 5h at crit takes wk
@@ -5256,8 +5276,8 @@ test_band_plain_level_prints_the_plain_line() {
     assert_eq "$want" "$out" "plain ignores the layout" || return 1
 }
 
-# Below truecolor the band is a flat surface fill, every cell, islands in the
-# level's own tokens.
+# Below truecolor the band is a flat surface fill, every cell, the amber ink
+# and the crit island in the level's own tokens.
 test_band_256_is_a_flat_fill() {
     band_env
     unset COLORTERM
@@ -5266,7 +5286,7 @@ test_band_256_is_a_flat_fill() {
     assert_eq 80 "$(band_cells "$out")" "a flat band is 80 cells" || return 1
     assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
     assert_eq "[48;5;237m" "$(band_first_cell "$out")" "the band is the 256 surface" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;5;94;38;5;223;1m 45% " "the amber island in 256 tokens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;221;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
     assert_output_contains_f "$out" "${ESC_}[48;5;203;38;5;231;1m ◷ 5h 95% ⋮ ◶ wk 60% " "the crit island in 256 tokens" || return 1
 }
 
@@ -5279,7 +5299,7 @@ test_band_basic_is_a_flat_fill() {
     assert_eq 80 "$(band_cells "$out")" "a basic band is 80 cells" || return 1
     assert_output_not_contains_f "$out" "48;" "no 256 or truecolor fill" || return 1
     assert_eq "[100m" "$(band_first_cell "$out")" "the band is the basic surface" || return 1
-    assert_output_contains_f "$out" "${ESC_}[43;30;1m 45% " "the amber island in basic tokens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[100;93;1m45%" "the amber number in basic tokens on the flat fill" || return 1
 }
 
 
@@ -5302,7 +5322,8 @@ run_test test_band_takes_the_session_colour
 run_test test_band_hue_is_desaturated_and_pulled_per_theme
 run_test test_band_without_a_usable_session_colour_is_neutral
 run_test test_band_colour_override_precedence
-run_test test_band_amber_reading_is_an_island
+run_test test_band_amber_reading_is_ink
+run_test test_band_amber_island_tokens_are_unknown
 run_test test_band_crit_group_is_one_red_island
 run_test test_band_inks_on_a_dark_terminal
 run_test test_band_inks_on_a_light_terminal
