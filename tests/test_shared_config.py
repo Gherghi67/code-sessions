@@ -129,6 +129,108 @@ CS_HOOKS+=(fixture-active-hook.sh)
         self.assertEqual(selected.read_text(), "old external startup")
         self.assertEqual(actual.stat().st_mode & 0o777, 0o640)
 
+    def test_backup_restores_linked_settings_after_the_native_settings_writer(self):
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        actual = self.put(Path(external.name).resolve(), "settings.json", '{"env":{"KEEP":"yes"}}\n')
+        actual.chmod(0o640)
+        logical = self.home / ".claude/settings.json"
+        logical.parent.mkdir()
+        logical.symlink_to(actual)
+        saved = migration.backup(self.home, Path(SPEC.origin).parent.parent)
+        script = 'source "$1"; cs_settings_update "$2" jq \'.env.CHANGED = "yes"\''
+        result = subprocess.run(["bash", "-c", script, "settings-fixture",
+                                 str(Path(SPEC.origin).parent.parent / "hooks/cs-shared.sh"), str(logical)],
+                                env={"HOME": str(self.home), "PATH": os.environ["PATH"]},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(actual.read_text())["env"]["CHANGED"], "yes")
+        entries = {entry["source"]: entry for entry in json.loads((saved / "manifest.json").read_text())["entries"]}
+        self.assertTrue(str(actual) in entries, "write-through settings referent was not backed up")
+        migration.shutil.copy2(saved / entries[str(actual)]["backup"], actual)
+        logical.unlink()
+        logical.symlink_to(os.readlink(saved / ".claude/settings.json"))
+        self.assertEqual(logical.read_text(), '{"env":{"KEEP":"yes"}}\n')
+        self.assertEqual(actual.stat().st_mode & 0o777, 0o640)
+
+    def test_backup_captures_writable_directory_links_and_nested_answer_referents(self):
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        directory = Path(external.name).resolve()
+        originals = {}
+        for relative, name in [(".claude/hooks/cs", "claude-hooks"), (".codex/hooks/cs", "codex-hooks"),
+                               (".config/cs", "config")]:
+            actual = directory / name
+            actual.mkdir()
+            original = self.put(actual, ".installed", "old owned files")
+            original.chmod(0o640)
+            logical = self.home / relative
+            logical.parent.mkdir(parents=True, exist_ok=True)
+            logical.symlink_to(actual)
+            originals[actual] = original
+        answers = []
+        for name in ("option-keys", "statusline-caps"):
+            actual = self.put(directory, "answers/" + name, "old answer")
+            actual.chmod(0o640)
+            (directory / "config" / name).symlink_to(actual)
+            answers.append(actual)
+        marker = self.put(directory, "engines", "claude\n")
+        logical_marker = self.home / ".local/bin/.cs-install-engines"
+        logical_marker.parent.mkdir(parents=True)
+        logical_marker.symlink_to(marker)
+        saved = migration.backup(self.home, Path(SPEC.origin).parent.parent)
+        entries = {entry["source"]: entry for entry in json.loads((saved / "manifest.json").read_text())["entries"]}
+        for actual, original in originals.items():
+            with self.subTest(directory=actual.name):
+                self.assertTrue(str(actual) in entries, f"directory referent omitted: {actual.name}")
+                original.write_text("overwritten")
+                original.chmod(0o644)
+                migration.shutil.copy2(saved / entries[str(actual)]["backup"] / ".installed", original)
+                self.assertEqual(original.read_text(), "old owned files")
+                self.assertEqual(original.stat().st_mode & 0o777, 0o640)
+        for actual in (*answers, marker):
+            with self.subTest(referent=actual.name):
+                self.assertTrue(str(actual) in entries, f"file referent omitted: {actual.name}")
+                old = actual.read_text()
+                actual.write_text("overwritten")
+                migration.shutil.copy2(saved / entries[str(actual)]["backup"], actual)
+                self.assertEqual(actual.read_text(), old)
+        self.assertTrue(logical_marker.is_symlink())
+        self.assertTrue((directory / "config/option-keys").is_symlink())
+
+    def test_backup_records_a_dangling_startup_links_missing_referent(self):
+        missing = self.home / "dotfiles/zshrc"
+        missing.parent.mkdir()
+        startup = self.home / ".zshrc"
+        startup.symlink_to(missing)
+        saved = migration.backup(self.home, Path(SPEC.origin).parent.parent)
+        entries = {entry["source"]: entry for entry in json.loads((saved / "manifest.json").read_text())["entries"]}
+        self.assertTrue(str(missing.resolve()) in entries, "missing startup referent omitted")
+        self.assertEqual(entries[str(missing.resolve())]["kind"], "missing")
+        self.assertIsNone(entries[str(missing.resolve())]["backup"])
+        missing.write_text("created by setup append")
+        if entries[str(missing.resolve())]["kind"] == "missing":
+            missing.unlink()
+        self.assertTrue(startup.is_symlink())
+        self.assertFalse(startup.exists())
+
+    def test_backup_refuses_a_directory_referent_containing_its_own_destination(self):
+        config = self.home / ".config/cs"
+        config.parent.mkdir()
+        config.symlink_to(self.home)
+        with self.assertRaisesRegex(ValueError, "recursive backup"):
+            migration.backup(self.home, Path(SPEC.origin).parent.parent)
+
+    def test_backup_preserves_a_skill_link_without_following_its_arbitrary_directory(self):
+        skill = self.home / ".claude/skills/rotate"
+        skill.parent.mkdir(parents=True)
+        skill.symlink_to(self.home)
+        saved = migration.backup(self.home, Path(SPEC.origin).parent.parent)
+        self.assertTrue((saved / ".claude/skills/rotate").is_symlink())
+        self.assertEqual(os.readlink(saved / ".claude/skills/rotate"), str(self.home))
+        sources = {entry["source"] for entry in json.loads((saved / "manifest.json").read_text())["entries"]}
+        self.assertNotIn(str(self.home.resolve()), sources)
+
     def test_missing_rollout_preserves_live_appends_and_rerun_is_empty(self):
         source = self.put(self.profile, ".codex/sessions/2026/rollout.jsonl", '{}\n')
         migration.migrate(self.home, True)

@@ -110,9 +110,17 @@ record completion "${CS_COMPLETION_FILES[@]}"
             directory = checkout / directory
         startup.add(directory / ".zshrc")
     paths.update(startup)
-    # setup appends to startup files through their links. Preserve both the
-    # link and the bytes actually modified, including a dotfiles tree outside HOME.
-    paths.update(path.resolve() for path in startup if path.exists())
+    # These writers follow links: native settings/keybinding updates, answer
+    # and engine markers, and payload placement through managed directories.
+    # Skill directory links are deliberately kept by the installer instead.
+    write_through = startup | {home / name for name in (
+        ".claude/settings.json", ".claude/keybindings.json", ".codex/config.toml",
+        ".claude/agents-sidebar-status/original-statusline", ".local/bin/.cs-install-engines",
+        ".claude/hooks/cs", ".codex/hooks/cs", ".config/cs",
+        ".config/cs/option-keys", ".config/cs/statusline-caps")}
+    # A dangling link's final target is also recorded as missing, so rollback
+    # can remove a file the install creates there while retaining the old link.
+    paths.update(path.resolve() for path in write_through)
     return sorted({Path(os.path.abspath(path)) for path in paths})
 
 
@@ -121,7 +129,15 @@ def backup(home, checkout):
     root = home / ".local/share/code-sessions/backups" / stamp
     private_directory(root, home)
     entries = []
-    for path in installation_targets(home, checkout):
+    paths = installation_targets(home, checkout)
+    for path in paths:
+        if path.is_dir() and not path.is_symlink():
+            try:
+                root.resolve().relative_to(path.resolve())
+            except ValueError:
+                continue
+            raise ValueError(f"Refusing recursive backup from {path} into {root}")
+    for path in paths:
         try:
             relative = path.relative_to(home)
         except ValueError:
