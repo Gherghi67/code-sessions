@@ -406,7 +406,7 @@ prompt (the cs plugin's `userConfig`, stored by Claude Code in
 |-----|--------|---------|--------------|
 | `cs.bandPrompts` | on, off | off | Draws the rail: a tick per prompt and the name of one prompt before the ticks; a press on a tick scrolls to its prompt. The band's other words draw either way. |
 | `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its tick as `┃`. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
-| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt ticks the band draws; older prompts fold into one `…N` run. |
+| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt ticks the band draws, the named prompt's always among them; older prompts fold into one `…N` run, and newer ones into one `M…` run when the named prompt is older than the ticks reach. |
 
 `/config` refuses a value the band cannot draw (a tick count under 1 or not
 whole), naming the row beside it. A bad value stored some other way, such

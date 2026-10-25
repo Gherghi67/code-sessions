@@ -498,7 +498,7 @@ the prompt, two columns in where Claude Code draws its own footer, with a
 blank line above it, in two zones. At the left, after a mark, stand the
 actions, what a key or a press does now; at the line's right edge stand the
 words that say what the session is, then the prompt the rail names, then the
-rail of prompts, its last tick in the line's last cell. Items in a zone stand three cells apart, and the line's free
+rail of prompts, ending in the line's last cell. Items in a zone stand three cells apart, and the line's free
 cells fall between the zones, never fewer than three, so the right edge holds
 still while the actions come and go. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
@@ -551,13 +551,17 @@ modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
-are not prompts. The ticks end in the line's last cell, so the actions at the
-left never move them while the line has room for every tick. At
+are not prompts. The rail ends in the line's last cell, so the actions at
+the left never move it while the line has room for every tick. At
 most `cs.bandBars` ticks draw (10 by default), in what the line leaves after
-the inset and the words; the older prompts collapse into one dim `…N` run at
-the rail's start, a cell before the first tick. The rail keeps its least:
-every prompt but the named one folded into `…N` before the named tick, and
-three cells before that. The words fit what that leaves, so the right edge's
+the inset and the words, and the named tick always among them: the ticks
+reach the newest prompt, or start at the named one when that prompt
+predates their reach. The older prompts collapse into one dim `…N` run at the rail's
+start, a cell before the first tick, and the newer into one dim `M…` run at
+its end, a cell after the last: `#7 step 7   …6 ┃╷╷╷╷ 3…` with the seventh
+of fourteen prompts named under `cs.bandPrompt` `read` and `cs.bandBars` at 5. The rail keeps its
+least: the named tick alone, the older prompts folded into `…N` before it
+and the newer into `M…` after it, and three cells before that. The words fit what that leaves, so the right edge's
 words drop and shorten and the keys lose their words before the rail goes:
 `⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ┃`
 on a 75-column line with fourteen prompts, every action, the features word
@@ -573,7 +577,7 @@ word before it, the band names its prompt, `#N` and its first line (up to 80
 characters),
 dim italic, cut with `…` when the line is narrower, counted in terminal cells
 so a wide character takes two; under ten cells left it names none, and the
-ticks still end in the line's last cell. The three cells keep a `…N` run from
+rail still ends in the line's last cell. The three cells keep a `…N` run from
 reading as the end of a cut name. The name
 is as wide as the widest prompt it can show, the named one or a drawn tick's,
 padded on its left so it ends three cells before the ticks, so a swap never

@@ -3558,6 +3558,84 @@ test('every combination of entries at every width from 40 to 200 draws one row n
   expect(railKept).toBe(80 * 512 - 416)
 }, 60000)
 
+// The same lines with cs.bandPrompt read, the named prompt anywhere: wherever
+// the rail draws, its named tick draws, and wherever every action fits a line
+// that holds the rail's least for that prompt (the named tick, `…N ` before
+// it when older prompts fold, ` M…` after it when newer ones do, and the
+// three cells before the rail), the rail draws.
+test('with cs.bandPrompt read, every combination of entries at every width from 40 to 200 draws the named tick whenever the rail draws', () => {
+  const chordSets = [CHORDS, { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2', 'strip:jump3': 'alt+shift+f' }, {}]
+  const runCells = (folded: number) => (folded > 0 ? `${folded}`.length + 2 : 0)
+  let railed = 0
+  for (let bits = 0; bits < 512; bits++) {
+    const on = (i: number) => (bits & (1 << i)) !== 0
+    const entries = buildBandEntries({
+      ...quiet,
+      rotating: on(0), armed: on(1), countdown: on(1) ? { seconds: 18, ink: OWN } : undefined, wrapping: on(2),
+      feed: on(3) ? { on: true, color: OWN, onPress: noPress } : undefined, waiting: on(4) ? 2 : 0,
+      featured: on(5) ? { label: '3 features · fix-auth ready', onPress: noPress } : undefined,
+      gate: on(6) ? 'finishing fix-auth · gate 3s' : undefined, queued: on(7) ? 2 : 0, mail: on(8) ? 1 : 0,
+    })
+    for (let bodyColumns = 40; bodyColumns <= 200; bodyColumns++) {
+      const chords = chordSets[bodyColumns % 3]
+      const named = (bits + bodyColumns) % FOURTEEN.length
+      const rail = { ...railOf(FOURTEEN), bars: 5, named }
+      const hasSurvey = (bodyColumns >> 2) % 2 === 1
+      const tree = drawBand(view({ entries, chords, rail, bodyColumns, hasSurvey }), EL)
+      const least = runCells(named) + 1 + runCells(FOURTEEN.length - 1 - named) + 3
+      const kept = fitBand(entries, chords, bodyColumns - 2 - (hasSurvey ? 0 : 2) - least).entries.map(entry => entry.key)
+      const railOwed = entries.every(entry => !ACTION_KEYS.includes(entry.key) || kept.includes(entry.key))
+      const railDrawn = tree !== DRAWN && boxes(tree).some((b: any) => b.props.key === 'cs-rail')
+      if (railOwed && !railDrawn) throw new Error(`entries ${bits} at ${bodyColumns} columns, prompt ${named + 1} named, drew no rail where its actions left room`)
+      if (!railDrawn) continue
+      railed++
+      const [row, ...more] = bandRows(tree, bodyColumns)
+      if (row === undefined || more.length > 0 || [...row].length > bodyColumns) throw new Error(`entries ${bits} at ${bodyColumns} columns drew ${JSON.stringify([row, ...more])}`)
+      if (!row.includes('\u2503')) throw new Error(`entries ${bits} at ${bodyColumns} columns, prompt ${named + 1} named, drew a rail without its named tick: ${row}`)
+    }
+  }
+  expect(railed).toBeGreaterThan(0)
+}, 60000)
+
+// The rail with cs.bandPrompt read at 120 columns and on narrow lines: the
+// drawn ticks are the newest that fit, slid back only as far as the named
+// one; the older prompts fold into `…N ` before them and the newer ones
+// into ` M…` after them.
+const reading = (named: number) => ({ ...railOf(FOURTEEN), bars: 5, named })
+test('with the oldest prompt named the ticks start at it and the newer prompts fold after them, ` M…` in the line\'s last cells', () => {
+  const mail = buildBandEntries({ ...quiet, mail: 1 })
+  expect(lineAt(mail, 120, reading(0))).toBe(`  ⣿ ${gap(87)}mail 1   #1 step 1   ┃╷╷╷╷ 9…`)
+  expect(lineAt(mail, 21, reading(0))).toBe('  ⣿ mail 1   ┃╷╷╷╷ 9…')
+  expect(lineAt(mail, 18, reading(0))).toBe('  ⣿ mail 1   ┃ 13…')
+})
+
+test('with a middle prompt named the ticks slide back to start at it, the older prompts folded before them and the newer after', () => {
+  const mail = buildBandEntries({ ...quiet, mail: 1 })
+  // The name is as wide as `#11 step 11`, the widest drawn tick's.
+  expect(lineAt(mail, 120, reading(6))).toBe(`  ⣿ ${gap(82)}mail 1   ${gap(2)}#7 step 7   …6 ┃╷╷╷╷ 3…`)
+  expect(lineAt(mail, 21, reading(6))).toBe('  ⣿ mail 1   …6 ┃╷ 6…')
+  // The least, `…6 ┃ 7…`, takes seven cells and three before them.
+  expect(lineAt(mail, 20, reading(6))).toBe('  ⣿ mail 1   …6 ┃ 7…')
+  // A cell fewer holds the mail word and the least no more: the word leaves, and the rail takes the line.
+  expect(lineAt(mail, 19, reading(6))).toBe(`  ⣿ ${gap(4)}…6 ┃╷╷╷╷ 3…`)
+})
+
+test('with the newest prompt named the rail reads as it does with cs.bandPrompt latest', () => {
+  const mail = buildBandEntries({ ...quiet, mail: 1 })
+  expect(lineAt(mail, 120, reading(13))).toBe(`  ⣿ ${gap(72)}mail 1   #14 the band is too busy   …9 ╷╷╷╷┃`)
+  expect(lineAt(mail, 18, reading(13))).toBe('  ⣿ mail 1   …13 ┃')
+})
+
+test('a tick drawn after the named one hovers and jumps to its own prompt, and a folded prompt has no tick', async () => {
+  const jumped: number[] = []
+  const tree = drawBand(view({ entries: buildBandEntries({ ...quiet, mail: 1 }), bodyColumns: 120, rail: { ...reading(6), jump: async (i: number) => { jumped.push(i) } } }), EL)
+  expect(bandRows(tree, 120, 'cs-rail-10')).toEqual([`  ⣿ ${gap(82)}mail 1   #11 step 11   …6 ┃╷╷╷╷ 3…`])
+  const ticks = buttons(tree).filter((b: any) => b.props.key?.startsWith('cs-rail-'))
+  expect(ticks.map((b: any) => b.props.key)).toEqual(['cs-rail-7', 'cs-rail-8', 'cs-rail-9', 'cs-rail-10'])
+  for (const tick of ticks) await tick.props.onPress()
+  expect(jumped).toEqual([7, 8, 9, 10])
+})
+
 test('every entry the band never drops stays whole at the narrowest line that holds them, and the features word shortens a cell under it', () => {
   // The actions without the prefix (40), three cells and the features press (27) hold 70 cells.
   expect(lineAt(everything, 74)).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-auth ready')

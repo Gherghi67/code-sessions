@@ -385,7 +385,7 @@ let redrawPending = false
 // The band's /config rows (plugin.json userConfig), as this activation got
 // them: whether it draws the prompt ticks at all (off by default), the prompt
 // it names, `latest` (the newest) or `read` (the one being read), and the
-// most ticks it draws before older prompts fold into `…N`. A
+// most ticks it draws before the prompts past them fold into `…N` or `M…`. A
 // change reloads the plugin and register runs again. A stored value the band
 // cannot draw leaves it without ticks (undefined), said once, and the rest of
 // the mod running: a throw from register would unload all of it.
@@ -669,7 +669,7 @@ export function register(on: On, options: PluginOptions) {
     // is the line less the inset and the mark.
     const rail = railing && bars !== undefined ? { prompts, named, denied, bars, jump: (i: number) => jumpTo($, i) } : undefined
     const markCells = e.props.hasSurvey ? 0 : cellWidth(MARK) + 1
-    if (entries.length === 0 && (rail === undefined || railTicks(rail.prompts.length, e.props.bodyColumns - 2 - markCells, rail.bars) === undefined)) return drawn
+    if (entries.length === 0 && (rail === undefined || railTicks(rail.prompts.length, e.props.bodyColumns - 2 - markCells, rail.bars, rail.named) === undefined)) return drawn
     const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
     const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
     return drawBand({ drawn, entries, chords, own, markColor, hasSurvey: e.props.hasSurvey, bodyColumns: e.props.bodyColumns, surface: e.surface, rail }, { Box, Text, Button })
@@ -870,13 +870,13 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
   // The line starts two cells in; the mark and the words share the rest.
   const room = v.bodyColumns - 2 - markCells
-  // A rail keeps its least, every prompt but the named one folded into `…N`
-  // before the named tick, and the three cells before it: the words fit what
-  // that leaves, so the status words drop and the keys shorten before the
-  // rail goes. The actions outrank the rail: where the words cannot keep
-  // every action beside its least, they fit the whole line, and the rail
-  // takes what they leave, or nothing.
-  const reserved = v.rail === undefined ? 0 : foldCells(v.rail.prompts.length - 1) + 1 + GAP
+  // A rail keeps its least, the named tick alone, the older prompts folded
+  // into `…N ` before it and the newer into ` M…` after it, and the three
+  // cells before it: the words fit what that leaves, so the status words drop
+  // and the keys shorten before the rail goes. The actions outrank the rail:
+  // where the words cannot keep every action beside its least, they fit the
+  // whole line, and the rail takes what they leave, or nothing.
+  const reserved = v.rail === undefined ? 0 : railCells(v.rail.prompts.length, leastWindow(v.rail.named)) + GAP
   const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.map(entry => entry.key)
   const besideRail = fitBand(v.entries, chords, room - reserved)
   const keptActions = actionKeys(besideRail.entries)
@@ -911,19 +911,21 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // Each is a Button (the named one a Text: a
   // Button takes no colour, and there is nowhere to jump). It draws at most
   // cs.bandBars ticks in what the line leaves after the inset, the gaps and
-  // the words; the older prompts collapse into one `…N` run, a cell before
-  // the first tick. The named tick is remembered so a report that moves it
-  // can redraw the band.
+  // the words, always the named one among them (railTicks); the older prompts
+  // collapse into one `…N` run, a cell before the first tick, and any newer
+  // than the drawn ticks into one `M…` run, a cell after the last. The named
+  // tick is remembered so a report that moves it can redraw the band.
   const budget = room - (wordCells > 0 ? GAP + wordCells : 0)
   const rail = v.rail
-  const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
-  const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
+  const shown = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars, rail.named)
+  const ticks = rail === undefined || shown === undefined ? undefined : { ...rail, ...shown }
+  const drawnTick = (i: number) => ticks !== undefined && i >= ticks.from && i < ticks.to
   // Left of the rail, GAP cells before it so the `…N` run never reads as
   // the cut name's own `…`, the band names a prompt in what the line leaves:
   // the newest or the one being read (cs.bandPrompt), or the one under the
   // pointer. Too little left to name one names none.
-  const railCells = ticks === undefined ? 0 : foldCells(ticks.hidden) + ticks.prompts.length - ticks.hidden
-  const labelRoom = ticks === undefined ? 0 : budget - railCells - GAP
+  const railWidth = ticks === undefined ? 0 : railCells(ticks.prompts.length, ticks)
+  const labelRoom = ticks === undefined ? 0 : budget - railWidth - GAP
   const labeled = labelRoom >= RAIL_LABEL_MIN
   // A tick under the pointer swaps its prompt in over the named one, on the
   // terminal only: the desktop app paints a card over a line without hiding
@@ -939,7 +941,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // to the one it shows would move the words before it whenever a swap shows
   // a longer or shorter one. It is padded on its left, so it hugs the gap
   // before the ticks.
-  const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(i => i >= ticks.hidden) : [])]
+  const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(drawnTick) : [])]
     .map(i => cellWidth(name(ticks.prompts, i)))))
   // Each name fills the width, so a card over the named one paints every
   // cell of it: a shorter one would leave the named one's head showing.
@@ -950,7 +952,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // transcript, in two zones: at the left the actions, only the words that
   // need a key now, the keys in the session colour and the rest dim; at the
   // right edge what the session is, dim, then the prompt's name, then the
-  // rail, its last tick in the line's last cell. A spacer that grows
+  // rail, ending in the line's last cell. A spacer that grows
   // takes the line's free cells between them, so the rail stays put as the
   // actions come and go; the row is the line's whole width for it to grow
   // into, and a line with nothing at the right draws no spacer. The context
@@ -990,8 +992,8 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
               {ticks !== undefined && labeled && (
                 <Box width={labelCells} marginLeft={status.length > 0 ? GAP : 0}>
                   <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
-                  {/* a card for each drawn tick but the named one: a prompt folded into `…N` has no tick to hover */}
-                  {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
+                  {/* a card for each drawn tick but the named one: a prompt folded into `…N` or `M…` has no tick to hover */}
+                  {hovering && ticks.prompts.map((_, i) => drawnTick(i) && i !== ticks.named && (
                     <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
                       <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
                     </Box>
@@ -1000,13 +1002,14 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
               )}
               {ticks !== undefined && (
                 <Box key="cs-rail" marginLeft={status.length > 0 || labeled ? GAP : 0}>
-                  {ticks.hidden > 0 && <Box marginRight={1}><Text dimColor>{`…${ticks.hidden}`}</Text></Box>}
-                  {ticks.prompts.slice(ticks.hidden).map((p, j) => {
-                    const i = ticks.hidden + j
+                  {ticks.from > 0 && <Box marginRight={1}><Text dimColor>{`…${ticks.from}`}</Text></Box>}
+                  {ticks.prompts.slice(ticks.from, ticks.to).map((p, j) => {
+                    const i = ticks.from + j
                     if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
                     return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '╵' : '╷'}
                                    hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
                   })}
+                  {ticks.to < ticks.prompts.length && <Box marginLeft={1}><Text dimColor>{`${ticks.prompts.length - ticks.to}\u2026`}</Text></Box>}
                 </Box>
               )}
             </Box>
@@ -1139,19 +1142,39 @@ async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean
   return entries.some(entry => entry.name.startsWith(`${base}@`))
 }
 
-// How many of `count` prompts fold into the rail's `…N` run so that at most
-// `most` ticks draw and the rail fits `budget` cells; undefined when no tick fits.
-export function railTicks(count: number, budget: number, most: number): { hidden: number } | undefined {
-  for (let hidden = Math.max(0, count - most); hidden < count; hidden++) {
-    if (count - hidden + foldCells(hidden) <= budget) return { hidden }
+// The prompts the rail draws a tick for, `from` up to but not including
+// `to`: those before fold into its `…N` run, those after into its `M…` run.
+type RailWindow = { from: number; to: number }
+
+// The ticks the rail draws of `count` prompts: the most, up to `most`, that
+// fit `budget` cells with their runs, and always the named one. They end at
+// the newest prompt, slid back only as far as the named one, where it is the
+// first; undefined when not even the named tick fits.
+export function railTicks(count: number, budget: number, most: number, named: number): RailWindow | undefined {
+  if (!Number.isInteger(named) || named < 0 || named >= count) throw new Error(`cs: the rail named prompt ${named} of ${count}`)
+  for (let drawn = Math.min(most, count); drawn >= 1; drawn--) {
+    const from = Math.min(count - drawn, named)
+    const shown = { from, to: from + drawn }
+    if (railCells(count, shown) <= budget) return shown
   }
   return undefined
 }
 
-// The cells of the rail's `…N` run and the space between it and the first
-// tick; none when no prompt folds.
-function foldCells(hidden: number): number {
-  return hidden > 0 ? `\u2026${hidden}`.length + 1 : 0
+// The rail's least: the named tick alone.
+function leastWindow(named: number): RailWindow {
+  return { from: named, to: named + 1 }
+}
+
+// The cells the rail takes: its ticks, and each run with the space between it
+// and the ticks.
+function railCells(count: number, { from, to }: RailWindow): number {
+  return foldCells(from) + to - from + foldCells(count - to)
+}
+
+// The cells of a run of folded prompts, `…N ` before the ticks or ` N…`
+// after them, the space included; none when no prompt folds.
+function foldCells(folded: number): number {
+  return folded > 0 ? `\u2026${folded}`.length + 1 : 0
 }
 
 // The prompt the band names: the newest, or the one being read (cs.bandPrompt).
