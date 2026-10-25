@@ -171,7 +171,7 @@ test('splitReply keeps prose and fences in order', () => {
 })
 
 
-// The design lab draws a fence by calling Drawing or drawFence itself. A Pane
+// A design tool outside cs draws a fence by calling Drawing or drawFence itself. A Pane
 // the test draws from those exports must match the reply the mod draws, but
 // for the root's stamp, which names the plugin that returned the tree.
 async function sameAsExports($: Engine, source: string) {

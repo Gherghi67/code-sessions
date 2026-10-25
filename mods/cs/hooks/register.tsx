@@ -179,8 +179,8 @@ export const QUEUE_KICK = 'The cs walk-away queue is started. Reply with one sho
 
 // Every line the mod hands the engine to draw on a surface of the engine's
 // own: its dialogs, toasts, transcript notices, slash command replies and
-// slash menu rows, one table per surface, so the design lab draws each from
-// these words. Claude Code leads each toast, notice and reply with the
+// slash menu rows, one table per surface, so a design tool outside cs can draw
+// each from these words. Claude Code leads each toast, notice and reply with the
 // plugin's name, so no line names cs first; one that starts `cs <base>` or
 // `cs -queue` names a cs command. An error arrives as the text its site makes
 // of it: some keep the `Error: ` that String() gives, some only the message.
