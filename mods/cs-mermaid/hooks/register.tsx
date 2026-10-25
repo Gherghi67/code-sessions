@@ -120,7 +120,7 @@ export function blockRows(label: string, width: number, height: number): string[
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
 
 // The diagram as coloured blocks and line glyphs.
-function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Graph; palette: Palette; elements: Elements }) {
+export function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Graph; palette: Palette; elements: Elements }) {
   const { Box, Text } = elements
   return (
     <Box width={drawn.width} height={drawn.height} position="relative">
@@ -142,6 +142,17 @@ function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Gr
       {drawn.labels.map(label => (
         <Box position="absolute" top={label.y} left={label.x}><Text italic color={labelColor(label.text, palette)}>{label.text}</Text></Box>
       ))}
+    </Box>
+  )
+}
+
+// A fence the drawing cannot take: its source as it was written, the reason under it.
+export function drawFence(source: string, error: string, elements: Elements) {
+  const { Box, Text, Code } = elements
+  return (
+    <Box flexDirection="column">
+      <Code source={source} language="mermaid" />
+      <Text dimColor>mermaid: {error}</Text>
     </Box>
   )
 }
@@ -186,7 +197,7 @@ export const register: Register = (on, options) => {
     if (fencesOf(e.props.text).length === 0) return next(e)
     // Draw each fence inline, in the room the terminal has; one that does not fit stays a fence.
     const elements = $.ui.resolve(e)
-    const { Box, Text, Code } = elements
+    const { Box } = elements
     const theme = (await $.config.list()).find(row => row.key === 'theme')?.value
     const palette = paletteFor(theme)
     const columns = Math.max(20, (e.viewport?.columns ?? 80) - 6)
@@ -200,14 +211,7 @@ export const register: Register = (on, options) => {
         {parts.map((part, index) => {
           if (part.kind === 'text') return prose[index]
           const fitted = fitSource(part.body, columns)
-          if ('error' in fitted) {
-            return (
-              <Box flexDirection="column">
-                <Code source={part.body} language="mermaid" />
-                <Text dimColor>mermaid: {fitted.error}</Text>
-              </Box>
-            )
-          }
+          if ('error' in fitted) return drawFence(part.body, fitted.error, elements)
           return <Box marginY={1}><Drawing drawn={fitted.drawn} graph={fitted.graph} palette={palette} elements={elements} /></Box>
         })}
       </Box>
