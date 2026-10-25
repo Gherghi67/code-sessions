@@ -1,9 +1,10 @@
 // ABOUTME: Engine test-kit tests for the cs-mermaid register module: inline drawing, the fallback to source, fit and palette helpers.
 // ABOUTME: Also pins the drawDiagrams option, which turns off the drawing.
 import { test, expect } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { OPTION, blockRows, fencesOf, fillFor, fit, labelColor, paletteFor, roleOf, splitReply } from '../hooks/register'
+import { Drawing, OPTION, blockRows, drawFence, fencesOf, fillFor, fit, fitSource, labelColor, paletteFor, roleOf, splitReply } from '../hooks/register'
 import { parse } from '../hooks/parse'
 
 const TEXT = ['Flow:', '', '```mermaid', 'graph TD', '  A[prompt] --> B{cached?}', '  B -->|no| C[render]', '```'].join('\n')
@@ -79,7 +80,10 @@ test('an unsupported chart stays a fence with the reason under it', async ($, on
   const text = '```mermaid\ngraph TD\n  subgraph S\n  A --> B\n  end\n```'
   const reply = await $.ui.mount({ plugin: 'cs-mermaid', surface: 'terminal', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
   expect(await reply.find({ type: 'Code', text: 'subgraph S' })).toBeDefined()
-  expect(await reply.find({ type: 'Text', text: 'mermaid: subgraphs are not supported' })).toBeDefined()
+  const reason = await reply.find({ type: 'Text', text: 'mermaid: subgraphs are not supported' })
+  expect(reason?.props.dimColor).toBe(true)
+  // The source first, the reason under it.
+  expect((await reply.findAll({})).map(node => node.type).filter(type => type === 'Code' || type === 'Text')).toEqual(['Code', 'Text'])
   await reply.unmount()
 })
 
@@ -166,3 +170,41 @@ test('splitReply keeps prose and fences in order', () => {
   ])
 })
 
+
+// The design lab draws a fence by calling Drawing or drawFence itself. A Pane
+// the test draws from those exports must match the reply the mod draws, but
+// for the root's stamp, which names the plugin that returned the tree.
+async function sameAsExports($: Engine, source: string) {
+  const reply = await $.ui.mount({ plugin: 'cs-mermaid', surface: 'terminal', component: 'AssistantMessage', props: { text: `\`\`\`mermaid\n${source}\n\`\`\``, isFirstOfReply: true } })
+  const pane = await $.ui.mount({ plugin: 'cs-mermaid', surface: 'terminal', component: 'Pane', requestId: 'exports', props: { title: 'exports', isFocused: false, placement: 'inline', bodyColumns: 80, scroll: { offset: 0, bodyRows: 24 }, view: {} } })
+  const { part: drawer, ...drawn } = await reply.drawn() as { part?: unknown }
+  const { part: exporter, ...ours } = await pane.drawn() as { part?: unknown }
+  expect([drawer, exporter]).toEqual([{ plugin: 'cs-mermaid' }, { plugin: 'test' }])
+  expect(ours).toEqual(drawn)
+  await reply.unmount(); await pane.unmount()
+}
+
+test('a chart the mod draws is the tree Drawing draws from the fitted chart', async ($, on) => {
+  const source = 'graph TD\n  A[prompt] --> B{cached?}\n  B -->|no| C[render]'
+  on('config.list', () => ({ value: [] }))
+  on('ui.render', { component: 'Pane' }, ($, e) => {
+    const elements = $.ui.resolve(e)
+    const { Box } = elements
+    // No viewport measured: the mod fits the chart to 80 columns less its 6-cell inset.
+    const fitted = fitSource(source, 74)
+    if ('error' in fitted) throw new Error(fitted.error)
+    return <Box flexDirection="column"><Box marginY={1}><Drawing drawn={fitted.drawn} graph={fitted.graph} palette={paletteFor(undefined)} elements={elements} /></Box></Box>
+  })
+  await sameAsExports($, source)
+})
+
+test('a chart the parser refuses is the tree drawFence draws from its source and reason', async ($, on) => {
+  const source = 'graph TD\n  subgraph S\n  A --> B\n  end'
+  on('config.list', () => ({ value: [] }))
+  on('ui.render', { component: 'Pane' }, ($, e) => {
+    const elements = $.ui.resolve(e)
+    const { Box } = elements
+    return <Box flexDirection="column">{drawFence(source, 'subgraphs are not supported', elements)}</Box>
+  })
+  await sameAsExports($, source)
+})

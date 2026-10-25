@@ -344,6 +344,7 @@ test('the settings pane stays usable while off and pressing group enables this s
   expect((await pane.find({ type: 'Text', text: 'Chat view' }))?.text).toBe('Chat view')
   expect((await pane.find({ type: 'Text', text: 'raw' }))?.text).toBe('raw')
   expect((await pane.find({ type: 'Button', key: 'btn-group' }))?.props.label).toBe('Group a turn into one line')
+  expect((await pane.find({ type: 'Text', text: /\/feed group/ }))?.text).toBe('· /feed group off')
   await $.ui.press({ plugin: 'cs-feed', key: 'btn-group' })
   expect(files.get('/session/.cs/local/feed')).toBe('on\n')
   expect(files.get('/session/.cs/local/feed-view')).toBe('{"group":false,"clear":true,"keep":false,"style":"subtle","commands":"grouped","after":"clear","hide":[]}\n')

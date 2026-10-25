@@ -89,6 +89,9 @@ Environment:
   CS_STATUSLINE_SEGMENTS  Status line segments, csv order (default:
                           logo,session,notes,mail,git,model,ctx,limits;
                           'cost' also available, off by default)
+  CS_STATUSLINE_LAYOUT    Status line layout: band (default), a full-width
+                          row fading from CS_STATUSLINE_BAND (a palette name,
+                          r;g;b, session, none) into the terminal, or capsules
   CS_TERM_THEME           Override terminal theme detection (light|dark);
                           cs -detect-theme shows what detection yields.
                           Under tmux, detection queries the outer terminal via

@@ -5,7 +5,7 @@
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
 // ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
-import type { On, EngineInterface, PluginOptions } from 'claude-code'
+import type { On, EngineInterface, PluginOptions, RenderElement, RenderSurface } from 'claude-code'
 
 declare const h: any
 declare const Fragment: any
@@ -596,115 +596,16 @@ export function register(on: On, options: PluginOptions) {
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
     })
-    // The Buttons carry no hotkey: a bare digit pressed them from an empty
-    // composer, where a digit typed as the answer to a numbered question
-    // belongs. A chord bound to each Button's action presses it instead, and
-    // the engine draws a Button with no hotkey as its label alone, so the key
-    // is spelled beside it, and only when keybindings.json binds one. Chords
-    // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
-    // each Button its own key; chords that differ are spelled whole.
-    const actions = entries.flatMap(entry => entry.kind === 'chord' ? [entry.action] : [])
-    const prefix = sharedPrefix(actions.map(action => chords[action]))
-    const firstChord = entries.findIndex(entry => entry.kind === 'chord' && chords[entry.action] !== undefined)
-    const spelled = (action: string) => {
-      const chord = chords[action]
-      return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
-    }
-    const key = (action: string) => {
-      const text = spelled(action)
-      return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
-    }
-    // What the words take, in cells, so the rail knows what the line leaves it.
-    const sep = '  \u00b7  '
-    const wordText = entries.map((entry, index) => {
-      const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
-      return `${index === firstChord && prefix !== undefined ? `${prefix}  ` : ''}${chord === undefined ? '' : `${chord} `}${entry.label}`
-    }).join(sep)
-    const wordCells = cellWidth(wordText)
-    // The mark and its space, first on every line the band draws but under a
-    // survey, which owns the band.
+    // A line with no words and no room for a tick draws nothing, and asks
+    // nothing more: a hook on env.get sees every read, so the mark's two reads
+    // wait until drawBand has a line to draw. With no words, drawBand's budget
+    // is the line less the inset and the mark.
+    const rail = railing && bars !== undefined ? { prompts, named, denied, bars, jump: (i: number) => jumpTo($, i) } : undefined
     const markCells = e.props.hasSurvey ? 0 : cellWidth(MARK) + 1
-    // The rail: one upright bar per prompt after the words, `┃` for
-    // the one the band names, `┆` for one a jump was refused, `│` otherwise
-    // (side by side, flat ticks run together into one line), each a Button
-    // (the named one a Text: a
-    // Button takes no colour, and there is nowhere to jump). It draws at most
-    // cs.bandBars bars in what the line leaves after the inset, the gaps and
-    // the words; the older prompts collapse into one `…N` run. The named tick
-    // is remembered so a report that moves it can redraw the band.
-    const budget = e.props.bodyColumns - 2 - markCells - (wordCells > 0 ? 3 + wordCells : 0)
-    const ticks = railing && bars !== undefined ? railTicks(prompts.length, budget, bars) : undefined
-    // After the bars the band names a prompt in what the line leaves: the
-    // newest or the one being read (cs.bandPrompt), or the one under the
-    // pointer. Too little left to name one names none.
-    const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `\u2026${ticks.hidden}`.length : 0) + prompts.length - ticks.hidden
-    const labelCells = ticks === undefined ? 0 : budget - railCells - 2
-    const labeled = labelCells >= RAIL_LABEL_MIN
-    // A bar under the pointer swaps its prompt in over the named one, on the
-    // terminal only: the desktop app paints a card over a line without hiding
-    // what is under it, so both prompts would show at once.
-    const hovering = labeled && e.surface === 'terminal'
-    const label = (i: number) => {
-      const p = prompts[i]
-      if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
-      return fitLeft(`#${i + 1} ${p.text}`, labelCells)
-    }
-    // A line too narrow for any tick, with nothing else to say, draws nothing.
-    if (entries.length === 0 && ticks === undefined) return drawn
+    if (entries.length === 0 && (rail === undefined || railTicks(rail.prompts.length, e.props.bodyColumns - 2 - markCells, rail.bars) === undefined)) return drawn
     const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
     const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
-    // One thin line, a blank line above it so it reads apart from the
-    // transcript: only the words that need a key now, the keys in the
-    // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
-    // the band does not repeat it. It starts two columns in, where Claude Code
-    // draws the bar and the mode line under the prompt. A Button is a block:
-    // nested in a Text the engine refuses the whole tree (measured), so each
-    // separator stands beside its Button.
-    return (
-      <Box flexDirection="column">
-        {drawn}
-        <Box marginTop={1}>
-          <Box key="cs-rotate-band" marginLeft={2}>
-            {/* the mark: its colour says what is due (bandState) */}
-            {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={markColor}>{MARK}</Text></Box>}
-            {entries.flatMap((entry, index) => [
-              index > 0 && <Text dimColor>{sep}</Text>,
-              index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
-              entry.kind === 'chord' && key(entry.action),
-              entry.kind === 'word'
-                ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
-                : entry.kind === 'chord'
-                  ? entry.ink === undefined
-                    ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
-                    : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
-                  : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
-            ])}
-            {ticks !== undefined && (
-              <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
-                {ticks.hidden > 0 && <Text dimColor>{`\u2026${ticks.hidden}`}</Text>}
-                {prompts.slice(ticks.hidden).map((p, j) => {
-                  const i = ticks.hidden + j
-                  if (i === named) return own === undefined ? <Text bold>{'\u2503'}</Text> : <Text bold color={own}>{'\u2503'}</Text>
-                  return <Button key={`cs-rail-${i}`} plain dimColor label={denied.has(p.uuid) ? '\u2506' : '\u2502'}
-                                 hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => jumpTo($, i)} />
-                })}
-              </Box>
-            )}
-            {labeled && (
-              <Box width={labelCells} marginLeft={2}>
-                <Text dimColor italic wrap="truncate-end">{label(named)}</Text>
-                {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
-                {hovering && prompts.map((_, i) => i >= (ticks as { hidden: number }).hidden && i !== named && (
-                  <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                    <Text italic wrap="truncate-end">{label(i)}</Text>
-                  </Box>
-                ))}
-              </Box>
-            )}
-          </Box>
-        </Box>
-      </Box>
-    )
+    return drawBand({ drawn, entries, chords, own, markColor, hasSurvey: e.props.hasSurvey, bodyColumns: e.props.bodyColumns, surface: e.surface, rail }, { Box, Text, Button })
   })
 
   // A rail tick never takes the band's focus ring: the ring draws as an
@@ -714,6 +615,136 @@ export function register(on: On, options: PluginOptions) {
     if (e.element?.startsWith('cs-rail-')) return { deny: 'cs: the rail takes clicks and /cs, not the focus ring' }
     return next(e)
   })
+}
+
+// What the band's line is drawn from, as the AbovePrompt handler read it: the
+// engine's own tree, the entries, the bound chords by action, the session
+// colour, the mark's ink, and the rail when cs.bandPrompts draws one.
+export type BandView = {
+  drawn: RenderElement
+  entries: BandEntry[]
+  chords: Record<string, string>
+  own: string | undefined
+  markColor: string
+  hasSurvey: boolean
+  bodyColumns: number
+  surface: RenderSurface
+  rail?: { prompts: Prompt[]; named: number; denied: Set<string>; bars: number; jump: (i: number) => Promise<void> }
+}
+export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Text' | 'Button'>
+
+export function drawBand(v: BandView, el: BandElements): RenderElement {
+  const { Box, Text, Button } = el
+  const { entries, chords, own } = v
+  // The Buttons carry no hotkey: a bare digit pressed them from an empty
+  // composer, where a digit typed as the answer to a numbered question
+  // belongs. A chord bound to each Button's action presses it instead, and
+  // the engine draws a Button with no hotkey as its label alone, so the key
+  // is spelled beside it, and only when keybindings.json binds one. Chords
+  // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
+  // each Button its own key; chords that differ are spelled whole.
+  const actions = entries.flatMap(entry => entry.kind === 'chord' ? [entry.action] : [])
+  const prefix = sharedPrefix(actions.map(action => chords[action]))
+  const firstChord = entries.findIndex(entry => entry.kind === 'chord' && chords[entry.action] !== undefined)
+  const spelled = (action: string) => {
+    const chord = chords[action]
+    return chord === undefined ? undefined : prefix === undefined ? chord : chord.slice(prefix.length + 1)
+  }
+  const key = (action: string) => {
+    const text = spelled(action)
+    return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
+  }
+  // What the words take, in cells, so the rail knows what the line leaves it.
+  const sep = '  ·  '
+  const wordText = entries.map((entry, index) => {
+    const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
+    return `${index === firstChord && prefix !== undefined ? `${prefix}  ` : ''}${chord === undefined ? '' : `${chord} `}${entry.label}`
+  }).join(sep)
+  const wordCells = cellWidth(wordText)
+  // The mark and its space, first on every line the band draws but under a
+  // survey, which owns the band.
+  const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
+  // The rail: one upright bar per prompt after the words, `┃` for
+  // the one the band names, `┆` for one a jump was refused, `│` otherwise
+  // (side by side, flat ticks run together into one line), each a Button
+  // (the named one a Text: a
+  // Button takes no colour, and there is nowhere to jump). It draws at most
+  // cs.bandBars bars in what the line leaves after the inset, the gaps and
+  // the words; the older prompts collapse into one `…N` run. The named tick
+  // is remembered so a report that moves it can redraw the band.
+  const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? 3 + wordCells : 0)
+  const rail = v.rail
+  const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
+  const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
+  // After the bars the band names a prompt in what the line leaves: the
+  // newest or the one being read (cs.bandPrompt), or the one under the
+  // pointer. Too little left to name one names none.
+  const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `…${ticks.hidden}`.length : 0) + ticks.prompts.length - ticks.hidden
+  const labelCells = ticks === undefined ? 0 : budget - railCells - 2
+  const labeled = labelCells >= RAIL_LABEL_MIN
+  // A bar under the pointer swaps its prompt in over the named one, on the
+  // terminal only: the desktop app paints a card over a line without hiding
+  // what is under it, so both prompts would show at once.
+  const hovering = labeled && v.surface === 'terminal'
+  const label = (prompts: Prompt[], i: number) => {
+    const p = prompts[i]
+    if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
+    return fitLeft(`#${i + 1} ${p.text}`, labelCells)
+  }
+  // A line too narrow for any tick, with nothing else to say, draws nothing.
+  if (entries.length === 0 && ticks === undefined) return v.drawn
+  // One thin line, a blank line above it so it reads apart from the
+  // transcript: only the words that need a key now, the keys in the
+  // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
+  // the band does not repeat it. It starts two columns in, where Claude Code
+  // draws the bar and the mode line under the prompt. A Button is a block:
+  // nested in a Text the engine refuses the whole tree (measured), so each
+  // separator stands beside its Button.
+  return (
+    <Box flexDirection="column">
+      {v.drawn}
+      <Box marginTop={1}>
+        <Box key="cs-rotate-band" marginLeft={2}>
+          {/* the mark: its colour says what is due (bandState) */}
+          {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={v.markColor}>{MARK}</Text></Box>}
+          {entries.flatMap((entry, index) => [
+            index > 0 && <Text dimColor>{sep}</Text>,
+            index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
+            entry.kind === 'chord' && key(entry.action),
+            entry.kind === 'word'
+              ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
+              : entry.kind === 'chord'
+                ? entry.ink === undefined
+                  ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+                  : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
+                : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
+          ])}
+          {ticks !== undefined && (
+            <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
+              {ticks.hidden > 0 && <Text dimColor>{`…${ticks.hidden}`}</Text>}
+              {ticks.prompts.slice(ticks.hidden).map((p, j) => {
+                const i = ticks.hidden + j
+                if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
+                return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
+                               hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
+              })}
+            </Box>
+          )}
+          {ticks !== undefined && labeled && (
+            <Box width={labelCells} marginLeft={2}>
+              <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
+              {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
+              {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
+                <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
+                  <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </Box>
+      </Box>
+    </Box>
+  )
 }
 
 // The chord prefix every bound key shares, up to its last space (`ctrl+x` of
