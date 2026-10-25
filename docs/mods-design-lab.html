@@ -1836,7 +1836,8 @@ document.addEventListener("keydown",e=>{
   if($("bd-help").open) return;
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||""), app=document.body.classList.contains("app");
   if(e.key==="Escape"){ $("finder").classList.remove("on"); document.activeElement?.blur(); return; }
-  if(typing) return;
+  // Cmd/Ctrl/Alt with a hotkey is the browser's (Cmd 0 resets its zoom, Cmd 1 picks a tab).
+  if(typing||e.metaKey||e.ctrlKey||e.altKey) return;
   if(e.key==="/"){ e.preventDefault(); openFinder(); return; }
   if(!app&&(e.key==="ArrowDown"||e.key==="j")){ e.preventDefault(); step(1); return; }
   if(!app&&(e.key==="ArrowUp"||e.key==="k")){ e.preventDefault(); step(-1); return; }
