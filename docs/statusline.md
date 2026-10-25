@@ -175,8 +175,6 @@ Color depth is detected per render, in priority order: `FORCE_COLOR=0`, `NO_COLO
 | `amber` | hot numbers, notes and mail counts | light: `180;83;9`; dark: `253;230;138` — light/dark by the measured `CS_TERM_BG_RGB`, by theme only when unmeasured | 130/221 | 33/93 |
 | `crit` | inverted capsule fill | light: `215;0;21`; dark: `255;69;58` | 160/203 | 31 |
 | `critink` | inverted capsule text | `255;255;255` on both themes | 231 | 97 |
-| `amberfill` | the band's amber island fill | light: `251;232;196`; dark: `120;74;12` | 223/94 | 33 |
-| `amberink` | the band's amber island text | light: `140;64;8`; dark: `255;228;160` | 94/223 | 30 |
 | `effort-*` | the effort word | Claude Code's /effort picker colours, pixel-sampled; lifted a third toward white on dark; `effort-max-1..3` are the gradient stops | 136/179, 28/71, 63/105, 93/135, 110·140·175 / 153·183·218 | 33, 32, 34, 35, 36·35·95 |
 
 Every capsule fill is `surface`, a shade of the terminal's own background so the bar harmonizes with the terminal instead of sitting on a fixed grey; darker on a light terminal, lighter on a dark one. On a cream terminal (`253;246;227`) the derived surface comes out `227;221;204`, a warm off-white a few shades darker — so the values above are the fallback for an unmeasured background and a reference for what the derived shade lands near, not fixed paints.
@@ -205,7 +203,7 @@ Each render picks the band color, first match winning:
 2. The session's own color, `claude_session_color` in `.cs/local/state`, through the same palette the session pill uses.
 3. A neutral: the terminal background lifted a step, `+40;+40;+50` on a dark terminal and `-30` a channel on a light one, held within 0-255.
 
-The render then pulls that color 30% of the way toward the background, so text reads on the band's brightest cells. The background is `CS_TERM_BG_RGB` when it parses, else the one the `surface` token assumes (dark `28;28;28`, light `255;255;255`).
+A color from step 1 or 2 is then desaturated and pulled toward the background, so the band is a tint of the terminal and text reads on its first cells. Each channel moves halfway to the color's luminance, `(r×299 + g×587 + b×114) / 1000`, and then 78% of the way to the background. Session blue `106;155;204` starts the band at `224;224;215` on a cream `253;246;227` and at `44;52;70` on a dark `21;24;40`. The neutral of step 3 is already a step off the background, so the band starts at it unchanged: `223;216;197` on cream, `68;68;78` on a dark `28;28;28`. The background is `CS_TERM_BG_RGB` when it parses, else the one the `surface` token assumes (dark `28;28;28`, light `255;255;255`).
 
 It picks the band's width W the same way:
 
@@ -217,9 +215,9 @@ It picks the band's width W the same way:
 
 A measured width (steps 2 to 5) loses the frame. Claude Code 2.1.310 draws the status line inside its prompt frame, two columns in on each side, and truncates past it with `…`. `CS_STATUSLINE_FRAME` (a whole number, default 4) sets the frame; with `statusLine.padding` set in Claude Code's settings, add twice the padding. The band is never narrower than 20 cells, `CS_STATUSLINE_COLS` included.
 
-A hot reading is a solid island on the band rather than colored text on it. An item in amber ink (a reading past its warn threshold, the notes and mail counts) takes the `amberfill` fill and `amberink` ink, bold, with one fill space on each side. A group at crit is one red island holding every item of the group and the joiners between them, in `critink` bold on `crit`, again with a fill space on each side. Islands have no gradient under them, and the fade resumes after an island at the color its cell position gives.
+An item in amber ink (a reading past its warn threshold, the notes and mail counts) is `amber` text, bold on either theme, on the gradient, as on the capsules. A group at crit is a solid red island holding every item of the group and the joiners between them, in `critink` bold on `crit`, with a fill space on each side. The island has no gradient under it, and the fade resumes after it at the color its cell position gives.
 
-On the band, primary text (bold `ink`, and `white`) is `255;255;255` on a dark terminal and `20;20;30` on a light one; regular `ink` is `214;222;240` / `40;44;60`; `ink2` (labels and joiners) is `150;165;200` / `90;96;120`. The brand mark, the effort word, the session palette and `periwinkle` keep their own colors.
+On a dark terminal, primary text on the band (bold `ink`, and `white`) is `255;255;255`, regular `ink` is `214;222;240` and `ink2` (labels and joiners) is `150;165;200`. On a light one the three are dark shades of the band's color before its desaturation and pull: 34%, 44% and 56% of each channel, so session blue writes primary text in `36;52;69` and labels in `59;86;114`, and the cream neutral `223;216;197` gives `75;73;66` and `124;120;110`. A light band draws every item at regular weight, the mark included; the amber reading and the crit island stay bold. A dark band keeps bold items bold. The brand mark, the effort word, the session palette and `periwinkle` keep their own colors.
 
 Below truecolor the band has no gradient. At 256 colors a flat `surface` fill runs across W cells (237 dark, 254 light), the inks and islands in their 256 tokens; at basic, the same with the basic tokens. Plain mode (`NO_COLOR` and the rest) ignores the layout and prints the plain line the capsules print.
 
