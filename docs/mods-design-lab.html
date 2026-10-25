@@ -1752,6 +1752,11 @@ function composeRender(){
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=reach(ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room));
   $("bd-fit").textContent=fitWords(fitW,room); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,room)}`; $("bd-fit").classList.toggle("no",fitW>room);
   document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`Insert a ${b.dataset.insert} (${b.dataset.key})`; });
+  bdHistoryRender();
+}
+// What a step changes beyond the canvas: the undo and redo counts, the
+// History tab and the stored document.
+function bdHistoryRender(){
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
   $("bd-redo").disabled=!bdHist.future.length; $("bd-redo").querySelector("b").textContent=bdHist.future.length;
   $("bd-hist").innerHTML=bdHistory();
@@ -2125,8 +2130,11 @@ function composeUI(){
   $("bd-help").addEventListener("click",e=>{ if(e.target===$("bd-help")) $("bd-help").close(); });
   $("bd-props").addEventListener("change",e=>{
     if(!e.target.dataset.prop||!bdDraft) return;
+    // Every panel already draws the draft. Redrawing them here, in the blur of
+    // a press elsewhere, would replace the pressed control, and the browser
+    // sends no click to a removed one.
     bdSettle();
-    composeRender();
+    bdHistoryRender();
   });
 }
 
