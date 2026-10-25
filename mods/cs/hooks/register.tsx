@@ -177,6 +177,71 @@ export const QUEUE_WORKFLOWS = 'As workflows'
 const QUEUE_MODE_WORDS: Record<string, string[]> = { [QUEUE_HERE]: [], [QUEUE_SUBAGENTS]: ['subagents'], [QUEUE_WORKFLOWS]: ['workflow'] }
 export const QUEUE_KICK = 'The cs walk-away queue is started. Reply with one short line saying so, then stop: the cs Stop hook hands you each queued task in turn.'
 
+// Every line the mod hands the engine to draw on a surface of the engine's
+// own: its dialogs, toasts, transcript notices, slash command replies and
+// slash menu rows, one table per surface, so the design lab draws each from
+// these words. An error arrives as the text its site makes of it: some keep
+// the `Error: ` that String() gives, some only the message.
+export type Ask = { question: string; header: string; options: string[] }
+export const ASKS = {
+  wrap: { question: WRAP_QUESTION, header: 'Wrap', options: [WRAP_YES, 'Not now'] },
+  queueStart: (count: number): Ask => ({ question: `Start the ${count} queued ${count === 1 ? 'task' : 'tasks'} now?`, header: 'Queue', options: [QUEUE_START, 'Not yet', QUEUE_COMPACT] }),
+  queueMode: { question: QUEUE_MODE_QUESTION, header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] },
+} satisfies Record<string, Ask | ((...args: never[]) => Ask)>
+
+export const TOASTS = {
+  queued: (task: string) => `cs: queued: ${cutTask(task)}`,
+  bandOption: (problem: string) => `cs: the band draws no prompt bars: ${problem}. Set it in /config.`,
+  promptNotDrawn: 'cs: that prompt is not on screen yet',
+  scrollRefused: (deny: string) => `cs: ${deny}`,
+  transcriptTail: () => `cs: the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`,
+  forceBelowStart: (force: number, startPercent: number) => `cs: CS_ROTATE_FORCE_CTX=${force} is below this conversation's starting context (${startPercent}%); not forcing a rotation`,
+  rotateFailed: (err: string) => `cs: /rotate did not run: ${err}`,
+  clearFailed: (err: string) => `cs: /clear did not run: ${err}`,
+  nextStep: (line: string) => `cs: next step: ${line}`,
+  noRotation: (refusal: string) => `cs: no rotation in this session: ${refusal}`,
+  feedFailed: (err: string) => `cs: feed update failed: ${err}`,
+  finishFailed: (task: string, err: string) => `cs: /finish${task === '' ? '' : ` ${task}`} did not run: ${err}`,
+  pressedNotEmptied: (err: string) => `cs: could not empty ${PRESSED}: ${err}`,
+  wrapFailed: (err: string) => `cs: /wrap did not run: ${err}`,
+  queueNoBin: 'cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session',
+  queueModeUnknown: (how: string) => `cs: '${how}' is not a way to run the queue; it is not started`,
+  notCompacted: (reason: string) => `cs: the conversation was not compacted (${reason}); the queue is not started`,
+  queueStartFailed: (err: string) => `cs: cs -queue start did not run: ${err}`,
+  queueStartExited: (code: number, tail: string) => `cs: cs -queue start exited ${code}${tail === '' ? '' : `: ${tail}`}`,
+  queueKickFailed: (err: string) => `cs: the queue is armed, but its first turn did not start: ${err}`,
+  finishRecordUnread: (dir: string) => `cs: .cs/${dir}/${FINISH_RECORD} is not a record cs wrote; /finish progress is not shown`,
+  finishPidUnknown: (err: string) => `cs: cannot tell whether /finish is still running: ${err}`,
+} as const
+
+export const LOGS = {
+  featuresUnread: (err: string) => `cs: the features word could not be read: ${err}`,
+  featuresExited: (base: string, code: number, line: string) => `cs ${base} -features exited ${code}: ${line}`,
+  featuresUnreadable: (base: string, record: string) => `cs ${base} -features gave a record the band cannot read: ${record}`,
+  featuresNoAnswer: (base: string, err: string) => `cs ${base} -features did not answer: ${err}`,
+  transcriptUnread: (err: string) => `cs: the transcript could not be read: ${err}`,
+  colorFailed: (color: string, err: string) => `cs: /color ${color} did not run: ${err}`,
+  feedUnread: (message: string) => `cs: the feed setting could not be read: ${message}`,
+} as const
+
+// `what` is the cs command a reply is about: `cs -queue add` or `cs -queue list`.
+export const REPLIES = {
+  queueNoBin: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.',
+  queueFailed: (what: string, err: string) => `${what} did not run: ${err}`,
+  queueExited: (what: string, code: number, tail: string) => tail === '' ? `${what} exited ${code}.` : `${what} exited ${code}.\n${tail}`,
+  queued: (task: string) => `Queued: ${task}`,
+  csUsage: 'usage: /cs next|prev|first|last|<n>',
+  railEmpty: 'cs: the rail has no prompts',
+  noneAfter: 'cs: no prompt after this one',
+  noneBefore: 'cs: no prompt before this one',
+  railCount: (count: number) => `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}`,
+} as const
+
+export const COMMANDS = {
+  queue: { name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true },
+  cs: { name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true },
+} as const
+
 // The countdown: seconds left, its ticker, and what the band last saw. Module
 // state survives a /clear (measured), so every path that ends the countdown
 // cancels the ticker; a reload of the mod drops it with its timers.
@@ -359,8 +424,8 @@ export function register(on: On, options: PluginOptions) {
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
-      await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
-      await $.command.register({ name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true })
+      await $.command.register(COMMANDS.queue)
+      await $.command.register(COMMANDS.cs)
     }
     await refreshRail($)
     readFeaturesLater($)
@@ -382,24 +447,24 @@ export function register(on: On, options: PluginOptions) {
     const task = e.args.trim()
     const argv = task === '' ? ['-queue', 'list'] : ['-queue', 'add', e.args]
     const bin = await $.env.get("CS_BIN")
-    if (!bin) return { text: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.' }
+    if (!bin) return { text: REPLIES.queueNoBin }
     const what = `cs ${argv.slice(0, 2).join(' ')}`
     let result: { exitCode: number; stdout: string; stderr: string }
     try {
       result = await $.process.run([bin, ...argv])
     } catch (err) {
-      return { text: `${what} did not run: ${String(err instanceof Error ? err.message : err)}` }
+      return { text: REPLIES.queueFailed(what, String(err instanceof Error ? err.message : err)) }
     }
     if (result.exitCode !== 0) {
       const tail = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-5).join('\n')
-      return { text: tail === '' ? `${what} exited ${result.exitCode}.` : `${what} exited ${result.exitCode}.\n${tail}` }
+      return { text: REPLIES.queueExited(what, result.exitCode, tail) }
     }
     if (task !== '') {
       // The command's text lands in the transcript, which a running turn
       // scrolls past; the toast under the prompt confirms the add where the
       // person is looking. One line, so a long task is cut.
-      $.ui.toast(`cs: queued: ${cutTask(task)}`)
-      return { text: `Queued: ${task}` }
+      $.ui.toast(TOASTS.queued(task))
+      return { text: REPLIES.queued(task) }
     }
     const pending = /^Pending \((\d+)\)$/m.exec(result.stdout)
     if (pending && !(await queueRunning($))) void offerToStart($, bin, Number(pending[1]))
@@ -421,11 +486,11 @@ export function register(on: On, options: PluginOptions) {
     else if (asked === 'first') target = 0
     else if (asked === 'last') target = count - 1
     else if (/^\d+$/.test(asked)) target = Number(asked) - 1
-    else return { text: 'usage: /cs next|prev|first|last|<n>' }
-    if (count === 0) return { text: 'cs: the rail has no prompts' }
-    if (asked === 'next' && target >= count) return { text: 'cs: no prompt after this one' }
-    if (asked === 'prev' && target < 0) return { text: 'cs: no prompt before this one' }
-    if (target < 0 || target >= count) return { text: `cs: the rail has ${count} ${count === 1 ? 'prompt' : 'prompts'}` }
+    else return { text: REPLIES.csUsage }
+    if (count === 0) return { text: REPLIES.railEmpty }
+    if (asked === 'next' && target >= count) return { text: REPLIES.noneAfter }
+    if (asked === 'prev' && target < 0) return { text: REPLIES.noneBefore }
+    if (target < 0 || target >= count) return { text: REPLIES.railCount(count) }
     await jumpTo($, target)
     return {}
   })
@@ -565,7 +630,7 @@ export function register(on: On, options: PluginOptions) {
     let railing = !e.props.hasSurvey && prompts.length > 1 && bandOptions?.prompts === true
     if (bandProblem !== undefined && !bandProblemSaid && (await ownsRotation($))) {
       bandProblemSaid = true
-      $.ui.toast(`cs: the band draws no prompt bars: ${bandProblem}. Set it in /config.`)
+      $.ui.toast(TOASTS.bandOption(bandProblem))
     }
     // The features word takes the left, before any key word; a running gate
     // already names the feature it lands.
@@ -911,7 +976,7 @@ export function featuresWordOf(records: FeatureRecord[]): FeaturesWord | undefin
 // The hooks do not wait on cs: a base's readiness walks git for every
 // feature (1.4 s measured for one), so the band redraws when it answers.
 function readFeaturesLater($: EngineInterface) {
-  refreshFeatures($).catch(err => $.ui.log(`cs: the features word could not be read: ${String(err instanceof Error ? err.message : err)}`))
+  refreshFeatures($).catch(err => $.ui.log(LOGS.featuresUnread(String(err instanceof Error ? err.message : err))))
 }
 
 // Asks cs for the session's features and redraws the band when the word
@@ -950,14 +1015,14 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
     const result = await $.process.run([bin, base, '-features', '--porcelain'], { timeoutMs: FEATURES_TIMEOUT_MS })
     const parsed = result.exitCode === 0 ? parseFeatures(result.stdout) : undefined
     if (parsed === undefined) {
-      complaint = `cs ${base} -features exited ${result.exitCode}: ${result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? ''}`
+      complaint = LOGS.featuresExited(base, result.exitCode, result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? '')
     } else if ('unreadable' in parsed) {
-      complaint = `cs ${base} -features gave a record the band cannot read: ${parsed.unreadable}`
+      complaint = LOGS.featuresUnreadable(base, parsed.unreadable)
     } else {
       word = featuresWordOf(parsed)
     }
   } catch (err) {
-    complaint = `cs ${base} -features did not answer: ${String(err instanceof Error ? err.message : err)}`
+    complaint = LOGS.featuresNoAnswer(base, String(err instanceof Error ? err.message : err))
   }
   if (complaint !== undefined && complaint !== featuresComplaint) $.ui.log(complaint)
   featuresComplaint = complaint
@@ -1091,11 +1156,11 @@ async function jumpTo($: EngineInterface, i: number) {
     return
   }
   if (id === undefined && /nothing drawn/.test(result.deny)) {
-    if (!notYetSaid) { notYetSaid = true; $.ui.toast('cs: that prompt is not on screen yet') }
+    if (!notYetSaid) { notYetSaid = true; $.ui.toast(TOASTS.promptNotDrawn) }
     return
   }
   if (!denied.has(p.uuid)) { denied.add(p.uuid); $.ui.invalidate('ui.render') }
-  if (!denySaid) { denySaid = true; $.ui.toast(`cs: ${result.deny}`) }
+  if (!denySaid) { denySaid = true; $.ui.toast(TOASTS.scrollRefused(result.deny)) }
 }
 
 // Reads the transcript again when it moved and redraws the band when the
@@ -1119,12 +1184,12 @@ async function refreshRail($: EngineInterface) {
       // Past what one read may copy, the newest READ_CAP bytes; the cut's
       // partial first line is dropped by the parser.
       text = (await $.process.run(['tail', '-c', String(READ_CAP), path])).stdout
-      if (!tailSaid) { tailSaid = true; $.ui.toast(`cs: the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`) }
+      if (!tailSaid) { tailSaid = true; $.ui.toast(TOASTS.transcriptTail()) }
     } else {
       text = await $.fs.read(path)
     }
   } catch (err) {
-    $.ui.log(`cs: the transcript could not be read: ${String(err instanceof Error ? err.message : err)}`)
+    $.ui.log(LOGS.transcriptUnread(String(err instanceof Error ? err.message : err)))
     return
   }
   railFile = { path, size, mtimeMs }
@@ -1232,7 +1297,7 @@ async function noteConversation($: EngineInterface, id: string): Promise<boolean
     const color = await sessionColor($)
     if (color !== undefined && Object.hasOwn(SESSION_PALETTE, color)) {
       $.command.run({ command: 'color', args: color }).catch(err => {
-        $.ui.log(`cs: /color ${color} did not run: ${String(err).replace(/[\r\n]+/g, ' ')}`)
+        $.ui.log(LOGS.colorFailed(color, String(err).replace(/[\r\n]+/g, ' ')))
       })
     }
   }
@@ -1255,7 +1320,7 @@ async function forceRotation($: EngineInterface) {
     birth = undefined
     startPercent = context.percent
     if (startPercent !== undefined && startPercent >= force) {
-      $.ui.toast(`cs: CS_ROTATE_FORCE_CTX=${force} is below this conversation's starting context (${startPercent}%); not forcing a rotation`)
+      $.ui.toast(TOASTS.forceBelowStart(force, startPercent))
     }
   }
   if (await handoffArmed($)) {
@@ -1270,7 +1335,7 @@ async function forceRotation($: EngineInterface) {
   if ((await $.fs.exists(forced)) && (await $.fs.read(forced)).trim() === id) return
   await $.fs.write(forced, `${id}\n`)
   $.clock.after(0, () => {
-    rotate($).catch(err => $.ui.toast(`cs: /rotate did not run: ${String(err)}`))
+    rotate($).catch(err => $.ui.toast(TOASTS.rotateFailed(String(err))))
   })
 }
 
@@ -1297,7 +1362,7 @@ function startCountdown($: EngineInterface) {
     const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($)) && (await sessionVetted($, await $.session.cwd()))
     if (left !== 0) return
     stopCountdown($)
-    if (idle) await clearAndContinue($).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
+    if (idle) await clearAndContinue($).catch(err => $.ui.toast(TOASTS.clearFailed(String(err))))
   })
 }
 
@@ -1318,7 +1383,7 @@ async function toastNextStep($: EngineInterface) {
   if (text === undefined || text === stepToastedFor || ticker === undefined) return
   stepToastedFor = text
   const line = nextStepLine(text)
-  if (line !== undefined) $.ui.toast(`cs: next step: ${line}`)
+  if (line !== undefined) $.ui.toast(TOASTS.nextStep(line))
 }
 
 // How much of the next step the toast carries: one line, cut past this.
@@ -1430,7 +1495,7 @@ async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> 
       refusal = `cs -vet-session did not run: ${String(err instanceof Error ? err.message : err)}`
     }
   }
-  if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(`cs: no rotation in this session: ${refusal}`)
+  if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(TOASTS.noRotation(refusal))
   lastRefusal = refusal
   feedVetRefused = refusal !== undefined
   return refusal === undefined
@@ -1484,7 +1549,7 @@ async function readFeed($: EngineInterface): Promise<boolean> {
     return text === 'on\n'
   } catch (err) {
     const message = String(err instanceof Error ? err.message : err)
-    if (!message.endsWith(' failed: ENOENT')) complaint = `cs: the feed setting could not be read: ${message}`
+    if (!message.endsWith(' failed: ENOENT')) complaint = LOGS.feedUnread(message)
   }
   if (complaint !== undefined && complaint !== feedComplaint) $.ui.log(complaint)
   feedComplaint = complaint
@@ -1500,7 +1565,7 @@ async function pressFeed($: EngineInterface) {
       const on = !(await readFeed($))
       await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
     } catch (err) {
-      $.ui.toast(`cs: feed update failed: ${String(err instanceof Error ? err.message : err)}`)
+      $.ui.toast(TOASTS.feedFailed(String(err instanceof Error ? err.message : err)))
     } finally {
       $.ui.invalidate('ui.render')
     }
@@ -1625,7 +1690,7 @@ async function pressFinish($: EngineInterface, task: string) {
   if (featuresWord !== undefined) featuresWord = { label: featuresWord.label }
   $.ui.invalidate('ui.render')
   await $.command.run({ command: 'finish', args: task }).catch(err => {
-    $.ui.toast(`cs: /finish${task === '' ? '' : ` ${task}`} did not run: ${String(err instanceof Error ? err.message : err)}`)
+    $.ui.toast(TOASTS.finishFailed(task, String(err instanceof Error ? err.message : err)))
   })
 }
 
@@ -1666,7 +1731,7 @@ async function clearPressed($: EngineInterface) {
   if (marker === '' || marker !== (await $.session.id())) return
   if (!(await sessionVetted($, cwd))) return
   await $.fs.write(`${cwd}/${PRESSED}`, '')
-    .catch(err => $.ui.toast(`cs: could not empty ${PRESSED}: ${String(err)}`))
+    .catch(err => $.ui.toast(TOASTS.pressedNotEmptied(String(err))))
 }
 
 // /wrap's last pass writes WRAPPED naming the conversation it ran in
@@ -1701,7 +1766,7 @@ async function readWrapped($: EngineInterface): Promise<string> {
 async function askToWrap($: EngineInterface) {
   let answer: string
   try {
-    answer = await $.ui.ask(WRAP_QUESTION, { header: 'Wrap', options: [WRAP_YES, 'Not now'] })
+    answer = await $.ui.ask(ASKS.wrap.question, { header: ASKS.wrap.header, options: ASKS.wrap.options })
   } catch {
     return // dismissed, or a `-p` run with nobody to ask
   }
@@ -1709,7 +1774,7 @@ async function askToWrap($: EngineInterface) {
   try {
     await $.command.run({ command: 'wrap', args: '' })
   } catch (err) {
-    $.ui.toast(`cs: /wrap did not run: ${String(err)}`)
+    $.ui.toast(TOASTS.wrapFailed(String(err)))
   }
 }
 
@@ -1779,7 +1844,7 @@ async function idleQueueLength($: EngineInterface): Promise<number> {
 async function pressQueueStart($: EngineInterface) {
   const bin = await $.env.get("CS_BIN")
   if (!bin) {
-    $.ui.toast('cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session')
+    $.ui.toast(TOASTS.queueNoBin)
     return
   }
   const count = await idleQueueLength($)
@@ -1796,21 +1861,22 @@ async function pressQueueStart($: EngineInterface) {
 async function offerToStart($: EngineInterface, bin: string, count: number) {
   let answer: string
   try {
-    answer = await $.ui.ask(`Start the ${count} queued ${count === 1 ? 'task' : 'tasks'} now?`, { header: 'Queue', options: [QUEUE_START, 'Not yet', QUEUE_COMPACT] })
+    const start = ASKS.queueStart(count)
+    answer = await $.ui.ask(start.question, { header: start.header, options: start.options })
   } catch {
     return // dismissed, or a `-p` run with nobody to ask
   }
   if (answer !== QUEUE_START && answer !== QUEUE_COMPACT) return
   let how: string
   try {
-    how = await $.ui.ask(QUEUE_MODE_QUESTION, { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] })
+    how = await $.ui.ask(ASKS.queueMode.question, { header: ASKS.queueMode.header, options: ASKS.queueMode.options })
   } catch {
     return
   }
   const mode = QUEUE_MODE_WORDS[how]
   if (mode === undefined) {
     // Free text typed under "Other" names no mode cs knows.
-    $.ui.toast(`cs: '${how}' is not a way to run the queue; it is not started`)
+    $.ui.toast(TOASTS.queueModeUnknown(how))
     return
   }
   if (answer === QUEUE_COMPACT) {
@@ -1822,7 +1888,7 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
       reason = String(err instanceof Error ? err.message : err)
     }
     if (reason !== undefined) {
-      $.ui.toast(`cs: the conversation was not compacted (${reason}); the queue is not started`)
+      $.ui.toast(TOASTS.notCompacted(reason))
       return
     }
   }
@@ -1830,19 +1896,19 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
   try {
     result = await $.process.run([bin, '-queue', 'start', ...mode])
   } catch (err) {
-    $.ui.toast(`cs: cs -queue start did not run: ${String(err instanceof Error ? err.message : err)}`)
+    $.ui.toast(TOASTS.queueStartFailed(String(err instanceof Error ? err.message : err)))
     return
   }
   if (result.exitCode !== 0) {
     const tail = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? ''
-    $.ui.toast(`cs: cs -queue start exited ${result.exitCode}${tail === '' ? '' : `: ${tail}`}`)
+    $.ui.toast(TOASTS.queueStartExited(result.exitCode, tail))
     return
   }
   if (turnRunning) return
   try {
     await $.prompt.submit({ text: QUEUE_KICK })
   } catch (err) {
-    $.ui.toast(`cs: the queue is armed, but its first turn did not start: ${String(err instanceof Error ? err.message : err)}`)
+    $.ui.toast(TOASTS.queueKickFailed(String(err instanceof Error ? err.message : err)))
   }
 }
 
@@ -1944,7 +2010,7 @@ async function readFinish($: EngineInterface): Promise<FinishRecord | undefined>
       continue // absent, or behind a locked vault
     }
     const record = parseFinish(text)
-    if (record === undefined) finishProblem($, `.cs/${dir}/${FINISH_RECORD} is not a record cs wrote; /finish progress is not shown`)
+    if (record === undefined) finishProblem($, TOASTS.finishRecordUnread(dir))
     return record
   }
   return undefined
@@ -1979,15 +2045,15 @@ async function pidAlive($: EngineInterface, pid: number): Promise<boolean> {
   try {
     return (await $.process.run(['kill', '-0', String(pid)])).exitCode === 0
   } catch (err) {
-    finishProblem($, `cannot tell whether /finish is still running: ${String(err instanceof Error ? err.message : err)}`)
+    finishProblem($, TOASTS.finishPidUnknown(String(err instanceof Error ? err.message : err)))
     return false
   }
 }
 
-function finishProblem($: EngineInterface, text: string) {
+function finishProblem($: EngineInterface, toast: string) {
   if (finishProblemShown) return
   finishProblemShown = true
-  $.ui.toast(`cs: ${text}`)
+  $.ui.toast(toast)
 }
 
 // The time since a gate started, as the band shows it: 42s, 1m 05s.

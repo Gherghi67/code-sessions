@@ -3732,3 +3732,69 @@ test('feed presses use the local directory even when private storage exists', as
   expect(written).toEqual({ '/work/.cs/local/feed': 'off\n' })
   expect(ran).toEqual([])
 })
+
+// ---------------------------------------------------------------------------
+// The lines the mod hands the engine on paths the tests above do not walk:
+// a toast, a transcript notice and a /cs reply each, in their exact words.
+
+test('a transcript past 4 MiB is read by its tail, and a toast says the rail lists only its prompts', async () => {
+  transcript(LINEAR)
+  files[TRANSCRIPT] += ' '.repeat(4 * 1024 * 1024)
+  runResult = { exitCode: 0, stdout: `${LINEAR.join('\n')}\n`, stderr: '' }
+  await turnComplete({ reason: 'aborted' })
+  expect(runs.map(r => r.argv[0])).toEqual(['tail'])
+  expect(toasts).toEqual(['cs: the transcript is over 4 MiB; the rail lists the prompts of its tail'])
+})
+
+test('a transcript that cannot be read is logged with the reason', async () => {
+  transcript(LINEAR)
+  const read = $.fs.read
+  $.fs.read = async (path: string) => { if (path === TRANSCRIPT) throw new Error('EACCES'); return read(path) }
+  try {
+    await turnComplete({ reason: 'aborted' })
+  } finally {
+    $.fs.read = read
+  }
+  expect(logs).toEqual(['cs: the transcript could not be read: EACCES'])
+})
+
+test('a features reading that fails before cs is asked is logged with the reason', async () => {
+  featureDir('fix-auth')
+  const every = $.clock.every
+  $.clock.every = () => { throw new Error('clock refused') }
+  try {
+    await featuresTurn()
+  } finally {
+    $.clock.every = every
+  }
+  expect(featureRuns()).toEqual([])
+  expect(logs).toEqual(['cs: the features word could not be read: clock refused'])
+})
+
+test('/cs next on the last prompt says there is none after it', async () => {
+  transcript(LINEAR)
+  await turnComplete()
+  expect(await cs('next')).toEqual({ text: 'cs: no prompt after this one' })
+})
+
+test('a /finish record cs did not write is toasted once, and the watch shows no progress', async () => {
+  await startFinish()
+  files[RECORD] = '{"id": 1'
+  await watchTick()
+  await watchTick()
+  expect(toasts).toEqual(['cs: .cs/local/finish-progress.json is not a record cs wrote; /finish progress is not shown'])
+})
+
+test('a /finish whose pid cannot be checked is toasted once and counts as over', async () => {
+  await startFinish()
+  record(running('merging'))
+  const run = $.process.run
+  $.process.run = async (argv: string[], init: any) => { if (argv[0] === 'kill') throw new Error('spawn EPERM'); return run(argv, init) }
+  try {
+    await watchTick()
+    await watchTick()
+  } finally {
+    $.process.run = run
+  }
+  expect(toasts).toEqual(['cs: finishing fix-auth', 'cs: cannot tell whether /finish is still running: spawn EPERM'])
+})

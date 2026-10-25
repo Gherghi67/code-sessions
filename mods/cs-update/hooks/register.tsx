@@ -31,6 +31,24 @@ export const NOTES = (home: string, version: string) => `${home}/.cache/cs/updat
 export const UPDATE_TIMEOUT_MS = 600000
 const VET_TIMEOUT_MS = 10000
 
+// Every line the mod hands the engine to draw on a surface of the engine's
+// own: its toasts, /cs-update's replies and its slash menu row, so the design
+// lab draws each from these words.
+export const TOASTS = {
+  declined: (version: string) => `cs ${version} is available · run cs -update to install it, or /cs-update for the notes`,
+  notRecorded: (err: string) => `cs-update: could not record the finished update: ${err}`,
+} as const
+
+export const REPLIES = {
+  notLead: 'The release-notes pane belongs to the conversation cs launched.',
+  nothingPending: 'This launch found no newer cs; the check runs again at the next launch.',
+  notesOpen: 'Release notes are in the side pane.',
+} as const
+
+export const COMMANDS = {
+  'cs-update': { name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' },
+} as const
+
 export type Section = { version: string; lines: string[] }
 
 // Links, bold and inline code, as _md_strip_inline strips them in bash: the
@@ -86,7 +104,7 @@ export function register(on: On, options: PluginOptions) {
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
-      await $.command.register({ name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' })
+      await $.command.register(COMMANDS['cs-update'])
     }
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await mayWriteControlFiles($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
@@ -99,7 +117,7 @@ export function register(on: On, options: PluginOptions) {
         const declined = await $.env.get('CS_UPDATE_DECLINED')
         if (pending && declined === pending) {
           shown = true
-          $.ui.toast(`cs ${pending} is available · run cs -update to install it, or /cs-update for the notes`)
+          $.ui.toast(TOASTS.declined(pending))
         } else if (pending) { shown = true; await openPane($, e.cwd, pending) }
       }
     }
@@ -133,17 +151,17 @@ export function register(on: On, options: PluginOptions) {
   // refuses it.
   on('command.run', { command: 'cs-update' }, async ($, e) => {
     const cwd = await $.session.cwd()
-    if (!(await isLead($, cwd))) return { text: 'The release-notes pane belongs to the conversation cs launched.' }
+    if (!(await isLead($, cwd))) return { text: REPLIES.notLead }
     const pending = await $.env.get('CS_UPDATE_AVAILABLE')
-    if (!pending) return { text: 'This launch found no newer cs; the check runs again at the next launch.' }
+    if (!pending) return { text: REPLIES.nothingPending }
     // After a reload (which drops the module state, and fires no
     // session.start) a pane dismissed before the update installed leaves
     // nothing open for the render path to restore, so the command asks the
     // marker itself before it offers an install that already finished.
-    if (version === undefined && (await restoreDone($, cwd))) return { text: 'Release notes are in the side pane.' }
+    if (version === undefined && (await restoreDone($, cwd))) return { text: REPLIES.notesOpen }
     shown = true
     await openPane($, cwd, pending)
-    return { text: 'Release notes are in the side pane.' }
+    return { text: REPLIES.notesOpen }
   })
 }
 
@@ -355,7 +373,7 @@ async function runUpdate($: EngineInterface) {
         const cwd = await $.session.cwd()
         if (await mayWriteControlFiles($, cwd)) await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
       } catch (err) {
-        $.ui.toast(`cs-update: could not record the finished update: ${String(err instanceof Error ? err.message : err)}`)
+        $.ui.toast(TOASTS.notRecorded(String(err instanceof Error ? err.message : err)))
       }
     } else {
       const tail = stderr.split('\n').filter(l => l.trim() !== '').slice(-5).join('\n')

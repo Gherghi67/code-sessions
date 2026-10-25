@@ -113,6 +113,24 @@ test('a torn feed-view leaves the feed on with the default view, logs once, and 
   await later.unmount()
 })
 
+test('a feed-view that cannot be read for a reason other than its absence is logged with its path, and the default view draws', async ($, on) => {
+  const logs: string[] = []
+  on('session.cwd', () => ({ value: '/session' }))
+  on('fs.read', ($, e) => e.path.endsWith('/feed') ? { value: 'on\n' } : e.path.endsWith('/feed-view') ? { deny: 'EACCES: permission denied' } : { deny: 'ENOENT: no such file or directory' })
+  on('env.get', { name: 'CS_BIN' }, () => ({ value: '/bin/cs' }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  mock.clock(on)
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: `hint:${e.props.hint}` }))
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'first', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
+  expect(logs).toEqual(['could not read /session/.cs/local/feed-view: cs-feed: $.fs.read: EACCES: permission denied'])
+  expect(await $.command.run(STATUS)).toEqual({ text: 'on · clean' })
+  await row.unmount()
+})
+
 test('feed status reads a hand edit and vets an outside flip on only once', async ($, on) => {
   let file = 'off\n'
   let vets = 0

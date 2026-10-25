@@ -254,6 +254,18 @@ test('a pulse write that fails stops the pulse with one log line, and the next p
   await second.unmount()
 })
 
+test('a tick write that fails stops the clock with one log line', async ($, on) => {
+  const clock = feedOn(on, [], () => [{ id: 'reader', type: 'Explore', description: 'Read the notes', status: 'running' }])
+  const logs: string[] = []
+  on('state.set', async ($, e, next) => e.key === 'tick' ? { deny: 'tick refused' } : next(e))
+  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'ToolProgress' }, ($, e) => $.ui.resolve(e).Text({ children: e.props.hint }))
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolProgress', requestId: 'first', props: { tool_use_id: 'call', kind: 'background_hint', hint: 'ctrl+b' } })
+  await clock.advance(3000)
+  expect(logs).toEqual(['clock stopped: cs-feed: $.state.set: tick refused'])
+  await row.unmount()
+})
+
 for (const key of ['live', 'tick'] as const) test(`a ${key} bump whose token read is in flight when the feed goes off writes nothing`, async ($, on) => {
   let file = 'on\n'
   let hold: string | undefined
