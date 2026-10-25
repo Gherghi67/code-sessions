@@ -24,7 +24,7 @@
   }
 
   var chars = function (s) { return Array.from(String(s)); };
-  function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path }; }); }
+  function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path, ink: true }; }); }
   function blanks(n, st, path) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY, path: path }); return out; }
 
   // Break `cells` into rows no wider than `room`, by the Text wrap mode. A
@@ -197,10 +197,11 @@
     if (p.display === "none") return grid([]);
     var m = margins(p), pd = pads(p);
     var border = p.borderStyle && BORDERS[p.borderStyle] ? p.borderStyle : "";
+    var edge = border ? 1 : 0;
     var edgeSt = { color: p.borderColor || "", bg: "", bold: false, dim: !!p.borderDimColor, italic: false, underline: false, strikethrough: false, inverse: false };
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
 
-    var chrome = (border ? 2 : 0) + pd.l + pd.r;
+    var chrome = 2 * edge + pd.l + pd.r;
     var outer = typeof p.width === "number" ? p.width : 0;
     // Room the children get: an explicit width fixes it, else what is left of
     // the band after this Box's own margins and chrome.
@@ -229,40 +230,61 @@
       blocks.forEach(function (b) { if (b.node.type === "Box" && typeof (b.node.props || {}).width !== "number") b.g = layout(b.node, colWidth, b.at, true); });
     }
 
-    var body = column ? stackColumn(blocks, inner, gap, p, outer, path, least) : stackRow(blocks, inner, gap, p, outer, path, least);
+    var body = column ? placeColumn(blocks, inner, gap, p, outer, least) : placeRow(blocks, inner, gap, p, outer, least);
 
-    // Height: an explicit height pads or (with overflow hidden) clips the body.
-    var bodyRows = body.rows;
     // An explicit width holds the content open even when nothing in the flow fills it.
     var w = outer ? Math.max(inner, body.w) : body.w;
+    // Height: an explicit height pads or (with overflow hidden) clips the body.
+    var h = body.h;
     if (typeof p.height === "number") {
-      var room = Math.max(0, p.height - (border ? 2 : 0) - pd.t - pd.b);
-      if (bodyRows.length > room && p.overflow === "hidden") bodyRows = bodyRows.slice(0, room);
-      while (bodyRows.length < room) bodyRows.push(blanks(w, EMPTY, path));
+      var room = Math.max(0, p.height - 2 * edge - pd.t - pd.b);
+      h = body.h > room && p.overflow === "hidden" ? room : Math.max(room, body.h);
     }
 
+    // The Box's own cells: its margins, then its border, then the padding and
+    // body its background fills; its children are painted over them in the
+    // order the mod wrote them. The body is cut at the width an explicit
+    // width gives it and at the height overflow hidden keeps.
+    var x0 = m.l + edge + pd.l, y0 = m.t + edge + pd.t;
+    var iw = w + pd.l + pd.r, ih = h + pd.t + pd.b;
+    var W = m.l + 2 * edge + iw + m.r, H = m.t + 2 * edge + ih + m.b;
+    if (!H) return { w: outer ? outer + m.l + m.r : 0, h: 0, rows: [] };
+    var canvas = [];
+    for (var y = 0; y < H; y++) {
+      var inside = y >= m.t + edge && y < m.t + edge + ih;
+      canvas.push(blanks(m.l + edge, EMPTY, path).concat(blanks(iw, inside ? fillSt : EMPTY, path), blanks(edge + m.r, EMPTY, path)));
+    }
+    if (border) {
+      var g = BORDERS[border];
+      canvas[m.t] = blanks(m.l, EMPTY, path).concat(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt, path), blanks(m.r, EMPTY, path));
+      canvas[m.t + 1 + ih] = blanks(m.l, EMPTY, path).concat(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path), blanks(m.r, EMPTY, path));
+      for (var r = m.t + 1; r <= m.t + ih; r++) { canvas[r][m.l] = { ch: g.l, st: edgeSt, path: path, ink: true }; canvas[r][m.l + 1 + iw] = { ch: g.r, st: edgeSt, path: path, ink: true }; }
+    }
+    var cut = { right: outer ? x0 + inner : Infinity, bottom: y0 + h };
+    body.spots.forEach(function (s) { paint(canvas, s.g, x0 + s.x, y0 + s.y, cut); });
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
-    if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w, EMPTY, path), p.backgroundColor); });
-    var rows = bodyRows.map(function (r) { return blanks(pd.l, fillSt, path).concat(padRow(r, w, fillSt, path), blanks(pd.r, fillSt, path)); });
-    for (var i = 0; i < pd.t; i++) rows.unshift(blanks(w + pd.l + pd.r, fillSt, path));
-    for (var j = 0; j < pd.b; j++) rows.push(blanks(w + pd.l + pd.r, fillSt, path));
-
-    if (border) {
-      var g = BORDERS[border], iw = w + pd.l + pd.r;
-      rows = rows.map(function (r) { return [{ ch: g.l, st: edgeSt, path: path }].concat(r, [{ ch: g.r, st: edgeSt, path: path }]); });
-      rows.unshift(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt, path));
-      rows.push(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path));
+    if (p.backgroundColor) for (var by = m.t + edge; by < m.t + edge + ih; by++) {
+      canvas[by] = canvas[by].slice(0, m.l + edge).concat(underpaint(canvas[by].slice(m.l + edge, m.l + edge + iw), p.backgroundColor), canvas[by].slice(m.l + edge + iw));
     }
+    return { w: W, h: H, rows: canvas };
+  }
 
-    if (m.l || m.r) rows = rows.map(function (r) { return blanks(m.l, EMPTY, path).concat(r, blanks(m.r, EMPTY, path)); });
-    var mw = rows.length ? rows[0].length : 0;
-    for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw, EMPTY, path));
-    for (var b = 0; b < m.b; b++) rows.push(blanks(mw, EMPTY, path));
-    var out = grid(rows);
-    // A Box with no rows still takes its explicit width, as Yoga sizes it.
-    if (!rows.length && outer) out.w = outer + m.l + m.r;
-    return out;
+  // A cell a node drew (text, a border, a background) always lands; a cell a
+  // Box only keeps room with (padding, gaps, margins, slack) lands only where
+  // nothing has been drawn, so a later sibling's room never erases what an
+  // earlier one drew past its own cells.
+  function inked(c) { return !!(c.ink || (c.st && c.st.bg)); }
+  function paint(canvas, g, x, y, cut) {
+    g.rows.forEach(function (r, dy) {
+      var row = canvas[y + dy];
+      if (!row || y + dy >= cut.bottom) return;
+      r.forEach(function (c, dx) {
+        var at = x + dx;
+        if (at >= cut.right) return;
+        if (at >= row.length || inked(c) || !inked(row[at])) row[at] = c;
+      });
+    });
   }
 
   function underpaint(row, bg) {
@@ -270,7 +292,7 @@
       if (c.st && c.st.bg) return c;
       var st = {}; for (var k in (c.st || EMPTY)) st[k] = (c.st || EMPTY)[k];
       st.bg = bg;
-      return { ch: c.ch, st: st, path: c.path };
+      return { ch: c.ch, st: st, path: c.path, ink: c.ink };
     });
   }
 
@@ -288,17 +310,14 @@
     return { lead: 0, between: 0, tail: free };
   }
 
-  function alignRow(g, h, align, st, path) {
-    if (g.h >= h) return g;
-    var slack = h - g.h, rows = g.rows.slice();
-    var top = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-    for (var i = 0; i < top; i++) rows.unshift(blanks(g.w, st, path));
-    while (rows.length < h) rows.push(blanks(g.w, st, path));
-    return grid(rows);
+  // Where a child of `size` cells sits in `room` cells by an align value.
+  function alignAt(align, size, room) {
+    var slack = Math.max(0, room - size);
+    return align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
   }
 
-  function stackRow(blocks, inner, gap, p, outer, path, least) {
-    var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
+  // Each child's place in a row Box's body, and the body's size.
+  function placeRow(blocks, inner, gap, p, outer, least) {
     var h = blocks.reduce(function (a, b) { return Math.max(a, b.g.h); }, 0) || (blocks.length ? 1 : 0);
     var content = blocks.reduce(function (a, b) { return a + b.g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
     var room = outer ? inner : Math.max(least, content);
@@ -315,33 +334,26 @@
     }
     var s = spread(p.justifyContent, free, blocks.length);
 
-    var rows = [];
-    for (var y = 0; y < h; y++) {
-      var row = blanks(s.lead, fillSt, path);
-      blocks.forEach(function (b, i) {
-        if (i) row = row.concat(blanks(gap + s.between, fillSt, path));
-        var a = alignRow(b.g, h, p.alignItems, fillSt, path);
-        row = row.concat(a.rows[y] || blanks(b.g.w, fillSt, path), blanks(extra[i], fillSt, path));
-      });
-      rows.push(row);
-    }
-    var w = outer ? inner : Math.max(room, rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0));
-    return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt, path) : padRow(r, w, fillSt, path); }));
+    var x = s.lead, spots = [];
+    blocks.forEach(function (b, i) {
+      if (i) x += gap + s.between;
+      spots.push({ g: b.g, x: x, y: alignAt(p.alignItems, b.g.h, h) });
+      x += b.g.w + extra[i];
+    });
+    return { w: outer ? inner : Math.max(room, x), h: h, spots: spots };
   }
 
-  function stackColumn(blocks, inner, gap, p, outer, path, least) {
-    var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
+  // Each child's place in a column Box's body, and the body's size.
+  function placeColumn(blocks, inner, gap, p, outer, least) {
     var natural = blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
     var w = outer ? inner : Math.max(least, natural);
-    var rows = [];
+    var y = 0, spots = [];
     blocks.forEach(function (b, i) {
-      if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt, path));
-      var slack = Math.max(0, w - b.g.w);
-      var align = p.alignItems;
-      var lead = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-      b.g.rows.forEach(function (r) { rows.push(padRow(blanks(lead, fillSt, path).concat(r), w, fillSt, path)); });
+      if (i) y += gap;
+      spots.push({ g: b.g, x: alignAt(p.alignItems, b.g.w, w), y: y });
+      y += b.g.h;
     });
-    return grid(rows);
+    return { w: w, h: y, spots: spots };
   }
 
   // Plain text of each row, for tests and for the copy-as-text button.
