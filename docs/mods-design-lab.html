@@ -1405,7 +1405,7 @@ function bdFrameCard(f){
   return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
-    +`<span class="quiet"><label class="inline" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export" data-act="export"${doc.exportFrame===f.id?" checked":""}> export</label>`
+    +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +`<div class="strip"><div class="term">${bdPaint(g)}\n<span class="rule">${"─".repeat(Math.min(c,100))}</span>\n<span class="prompt">❯ </span></div></div>`
