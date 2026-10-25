@@ -683,6 +683,56 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
                 counts.append(db.execute("SELECT count(*) FROM threads").fetchone()[0])
         self.assertEqual(sorted(counts), [0, 1])
 
+    def test_existing_database_and_live_wal_files_are_private_before_import(self):
+        src = self.database(self.profile, [("private", "/private/rollout", "private")])
+        src.chmod(0o600)
+        dst = self.database(self.home, [("normal", "/normal/rollout", "normal")])
+        dst.parent.chmod(0o755)
+        previous = os.umask(0o022)
+        try:
+            with closing(sqlite3.connect(dst)) as native:
+                native.execute("PRAGMA journal_mode=WAL")
+                with native:
+                    native.execute("INSERT INTO threads VALUES('live','/live/rollout','live')")
+                paths = [dst, Path(str(dst) + "-wal"), Path(str(dst) + "-shm")]
+                for path in paths:
+                    self.assertTrue(path.exists())
+                    path.chmod(0o644)
+                self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+                for path in paths:
+                    with self.subTest(file=path.name):
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(native.execute("SELECT id FROM threads ORDER BY id").fetchall(),
+                                 [("live",), ("normal",), ("private",)])
+        finally:
+            os.umask(previous)
+        self.assertEqual(dst.parent.stat().st_mode & 0o777, 0o755)
+
+    def test_database_apply_secures_existing_file_even_with_no_missing_threads(self):
+        src = self.database(self.profile, [("same", "/old/rollout", "old")])
+        dst = self.database(self.home, [("same", "/normal/rollout", "normal")])
+        dst.chmod(0o644)
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 0)
+        self.assertEqual(dst.stat().st_mode & 0o777, 0o600)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT title FROM threads").fetchone()[0], "normal")
+
+    def test_database_dry_run_preserves_existing_database_and_wal_permissions(self):
+        src = self.database(self.profile, [("private", "/private/rollout", "private")])
+        dst = self.database(self.home, [("normal", "/normal/rollout", "normal")])
+        with closing(sqlite3.connect(dst)) as native:
+            native.execute("PRAGMA journal_mode=WAL")
+            with native:
+                native.execute("INSERT INTO threads VALUES('live','/live/rollout','live')")
+            paths = [dst, Path(str(dst) + "-wal"), Path(str(dst) + "-shm")]
+            for path in paths:
+                path.chmod(0o644)
+            self.assertEqual(migration.merge_threads(src, dst, self.home, False, None), 1)
+            for path in paths:
+                with self.subTest(file=path.name):
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(native.execute("SELECT count(*) FROM threads").fetchone()[0], 2)
+
     def test_competing_database_already_containing_the_thread_imports_zero_records(self):
         src = self.database(self.profile, [("same", "/old/rollout", "old")])
         dst = self.home / ".codex/state_5.sqlite"

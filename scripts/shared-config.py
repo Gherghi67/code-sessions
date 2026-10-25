@@ -441,6 +441,25 @@ def backup_thread_database(target, backup_dir):
         raise
 
 
+def secure_thread_database(target):
+    # Existing installations may have inherited public modes from an earlier
+    # import. Secure their actual inodes before any private metadata is written.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        path = Path(str(target) + suffix)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            if not suffix:
+                raise
+            continue
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ValueError(f"Refusing non-regular Codex database file: {path}")
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+
+
 def merge_thread_records(source, target, src, dst, incoming, schemas):
     columns = schemas["threads"][0]
     threads = [row for row in database_rows(src, "threads", columns) if row["id"] in incoming]
@@ -527,6 +546,8 @@ def merge_threads(source, target, home, apply, backup_dir):
         dst.execute("PRAGMA foreign_keys=ON")
         with dst:
             dst.execute("BEGIN IMMEDIATE" if apply else "BEGIN")
+            if apply:
+                secure_thread_database(target)
             incoming = {r[0] for r in src.execute("SELECT id FROM threads")} - {r[0] for r in dst.execute("SELECT id FROM threads")}
             if not apply or not incoming:
                 return len(incoming)
