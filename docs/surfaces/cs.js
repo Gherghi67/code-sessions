@@ -363,6 +363,17 @@
       throw new Error("cs fixture: featuresWordOf drew no word for " + JSON.stringify(records));
     return { label: w.label, pressable: pressable && w.finish !== undefined };
   };
+  var ONE_FEATURE = [
+    ["ready", feature("ready")],
+    ["no-commits", feature("ready", 0)],
+    ["staged", feature("staged")],
+    ["locked", feature("locked")],
+    ["dirty", feature("dirty")],
+    ["untracked", feature("untracked")],
+    ["vault-locked", feature("vault-locked")],
+    ["base-dirty", feature("base-dirty")],
+    ["merged", feature("merged")]
+  ];
   var DUE = { rotating: true, wrapping: true, due: true };
   var STATES = [
     { id: "idle", name: "nothing to say", facts: facts({}) },
@@ -386,7 +397,24 @@
     }) },
     { id: "rail-few", name: "three prompts on the rail", facts: facts({ rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
     { id: "rail-many", name: "fourteen prompts, the oldest folded", facts: facts({ rail: { prompts: PROMPTS.slice(), named: 13, refused: [5] } }) },
-    { id: "no-chords", name: "context past the threshold, keybindings unbound", facts: facts({ ...DUE, chords: {} }) }
+    { id: "no-chords", name: "context past the threshold, keybindings unbound", facts: facts({ ...DUE, chords: {} }) },
+    { id: "rotate-wrapped", name: "past the threshold after /wrap ran in this conversation", facts: facts({ rotating: true, due: true }) },
+    { id: "countdown-session", name: "handoff armed, the count still in the session colour", facts: facts({ countdown: { seconds: 15 }, rotating: true, armed: true, due: true }) },
+    { id: "countdown-crit", name: "handoff armed, seconds from the /clear", facts: facts({ countdown: { seconds: 3 }, rotating: true, armed: true, due: true }) },
+    { id: "armed-with-queue", name: "handoff armed with tasks queued", facts: facts({ rotating: true, armed: true, due: true, queued: 3 }) },
+    { id: "due-midturn", name: "a turn running past the threshold, with mail", facts: facts({ due: true, mail: 2 }) },
+    { id: "queued-blocked", name: "tasks queued while a turn runs", facts: facts({ queued: 3 }) },
+    { id: "survey-gate", name: "a survey up while a /finish gate runs", facts: facts({ survey: true, gate: "finishing fix-auth · gate 1m 12s" }) },
+    { id: "features-many-ready", name: "several features ready to finish", facts: facts({ featured: word([feature("ready"), feature("ready"), feature("dirty")], true) }) },
+    ...ONE_FEATURE.map(([sid, record]) => ({ id: `features-one-${sid}`, name: sid === "ready" ? "one feature, ready to finish" : `one feature, not ready: ${sid.replace("-", " ")}`, facts: facts({ featured: word([record], true) }) })),
+    { id: "features-none-ready", name: "several features, none ready", facts: facts({ featured: word([feature("dirty"), feature("locked"), feature("staged")], true) }) },
+    { id: "features-midturn", name: "a turn running, the ready feature not pressable", facts: facts({ featured: word([feature("ready")], false) }) },
+    { id: "chords-mixed", name: "keys bound under different prefixes", facts: facts({ ...DUE, chords: { rotate: "ctrl+x 1", wrap: "ctrl+y 2" } }) },
+    { id: "chords-partial", name: "only the rotate key bound", facts: facts({ ...DUE, chords: { rotate: "ctrl+x 1" } }) },
+    { id: "rail-no-label", name: "the words leaving the rail no room to name a prompt", facts: facts({ ...DUE, feed: { on: true }, waiting: 2, rail: { prompts: PROMPTS.slice(0, 6), named: 5, refused: [] } }) },
+    { id: "rail-uncoloured", name: "the rail in a session with no colour", facts: facts({ colour: null, rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
+    { id: "rail-desktop", name: "the rail on the desktop app, no hover cards", facts: facts({ surface: "desktop", rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
+    { id: "absent-teammate", name: "in a teammate conversation while a gate runs", facts: facts({ gate: "finishing fix-auth · gate 1m 12s" }) }
   ];
   var surfaces = [{
     id: "cs.AbovePrompt",

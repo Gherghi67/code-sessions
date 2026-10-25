@@ -202,3 +202,63 @@ test('cs-update\'s pane clips a long span of notes, its keys above them', () => 
   expect(g[3]).toBe('│  1: update now   Esc: later')
   expect(g[14]).toBe('│  2026.10.23')
 })
+
+// The rest of the band's states, each read off buildBandEntries and drawBand
+// by hand at 80 cols (bodyColumns 75).
+const bandLine = (id: string) => rows(`cs.AbovePrompt/${id}`, 80)
+const ink = (id: string, col: number) => layout(state(`cs.AbovePrompt/${id}`).draw(80, 'light'), 80).rows[1][col].st
+test('cs draws the keys the hook leaves for each state', () => {
+  expect(bandLine('rotate-wrapped')[1]).toBe('  ● ctrl+x  1 rotate')
+  expect(bandLine('armed-with-queue')[1]).toBe('  ● ctrl+x  1 /clear now  ·  ▤ queue 3')
+  expect(bandLine('chords-mixed')[1]).toBe('  ● ctrl+x 1 rotate  ·  ctrl+y 2 wrap')
+  expect(bandLine('chords-partial')[1]).toBe('  ● ctrl+x  1 rotate  ·  wrap')
+  expect(bandLine('due-midturn')[1]).toBe('  ● mail 2')
+  expect(bandLine('queued-blocked')[1]).toBe('  ● ▤ queue 3')
+})
+
+// The count is the session colour above AMBER_AT, amber to CRIT_AT, crit
+// under it; the mark reads the hook's own facts: due mid-turn is amber,
+// tasks queued with nothing running them green, not the queue's blue.
+test('cs inks the count by its ramp and the mark by what is due, not by the words drawn', () => {
+  expect(bandLine('countdown-session')[1]).toBe('  ● /clear in 15s  ·  ctrl+x  1 /clear now')
+  expect(ink('countdown-session', 4)).toMatchObject({ color: 'rgb(217,119,87)', bold: true })
+  expect(ink('countdown-crit', 4)).toMatchObject({ color: 'rgb(215,0,21)', bold: true })
+  expect(ink('due-midturn', 2).color).toBe('rgb(180,83,9)')
+  expect(ink('armed-with-queue', 2).color).toBe('rgb(180,83,9)')
+  expect(ink('queued-blocked', 2).color).toBe('rgb(22,163,74)')
+})
+
+test('cs gives a survey the band: no mark, the gate word alone under the survey', () => {
+  const lines = bandLine('survey-gate')
+  expect(lines.length).toBe(3)
+  expect(lines[2]).toBe('  finishing fix-auth · gate 1m 12s')
+  expect(bandLine('absent-teammate')[1]).toBe('  ● finishing fix-auth · gate 1m 12s')
+})
+
+// featuresWordOf: one feature names its task and its state word, `no
+// commits` for a ready one with nothing ahead; only a ready word is pressable.
+test('cs says a feature\'s state in every word featuresWordOf has, and presses only a ready one', () => {
+  const words: [string, string][] = [['ready', 'ready'], ['no-commits', 'no commits'], ['staged', 'staged'], ['locked', 'locked'], ['dirty', 'dirty'], ['untracked', 'untracked'], ['vault-locked', 'vault-locked'], ['base-dirty', 'base-dirty'], ['merged', 'merged']]
+  for (const [id, word] of words) {
+    const tree = state(`cs.AbovePrompt/features-one-${id}`).draw(80, 'light')
+    const entry = tree.children[1].children[0].children[1]
+    expect({ id, line: bandLine(`features-one-${id}`)[1], type: entry.type }).toEqual({ id, line: `  ● 1 feature · fix-auth ${word}`, type: id === 'ready' ? 'Button' : 'Text' })
+  }
+  expect(bandLine('features-many-ready')[1]).toBe('  ● 3 features · 2 ready')
+  expect(bandLine('features-none-ready')[1]).toBe('  ● 3 features · none ready')
+  expect(state('cs.AbovePrompt/features-midturn').draw(80, 'light').children[1].children[0].children[1].type).toBe('Text')
+})
+
+// rotate, wrap, the feed and the queue take 62 cells; the budget is
+// 75 - 2 - 2 - (3 + 62) = 6, room for the six bars and no label.
+test('cs draws the rail without its label when the words leave under ten cells', () => {
+  expect(bandLine('rail-no-label')[1]).toBe('  ● ctrl+x  1 rotate  ·  2 wrap  ·  3 feed ✓  ·  ▤ queue 2 · start   │││││┃')
+})
+
+test('cs draws the named bar uncoloured with no session colour, and no hover cards off the terminal', () => {
+  const named = layout(state('cs.AbovePrompt/rail-uncoloured').draw(80, 'light'), 80).rows[1][6]
+  expect(named).toMatchObject({ ch: '┃', st: { color: '', bold: true } })
+  const cards = (id: string) => JSON.stringify(state(`cs.AbovePrompt/${id}`).draw(80, 'light')).split('"position":"absolute"').length - 1
+  expect(cards('rail-few')).toBe(2)
+  expect(cards('rail-desktop')).toBe(0)
+})
