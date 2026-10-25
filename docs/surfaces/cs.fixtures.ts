@@ -164,7 +164,8 @@ export const STATES: BandState[] = [
 // ---- the rows Claude Code draws around cs's words ----
 // One state per line the mod can hand the engine, each with the values a
 // person meets it with. Keyed by the tables' own keys, so a line added to a
-// table and not here fails the type-check.
+// table and not here fails the type-check, which runs where the engine's
+// types exist (tests/test_lab_surfaces.sh; CI skips it).
 const kebab = (key: string) => key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)
 type Line = { name: string; draw: (cols: number) => RenderElement }
 const chromeStates = <K extends string>(lines: Record<K, Line>): State[] =>

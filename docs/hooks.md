@@ -874,7 +874,10 @@ one dim row at the right of the footer, `<plugin>: <words>`, cut with
 a command reply all reach the screen led by the plugin's name, which Claude
 Code adds, so the mods' lines never start with it.
 `tests/test_lab_surfaces.sh` fails when a call site writes such a line inline
-instead of naming its table, so the lab never misses one.
+instead of naming its table. The fixtures key the toast and log states by
+their table's keys, so a line added to a table and not to the lab fails the
+fixtures' type-check; that check runs only where the engine's types exist, a
+dev machine that has loaded the mod, and CI skips it.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
 localStorage. The editor's model lives in `docs/mods-band-editor.js`, pinned
 by `docs/test/band-editor.test.ts`. The layout engine behind it lives in
