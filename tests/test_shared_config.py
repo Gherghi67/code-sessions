@@ -39,6 +39,95 @@ class SharedConfigTests(unittest.TestCase):
         self.assertFalse((self.home / ".claude").exists())
         self.assertTrue(source.exists())
 
+    def test_backup_restores_deployment_retirement_and_completion_targets(self):
+        files = {
+            ".local/bin/ccs": ("old launcher", 0o751),
+            ".local/bin/code-sessions": ("old named launcher", 0o755),
+            ".local/bin/cs-tui.exe": ("old picker", 0o700),
+            ".codex/hooks/cs/cs-shared.sh": ("old recovery", 0o750),
+            ".claude/hooks/narrative-precompact.sh": ("old flat hook", 0o755),
+            ".claude/hooks/session-start.sh": ("old active flat hook", 0o755),
+            ".claude/hooks/cs/.version": ("old version", 0o644),
+            ".claude/skills/voice/SKILL.md": ("old retired skill", 0o640),
+            ".claude/skills/cs/hooks/register.tsx": ("old mod", 0o644),
+            ".codex/skills/finish/SKILL.md": ("old codex skill", 0o644),
+            ".bash_completion.d/cs.bash": ("old bash completion", 0o644),
+            ".zsh/completion/_cs": ("old singular completion", 0o644),
+            ".zsh/completions/_cs": ("old plural completion", 0o644),
+            ".bash_login": ("old login", 0o600),
+            ".config/cs/installed": ("old ownership", 0o600),
+        }
+        for relative, (content, mode) in files.items():
+            self.put(self.home, relative, content).chmod(mode)
+        link = self.home / ".claude/skills/rotate"
+        link.symlink_to("../custom-rotate")
+        self.put(self.home, ".codex/auth.json", "private login")
+        self.put(self.home, ".claude/.credentials.json", "private credential")
+        saved = migration.backup(self.home, Path(SPEC.origin).parent.parent)
+        for relative, (content, mode) in files.items():
+            with self.subTest(path=relative):
+                snapshot = saved / relative
+                self.assertTrue(snapshot.is_file(), f"backup omitted {relative}")
+                current = self.home / relative
+                current.write_text("overwritten by install")
+                current.chmod(0o644)
+                migration.shutil.copy2(snapshot, current)
+                self.assertEqual(current.read_text(), content)
+                self.assertEqual(current.stat().st_mode & 0o777, mode)
+        link.unlink()
+        self.assertTrue((saved / ".claude/skills/rotate").is_symlink())
+        link.symlink_to(os.readlink(saved / ".claude/skills/rotate"))
+        self.assertEqual(os.readlink(link), "../custom-rotate")
+        self.assertFalse((saved / ".codex/auth.json").exists())
+        self.assertFalse((saved / ".claude/.credentials.json").exists())
+
+    def test_backup_reads_current_and_retired_targets_from_checkout_manifest(self):
+        checkout = self.home / "checkout"
+        (checkout / "lib").mkdir(parents=True)
+        (checkout / "skills").mkdir()
+        (checkout / "mods").mkdir()
+        manifest = (Path(SPEC.origin).parent.parent / "lib/01-manifests.sh").read_text()
+        (checkout / "lib/01-manifests.sh").write_text(manifest + """
+RETIRED_HOOKS+=(fixture-retired-hook.sh)
+RETIRED_SKILLS+=(fixture-retired-skill)
+CS_SKILLS+=(fixture-active-skill)
+CS_HOOKS+=(fixture-active-hook.sh)
+""")
+        paths = [".claude/hooks/fixture-retired-hook.sh", ".claude/hooks/fixture-active-hook.sh",
+                 ".claude/skills/fixture-retired-skill/SKILL.md", ".claude/skills/fixture-active-skill/SKILL.md",
+                 ".codex/skills/fixture-active-skill/SKILL.md"]
+        for relative in paths:
+            self.put(self.home, relative, "old managed file")
+        saved = migration.backup(self.home, checkout)
+        for relative in paths:
+            with self.subTest(path=relative):
+                self.assertTrue((saved / relative).is_file(), f"backup omitted manifest target {relative}")
+
+    def test_backup_captures_external_zsh_startup_link_and_its_referent(self):
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        directory = Path(external.name).resolve()
+        actual = self.put(directory, "dotfiles/startup", "old external startup")
+        actual.chmod(0o640)
+        selected = directory / "selected/.zshrc"
+        selected.parent.mkdir()
+        selected.symlink_to("../dotfiles/startup")
+        with mock.patch.dict(os.environ, {"SHELL": "/bin/zsh", "ZDOTDIR": str(selected.parent)}):
+            saved = migration.backup(self.home, Path(SPEC.origin).parent.parent)
+        self.assertTrue((saved / "manifest.json").is_file(), "backup lacks an absolute path restoration map")
+        entries = {entry["source"]: entry for entry in json.loads((saved / "manifest.json").read_text())["entries"]}
+        self.assertIn(str(selected), entries)
+        self.assertIn(str(actual), entries)
+        link_snapshot = saved / entries[str(selected)]["backup"]
+        self.assertTrue(link_snapshot.is_symlink())
+        self.assertEqual(os.readlink(link_snapshot), "../dotfiles/startup")
+        actual.write_text("appended by setup")
+        selected.unlink()
+        migration.shutil.copy2(saved / entries[str(actual)]["backup"], actual)
+        selected.symlink_to(os.readlink(link_snapshot))
+        self.assertEqual(selected.read_text(), "old external startup")
+        self.assertEqual(actual.stat().st_mode & 0o777, 0o640)
+
     def test_missing_rollout_preserves_live_appends_and_rerun_is_empty(self):
         source = self.put(self.profile, ".codex/sessions/2026/rollout.jsonl", '{}\n')
         migration.migrate(self.home, True)

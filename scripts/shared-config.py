@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 
 
@@ -52,31 +53,95 @@ def private_directory(path, home):
             current.chmod(0o700)
 
 
+def installation_targets(home, checkout):
+    # Read the same current/retired lists as the installer. Folder enumeration
+    # misses retired names and does not describe flat-layout hook cleanup.
+    script = r'''
+source "$1"
+record() {
+    local category="$1" value
+    shift
+    for value in "$@"; do printf '%s\0%s\0' "$category" "$value"; done
+}
+while IFS= read -r value; do record payload "$value"; done < <(_cs_payload_files)
+record retired_hook "${RETIRED_HOOKS[@]}"
+record retired_command "${RETIRED_COMMANDS[@]}"
+record retired_skill "${RETIRED_SKILLS[@]}"
+record completion "${CS_COMPLETION_FILES[@]}"
+'''
+    output = subprocess.run(["bash", "-c", script, "backup-manifest", str(checkout / "lib/01-manifests.sh")],
+                            check=True, stdout=subprocess.PIPE).stdout.split(b"\0")[:-1]
+    paths = {home / name for name in (".claude.json", ".zshrc", ".bashrc", ".bash_profile", ".bash_login",
+             ".profile", ".claude/hooks/cs", ".codex/hooks/cs",
+             ".claude/agents-sidebar-status/original-statusline", ".config/cs",
+             ".local/bin/cs-tui", ".local/bin/cs-tui.exe", ".local/bin/ccs",
+             ".local/bin/code-sessions", ".local/bin/.cs-install-engines")}
+    for category, value in zip(output[::2], output[1::2]):
+        category, value = category.decode(), value.decode()
+        if category == "payload":
+            folder, relative = value.split("/", 1)
+            if folder == "bin":
+                paths.add(home / ".local/bin" / relative)
+            elif folder in ("hooks", "commands"):
+                paths.add(home / ".claude" / folder / relative)
+            elif folder in ("skills", "mods"):
+                name = relative.split("/", 1)[0]
+                paths.add(home / ".claude/skills" / name)
+                if folder == "skills":
+                    paths.add(home / ".codex/skills" / name)
+        elif category in ("retired_hook", "retired_command", "retired_skill"):
+            folder = {"retired_hook": "hooks", "retired_command": "commands", "retired_skill": "skills"}[category]
+            paths.add(home / ".claude" / folder / value)
+        elif category == "completion":
+            name = Path(value).name
+            folders = (".bash_completion.d",) if name.endswith(".bash") else (".zsh/completion", ".zsh/completions")
+            paths.update(home / folder / name for folder in folders)
+    for engine in (".claude", ".codex"):
+        paths.update(home / engine / name for name in ("settings.json", "hooks.json", "config.toml", "keybindings.json"))
+    startup = {home / name for name in (".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile")}
+    if Path(os.environ.get("SHELL", "/bin/sh")).name == "zsh":
+        directory = Path(os.environ.get("ZDOTDIR") or home)
+        if not directory.is_absolute():
+            directory = checkout / directory
+        startup.add(directory / ".zshrc")
+    paths.update(startup)
+    # setup appends to startup files through their links. Preserve both the
+    # link and the bytes actually modified, including a dotfiles tree outside HOME.
+    paths.update(path.resolve() for path in startup if path.exists())
+    return sorted({Path(os.path.abspath(path)) for path in paths})
+
+
 def backup(home, checkout):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     root = home / ".local/share/code-sessions/backups" / stamp
-    root.mkdir(parents=True, mode=0o700)
-    paths = [home / ".claude.json", home / ".zshrc", home / ".bashrc", home / ".bash_profile",
-             home / ".profile", home / ".claude/hooks/cs", home / ".claude/commands",
-             home / ".claude/agents-sidebar-status/original-statusline", home / ".config/cs"]
-    for engine in (".claude", ".codex"):
-        paths += [home / engine / name for name in
-                  ("settings.json", "hooks.json", "config.toml", "keybindings.json")]
-        for name in {p.name for folder in ("skills", "mods") for p in (checkout / folder).iterdir() if p.is_dir()}:
-            paths.append(home / engine / "skills" / name)
-    paths += list((home / ".local/bin").glob("cs*"))
-    paths += [home / ".local/bin/code-sessions", home / ".local/bin/.cs-install-engines"]
-    for path in paths:
+    private_directory(root, home)
+    entries = []
+    for path in installation_targets(home, checkout):
+        try:
+            relative = path.relative_to(home)
+        except ValueError:
+            relative = Path("external") / hashlib.sha256(str(path).encode()).hexdigest() / path.name
+        entry = {"source": str(path), "backup": str(relative)}
+        entries.append(entry)
         if not path.exists() and not path.is_symlink():
+            entry.update(kind="missing", backup=None)
             continue
-        target = root / path.relative_to(home)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target = root / relative
+        private_directory(target.parent, root)
+        entry["kind"] = "symlink" if path.is_symlink() else "directory" if path.is_dir() else "file"
+        # An earlier directory snapshot may already include this entry.
+        if target.exists() or target.is_symlink():
+            continue
         if path.is_symlink():
             target.symlink_to(os.readlink(path))
         elif path.is_dir():
             shutil.copytree(path, target, symlinks=True)
         else:
             shutil.copy2(path, target)
+    descriptor = os.open(root / "manifest.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump({"home": str(home), "entries": entries}, stream, indent=2)
+        stream.write("\n")
     return root
 
 
