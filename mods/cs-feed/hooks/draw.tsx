@@ -7,7 +7,7 @@ import type { FeedCommand, FieldSpec, Session, View } from './settings'
 import { FIELDS, KINDS, parseFeedArgs } from './settings'
 import type { FrameLine } from './words'
 import { helperNowLine, helperPaneHead, helpersPaneWords, kindChip, settingCommand, settingValue, settingsWords, slashCommand } from './words'
-import { backgroundLine, backgroundTail, braille, breathing, burstLine, callChips, callWords, fit, frameBody, frameHead, helperCounts, helperFraction, helperLine, helperNoteLine, hhmm, hookNotice, joined, labels, marks, moreKinds, outputLines, peerLine, pillLabel, questionLines, runChips, runWords, stepsLine, usageLabel, usagePeriods } from './words'
+import { backgroundLine, backgroundTail, braille, breathing, burstLine, callChips, callWords, fit, frameBody, frameHead, helperCounts, helperFraction, helperLine, helperNoteLine, hhmm, hookNotice, labels, marks, moreKinds, outputLines, peerLine, pillLabel, questionLines, runChips, runWords, stepsLine, usageLabel, usagePeriods } from './words'
 
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
 
@@ -156,7 +156,7 @@ export function drawSettingsPane(mode: string, session: Session, pen: Pick<Pen, 
     const next = spec.values[(spec.values.findIndex(value => value === current) + 1) % spec.values.length]
     if (next === undefined) throw new Error(`setting ${spec.field} has no next value`)
     const command = settingCommand(spec.word, next)
-    return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`btn-${spec.field}`} label={spec.title} onPress={() => onPress(parseFeedArgs(command.slice(6)))} /><Text color={pen.ink.accent} bold>{settingValue(current)}</Text><Text dimColor>{joined([marks.dot, command])}</Text></Box><Box paddingLeft={2} flexDirection="column">{fieldPicture(spec, session.view).map(line => <Text dimColor>{fit(line, Math.max(1, pen.room - 4))}</Text>)}</Box></Box>
+    return <Box flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`btn-${spec.field}`} label={spec.title} onPress={() => onPress(parseFeedArgs(command.slice(6)))} /><Text color={pen.ink.accent} bold>{settingValue(current)}</Text><Text dimColor>{`${marks.dot} ${command}`}</Text></Box><Box paddingLeft={2} flexDirection="column">{fieldPicture(spec, session.view).map(line => <Text dimColor>{fit(line, Math.max(1, pen.room - 4))}</Text>)}</Box></Box>
   })}<Text bold>{settingsWords.show}</Text><Box flexDirection="row" gap={1}>{KINDS.map(kind => {
     const shown = !session.view.hide.includes(kind)
     return <Button key={`kind-${kind}`} label={kindChip(kind, shown)} onPress={() => onPress({ kind: shown ? 'hide' : 'show', what: kind })} />
