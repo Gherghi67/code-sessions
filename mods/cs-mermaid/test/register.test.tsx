@@ -80,7 +80,10 @@ test('an unsupported chart stays a fence with the reason under it', async ($, on
   const text = '```mermaid\ngraph TD\n  subgraph S\n  A --> B\n  end\n```'
   const reply = await $.ui.mount({ plugin: 'cs-mermaid', surface: 'terminal', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
   expect(await reply.find({ type: 'Code', text: 'subgraph S' })).toBeDefined()
-  expect(await reply.find({ type: 'Text', text: 'mermaid: subgraphs are not supported' })).toBeDefined()
+  const reason = await reply.find({ type: 'Text', text: 'mermaid: subgraphs are not supported' })
+  expect(reason?.props.dimColor).toBe(true)
+  // The source first, the reason under it.
+  expect((await reply.findAll({})).map(node => node.type).filter(type => type === 'Code' || type === 'Text')).toEqual(['Code', 'Text'])
   await reply.unmount()
 })
 
