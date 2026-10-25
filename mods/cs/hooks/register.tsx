@@ -794,6 +794,11 @@ export function fitBand(all: BandEntry[], chords: Record<string, string>, room: 
   const spelling = chordSpelling(all, chords)
   for (let kept = all; ;) {
     const fitted = shortenBand(kept, chords, spelling, room)
+    const mute = mutedBy(fitted.entries, kept)
+    if (mute !== undefined) {
+      kept = kept.filter(entry => entry.key !== mute)
+      continue
+    }
     const excess = wordCellsOf(fitted.entries, chords, spelling, fitted.prefixed) - room
     const last = fitted.entries[fitted.entries.length - 1]
     if (excess <= 0 || last === undefined) return fitted
@@ -805,6 +810,20 @@ export function fitBand(all: BandEntry[], chords: Record<string, string>, room: 
     }
     kept = kept.filter(entry => entry.key !== (leaving ?? last.key))
   }
+}
+
+// The entry a fitted line draws that says nothing, which leaves before the
+// line is fitted again: a status word cut shorter than its head, the words
+// before its first ` · `, and `…`, names nothing (`1…` of `1 feature ·
+// fix-auth ready`). `kept` holds each entry's whole label.
+function mutedBy(fitted: FittedEntry[], kept: BandEntry[]): string | undefined {
+  return fitted.find(entry => {
+    if (ZONES.get(entry.key) !== 'status') return false
+    const whole = kept.find(k => k.key === entry.key)?.label
+    if (whole === undefined) throw new Error(`cs: the band fitted ${entry.key}, an entry it was not given`)
+    const head = whole.split(' · ')[0] ?? whole
+    return entry.label !== whole && cellWidth(entry.label) < cellWidth(head) + 1
+  })?.key
 }
 
 // The entries of a line of `room` cells before any leaves whole: each step

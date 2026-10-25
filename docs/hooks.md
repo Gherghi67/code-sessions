@@ -561,7 +561,10 @@ words drop and shorten and the keys lose their words before the rail goes:
 `⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ┃`
 on a 75-column line with fourteen prompts, every action, the features word
 and `mail 1`: the mail word drops, the shared prefix goes and the features
-word shortens. The
+word shortens. A right-edge word never shortens past its head, the words
+before its first `·`, and `…` (`3 features…`): a cut into the head, such as
+`1…`, says nothing, so the word leaves instead and the band fits the line
+again without it. The
 actions outrank the rail: where one would leave the line whole beside that
 least, the words take the whole line, the rail draws in what they leave, and
 a line too narrow for any tick draws no rail. Three cells before the ticks, and three cells after any

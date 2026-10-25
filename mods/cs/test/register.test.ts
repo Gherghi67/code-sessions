@@ -3543,9 +3543,9 @@ test('every combination of entries at every width from 40 to 200 draws one row n
   }
   // 512 combinations at 161 widths, less the empty one at the 81 widths without a rail.
   expect(drawn).toBe(512 * 161 - 81)
-  // The rail is on at 80 widths; at 312 of their 40960 lines the actions
+  // The rail is on at 80 widths; at 224 of their 40960 lines the actions
   // cannot all stand beside its least, and there it may go.
-  expect(railKept).toBe(80 * 512 - 312)
+  expect(railKept).toBe(80 * 512 - 224)
 }, 60000)
 
 test('every entry the band never drops stays whole at the narrowest line that holds them, and the features word shortens a cell under it', () => {
@@ -3554,12 +3554,23 @@ test('every entry the band never drops stays whole at the narrowest line that ho
   expect(lineAt(everything, 73)).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-auth rea…')
 })
 
+test('a status word keeps at least its head, the words before its first `·`, and `…`: cut shorter it says nothing, so it leaves and the line is fitted again', () => {
+  const oneReady = buildBandEntries({ ...quiet, featured: { label: '1 feature · fix-auth ready', onPress: noPress }, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress }, waiting: 3, mail: 1 })
+  // `1 feature…` is the shortest the features press draws.
+  expect(lineAt(oneReady, 64, railOf(FOUR))).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 3   1 feature…   ╷╷╷┃')
+  // A cell fewer would cut it into its head: it leaves, and the shared prefix comes back.
+  expect(lineAt(oneReady, 63, railOf(FOUR))).toBe(`  ⣿ ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(5)}   ╷╷╷┃`)
+  expect(lineAt(oneReady, 60, railOf(FOUR))).toBe(`  ⣿ ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(2)}   ╷╷╷┃`)
+  expect(lineAt(oneReady, 56, railOf(FOUR))).toBe(`  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(5)}   ╷╷╷┃`)
+})
+
 test('with every entry on, the band leaves out its lowest words, then shortens the free text before the actions, until it fits one line', () => {
   // 120, 80, 60 and 40 columns: the engine keeps five cells of each for the [-].
   expect(lineAt(everything, 115)).toBe(`  ⣿ ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(28)}3 features · fix-auth ready   mail 1`)
   expect(lineAt(everything, 75)).toBe(`  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(4)}3 features · fix-auth ready`)
-  expect(lineAt(everything, 55)).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 featu…')
-  expect(lineAt(everything, 35)).toBe('  ⣿ 1 rotate   2 wrap   3   ▤…   3…')
+  // At 60 the features press would cut into its head: it leaves, and the prefix comes back.
+  expect(lineAt(everything, 55)).toBe('  ⣿ ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2')
+  expect(lineAt(everything, 35)).toBe('  ⣿ 1 rotate   2 wrap   3   ▤…')
 })
 
 test('the rail keeps its least, `…N ┃` three cells after the words, while the words can drop and shorten and still keep every action', () => {
@@ -3567,10 +3578,10 @@ test('the rail keeps its least, `…N ┃` three cells after the words, while th
   expect(lineAt(typical, 75, REFUSED)).toBe(`  ⣿ ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(7)}mail 1   …9 ╷╷╵╷┃`)
   // With the features press too, the mail word drops, the prefix goes and the press shortens, so `…13 ┃` stays.
   expect(lineAt(everything, 75, REFUSED)).toBe('  ⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ┃')
-  // 38 columns: both presses shorten to a cell and `…`, and the feed and wrap keys lose their words.
-  expect(lineAt(everything, 38, REFUSED)).toBe('  ⣿ 1 rotate   2   3   ▤…   3…   …13 ┃')
-  // 40 columns (35 after the [-]): every key is bare, and the cells the words leave past the least go to ticks.
-  expect(lineAt(everything, 35, REFUSED)).toBe(`  ⣿ 1   2   3   ▤…${gap(4)}3…   …9 ╷╷╵╷┃`)
+  // 38 columns: the features press would cut into its head and leaves, the queue press shortens to a cell and `…`, and the feed key loses its word.
+  expect(lineAt(everything, 38, REFUSED)).toBe('  ⣿ 1 rotate   2 wrap   3   ▤…   …13 ┃')
+  // 40 columns (35 after the [-]): the wrap key loses its word too, and the cells the words leave past the least go to ticks.
+  expect(lineAt(everything, 35, REFUSED)).toBe('  ⣿ 1 rotate   2   3   ▤…   …11 ╵╷┃')
 })
 
 test('the actions outrank the rail: where an action would leave whole beside its least, the words take the whole line and the rail what they leave', () => {
@@ -3578,18 +3589,17 @@ test('the actions outrank the rail: where an action would leave whole beside its
   const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: everything, bodyColumns, rail: REFUSED }), EL), bodyColumns)
   // The keys bare (38 cells), three cells and `…13 ┃` fill 50 columns.
   expect(at(50)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…   …13 ┃')
-  // Two fewer and the queue press would leave: it stays, the features press takes the cells back, and no tick fits.
-  expect(at(48)).toBe(`  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…${gap(4)}3…`)
+  // Two fewer and the queue press would leave: it stays, the features press would cut into its head and leaves, and no tick fits.
+  expect(at(48)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…')
 })
 
 test('a chord drawn as its key alone is still its Button, pressed by its action, the key in the session colour', () => {
-  const pressable = buttons(drawBand(view({ entries: everything, bodyColumns: 25 }), EL)).map((b: any) => [b.props.key, b.props.action, b.props.label, texts(b).map((t: any) => t.props)])
+  const pressable = buttons(drawBand(view({ entries: everything, bodyColumns: 24 }), EL)).map((b: any) => [b.props.key, b.props.action, b.props.label, texts(b).map((t: any) => t.props)])
   expect(pressable).toEqual([
     ['cs-rotate', 'strip:jump1', '1', [{ bold: true, color: OWN }]],
     ['cs-wrap', 'strip:jump2', '2', [{ bold: true, color: OWN }]],
     ['cs-feed', 'strip:jump3', '3', [{ bold: true, color: OWN }]],
     ['cs-queue', undefined, '▤…', []],
-    ['cs-features', undefined, '3…', []],
   ])
 })
 
@@ -3599,8 +3609,9 @@ test('a cut that lands after a space drops the space before the ellipsis, in the
   expect(textOf(gapLabel(drawBand(view({ bodyColumns: 19, rail: railOf(shop) }), EL)))).toBe(' #2 go to…')
 })
 
-test('when even the keys overrun, the features press and then the queue press leave whole, then the chords right to left, and the mark stays', () => {
-  expect(lineAt(everything, 23)).toBe('  ⣿ 1   2   3   ▤…   3…')
+test('when even the keys overrun, the queue press leaves whole, then the chords right to left, and the mark stays', () => {
+  // The features press, which would cut into its head, has left already.
+  expect(lineAt(everything, 23)).toBe('  ⣿ 1   2   3   ▤…')
   expect(lineAt(everything, 22)).toBe('  ⣿ 1   2   3   ▤…')
   expect(lineAt(everything, 18)).toBe('  ⣿ 1   2   3   ▤…')
   expect(lineAt(everything, 17)).toBe('  ⣿ 1   2   3')
@@ -3622,8 +3633,9 @@ test('the queue press never shortens past `▤…`: it leaves whole, and a line 
 test('the countdown is free text after its clear key: it outlasts the key\'s word, and leaves before the presses', () => {
   const counting = buildBandEntries({ ...quiet, featured: { label: '3 features · fix-auth ready', onPress: noPress }, countdown: { seconds: 30, ink: OWN }, rotating: true, armed: true, feed: { on: true, color: OWN, onPress: noPress }, queued: 2, mail: 1 })
   expect(lineAt(counting, 100)).toBe(`  ⣿ ctrl+x 1 /clear now   in 30s   3 feed ✓${gap(9)}3 features · fix-auth ready   ▤ queue 2   mail 1`)
-  expect(lineAt(counting, 23)).toBe('  ⣿ 1   in 30s   3   3…')
-  expect(lineAt(counting, 22)).toBe(`  ⣿ 1   3${gap(11)}3…`)
+  expect(lineAt(counting, 23)).toBe('  ⣿ 1   in 30s   3')
+  expect(lineAt(counting, 18)).toBe('  ⣿ 1   in 30s   3')
+  expect(lineAt(counting, 17)).toBe('  ⣿ 1   3')
 })
 
 test('the band drops mail, the queue count, an unpressable features word, the gate word and then the chord prefix, in that order', () => {
@@ -3658,7 +3670,8 @@ test('chords that differ fall back to their whole chord, right to left; the last
 test('with chords that differ, every chord outlives the features and queue presses', () => {
   const differ = { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2', 'strip:jump3': 'alt+shift+f' }
   const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: everything, bodyColumns }), EL), bodyColumns)
-  expect(at(47)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…   3…')
+  // The features press would cut into its head, so it has left.
+  expect(at(47)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…')
   expect(at(46)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…')
   expect(at(42)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…')
   expect(at(41)).toBe('  ⣿ ctrl+x 1   ctrl+w 2   alt+shift+f')
