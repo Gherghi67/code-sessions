@@ -1366,7 +1366,7 @@ function bdHoverDraw(){
   const s=BandEditor.spanOf(bdGrids[h.frame],h.path), strip=$("bd-canvas").querySelector(`[data-frame="${h.frame}"] .strip`);
   if(!s||!strip) return;
   strip.insertAdjacentHTML("beforeend",`<div class="hovl" style="${bdSpanBox(strip,s)}"></div>`);
-  $("bd-layers").querySelector(`.lrow[data-path="${h.path.join(",")}"]`)?.classList.add("hov");
+  if($("bd-layers").dataset.frame===h.frame) $("bd-layers").querySelector(`.lrow[data-path="${h.path.join(",")}"]`)?.classList.add("hov");
 }
 function bdHoverSet(h){
   const same=h&&bdHover&&h.frame===bdHover.frame&&samePath(h.path,bdHover.path);
@@ -1723,6 +1723,11 @@ function composeUI(){
   $("bd-layers").addEventListener("click",e=>{ const row=e.target.closest(".lrow"); if(row) bdDispatch({type:"select",frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}); });
   $("bd-layers").addEventListener("mouseover",e=>{ const row=e.target.closest(".lrow"); bdHoverSet(row?{frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}:null); });
   $("bd-layers").addEventListener("mouseleave",()=>bdHoverSet(null));
+  $("bd-canvas").addEventListener("mousemove",e=>{
+    const cell=!bdDrag&&e.target.closest("[data-r]"), frame=cell&&cell.closest("[data-frame]");
+    bdHoverSet(frame?{frame:frame.dataset.frame,path:BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c)}:null);
+  });
+  $("bd-canvas").parentElement.addEventListener("mouseleave",()=>bdHoverSet(null));
   $("bd-props").addEventListener("toggle",e=>{ const g=e.target.dataset?.group; if(g) e.target.open?bdShut.delete(g):bdShut.add(g); },true);
   const tabs=[...document.querySelectorAll(".itabs [role=tab]")];
   const pick=tab=>tabs.forEach(t=>{ const on=t===tab; t.setAttribute("aria-selected",on); t.tabIndex=on?0:-1; $(t.getAttribute("aria-controls")).hidden=!on; });
