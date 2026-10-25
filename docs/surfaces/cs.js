@@ -323,6 +323,14 @@
   }
   var press = () => {};
   var ACTION = { rotate: ROTATE_ACTION, wrap: WRAP_ACTION, feed: FEED_ACTION };
+  function survey() {
+    const el = elements();
+    const answers = [["1", "Bad"], ["2", "Fine"], ["3", "Good"], ["0", "Dismiss"]];
+    return el.Box({ flexDirection: "column", marginTop: 1, children: [
+      el.Box({ children: [el.Box({ minWidth: 2, children: [el.Text({ color: "ansi:cyan", children: "●" })] }), el.Text({ bold: true, wrap: "wrap", children: "How is Claude doing this session? (optional)" })] }),
+      el.Box({ marginLeft: 2, children: answers.map(([key, label]) => el.Box({ width: 10, children: [el.Text({ color: "ansi:cyan", children: key }), el.Text({ children: `: ${label}` })] })) })
+    ] });
+  }
   function viewOf(f, cols, theme) {
     const el = elements();
     const own = paletteColor(f.colour ?? undefined);
@@ -350,7 +358,7 @@
     const prompts = (f.rail?.prompts ?? []).map((text, i) => ({ uuid: `p${i}`, text }));
     const rail = f.rail && prompts.length > 1 ? { prompts, named: f.rail.named, denied: new Set(f.rail.refused.map((i) => `p${i}`)), bars: BAND_BARS, jump: async () => {} } : undefined;
     const markColor = MARK_INK[bandState({ gate: f.gate !== undefined, queueRunning: f.queueRunning, rotationDue: f.due })](undefined, theme);
-    const drawn = f.survey ? el.Box({ children: [el.Text({ dimColor: true, children: "How is Claude doing this session? (the engine draws its survey here)" })] }) : el.Box({});
+    const drawn = f.survey ? survey() : el.Box({});
     return { drawn, entries, chords, own, markColor, hasSurvey: f.survey, bodyColumns: cols - RESERVED, surface: f.surface, rail };
   }
   function band(f, cols, theme) {
@@ -422,7 +430,6 @@
     slot: "AbovePrompt",
     source: "generated",
     global: "CsSurfaces",
-    needs: ["hover", "focus inverse", "engine drawing"],
     chrome: { kind: "above-prompt" },
     states: STATES.map((s) => ({ id: s.id, name: s.name, draw: (cols, theme) => band(s.facts, cols, theme) })),
     parts: [

@@ -203,7 +203,6 @@ body.app .rail,body.app .head{display:none}
 #bd-comps .csurf > summary .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #bd-comps .cnt{font-size:11px;color:var(--fg2);font-variant-numeric:tabular-nums}
 #bd-comps .ckind{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2);padding:4px 10px 2px 30px}
-#bd-comps .needs{font-size:11px;color:var(--fg2);padding:0 10px 2px 30px}
 #bd-comps .crow{display:flex;align-items:center;gap:7px;width:100%;min-height:24px;padding:0 10px 0 30px;background:none;border:0;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
 #bd-comps .crow:hover{background:var(--page)}
 #bd-comps .crow.part{cursor:grab}
@@ -268,12 +267,11 @@ body.dragging{user-select:none;cursor:grabbing}
 .frame.on .fhead .fname{color:var(--accent-ink)}
 .fhead .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-ink)}
 .fhead .badge.ref{color:var(--canvas-ink);border:1px solid currentColor;border-radius:3px;padding:0 4px}
-.frame .needs{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
-.frame .needs b{font-weight:600}
 .frame .why.empty{margin:0 0 6px;font-size:12px;color:var(--canvas-ink)}
 .ronote{font-size:12px;color:var(--fg2);margin:0 0 8px}
 .fhead .quiet{display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .12s ease-out}
-.frame:hover .quiet,.frame.on .quiet,.frame:focus-within .quiet{opacity:1}
+.frame:hover .quiet,.frame.on .quiet,.frame:focus-within .quiet,.frame.preview .quiet{opacity:1}
+.fhead button[aria-pressed=true]{color:var(--accent-ink);border-color:currentColor}
 .fhead label.inline{display:flex;gap:4px;align-items:center;min-height:24px;cursor:pointer}
 .fhead .fname-edit{font:500 12px "IBM Plex Sans",sans-serif;padding:1px 4px}
 .fhead :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -700,7 +698,7 @@ none|start fresh</textarea></label>
 </section>
 <section class="panel" id="p-variants">
 <h2 id="variants">Band variants <span class="src">docs/mods-band-variants.js</span></h2>
-<p class="sub">The cs band in each of its states, as it ships and as seven sketches would draw it. Each strip is the engine tree the sketch returns, laid out at the page's columns and painted in the page's theme (the header's Theme and Columns; the slider here moves Columns). A strip wider than the band is clipped and says by how much; a tree the engine would refuse prints the refusal in red. The first row is the band that ships.</p>
+<p class="sub">The cs band in each of its states, as it ships and as seven sketches would draw it. Each strip is the engine tree the sketch returns, laid out at the page's columns and painted in the page's theme (the header's Theme and Columns; the slider here moves Columns). A strip whose Buttons alone are wider than the band runs past its edge, is cut there and says by how much; a tree the engine would refuse prints the refusal in red. The first row is the band that ships.</p>
 <div class="lab">
   <div class="controls">
     <label>State <select id="va-state"></select></label>
@@ -791,7 +789,15 @@ const PALETTE={
   diffRemoved:{light:"rgb(255,168,180)",dark:"rgb(122,41,54)",why:"Code diff - background"},
 };
 const RAW={CORAL:"rgb(217,119,87)",AMBER_L:"rgb(180,83,9)",AMBER_D:"rgb(253,230,138)",CRIT_L:"rgb(215,0,21)",CRIT_D:"rgb(255,69,58)"};
-const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(RAW[k]) return RAW[k]; return k; };
+// Inks the engine draws in that are not a theme key a mod can name: a Code
+// node's plain ink, its highlighter's GitHub and Monokai Extended foreground
+// (2.1.310: light u(51,51,51), dark u(248,248,242)).
+const ENGINE_INK={codeForeground:{light:"rgb(51,51,51)",dark:"rgb(248,248,242)"}};
+// An `ansi:` colour is the terminal's own palette entry, so the terminal
+// picks it; the lab shows xterm's defaults (the engine's survey mark is
+// ansi:cyan).
+const ANSI={black:"rgb(0,0,0)",red:"rgb(205,0,0)",green:"rgb(0,205,0)",yellow:"rgb(205,205,0)",blue:"rgb(0,0,238)",magenta:"rgb(205,0,205)",cyan:"rgb(0,205,205)",white:"rgb(229,229,229)"};
+const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(ENGINE_INK[k]) return ENGINE_INK[k][theme()]; if(RAW[k]) return RAW[k]; if(k.startsWith("ansi:")&&ANSI[k.slice(5)]) return ANSI[k.slice(5)]; return k; };
 const colExpr=k=>!k?"":PALETTE[k]?`"${k}"`:RAW[k]?`{${k}}`:`"${k}"`;
 function fillColorPicks(){
   document.querySelectorAll("select.colorpick").forEach(s=>{
@@ -1312,21 +1318,26 @@ const bdSelected=()=>{ const sel=bdDocNow().selection; return sel&&BandEditor.no
 // open draft first, so a field typed in but never left (a mousedown on the
 // strip keeps its focus) is a step of its own before what follows.
 function bdSettle(){ bdHist=BandEditor.commitDraft(bdHist,bdDraft); bdDraft=null; }
-function bdDispatch(action){ bdSettle(); bdRefusal=null; bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender(); }
-// Every edit of a frame's tree comes through here, so a reference frame is
-// refused in one place, with its reason drawn on the frame.
+function bdDispatch(action){
+  if((action.type==="select"||action.type==="selectFrame")&&bdPreview.has(action.frame)) return bdRefuse(action.frame);
+  bdSettle(); bdRefusal=null; bdHist=BandEditor.replace(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender();
+}
+// Every edit of a frame's tree comes through here, so a reference frame or
+// one in preview is refused in one place, with its reason drawn on the frame.
 const BD_TREE_EDITS=new Set(["setProp","move","insert","remove","setText","duplicateNode"]);
 function bdEdit(action){
   const sel=bdDocNow().selection;
   if(BD_TREE_EDITS.has(action.type)&&sel&&bdReadOnly(sel.frame)) return bdRefuse(sel.frame);
   bdSettle(); bdRefusal=null; bdHist=BandEditor.commit(bdHist,BandEditor.apply(bdHist.present,action)); bdPanelStale=true; composeRender();
 }
-// A reference frame is drawn by the mod and read, never edited: why, or null
-// for a frame the designer edits. The refusal last met, drawn on its frame.
+// A reference frame is drawn by the mod and read, never edited, and a frame
+// in preview is looked at, not edited: why, or null for a frame the designer
+// edits. The refusal last met, drawn on its frame.
 let bdRefusal=null;
 function bdReadOnly(frame){
   const f=bdFrame(frame);
-  return f.ref?`${f.name} is a reference frame: ${BandEditor.uneditable(BandEditor.toEngine(f.tree))}, which the designer does not edit`:null;
+  if(f.ref) return `${f.name} is a reference frame: ${BandEditor.uneditable(BandEditor.toEngine(f.tree))}, which the designer does not edit`;
+  return bdPreview.has(frame)?`${f.name} is in preview, drawn as under the pointer: turn preview off to edit it`:null;
 }
 function bdRefuse(frame){ bdRefusal={frame,text:bdReadOnly(frame)}; composeRender(); }
 
@@ -1344,12 +1355,13 @@ function cpField([name,kind,extra],v){
 const bdShut=new Set();
 // With nothing selected the panel names the export frame and how it fits.
 function cpFrameSummary(){
-  const f=bdFrame(bdDocNow().exportFrame), room=bdRoom(f), w=ModLayout.layout(BandEditor.toEngine(f.tree),room).w;
+  const f=bdFrame(bdDocNow().exportFrame), room=bdRoom(f), w=reach(ModLayout.layout(BandEditor.toEngine(f.tree),room));
   return `<div class="phead"><b>${esc(f.name)}</b></div><dl class="fsum"><dt>width</dt><dd>${cols()} cols</dd><dt>fit</dt><dd class="${w>room?"no":""}">${esc(fitWords(w,room))}</dd></dl>`;
 }
 function cpInspector(n,path){
   if(!n) return cpFrameSummary();
-  if(bdReadOnly(bdDocNow().selection.frame)) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">Reference frame: drawn by the mod's code, read only.</p>`
+  const sel=bdDocNow().selection, ro=bdReadOnly(sel.frame);
+  if(ro) return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div><p class="ronote">${bdFrame(sel.frame).ref?"Reference frame: drawn by the mod's code, read only.":esc(ro)}</p>`
     +`<dl class="fsum">${Object.keys(n.props).map(k=>`<dt>${esc(k)}</dt><dd>${esc(typeof n.props[k]==="object"?JSON.stringify(n.props[k]):String(n.props[k]))}</dd>`).join("")}</dl>`;
   const groups=CP_SCHEMA[n.type];
   return `<div class="phead"><b>${n.type}</b>${n.props.key?` ${esc(n.props.key)}`:""} <code>${esc(JSON.stringify(path))}</code></div>`
@@ -1393,14 +1405,25 @@ function cpPaint(g){
 function bdPaint(g){
   return g.rows.map((row,r)=>row.map((c,x)=>`<span class="cell" data-r="${r}" data-c="${x}" style="${cellCss(c.st)}">${esc(c.ch)}</span>`).join("")).join("\n");
 }
-// How a tree's width sits in the band's, in the words every panel prints. The
-// engine never lets a row overrun its width: Box and Text default to
-// flexShrink 1, so each child of the row shrinks and its Text wraps or
-// truncates as its wrap says. The lab's engine does not shrink, so it clips
-// the row at the band's edge and says so.
-function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: the lab clips it at the band's edge, where the engine shrinks each child of the row and wraps or truncates its Text`:""); }
-// A grid wider than the band, cut at the band's edge.
-function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
+// How a tree's width sits in the band's, in the words every panel prints. A
+// row that overruns its width shrinks its children and each Text wraps or
+// truncates in what it is left (the engine's flexShrink 1), so a tree only
+// draws past the band when what cannot shrink, its Buttons and anything set
+// to flexShrink 0, is wider than the band; the lab cuts it at the edge.
+function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: its Buttons and whatever is set not to shrink are wider than the band, so the line runs past the edge, where the lab cuts it`:""); }
+// The cells a grid reaches: its own width, or further where a child that
+// cannot shrink draws past it.
+const reach=g=>g.rows.reduce((a,r)=>Math.max(a,r.length),g.w);
+// A grid cut at the band's edge.
+function clipTo(g,c){ return reach(g)>c?{w:Math.min(g.w,c),h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
+// A tree as the terminal lays it out in `c` cells. The root takes exactly
+// them, so the edge only ever cuts what draws past it, what cannot shrink: a
+// root laid out wider is a bug in the lab's engine, never the engine's drawing.
+function screenGrid(tree,c){
+  const g=ModLayout.layoutScreen(tree,c);
+  if(g.w>c) throw new Error(`the lab's engine laid a tree out ${g.w} cells wide in ${c}`);
+  return clipTo(g,c);
+}
 
 // A strip's cells as boxes relative to the strip, read from the cells' own
 // rects, so whatever is laid over them follows the size the strip is drawn at.
@@ -1463,13 +1486,6 @@ const bdRowPath=row=>row.dataset.path?row.dataset.path.split(",").map(Number):[]
 // ---- surfaces: every cs mod surface the bundles carry (docs/surfaces) ----
 const bdSurface=id=>{ const s=SURFACES.find(x=>x.id===id); if(!s) throw new Error(`no surface ${id} in docs/surfaces`); return s; };
 const bdSurfaceState=(sid,stid)=>{ const st=bdSurface(sid).states.find(x=>x.id===stid); if(!st) throw new Error(`no state ${stid} of ${sid}`); return st; };
-// "a", "a or b", "a, b or c".
-const bdList=xs=>xs.length<2?xs.join(""):xs.slice(0,-1).join(", ")+" or "+xs[xs.length-1];
-const BD_NEEDS={"position=absolute":"position=absolute","Code":"a Code node's colours","hover":"hover","focus inverse":"a focused Button's inverse","engine drawing":"the engine's own drawing beside it"};
-// What a frame draws in place of a need, where it draws anything.
-const BD_STANDINS={"position=absolute":"leaves an absolute child's region blank","Code":"draws a Code node's source as plain dim lines"};
-const bdNeedsWords=(needs,mark)=>`lab cannot draw ${bdList(needs.map(n=>mark(esc(BD_NEEDS[n]))))} yet`
-  +(needs.some(n=>BD_STANDINS[n])?`: it ${needs.filter(n=>BD_STANDINS[n]).map(n=>esc(BD_STANDINS[n])).join(" and ")}`:"");
 // A node of a state's engine tree, by its child index path.
 function bdPartNode(sid,part){
   let n=bdSurfaceState(sid,part.state).draw(cols(),theme());
@@ -1477,6 +1493,8 @@ function bdPartNode(sid,part){
   if(!n||typeof n!=="object") throw new Error(`part ${part.id} of ${sid} names no element at ${JSON.stringify(part.path)}`);
   return n;
 }
+// The frames in preview, by id, each with the node the pointer is over and the Button that has the focus.
+const bdPreview=new Map();
 // The grid a frame paints, inside the chrome the engine draws round its
 // surface: AbovePrompt keeps five cells at the right of each row for its
 // `[-]`, which sits on the first row one cell in, and the band is clipped to
@@ -1484,18 +1502,35 @@ function bdPartNode(sid,part){
 // tab and clipped to its rows; any other surface fills the terminal's row.
 // A frame of no surface is measured at its natural width, clipped at the band's edge.
 function bdGridOf(f,c){
-  const tree=BandEditor.toEngine(f.tree), chrome=f.source&&bdSurface(f.source.surface).chrome;
+  const pv=bdPreview.get(f.id), drawn=BandEditor.toEngine(f.tree), tree=pv?ModLayout.interact(drawn,pv):drawn, chrome=f.source&&bdSurface(f.source.surface).chrome;
   if(!f.source) return clipTo(ModLayout.layout(tree,c),c);
   if(chrome&&chrome.kind==="pane") return ModLayout.layoutPane(tree,{columns:c,rows:chrome.rows,title:chrome.title,titles:[chrome.title]});
   if(chrome&&chrome.kind==="above-prompt"){
-    const g=clipTo(ModLayout.layoutScreen(tree,c-5),c-5);
+    const g=screenGrid(tree,c-5);
     if(!g.h) return g;
     const rows=g.rows.map(r=>r.concat(ModLayout.blanks(c-r.length,ModLayout.EMPTY,[])));
     const dim={...ModLayout.EMPTY,dim:true};
     [..."[-]"].forEach((ch,i)=>{ rows[0][c-4+i]={ch,st:dim,path:[]}; });
     return {w:c,h:rows.length,rows};
   }
-  return clipTo(ModLayout.layoutScreen(tree,c),c);
+  return screenGrid(tree,c);
+}
+// Preview: a frame drawn as the terminal draws it under the pointer. The
+// pointer over the strip is over the node that drew the cell under it; a
+// click gives the Button under it the focus, as ctrl+x tab would, and a click
+// on it again or off any Button takes the focus away. Nothing is selected or
+// edited while it is on. Per frame and not saved: it is a way of looking.
+function bdPreviewHover(id,path){
+  const pv=bdPreview.get(id);
+  if(!pv||(path===null?pv.hover===null:pv.hover&&samePath(pv.hover,path))) return;
+  pv.hover=path; composeRender();
+}
+function bdPreviewPress(id,path){
+  let n=BandEditor.toEngine(bdFrame(id).tree);
+  for(const i of path) n=n&&typeof n==="object"?n.children[i]:undefined;
+  const pv=bdPreview.get(id), button=n&&typeof n==="object"&&n.type==="Button";
+  pv.focus=button&&!(pv.focus&&samePath(pv.focus,path))?path:null;
+  composeRender();
 }
 // The cells a frame's tree is handed: the band, the terminal less AbovePrompt's
 // five `[-]` cells; anything else, the terminal's width.
@@ -1507,15 +1542,15 @@ function bdFrameCard(f){
   bdGrids[f.id]=g;
   const doc=bdDocNow(), only=doc.frames.length===1, surf=f.source&&bdSurface(f.source.surface);
   const prompt=!surf||surf.chrome?.kind==="above-prompt";
-  const room=bdRoom(f), measured=ModLayout.layout(tree,room).w;
-  const ro=bdReadOnly(f.id);
-  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}" data-frame="${f.id}">`
+  const room=bdRoom(f), measured=reach(ModLayout.layout(tree,room));
+  const ro=f.ref&&bdReadOnly(f.id), pv=bdPreview.has(f.id);
+  return `<div class="frame${doc.selection&&doc.selection.frame===f.id?" on":""}${ro?" ref":""}${pv?" preview":""}" data-frame="${f.id}">`
     +`<div class="fhead"><button type="button" class="fname" data-act="rename" title="Rename">${esc(f.name)}</button>`
     +(doc.exportFrame===f.id?`<span class="badge">export</span>`:"")
     +(ro?`<span class="badge ref" title="${esc(ro)}">reference</span>`:"")
     +`<span class="quiet"><label class="inline" data-act="export" title="The frame whose JSX the Code tab prints"><input type="radio" name="bd-export"${doc.exportFrame===f.id?" checked":""}> export</label>`
+    +`<button type="button" data-act="preview" aria-pressed="${pv}" title="Draw it under the pointer: hover a node, click a Button to give it the focus">preview</button>`
     +`<button type="button" data-act="duplicate">duplicate</button><button type="button" data-act="remove"${only?" disabled":""}>remove</button></span></div>`
-    +(surf&&surf.needs.length?`<p class="needs">${bdNeedsWords(surf.needs,w=>`<b>${w}</b>`)}</p>`:"")
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +(bdRefusal&&bdRefusal.frame===f.id?`<p class="refuse" role="status">${esc(bdRefusal.text)}</p>`:"")
     +(g.h?"":`<p class="why empty">draws nothing: the hook hands back the engine's own rows</p>`)
@@ -1535,7 +1570,6 @@ function bdComponents(){
     }).join("");
     const parts=s.parts.map(p=>`<button type="button" class="crow part" data-part="${esc(s.id)}#${esc(p.id)}" title="Drag into a frame, or press to insert it by the selection"><span class="g g-${bdPartNode(s.id,p).type}" aria-hidden="true"></span><span class="lname">${esc(p.name)}</span></button>`).join("");
     return `<details class="csurf" data-surface="${esc(s.id)}"><summary><span class="lname">${esc(s.slot==="Pane"?s.id.slice(s.mod.length+1):s.slot)}</span><span class="cnt">${s.states.length}</span></summary>`
-      +(s.needs.length?`<div class="needs">${bdNeedsWords(s.needs,w=>w)}</div>`:"")
       +(parts?`<div class="ckind">Parts</div>${parts}`:"")+`<div class="ckind">States</div>${states}</details>`;
   }).join("")+`</details>`).join("")+`<p class="note" id="bd-comps-note" role="status" hidden></p>`;
 }
@@ -1589,6 +1623,7 @@ function composeRender(){
     +[...new Set(SURFACES.map(x=>x.mod))].map(m=>`<optgroup label="${esc(m)}">`+SURFACES.filter(x=>x.mod===m).flatMap(x=>x.states.map(st=>`<option value="s:${esc(x.id)}/${esc(st.id)}">${esc(x.id)}/${esc(st.id)}</option>`)).join("")+`</optgroup>`).join("")
     +`<optgroup label="Band variants, in the picked state">`+BandVariants.VARIANTS.map(v=>`<option value="${v.id}">${esc(v.name)}</option>`).join("")+`</optgroup>`;
   for(const id in bdGrids) delete bdGrids[id];
+  for(const id of [...bdPreview.keys()]) if(!doc.frames.some(f=>f.id===id)) bdPreview.delete(id);
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const fs=bdFontSize(); $("bd-canvas").style.setProperty("--fs",fs+"px");
   $("bd-zoom").value=String(bdZoom); $("bd-zoom").options[0].textContent=`Fit (${Math.round(fs/15*100)}%)`;
@@ -1598,7 +1633,7 @@ function composeRender(){
   if(bdPanelStale||!sel){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   $("bd-code-name").textContent=`${bdFrame(doc.exportFrame).name}, the frame that exports`;
-  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room).w;
+  const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), room=bdRoom(fitFrame), fitW=reach(ModLayout.layout(BandEditor.toEngine(fitFrame.tree),room));
   $("bd-fit").textContent=fitWords(fitW,room); $("bd-fit").title=`${fitFrame.name} ${fitWords(fitW,room)}`; $("bd-fit").classList.toggle("no",fitW>room);
   document.querySelectorAll("[data-insert]").forEach(b=>{ const why=bdInsertRefusal(b.dataset.insert); b.disabled=!!why; b.title=why||`Insert a ${b.dataset.insert} (${b.dataset.key})`; });
   $("bd-undo").disabled=!bdHist.past.length; $("bd-undo").querySelector("b").textContent=bdHist.past.length;
@@ -1695,6 +1730,12 @@ function bdFrameAct(el,frame){
   if(act==="export") return bdEdit({type:"exportFrame",frame});
   if(act==="duplicate") return bdEdit({type:"addFrame",from:frame});
   if(act==="remove") return bdEdit({type:"removeFrame",frame});
+  if(act==="preview"){
+    bdPanelStale=true;
+    if(bdPreview.has(frame)){ bdPreview.delete(frame); return composeRender(); }
+    bdPreview.set(frame,{hover:null,focus:null});
+    return bdDocNow().selection?.frame===frame?bdDispatch({type:"deselect"}):composeRender();
+  }
 }
 
 // A click selects the node that drew the cell; a second click on the node
@@ -1710,6 +1751,7 @@ function bdClick(e){
   if(e.target.closest(".fname-edit")) return;
   if(!cell||!frame){ if(bdDocNow().selection) bdDispatch({type:"deselect"}); return; }
   const id=frame.dataset.frame, path=BandEditor.pathOfCell(bdGrids[id],+cell.dataset.r,+cell.dataset.c);
+  if(bdPreview.has(id)) return bdPreviewPress(id,path);
   const sel=bdDocNow().selection;
   const again=sel&&sel.frame===id&&samePath(sel.path,path)&&path.length>0;
   bdDispatch({type:"select",frame:id,path:again?path.slice(0,-1):path});
@@ -1756,7 +1798,7 @@ function bdIndicator(strip,t){
 }
 function bdDragStart(e){
   const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]"), sel=bdDocNow().selection;
-  if(e.button!==0||!cell||!frame||!sel||sel.frame!==frame.dataset.frame||!sel.path.length) return;
+  if(e.button!==0||!cell||!frame||!sel||sel.frame!==frame.dataset.frame||!sel.path.length||bdPreview.has(sel.frame)) return;
   const path=BandEditor.pathOfCell(bdGrids[sel.frame],+cell.dataset.r,+cell.dataset.c);
   if(!bdWithin(path,sel.path)) return;
   e.preventDefault();
@@ -1850,7 +1892,7 @@ function bdInline(frame,path){
 }
 function bdDoubleClick(e){
   const cell=e.target.closest("[data-r]"), frame=e.target.closest("[data-frame]");
-  if(!cell||!frame) return;
+  if(!cell||!frame||bdPreview.has(frame.dataset.frame)) return;
   bdInline(frame.dataset.frame,BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c));
 }
 
@@ -1924,9 +1966,11 @@ function composeUI(){
   $("bd-layers").addEventListener("mouseleave",()=>bdHoverSet(null));
   $("bd-canvas").addEventListener("mousemove",e=>{
     const cell=!bdDrag&&e.target.closest("[data-r]"), frame=cell&&cell.closest("[data-frame]");
-    bdHoverSet(frame?{frame:frame.dataset.frame,path:BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c)}:null);
+    const at=frame&&{frame:frame.dataset.frame,path:BandEditor.pathOfCell(bdGrids[frame.dataset.frame],+cell.dataset.r,+cell.dataset.c)};
+    for(const id of bdPreview.keys()) bdPreviewHover(id,at&&at.frame===id?at.path:null);
+    bdHoverSet(at&&!bdPreview.has(at.frame)?at:null);
   });
-  $("bd-canvas").parentElement.addEventListener("mouseleave",()=>bdHoverSet(null));
+  $("bd-canvas").parentElement.addEventListener("mouseleave",()=>{ for(const id of bdPreview.keys()) bdPreviewHover(id,null); bdHoverSet(null); });
   $("bd-props").addEventListener("toggle",e=>{ const g=e.target.dataset?.group; if(g) e.target.open?bdShut.delete(g):bdShut.add(g); },true);
   document.querySelectorAll(".itabs").forEach(list=>{
     const tabs=[...list.querySelectorAll("[role=tab]")];
@@ -1974,7 +2018,7 @@ function vaCell(v,s,c,th,named){
   return `<div class="vcell">${named?`<div class="name">${esc(s.id)}</div>`:""}`
     +(refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"")
     +`<div class="term">${body}</div>`
-    +(g.w>c?`<p class="why no">${esc(fitWords(g.w,c))}</p>`:"")+`</div>`;
+    +(reach(g)>c?`<p class="why no">${esc(fitWords(reach(g),c))}</p>`:"")+`</div>`;
 }
 function variantsRender(){
   const {STATES,VARIANTS}=BandVariants, c=cols(), th=theme();

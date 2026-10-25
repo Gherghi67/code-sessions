@@ -174,10 +174,19 @@ test('the engine accepts every variant in every state', () => {
   }
 })
 
-// The cells that overrun 60 cols, each declared in its variant's note.
-test('the cells that clip at 60 cols are the ones the notes name', () => {
-  const clipped = cells().filter(({ v, s }: any) => layout(v.draw(s.facts, 60, 'light'), 60).w > 60).map(({ v, s }: any) => `${v.id} / ${s.id}`)
-  expect(clipped).toEqual(['shipped / everything', 'keys-first / everything', 'status-first / everything', 'two-zone / everything', 'rail-first / everything', 'capsule / everything', 'stacked / everything'])
+// A row shrinks what overruns it, so a band only draws past the edge when
+// what cannot shrink is wider than it. Each note says where its every-word
+// band does. The shipped one, by hand: its five Buttons take 60 cells, the
+// margins and the inset 8 more, past the 55 the band is handed at 60 cols
+// and inside the 75 it is handed at 80.
+test('a variant runs past the edge exactly where its note says, and the shipped one at 60 only', () => {
+  const past = (v: any, facts: any, cols: number) => layout(v.draw(facts, cols, 'light'), cols).rows.some((r: any[]) => r.length > cols)
+  const everything = state('everything')
+  for (const v of VARIANTS) {
+    expect({ variant: v.id, at60: past(v, everything, 60), at80: past(v, everything, 80) }).toEqual({ variant: v.id, at60: v.note.includes('past the edge at 60'), at80: v.note.includes('past the edge at 80') })
+  }
+  expect([past(variant('shipped'), everything, 60), past(variant('shipped'), everything, 80)]).toEqual([true, false])
+  for (const { v, s } of cells()) if (s.id !== 'everything') expect({ cell: `${v.id} / ${s.id}`, past: past(v, s.facts, 60) || past(v, s.facts, 80) }).toEqual({ cell: `${v.id} / ${s.id}`, past: false })
 })
 
 // Glyphs a monospace terminal font renders: box drawing, the mark, the queue

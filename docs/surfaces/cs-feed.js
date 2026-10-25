@@ -1084,7 +1084,7 @@
     state("failed", "reading where a helper failed", helpersPane([{ name: "Plan", status: "failed", elapsedMs: 9000, calls: ["Ran the tests"] }])),
     state("mixed", "reading several helpers, newest first", helpersPane([WORKING, { name: "Plan", status: "finished", elapsedMs: 30000, calls: [] }, { name: "general-purpose", status: "stopped", calls: ["Read app.py"] }]))
   ];
-  var surface = (slot, states, parts, extra = {}) => ({ id: `cs-feed.${slot}`, mod: "cs-feed", slot, source: "generated", global: "CsFeedSurfaces", needs: [], states, parts, ...extra });
+  var surface = (slot, states, parts, extra = {}) => ({ id: `cs-feed.${slot}`, mod: "cs-feed", slot, source: "generated", global: "CsFeedSurfaces", states, parts, ...extra });
   var surfaces = [
     surface("UserMessage", userStates, [
       { id: "feed-row", name: "you row with the name margin", state: "you-at", path: [0] },

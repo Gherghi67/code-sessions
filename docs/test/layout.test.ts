@@ -36,18 +36,66 @@ test('an explicit width holds a Box open, and clips it when overflow is hidden',
   expect(toText(layout(B({ width: 3, overflow: 'hidden' }, T({ wrap: 'end' }, 'abcdef')), 40))).toEqual(['ab…'])
 })
 
-// An absolute child takes no room in its parent's flow; the lab does not yet
-// draw it where its top and left put it, so its region stays blank.
-test('an absolute child takes no room in the flow and draws nothing yet', () => {
-  expect(toText(layout(B({}, T({}, 'a'), B({ position: 'absolute', top: 0, left: 0 }, T({}, 'zz')), T({}, 'b')), 40))).toEqual(['ab'])
-  expect(toText(layout(B({ width: 4, height: 2, position: 'relative' }, B({ position: 'absolute', top: 1, left: 1 }, T({}, 'zz'))), 40))).toEqual(['    ', '    '])
+// An absolute child takes no room in its parent's flow and paints at its
+// offsets over the parent's box, in the order the children are written
+// (2.1.310 paints childNodes in order; Rx places it). Worked by hand.
+const Abs = (props: any, ...children: any[]) => B({ position: 'absolute', ...props }, ...children)
+test('an absolute child takes no room in the flow and paints at its top and left, in child order', () => {
+  expect(toText(layout(B({}, T({}, 'a'), Abs({ top: 0, left: 0 }, T({}, 'zz')), T({}, 'b')), 40))).toEqual(['zb'])
+  expect(toText(layout(B({ width: 4, height: 2, position: 'relative' }, Abs({ top: 1, left: 1 }, T({}, 'zz'))), 40))).toEqual(['    ', ' zz '])
+  expect(toText(layout(B({ width: 5 }, T({}, 'abcde'), Abs({ top: 0, left: 1 }, T({}, 'XY'))), 40))).toEqual(['aXYde'])
+  expect(toText(layout(B({ width: 5 }, Abs({ top: 0, left: 1 }, T({}, 'XY')), T({}, 'abcde')), 40))).toEqual(['abcde'])
 })
 
-// The lab draws no syntax colour: a Code node is its source, line by line, dim.
-test('a Code node draws its source as plain dim lines', () => {
-  const g = layout({ type: 'Code', props: { source: 'graph TD\n  A --> B', language: 'mermaid' }, children: [] }, 40)
+// Rx: "if(tt(_))fe=g[0]+_+q;else if(tt(I))fe=f-g[2]-I-Se-Z" and the same down
+// the column: left and top count from inside the border, the padding not
+// counted; right and bottom from the far border, less the child's size.
+test('an absolute child sits inside the border, by left and top or by right and bottom', () => {
+  expect(toText(layout(B({ width: 6, height: 3, borderStyle: 'single', paddingLeft: 2 }, Abs({ top: 0, left: 0 }, T({}, 'X'))), 40))).toEqual(['\u250c\u2500\u2500\u2500\u2500\u2510', '\u2502X   \u2502', '\u2514\u2500\u2500\u2500\u2500\u2518'])
+  expect(toText(layout(B({ width: 6, height: 3 }, Abs({ bottom: 0, right: 1 }, T({}, 'zz'))), 40))).toEqual(['      ', '      ', '   zz '])
+  // The far border counts too: x = 6 - 1 - 0 - 2 = 3, y = 3 - 1 - 0 - 1 = 1.
+  expect(toText(layout(B({ width: 6, height: 3, borderStyle: 'single' }, Abs({ bottom: 0, right: 0 }, T({}, 'zz'))), 40))).toEqual(['\u250c\u2500\u2500\u2500\u2500\u2510', '\u2502  zz\u2502', '\u2514\u2500\u2500\u2500\u2500\u2518'])
+})
+
+// Rx sizes the child apart from the flow: its own width, or what its left
+// and right leave ("if(!tt(X)&&tt(_)&&tt(I))X=z-_-I"), else its content's,
+// unbounded (measure mode undefined), so a Text in it never wraps to the parent.
+test('an absolute child takes its own width, or what its left and right leave, or its content\'s', () => {
+  expect(toText(layout(B({ width: 3, height: 1 }, Abs({ top: 0, left: 1 }, T({}, 'abcdef'))), 40))).toEqual([' abcdef'])
+  expect(toText(layout(B({ width: 6, height: 2 }, Abs({ top: 0, left: 1, right: 1 }, T({}, 'abc def'))), 40))).toEqual([' abc  ', ' def  '])
+  // 6 - 1 - 1 leaves 4 cells, so abcde breaks after abcd; 5 would hold it.
+  expect(toText(layout(B({ width: 6, height: 2 }, Abs({ top: 0, left: 1, right: 1 }, T({}, 'abcde'))), 40))).toEqual([' abcd ', ' e    '])
+})
+
+// Given no offset along a reversed main axis, Rx sets the child against the
+// far padding edge and reads no justifyContent: "if(de){let ze=p[0]+g[0],
+// De=f-p[2]-g[2];fe=ne?De-Se-Z:Up(ye,ze,De,Se)+q}" (ne a reversed
+// direction), and down a column "ge=ne?De-xe-V:Up(ye,ze,De,xe)+Y".
+// Worked by hand: 6 - 1 - 2 = 3 across the row, 4 - 1 = 3 down the column.
+test('an absolute child with no offset along a reversed main axis sits at its far end', () => {
+  expect(toText(layout(B({ width: 6, height: 1, paddingRight: 1, flexDirection: 'row-reverse', justifyContent: 'center' }, Abs({ top: 0 }, T({}, 'ab'))), 40))).toEqual(['   ab '])
+  expect(toText(layout(B({ width: 2, height: 4, flexDirection: 'column-reverse', justifyContent: 'center' }, Abs({ left: 0 }, T({}, 'ab'))), 40))).toEqual(['  ', '  ', '  ', 'ab'])
+})
+
+// An absolute Box with no background skips its own blit ("skipSelfBlit:G&&
+// pe&&!ue.style.opaque&&ue.style.backgroundColor===void 0"): its padding is
+// transparent, and only what it draws lands.
+test('an absolute child\'s own room is transparent over what is under it', () => {
+  expect(toText(layout(B({ width: 5 }, T({}, 'abcde'), Abs({ top: 0, left: 0, paddingLeft: 2 }, T({}, 'X'))), 40))).toEqual(['abXde'])
+})
+
+// 2.1.310 draws a Code node (et -> LE) through its highlighter, which finds
+// a grammar by the language among highlight.js's 186 ("Z(this.filePath,o)",
+// filePath "source.${language}"); mermaid has none, so every line is the
+// theme's plain code ink ("if(!e.lang)return[[B(t),c]]", foreground
+// u(51,51,51) light, u(248,248,242) dark), not dim, broken at the width cell
+// by cell rather than at words (se), with a trailing newline dropped.
+test('a Code node draws its source in the plain code ink, broken cell by cell', () => {
+  const code = (source: string, w: number) => layout({ type: 'Code', props: { source, language: 'mermaid' }, children: [] }, w)
+  const g = code('graph TD\n  A --> B\n', 40)
   expect(toText(g).map((r: string) => r.replace(/\s+$/, ''))).toEqual(['graph TD', '  A --> B'])
-  expect(g.rows[1][2].st).toMatchObject({ dim: true, color: '' })
+  expect(g.rows[1][2].st).toMatchObject({ dim: false, color: 'codeForeground' })
+  expect(toText(code('ab cdef', 4))).toEqual(['ab c', 'def'])
 })
 
 // Yoga sizes a Box by its width whatever it holds: an empty one has no rows
@@ -287,12 +335,86 @@ test('a row Box stretches to the width of its column parent, so flexGrow takes t
   expect(toText(layout(B({ flexDirection: 'column', width: 8 }, B({}, B({ flexGrow: 1 }, T({}, 'a')), T({}, 'b'))), 40))).toEqual(['a      b'])
 })
 
-test('a column aligned flex-start does not stretch its children, and a stretched row still measures what overflows it', () => {
+test('a column aligned flex-start does not stretch its children', () => {
   const { layoutScreen } = require('../mods-layout.js')
   const g = layoutScreen(B({ flexDirection: 'column', alignItems: 'flex-start' }, B({}, B({ flexGrow: 1 }, T({}, 'a')), T({}, 'b'))), 10)
   expect(toText(g)).toEqual(['ab        '])
-  expect(layoutScreen(B({ flexDirection: 'column' }, B({}, T({}, 'abcde'), T({}, 'fghij'))), 5).w).toBe(10)
   expect(toText(layout(you2(), 40))).toEqual(['you09:41'])
+})
+
+// Box and Text default to flexShrink 1 in 2.1.310 ("var Ab={flexWrap:"nowrap",
+// flexDirection:"row",flexGrow:0,flexShrink:1,...}"), and Yoga gives a child
+// no minimum of its content's: a row whose children overrun it takes the
+// overrun off each in proportion to flexShrink times its basis ("ne+=K*
+// (J.flexShrink*ae)/G"), sizes rounded on their running sum ("_+=D[P];let
+// B=_+0.5|0"), then each Text wraps or truncates in what it is left.
+// Worked by hand.
+test('a row shrinks the children that overrun it, each in proportion to its basis', () => {
+  const { layoutScreen } = require('../mods-layout.js')
+  // abcde and fghij, 10 cells in 5: 2.5 each, rounded on the running sum to 3
+  // and 2; each wraps hard in its cells.
+  const g = layoutScreen(B({ flexDirection: 'column' }, B({}, T({}, 'abcde'), T({}, 'fghij'))), 5)
+  expect([g.w, toText(g)]).toEqual([5, ['abcfg', 'de hi', '   j ']])
+  // A truncate-end Text: 8 + 3 cells in 10 leaves 8 - 8/11 and 3 - 3/11,
+  // rounded to 7 and 3; abcdefgh truncates to abcdef and the mark.
+  expect(toText(layout(B({ width: 10 }, T({ wrap: 'truncate-end' }, 'abcdefgh'), T({}, 'xyz')), 40))).toEqual(['abcdef\u2026xyz'])
+  // A wrapping one: 11 + 2 cells in 10 leaves 8.46 and 1.54, rounded to 8 and
+  // 2; aaa bbb ccc wraps at its words in 8, dd fits its 2.
+  expect(toText(layout(B({ width: 10 }, T({}, 'aaa bbb ccc'), T({}, 'dd')), 40))).toEqual(['aaa bbb dd', 'ccc       '])
+})
+
+// Children whose flexShrink sums under 1 give up only that share of the
+// overrun ("if(K<0&&G>0){...if(Z<1){let V=H*Z;if(V>K)K=V}}"): two Boxes of
+// flexShrink 0.25 holding 5 cells each in 6 overrun by 4 and give up 4 x 0.5
+// = 2, one each, so each keeps 4 and the row draws 8 wide. Worked by hand.
+test('children whose flexShrink sums under 1 give up only that share of the overrun', () => {
+  expect(toText(layout(B({ width: 6 }, B({ flexShrink: 0.25 }, T({}, 'abcde')), B({ flexShrink: 0.25 }, T({}, 'fghij'))), 40))).toEqual(['abcdfghi', 'e   j   '])
+})
+
+// A Button never shrinks: the engine draws it in a Box of flexShrink 0
+// ("wc(s,{ref:h,flexShrink:0,alignSelf:"flex-start",..."), and so does a
+// child that sets flexShrink 0. The Text beside them takes all the overrun.
+test('a Button and a child of flexShrink 0 keep their cells while the Text beside them shrinks', () => {
+  expect(toText(layout(B({ width: 8 }, { type: 'Button', props: { label: 'rotate', plain: true }, children: [] }, T({}, 'abcdef')), 40))).toEqual(['rotateab', '      cd', '      ef'])
+  expect(toText(layout(B({ width: 8 }, B({ flexShrink: 0 }, T({}, 'rotate')), T({}, 'abcdef')), 40))).toEqual(['rotateab', '      cd', '      ef'])
+})
+
+// A Box's own width is only its basis: a row that cannot hold it shrinks it
+// like any child (Yoga reads width as the flex basis, "let A=at(E.width,p);
+// if(A===A)return A>0?A:0"), and what the Box holds wraps in what is left.
+test('a Box of an explicit width shrinks in a row that cannot hold it', () => {
+  expect(toText(layout(B({ width: 6 }, B({ width: 8 }, T({}, 'abcdefgh'))), 40))).toEqual(['abcdef', 'gh    '])
+})
+
+// A Box of an explicit width is that wide whatever it holds: two Buttons of
+// 2 cells each keep their 4 in its 3 and the second draws past its edge, into
+// the margin of the Box after it, which draws nothing there; the renderer
+// paints children in order, so the margin's room never erases it.
+test('what a Box cannot shrink draws past its width, under the sibling after it', () => {
+  const Bt = (label: string) => ({ type: 'Button', props: { label, plain: true }, children: [] })
+  const g = layout(B({}, B({ width: 3 }, Bt('ab'), Bt('cd')), B({ marginLeft: 2 }, T({}, 'x'))), 40)
+  expect([g.w, toText(g)]).toEqual([6, ['abcd x']])
+  // The root takes the terminal's cells exactly, and draws past them too.
+  const { layoutScreen } = require('../mods-layout.js')
+  const root = layoutScreen(B({}, Bt('ab'), Bt('cd')), 3)
+  expect([root.w, toText(root)]).toEqual([3, ['abcd']])
+})
+
+// The Button is a Box of flexShrink 0 around one Text of the default wrap
+// ("z?wc(n,{inverse:C,dimColor:W,...H},B?"":wc(n,{color:"suggestion"},f),B?"":": ",...N)"),
+// so a label wider than the room wraps at its words like any Text.
+test('a Button whose label is wider than its room wraps it', () => {
+  expect(toText(layout({ type: 'Button', props: { label: 'abcdef', plain: true }, children: [] }, 3))).toEqual(['abc', 'def'])
+  const g = layout({ type: 'Button', props: { label: 'abcdef', hotkey: '1', plain: true }, children: [] }, 4)
+  expect(toText(g)).toEqual(['1: ', 'abcd', 'ef'])
+  expect(g.rows[0][0].st.color).toBe('suggestion')
+})
+
+// A child shrunk to no cells still draws: a wrapping Text given 0 cells
+// draws whole, so the mark paints into its Box's margin cell, under the
+// Button laid out after it.
+test('a child shrunk to no cells draws past them, under what is drawn after it', () => {
+  expect(toText(layout(B({ width: 5 }, B({ marginRight: 1 }, T({}, '\u25cf')), { type: 'Button', props: { label: 'abcd', plain: true }, children: [] }), 40))).toEqual(['\u25cfabcd'])
 })
 const you2 = () => B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({}, 'you')), T({}, '09:41')))
 
@@ -301,8 +423,59 @@ const you2 = () => B({ flexDirection: 'column' }, B({}, B({ flexGrow: 1 }, T({},
 test('a Text breaks into rows at each newline, then wraps each row to the room', () => {
   expect(toText(layout(T({}, 'cs -update exited 3.\ndownload failed'), 40))).toEqual(['cs -update exited 3.', 'download failed'])
   expect(toText(layout(T({}, 'abcdef\ngh'), 4))).toEqual(['abcd', 'ef', 'gh'])
-  expect(toText(layout(T({ wrap: 'truncate-end' }, 'abcdef\ngh'), 4))).toEqual(['abc…', 'gh'])
   expect(toText(layout(T({}, 'a\n\nb'), 4))).toEqual(['a', '', 'b'])
+})
+
+// 2.1.310 wraps a Text in its render (gv) and its measure (s1) through Ip:
+// `wrap` is ku(n,u,{trim:!1,hard:!0}), the bundle's wrapper over
+// Bun.wrapAnsi, `wrap-trim` the same with trim. A word moves to the next row
+// whole and only a word wider than the row breaks; a row that starts with the
+// space the wrap carried over draws without it ("I=_.startsWith(" ")?
+// _.slice(1):_,P=vf(I)>0?I:_"), unless the space is all the row holds.
+// Worked by hand from wrap-ansi's rules, the ones Bun.wrapAnsi implements.
+test('a Text wraps at its words, as the engine wraps it', () => {
+  const rows = (s: string, w: number, wrap?: string) => toText(layout(T(wrap ? { wrap } : {}, s), w))
+  expect(rows('one two three', 7)).toEqual(['one two', 'three'])
+  expect(rows('abcdefghij klm', 4)).toEqual(['abcd', 'efgh', 'ij ', 'klm'])
+  expect(rows('  \u00b7  ', 1)).toEqual([' ', ' ', '\u00b7', ' ', ' '])
+  expect(rows('mail 1', 1)).toEqual(['m', 'a', 'i', 'l', ' ', '1'])
+  expect(rows('ab  cd', 3, 'wrap-trim')).toEqual(['ab', 'cd'])
+})
+
+// What a Text given no cells draws: ku returns the text unchanged for a
+// width that is not above 0 ("if(!(t>0))return e"), so a wrapping Text draws
+// whole; o1 returns "" below 1, so a truncating one draws nothing.
+test('a wrapping Text given no cells draws whole, a truncating one draws nothing', () => {
+  expect(toText(layout(T({}, 'ab'), 0))).toEqual(['ab'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'ab'), 0))).toEqual([''])
+})
+
+// A truncating Text is cut whole (gv hands Ip the text, newlines and all,
+// when the mode does not wrap): its widest line decides, and what follows
+// the cut, the rest of the lines included, is gone.
+test('a truncating Text is cut once across its lines', () => {
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'abcdef\ngh'), 4))).toEqual(['abc\u2026'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'ab\ncdefgh'), 4))).toEqual(['ab', 'c\u2026'])
+  expect(toText(layout(T({ wrap: 'truncate-end' }, 'ab\ncd'), 4))).toEqual(['ab', 'cd'])
+})
+
+// The engine's own wrap is the oracle: over a battery of texts and widths,
+// the lab's rows are Bun.wrapAnsi's (bun 1.4.4, the Bun 2.1.310 embeds) with
+// a carried space dropped from a continuation row, and the Text measures the
+// widest row Bun.wrapAnsi gives.
+test('a Text wraps as Bun.wrapAnsi does, over a battery of texts and widths', () => {
+  const texts = ['one two three', 'a  b', ' lead', 'trail  ', 'abcdefghij klm', 'x yy zzz wwww vvvvv', '  \u00b7  ', 'ctrl+x  1 rotate  \u00b7  2 wrap', 'a b c d e f g', 'word\nnext line here']
+  const misses: string[] = []
+  for (const s of texts) for (let w = 1; w <= 12; w++) {
+    const raw = Bun.wrapAnsi(s, w, { trim: false, hard: true }).split('\n')
+    const widest = Math.max(...s.split('\n').map(l => l.length))
+    const drawn = widest <= w ? s.split('\n') : s.split('\n').flatMap(l => Bun.wrapAnsi(l, w, { trim: false, hard: true }).split('\n').map((r, i) => i && r.startsWith(' ') && r.length > 1 ? r.slice(1) : r))
+    const g = layout(T({}, s), w)
+    const got = { rows: toText(g), w: g.w }
+    const want = { rows: drawn, w: widest <= w ? widest : Math.max(...raw.map(r => r.length)) }
+    if (JSON.stringify(got) !== JSON.stringify(want)) misses.push(`${JSON.stringify(s)} at ${w}: ${JSON.stringify(got)} != ${JSON.stringify(want)}`)
+  }
+  expect(misses).toEqual([])
 })
 
 // The 2.1.310 bundle's Markdown renderer: strong is bold, em italic, and a
@@ -316,7 +489,7 @@ test('a Markdown node draws its text with bold, italic and code styled, the mark
   expect(g.rows[0][4].st.bold).toBe(false)
   expect(g.rows[0][16].st).toMatchObject({ color: 'permission', bold: false })
   expect(g.rows[0][27].st.italic).toBe(true)
-  expect(toText(layout(md('one two three\nfour'), 7))).toEqual(['one two', ' three', 'four'])
+  expect(toText(layout(md('one two three\nfour'), 7))).toEqual(['one two', 'three', 'four'])
 })
 
 // A pane as the 2.1.310 bundle frames an inline one (Tle): a round border,
@@ -346,4 +519,53 @@ test('a pane clips its body to its rows, and shows its tabs only beside another 
 test('toJsx prints a Markdown or a Code node as the element the mod writes', () => {
   expect(toJsx({ type: 'Markdown', props: { text: 'Gate **green**' }, children: [] })).toBe('<Markdown text="Gate **green**" />')
   expect(toJsx(B({}, { type: 'Code', props: { source: 'graph TD', language: 'mermaid' }, children: [] }))).toBe('<Box>\n  <Code source="graph TD" language="mermaid" />\n</Box>')
+})
+
+// Hover and focus as 2.1.310 draws them. A Button lights when the pointer
+// is over it or it has the focus ("let C=M.focused||M.hovered||S,W=x===!0&&
+// !C"): its whole Text inverts and drops its dim ("wc(n,{inverse:C,dimColor:W,
+// ...H},...)"), then its own hover props apply. A node's hover props merge
+// when its hover.scope is hot (a node of that scope is under the pointer,
+// "c=(o?f.isHot:m)&&p?Me(ot(p))??{}:{}"), or, with no scope, when the keyed
+// Box it sits in is under the pointer (Ot provides that, "wc(Ne.Provider,
+// {value:k}"); a keyed Box's own hover merges when it is under the pointer.
+const { interact } = require('../mods-layout.js')
+const Bh = (props: any) => ({ type: 'Button', props: { plain: true, ...props }, children: [] })
+test('a Button under the pointer or with the focus inverts and drops its dim', () => {
+  const tree = B({}, Bh({ key: 'a', label: 'ab', dimColor: true }), Bh({ key: 'b', label: 'cd', hotkey: '1' }))
+  const hovered = layout(interact(tree, { hover: [0], focus: null }), 40).rows[0]
+  expect([hovered[0].st, hovered[2].st.inverse]).toMatchObject([{ inverse: true, dim: false }, false])
+  const focused = layout(interact(tree, { hover: null, focus: [1] }), 40).rows[0]
+  expect(toText({ rows: [focused] })).toEqual(['ab1: cd'])
+  expect(focused.slice(2).map((c: any) => [c.st.inverse, c.st.color])).toEqual([[true, 'suggestion'], [true, ''], [true, ''], [true, ''], [true, '']])
+  expect(layout(interact(tree, { hover: null, focus: null }), 40).rows[0][0].st).toMatchObject({ inverse: false, dim: true })
+})
+
+test('a hovered node lights its scope: every node of that scope merges its hover props', () => {
+  const tree = B({}, Bh({ key: 'bar', label: '│', dimColor: true, hover: { scope: 's', dimColor: false } }),
+    B({ display: 'none', hover: { scope: 's', display: 'flex' } }, T({}, 'card')))
+  expect(toText(layout(interact(tree, { hover: null, focus: null }), 40))).toEqual(['│'])
+  expect(toText(layout(interact(tree, { hover: [0], focus: null }), 40))).toEqual(['│card'])
+  // A Button's hover props spread after the engine's own ("{inverse:C,
+  // dimColor:W,...H}"), so a hover that dims it dims it while it inverts.
+  const dims = B({}, Bh({ key: 'bar', label: 'ab', hover: { scope: 's', dimColor: true } }))
+  expect(layout(interact(dims, { hover: [0], focus: null }), 40).rows[0][0].st).toMatchObject({ inverse: true, dim: true })
+})
+
+test('a keyed Box under the pointer merges its own hover, and the Text it holds merges a hover of no scope', () => {
+  const tree = B({ key: 'row', hover: { backgroundColor: 'red' } }, T({ hover: { color: 'claude' } }, 'x'), T({}, 'y'))
+  const over = layout(interact(tree, { hover: [1], focus: null }), 40).rows[0]
+  expect(over.map((c: any) => [c.st.bg, c.st.color])).toEqual([['red', 'claude'], ['red', '']])
+  const off = layout(interact(tree, { hover: null, focus: null }), 40).rows[0]
+  expect(off.map((c: any) => [c.st.bg, c.st.color])).toEqual([['', ''], ['', '']])
+  // An unkeyed Box under the pointer gives the Text in it nothing to merge.
+  expect(layout(interact(B({}, T({ hover: { color: 'claude' } }, 'x')), { hover: [0], focus: null }), 40).rows[0][0].st.color).toBe('')
+})
+
+// Yoga holds a Box to its minWidth ("if(u===1){if(E<m)E=m}" in Dx): the
+// engine's survey mark is one cell in a Box of minWidth 2, so its question
+// starts two cells in; a row's shrink stops a child there too.
+test('a Box takes at least its minWidth, and a row does not shrink it below that', () => {
+  expect(toText(layout(B({}, B({ minWidth: 2 }, T({}, 'x')), T({}, 'y')), 40))).toEqual(['x y'])
+  expect(toText(layout(B({ width: 4 }, B({ minWidth: 3 }, T({}, 'ab')), T({}, 'cdef')), 40))).toEqual(['ab c', '   d', '   e', '   f'])
 })

@@ -845,19 +845,31 @@ prints the JSX to paste into a mod. The Components tab beside Layers lists
 every surface by mod, with its states and its reusable parts: a state adds a
 frame drawn by the mod's code inside the chrome the engine draws round it (a
 pane's frame and tab, the band's `[-]` cells), and a part drags into a frame
-or inserts by the selection. A frame says what in it the lab cannot draw yet,
-such as cs-mermaid's absolute layout, and what it draws instead: an absolute
-child's region left blank at its size, a Code node's source as plain dim
-lines. A state that holds a Markdown or a Code
+or inserts by the selection. A frame's `preview` toggle draws it the way the
+terminal does under the pointer. The node under the pointer takes its hover
+props, through its hover scope or the keyed Box it sits in, and a click gives
+the Button under it the focus. A hovered or focused Button draws inverted.
+This is how the band's rail cards and a focused chord Button show. A frame in
+preview is only looked at: turning preview on drops a selection in it, and the
+lab refuses every edit of it and says why. A state that holds a Markdown or a Code
 node opens as a reference frame: you can select and inspect it, and the lab
 refuses every edit of it and says why.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's
 localStorage. The editor's model lives in `docs/mods-band-editor.js`, pinned
 by `docs/test/band-editor.test.ts`. The layout engine behind it lives in
 `docs/mods-layout.js`, which the page loads as a plain script and
-`tests/test_mods_layout.sh` drives through bun. It approximates the engine
-rather than porting it: a row that overruns the band is clipped and named,
-where the real one shrinks a Text to fit.
+`tests/test_mods_layout.sh` drives through bun. It follows the layout of
+Claude Code 2.1.310, read off its bundle. A row whose children overrun it
+shrinks each one by its flexShrink and its width, and each Text then wraps at
+its words, as Bun.wrapAnsi does, or truncates in the cells it keeps. A Button never
+shrinks. When the Buttons alone are wider than the band, the line runs past
+the edge, and the frame cuts it there and says so. An absolute child paints at
+its offsets over its parent, in the order the mod writes them, so
+cs-mermaid's chart draws its diagram. A Code node draws mermaid in the theme's
+plain code ink, as the engine does for a language its highlighter has no
+grammar for. The band under a survey shows the survey the engine draws. The
+lab still counts code points where the terminal counts cells, so a wide glyph
+draws one cell short.
 
 The mod also registers `/queue`, marked immediate so it runs while a turn is
 in flight instead of waiting for it to end. `/queue <task>` runs

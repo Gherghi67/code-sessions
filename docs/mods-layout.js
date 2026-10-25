@@ -24,33 +24,110 @@
   }
 
   var chars = function (s) { return Array.from(String(s)); };
-  function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path }; }); }
+  function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path, ink: true }; }); }
   function blanks(n, st, path) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY, path: path }); return out; }
 
-  // Break `cells` into rows no wider than `room`, by the Text wrap mode. A
-  // truncation mark inherits the style of the run it lands in.
-  function wrapCells(cells, room, mode) {
-    if (room <= 0) return [[]];
-    var dots = function (i) { var from = cells[i] || cells[cells.length - 1]; return { ch: "\u2026", st: from.st, path: from.path }; };
-    if (!mode || mode === "wrap") {
-      var out = [];
-      for (var i = 0; i < cells.length; i += room) out.push(cells.slice(i, i + room));
-      return out.length ? out : [[]];
-    }
-    if (cells.length <= room) return [cells];
-    if (mode === "truncate-start") return [[dots(cells.length - room)].concat(cells.slice(cells.length - room + 1))];
+  // A truncated run no wider than `room`, by the Text wrap mode, its newlines
+  // taking no cells: the 2.1.310 renderer cuts a Text that does not wrap
+  // whole (o1), so the cut can fall past a newline and drops the lines after
+  // it. A truncation mark inherits the style of the run it lands in. Below
+  // one cell nothing is left.
+  function truncate(cells, room, mode) {
+    if (room < 1) return [];
+    var shown = cells.filter(function (c) { return c.ch !== "\n"; });
+    var dots = function (from) { return { ch: "…", st: from.st, path: from.path, ink: true }; };
+    if (room === 1) return [dots(shown[0])];
+    var head = function (n) { var out = [], seen = 0; for (var i = 0; i < cells.length && seen < n; i++) { out.push(cells[i]); if (cells[i].ch !== "\n") seen++; } return out; };
+    var tail = function (n) { var out = [], seen = 0; for (var i = cells.length - 1; i >= 0 && seen < n; i--) { out.unshift(cells[i]); if (cells[i].ch !== "\n") seen++; } return out; };
+    if (mode === "truncate-start") return [dots(shown[shown.length - room])].concat(tail(room - 1));
     if (mode === "middle" || mode === "truncate-middle") {
-      var head = Math.floor((room - 1) / 2);
-      return [cells.slice(0, head).concat([dots(head)], cells.slice(cells.length - (room - 1 - head)))];
+      var left = Math.floor((room - 1) / 2);
+      return head(left).concat([dots(shown[left])], tail(room - 1 - left));
     }
-    return [cells.slice(0, room - 1).concat([dots(room - 1)])];
+    return head(room - 1).concat([dots(shown[room - 1])]);
   }
 
-  // A Text's rows: broken at each newline, then each line wrapped to `room`.
+  // One line broken into rows no wider than `columns` as Bun.wrapAnsi breaks
+  // it with hard on, the 2.1.310 wrap (wrap-ansi's rules): a word that does
+  // not fit moves to a new row whole, one wider than a row breaks across rows,
+  // the space between two words stays at the end of a row or starts the
+  // next. `trim` drops the spaces each row starts and ends with.
+  function wordRows(line, columns, trim) {
+    if (trim && line.every(function (c) { return c.ch === " "; })) return [[]];
+    var words = [[]], spaces = [];
+    line.forEach(function (c) { if (c.ch === " ") { spaces.push(c); words.push([]); } else words[words.length - 1].push(c); });
+    var rows = [[]];
+    var last = function () { return rows[rows.length - 1]; };
+    words.forEach(function (word, i) {
+      if (trim) { var lead = 0; while (lead < last().length && last()[lead].ch === " ") lead++; rows[rows.length - 1] = last().slice(lead); }
+      var used = last().length;
+      if (i > 0) {
+        if (used >= columns && !trim) { rows.push([]); used = 0; }
+        if (used > 0 || !trim) { last().push(spaces[i - 1]); used++; }
+      }
+      if (word.length > columns) {
+        var thisRow = 1 + Math.floor((word.length - (columns - used) - 1) / columns);
+        var nextRow = Math.floor((word.length - 1) / columns);
+        if (nextRow < thisRow) rows.push([]);
+        var shown = last().length;
+        word.forEach(function (c, k) {
+          if (shown + 1 <= columns) last().push(c); else { rows.push([c]); shown = 0; }
+          shown++;
+          if (shown === columns && k < word.length - 1) { rows.push([]); shown = 0; }
+        });
+        return;
+      }
+      if (used + word.length > columns && used > 0 && word.length > 0) rows.push([]);
+      rows[rows.length - 1] = last().concat(word);
+    });
+    if (trim) rows = rows.map(function (r) { var end = r.length; while (end > 0 && r[end - 1].ch === " ") end--; return r.slice(0, end); });
+    return rows;
+  }
+
+  // A Text's rows in `room` cells, and the cells it measures, as the 2.1.310
+  // terminal draws and measures it (gv and s1). A Text whose widest line fits
+  // draws as written. A wrapping one is broken line by line; a row that
+  // starts with the space carried over from the row above draws without it,
+  // unless the space is all the row holds, but measures with it. Given no
+  // cells it draws whole. Any other mode is cut once (`truncate`).
   function textRows(cells, room, mode) {
     var lines = [[]];
     cells.forEach(function (c) { if (c.ch === "\n") lines.push([]); else lines[lines.length - 1].push(c); });
-    return lines.reduce(function (rows, line) { return rows.concat(wrapCells(line, room, mode)); }, []);
+    var widest = function (rows) { return rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0); };
+    var natural = widest(lines);
+    var wraps = !mode || mode === "wrap" || mode === "wrap-trim";
+    if (natural <= room || (wraps && room <= 0)) return { w: natural, rows: lines };
+    if (!wraps) {
+      var cut = truncate(cells, room, mode), rows = [[]];
+      cut.forEach(function (c) { if (c.ch === "\n") rows.push([]); else rows[rows.length - 1].push(c); });
+      return { w: widest(rows), rows: rows };
+    }
+    var measured = 0, drawn = [];
+    lines.forEach(function (line) {
+      wordRows(line, room, mode === "wrap-trim").forEach(function (r, i) {
+        measured = Math.max(measured, r.length);
+        drawn.push(i > 0 && r.length > 1 && r[0].ch === " " ? r.slice(1) : r);
+      });
+    });
+    return { w: measured, rows: drawn };
+  }
+
+  // A Code node as 2.1.310's highlighter draws a language it has no grammar
+  // for (mermaid, the one a mod draws): each line in the theme's plain code
+  // ink, `codeForeground` (the page resolves it per theme), broken at the
+  // width cell by cell, a trailing newline dropped. A language among its
+  // grammars draws in scope colours the lab does not reproduce; no mod
+  // surface hands it one.
+  function codeRows(source, width, path) {
+    var lines = source.split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    var ink = styleOf({ color: "codeForeground" }), room = Math.max(1, width), rows = [];
+    lines.forEach(function (line) {
+      var cells = run(line, ink, path);
+      if (!cells.length) rows.push([]);
+      for (var i = 0; i < cells.length; i += room) rows.push(cells.slice(i, i + room));
+    });
+    return { w: rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0), rows: rows };
   }
 
   // A Markdown text as one inline run, as the 2.1.310 renderer styles it:
@@ -95,6 +172,9 @@
     var w = rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0);
     return { w: w, h: rows.length, rows: rows };
   }
+  // A Text's grid: the cells it measures, which can be more than its widest
+  // drawn row (`textRows`).
+  function textGrid(t) { return { w: t.w, h: t.rows.length, rows: t.rows }; }
 
   var BORDERS = {
     single: { tl: "\u250c", t: "\u2500", tr: "\u2510", r: "\u2502", br: "\u2518", b: "\u2500", bl: "\u2514", l: "\u2502" },
@@ -129,20 +209,24 @@
     };
   }
 
-  // `fill`: the Box takes all of `availWidth` (Yoga's stretch), as the root
-  // does in the terminal and a Box does in a column; without it the tree is
-  // measured at its natural width.
+  // `fill`: the node takes exactly `availWidth` (Yoga's stretch, or the size
+  // a row's flex gave it), as the root does in the terminal and a Box does in
+  // a column, and draws past it what does not fit; without it the node is
+  // measured in at most `availWidth`, as Yoga measures a flex basis.
   function layout(node, availWidth, at, fill) {
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
     var path = at || [];
     if (!node) return grid([]);
-    if (node.type === "Text") return grid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
     if (node.type === "Button") return layoutButton(node, width, path);
     if (node.type === "Box") return layoutBox(node, width, path, !!fill);
-    if (node.type === "Markdown") return grid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
-    // The lab draws no syntax colour: a Code node is its source, dim.
-    if (node.type === "Code") return grid(textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width));
-    return grid([]);
+    var text = null;
+    if (node.type === "Text") text = textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap);
+    if (node.type === "Markdown") text = textRows(markdownCells(String((node.props || {}).text || ""), path), width);
+    if (node.type === "Code") text = codeRows(String((node.props || {}).source || ""), width, path);
+    if (!text) return grid([]);
+    var g = textGrid(text);
+    if (fill) g.w = width;
+    return g;
   }
   // The tree as the terminal draws it in a row `width` cells wide.
   function layoutScreen(node, width) { return layout(node, width, [], true); }
@@ -179,17 +263,19 @@
   // other is `[ label ]` bold, in suggestion for variant primary, and never
   // shows its hotkey. Children, when there are any, draw in the label's place
   // as inline runs (strings and Text), inside the brackets. The engine reads
-  // no colour or bold of a Button's own.
+  // no colour or bold of a Button's own. It draws the Button as one Text of
+  // the default wrap, so a label wider than the room wraps in it.
   function layoutButton(node, width, path) {
     var p = node.props || {};
     var st = styleOf(p.plain ? { dimColor: p.dimColor } : { dimColor: p.dimColor, bold: true, color: p.variant === "primary" ? "suggestion" : "" });
+    if (p.lit) st = mergeStyle(st, p.lit);
     var drawn = (node.children || []).some(function (k) { return k != null && k !== false && k !== ""; });
     var body = drawn ? textCells({ props: {}, children: node.children }, st, path) : run(p.label == null ? "" : String(p.label), st, path);
     var cells;
     if (!p.plain) cells = run("[ ", st, path).concat(body, run(" ]", st, path));
     else if (p.hotkey) cells = run(String(p.hotkey), mergeStyle(st, { color: "suggestion" }), path).concat(run(": ", st, path), body);
     else cells = body;
-    return grid([cells.slice(0, Math.max(0, width))]);
+    return textGrid(textRows(cells, width, "wrap"));
   }
 
   function layoutBox(node, width, path, fill) {
@@ -197,10 +283,11 @@
     if (p.display === "none") return grid([]);
     var m = margins(p), pd = pads(p);
     var border = p.borderStyle && BORDERS[p.borderStyle] ? p.borderStyle : "";
+    var edge = border ? 1 : 0;
     var edgeSt = { color: p.borderColor || "", bg: "", bold: false, dim: !!p.borderDimColor, italic: false, underline: false, strikethrough: false, inverse: false };
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
 
-    var chrome = (border ? 2 : 0) + pd.l + pd.r;
+    var chrome = 2 * edge + pd.l + pd.r;
     var outer = typeof p.width === "number" ? p.width : 0;
     // Room the children get: an explicit width fixes it, else what is left of
     // the band after this Box's own margins and chrome.
@@ -213,14 +300,16 @@
     var column = dir.indexOf("column") === 0;
     var reverse = /-reverse$/.test(dir);
 
-    // Every child measures against the full inner room; a row that overruns it
-    // overflows rather than starving its later children. The engine shrinks
-    // them instead (Box and Text default to flexShrink 1); this layout does not.
+    // Every child is measured in at most the inner room, its flex basis; a row
+    // then grows or shrinks them to fit (`placeRow`).
     // A child's path keeps its index among all the children, falsy ones too.
-    // An absolute child takes no room in the flow, and the lab does not yet
-    // draw it at its top and left, so it is left out.
-    var blocks = [];
-    (node.children || []).forEach(function (kid, i) { if (kid && (kid.props || {}).position !== "absolute") blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
+    // An absolute child takes no room in the flow (`placeAbsolute`).
+    var blocks = [], loose = [];
+    (node.children || []).forEach(function (kid, i) {
+      if (!kid) return;
+      if ((kid.props || {}).position === "absolute") loose.push({ node: kid, at: path.concat([i]), i: i });
+      else blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]), i: i });
+    });
     if (reverse) blocks.reverse();
     // A column stretches each Box it holds that sets no width of its own to
     // the column's width, unless the column aligns its items otherwise.
@@ -229,40 +318,101 @@
       blocks.forEach(function (b) { if (b.node.type === "Box" && typeof (b.node.props || {}).width !== "number") b.g = layout(b.node, colWidth, b.at, true); });
     }
 
-    var body = column ? stackColumn(blocks, inner, gap, p, outer, path, least) : stackRow(blocks, inner, gap, p, outer, path, least);
+    var body = column ? placeColumn(blocks, inner, gap, p, outer, least) : placeRow(blocks, inner, gap, p, outer, least);
 
+    // An explicit width, or a width the Box was handed whole, is the Box's
+    // width: what its children draw past it spills over its edge.
+    var w = outer || fill ? inner : body.w;
+    // Yoga holds a Box to its minWidth, whatever it was handed.
+    if (typeof p.minWidth === "number") w = Math.max(w, p.minWidth - chrome);
     // Height: an explicit height pads or (with overflow hidden) clips the body.
-    var bodyRows = body.rows;
-    // An explicit width holds the content open even when nothing in the flow fills it.
-    var w = outer ? Math.max(inner, body.w) : body.w;
+    var h = body.h;
     if (typeof p.height === "number") {
-      var room = Math.max(0, p.height - (border ? 2 : 0) - pd.t - pd.b);
-      if (bodyRows.length > room && p.overflow === "hidden") bodyRows = bodyRows.slice(0, room);
-      while (bodyRows.length < room) bodyRows.push(blanks(w, EMPTY, path));
+      var room = Math.max(0, p.height - 2 * edge - pd.t - pd.b);
+      h = body.h > room && p.overflow === "hidden" ? room : Math.max(room, body.h);
     }
 
+    // The Box's own cells: its margins, then its border, then the padding and
+    // body its background fills; its children are painted over them in the
+    // order the mod wrote them. Overflow hidden cuts them at the body's edge.
+    var x0 = m.l + edge + pd.l, y0 = m.t + edge + pd.t;
+    var iw = w + pd.l + pd.r, ih = h + pd.t + pd.b;
+    var W = m.l + 2 * edge + iw + m.r, H = m.t + 2 * edge + ih + m.b;
+    if (!H) return { w: outer ? outer + m.l + m.r : 0, h: 0, rows: [] };
+    var canvas = [];
+    for (var y = 0; y < H; y++) {
+      var inside = y >= m.t + edge && y < m.t + edge + ih;
+      canvas.push(blanks(m.l + edge, EMPTY, path).concat(blanks(iw, inside ? fillSt : EMPTY, path), blanks(edge + m.r, EMPTY, path)));
+    }
+    if (border) {
+      var g = BORDERS[border];
+      canvas[m.t] = blanks(m.l, EMPTY, path).concat(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt, path), blanks(m.r, EMPTY, path));
+      canvas[m.t + 1 + ih] = blanks(m.l, EMPTY, path).concat(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path), blanks(m.r, EMPTY, path));
+      for (var r = m.t + 1; r <= m.t + ih; r++) { canvas[r][m.l] = { ch: g.l, st: edgeSt, path: path, ink: true }; canvas[r][m.l + 1 + iw] = { ch: g.r, st: edgeSt, path: path, ink: true }; }
+    }
+    var cut = { right: p.overflow === "hidden" ? x0 + w : Infinity, bottom: y0 + h };
+    var spots = body.spots.map(function (s, k) { return { g: s.g, x: x0 + s.x, y: y0 + s.y, i: blocks[k].i }; });
+    var box = { x: m.l, y: m.t, w: 2 * edge + iw, h: 2 * edge + ih, edge: edge, pd: pd, column: column, reverse: reverse, p: p };
+    loose.forEach(function (a) { spots.push(placeAbsolute(a, box)); });
+    spots.sort(function (a, b) { return a.i - b.i; }).forEach(function (s) { paint(canvas, s.g, s.x, s.y, cut, path); });
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
-    if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w, EMPTY, path), p.backgroundColor); });
-    var rows = bodyRows.map(function (r) { return blanks(pd.l, fillSt, path).concat(padRow(r, w, fillSt, path), blanks(pd.r, fillSt, path)); });
-    for (var i = 0; i < pd.t; i++) rows.unshift(blanks(w + pd.l + pd.r, fillSt, path));
-    for (var j = 0; j < pd.b; j++) rows.push(blanks(w + pd.l + pd.r, fillSt, path));
-
-    if (border) {
-      var g = BORDERS[border], iw = w + pd.l + pd.r;
-      rows = rows.map(function (r) { return [{ ch: g.l, st: edgeSt, path: path }].concat(r, [{ ch: g.r, st: edgeSt, path: path }]); });
-      rows.unshift(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt, path));
-      rows.push(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path));
+    if (p.backgroundColor) for (var by = m.t + edge; by < m.t + edge + ih; by++) {
+      canvas[by] = canvas[by].slice(0, m.l + edge).concat(underpaint(canvas[by].slice(m.l + edge, m.l + edge + iw), p.backgroundColor), canvas[by].slice(m.l + edge + iw));
     }
+    return { w: W, h: H, rows: canvas };
+  }
 
-    if (m.l || m.r) rows = rows.map(function (r) { return blanks(m.l, EMPTY, path).concat(r, blanks(m.r, EMPTY, path)); });
-    var mw = rows.length ? rows[0].length : 0;
-    for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw, EMPTY, path));
-    for (var b = 0; b < m.b; b++) rows.push(blanks(mw, EMPTY, path));
-    var out = grid(rows);
-    // A Box with no rows still takes its explicit width, as Yoga sizes it.
-    if (!rows.length && outer) out.w = outer + m.l + m.r;
-    return out;
+  // An absolute child as 2.1.310 places it (Rx), apart from the flow: its own
+  // width, or what its left and right leave of the Box inside the border,
+  // else its content's, unbounded; the same down the column. It sits at its
+  // left (or its right) and its top (or its bottom) counted from inside the
+  // border, the padding not counted, or, given neither, where the Box's
+  // justifyContent (along a row) or alignItems (across it) would put it; along
+  // a reversed main axis, against the far padding edge, justifyContent unread.
+  // `box` is the parent's border box on its canvas.
+  function placeAbsolute(a, box) {
+    var q = a.node.props || {}, km = margins(q), e = box.edge;
+    var size = function (own, from, to, room) { return typeof own === "number" ? own : typeof from === "number" && typeof to === "number" ? Math.max(0, room - from - to) : null; };
+    var w = size(q.width, q.left, q.right, box.w - 2 * e), h = size(q.height, q.top, q.bottom, box.h - 2 * e);
+    var props = Object.assign({}, q, w === null ? {} : { width: w }, h === null ? {} : { height: h });
+    var g = layout({ type: a.node.type, props: props, children: a.node.children }, w === null ? UNBOUNDED : w + km.l + km.r, a.at, w !== null);
+    var at = function (lead, trail, extent, span, pad0, pad1, align, reversed) {
+      if (typeof lead === "number") return e + lead;
+      if (typeof trail === "number") return extent - e - trail - span;
+      var from = e + pad0, to = extent - e - pad1;
+      if (reversed) return to - span;
+      return align === "center" ? Math.round(from + (to - from - span) / 2) : align === "flex-end" ? to - span : from;
+    };
+    var rowAlign = box.column ? box.p.alignItems : box.p.justifyContent, colAlign = box.column ? box.p.justifyContent : box.p.alignItems;
+    return {
+      g: g, i: a.i,
+      x: box.x + at(q.left, q.right, box.w, g.w, box.pd.l, box.pd.r, rowAlign, box.reverse && !box.column),
+      y: box.y + at(q.top, q.bottom, box.h, g.h, box.pd.t, box.pd.b, colAlign, box.reverse && box.column),
+    };
+  }
+  // The room an absolute child of no width of its own is measured in: its
+  // content's, whatever it is.
+  var UNBOUNDED = 1e6;
+
+  // A cell a node drew (text, a border, a background) always lands; a cell a
+  // Box only keeps room with (padding, gaps, margins, slack) lands only where
+  // nothing has been drawn, so a later sibling's room never erases what an
+  // earlier one drew past its own cells.
+  function inked(c) { return !!(c.ink || (c.st && c.st.bg)); }
+  // What lands past the canvas's edge widens its row, the gap kept by the
+  // Box at `path`.
+  function paint(canvas, g, x, y, cut, path) {
+    g.rows.forEach(function (r, dy) {
+      var row = canvas[y + dy];
+      if (!row || y + dy >= cut.bottom) return;
+      r.forEach(function (c, dx) {
+        var at = x + dx;
+        if (at >= cut.right) return;
+        while (row.length < at) row.push({ ch: " ", st: EMPTY, path: path });
+        if (at >= row.length || inked(c) || !inked(row[at])) row[at] = c;
+      });
+    });
   }
 
   function underpaint(row, bg) {
@@ -270,7 +420,7 @@
       if (c.st && c.st.bg) return c;
       var st = {}; for (var k in (c.st || EMPTY)) st[k] = (c.st || EMPTY)[k];
       st.bg = bg;
-      return { ch: c.ch, st: st, path: c.path };
+      return { ch: c.ch, st: st, path: c.path, ink: c.ink };
     });
   }
 
@@ -288,60 +438,133 @@
     return { lead: 0, between: 0, tail: free };
   }
 
-  function alignRow(g, h, align, st, path) {
-    if (g.h >= h) return g;
-    var slack = h - g.h, rows = g.rows.slice();
-    var top = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-    for (var i = 0; i < top; i++) rows.unshift(blanks(g.w, st, path));
-    while (rows.length < h) rows.push(blanks(g.w, st, path));
-    return grid(rows);
+  // Where a child of `size` cells sits in `room` cells by an align value.
+  function alignAt(align, size, room) {
+    var slack = Math.max(0, room - size);
+    return align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
   }
 
-  function stackRow(blocks, inner, gap, p, outer, path, least) {
-    var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
-    var h = blocks.reduce(function (a, b) { return Math.max(a, b.g.h); }, 0) || (blocks.length ? 1 : 0);
-    var content = blocks.reduce(function (a, b) { return a + b.g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
-    var room = outer ? inner : Math.max(least, content);
-
-    // flexGrow shares the slack before justifyContent sees any of it.
-    var grows = blocks.map(function (b) { return num((b.node.props || {}).flexGrow); });
-    var total = grows.reduce(function (a, v) { return a + v; }, 0);
-    var free = Math.max(0, room - content);
-    var extra = blocks.map(function () { return 0; });
-    if (total > 0 && free > 0) {
-      var left = free;
-      grows.forEach(function (v, i) { var share = i === grows.length - 1 ? left : Math.floor(free * v / total); extra[i] = share; left -= share; });
-      free = 0;
-    }
-    var s = spread(p.justifyContent, free, blocks.length);
-
-    var rows = [];
-    for (var y = 0; y < h; y++) {
-      var row = blanks(s.lead, fillSt, path);
-      blocks.forEach(function (b, i) {
-        if (i) row = row.concat(blanks(gap + s.between, fillSt, path));
-        var a = alignRow(b.g, h, p.alignItems, fillSt, path);
-        row = row.concat(a.rows[y] || blanks(b.g.w, fillSt, path), blanks(extra[i], fillSt, path));
+  // The main sizes Yoga gives a row's children (2.1.310's wx): `free` cells
+  // shared out by flexGrow, or, when they overrun the row, taken off each in
+  // proportion to its flexShrink times its basis; a child whose factor is 0
+  // keeps its basis, and one the share would take below its minimum (its
+  // minWidth, else 0) stops there while the rest share again. The sizes are
+  // rounded on their running sum, so they add up to what the row has.
+  function flexSizes(items, free) {
+    var n = items.length;
+    var frozen = items.map(function (it) { return free >= 0 ? it.grow === 0 : it.shrink === 0; });
+    var size = items.map(function (it) { return it.basis; });
+    for (var pass = 0; pass <= n; pass++) {
+      var left = free, grow = 0, weight = 0, factors = 0, live = 0;
+      items.forEach(function (it, i) {
+        if (frozen[i]) left -= size[i] - it.basis;
+        else { grow += it.grow; weight += it.shrink * it.basis; factors += it.shrink; live++; }
       });
-      rows.push(row);
+      if (!live) break;
+      if (left > 0 && grow > 0 && grow < 1) left = Math.min(left, free * grow);
+      else if (left < 0 && weight > 0 && factors < 1) left = Math.max(left, free * factors);
+      var lost = 0, target = [];
+      items.forEach(function (it, i) {
+        if (frozen[i]) return;
+        var t = it.basis;
+        if (left > 0 && grow > 0) t += left * it.grow / grow;
+        else if (left < 0 && weight > 0) t += left * it.shrink * it.basis / weight;
+        target[i] = t;
+        size[i] = Math.max(it.min, t);
+        lost += size[i] - t;
+      });
+      if (lost === 0) break;
+      var stopped = false;
+      items.forEach(function (it, i) { if (!frozen[i] && (size[i] - target[i]) * lost > 0) { frozen[i] = true; stopped = true; } });
+      if (!stopped) break;
     }
-    var w = outer ? inner : Math.max(room, rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0));
-    return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt, path) : padRow(r, w, fillSt, path); }));
+    var sum = 0, edge = 0;
+    return size.map(function (v) { sum += v; var next = (sum + 0.5) | 0, out = next - edge; edge = next; return out; });
   }
 
-  function stackColumn(blocks, inner, gap, p, outer, path, least) {
-    var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
+  // A child's own margin cells along a row, which its grid carries.
+  function marginX(node) { if (node.type !== "Box") return 0; var m = margins(node.props || {}); return m.l + m.r; }
+
+  // Each child's place in a row Box's body, and the body's size. A row that
+  // is handed its width (`outer`, or `least` when stretched) grows its
+  // children into the slack; any row whose children overrun the room shrinks
+  // them; each child whose size moved is laid out again at exactly that size.
+  // A Button never shrinks or grows: the engine draws it in a Box of
+  // flexShrink 0 and no flexGrow.
+  function placeRow(blocks, inner, gap, p, outer, least) {
+    var items = blocks.map(function (b) {
+      var q = b.node.props || {}, button = b.node.type === "Button", mx = marginX(b.node);
+      return { basis: b.g.w - mx, margin: mx, min: b.node.type === "Box" ? num(q.minWidth) : 0, grow: button ? 0 : num(q.flexGrow), shrink: button ? 0 : typeof q.flexShrink === "number" ? q.flexShrink : 1 };
+    });
+    var content = items.reduce(function (a, it) { return a + it.basis + it.margin; }, 0) + gap * Math.max(0, blocks.length - 1);
+    var room = outer ? inner : Math.max(least, Math.min(content, inner));
+    var sizes = flexSizes(items, room - content);
+    // A width the Box sets is only its basis: the size the row gives it wins.
+    var placed = blocks.map(function (b, i) {
+      if (sizes[i] === items[i].basis) return b.g;
+      var sized = b.node.type === "Box" ? { type: "Box", props: Object.assign({}, b.node.props, { width: sizes[i] }), children: b.node.children } : b.node;
+      return layout(sized, sizes[i] + items[i].margin, b.at, true);
+    });
+    var used = placed.reduce(function (a, g) { return a + g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
+    var s = spread(p.justifyContent, room - used, blocks.length);
+    var h = placed.reduce(function (a, g) { return Math.max(a, g.h); }, 0) || (blocks.length ? 1 : 0);
+
+    var x = s.lead, spots = [];
+    placed.forEach(function (g, i) {
+      if (i) x += gap + s.between;
+      spots.push({ g: g, x: x, y: alignAt(p.alignItems, g.h, h) });
+      x += g.w;
+    });
+    return { w: outer ? inner : Math.max(room, x), h: h, spots: spots };
+  }
+
+  // Each child's place in a column Box's body, and the body's size.
+  function placeColumn(blocks, inner, gap, p, outer, least) {
     var natural = blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
     var w = outer ? inner : Math.max(least, natural);
-    var rows = [];
+    var y = 0, spots = [];
     blocks.forEach(function (b, i) {
-      if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt, path));
-      var slack = Math.max(0, w - b.g.w);
-      var align = p.alignItems;
-      var lead = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-      b.g.rows.forEach(function (r) { rows.push(padRow(blanks(lead, fillSt, path).concat(r), w, fillSt, path)); });
+      if (i) y += gap;
+      spots.push({ g: b.g, x: alignAt(p.alignItems, b.g.w, w), y: y });
+      y += b.g.h;
     });
-    return grid(rows);
+    return { w: w, h: y, spots: spots };
+  }
+
+  // The tree as 2.1.310 draws it while the pointer is over the node at
+  // `o.hover` and the Button at `o.focus` has the focus (index paths, or
+  // null). The pointer is over that node and every node holding it. A
+  // node's hover props merge into its props when its hover.scope is hot, a
+  // node of that scope being under the pointer; with no scope, when the
+  // nearest keyed Box holding it is under the pointer, or, for a keyed Box,
+  // when it is (Ot, Mt, vt). A Button under the pointer or with the focus
+  // lights (rr): its Text inverts and drops its dim, then takes its own hover
+  // props, carried to layoutButton as `lit`. The tree keeps its shape, so
+  // every cell names the node it names without them.
+  function interact(tree, o) {
+    var under = function (path) { return !!o.hover && path.length <= o.hover.length && path.every(function (v, i) { return v === o.hover[i]; }); };
+    var same = function (a, b) { return !!a && !!b && a.length === b.length && a.every(function (v, i) { return v === b[i]; }); };
+    var hot = {};
+    (function scopes(n, path) {
+      if (!n || typeof n !== "object") return;
+      var h = (n.props || {}).hover;
+      if (h && h.scope && under(path)) hot[h.scope] = true;
+      (n.children || []).forEach(function (k, i) { scopes(k, path.concat([i])); });
+    })(tree, []);
+    return (function lit(n, path, boxHovered) {
+      if (!n || typeof n !== "object") return n;
+      var p = n.props || {}, h = p.hover, keyed = n.type === "Box" && p.key !== undefined;
+      var on = !!h && (h.scope ? !!hot[h.scope] : keyed ? under(path) : boxHovered);
+      var over = {};
+      if (on) Object.keys(h).forEach(function (k) { if (k !== "scope") over[k] = h[k]; });
+      var props = p;
+      if (n.type === "Button") {
+        var bright = under(path) || same(o.focus, path);
+        props = Object.assign({}, p, { lit: Object.assign({ inverse: bright, dimColor: !!p.dimColor && !bright }, over) });
+      } else if (on) props = Object.assign({}, p, over);
+      var inside = keyed ? under(path) : boxHovered;
+      return { type: n.type, props: props, children: (n.children || []).map(function (k, i) { return lit(k, path.concat([i]), inside); }) };
+    })(tree, [], false);
   }
 
   // Plain text of each row, for tests and for the copy-as-text button.
@@ -464,7 +687,7 @@
     return out;
   }
 
-  var api = { layout: layout, layoutScreen: layoutScreen, layoutPane: layoutPane, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
+  var api = { layout: layout, layoutScreen: layoutScreen, layoutPane: layoutPane, interact: interact, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ModLayout = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
