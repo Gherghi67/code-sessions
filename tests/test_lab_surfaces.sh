@@ -18,6 +18,7 @@ mods/cs/hooks/register.tsx
 mods/cs-feed/hooks/draw.tsx
 mods/cs-feed/hooks/settings.ts
 mods/cs-feed/hooks/transcript.ts
+mods/cs-feed/hooks/verdict.ts
 mods/cs-feed/hooks/words.ts
 mods/cs-mermaid/hooks/layout.ts
 mods/cs-mermaid/hooks/parse.ts
@@ -28,7 +29,6 @@ mods/cs-update/hooks/register.tsx
 # shellcheck disable=SC2034 # read by run_all.sh --changed, which greps suites for a changed path
 TYPED_SOURCES="
 mods/cs-feed/hooks/session.ts
-mods/cs-feed/hooks/verdict.ts
 "
 
 _entries() { (cd "$SURFACES" && ls ./*.entry.ts | sed 's|^\./||; s|\.entry\.ts$||'); }

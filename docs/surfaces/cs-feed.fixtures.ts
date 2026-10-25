@@ -3,10 +3,11 @@
 import type { RenderElement } from 'claude-code'
 import { drawBand, drawCall, drawCommandOutput, drawGroup, drawHelpersPane, drawReply, drawSettingsPane, drawUser, inks, type Pen } from '../../mods/cs-feed/hooks/draw.tsx'
 import type { Observations } from '../../mods/cs-feed/hooks/session.ts'
-import { DEFAULT_VIEW, PRESETS, modeOf, type Session, type View } from '../../mods/cs-feed/hooks/settings.ts'
-import { callId, type CallId, type FiledCall, type Outcome, type Run, type Transcript } from '../../mods/cs-feed/hooks/transcript.ts'
-import type { BandVerdict, CallVerdict, CallView, Context, GroupVerdict, HelperBlock, ReplyVerdict, UserVerdict } from '../../mods/cs-feed/hooks/verdict.ts'
-import { errorLine, marks } from '../../mods/cs-feed/hooks/words.ts'
+import { DEFAULT_VIEW, PRESETS, modeOf, parseFeedArgs, transition, type Session, type View } from '../../mods/cs-feed/hooks/settings.ts'
+import { callId, type CallId, type FiledCall, type Outcome, type Run, type Transcript, type Turn } from '../../mods/cs-feed/hooks/transcript.ts'
+import { decideSpinner, sessionModes, type BandVerdict, type CallVerdict, type CallView, type Context, type GroupVerdict, type HelperBlock, type ReplyVerdict, type UserVerdict } from '../../mods/cs-feed/hooks/verdict.ts'
+import { commands, errorLine, logs, marks, replies } from '../../mods/cs-feed/hooks/words.ts'
+import { backgroundHint, commandReply, footerModes, logRow, menuRows, nothing, turnLine, workingLine } from './chrome.ts'
 import { elements, type State, type Surface, type Theme } from './registry.ts'
 
 // ---- one turn's transcript: three shell commands and a read, one refused run, a helper ----
@@ -182,6 +183,75 @@ const helperStates: State[] = [
   state('mixed', 'reading several helpers, newest first', helpersPane([WORKING, { name: 'Plan', status: 'finished', elapsedMs: 30000, calls: [] }, { name: 'general-purpose', status: 'stopped', calls: ['Read app.py'] }])),
 ]
 
+// ---- the rows Claude Code draws around cs-feed's words ----
+// /feed with the feed off, where the engine draws the reply; with it on, the
+// feed's own CommandOutput above draws it.
+const ON: Session = { on: true, view: clean }
+const feedReply = (args: string) => () => commandReply('feed', args, transition(parseFeedArgs(args), ON).reply)
+const commandStates: State[] = [
+  state('open', 'opening the Chat view settings with /feed', feedReply('')),
+  state('close', 'closing the settings with /feed close', feedReply('close')),
+  state('status', 'asking /feed status', feedReply('status')),
+  state('on', 'turning the feed on', feedReply('on')),
+  state('off', 'turning the feed off', feedReply('off')),
+  state('clean', 'choosing the clean view', feedReply('clean')),
+  state('normal', 'choosing the normal view', feedReply('normal')),
+  state('raw', "choosing Claude Code's own drawing", feedReply('raw')),
+  state('hide-kind', 'hiding the peer rows', feedReply('hide peer')),
+  state('set-field', 'setting one field', feedReply('style line')),
+  state('usage', 'typing a /feed word it does not take', feedReply('loud')),
+  state('not-a-session', 'running /feed outside a cs session', () => commandReply('feed', 'on', replies.notASession)),
+  state('refused', 'running /feed in a session cs refuses', () => commandReply('feed', 'on', replies.refused('.cs/local is tracked by git'))),
+  state('helpers', 'opening the Helpers pane with /helpers', () => commandReply('helpers', '', replies.helpersOpen)),
+]
+
+const menuStates: State[] = [
+  state('feed-selected', 'typing /f in the prompt', cols => menuRows([commands.feed, commands.helpers], 0, cols)),
+  state('helpers-selected', 'moving to /helpers in the slash menu', cols => menuRows([commands.feed, commands.helpers], 1, cols)),
+]
+
+const feedLog = (text: string) => (cols: number) => logRow('cs-feed', text, cols)
+const logStates: State[] = [
+  state('view-unusable', 'loading a session whose feed-view file is torn', feedLog(logs.viewUnusable('/work/.cs/local/feed-view', 'feed-view is torn: missing closing newline'))),
+  state('unread', 'loading a session whose feed-view file cannot be read', feedLog(logs.unread('/work/.cs/local/feed-view', 'cs-feed: $.fs.read: EACCES: permission denied'))),
+  state('feed-off', 'working in a session cs refuses, with the feed planted on', feedLog(logs.feedOff('.cs/local is tracked by git'))),
+  state('clock-stopped', 'watching the clock stop when its write is refused', feedLog(logs.clockStopped('cs-feed: $.state.set: tick refused'))),
+  state('pulse-stopped', 'watching the pulse stop when its write is refused', feedLog(logs.pulseStopped('cs-feed: $.state.set: pulse refused'))),
+  state('helper-unread', "opening the Helpers pane when a helper's transcript cannot be read", feedLog(logs.helperUnread('checker', 'no transcript for checker'))),
+]
+
+// The working line's time and tokens are the engine's; the message is
+// decideSpinner's for an open turn of three done steps, or the engine's own
+// word (its fallback verb, `Working`) when the hook leaves the row alone.
+const RUNNING = id(9)
+const OPEN: Turn = { id: TURN, first: id(1), steps: [id(1), id(2), id(3)], runs: [RUN] }
+const working = (open: Turn, over: { mode?: 'requesting' | 'responding'; agents?: number; t?: Transcript } = {}): Draw => cols => {
+  const agents = Array.from({ length: over.agents ?? 0 }, (_, i) => ({ id: `helper-${i}`, type: 'Explore', description: 'Read the tests', status: 'running' as const }))
+  const cx: Context = { ...context(cols, clean, over.t ?? transcript), open, agents }
+  const { verdict } = decideSpinner({ message: null, mode: over.mode ?? 'requesting' }, cx)
+  return verdict.draw === 'rewrite' ? workingLine({ message: verdict.message, suffix: verdict.suffix, elapsed: '24s', tokens: '1.2k' }) : workingLine({ message: 'Working', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })
+}
+const withRunning: Transcript = { ...transcript, calls: new Map([...transcript.calls, [RUNNING, filed(9, 'Bash', { command: 'bun test', description: 'Run the tests' }, { state: 'running' }, RUN)]]) }
+const spinnerStates: State[] = [
+  state('engine', "working with the feed off, the engine's own word", () => workingLine({ message: 'Working', suffix: '\u2026', elapsed: '24s', tokens: '1.2k' })),
+  state('thinking', 'waiting while Claude thinks before its first step', working({ steps: [], runs: [] })),
+  state('working', 'waiting on a turn three steps in', working(OPEN)),
+  state('call', 'waiting on a step that is running', working({ ...OPEN, steps: [...OPEN.steps, RUNNING] }, { t: withRunning })),
+  state('writing', 'watching Claude write its reply', working(OPEN, { mode: 'responding' })),
+  state('helpers', 'waiting while two helpers work', working(OPEN, { agents: 2 })),
+]
+
+const ENGINE_MODES = ['memory paused']
+const modeStates: State[] = [
+  state('engine', "reading the footer with the feed off: the engine's modes alone", cols => footerModes(ENGINE_MODES, cols)),
+  state('clean', 'reading the footer in the clean view', cols => footerModes(sessionModes(ENGINE_MODES, clean), cols)),
+  state('normal', 'reading the footer in the normal view', cols => footerModes(sessionModes(ENGINE_MODES, { ...PRESETS.normal.fields, hide: [] }), cols)),
+  state('custom', 'reading the footer after changing one setting', cols => footerModes(sessionModes(ENGINE_MODES, { ...clean, style: 'expanded' }), cols)),
+]
+
+const chromeSurface = (slot: string, states: State[]): Surface =>
+  ({ id: `cs-feed.${slot}`, mod: 'cs-feed', slot, source: 'chrome', global: 'CsFeedSurfaces', states, parts: [] })
+
 const surface = (slot: string, states: State[], parts: Surface['parts'], extra: Partial<Surface> = {}): Surface =>
   ({ id: `cs-feed.${slot}`, mod: 'cs-feed', slot, source: 'generated', global: 'CsFeedSurfaces', states, parts, ...extra })
 
@@ -215,4 +285,17 @@ export const surfaces: Surface[] = [
   surface('Pane.cs-feed-helpers', helperStates, [
     { id: 'helper-head', name: 'helper head', state: 'working', path: [0, 0] },
   ], { slot: 'Pane', chrome: { kind: 'pane', title: 'Helpers', rows: 12 } }),
+  chromeSurface('command', commandStates),
+  chromeSurface('menu', menuStates),
+  chromeSurface('log', logStates),
+  chromeSurface('Spinner', spinnerStates),
+  chromeSurface('SessionMode', modeStates),
+  chromeSurface('ToolProgress', [
+    state('engine', 'running a tool call with the feed off', () => backgroundHint('(ctrl+b to run in background)')),
+    state('feed-on', 'running a tool call with the feed on, its hint taken away', () => backgroundHint('')),
+  ]),
+  chromeSurface('TurnDuration', [
+    state('engine', 'reading how long the turn took, with the feed off', () => turnLine('Baked', '3s', '3:45 PM')),
+    state('feed-on', 'ending a turn with the feed on, its time line taken away', () => nothing()),
+  ]),
 ]

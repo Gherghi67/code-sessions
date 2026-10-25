@@ -44,15 +44,76 @@
     const rgb = name === undefined ? undefined : SESSION_PALETTE[name];
     return rgb === undefined ? undefined : `rgb(${rgb})`;
   }
+  var PRESSED = ".cs/local/cs.pressed";
+  var WRAP_QUESTION = "Run /wrap for this session?";
+  var WRAP_YES = "Yes, wrap up";
+  var QUEUE_START = "Start";
+  var QUEUE_COMPACT = "Compact";
   var TOAST_TASK_CHARS = 60;
   function cutTask(task) {
     return task.length > TOAST_TASK_CHARS ? `${task.slice(0, TOAST_TASK_CHARS)}…` : task;
   }
+  var FINISH_RECORD = "finish-progress.json";
   var FINISH_OUTCOMES = new Set(["landed", "refused", "retired"]);
+  var QUEUE_MODE_QUESTION = "How should the queued tasks run?";
   var QUEUE_HERE = "In this conversation";
   var QUEUE_SUBAGENTS = "In subagents";
   var QUEUE_WORKFLOWS = "As workflows";
   var QUEUE_MODE_WORDS = { [QUEUE_HERE]: [], [QUEUE_SUBAGENTS]: ["subagents"], [QUEUE_WORKFLOWS]: ["workflow"] };
+  var ASKS = {
+    wrap: { question: WRAP_QUESTION, header: "Wrap", options: [WRAP_YES, "Not now"] },
+    queueStart: (count) => ({ question: `Start the ${count} queued ${count === 1 ? "task" : "tasks"} now?`, header: "Queue", options: [QUEUE_START, "Not yet", QUEUE_COMPACT] }),
+    queueMode: { question: QUEUE_MODE_QUESTION, header: "Queue", options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] }
+  };
+  var TOASTS = {
+    queued: (task) => `cs: queued: ${cutTask(task)}`,
+    bandOption: (problem) => `cs: the band draws no prompt bars: ${problem}. Set it in /config.`,
+    promptNotDrawn: "cs: that prompt is not on screen yet",
+    scrollRefused: (deny) => `cs: ${deny}`,
+    transcriptTail: () => `cs: the transcript is over ${READ_CAP / 1024 / 1024} MiB; the rail lists the prompts of its tail`,
+    forceBelowStart: (force, startPercent) => `cs: CS_ROTATE_FORCE_CTX=${force} is below this conversation's starting context (${startPercent}%); not forcing a rotation`,
+    rotateFailed: (err) => `cs: /rotate did not run: ${err}`,
+    clearFailed: (err) => `cs: /clear did not run: ${err}`,
+    nextStep: (line) => `cs: next step: ${line}`,
+    noRotation: (refusal) => `cs: no rotation in this session: ${refusal}`,
+    feedFailed: (err) => `cs: feed update failed: ${err}`,
+    finishFailed: (task, err) => `cs: /finish${task === "" ? "" : ` ${task}`} did not run: ${err}`,
+    pressedNotEmptied: (err) => `cs: could not empty ${PRESSED}: ${err}`,
+    wrapFailed: (err) => `cs: /wrap did not run: ${err}`,
+    queueNoBin: "cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session",
+    queueModeUnknown: (how) => `cs: '${how}' is not a way to run the queue; it is not started`,
+    notCompacted: (reason) => `cs: the conversation was not compacted (${reason}); the queue is not started`,
+    queueStartFailed: (err) => `cs: cs -queue start did not run: ${err}`,
+    queueStartExited: (code, tail) => `cs: cs -queue start exited ${code}${tail === "" ? "" : `: ${tail}`}`,
+    queueKickFailed: (err) => `cs: the queue is armed, but its first turn did not start: ${err}`,
+    finishRecordUnread: (dir) => `cs: .cs/${dir}/${FINISH_RECORD} is not a record cs wrote; /finish progress is not shown`,
+    finishPidUnknown: (err) => `cs: cannot tell whether /finish is still running: ${err}`
+  };
+  var LOGS = {
+    featuresUnread: (err) => `cs: the features word could not be read: ${err}`,
+    featuresExited: (base, code, line) => `cs ${base} -features exited ${code}: ${line}`,
+    featuresUnreadable: (base, record) => `cs ${base} -features gave a record the band cannot read: ${record}`,
+    featuresNoAnswer: (base, err) => `cs ${base} -features did not answer: ${err}`,
+    transcriptUnread: (err) => `cs: the transcript could not be read: ${err}`,
+    colorFailed: (color, err) => `cs: /color ${color} did not run: ${err}`,
+    feedUnread: (message) => `cs: the feed setting could not be read: ${message}`
+  };
+  var REPLIES = {
+    queueNoBin: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.',
+    queueFailed: (what, err) => `${what} did not run: ${err}`,
+    queueExited: (what, code, tail) => tail === "" ? `${what} exited ${code}.` : `${what} exited ${code}.
+${tail}`,
+    queued: (task) => `Queued: ${task}`,
+    csUsage: "usage: /cs next|prev|first|last|<n>",
+    railEmpty: "cs: the rail has no prompts",
+    noneAfter: "cs: no prompt after this one",
+    noneBefore: "cs: no prompt before this one",
+    railCount: (count) => `cs: the rail has ${count} ${count === 1 ? "prompt" : "prompts"}`
+  };
+  var COMMANDS = {
+    queue: { name: "queue", description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: "[task]", immediate: true },
+    cs: { name: "cs", description: "Scroll the transcript along the band's rail of prompts.", argumentHint: "next|prev|first|last|<n>", immediate: true }
+  };
   var finishShown = new Set;
   function buildBandEntries(facts) {
     const entries = [];
@@ -363,6 +424,19 @@
   var ROTATE_ACTION = "strip:jump1";
   var WRAP_ACTION = "strip:jump2";
   var FEED_ACTION = "strip:jump3";
+  function finishToast(record) {
+    const task = cutTask(record.task);
+    switch (record.step) {
+      case "landed":
+        return `cs: landed ${task} ${record.sha.slice(0, 7)} -> ${(record.result ?? "").slice(0, 7)}`;
+      case "refused":
+        return `cs: /finish ${task} refused: ${record.reason ?? ""}`;
+      case "retired":
+        return `cs: retired ${task}`;
+      default:
+        return `cs: finishing ${task}`;
+    }
+  }
 
   // docs/surfaces/registry.ts
   function elements() {
@@ -370,6 +444,162 @@
     if (el === undefined)
       throw new Error("the lab shim (docs/surfaces/shim.js) is not loaded: LabElements is undefined");
     return el;
+  }
+
+  // docs/surfaces/chrome.ts
+  var cells = (s) => Array.from(s).length;
+  function wrapRows(line, width) {
+    const rows = [];
+    let row = [];
+    const next = (start = []) => {
+      rows.push(row);
+      row = start;
+    };
+    line.split(" ").forEach((word, i) => {
+      let used = row.length;
+      if (i > 0) {
+        if (used >= width) {
+          next();
+          used = 0;
+        }
+        row.push(" ");
+        used++;
+      }
+      const chars = Array.from(word);
+      if (chars.length > width) {
+        const thisRow = 1 + Math.floor((chars.length - (width - used) - 1) / width);
+        const nextRow = Math.floor((chars.length - 1) / width);
+        if (nextRow < thisRow)
+          next();
+        let shown = row.length;
+        chars.forEach((c, k) => {
+          if (shown + 1 <= width)
+            row.push(c);
+          else {
+            next([c]);
+            shown = 0;
+          }
+          shown++;
+          if (shown === width && k < chars.length - 1) {
+            next();
+            shown = 0;
+          }
+        });
+        return;
+      }
+      if (used + chars.length > width && used > 0 && chars.length > 0)
+        next();
+      row = row.concat(chars);
+    });
+    rows.push(row);
+    return rows.map((r) => r.join(""));
+  }
+  var TOAST_WIDEST = 44;
+  var TOAST_FRAME = 4;
+  var TOAST_ROWS = 3;
+  function toast(plugin, text, cols) {
+    const el = elements();
+    const room = Math.max(1, Math.min(Math.max(1, cols - 2), TOAST_WIDEST));
+    const wrapped = text.split(`
+`).flatMap((line) => wrapRows(line, Math.max(1, room - TOAST_FRAME)));
+    const lines = [...wrapped.slice(0, TOAST_ROWS - 1), wrapped.slice(TOAST_ROWS - 1).join(" ")].filter((line, i) => i === 0 || line !== "");
+    const width = Math.min(room, Math.max(cells(plugin), ...lines.map(cells)) + TOAST_FRAME);
+    return el.Box({ width: cols, justifyContent: "flex-end", children: [
+      el.Box({ width, flexDirection: "column", borderStyle: "round", borderDimColor: true, paddingX: 1, children: [
+        el.Text({ dimColor: true, wrap: "truncate-end", children: plugin }),
+        ...lines.map((line) => el.Text({ wrap: "truncate-end", children: line }))
+      ] })
+    ] });
+  }
+  var rule = (cols) => elements().Text({ color: "inactive", children: "─".repeat(cols) });
+  function askDialog(dialog, cols, focus = 0) {
+    const el = elements();
+    const pointer = (on) => on ? el.Text({ color: "suggestion", children: "❯" }) : el.Text({ children: " " });
+    const digits = String(dialog.options.length + 1).length;
+    const other = dialog.options.length + 1;
+    return el.Box({ flexDirection: "column", children: [
+      rule(cols),
+      el.Box({ flexDirection: "column", children: [
+        el.Box({ marginBottom: 1, children: [el.Box({ children: [el.Text({ backgroundColor: "permission", color: "inverseText", children: ` ☐ ${dialog.header} ` })] })] }),
+        el.Box({ gap: 1, children: [el.Text({ bold: true, color: "text", children: dialog.question })] }),
+        el.Box({ flexDirection: "column", children: [
+          el.Box({ marginTop: 1, flexDirection: "column", children: [
+            ...dialog.options.map((label, i) => el.Box({ gap: 1, children: [
+              pointer(i === focus),
+              el.Text({ dimColor: true, children: `${i + 1}.`.padEnd(digits + 1) }),
+              el.Text({ color: i === focus ? "suggestion" : undefined, children: label })
+            ] })),
+            el.Box({ gap: 1, children: [
+              pointer(focus === dialog.options.length),
+              el.Box({ children: [
+                el.Box({ flexShrink: 0, children: [el.Text({ dimColor: true, children: `${other}.`.padEnd(digits + 2) })] }),
+                el.Text({ color: "inactive", children: "Type something." })
+              ] })
+            ] })
+          ] }),
+          el.Box({ flexDirection: "column", children: [
+            rule(cols),
+            el.Box({ gap: 1, children: [pointer(false), el.Text({ children: `${other + 1}. Chat about this` })] })
+          ] }),
+          el.Box({ marginTop: 1, children: [el.Text({ color: "inactive", dimColor: true, children: "Enter to select · ↑/↓ to navigate · Esc to cancel" })] })
+        ] })
+      ] })
+    ] });
+  }
+  function commandReply(command, args, reply, errored = false) {
+    const el = elements();
+    return el.Box({ flexDirection: "column", children: [
+      el.Box({ flexDirection: "column", backgroundColor: "userMessageBackground", paddingRight: 1, children: [
+        el.Text({ children: [el.Text({ color: "inactive", children: "❯" }), " ", el.Text({ color: "text", children: `/${[command, args].filter(Boolean).join(" ")}` })] })
+      ] }),
+      el.Box({ children: [
+        el.Text({ dimColor: true, children: "  ⎿  " }),
+        el.Box({ flexDirection: "column", flexGrow: 1, children: [errored ? el.Text({ color: "error", wrap: "wrap", children: reply }) : el.Markdown({ text: reply })] })
+      ] })
+    ] });
+  }
+  function menuRows(commands, selected, cols) {
+    const el = elements();
+    const widest = Math.max(...commands.map((c) => cells(`/${c.name}`))) + 5;
+    const column = widest > Math.floor(cols * 0.4) ? Math.floor(cols * 0.4) : widest;
+    const room = Math.max(0, cols - column - 4);
+    return el.Box({ paddingX: 2, children: [el.Box({ flexDirection: "column", children: commands.flatMap((c, i) => {
+      const on = i === selected;
+      const ink = on ? "suggestion" : undefined;
+      const name = `/${c.name}`;
+      const [first, rest] = firstRow(c.description, room);
+      const row = el.Text({ wrap: "truncate", children: [
+        el.Text({ color: ink, dimColor: !on, children: on ? "❯ " : "  " }),
+        el.Text({ color: ink, dimColor: !on, children: name }),
+        el.Text({ color: ink, dimColor: !on, children: " ".repeat(Math.max(0, column - cells(name) - 2)) }),
+        el.Text({ color: ink, dimColor: !on, children: first })
+      ] });
+      if (rest === "")
+        return [row];
+      return [row, el.Text({ wrap: "truncate", children: [" ".repeat(column), el.Text({ color: ink, dimColor: !on, children: cut(rest, Math.max(0, cols - column - 4)) })] })];
+    }) })] });
+  }
+  function firstRow(text, room) {
+    if (room <= 0 || cells(text) <= room)
+      return [text, ""];
+    const head = Array.from(text).slice(0, room).join("");
+    const after = Array.from(text).slice(room).join("");
+    if (after.startsWith(" "))
+      return [head, after.trimStart()];
+    const space = head.lastIndexOf(" ");
+    return space > 0 ? [head.slice(0, space), text.slice(space + 1)] : [head, after];
+  }
+  function cut(text, room) {
+    if (cells(text) <= room)
+      return text;
+    return room < 1 ? "" : Array.from(text).slice(0, room - 1).join("") + "…";
+  }
+  function logRow(plugin, text, cols) {
+    const el = elements();
+    return el.Box({ width: cols, children: [
+      el.Box({ minWidth: 2, children: [el.Text({ color: "inactive", children: "⏺" })] }),
+      el.Box({ flexDirection: "column", width: cols - 10, children: [el.Text({ color: "inactive", wrap: "wrap", children: `${plugin}: ${text}` })] })
+    ] });
   }
 
   // docs/surfaces/cs.fixtures.ts
@@ -501,23 +731,99 @@
     { id: "rail-uncoloured", name: "the rail in a session with no colour", facts: facts({ colour: null, rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) },
     { id: "rail-desktop", name: "the rail on the desktop app, no hover cards", facts: facts({ surface: "desktop", rail: { prompts: PROMPTS.slice(0, 3), named: 2, refused: [] } }) }
   ];
-  var surfaces = [{
-    id: "cs.AbovePrompt",
-    mod: "cs",
-    slot: "AbovePrompt",
-    source: "generated",
-    global: "CsSurfaces",
-    chrome: { kind: "above-prompt" },
-    states: STATES.map((s) => ({ id: s.id, name: s.name, draw: (cols, theme) => band(s.facts, cols, theme) })),
-    parts: [
-      { id: "band-mark", name: "band mark", state: "rotate-due", path: [1, 0, 0] },
-      { id: "chord", name: "chord key", state: "rotate-due", path: [1, 0, 2] },
-      { id: "chord-word", name: "chord word Button", state: "rotate-due", path: [1, 0, 3] },
-      { id: "countdown", name: "countdown word", state: "countdown", path: [1, 0, 1] },
-      { id: "rail-tick", name: "rail tick", state: "rail-few", path: [1, 0, 1, 0] },
-      { id: "prompt-label", name: "prompt label", state: "rail-few", path: [1, 0, 2] }
-    ]
-  }];
+  var kebab = (key) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+  var chromeStates = (lines) => Object.keys(lines).map((key) => ({ id: kebab(key), name: lines[key].name, draw: (cols) => lines[key].draw(cols) }));
+  var csToast = (text) => (cols) => toast("cs", text, cols);
+  var TOAST_STATES = {
+    queued: { name: "queuing a task with /queue", draw: csToast(TOASTS.queued("fix the login redirect")) },
+    bandOption: { name: "loading the band with a /config value it cannot draw", draw: csToast(TOASTS.bandOption("cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0")) },
+    promptNotDrawn: { name: "jumping to a prompt no row has drawn since a resume", draw: csToast(TOASTS.promptNotDrawn) },
+    scrollRefused: { name: "jumping to a prompt the engine would not scroll to", draw: csToast(TOASTS.scrollRefused("the window moved meanwhile")) },
+    transcriptTail: { name: "working in a conversation whose transcript is past 4 MiB", draw: csToast(TOASTS.transcriptTail()) },
+    forceBelowStart: { name: "starting a conversation already past the forced rotation", draw: csToast(TOASTS.forceBelowStart(70, 75)) },
+    rotateFailed: { name: "seeing a forced /rotate fail to run", draw: csToast(TOASTS.rotateFailed("Error: unknown command")) },
+    clearFailed: { name: "seeing the countdown reach zero and /clear fail to run", draw: csToast(TOASTS.clearFailed("Error: no session")) },
+    nextStep: { name: "watching the countdown start on an armed handoff", draw: csToast(TOASTS.nextStep("Run the secrets suites solo.")) },
+    noRotation: { name: "working in a session cs will not rotate", draw: csToast(TOASTS.noRotation("the launch did not say where cs is (CS_BIN)")) },
+    feedFailed: { name: "pressing feed when the feed file cannot be written", draw: csToast(TOASTS.feedFailed("EACCES: permission denied")) },
+    finishFailed: { name: "pressing the features word when /finish cannot run", draw: csToast(TOASTS.finishFailed("fix-auth", "a turn is running")) },
+    pressedNotEmptied: { name: "ending a turn when the press marker cannot be emptied", draw: csToast(TOASTS.pressedNotEmptied("Error: EACCES")) },
+    wrapFailed: { name: "answering yes to /wrap when it cannot run", draw: csToast(TOASTS.wrapFailed("Error: no session")) },
+    queueNoBin: { name: "pressing the queue start where the launch did not say where cs is", draw: csToast(TOASTS.queueNoBin) },
+    queueModeUnknown: { name: "typing a way to run the queue cs does not know", draw: csToast(TOASTS.queueModeUnknown("in parallel please")) },
+    notCompacted: { name: "choosing Compact when the conversation is not compacted", draw: csToast(TOASTS.notCompacted("a turn is running")) },
+    queueStartFailed: { name: "starting the queue when cs cannot run", draw: csToast(TOASTS.queueStartFailed("spawn ENOENT")) },
+    queueStartExited: { name: "starting the queue when cs refuses", draw: csToast(TOASTS.queueStartExited(1, "Error: the queue is locked")) },
+    queueKickFailed: { name: "starting the queue when its first turn cannot start", draw: csToast(TOASTS.queueKickFailed("session closed")) },
+    finishRecordUnread: { name: "running /finish when its progress record is not one cs wrote", draw: csToast(TOASTS.finishRecordUnread("local")) },
+    finishPidUnknown: { name: "running /finish when its process cannot be checked", draw: csToast(TOASTS.finishPidUnknown("spawn EPERM")) }
+  };
+  var FINISH = { id: "4242-1799999990", pid: 4242, task: "fix-auth", sha: "1234567" + "f".repeat(33), step: "started" };
+  var FINISH_STATES = [
+    { id: "finishing", name: "running /finish on a feature", draw: csToast(finishToast(FINISH)) },
+    { id: "landed", name: "seeing /finish land a feature", draw: csToast(finishToast({ ...FINISH, step: "landed", result: "89abcde" + "0".repeat(33) })) },
+    { id: "finish-refused", name: "seeing /finish refuse a feature", draw: csToast(finishToast({ ...FINISH, step: "refused", reason: "the gate failed: 2 suites red" })) },
+    { id: "retired", name: "seeing /finish retire a feature", draw: csToast(finishToast({ ...FINISH, step: "retired" })) }
+  ];
+  var ASK_STATES = [
+    { id: "wrap", name: "pressing the wrap key", draw: (cols) => askDialog(ASKS.wrap, cols) },
+    { id: "wrap-not-now", name: "moving to Not now in the wrap dialog", draw: (cols) => askDialog(ASKS.wrap, cols, 1) },
+    { id: "queue-start-one", name: "running bare /queue with one task queued", draw: (cols) => askDialog(ASKS.queueStart(1), cols) },
+    { id: "queue-start-many", name: "pressing the queue start with three tasks queued", draw: (cols) => askDialog(ASKS.queueStart(3), cols) },
+    { id: "queue-mode", name: "choosing how the queued tasks run", draw: (cols) => askDialog(ASKS.queueMode, cols) }
+  ];
+  var TASK = "fix the login redirect";
+  var COMMAND_STATES = [
+    { id: "queue-added", name: "queuing a task with /queue", draw: () => commandReply("queue", TASK, REPLIES.queued(TASK)) },
+    { id: "queue-no-bin", name: "running /queue where the launch did not say where cs is", draw: () => commandReply("queue", TASK, REPLIES.queueNoBin) },
+    { id: "queue-failed", name: "running bare /queue when cs cannot run", draw: () => commandReply("queue", "", REPLIES.queueFailed("cs -queue list", "spawn ENOENT")) },
+    { id: "queue-exited", name: "queuing a task cs refuses", draw: () => commandReply("queue", TASK, REPLIES.queueExited("cs -queue add", 1, "")) },
+    { id: "cs-usage", name: "running /cs with a word it does not take", draw: () => commandReply("cs", "sideways", REPLIES.csUsage) },
+    { id: "rail-empty", name: "running /cs in a conversation with no prompts yet", draw: () => commandReply("cs", "next", REPLIES.railEmpty) },
+    { id: "none-after", name: "running /cs next on the last prompt", draw: () => commandReply("cs", "next", REPLIES.noneAfter) },
+    { id: "none-before", name: "running /cs prev on the first prompt", draw: () => commandReply("cs", "prev", REPLIES.noneBefore) },
+    { id: "rail-count", name: "running /cs with a number past the last prompt", draw: () => commandReply("cs", "9", REPLIES.railCount(4)) }
+  ];
+  var MENU = [COMMANDS.queue, COMMANDS.cs];
+  var MENU_STATES = [
+    { id: "queue-selected", name: "typing /q in the prompt", draw: (cols) => menuRows(MENU, 0, cols) },
+    { id: "cs-selected", name: "moving to /cs in the slash menu", draw: (cols) => menuRows(MENU, 1, cols) }
+  ];
+  var csLog = (text) => (cols) => logRow("cs", text, cols);
+  var LOG_STATES = {
+    featuresUnread: { name: "ending a turn when the features word cannot be read", draw: csLog(LOGS.featuresUnread("spawn ENOENT")) },
+    featuresExited: { name: "ending a turn when cs refuses to list the features", draw: csLog(LOGS.featuresExited("work", 2, "error: no such session")) },
+    featuresUnreadable: { name: "ending a turn when cs lists a feature the band cannot read", draw: csLog(LOGS.featuresUnreadable("work", "fix-auth")) },
+    featuresNoAnswer: { name: "ending a turn when cs does not answer for the features", draw: csLog(LOGS.featuresNoAnswer("work", "spawn ENOENT")) },
+    transcriptUnread: { name: "ending a turn when the transcript cannot be read", draw: csLog(LOGS.transcriptUnread("EACCES")) },
+    colorFailed: { name: "starting a conversation whose session colour does not apply", draw: csLog(LOGS.colorFailed("red", "Error: command refused")) },
+    feedUnread: { name: "drawing the band when the feed setting cannot be read", draw: csLog(LOGS.feedUnread("cs: $.fs.read(/work/.cs/local/feed) failed: EACCES")) }
+  };
+  var chromeSurface = (slot, states) => ({ id: `cs.${slot}`, mod: "cs", slot, source: "chrome", global: "CsSurfaces", states, parts: [] });
+  var surfaces = [
+    {
+      id: "cs.AbovePrompt",
+      mod: "cs",
+      slot: "AbovePrompt",
+      source: "generated",
+      global: "CsSurfaces",
+      chrome: { kind: "above-prompt" },
+      states: STATES.map((s) => ({ id: s.id, name: s.name, draw: (cols, theme) => band(s.facts, cols, theme) })),
+      parts: [
+        { id: "band-mark", name: "band mark", state: "rotate-due", path: [1, 0, 0] },
+        { id: "chord", name: "chord key", state: "rotate-due", path: [1, 0, 2] },
+        { id: "chord-word", name: "chord word Button", state: "rotate-due", path: [1, 0, 3] },
+        { id: "countdown", name: "countdown word", state: "countdown", path: [1, 0, 1] },
+        { id: "rail-tick", name: "rail tick", state: "rail-few", path: [1, 0, 1, 0] },
+        { id: "prompt-label", name: "prompt label", state: "rail-few", path: [1, 0, 2] }
+      ]
+    },
+    chromeSurface("toast", [...chromeStates(TOAST_STATES), ...FINISH_STATES]),
+    chromeSurface("ask", ASK_STATES),
+    chromeSurface("command", COMMAND_STATES),
+    chromeSurface("menu", MENU_STATES),
+    chromeSurface("log", chromeStates(LOG_STATES))
+  ];
 
   // docs/surfaces/cs.entry.ts
   globalThis.CsSurfaces = { surfaces, STATES, CATALOGUE, CHORDS, PROMPTS, band, countdownStep, facts };

@@ -6,9 +6,9 @@ const { layout, toText, validate } = require('../mods-layout.js')
 
 const rows = (id: string, cols: number, width = cols) => toText(layout(state(id).draw(cols, 'light'), width)).map((r: string) => r.replace(/\s+$/, ''))
 
-test('every surface is named <mod>.<slot> and comes from a generated bundle', () => {
+test('every surface is named <mod>.<slot> and is drawn by the mod or by the chrome around its words', () => {
   for (const s of SURFACES) {
-    expect({ id: s.id, prefix: s.id.startsWith(`${s.mod}.${s.slot}`), source: s.source }).toEqual({ id: s.id, prefix: true, source: 'generated' })
+    expect({ id: s.id, prefix: s.id.startsWith(`${s.mod}.${s.slot}`), source: ['generated', 'chrome'].includes(s.source) }).toEqual({ id: s.id, prefix: true, source: true })
   }
   expect(new Set(SURFACES.map((s: any) => s.id)).size).toBe(SURFACES.length)
 })
