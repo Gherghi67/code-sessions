@@ -46,7 +46,7 @@ When you forget a name, a bare `cs` opens a picker of your sessions, and `cs .` 
 
 ![cs statusline cycling through quiet, context warning, critical context, queued tasks and unread mail, and quota reset countdowns](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/statusline.svg)
 
-The [statusline guide](docs/statusline.md) covers the capsules, colors, thresholds, font setup, and agent rows.
+The [statusline guide](docs/statusline.md) covers the capsules, the band layout, colors, thresholds, font setup, and agent rows.
 
 ## Features
 
@@ -87,7 +87,7 @@ cs -uninstall
 | [Session layout](docs/session-layout.md) | Shared and local records, encryption, and merge policy. |
 | [Hooks](docs/hooks.md) | Hook behavior, prompt rewriting, and Claude Code mods. |
 | [Secrets](docs/secrets.md) | Storage backends, backups, and signed sync files. |
-| [Statusline](docs/statusline.md) | Segments, colors, thresholds, and agent rows. |
+| [Statusline](docs/statusline.md) | Segments, the band layout, colors, thresholds, and agent rows. |
 
 ## License
 

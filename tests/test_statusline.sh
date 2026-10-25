@@ -61,6 +61,9 @@ setup() {
     export XDG_CONFIG_HOME="$TEST_TMPDIR/xdg"
     mkdir -p "$XDG_CONFIG_HOME/cs"
     printf 'on\n' > "$XDG_CONFIG_HOME/cs/statusline-caps"
+    # The capsule pins below predate the band, which is the default layout
+    # now; the band tests export the band for themselves in band_env.
+    export CS_STATUSLINE_LAYOUT=capsules
 }
 
 teardown() {
@@ -2543,24 +2546,28 @@ test_refresh_reclaims_an_abandoned_lock() {
     assert_not_exists "$CS_USAGE_DIR/.lock" "the reclaiming refresher must release the lock" || return 1
 }
 
-# The three caches keyed on the parent pid (tmux-client, tmux-real, tty) mint a
-# new entry per conversation and nothing on the render path may fork to remove
-# them, so the refresher sweeps them. Only those three: a cache keyed on a
-# repeating identity is left alone.
+# The caches keyed on the parent pid (tmux-client2 and the tmux-client entries
+# written before it, tmux-real, tty, stty) mint a new entry per conversation
+# and nothing on the render path may fork to remove them, so the refresher
+# sweeps them. Only those: a cache keyed on a repeating identity is left alone.
 test_refresh_prunes_the_pid_keyed_caches() {
     make_usage_shims 200 "$USAGE_BODY"
     use_scratch_usage_env
     local cache="$HOME/.cache/cs"
-    mkdir -p "$cache/tmux-client" "$cache/tmux-real" "$cache/tmux-walking" "$cache/tty" "$cache/git"
-    TZ=UTC touch -t 202608270730.00 "$cache/tmux-client/old" "$cache/tmux-real/old" "$cache/tmux-walking/old" "$cache/tty/old" "$cache/git/old"
-    touch "$cache/tmux-client/fresh" "$cache/tmux-real/fresh" "$cache/tty/fresh"
+    mkdir -p "$cache/tmux-client" "$cache/tmux-client2" "$cache/tmux-real" "$cache/tmux-walking" "$cache/tty" "$cache/stty" "$cache/git"
+    TZ=UTC touch -t 202608270730.00 "$cache/tmux-client/old" "$cache/tmux-client2/old" "$cache/tmux-real/old" "$cache/tmux-walking/old" "$cache/tty/old" "$cache/stty/old" "$cache/git/old"
+    touch "$cache/tmux-client/fresh" "$cache/tmux-client2/fresh" "$cache/tmux-real/fresh" "$cache/tty/fresh" "$cache/stty/fresh"
     PATH="$USAGE_BINDIR:$PATH" CS_STATUSLINE_NOW=1787816000 bash "$SL" --refresh-usage
     assert_not_exists "$cache/tmux-client/old" "an old tmux-client entry must be swept" || return 1
     assert_not_exists "$cache/tmux-real/old" "an old tmux-real entry must be swept" || return 1
     assert_not_exists "$cache/tty/old" "an old tty entry must be swept" || return 1
+    assert_not_exists "$cache/tmux-client2/old" "an old tmux-client2 entry must be swept" || return 1
+    assert_not_exists "$cache/stty/old" "an old stty entry must be swept" || return 1
     assert_exists "$cache/tmux-client/fresh" "a fresh tmux-client entry must survive" || return 1
     assert_exists "$cache/tmux-real/fresh" "a fresh tmux-real entry must survive" || return 1
     assert_exists "$cache/tty/fresh" "a fresh tty entry must survive" || return 1
+    assert_exists "$cache/tmux-client2/fresh" "a fresh tmux-client2 entry must survive" || return 1
+    assert_exists "$cache/stty/fresh" "a fresh stty entry must survive" || return 1
     assert_exists "$cache/git/old" "the sweep must not touch a cache keyed on a repeating identity" || return 1
 }
 
@@ -4830,5 +4837,508 @@ test_a_warm_render_runs_no_program_but_jq() {
 }
 
 run_test test_a_warm_render_runs_no_program_but_jq
+
+# --- band layout -------------------------------------------------------------
+
+# The band tests' common ground: the docs fixture on a dark terminal of a known
+# background, truecolor, 80 cells wide.
+band_env() {
+    export CS_STATUSLINE_LAYOUT=band CS_STATUSLINE_COLS=80 \
+        CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40" COLORTERM=truecolor
+}
+
+# The cells rendered line $1 takes on screen: its escapes stripped, counted the
+# way _display_width counts.
+band_cells() {
+    local plain
+    plain=$(printf '%s' "$1" | sed "s/$ESC_\[[0-9;]*m//g")
+    ( _load_sl_functions; _display_width "$plain"; printf '%s' "$_WIDTH" )
+}
+
+test_band_fills_exactly_the_width() {
+    band_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq 80 "$(band_cells "$out")" "an 80-column band is 80 cells" || return 1
+    out=$(CS_STATUSLINE_COLS=40 CS_STATUSLINE_SEGMENTS=logo,session run_sl "$FIXTURE_DOCS")
+    assert_eq 40 "$(band_cells "$out")" "a 40-column band is 40 cells" || return 1
+    assert_eq "${ESC_}[0m" "${out: -4}" "the line ends with a reset" || return 1
+}
+
+# The docs fixture's items take 55 cells (one band cell, ✳, my-session, Opus
+# high, ○ ctx 8%, ◷ 5h 23%, and the joiners between them). Past the width they
+# are all emitted, uncut and with no fill after them: Claude Code truncates.
+test_band_overflow_emits_every_item_and_no_fill() {
+    band_env
+    local out
+    out=$(CS_STATUSLINE_COLS=40 run_sl "$FIXTURE_DOCS")
+    assert_eq 55 "$(band_cells "$out")" "items wider than the band are emitted whole" || return 1
+    assert_eq " ✳ my-session  ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%" \
+        "$(printf '%s' "$out" | sed "s/$ESC_\[[0-9;]*m//g")" "every item, uncut, and no fill after the last" || return 1
+}
+
+# Under the C locale bash sees bytes, and a glyph's continuation bytes must
+# stay in its cell rather than each take a cell of gradient.
+test_band_width_holds_under_the_c_locale() {
+    band_env
+    local out
+    out=$(LC_ALL=C run_sl "$FIXTURE_DOCS")
+    assert_eq 80 "$(band_cells "$out")" "the C locale still yields 80 cells" || return 1
+}
+
+# The frame comes off a measured width; CS_STATUSLINE_COLS is already the
+# width the caller may use, so none comes off it.
+test_band_frame_is_subtracted_from_a_measured_width() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    local json out
+    json=$(jq -c '. + {columns: 100}' <<< "$FIXTURE_DOCS")
+    out=$(run_sl "$json")
+    assert_eq 96 "$(band_cells "$out")" "the default frame takes 4 columns" || return 1
+    out=$(CS_STATUSLINE_FRAME=10 run_sl "$json")
+    assert_eq 90 "$(band_cells "$out")" "a padded frame takes what it names" || return 1
+    out=$(CS_STATUSLINE_FRAME=0 run_sl "$json")
+    assert_eq 100 "$(band_cells "$out")" "no frame takes nothing" || return 1
+    out=$(CS_STATUSLINE_FRAME=wide run_sl "$json")
+    assert_eq 96 "$(band_cells "$out")" "a frame that is not a number is the default" || return 1
+    out=$(CS_STATUSLINE_COLS=120 run_sl "$json")
+    assert_eq 120 "$(band_cells "$out")" "the override is the final width, the frame untouched" || return 1
+    out=$(CS_STATUSLINE_COLS=120 CS_STATUSLINE_FRAME=10 run_sl "$json")
+    assert_eq 120 "$(band_cells "$out")" "a named frame leaves the override alone too" || return 1
+}
+
+test_band_width_floors_at_twenty() {
+    band_env
+    export CS_STATUSLINE_SEGMENTS=logo
+    local out
+    out=$(CS_STATUSLINE_COLS=10 run_sl "$FIXTURE_DOCS")
+    assert_eq 20 "$(band_cells "$out")" "a ten-column override floors at twenty" || return 1
+    unset CS_STATUSLINE_COLS
+    out=$(run_sl "$(jq -c '. + {columns: 22}' <<< "$FIXTURE_DOCS")")
+    assert_eq 20 "$(band_cells "$out")" "a frame that drops a measured width below twenty floors there" || return 1
+}
+
+test_band_columns_from_stdin_rank_below_the_override() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    local json out
+    json=$(jq -c '. + {columns: 100}' <<< "$FIXTURE_DOCS")
+    out=$(run_sl "$json")
+    assert_eq 96 "$(band_cells "$out")" ".columns sets the width, less the frame" || return 1
+    out=$(CS_STATUSLINE_COLS=80 run_sl "$json")
+    assert_eq 80 "$(band_cells "$out")" "CS_STATUSLINE_COLS outranks .columns" || return 1
+    out=$(CS_STATUSLINE_COLS=abc run_sl "$json")
+    assert_eq 96 "$(band_cells "$out")" "an override that is not a number is ignored" || return 1
+}
+
+# Outside tmux and without a terminal to measure, the band is 120 columns.
+# stty is a failing shim, so a runner that does have a terminal measures nothing
+# either.
+test_band_width_defaults_to_120() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TMPDIR/fakebin/stty"
+    chmod +x "$TEST_TMPDIR/fakebin/stty"
+    local out
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 116 "$(band_cells "$out")" "nothing measured is 120, less the frame" || return 1
+}
+
+# A cached stty answer is read the way a fresh one is: an entry that is not a
+# column count (a hand-edited file, a torn write, another cs's format) is a
+# miss, so the band is 120 less the frame and nothing reaches stderr.
+test_band_width_ignores_a_poisoned_stty_cache() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export CS_STATUSLINE_PARENT=4242
+    mkdir -p "$TEST_TMPDIR/fakebin" "$HOME/.cache/cs/stty"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TMPDIR/fakebin/stty"
+    chmod +x "$TEST_TMPDIR/fakebin/stty"
+    local bad out err
+    for bad in nope "80 24" 500000000000; do
+        printf '%s\t4242\n%s\n' "$(date +%s)" "$bad" > "$HOME/.cache/cs/stty/4242"
+        out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS" 2>"$TEST_TMPDIR/err")
+        err=$(cat "$TEST_TMPDIR/err")
+        assert_eq 116 "$(band_cells "$out")" "a cached '$bad' is a miss, not a width" || return 1
+        assert_eq "" "$err" "a cached '$bad' prints nothing to stderr" || return 1
+    done
+}
+
+# Inside a real tmux the width is the pane's, from the one query the client
+# rung already makes, asked about the pane in TMUX_PANE.
+test_band_width_from_the_tmux_pane() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export TMUX="/tmp/fake,1,0" TMUX_PANE="%7" CS_STATUSLINE_PARENT=4242
+    mkdir -p "$TEST_TMPDIR/fakebin" "$HOME/.cache/cs/tmux-real"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nprintf "dark\\t/dev/ttys002\\t90\\n"\n' \
+        "$TEST_TMPDIR/tmux.args" > "$TEST_TMPDIR/fakebin/tmux"
+    chmod +x "$TEST_TMPDIR/fakebin/tmux"
+    printf '%s\t%s\nreal\n' "$(date +%s)" "4242,$TMUX" > "$HOME/.cache/cs/tmux-real/4242,-tmp-fake,1,0"
+    local out
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 86 "$(band_cells "$out")" "the pane's width sets the band, less the frame" || return 1
+    assert_output_contains_f "$(cat "$TEST_TMPDIR/tmux.args")" "-t %7" "the width asked for is TMUX_PANE's" || return 1
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 1 "$(wc -l < "$TEST_TMPDIR/tmux.args" | tr -d ' ')" "a second render reads the cached answer" || return 1
+}
+
+# A TMUX this process only inherited names a pane it is not in: its width is
+# not the band's.
+test_band_width_ignores_a_foreign_tmux() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export TMUX="/tmp/fake,1,0" TMUX_PANE="%7" CS_STATUSLINE_PARENT=4242
+    mkdir -p "$TEST_TMPDIR/fakebin" "$HOME/.cache/cs/tmux-real"
+    printf '#!/bin/sh\nprintf "dark\\t/dev/ttys002\\t90\\n"\n' > "$TEST_TMPDIR/fakebin/tmux"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TMPDIR/fakebin/stty"
+    chmod +x "$TEST_TMPDIR/fakebin/tmux" "$TEST_TMPDIR/fakebin/stty"
+    printf '%s\t%s\nforeign\n' "$(date +%s)" "4242,$TMUX" > "$HOME/.cache/cs/tmux-real/4242,-tmp-fake,1,0"
+    local out
+    out=$(PATH="$TEST_TMPDIR/fakebin:$PATH" run_sl "$FIXTURE_DOCS")
+    assert_eq 116 "$(band_cells "$out")" "a foreign pane's width is not used" || return 1
+}
+
+# Run command string $1 under a pseudo-terminal, so /dev/tty opens; 77 (skip)
+# where no `script` here can provide one. BSD script takes the command after
+# the file, util-linux script takes it in -c; each form is proved by a probe
+# that leaves a file behind, since the other form can exit 0 without running
+# the command at all.
+in_pty() {
+    local probe="$TEST_TMPDIR/pty-probe"
+    rm -f "$probe"
+    script -q /dev/null /bin/sh -c "touch '$probe'" </dev/null >/dev/null 2>&1
+    if [ -f "$probe" ]; then
+        script -q /dev/null /bin/sh -c "$1" </dev/null >/dev/null 2>&1
+        return 0
+    fi
+    script -qec "touch '$probe'" /dev/null </dev/null >/dev/null 2>&1
+    if [ -f "$probe" ]; then
+        script -qec "$1" /dev/null </dev/null >/dev/null 2>&1
+        return 0
+    fi
+    SKIP_REASON="no script(1) to provide a terminal"
+    return 77
+}
+
+# On a terminal and outside tmux the width is the terminal's, measured once per
+# conversation: a resize inside the cache window is not measured again.
+test_band_width_from_the_terminal_is_measured_once() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    export CS_STATUSLINE_PARENT=4243
+    printf '%s' "$FIXTURE_DOCS" > "$TEST_TMPDIR/in.json"
+    in_pty "stty cols 100 rows 30 </dev/tty; bash '$SL' < '$TEST_TMPDIR/in.json' > '$TEST_TMPDIR/first.txt'; stty cols 60 </dev/tty; bash '$SL' < '$TEST_TMPDIR/in.json' > '$TEST_TMPDIR/second.txt'" || return $?
+    assert_eq 96 "$(band_cells "$(cat "$TEST_TMPDIR/first.txt")")" "the terminal's 100 columns set the band, less the frame" || return 1
+    assert_eq 96 "$(band_cells "$(cat "$TEST_TMPDIR/second.txt")")" "the second render reuses the measurement" || return 1
+}
+
+test_band_render_writes_nothing_to_stderr() {
+    band_env
+    unset CS_STATUSLINE_COLS
+    assert_eq "" "$(run_sl_stderr "$FIXTURE_DOCS")" "the band renders silently" || return 1
+}
+
+# The fill the band starts at: the run that opens the line after its reset,
+# one blank cell.
+band_first_cell() {
+    printf '%s' "${1:4:40}" | sed -n "s/^\($ESC_\[[0-9;]*m\) .*/\1/p" | tr -d '\033'
+}
+
+# A session whose machine-local state names colour $1.
+band_session_colour() {
+    export CLAUDE_SESSION_NAME=band-sess
+    mkdir -p "$CS_SESSIONS_ROOT/band-sess/.cs/local"
+    printf 'claude_session_color: %s\n' "$1" > "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
+}
+
+# The first cell is the band colour, and the last cell is the background
+# itself. With no session and no override the colour is neutral, which takes
+# no pull: the dark background 21;24;40 lifted to 61;64;90.
+test_band_fades_from_the_band_colour_to_the_background() {
+    band_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[0m" "$(printf '%s' "${out:0:4}" | tr -d '\033')" "the line opens with a reset" || return 1
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "the first cell is the neutral band colour" || return 1
+    local tail="${ESC_}[48;2;21;24;40m ${ESC_}[0m"
+    assert_eq "$tail" "${out: -${#tail}}" "the last cell is the background" || return 1
+}
+
+# A light terminal's neutral is the background darkened 30 a channel:
+# 250;246;235 to 220;216;205.
+test_band_neutral_darkens_a_light_background() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="250;246;235"
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;220;216;205m" "$(band_first_cell "$out")" "a light neutral is a darker step" || return 1
+}
+
+# On cream 253;246;227 the neutral is 223;216;197, asked for with `none` or
+# reached with no session colour, and still that colour at the first cell.
+test_band_neutral_on_cream_takes_no_pull() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    local out
+    out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "none on cream" || return 1
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;223;216;197m" "$(band_first_cell "$out")" "no session colour on cream" || return 1
+}
+
+# The session colour from the state file: blue 106;155;204, halfway to its
+# luminance 145 is 125;150;175, and 78% of the way from there to 21;24;40 is
+# 44;52;70.
+test_band_takes_the_session_colour() {
+    band_env
+    band_session_colour blue
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "the session colour starts the band" || return 1
+}
+
+# The same desaturated blue 125;150;175 pulled 78% toward cream 253;246;227 is
+# 224;224;215, and toward the dark 21;24;40 is 44;52;70.
+test_band_hue_is_desaturated_and_pulled_per_theme() {
+    band_env
+    local out
+    out=$(CS_STATUSLINE_BAND=blue CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;224;224;215m" "$(band_first_cell "$out")" "blue on cream" || return 1
+    out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "blue on dark" || return 1
+}
+
+test_band_without_a_usable_session_colour_is_neutral() {
+    band_env
+    local out
+    band_session_colour magenta
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a colour outside the palette is neutral" || return 1
+    rm -f "$CS_SESSIONS_ROOT/band-sess/.cs/local/state"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "a session without state is neutral" || return 1
+}
+
+# CS_STATUSLINE_BAND outranks the session colour: red 220;38;38 desaturates to
+# 156;65;65 and pulls to 51;34;46 (the -31.98 truncates to -31), the triplet
+# 100;200;0 to 44;57;48, brand 217;119;87 to 57;48;57. `session` and anything
+# unusable fall to the session colour (blue, 44;52;70); `none` is the neutral
+# even with one set.
+test_band_colour_override_precedence() {
+    band_env
+    band_session_colour blue
+    local out
+    out=$(CS_STATUSLINE_BAND=red run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;51;34;46m" "$(band_first_cell "$out")" "a palette name" || return 1
+    out=$(CS_STATUSLINE_BAND="100;200;0" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;57;48m" "$(band_first_cell "$out")" "an r;g;b triplet" || return 1
+    out=$(CS_STATUSLINE_BAND=brand run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;57;48;57m" "$(band_first_cell "$out")" "the brand coral" || return 1
+    out=$(CS_STATUSLINE_BAND=session run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "session names the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND=chartreuse run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "an unknown word falls to the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND="red blue" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "two palette names are not one" || return 1
+    out=$(CS_STATUSLINE_BAND="300;0;0" run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;44;52;70m" "$(band_first_cell "$out")" "an out-of-range triplet falls to the session colour" || return 1
+    out=$(CS_STATUSLINE_BAND=none run_sl "$FIXTURE_DOCS")
+    assert_eq "[48;2;61;64;90m" "$(band_first_cell "$out")" "none is the neutral band" || return 1
+    assert_eq "" "$(CS_STATUSLINE_BAND=chartreuse run_sl_stderr "$FIXTURE_DOCS")" "an unusable override is silent" || return 1
+}
+
+
+# The docs fixture with its ctx and limits readings replaced: $1 ctx, $2 5h,
+# $3 wk.
+band_fixture() {
+    jq -c --argjson c "$1" --argjson h "$2" --argjson w "$3" \
+        '.context_window.used_percentage = $c
+         | .rate_limits.five_hour.used_percentage = $h
+         | .rate_limits.seven_day.used_percentage = $w' <<< "$FIXTURE_DOCS"
+}
+
+# An amber reading is amber ink, bold, on the gradient, on either theme: ctx 45
+# starts at cell 40, 40/79 of the way from 61;64;90 to 21;24;40, so 41;44;65,
+# and the dot joiner's first space follows at cell 43, 40;43;63. On cream the
+# number is the light amber 180;83;9, and a crit group is still a red island.
+test_band_amber_reading_is_ink() {
+    band_env
+    local out
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[48;2;41;44;65;38;2;253;230;138;1m4" "the ctx number at warn is amber ink on the gradient" || return 1
+    assert_output_contains_f "$out" \
+        "%${ESC_}[48;2;40;43;63;38;2;150;165;200;22m " "the joiner follows on the next cell" || return 1
+    assert_eq 80 "$(band_cells "$out")" "the amber cells are counted" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" ";38;2;180;83;9;1m4" "the ctx number on cream is light amber, bold" || return 1
+    assert_output_not_contains_f "$out" "48;2;251;232;196" "no amber fill on cream" || return 1
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" "${ESC_}[48;2;215;0;21;38;2;255;255;255;1m ◷ 5h 95% " "crit on cream is the red island" || return 1
+}
+
+# The amber island's tokens are gone: like any unknown name, they paint the
+# surface at every level.
+test_band_amber_island_tokens_are_unknown() {
+    ( _load_sl_functions
+      local level want
+      for level in truecolor 256 basic; do
+          LEVEL=$level; SL_THEME=light; _SURFACE_RGB=""
+          _sgr 48 surface; want="$_SGR"
+          _sgr 48 amberfill; assert_eq "$want" "$_SGR" "amberfill at $level is the surface" || return 1
+          _sgr 48 amberink;  assert_eq "$want" "$_SGR" "amberink at $level is the surface" || return 1
+      done )
+}
+
+# A crit group is one red island, its joiners inside it: 5h at crit takes wk
+# with it. The island ends at cell 67, and the fade runs on from cell 68 at
+# 27;30;47.
+test_band_crit_group_is_one_red_island() {
+    band_env
+    local out
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[48;2;255;69;58;38;2;255;255;255;1m ◷ 5h 95% ⋮ ◶ wk 60% ${ESC_}[48;2;27;30;47m    " \
+        "the limits group at crit is one red island" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;38;41;61;38;2;150;165;200;22m ${ESC_}[48;2;255;69;58;" \
+        "the dot before the island sits on the gradient, its last cell at 46" || return 1
+    assert_eq 80 "$(band_cells "$out")" "the island's cells are counted" || return 1
+}
+
+# The band's own inks on a dark terminal, each cell on its own fill: the mark
+# keeps the brand coral (cell 1), bold text takes the primary (my-session from
+# cell 3), the effort word its own colour (cell 25), a label the dim ink
+# (cell 34).
+test_band_inks_on_a_dark_terminal() {
+    band_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[48;2;61;64;90;38;2;217;119;87;1m✳" "the mark is brand coral" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;60;63;89;38;2;255;255;255;1mm" "the session name is primary" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;49;52;75;38;2;146;158;250;22mh" "the effort word keeps its colour" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;2;44;47;69;38;2;150;165;200;22m○" "a label is dim" || return 1
+}
+
+# The three band inks per theme, which no default item exercises all of. On a
+# light theme they are shades of the band's hue, here blue 106;155;204: 34%,
+# 44% and 56% of each channel.
+test_band_ink_roles_per_theme() {
+    ( _load_sl_functions
+      LEVEL=truecolor; SL_THEME=dark
+      _HUE_R=106; _HUE_G=155; _HUE_B=204
+      _band_ink ink bold; assert_eq "38;2;255;255;255" "$_BAND_FG" "dark primary" || return 1
+      _band_ink white "";  assert_eq "38;2;255;255;255" "$_BAND_FG" "white is the primary" || return 1
+      _band_ink ink "";    assert_eq "38;2;214;222;240" "$_BAND_FG" "dark secondary" || return 1
+      _band_ink ink2 "";   assert_eq "38;2;150;165;200" "$_BAND_FG" "dark dim" || return 1
+      SL_THEME=light
+      _band_ink ink bold; assert_eq "38;2;36;52;69" "$_BAND_FG" "light primary" || return 1
+      _band_ink white "";  assert_eq "38;2;36;52;69" "$_BAND_FG" "white is the light primary" || return 1
+      _band_ink ink "";    assert_eq "38;2;46;68;89" "$_BAND_FG" "light secondary" || return 1
+      _band_ink ink2 "";   assert_eq "38;2;59;86;114" "$_BAND_FG" "light dim" || return 1
+      _band_ink periwinkle ""; assert_eq "38;2;76;29;149" "$_BAND_FG" "periwinkle keeps its colour" || return 1 )
+}
+
+# A light band's inks come from the raw hue, not the pale band it is pulled
+# to: blue gives the session name 36;52;69 and a label 59;86;114. The neutral
+# on cream, 223;216;197, gives 75;73;66 and 124;120;110. Nothing on a light
+# band is bold, the mark included.
+test_band_inks_on_a_light_terminal() {
+    band_env
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    local out
+    out=$(CS_STATUSLINE_BAND=blue run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" ";38;2;36;52;69;22mm" "the session name is the blue primary, regular weight" || return 1
+    assert_output_contains_f "$out" ";38;2;59;86;114;22m○" "a label is the blue dim" || return 1
+    assert_output_contains_f "$out" ";38;2;217;119;87;22m✳" "the mark is regular weight" || return 1
+    assert_output_not_contains_f "$out" ";1m" "no item is bold" || return 1
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" ";38;2;75;73;66;22mm" "the session name is the neutral's primary" || return 1
+    assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
+}
+
+test_band_layout_unset_or_unknown_is_the_band() {
+    band_env
+    local want out
+    want=$(run_sl "$FIXTURE_DOCS")
+    assert_output_not_contains "$want" "$CAPL" "the band draws no capsule cap" || return 1
+    out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an empty layout is the band" || return 1
+    unset CS_STATUSLINE_LAYOUT
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unset layout is the band" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unknown layout is the band" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "$CAPL" "capsules draws the capsules" || return 1
+}
+
+test_band_plain_level_prints_the_plain_line() {
+    band_env
+    export NO_COLOR=1
+    local want out
+    want=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "plain ignores the layout" || return 1
+}
+
+# Below truecolor the band is a flat surface fill, every cell, the amber ink
+# and the crit island in the level's own tokens.
+test_band_256_is_a_flat_fill() {
+    band_env
+    unset COLORTERM
+    local out
+    out=$(run_sl "$(band_fixture 45 95 60)")
+    assert_eq 80 "$(band_cells "$out")" "a flat band is 80 cells" || return 1
+    assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
+    assert_eq "[48;5;237m" "$(band_first_cell "$out")" "the band is the 256 surface" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;221;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;203;38;5;231;1m ◷ 5h 95% ⋮ ◶ wk 60% " "the crit island in 256 tokens" || return 1
+}
+
+test_band_basic_is_a_flat_fill() {
+    band_env
+    unset COLORTERM
+    export TERM=xterm
+    local out
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_eq 80 "$(band_cells "$out")" "a basic band is 80 cells" || return 1
+    assert_output_not_contains_f "$out" "48;" "no 256 or truecolor fill" || return 1
+    assert_eq "[100m" "$(band_first_cell "$out")" "the band is the basic surface" || return 1
+    assert_output_contains_f "$out" "${ESC_}[100;93;1m45%" "the amber number in basic tokens on the flat fill" || return 1
+}
+
+
+run_test test_band_fills_exactly_the_width
+run_test test_band_overflow_emits_every_item_and_no_fill
+run_test test_band_width_holds_under_the_c_locale
+run_test test_band_frame_is_subtracted_from_a_measured_width
+run_test test_band_width_floors_at_twenty
+run_test test_band_columns_from_stdin_rank_below_the_override
+run_test test_band_width_defaults_to_120
+run_test test_band_width_ignores_a_poisoned_stty_cache
+run_test test_band_width_from_the_tmux_pane
+run_test test_band_width_ignores_a_foreign_tmux
+run_test test_band_width_from_the_terminal_is_measured_once
+run_test test_band_render_writes_nothing_to_stderr
+run_test test_band_fades_from_the_band_colour_to_the_background
+run_test test_band_neutral_darkens_a_light_background
+run_test test_band_neutral_on_cream_takes_no_pull
+run_test test_band_takes_the_session_colour
+run_test test_band_hue_is_desaturated_and_pulled_per_theme
+run_test test_band_without_a_usable_session_colour_is_neutral
+run_test test_band_colour_override_precedence
+run_test test_band_amber_reading_is_ink
+run_test test_band_amber_island_tokens_are_unknown
+run_test test_band_crit_group_is_one_red_island
+run_test test_band_inks_on_a_dark_terminal
+run_test test_band_inks_on_a_light_terminal
+run_test test_band_ink_roles_per_theme
+run_test test_band_layout_unset_or_unknown_is_the_band
+run_test test_band_plain_level_prints_the_plain_line
+run_test test_band_256_is_a_flat_fill
+run_test test_band_basic_is_a_flat_fill
 
 report_results
