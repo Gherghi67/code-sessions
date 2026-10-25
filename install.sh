@@ -1402,7 +1402,7 @@ CS_PAYLOAD_SHA256=(
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
     "44bdc6baba3512597a77b1bcff81d23806724b14fae4aac65e99564f202722dd  mods/cs-feed/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-feed/hooks/hooks.json"
-    "a027668b799b84e1e6c023e181c7ecf953fdcd198f513e0a3d18c6afb0f98cfd  mods/cs-feed/hooks/draw.tsx"
+    "0b875b3227bc7c7d685d4d1c3e07f410b5a36541bfaa9baa6e11fb5fd2b5faaa  mods/cs-feed/hooks/draw.tsx"
     "a0f46ff85e1f25cb746efda9ee62fae61af611b9a809c1a8cc18d3a1aa856a00  mods/cs-feed/hooks/register.tsx"
     "7793d905423077db7e94640f912ebf69ed5000dee87ccfeaffbd4b6545a4ccf4  mods/cs-feed/hooks/session.ts"
     "097ae1502394519791b890aad368f95a569a64feb8ea8ca0423f6e3e39c714ee  mods/cs-feed/hooks/settings.ts"

@@ -83,6 +83,18 @@ test('the steps line draws its chevron one cell after its words', async ($, on) 
   expect(await rowLines($, { ...TOOL, tool_use_id: 'tests', tool: 'Bash', input: { command: 'npm test' }, output: 'ok\nok' })).toEqual(['3 steps this turn ›'])
 })
 
+test('a pressable chevron draws as the bare glyph, dim like the one that cannot be pressed', async ($, on) => {
+  session(on, WORK, () => [], NORMAL_VIEW)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => $.ui.resolve(e).Text({ children: 'engine tool' }))
+  expect(await rowLines($, LOOSE_READ, true)).toEqual(['○ Read notes.md +1 line ›'])
+  expect(await rowLines($, { ...TOOL, tool_use_id: 'helper', tool: 'Agent', input: { description: 'Read the notes' }, output: 'done' }, true)).toEqual(['Read the notes · finished · 4s ›'])
+  const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolUse', viewport: { columns: 80, rows: 24, isFullscreen: true }, props: LOOSE_READ })
+  expect((await row.find({ type: 'Button' }))?.props.dimColor).toBe(true)
+  await $.ui.press({ plugin: 'cs-feed', key: 'loose' })
+  expect(shown(await row.drawn())).toEqual(['○ Read notes.md +1 line ⌄', 'the notes'])
+  await row.unmount()
+})
+
 test('UserMessage draws the terminal you margin and leaves the desktop engine body intact', async ($, on) => {
   session(on)
   let calls = 0
@@ -386,6 +398,7 @@ test('ToolGroup draws known helpers as a batch and opens their names without unf
   on('ui.render', { component: 'ToolGroup' }, ($, e) => { expanded.push(e.props.isExpanded); return $.ui.resolve(e).Text({ children: 'engine group' }) })
   const row = await $.ui.mount({ plugin: 'cs-feed', surface: 'terminal', component: 'ToolGroup', viewport: { columns: 80, rows: 24, isFullscreen: true }, props: { calls, isActive: true, isExpanded: false, isCallsOnly: true } })
   expect((await row.find({ type: 'Text', text: '2 helpers' }))?.text).toBe('2 helpers · 1 done · 1 running')
+  expect(shown(await row.drawn())[0]?.slice(2)).toBe('2 helpers · 1 done · 1 running ›')
   expect((await row.find({ type: 'Text', text: 'Explore' }))?.text).toBe('Explore')
   expect((await row.find({ type: 'Text', text: 'Plan' }))?.text).toBe('Plan')
   expect(await row.find({ type: 'Text', text: 'Read the notes' })).toBeUndefined()

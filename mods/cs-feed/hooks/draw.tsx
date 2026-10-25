@@ -62,7 +62,7 @@ export function drawCall(v: CallVerdict, pen: Pen): RenderElement {
       const chips = pen.cx.view.style === 'line' ? [] : callChips(v.call, v.filed)
       return <Box flexDirection="column"><Box paddingLeft={pen.pad} flexDirection="row" gap={1}><Text color={v.call.isErrored ? pen.ink.red : v.call.isRunning ? pen.ink.accent : undefined} dimColor={!v.call.isRunning && !v.call.isErrored}>{v.call.isRunning ? marks.live : marks.idle}</Text><Text>{fit(callWords(v.call, v.call.isRunning ? 'present' : 'past'), pen.room - 4)}</Text>{chips.map(chip => <Text backgroundColor={pen.ink.chip}>{chip}</Text>)}{v.call.id ? chevron(v.call.id, v.opened, pen) : null}</Box>{v.opened ? <Box paddingLeft={pen.pad + 2} flexDirection="column">{outputLines(v.call.output ?? (v.filed?.outcome.state === 'done' ? v.filed.outcome.output : undefined)).map(line => <Text dimColor>{line}</Text>)}</Box> : null}</Box>
     }
-    case 'helper': return <Box paddingLeft={pen.pad} flexDirection="row" gap={1}><Text color={v.state === 'failed' || v.state === 'stopped' ? pen.ink.red : pen.ink.peer}>{helperLine(v.call, v.state, v.elapsedMs)}</Text>{pen.clickable ? <Button key={`helper-${v.call.id ?? v.call.tool}`} label={marks.closed} onPress={pen.helpers} /> : <Text dimColor>{marks.closed}</Text>}</Box>
+    case 'helper': return <Box paddingLeft={pen.pad} flexDirection="row" gap={1}><Text color={v.state === 'failed' || v.state === 'stopped' ? pen.ink.red : pen.ink.peer}>{helperLine(v.call, v.state, v.elapsedMs)}</Text>{pen.clickable ? <Button key={`helper-${v.call.id ?? v.call.tool}`} label={marks.closed} plain dimColor onPress={pen.helpers} /> : <Text dimColor>{marks.closed}</Text>}</Box>
     case 'question': return <Box paddingLeft={pen.pad} flexDirection="column">{questionLines(v.call, v.call.id ? pen.cx.t.calls.get(v.call.id) : undefined).map(line => <Text>{line}</Text>)}</Box>
   }
 }
@@ -120,7 +120,7 @@ function drawFrameLine(line: FrameLine, pen: Pen): RenderElement {
 function chevron(key: string, opened: boolean, pen: Pen): RenderElement {
   const { Button, Text } = pen.el
   const label = opened ? marks.opened : marks.closed
-  return pen.clickable ? <Button key={key} label={label} onPress={() => pen.press(key)} /> : <Text dimColor>{label}</Text>
+  return pen.clickable ? <Button key={key} label={label} plain dimColor onPress={() => pen.press(key)} /> : <Text dimColor>{label}</Text>
 }
 /**
  * The "claude" margin beside the ENGINE's drawing of the reply (passed in as
