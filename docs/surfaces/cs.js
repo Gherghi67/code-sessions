@@ -494,14 +494,14 @@ ${tail}`,
     rows.push(row);
     return rows.map((r) => r.join(""));
   }
+  var oneLine = (text) => text.replace(/[\n\r\u2028\u2029]/g, "�");
   var TOAST_WIDEST = 44;
   var TOAST_FRAME = 4;
   var TOAST_ROWS = 3;
   function toast(plugin, text, cols) {
     const el = elements();
     const room = Math.max(1, Math.min(Math.max(1, cols - 2), TOAST_WIDEST));
-    const wrapped = text.split(`
-`).flatMap((line) => wrapRows(line, Math.max(1, room - TOAST_FRAME)));
+    const wrapped = wrapRows(oneLine(text), Math.max(1, room - TOAST_FRAME));
     const lines = [...wrapped.slice(0, TOAST_ROWS - 1), wrapped.slice(TOAST_ROWS - 1).join(" ")].filter((line, i) => i === 0 || line !== "");
     const width = Math.min(room, Math.max(cells(plugin), ...lines.map(cells)) + TOAST_FRAME);
     return el.Box({ width: cols, justifyContent: "flex-end", children: [
@@ -517,7 +517,6 @@ ${tail}`,
       el.Text({ dimColor: true, wrap: "truncate", children: `${plugin}: ${oneLine(text)}` })
     ] });
   }
-  var oneLine = (text) => text.replace(/[\n\r\u2028\u2029]/g, "�");
   var rule = (cols) => elements().Text({ color: "inactive", children: "─".repeat(cols) });
   function askDialog(dialog, cols, focus = 0) {
     const el = elements();
@@ -772,7 +771,9 @@ ${tail}`,
     { id: "finishing", name: "running /finish on a feature", draw: csToast(finishToast(FINISH)) },
     { id: "landed", name: "seeing /finish land a feature", draw: csToast(finishToast({ ...FINISH, step: "landed", result: "89abcde" + "0".repeat(33) })) },
     { id: "finish-refused", name: "seeing /finish refuse a feature", draw: csToast(finishToast({ ...FINISH, step: "refused", reason: "the gate failed: 2 suites red" })) },
-    { id: "retired", name: "seeing /finish retire a feature", draw: csToast(finishToast({ ...FINISH, step: "retired" })) }
+    { id: "retired", name: "seeing /finish retire a feature", draw: csToast(finishToast({ ...FINISH, step: "retired" })) },
+    { id: "rotate-failed-two-lines", name: "seeing a forced /rotate fail with an error of two lines", draw: csToast(TOASTS.rotateFailed(`Error: refused
+see /doctor`)) }
   ];
   var INLINE_STATES = [
     { id: "queued-inline", name: "queuing a task with /queue, outside the fullscreen renderer", draw: (cols) => inlineToast("cs", TOASTS.queued("fix the login redirect"), cols) },

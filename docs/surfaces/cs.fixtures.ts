@@ -201,6 +201,7 @@ const FINISH_STATES: State[] = [
   { id: 'landed', name: 'seeing /finish land a feature', draw: csToast(finishToast({ ...FINISH, step: 'landed', result: '89abcde' + '0'.repeat(33) })) },
   { id: 'finish-refused', name: 'seeing /finish refuse a feature', draw: csToast(finishToast({ ...FINISH, step: 'refused', reason: 'the gate failed: 2 suites red' })) },
   { id: 'retired', name: 'seeing /finish retire a feature', draw: csToast(finishToast({ ...FINISH, step: 'retired' })) },
+  { id: 'rotate-failed-two-lines', name: 'seeing a forced /rotate fail with an error of two lines', draw: csToast(TOASTS.rotateFailed('Error: refused\nsee /doctor')) },
 ]
 
 // The same toast outside the fullscreen renderer, one that fits and one cut.

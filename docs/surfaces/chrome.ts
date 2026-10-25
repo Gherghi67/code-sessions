@@ -43,9 +43,13 @@ export function wrapRows(line: string, width: number): string[] {
   return rows.map(r => r.join(''))
 }
 
+// $7e: a toast's text with every line break as U+FFFD (Sa:
+// `n.replace(/[\n\r\u2028\u2029]/g,"\uFFFD")`), so it is one line.
+const oneLine = (text: string): string => text.replace(/[\n\r\u2028\u2029]/g, '\uFFFD')
+
 // A toast (dV and JF): a round, dim-bordered box at the transcript's top
 // right, one cell of padding each side, the plugin's name dim on its own first
-// row, then the words wrapped at the box's room, at most three rows, the
+// row, then the words ($7e) wrapped at the box's room, at most three rows, the
 // third holding the rest joined by spaces and cut with `…`. The box is no
 // wider than 44 cells or the terminal less two (UIe, ate), and no wider than
 // its widest row and the four cells of frame (jIe). Drawn at rest: the slide
@@ -56,7 +60,7 @@ const TOAST_ROWS = 3
 export function toast(plugin: string, text: string, cols: number): RenderElement {
   const el = elements()
   const room = Math.max(1, Math.min(Math.max(1, cols - 2), TOAST_WIDEST))
-  const wrapped = text.split('\n').flatMap(line => wrapRows(line, Math.max(1, room - TOAST_FRAME)))
+  const wrapped = wrapRows(oneLine(text), Math.max(1, room - TOAST_FRAME))
   const lines = [...wrapped.slice(0, TOAST_ROWS - 1), wrapped.slice(TOAST_ROWS - 1).join(' ')].filter((line, i) => i === 0 || line !== '')
   const width = Math.min(room, Math.max(cells(plugin), ...lines.map(cells)) + TOAST_FRAME)
   return el.Box({ width: cols, justifyContent: 'flex-end', children: [
@@ -74,19 +78,15 @@ export function toast(plugin: string, text: string, cols: number): RenderElement
 // It sits first in the footer's right-hand column (uhe: `alignItems:
 // "flex-end"`, `children:[x,Ge]`, the notification above the modes), the
 // footer row two cells in from each side. Drawn alone: the prompt hint on the
-// left and the modes under it are not. Two other places draw it, both
-// fullscreen only: the row above the prompt when its hint is a timed one, and
-// a pane header's `▔` rule (Uu).
+// left and the modes under it are not, nor the two other places Pwe draws:
+// the row above the prompt while a timed hint holds it (`toastOnRow1`), and a
+// pane header's `▔` rule (Uu).
 export function inlineToast(plugin: string, text: string, cols: number): RenderElement {
   const el = elements()
   return el.Box({ width: cols, paddingX: 2, flexDirection: 'column', alignItems: 'flex-end', children: [
     el.Text({ dimColor: true, wrap: 'truncate', children: `${plugin}: ${oneLine(text)}` }),
   ] })
 }
-
-// $7e: a toast's text with every line break as U+FFFD (Sa:
-// `n.replace(/[\n\r\u2028\u2029]/g,"\uFFFD")`), so it is one line.
-const oneLine = (text: string): string => text.replace(/[\n\r\u2028\u2029]/g, '\uFFFD')
 
 // A rule across the terminal (Ql with no title): `─` in the inactive ink.
 const rule = (cols: number): RenderElement => elements().Text({ color: 'inactive', children: '─'.repeat(cols) })

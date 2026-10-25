@@ -150,14 +150,14 @@
     rows.push(row);
     return rows.map((r) => r.join(""));
   }
+  var oneLine = (text) => text.replace(/[\n\r\u2028\u2029]/g, "�");
   var TOAST_WIDEST = 44;
   var TOAST_FRAME = 4;
   var TOAST_ROWS = 3;
   function toast(plugin, text, cols) {
     const el = elements();
     const room = Math.max(1, Math.min(Math.max(1, cols - 2), TOAST_WIDEST));
-    const wrapped = text.split(`
-`).flatMap((line) => wrapRows(line, Math.max(1, room - TOAST_FRAME)));
+    const wrapped = wrapRows(oneLine(text), Math.max(1, room - TOAST_FRAME));
     const lines = [...wrapped.slice(0, TOAST_ROWS - 1), wrapped.slice(TOAST_ROWS - 1).join(" ")].filter((line, i) => i === 0 || line !== "");
     const width = Math.min(room, Math.max(cells(plugin), ...lines.map(cells)) + TOAST_FRAME);
     return el.Box({ width: cols, justifyContent: "flex-end", children: [
@@ -173,7 +173,6 @@
       el.Text({ dimColor: true, wrap: "truncate", children: `${plugin}: ${oneLine(text)}` })
     ] });
   }
-  var oneLine = (text) => text.replace(/[\n\r\u2028\u2029]/g, "�");
   function commandReply(plugin, command, args, reply) {
     const el = elements();
     return el.Box({ flexDirection: "column", children: [

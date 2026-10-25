@@ -61,6 +61,20 @@ test('a toast past three rows joins the rest into the third and cuts it', () => 
   ])
 })
 
+// $7e runs Sa over a toast's text, every line break becoming U+FFFD, so an
+// error of two lines wraps as one line: `refused\uFFFDsee` is one word, and
+// its space ends row one at exactly 40.
+test('a toast of two lines draws its line break as U+FFFD and wraps as one line', () => {
+  const pad = ' '.repeat(36)
+  expect(screen('cs.toast/rotate-failed-two-lines')).toEqual([
+    `${pad}╭${'─'.repeat(42)}╮`,
+    `${pad}│ ${'cs'.padEnd(40)} │`,
+    `${pad}│ /rotate did not run: Error: refused\uFFFDsee  │`,
+    `${pad}│ ${'/doctor'.padEnd(40)} │`,
+    `${pad}╰${'─'.repeat(42)}╯`,
+  ])
+})
+
 // Outside the fullscreen renderer a toast is a notification (Pwe): one dim
 // row, `<plugin>: <text>` (U7e), cut with `…` (wrap "truncate"), at the
 // right of the footer's right-hand column (uhe), two cells in from the edge.
@@ -208,7 +222,7 @@ test('cs-update hands the engine its toast, its replies and its menu row', () =>
 
 test('every toast, log line, reply and dialog the mods export has its own state', () => {
   const ids = (id: string) => surface(id).states.map((s: any) => s.id)
-  expect(ids('cs.toast').length).toBe(28)
+  expect(ids('cs.toast').length).toBe(29)
   expect(ids('cs.log').length).toBe(7)
   expect(ids('cs-feed.log').length).toBe(6)
   expect(ids('cs-update.toast')).toEqual(['declined', 'not-recorded', 'declined-inline'])
