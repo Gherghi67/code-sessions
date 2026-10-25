@@ -14,7 +14,6 @@ All notable changes to cs are documented here. Release notes are also available 
 - The release workflow refuses to build a tag whose commit has no green Test run: a first job looks up the Test workflow's push run on `main` for exactly the tagged commit and fails unless it completed with `success`, naming the commit and the status and conclusion it found (a pull request's run on the same commit does not count: it tested the merge commit). A tag pushed by hand, on a commit that never reached `main` or whose run is still going, publishes nothing. Reported in #15.
 
 ### Fixed
-- The `cs-feed` settings pane shows one dot before each row's command (`· /feed group off`). The row handed the dot to the helper that joins words with ` · `, so it drew two (`· · /feed group off`).
 - The `cs-update` release-notes pane draws its version headings in the session colour. It handed Claude Code the colour's name (`red`, `blue`), which Claude Code reads as neither a colour nor a theme key and drops, so every heading came out in the default ink; it now passes the same rgb the status line uses, and a colour outside the palette keeps the default ink.
 
 ### Removed
