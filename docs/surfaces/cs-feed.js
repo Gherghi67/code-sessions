@@ -971,7 +971,7 @@
 
   // docs/surfaces/chrome.ts
   var cells = (s) => Array.from(s).length;
-  function commandReply(command, args, reply) {
+  function commandReply(plugin, command, args, reply) {
     const el = elements();
     return el.Box({ flexDirection: "column", children: [
       el.Box({ flexDirection: "column", backgroundColor: "userMessageBackground", paddingRight: 1, children: [
@@ -979,7 +979,7 @@
       ] }),
       el.Box({ children: [
         el.Text({ dimColor: true, children: "  ⎿  " }),
-        el.Box({ flexDirection: "column", flexGrow: 1, children: [el.Markdown({ text: reply })] })
+        el.Box({ flexDirection: "column", flexGrow: 1, children: [el.Markdown({ text: `${plugin}: ${reply}` })] })
       ] })
     ] });
   }
@@ -1237,7 +1237,7 @@
     state("mixed", "reading several helpers, newest first", helpersPane([WORKING, { name: "Plan", status: "finished", elapsedMs: 30000, calls: [] }, { name: "general-purpose", status: "stopped", calls: ["Read app.py"] }]))
   ];
   var ON = { on: true, view: clean2 };
-  var feedReply = (args) => () => commandReply("feed", args, transition(parseFeedArgs(args), ON).reply);
+  var feedReply = (args) => () => commandReply("cs-feed", "feed", args, transition(parseFeedArgs(args), ON).reply);
   var commandStates = [
     state("open", "opening the Chat view settings with /feed", feedReply("")),
     state("close", "closing the settings with /feed close", feedReply("close")),
@@ -1250,9 +1250,9 @@
     state("hide-kind", "hiding the peer rows", feedReply("hide peer")),
     state("set-field", "setting one field", feedReply("style line")),
     state("usage", "typing a /feed word it does not take", feedReply("loud")),
-    state("not-a-session", "running /feed outside a cs session", () => commandReply("feed", "on", replies.notASession)),
-    state("refused", "running /feed in a session cs refuses", () => commandReply("feed", "on", replies.refused(".cs/local is tracked by git"))),
-    state("helpers", "opening the Helpers pane with /helpers", () => commandReply("helpers", "", replies.helpersOpen))
+    state("not-a-session", "running /feed outside a cs session", () => commandReply("cs-feed", "feed", "on", replies.notASession)),
+    state("refused", "running /feed in a session cs refuses", () => commandReply("cs-feed", "feed", "on", replies.refused(".cs/local is tracked by git"))),
+    state("helpers", "opening the Helpers pane with /helpers", () => commandReply("cs-feed", "helpers", "", replies.helpersOpen))
   ];
   var menuStates = [
     state("feed-selected", "typing /f in the prompt", (cols) => menuRows([commands.feed, commands.helpers], 0, cols)),

@@ -89,12 +89,13 @@ test('the queue dialog says task or tasks by its count, and moving the focus mov
 })
 
 // nl then Yn: the echo on the user-message ground, then `  ⎿  ` dim and the
-// reply in the default ink.
+// reply in the default ink, led by the plugin's name, as A2n answers a
+// plugin's command (`we=Se?`${be}: ${Q.text}`:Q.text`): cs's own `cs:` doubles.
 test('a command reply echoes the command and hangs the reply under the connector', () => {
-  expect(screen('cs.command/queue-added')).toEqual(['❯ /queue fix the login redirect', '  ⎿  Queued: fix the login redirect'])
+  expect(screen('cs.command/queue-added')).toEqual(['❯ /queue fix the login redirect', '  ⎿  cs: Queued: fix the login redirect'])
   const g = grid('cs.command/queue-added')
   expect([g.rows[0][0].st.color, g.rows[0][0].st.bg, g.rows[0][79].st.bg, g.rows[1][2].st.dim, g.rows[1][5].st.dim]).toEqual(['inactive', 'userMessageBackground', 'userMessageBackground', true, false])
-  expect(screen('cs.command/rail-count')).toEqual(['❯ /cs 9', '  ⎿  cs: the rail has 4 prompts'])
+  expect(screen('cs.command/rail-count')).toEqual(['❯ /cs 9', '  ⎿  cs: cs: the rail has 4 prompts'])
 })
 
 // Ye: name column = longest `/name` + 5 = 11, so `/queue` gets 3 spaces and
@@ -159,7 +160,7 @@ test('cs-update hands the engine its toast, its replies and its menu row', () =>
     `│ ${'cs 2026.11.2 is available · run cs '.padEnd(40)} │`,
     '│ -update to install it, or /cs-update for │',
   ])
-  expect(screen('cs-update.command/notes-open')).toEqual(['❯ /cs-update', '  ⎿  Release notes are in the side pane.'])
+  expect(screen('cs-update.command/notes-open')).toEqual(['❯ /cs-update', '  ⎿  cs-update: Release notes are in the side pane.'])
   // The description is 62 cells and the room 80 - 15 - 4 = 61: Ue breaks at
   // the space before `it.`.
   expect(screen('cs-update.menu/selected')).toEqual(['  ❯ /cs-update   Release notes for the pending cs update, with 1 to install', `  ${' '.repeat(15)}it.`])

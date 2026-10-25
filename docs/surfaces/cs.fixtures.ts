@@ -213,15 +213,15 @@ const ASK_STATES: State[] = [
 
 const TASK = 'fix the login redirect'
 const COMMAND_STATES: State[] = [
-  { id: 'queue-added', name: 'queuing a task with /queue', draw: () => commandReply('queue', TASK, REPLIES.queued(TASK)) },
-  { id: 'queue-no-bin', name: 'running /queue where the launch did not say where cs is', draw: () => commandReply('queue', TASK, REPLIES.queueNoBin) },
-  { id: 'queue-failed', name: 'running bare /queue when cs cannot run', draw: () => commandReply('queue', '', REPLIES.queueFailed('cs -queue list', 'spawn ENOENT')) },
-  { id: 'queue-exited', name: 'queuing a task cs refuses', draw: () => commandReply('queue', TASK, REPLIES.queueExited('cs -queue add', 1, '')) },
-  { id: 'cs-usage', name: 'running /cs with a word it does not take', draw: () => commandReply('cs', 'sideways', REPLIES.csUsage) },
-  { id: 'rail-empty', name: 'running /cs in a conversation with no prompts yet', draw: () => commandReply('cs', 'next', REPLIES.railEmpty) },
-  { id: 'none-after', name: 'running /cs next on the last prompt', draw: () => commandReply('cs', 'next', REPLIES.noneAfter) },
-  { id: 'none-before', name: 'running /cs prev on the first prompt', draw: () => commandReply('cs', 'prev', REPLIES.noneBefore) },
-  { id: 'rail-count', name: 'running /cs with a number past the last prompt', draw: () => commandReply('cs', '9', REPLIES.railCount(4)) },
+  { id: 'queue-added', name: 'queuing a task with /queue', draw: () => commandReply('cs', 'queue', TASK, REPLIES.queued(TASK)) },
+  { id: 'queue-no-bin', name: 'running /queue where the launch did not say where cs is', draw: () => commandReply('cs', 'queue', TASK, REPLIES.queueNoBin) },
+  { id: 'queue-failed', name: 'running bare /queue when cs cannot run', draw: () => commandReply('cs', 'queue', '', REPLIES.queueFailed('cs -queue list', 'spawn ENOENT')) },
+  { id: 'queue-exited', name: 'queuing a task cs refuses', draw: () => commandReply('cs', 'queue', TASK, REPLIES.queueExited('cs -queue add', 1, '')) },
+  { id: 'cs-usage', name: 'running /cs with a word it does not take', draw: () => commandReply('cs', 'cs', 'sideways', REPLIES.csUsage) },
+  { id: 'rail-empty', name: 'running /cs in a conversation with no prompts yet', draw: () => commandReply('cs', 'cs', 'next', REPLIES.railEmpty) },
+  { id: 'none-after', name: 'running /cs next on the last prompt', draw: () => commandReply('cs', 'cs', 'next', REPLIES.noneAfter) },
+  { id: 'none-before', name: 'running /cs prev on the first prompt', draw: () => commandReply('cs', 'cs', 'prev', REPLIES.noneBefore) },
+  { id: 'rail-count', name: 'running /cs with a number past the last prompt', draw: () => commandReply('cs', 'cs', '9', REPLIES.railCount(4)) },
 ]
 
 const MENU = [COMMANDS.queue, COMMANDS.cs]

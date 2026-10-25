@@ -116,9 +116,10 @@ export function askDialog(dialog: Dialog, cols: number, focus = 0): RenderElemen
 // A slash command and its reply in the transcript: the command echoed as the
 // person's row (nl: `❯ /name args` on the user-message ground), then the
 // reply under the `  ⎿  ` connector, the connector dim and the reply drawn as
-// Markdown in the default ink (Yn). A mod's command answers with text alone,
-// never as an error, so the error ink Yn also has is not drawn here.
-export function commandReply(command: string, args: string, reply: string): RenderElement {
+// Markdown in the default ink (Yn), led by the name of the plugin that
+// answered it (A2n). A mod's command answers with text alone, never as an
+// error, so the error ink Yn also has is not drawn here.
+export function commandReply(plugin: string, command: string, args: string, reply: string): RenderElement {
   const el = elements()
   return el.Box({ flexDirection: 'column', children: [
     el.Box({ flexDirection: 'column', backgroundColor: 'userMessageBackground', paddingRight: 1, children: [
@@ -126,7 +127,7 @@ export function commandReply(command: string, args: string, reply: string): Rend
     ] }),
     el.Box({ children: [
       el.Text({ dimColor: true, children: '  ⎿  ' }),
-      el.Box({ flexDirection: 'column', flexGrow: 1, children: [el.Markdown({ text: reply })] }),
+      el.Box({ flexDirection: 'column', flexGrow: 1, children: [el.Markdown({ text: `${plugin}: ${reply}` })] }),
     ] }),
   ] })
 }

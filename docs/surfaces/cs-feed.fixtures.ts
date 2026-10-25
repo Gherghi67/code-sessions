@@ -187,7 +187,7 @@ const helperStates: State[] = [
 // /feed with the feed off, where the engine draws the reply; with it on, the
 // feed's own CommandOutput above draws it.
 const ON: Session = { on: true, view: clean }
-const feedReply = (args: string) => () => commandReply('feed', args, transition(parseFeedArgs(args), ON).reply)
+const feedReply = (args: string) => () => commandReply('cs-feed', 'feed', args, transition(parseFeedArgs(args), ON).reply)
 const commandStates: State[] = [
   state('open', 'opening the Chat view settings with /feed', feedReply('')),
   state('close', 'closing the settings with /feed close', feedReply('close')),
@@ -200,9 +200,9 @@ const commandStates: State[] = [
   state('hide-kind', 'hiding the peer rows', feedReply('hide peer')),
   state('set-field', 'setting one field', feedReply('style line')),
   state('usage', 'typing a /feed word it does not take', feedReply('loud')),
-  state('not-a-session', 'running /feed outside a cs session', () => commandReply('feed', 'on', replies.notASession)),
-  state('refused', 'running /feed in a session cs refuses', () => commandReply('feed', 'on', replies.refused('.cs/local is tracked by git'))),
-  state('helpers', 'opening the Helpers pane with /helpers', () => commandReply('helpers', '', replies.helpersOpen)),
+  state('not-a-session', 'running /feed outside a cs session', () => commandReply('cs-feed', 'feed', 'on', replies.notASession)),
+  state('refused', 'running /feed in a session cs refuses', () => commandReply('cs-feed', 'feed', 'on', replies.refused('.cs/local is tracked by git'))),
+  state('helpers', 'opening the Helpers pane with /helpers', () => commandReply('cs-feed', 'helpers', '', replies.helpersOpen)),
 ]
 
 const menuStates: State[] = [

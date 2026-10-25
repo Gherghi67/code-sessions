@@ -47,9 +47,9 @@ export const surfaces: Surface[] = [{
     { id: 'not-recorded', name: 'finishing an update whose outcome cannot be written down', draw: cols => toast('cs-update', TOASTS.notRecorded('ENOSPC: no space left on device'), cols) },
   ]),
   chromeSurface('command', [
-    { id: 'not-lead', name: 'running /cs-update in a teammate conversation', draw: () => commandReply('cs-update', '', REPLIES.notLead) },
-    { id: 'nothing-pending', name: 'running /cs-update when this launch found no newer cs', draw: () => commandReply('cs-update', '', REPLIES.nothingPending) },
-    { id: 'notes-open', name: 'running /cs-update to reopen the release notes', draw: () => commandReply('cs-update', '', REPLIES.notesOpen) },
+    { id: 'not-lead', name: 'running /cs-update in a teammate conversation', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.notLead) },
+    { id: 'nothing-pending', name: 'running /cs-update when this launch found no newer cs', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.nothingPending) },
+    { id: 'notes-open', name: 'running /cs-update to reopen the release notes', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.notesOpen) },
   ]),
   chromeSurface('menu', [
     { id: 'selected', name: 'typing /cs-u in the prompt', draw: cols => menuRows([COMMANDS['cs-update']], 0, cols) },
