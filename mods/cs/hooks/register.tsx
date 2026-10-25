@@ -331,18 +331,18 @@ type BandFacts = {
 
 export function buildBandEntries(facts: BandFacts): BandEntry[] {
   const entries: BandEntry[] = []
-  // The features word takes the left; only a ready feature can be pressed.
+  if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
+  // The grace follows the clear key whose press stops it.
+  if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
+  if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
+  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
+  // The queue has no chord: a click or Enter under the band's focus starts it.
+  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 start ${facts.waiting}`, onPress: facts.queue })
+  // The features word leads what the session is; only a ready feature can be pressed.
   if (facts.featured !== undefined) {
     const { label, onPress } = facts.featured
     entries.push(onPress === undefined ? { key: 'cs-features', kind: 'word', label } : { key: 'cs-features', kind: 'press', label, onPress })
   }
-  // The grace belongs before the clear key whose press stops it.
-  if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `/clear in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
-  if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
-  if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
-  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
-  // The queue has no chord: a click or Enter under the band's focus starts it.
-  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 queue ${facts.waiting} \u00b7 start`, onPress: facts.queue })
   if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
   if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `\u25a4 queue ${facts.queued}` })
   if (facts.mail > 0) entries.push({ key: 'cs-mail', kind: 'word', label: `mail ${facts.mail}` })
@@ -634,8 +634,8 @@ export function register(on: On, options: PluginOptions) {
       bandProblemSaid = true
       $.ui.toast(TOASTS.bandOption(bandProblem))
     }
-    // The features word takes the left, before any key word; a running gate
-    // already names the feature it lands.
+    // The features word leads what the session is, at the line's right; a
+    // running gate already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
     let feedEligible = bandIdle && !armed
     if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
@@ -705,7 +705,29 @@ export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'B
 // them the shared chord prefix goes. The countdown, the presses and the
 // chords leave only whole and last (LEAVE_ORDER); the mark never leaves.
 const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
-const SEP = '  ·  '
+
+// Which side of the line each entry draws on: the actions, what a chord or a
+// press does now, at the left after the mark; what the session is, at the
+// right edge beside the rail. The line's free cells stand between the two.
+type Zone = 'actions' | 'status'
+const ZONES = new Map<string, Zone>([
+  ['cs-rotate', 'actions'], ['cs-countdown', 'actions'], ['cs-wrap', 'actions'], ['cs-feed', 'actions'], ['cs-queue', 'actions'],
+  ['cs-features', 'status'], ['cs-gate', 'status'], ['cs-queued', 'status'], ['cs-mail', 'status'],
+])
+// The cells between two entries of a zone, and the fewest between the zones.
+const GAP = 3
+const SEP = ' '.repeat(GAP)
+
+// The entries of each zone, in the line's order.
+function zonesOf<T extends BandEntry>(entries: T[]): Record<Zone, T[]> {
+  const zones: Record<Zone, T[]> = { actions: [], status: [] }
+  for (const entry of entries) {
+    const zone = ZONES.get(entry.key)
+    if (zone === undefined) throw new Error(`cs: the band has no zone for ${entry.key}`)
+    zones[zone].push(entry)
+  }
+  return zones
+}
 
 // The chords that share a prefix (`ctrl+x 1`, `ctrl+x 2`): the prefix, and
 // each chord's own key after it, or the chord whole when they differ.
@@ -727,19 +749,26 @@ const firstChordOf = (entries: BandEntry[], chords: Record<string, string>) =>
 // draws as its key alone.
 export type FittedEntry = BandEntry & { keyOnly?: true }
 
-// What the words take, in cells, as the tree draws them: a separator between
-// entries, the prefix once before the first bound chord with its two-cell
-// margin, each chord's key with its one-cell margin, then the label.
+// What the words take, in cells, as the tree draws them: in each zone a
+// separator between entries, the prefix once before the first bound chord
+// with its one-cell margin, each chord's key with its one-cell margin, then
+// the label; and the fewest cells between the zones when both draw.
 // `spelling` is the whole line's: a cut that leaves fewer chords keeps them
 // spelled as the full line spells them.
 type ChordSpelling = ReturnType<typeof chordSpelling>
 function wordCellsOf(entries: FittedEntry[], chords: Record<string, string>, { prefix, spelled }: ChordSpelling, prefixed: boolean): number {
-  const firstChord = firstChordOf(entries, chords)
-  return cellWidth(entries.map((entry, index) => {
-    const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
-    const keyed = chord === undefined ? entry.label : entry.keyOnly ? chord : `${chord} ${entry.label}`
-    return `${index === firstChord && prefixed && prefix !== undefined ? `${prefix}  ` : ''}${keyed}`
-  }).join(SEP))
+  const cellsOfZone = (zone: FittedEntry[]) => {
+    const firstChord = firstChordOf(zone, chords)
+    return cellWidth(zone.map((entry, index) => {
+      const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
+      const keyed = chord === undefined ? entry.label : entry.keyOnly ? chord : `${chord} ${entry.label}`
+      return `${index === firstChord && prefixed && prefix !== undefined ? `${prefix} ` : ''}${keyed}`
+    }).join(SEP))
+  }
+  const { actions, status } = zonesOf(entries)
+  const actionCells = cellsOfZone(actions)
+  const statusCells = cellsOfZone(status)
+  return actionCells + statusCells + (actionCells > 0 && statusCells > 0 ? GAP : 0)
 }
 
 // The keepers whose words are free text, shortened first to last before any
@@ -824,7 +853,6 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   const spelling = chordSpelling(v.entries, chords)
   const { spelled } = spelling
   const prefix = prefixed ? spelling.prefix : undefined
-  const firstChord = firstChordOf(entries, chords)
   const key = (action: string) => {
     const text = spelled(action)
     return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
@@ -838,7 +866,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   }
   // What the words take, in cells, so the rail knows what the line leaves it.
   const wordCells = wordCellsOf(entries, chords, spelling, prefixed)
-  // The rail: one upright bar per prompt after the words, `┃` for
+  // The rail: one upright bar per prompt at the line's right edge, `┃` for
   // the one the band names, `┆` for one a jump was refused, `│` otherwise
   // (side by side, flat ticks run together into one line), each a Button
   // (the named one a Text: a
@@ -850,69 +878,92 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   const rail = v.rail
   const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
   const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
-  // After the bars the band names a prompt in what the line leaves: the
-  // newest or the one being read (cs.bandPrompt), or the one under the
+  // A cell after the bars the band names a prompt in what the line leaves:
+  // the newest or the one being read (cs.bandPrompt), or the one under the
   // pointer. Too little left to name one names none.
   const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `…${ticks.hidden}`.length : 0) + ticks.prompts.length - ticks.hidden
-  const labelCells = ticks === undefined ? 0 : budget - railCells - 2
-  const labeled = labelCells >= RAIL_LABEL_MIN
+  const labelRoom = ticks === undefined ? 0 : budget - railCells - 1
+  const labeled = labelRoom >= RAIL_LABEL_MIN
   // A bar under the pointer swaps its prompt in over the named one, on the
   // terminal only: the desktop app paints a card over a line without hiding
   // what is under it, so both prompts would show at once.
   const hovering = labeled && v.surface === 'terminal'
-  const label = (prompts: Prompt[], i: number) => {
+  const name = (prompts: Prompt[], i: number) => {
     const p = prompts[i]
     if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
-    return fitLeft(`#${i + 1} ${p.text}`, labelCells)
+    return `#${i + 1} ${p.text}`
   }
+  // The name is as wide as the widest prompt it can show, the named one or a
+  // drawn bar's under the pointer, and no wider than the room: the rail sits
+  // at the line's right edge, so a name sized to the one it shows would move
+  // the bars whenever a swap shows a longer or shorter one.
+  const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(i => i >= ticks.hidden) : [])]
+    .map(i => cellWidth(name(ticks.prompts, i)))))
+  const label = (prompts: Prompt[], i: number) => cutToCells(name(prompts, i), labelCells)
   // A line too narrow for any tick, with nothing else to say, draws nothing.
   if (entries.length === 0 && ticks === undefined) return v.drawn
   // One thin line, a blank line above it so it reads apart from the
-  // transcript: only the words that need a key now, the keys in the
-  // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
-  // the band does not repeat it. It starts two columns in, where Claude Code
-  // draws the bar and the mode line under the prompt. A Button is a block:
-  // nested in a Text the engine refuses the whole tree (measured), so each
-  // separator stands beside its Button.
+  // transcript, in two zones: at the left the actions, only the words that
+  // need a key now, the keys in the session colour and the rest dim; at the
+  // right edge what the session is, dim, then the rail. A spacer that grows
+  // takes the line's free cells between them, so the rail stays put as the
+  // actions come and go; the row is the line's whole width for it to grow
+  // into, and a line with nothing at the right draws no spacer. The context
+  // percentage is the bar's to carry; the band does not repeat it. It starts
+  // two columns in, where Claude Code draws the bar and the mode line under
+  // the prompt. A Button is a block: nested in a Text the engine refuses the
+  // whole tree (measured), so each separator stands beside its Button.
+  const { actions, status } = zonesOf(entries)
+  const right = status.length > 0 || ticks !== undefined
+  const drawZone = (zone: FittedEntry[]) => {
+    const firstChord = firstChordOf(zone, chords)
+    return zone.flatMap((entry, index) => [
+      index > 0 && <Text dimColor>{SEP}</Text>,
+      index === firstChord && prefix !== undefined && <Box marginRight={1}><Text dimColor>{prefix}</Text></Box>,
+      entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
+      entry.kind === 'word'
+        ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
+        : entry.kind === 'chord'
+          ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
+            ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+            : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
+          : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
+    ])
+  }
   return (
     <Box flexDirection="column">
       {v.drawn}
       <Box marginTop={1}>
-        <Box key="cs-rotate-band" marginLeft={2}>
+        <Box key="cs-rotate-band" marginLeft={2} {...(right ? { width: v.bodyColumns - 2 } : {})}>
           {/* the mark: its colour says what is due (bandState) */}
           {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={v.markColor}>{MARK}</Text></Box>}
-          {entries.flatMap((entry, index) => [
-            index > 0 && <Text dimColor>{SEP}</Text>,
-            index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
-            entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
-            entry.kind === 'word'
-              ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
-              : entry.kind === 'chord'
-                ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
-                  ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
-                  : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
-                : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
-          ])}
-          {ticks !== undefined && (
-            <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
-              {ticks.hidden > 0 && <Text dimColor>{`…${ticks.hidden}`}</Text>}
-              {ticks.prompts.slice(ticks.hidden).map((p, j) => {
-                const i = ticks.hidden + j
-                if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
-                return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
-                               hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
-              })}
-            </Box>
-          )}
-          {ticks !== undefined && labeled && (
-            <Box width={labelCells} marginLeft={2}>
-              <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
-              {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
-              {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
-                <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                  <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+          {drawZone(actions)}
+          {right && <Box key="cs-spacer" flexGrow={1} />}
+          {right && (
+            <Box key="cs-status" marginLeft={actions.length > 0 ? GAP : 0}>
+              {drawZone(status)}
+              {ticks !== undefined && (
+                <Box key="cs-rail" marginLeft={status.length > 0 ? GAP : 0}>
+                  {ticks.hidden > 0 && <Text dimColor>{`…${ticks.hidden}`}</Text>}
+                  {ticks.prompts.slice(ticks.hidden).map((p, j) => {
+                    const i = ticks.hidden + j
+                    if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
+                    return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
+                                   hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
+                  })}
                 </Box>
-              ))}
+              )}
+              {ticks !== undefined && labeled && (
+                <Box width={labelCells} marginLeft={1}>
+                  <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
+                  {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
+                  {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
+                    <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
+                      <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+                    </Box>
+                  ))}
+                </Box>
+              )}
             </Box>
           )}
         </Box>
@@ -1130,12 +1181,6 @@ function cutToCells(text: string, width: number): string {
     used += cells
   }
   return `${fitted.trimEnd()}\u2026`
-}
-
-// `text` cut to `width` cells, with spaces after it to fill `width`.
-function fitLeft(text: string, width: number): string {
-  const fitted = cutToCells(text, width)
-  return fitted + ' '.repeat(Math.max(0, width - cellWidth(fitted)))
 }
 
 function firstLine(text: string): string {
