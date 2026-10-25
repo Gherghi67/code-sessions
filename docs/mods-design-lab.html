@@ -1377,10 +1377,10 @@ function bdHoverSet(h){
 // Layers: the frames as pages, then the shown frame's nodes in document
 // order, indented by depth. The shown frame is the selection's, else the
 // export frame.
-function bdLayerLabel(n){
-  if(n.type==="Text") return `<span class="lname words">${esc(n.props.text||"")}</span>`;
-  if(n.type==="Button") return `<span class="lname">${esc(n.props.key||n.props.label||"Button")}</span>`;
-  return `<span class="lname">${esc(n.props.key||n.props.flexDirection||"row")}</span>`;
+function bdLayerName(n){
+  if(n.type==="Text") return n.props.text||"";
+  if(n.type==="Button") return n.props.key||n.props.label||"Button";
+  return n.props.key||n.props.flexDirection||"row";
 }
 function bdLayers(){
   const doc=bdDocNow(), sel=doc.selection, shown=sel?sel.frame:doc.exportFrame;
@@ -1389,7 +1389,7 @@ function bdLayers(){
   walk(bdFrame(shown).tree,[]);
   $("bd-layers").innerHTML=rows.map(({n,path})=>{
     const on=sel&&sel.frame===shown&&samePath(sel.path,path);
-    return `<button type="button" class="lrow${on?" on":""}"${on?` aria-current="true"`:""} data-path="${path.join(",")}" style="--d:${path.length}" aria-label="${n.type} ${esc(n.props.key||n.props.text||n.props.label||"")}"><span class="g g-${n.type}" aria-hidden="true"></span>${bdLayerLabel(n)}</button>`;
+    return `<button type="button" class="lrow${on?" on":""}"${on?` aria-current="true"`:""} data-path="${path.join(",")}" style="--d:${path.length}" aria-label="${n.type} ${esc(bdLayerName(n))}"><span class="g g-${n.type}" aria-hidden="true"></span><span class="lname${n.type==="Text"?" words":""}">${esc(bdLayerName(n))}</span></button>`;
   }).join("");
   $("bd-layers").dataset.frame=shown;
   $("bd-layers").querySelector(".lrow.on")?.scrollIntoView({block:"nearest"});
