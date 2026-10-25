@@ -114,7 +114,7 @@ export type FieldSpec<F extends keyof Fields = keyof Fields> = { [K in F]: {
 const spoken = (value: Fields[keyof Fields]): string => typeof value === 'boolean' ? (value ? 'on' : 'off') : value
 export const FIELDS: readonly FieldSpec[] = [
   { field: 'group', word: 'group', title: 'Group a turn into one line', values: [true, false], spoken,
-    picture: value => value ? ['you   fix the login bug', '○ 6 steps this turn ›', 'claude Fixed: the token now refreshes.'] : ['you   fix the login bug', '○ Ran 3 shell commands · read 2 files ›', '○ Edited auth.ts', 'claude Fixed: the token now refreshes.'] },
+    picture: value => value ? ['you   fix the login bug', '6 steps this turn ›', 'claude Fixed: the token now refreshes.'] : ['you   fix the login bug', '○ Ran 3 shell commands · read 2 files ›', '○ Edited auth.ts', 'claude Fixed: the token now refreshes.'] },
   { field: 'clear', word: 'clear', title: 'Clear after the turn', values: [true, false], spoken,
     picture: value => [value ? 'a finished turn keeps only its one line (grouping on) or nothing (off)' : 'a finished turn keeps its rows'] },
   { field: 'keep', word: 'keep', title: 'Keep every card', values: [true, false], spoken,

@@ -1153,7 +1153,7 @@ What it draws while on:
   who acts: violet for a safeguard stop, red when you must act, amber when
   Claude Code handles it, such as
   `Connection lost · check your internet · send again to retry`.
-- Helpers. A helper's row reads like `Read the notes · dispatched · running`,
+- Helpers. A helper's row reads like `Read the notes · running ›`,
   then `finished`, `failed` or `stopped`, with its elapsed time. Helpers
   launched together share one line with counts per kind. Above the prompt a
   helper line reads like `2 helpers · 1 done · 1 running`, and `/helpers`
