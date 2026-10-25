@@ -352,7 +352,7 @@
     }
     var cut = { right: p.overflow === "hidden" ? x0 + w : Infinity, bottom: y0 + h };
     var spots = body.spots.map(function (s, k) { return { g: s.g, x: x0 + s.x, y: y0 + s.y, i: blocks[k].i }; });
-    var box = { x: m.l, y: m.t, w: 2 * edge + iw, h: 2 * edge + ih, edge: edge, pd: pd, column: column, p: p };
+    var box = { x: m.l, y: m.t, w: 2 * edge + iw, h: 2 * edge + ih, edge: edge, pd: pd, column: column, reverse: reverse, p: p };
     loose.forEach(function (a) { spots.push(placeAbsolute(a, box)); });
     spots.sort(function (a, b) { return a.i - b.i; }).forEach(function (s) { paint(canvas, s.g, s.x, s.y, cut, path); });
     // The background sits under everything the Box holds: every cell a child
@@ -368,7 +368,8 @@
   // else its content's, unbounded; the same down the column. It sits at its
   // left (or its right) and its top (or its bottom) counted from inside the
   // border, the padding not counted, or, given neither, where the Box's
-  // justifyContent (along a row) or alignItems (across it) would put it.
+  // justifyContent (along a row) or alignItems (across it) would put it; along
+  // a reversed main axis, against the far padding edge, justifyContent unread.
   // `box` is the parent's border box on its canvas.
   function placeAbsolute(a, box) {
     var q = a.node.props || {}, km = margins(q), e = box.edge;
@@ -376,17 +377,18 @@
     var w = size(q.width, q.left, q.right, box.w - 2 * e), h = size(q.height, q.top, q.bottom, box.h - 2 * e);
     var props = Object.assign({}, q, w === null ? {} : { width: w }, h === null ? {} : { height: h });
     var g = layout({ type: a.node.type, props: props, children: a.node.children }, w === null ? UNBOUNDED : w + km.l + km.r, a.at, w !== null);
-    var at = function (lead, trail, extent, span, pad0, pad1, align) {
+    var at = function (lead, trail, extent, span, pad0, pad1, align, reversed) {
       if (typeof lead === "number") return e + lead;
       if (typeof trail === "number") return extent - e - trail - span;
       var from = e + pad0, to = extent - e - pad1;
+      if (reversed) return to - span;
       return align === "center" ? Math.round(from + (to - from - span) / 2) : align === "flex-end" ? to - span : from;
     };
     var rowAlign = box.column ? box.p.alignItems : box.p.justifyContent, colAlign = box.column ? box.p.justifyContent : box.p.alignItems;
     return {
       g: g, i: a.i,
-      x: box.x + at(q.left, q.right, box.w, g.w, box.pd.l, box.pd.r, rowAlign),
-      y: box.y + at(q.top, q.bottom, box.h, g.h, box.pd.t, box.pd.b, colAlign),
+      x: box.x + at(q.left, q.right, box.w, g.w, box.pd.l, box.pd.r, rowAlign, box.reverse && !box.column),
+      y: box.y + at(q.top, q.bottom, box.h, g.h, box.pd.t, box.pd.b, colAlign, box.reverse && box.column),
     };
   }
   // The room an absolute child of no width of its own is measured in: its

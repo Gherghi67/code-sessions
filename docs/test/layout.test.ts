@@ -67,6 +67,16 @@ test('an absolute child takes its own width, or what its left and right leave, o
   expect(toText(layout(B({ width: 6, height: 2 }, Abs({ top: 0, left: 1, right: 1 }, T({}, 'abcde'))), 40))).toEqual([' abcd ', ' e    '])
 })
 
+// Given no offset along a reversed main axis, Rx sets the child against the
+// far padding edge and reads no justifyContent: "if(de){let ze=p[0]+g[0],
+// De=f-p[2]-g[2];fe=ne?De-Se-Z:Up(ye,ze,De,Se)+q}" (ne a reversed
+// direction), and down a column "ge=ne?De-xe-V:Up(ye,ze,De,xe)+Y".
+// Worked by hand: 6 - 1 - 2 = 3 across the row, 4 - 1 = 3 down the column.
+test('an absolute child with no offset along a reversed main axis sits at its far end', () => {
+  expect(toText(layout(B({ width: 6, height: 1, paddingRight: 1, flexDirection: 'row-reverse', justifyContent: 'center' }, Abs({ top: 0 }, T({}, 'ab'))), 40))).toEqual(['   ab '])
+  expect(toText(layout(B({ width: 2, height: 4, flexDirection: 'column-reverse', justifyContent: 'center' }, Abs({ left: 0 }, T({}, 'ab'))), 40))).toEqual(['  ', '  ', '  ', 'ab'])
+})
+
 // An absolute Box with no background skips its own blit ("skipSelfBlit:G&&
 // pe&&!ue.style.opaque&&ue.style.backgroundColor===void 0"): its padding is
 // transparent, and only what it draws lands.
