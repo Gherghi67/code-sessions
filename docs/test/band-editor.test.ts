@@ -1,0 +1,439 @@
+// ABOUTME: Tests for the band designer's document model in docs/mods-band-editor.js.
+// ABOUTME: Pins the reducer action by action, the history, the cell-to-node lookup and the engine round trip.
+import { test, expect } from 'bun:test'
+import './surfaces.ts'
+const E = require('../mods-band-editor.js')
+const { layout, toText } = require('../mods-layout.js')
+const { STATES, VARIANTS } = require('../mods-band-variants.js')
+
+const facts = (id: string) => STATES.find((s: any) => s.id === id).facts
+const drawn = (variantId: string, stateId: string, cols: number) =>
+  layout(VARIANTS.find((v: any) => v.id === variantId).draw(facts(stateId), cols, 'light'), cols)
+
+// Paths read off the shipped band's tree, the mod's own: the column []
+// holds what the engine drew, an empty Box [0], and the blank-row Box [1],
+// which holds the band [1,0] at marginLeft 2; its children are the mark Box
+// [1,0,0], the prefix Box [1,0,1], the rotate key's Box [1,0,2], its Button
+// [1,0,3], the separator [1,0,4], the wrap key's Box [1,0,5] and its Button
+// [1,0,6]. On `  ● ctrl+x  1 rotate  ·  2 wrap` (31 cells, 2 rows): col 2 is
+// the mark's Text, col 10 the prefix Box's 2-cell margin, col 13 the key's
+// 1-cell margin, col 14 the `r` of rotate, col 0 the band's inset.
+test('pathOfCell names the node under a cell of the shipped band', () => {
+  const g = drawn('shipped', 'rotate-due', 80)
+  expect(E.pathOfCell(g, 1, 2)).toEqual([1, 0, 0, 0])
+  expect(E.pathOfCell(g, 1, 10)).toEqual([1, 0, 1])
+  expect(E.pathOfCell(g, 1, 13)).toEqual([1, 0, 2])
+  expect(E.pathOfCell(g, 1, 14)).toEqual([1, 0, 3])
+  expect(E.pathOfCell(g, 1, 0)).toEqual([1, 0])
+  expect(E.pathOfCell(g, 0, 5)).toEqual([1])
+  expect(E.pathOfCell(g, 2, 0)).toBeNull()
+  expect(E.pathOfCell(g, 1, 31)).toBeNull()
+  expect(E.pathOfCell(g, -1, 0)).toBeNull()
+})
+
+// The capsule's round border is the bordered Box's own, [0].
+test('pathOfCell gives a border cell to the Box it frames', () => {
+  const g = drawn('capsule', 'rotate-due', 80)
+  expect(g.rows[0][2].ch).toBe('╭')
+  expect(E.pathOfCell(g, 0, 2)).toEqual([0])
+  expect(E.pathOfCell(g, 1, 2)).toEqual([0])
+})
+
+// The cells a node spans: its own and its descendants'. Rows and cols inclusive.
+test('spanOf covers a node and everything inside it', () => {
+  const g = drawn('shipped', 'rotate-due', 80)
+  expect(E.spanOf(g, [1, 0, 3])).toEqual({ top: 1, left: 14, bottom: 1, right: 19 })
+  expect(E.spanOf(g, [1, 0, 2])).toEqual({ top: 1, left: 12, bottom: 1, right: 13 })
+  expect(E.spanOf(g, [1, 0])).toEqual({ top: 1, left: 0, bottom: 1, right: 30 })
+  expect(E.spanOf(g, [1, 0, 9])).toBeNull()
+})
+
+// A group moves whole. On the keys-first sketch's rotate-due band
+// `  ctrl+x  1 rotate  2 wrap`, the band [0,0] holds the prefix [0,0,0], the
+// rotate chord's group [0,0,1], the spacer [0,0,2] and the wrap group
+// [0,0,3]: moving the wrap group to gap 1 carries its key with its word and
+// leaves the spacer trailing, and moving the spacer to gap 2 puts it back
+// between them.
+test('moving a chord group carries its key with its word', () => {
+  const t = E.fromEngine(VARIANTS.find((v: any) => v.id === 'keys-first').draw(facts('rotate-due'), 80, 'light'))
+  const band = { frames: [{ id: 'f1', name: 'Band', tree: t }], selection: { frame: 'f1', path: [0, 0, 3] }, exportFrame: 'f1' }
+  const row = (d: any) => toText(layout(E.toEngine(d.frames[0].tree), 80))[1]
+  const swapped = E.apply(band, { type: 'move', from: [0, 0, 3], to: { parentPath: [0, 0], index: 1 } })
+  expect(row(swapped)).toBe('  ctrl+x  2 wrap1 rotate  ')
+  expect(row(E.apply(swapped, { type: 'move', from: [0, 0, 3], to: { parentPath: [0, 0], index: 2 } }))).toBe('  ctrl+x  2 wrap  1 rotate')
+})
+
+// Where a drag lands, on the shipped rotate-due band
+// `  ● ctrl+x  1 rotate  ·  2 wrap`: in the band [1,0] the mark spans cols
+// 2-3 (midpoint 2.5), the prefix 4-11 (7.5), the rotate key 12-13 (12.5),
+// the rotate Button 14-19 (16.5), the separator 20-24 (22), the wrap key
+// 25-26 (25.5) and the wrap Button 27-30. A pointer anywhere inside a sibling
+// reorders among the siblings, before the first whose midpoint is not before
+// it; a pointer inside the dragged node gives no target.
+test('dropTarget reorders a node among its siblings when the pointer is inside one', () => {
+  const t = E.fromEngine(VARIANTS[0].draw(facts('rotate-due'), 80, 'light'))
+  const g = layout(E.toEngine(t), 80)
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 14 })).toEqual({ parentPath: [1, 0], index: 3 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 18 })).toEqual({ parentPath: [1, 0], index: 4 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 20 })).toEqual({ parentPath: [1, 0], index: 4 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 24 })).toEqual({ parentPath: [1, 0], index: 5 })
+  expect(E.dropTarget(t, g, [1, 0, 6], { r: 1, c: 28 })).toBeNull()
+  expect(E.dropTarget(t, g, [1, 0, 3], { r: 1, c: 28 })).toEqual({ parentPath: [1, 0], index: 6 })
+})
+
+// Outside the siblings the pointer's node takes the drop when it may hold
+// the dragged node, else the nearest container above it that may. Here `y`
+// [0,1] is dragged over the padded Box [1]: `xy` draws at cols 0-1, then
+// [1]'s padding at 2-3, `ab` at 4-5 (midpoint 4.5), padding at 6-7.
+test('dropTarget puts a node into an unrelated Box under the pointer', () => {
+  const t = box({}, box({}, text('x'), text('y')), box({ paddingX: 2 }, text('ab')))
+  const g = layout(E.toEngine(t), 40)
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 2 })).toEqual({ parentPath: [1], index: 0 })
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 7 })).toEqual({ parentPath: [1], index: 1 })
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 4 })).toEqual({ parentPath: [1], index: 0 })
+  expect(E.dropTarget(t, g, [0, 1], { r: 0, c: 9 })).toBeNull()
+  expect(E.dropTarget(t, g, [], { r: 0, c: 2 })).toBeNull()
+})
+
+const box = (props: any, ...kids: any[]) => ({ type: 'Box', props, kids })
+const text = (t: string, props: any = {}) => ({ type: 'Text', props: { text: t, ...props }, kids: [] })
+const button = (label: string, props: any = {}) => ({ type: 'Button', props: { label, ...props }, kids: [] })
+const tree = () => box({}, text('a'), box({ flexDirection: 'column' }, text('b'), button('go')), text('c'))
+const doc = (selection: any = null) => ({ frames: [{ id: 'f1', name: 'Band', tree: tree() }], selection, exportFrame: 'f1' })
+
+test('nodeAt walks the index path and parentOf names the parent and the index', () => {
+  expect(E.nodeAt(tree(), [1, 1])).toEqual(button('go'))
+  expect(E.nodeAt(tree(), [])).toEqual(tree())
+  expect(E.parentOf(tree(), [1, 1])).toEqual({ path: [1], index: 1 })
+  expect(E.parentOf(tree(), [])).toBeNull()
+  expect(() => E.nodeAt(tree(), [1, 5])).toThrow('no node at [1,5]: [1] has 2 children')
+  expect(() => E.nodeAt(tree(), [0, 0])).toThrow('no node at [0,0]: [0] has 0 children')
+})
+
+test('select and deselect move the selection and nothing else', () => {
+  expect(E.apply(doc(), { type: 'select', frame: 'f1', path: [1, 0] })).toEqual(doc({ frame: 'f1', path: [1, 0] }))
+  expect(E.apply(doc({ frame: 'f1', path: [1, 0] }), { type: 'deselect' })).toEqual(doc())
+  expect(() => E.apply(doc(), { type: 'select', frame: 'f1', path: [7] })).toThrow('no node at [7]: [] has 3 children')
+  expect(() => E.apply(doc(), { type: 'select', frame: 'f9', path: [] })).toThrow('no frame f9')
+})
+
+test('an action the reducer does not know throws naming it', () => {
+  expect(() => E.apply(doc(), { type: 'zap' })).toThrow('unknown action "zap"')
+})
+
+const sel = (path: number[]) => ({ frame: 'f1', path })
+const edited = (t: any, selection: any, edit: string) => ({ frames: [{ id: 'f1', name: 'Band', tree: t }], selection, exportFrame: 'f1', edit })
+
+test('setProp sets a prop on the node at the path, and an empty value removes it', () => {
+  expect(E.apply(doc(sel([1, 1])), { type: 'setProp', path: [1, 1], name: 'plain', value: true }))
+    .toEqual(edited(box({}, text('a'), box({ flexDirection: 'column' }, text('b'), button('go', { plain: true })), text('c')), sel([1, 1]), 'set plain on Button'))
+  expect(E.apply(doc(sel([1])), { type: 'setProp', path: [1], name: 'flexDirection', value: '' }))
+    .toEqual(edited(box({}, text('a'), box({}, text('b'), button('go')), text('c')), sel([1]), 'set flexDirection on Box'))
+  expect(E.apply(doc(sel([0])), { type: 'setProp', path: [0], name: 'bold', value: false })).toEqual(edited(tree(), sel([0]), 'set bold on Text'))
+  expect(() => E.apply(doc(), { type: 'setProp', path: [0], name: 'bold', value: true })).toThrow('setProp needs a selected frame')
+})
+
+test('setProp leaves the document it was given untouched', () => {
+  const before = doc(sel([0]))
+  E.apply(before, { type: 'setProp', path: [0], name: 'color', value: 'claude' })
+  expect(before).toEqual(doc(sel([0])))
+})
+
+// A text field is typed into a draft and committed once on blur or Enter:
+// three keystrokes are one step back.
+test('commit takes one undo step for a field however many keystrokes drafted it', () => {
+  const h = E.history(doc(sel([0])))
+  let draft = h.present
+  for (const t of ['x', 'xy', 'xyz']) draft = E.apply(draft, { type: 'setProp', path: [0], name: 'text', value: t })
+  const next = E.commit(h, draft)
+  expect(next.past).toEqual([doc(sel([0]))])
+  expect(next.present).toEqual(edited(box({}, text('xyz'), box({ flexDirection: 'column' }, text('b'), button('go')), text('c')), sel([0]), 'set text on Text'))
+  expect(next.future).toEqual([])
+})
+
+// A draft still open when another edit or a selection comes is settled
+// first: a step of its own when it changed the frames, else dropped.
+test('commitDraft takes a step for a draft that changed the frames, and none for one retyped to the original', () => {
+  const h = E.history(doc(sel([0])))
+  const typed = E.apply(h.present, { type: 'setProp', path: [0], name: 'text', value: 'DRAFTED' })
+  expect(E.commitDraft(h, typed)).toEqual({
+    past: [doc(sel([0]))],
+    present: edited(box({}, text('DRAFTED'), box({ flexDirection: 'column' }, text('b'), button('go')), text('c')), sel([0]), 'set text on Text'),
+    future: [],
+  })
+  const retyped = E.apply(typed, { type: 'setProp', path: [0], name: 'text', value: 'a' })
+  expect(E.commitDraft(h, retyped)).toEqual(E.history(doc(sel([0]))))
+  expect(E.commitDraft(h, null)).toEqual(E.history(doc(sel([0]))))
+})
+
+// Selecting is not an edit: it moves the present without a step to undo.
+test('replace swaps the present and keeps both stacks', () => {
+  const h = E.commit(E.history(doc()), doc(sel([0])))
+  expect(E.replace(h, doc(sel([2])))).toEqual({ past: [doc()], present: doc(sel([2])), future: [] })
+})
+
+// The 201st commit drops the oldest step: 200 are kept, the first is gone.
+test('history keeps the last 200 steps', () => {
+  let h = E.history(doc())
+  for (let i = 1; i <= 201; i++) h = E.commit(h, { ...doc(), edit: `step ${i}` })
+  expect(h.past.length).toBe(200)
+  expect(h.past[0].edit).toBe('step 1')
+  expect(h.past[199].edit).toBe('step 200')
+  expect(h.present.edit).toBe('step 201')
+})
+
+// `to.index` counts the gaps between the parent's children as they stand
+// before the move: 0 is before the first, kids.length after the last.
+const col = (...kids: any[]) => box({ flexDirection: 'column' }, ...kids)
+test('move puts a node at a gap among its siblings or into another parent, and the selection follows it', () => {
+  expect(E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [], index: 3 } }))
+    .toEqual(edited(box({}, col(text('b'), button('go')), text('c'), text('a')), sel([2]), 'move Text'))
+  expect(E.apply(doc(sel([2])), { type: 'move', from: [2], to: { parentPath: [1], index: 1 } }))
+    .toEqual(edited(box({}, text('a'), col(text('b'), text('c'), button('go'))), sel([1, 1]), 'move Text'))
+  expect(E.apply(doc(sel([1, 1])), { type: 'move', from: [1, 1], to: { parentPath: [], index: 0 } }))
+    .toEqual(edited(box({}, button('go'), text('a'), col(text('b')), text('c')), sel([0]), 'move Button'))
+  expect(E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [1], index: 2 } }))
+    .toEqual(edited(box({}, col(text('b'), button('go'), text('a')), text('c')), sel([0, 2]), 'move Text'))
+})
+
+test('a Text may go inside a Button, which then draws it in its label\'s place', () => {
+  expect(E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [1, 1], index: 0 } }))
+    .toEqual(edited(box({}, col(text('b'), { ...button('go'), kids: [text('a')] }), text('c')), sel([0, 1, 0]), 'move Text'))
+})
+
+test('a move the engine would refuse, or that would lose the node, throws the reason', () => {
+  expect(() => E.apply(doc(sel([1])), { type: 'move', from: [1], to: { parentPath: [1], index: 0 } })).toThrow('cannot move [1] into itself')
+  expect(() => E.apply(doc(sel([1])), { type: 'move', from: [1], to: { parentPath: [0], index: 0 } })).toThrow('a Box cannot go inside a Text')
+  expect(() => E.apply(doc(sel([1, 1])), { type: 'move', from: [1, 1], to: { parentPath: [2], index: 0 } })).toThrow('a Button cannot go inside a Text')
+  const twin = { frames: [{ id: 'f1', name: 'Band', tree: box({}, box({}), button('go')) }], selection: sel([0]), exportFrame: 'f1' }
+  expect(() => E.apply(twin, { type: 'move', from: [0], to: { parentPath: [1], index: 0 } })).toThrow('a Box cannot go inside a Button')
+  expect(() => E.apply(doc(sel([])), { type: 'move', from: [], to: { parentPath: [], index: 0 } })).toThrow('the root cannot move')
+  expect(E.canDrop(tree(), [1, 1], [0])).toBe('a Button cannot go inside a Text')
+  expect(E.canDrop(tree(), [2], [1])).toBeNull()
+})
+
+test('remove takes the node out and selects its parent; the root stays', () => {
+  expect(E.apply(doc(sel([1, 0])), { type: 'remove', path: [1, 0] }))
+    .toEqual(edited(box({}, text('a'), col(button('go')), text('c')), sel([1]), 'remove Text'))
+  expect(() => E.apply(doc(sel([])), { type: 'remove', path: [] })).toThrow('the root cannot be removed')
+})
+
+test('duplicateNode puts a copy right after the node and selects the copy', () => {
+  expect(E.apply(doc(sel([1])), { type: 'duplicateNode', path: [1] }))
+    .toEqual(edited(box({}, text('a'), col(text('b'), button('go')), col(text('b'), button('go')), text('c')), sel([2]), 'duplicate Box'))
+  expect(() => E.apply(doc(sel([])), { type: 'duplicateNode', path: [] })).toThrow('the root cannot be duplicated')
+})
+
+test('setText rewrites a Text\'s words, and only a Text\'s', () => {
+  expect(E.apply(doc(sel([1, 0])), { type: 'setText', path: [1, 0], text: 'beta' }))
+    .toEqual(edited(box({}, text('a'), col(text('beta'), button('go')), text('c')), sel([1, 0]), 'edit the words of a Text'))
+  expect(() => E.apply(doc(sel([1, 1])), { type: 'setText', path: [1, 1], text: 'x' })).toThrow('setText needs a Text; [1,1] is a Button')
+})
+
+// Tab walks the words on the strip in the order the tree holds them.
+test('wordPaths lists every Text and Button in document order', () => {
+  expect(E.wordPaths(tree())).toEqual([[0], [1, 0], [1, 1], [2]])
+  expect(E.wordPaths(box({}, { ...button('feed'), kids: [text('feed '), text('✓')] }))).toEqual([[0], [0, 0], [0, 1]])
+})
+
+// An engine tree with its empty props dropped, as toEngine drops them.
+const bare = (e: any): any => {
+  if (typeof e !== 'object' || e === null) return e
+  const props: any = {}
+  for (const [k, v] of Object.entries(e.props || {})) if (v !== '' && v !== false && v !== undefined) props[k] = v
+  return { type: e.type, props, children: (e.children || []).filter((k: any) => k !== null && k !== undefined && k !== false).map(bare) }
+}
+const engineTrees = () => VARIANTS.flatMap((v: any) => STATES.flatMap((s: any) => ['light', 'dark'].map(theme => ({ cell: `${v.id} / ${s.id} / ${theme}`, tree: v.draw(s.facts, 80, theme) })))).filter((c: any) => c.tree !== null)
+
+test('every tree the gallery draws comes back unchanged from the editor', () => {
+  for (const { cell, tree: e } of engineTrees()) expect({ cell, back: E.toEngine(E.fromEngine(e)) }).toEqual({ cell, back: bare(e) })
+})
+
+test('every editor tree read from the gallery survives a trip through the engine', () => {
+  for (const { cell, tree: e } of engineTrees()) {
+    const t = E.fromEngine(e)
+    expect({ cell, back: E.fromEngine(E.toEngine(t)) }).toEqual({ cell, back: t })
+  }
+})
+
+test('fromEngine spells a Text\'s words as text, the hover colours as fields, and keeps any other hover whole', () => {
+  expect(E.fromEngine({ type: 'Box', props: { key: 'k', hover: { borderColor: 'claude' }, gap: 0 }, children: [
+    { type: 'Text', props: { dimColor: true, bold: false }, children: ['hi'] },
+    { type: 'Button', props: { key: 'r', plain: true, label: '│', hover: { scope: 'r', dimColor: false } }, children: [] },
+    null,
+  ] })).toEqual(box({ key: 'k', hoverBorderColor: 'claude', gap: 0 },
+    text('hi', { dimColor: true }),
+    button('│', { key: 'r', plain: true, hover: { scope: 'r', dimColor: false } })))
+  expect(() => E.fromEngine({ type: 'Text', props: {}, children: [{ type: 'Text', props: {}, children: ['x'] }] }))
+    .toThrow('the editor holds a Text\'s words as one string; this Text has a Text inside it')
+})
+
+// A Button's children draw in its label's place and are strings and Text
+// only. The editor holds a bare string as a Text with no props but its
+// words, and prints such a Text back as the bare string; a Text with any
+// other prop stays a Text.
+test('a bare string in a Button is a Text in the editor and a bare string again in the engine', () => {
+  const feed = { type: 'Button', props: { key: 'cs-feed', plain: true, label: 'feed \u2713' }, children: ['feed ', { type: 'Text', props: { color: 'claude' }, children: ['\u2713'] }] }
+  const held = { ...button('feed \u2713', { key: 'cs-feed', plain: true }), kids: [text('feed '), text('\u2713', { color: 'claude' })] }
+  expect(E.fromEngine(feed)).toEqual(held)
+  expect(E.toEngine(held)).toEqual(feed)
+  expect(() => E.fromEngine({ type: 'Box', props: {}, children: ['loose'] })).toThrow('a Box holds no bare string; "loose" needs a Text')
+  expect(() => E.fromEngine({ type: 'Button', props: {}, children: [3] })).toThrow('a Button holds strings and Text; 3 is neither')
+})
+
+const frames = (...fs: any[]) => ({ frames: fs, selection: null, exportFrame: fs[0].id })
+const frame = (id: string, name: string, t: any) => ({ id, name, tree: t })
+const blank = () => box({})
+
+test('addFrame copies a frame, takes a tree, or starts empty, and selects the new frame\'s root', () => {
+  const one = frames(frame('f1', 'Band', tree()))
+  expect(E.apply(one, { type: 'addFrame', from: 'f1' }))
+    .toEqual({ frames: [frame('f1', 'Band', tree()), frame('f2', 'Band copy', tree())], selection: { frame: 'f2', path: [] }, exportFrame: 'f1', edit: 'add frame Band copy' })
+  expect(E.apply(one, { type: 'addFrame', tree: box({ gap: 1 }), name: 'Quiet line' }))
+    .toEqual({ frames: [frame('f1', 'Band', tree()), frame('f2', 'Quiet line', box({ gap: 1 }))], selection: { frame: 'f2', path: [] }, exportFrame: 'f1', edit: 'add frame Quiet line' })
+  expect(E.apply(frames(frame('f1', 'A', blank()), frame('f7', 'B', blank())), { type: 'addFrame' }).frames.map((f: any) => [f.id, f.name, f.tree]))
+    .toEqual([['f1', 'A', blank()], ['f7', 'B', blank()], ['f8', 'Frame 3', blank()]])
+  expect(() => E.apply(one, { type: 'addFrame', from: 'f1', tree: blank() })).toThrow('addFrame takes a frame to copy or a tree, not both')
+})
+
+test('renameFrame, selectFrame and exportFrame name, pick and mark one frame', () => {
+  const two = frames(frame('f1', 'A', blank()), frame('f2', 'B', blank()))
+  expect(E.apply(two, { type: 'renameFrame', frame: 'f2', name: 'Keys' })).toEqual({ ...frames(frame('f1', 'A', blank()), frame('f2', 'Keys', blank())), edit: 'rename frame B to Keys' })
+  expect(() => E.apply(two, { type: 'renameFrame', frame: 'f2', name: ' ' })).toThrow('a frame needs a name')
+  expect(E.apply(two, { type: 'selectFrame', frame: 'f2' })).toEqual({ ...two, selection: { frame: 'f2', path: [] } })
+  expect(E.apply(two, { type: 'exportFrame', frame: 'f2' })).toEqual({ ...two, exportFrame: 'f2', edit: 'export frame B' })
+})
+
+test('removeFrame drops a frame, its selection and its export mark; the last frame stays', () => {
+  const two = { ...frames(frame('f1', 'A', blank()), frame('f2', 'B', blank())), selection: { frame: 'f2', path: [] }, exportFrame: 'f2' }
+  expect(E.apply(two, { type: 'removeFrame', frame: 'f2' })).toEqual({ frames: [frame('f1', 'A', blank())], selection: null, exportFrame: 'f1', edit: 'remove frame B' })
+  expect(() => E.apply(frames(frame('f1', 'A', blank())), { type: 'removeFrame', frame: 'f1' })).toThrow('the last frame cannot be removed')
+})
+
+const step = (n: number) => ({ ...doc(), edit: `step ${n}` })
+const stepped = (n: number) => { let h = E.history(step(0)); for (let i = 1; i <= n; i++) h = E.commit(h, step(i)); return h }
+
+test('undo and redo walk the steps both ways and stop at the ends', () => {
+  const h = stepped(2)
+  const once = E.undo(h)
+  expect(once).toEqual({ past: [step(0)], present: step(1), future: [step(2)] })
+  const twice = E.undo(once)
+  expect(twice).toEqual({ past: [], present: step(0), future: [step(1), step(2)] })
+  expect(E.undo(twice)).toEqual(twice)
+  expect(E.redo(E.redo(twice))).toEqual(h)
+  expect(E.redo(h)).toEqual(h)
+})
+
+test('an edit after an undo drops the steps ahead', () => {
+  expect(E.commit(E.undo(stepped(2)), step(9))).toEqual({ past: [step(0), step(1)], present: step(9), future: [] })
+})
+
+// The history list jumps by an offset from the present: back is negative.
+test('jump moves straight to any step in the list', () => {
+  expect(E.jump(stepped(3), -3)).toEqual({ past: [], present: step(0), future: [step(1), step(2), step(3)] })
+  expect(E.jump(E.jump(stepped(3), -3), 2)).toEqual({ past: [step(0), step(1)], present: step(2), future: [step(3)] })
+  expect(E.jump(stepped(3), 0)).toEqual(stepped(3))
+})
+
+// What localStorage hands back is read, not trusted: a document must name its
+// frames and its export, a node its type, props and kids.
+test('readDoc takes a saved document and names what is wrong with a bad one', () => {
+  const saved = JSON.parse(JSON.stringify({ ...doc(sel([1, 1])), edit: 'set plain on Button' }))
+  expect(E.readDoc(saved)).toEqual(saved)
+  expect(() => E.readDoc({ frames: [], selection: null, exportFrame: 'f1' })).toThrow('a saved document has no frames')
+  expect(() => E.readDoc({ ...doc(), exportFrame: 'f4' })).toThrow('a saved document exports f4, which is not one of its frames')
+  expect(() => E.readDoc({ ...doc(), frames: [frame('f1', 'A', blank()), frame('f1', 'B', blank())] })).toThrow('a saved document has two frames with the id f1')
+  expect(() => E.readDoc(doc(sel([5])))).toThrow('no node at [5]: [] has 3 children')
+  expect(() => E.readDoc({ ...doc(), frames: [{ id: 'f1', name: 'Band', tree: { type: 'Link', props: {}, kids: [] } }] })).toThrow('a saved node is a Link, not a Box, Text or Button')
+})
+
+// A tree saved under the compose panel's key carries an id on every node,
+// which the editor's nodes do not hold.
+test('readTree reads the compose panel\'s saved tree, ids dropped', () => {
+  expect(E.readTree({ id: 1, type: 'Box', props: { gap: 1 }, kids: [{ id: 2, type: 'Text', props: { text: 'hi' }, kids: [] }] }))
+    .toEqual(box({ gap: 1 }, text('hi')))
+  expect(() => E.readTree({ type: 'Box', props: {} })).toThrow('a saved Box has no kids list')
+  expect(() => E.readTree(box({}, { ...text('hi'), kids: [text('in')] }))).toThrow('a saved tree is refused: a Text cannot go inside a Text')
+  expect(() => E.readTree({ ...button('go'), kids: [box({})] })).toThrow('a saved tree is refused: a Box cannot go inside a Button')
+})
+
+test('insert puts a node at a gap and selects it; the engine\'s refusals throw', () => {
+  expect(E.apply(doc(sel([1])), { type: 'insert', parentPath: [1], index: 2, node: text('new') }))
+    .toEqual(edited(box({}, text('a'), col(text('b'), button('go'), text('new')), text('c')), sel([1, 2]), 'insert Text'))
+  expect(() => E.apply(doc(sel([0])), { type: 'insert', parentPath: [0], index: 0, node: box({}) })).toThrow('a Box cannot go inside a Text')
+  expect(() => E.apply(doc(sel([1, 1])), { type: 'insert', parentPath: [1, 1], index: 0, node: button('x') })).toThrow('a Button cannot go inside a Button')
+})
+
+// A gap runs from 0 to the parent's child count. A move is checked once its
+// node is out: `move [0]` to 9 under the three-child root asks for gap 8 of
+// the two children left.
+test('insert and move refuse a gap outside the parent, naming it', () => {
+  expect(() => E.apply(doc(sel([1])), { type: 'insert', parentPath: [1], index: 9, node: text('x') })).toThrow('no gap 9 in [1]: it has 2 children')
+  expect(() => E.apply(doc(sel([1])), { type: 'insert', parentPath: [1], index: -1, node: text('x') })).toThrow('no gap -1 in [1]: it has 2 children')
+  expect(() => E.apply(doc(sel([0])), { type: 'move', from: [0], to: { parentPath: [], index: 9 } })).toThrow('no gap 8 in []: it has 2 children')
+})
+
+// The toolbar's + buttons: into a selected Box as its last child, else
+// right after the selected node.
+test('insertPoint is the selected Box\'s end, or the gap after a selected leaf', () => {
+  expect(E.insertPoint(tree(), [1])).toEqual({ parentPath: [1], index: 2 })
+  expect(E.insertPoint(tree(), [])).toEqual({ parentPath: [], index: 3 })
+  expect(E.insertPoint(tree(), [1, 0])).toEqual({ parentPath: [1], index: 1 })
+  expect(E.insertPoint(tree(), [2])).toEqual({ parentPath: [], index: 3 })
+})
+
+// A frame drawn from a mod surface's state names it (`source`); one whose
+// tree holds a node the designer cannot edit, Markdown or Code, is a
+// reference frame (`ref`): selectable and inspectable, never edited.
+const md = (text: string) => ({ type: 'Markdown', props: { text }, kids: [] })
+const refDoc = () => E.apply(doc(), { type: 'addFrame', tree: box({ flexDirection: 'column' }, md('Gate **green**'), text('x')), name: 'cs-feed.UserMessage/frames-text', source: { surface: 'cs-feed.UserMessage', state: 'frames-text' }, ref: true })
+
+test('addFrame keeps a surface frame\'s source and whether it is a reference, and a copy keeps both', () => {
+  const d = refDoc()
+  expect(d.frames[1]).toEqual({ id: 'f2', name: 'cs-feed.UserMessage/frames-text', tree: box({ flexDirection: 'column' }, md('Gate **green**'), text('x')), source: { surface: 'cs-feed.UserMessage', state: 'frames-text' }, ref: true })
+  expect(E.apply(d, { type: 'addFrame', from: 'f2' }).frames[2]).toMatchObject({ name: 'cs-feed.UserMessage/frames-text copy', source: { surface: 'cs-feed.UserMessage', state: 'frames-text' }, ref: true })
+  expect(E.apply(d, { type: 'select', frame: 'f2', path: [0] }).selection).toEqual({ frame: 'f2', path: [0] })
+})
+
+test('a reference frame refuses every edit of its tree, by name, and still renames, exports and goes', () => {
+  const d = E.apply(refDoc(), { type: 'select', frame: 'f2', path: [1] })
+  const refused = 'cs-feed.UserMessage/frames-text is a reference frame, drawn by the mod: the designer does not edit it'
+  for (const action of [{ type: 'setText', path: [1], text: 'y' }, { type: 'setProp', path: [1], name: 'bold', value: true }, { type: 'remove', path: [1] }, { type: 'duplicateNode', path: [1] }, { type: 'insert', parentPath: [], index: 0, node: text('z') }, { type: 'move', from: [1], to: { parentPath: [], index: 0 } }]) {
+    expect(() => E.apply(d, action)).toThrow(refused)
+  }
+  expect(E.apply(d, { type: 'renameFrame', frame: 'f2', name: 'lead' }).frames[1].name).toBe('lead')
+  expect(E.apply(d, { type: 'exportFrame', frame: 'f2' }).exportFrame).toBe('f2')
+  expect(E.apply(d, { type: 'removeFrame', frame: 'f2' }).frames.length).toBe(1)
+})
+
+test('uneditable names the first node a tree holds that the designer cannot edit', () => {
+  expect(E.uneditable({ type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: ['a'] }] })).toBeNull()
+  expect(E.uneditable({ type: 'Box', props: {}, children: [{ type: 'Box', props: {}, children: [{ type: 'Code', props: { source: 'x' }, children: [] }] }] })).toBe('it holds a Code node')
+  expect(E.uneditable({ type: 'Text', props: {}, children: ['a', { type: 'Text', props: {}, children: ['b'] }] })).toBe('it holds a Text inside a Text')
+})
+
+test('a reference frame round-trips through the engine tree, Markdown and Code kept', () => {
+  const engine = { type: 'Box', props: { flexDirection: 'column' }, children: [{ type: 'Code', props: { source: 'graph TD', language: 'mermaid' }, children: [] }, { type: 'Markdown', props: { text: '**x**' }, children: [] }] }
+  expect(E.toEngine(E.fromEngine(engine))).toEqual(engine)
+})
+
+test('readDoc keeps a surface frame\'s source and a reference frame\'s Markdown, and refuses Markdown elsewhere', () => {
+  const saved = JSON.parse(JSON.stringify({ ...refDoc(), selection: null }))
+  expect(E.readDoc(saved)).toEqual({ ...saved, edit: saved.edit })
+  const loose = { ...saved, frames: [saved.frames[0], { ...saved.frames[1], ref: false }] }
+  expect(() => E.readDoc(loose)).toThrow('a saved node is a Markdown, not a Box, Text or Button')
+  expect(() => E.readDoc({ ...saved, frames: [saved.frames[0], { ...saved.frames[1], source: { surface: 'x' } }] })).toThrow('a saved frame names a source with no surface and state')
+})
+
+// Where a node from elsewhere (a Components part) lands under the pointer:
+// the node under it when that may hold it, else the nearest container above
+// that may, at the gap of the first drawn child whose midpoint is not before
+// the pointer. On the shipped rotate-due band a pointer on the `r` of rotate
+// (col 14, the Button [1,0,3]) puts it in the band [1,0] before that Button.
+test('insertTarget places a node from outside the frame under the pointer', () => {
+  const t = E.fromEngine(VARIANTS[0].draw(facts('rotate-due'), 80, 'light'))
+  const g = layout(E.toEngine(t), 80)
+  expect(E.insertTarget(t, g, 'Box', { r: 1, c: 14 })).toEqual({ parentPath: [1, 0], index: 3 })
+  expect(E.insertTarget(t, g, 'Box', { r: 1, c: 2 })).toEqual({ parentPath: [1, 0, 0], index: 0 })
+  expect(E.insertTarget(t, g, 'Text', { r: 1, c: 40 })).toBeNull()
+})

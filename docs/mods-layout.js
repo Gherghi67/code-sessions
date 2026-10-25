@@ -3,8 +3,10 @@
 (function (root) {
   "use strict";
 
-  // A cell is one terminal column: the character, and the style it carries.
-  // `st` is shared between cells of the same run, so never mutate one in place.
+  // A cell is one terminal column: the character, the style it carries, and
+  // the index path from the root to the node that drew it (a Box owns its
+  // border, padding, gaps, margins and slack). `st` is shared between cells
+  // of the same run, so never mutate one in place.
   var EMPTY = { color: "", bg: "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
 
   function styleOf(props) {
@@ -22,14 +24,14 @@
   }
 
   var chars = function (s) { return Array.from(String(s)); };
-  function run(s, st) { return chars(s).map(function (ch) { return { ch: ch, st: st }; }); }
-  function blanks(n, st) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY }); return out; }
+  function run(s, st, path) { return chars(s).map(function (ch) { return { ch: ch, st: st, path: path }; }); }
+  function blanks(n, st, path) { var out = []; for (var i = 0; i < n; i++) out.push({ ch: " ", st: st || EMPTY, path: path }); return out; }
 
   // Break `cells` into rows no wider than `room`, by the Text wrap mode. A
   // truncation mark inherits the style of the run it lands in.
   function wrapCells(cells, room, mode) {
     if (room <= 0) return [[]];
-    var dots = function (i) { return { ch: "\u2026", st: (cells[i] || cells[cells.length - 1] || { st: EMPTY }).st }; };
+    var dots = function (i) { var from = cells[i] || cells[cells.length - 1]; return { ch: "\u2026", st: from.st, path: from.path }; };
     if (!mode || mode === "wrap") {
       var out = [];
       for (var i = 0; i < cells.length; i += room) out.push(cells.slice(i, i + room));
@@ -42,6 +44,26 @@
       return [cells.slice(0, head).concat([dots(head)], cells.slice(cells.length - (room - 1 - head)))];
     }
     return [cells.slice(0, room - 1).concat([dots(room - 1)])];
+  }
+
+  // A Text's rows: broken at each newline, then each line wrapped to `room`.
+  function textRows(cells, room, mode) {
+    var lines = [[]];
+    cells.forEach(function (c) { if (c.ch === "\n") lines.push([]); else lines[lines.length - 1].push(c); });
+    return lines.reduce(function (rows, line) { return rows.concat(wrapCells(line, room, mode)); }, []);
+  }
+
+  // A Markdown text as one inline run, as the 2.1.310 renderer styles it:
+  // **strong** bold, *em* or _em_ italic, `code` in the theme's permission
+  // ink, the marks dropped. Blocks (headings, lists, fences) draw as text.
+  var MD_INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_)/;
+  function markdownCells(text, path) {
+    return text.split(MD_INLINE).reduce(function (cells, piece, i) {
+      if (i % 2 === 0) return cells.concat(run(piece, EMPTY, path));
+      if (piece.indexOf("**") === 0) return cells.concat(run(piece.slice(2, -2), styleOf({ bold: true }), path));
+      if (piece.charAt(0) === "`") return cells.concat(run(piece.slice(1, -1), styleOf({ color: "permission" }), path));
+      return cells.concat(run(piece.slice(1, -1), styleOf({ italic: true }), path));
+    }, []);
   }
 
   // A Text child of a Text is an inline run: it inherits what it does not set.
@@ -58,13 +80,13 @@
     return st;
   }
 
-  function textCells(node, inherited) {
+  function textCells(node, inherited, path) {
     var st = mergeStyle(inherited || EMPTY, node.props);
     var cells = [];
-    (node.children || []).forEach(function (kid) {
+    (node.children || []).forEach(function (kid, i) {
       if (kid == null || kid === false) return;
-      if (typeof kid === "string" || typeof kid === "number") cells = cells.concat(run(kid, st));
-      else if (kid.type === "Text") cells = cells.concat(textCells(kid, st));
+      if (typeof kid === "string" || typeof kid === "number") cells = cells.concat(run(kid, st, path));
+      else if (kid.type === "Text") cells = cells.concat(textCells(kid, st, path.concat([i])));
     });
     return cells;
   }
@@ -85,12 +107,7 @@
     arrow: { tl: "\u2198", t: "\u2193", tr: "\u2199", r: "\u2190", br: "\u2196", b: "\u2191", bl: "\u2197", l: "\u2192" },
   };
 
-  function padRow(row, w, st) { return row.length >= w ? row.slice(0, w) : row.concat(blanks(w - row.length, st)); }
-  function padBlock(g, w, h, st) {
-    var rows = g.rows.map(function (r) { return padRow(r, w, st); });
-    while (rows.length < h) rows.push(blanks(w, st));
-    return grid(rows);
-  }
+  function padRow(row, w, st, path) { return row.length >= w ? row.slice(0, w) : row.concat(blanks(w - row.length, st, path)); }
   function num(v) { return typeof v === "number" ? v : 0; }
   // padding / margin: the side spelling wins over the axis, the axis over the whole.
   function edge(p, side, axis) {
@@ -112,29 +129,70 @@
     };
   }
 
-  function layout(node, availWidth) {
+  // `fill`: the Box takes all of `availWidth` (Yoga's stretch), as the root
+  // does in the terminal and a Box does in a column; without it the tree is
+  // measured at its natural width.
+  function layout(node, availWidth, at, fill) {
     var width = Math.max(0, availWidth == null ? 80 : availWidth);
+    var path = at || [];
     if (!node) return grid([]);
-    if (node.type === "Text") return grid(wrapCells(textCells(node, EMPTY), width, (node.props || {}).wrap));
-    if (node.type === "Button") return layoutButton(node, width);
-    if (node.type === "Box") return layoutBox(node, width);
+    if (node.type === "Text") return grid(textRows(textCells(node, EMPTY, path), width, (node.props || {}).wrap));
+    if (node.type === "Button") return layoutButton(node, width, path);
+    if (node.type === "Box") return layoutBox(node, width, path, !!fill);
+    if (node.type === "Markdown") return grid(textRows(markdownCells(String((node.props || {}).text || ""), path), width));
+    // The lab draws no syntax colour: a Code node is its source, dim.
+    if (node.type === "Code") return grid(textRows(run(String((node.props || {}).source || ""), styleOf({ dimColor: true }), path), width));
     return grid([]);
   }
+  // The tree as the terminal draws it in a row `width` cells wide.
+  function layoutScreen(node, width) { return layout(node, width, [], true); }
 
-  // A Button draws its label; `plain` drops the engine's brackets. The hotkey
-  // is the engine's own prefix, not part of the label.
-  function layoutButton(node, width) {
+  // A pane's body framed as the 2.1.310 terminal frames an inline pane that is
+  // not focused: a round dim border, one cell of padding each side, a tab per
+  // open pane (`titles`, the shown one `title` bold, the rest dim) only when
+  // two or more are open, the body clipped to what `rows` leaves, and the dim
+  // close mark on the top border two cells in from the right. The frame's
+  // cells name the root, so a press on it lands on the body's root.
+  function layoutPane(node, o) {
+    var inner = Math.max(0, o.columns - 4), path = [];
+    var dim = styleOf({ dimColor: true });
+    var tabs = o.titles.length > 1;
+    var body = layoutScreen(node, inner).rows.slice(0, Math.max(0, o.rows - 2 - (tabs ? 1 : 0)));
+    if (tabs) {
+      var row = [];
+      o.titles.forEach(function (t, i) {
+        if (i) row = row.concat(blanks(1, EMPTY, path));
+        row = row.concat(run(t, styleOf(t === o.title ? { bold: true } : { dimColor: true }), path));
+      });
+      body.unshift(row);
+    }
+    var top = run("\u256d" + repeat("\u2500", inner + 2) + "\u256e", dim, path);
+    if (o.columns >= 4) top[o.columns - 3] = { ch: "\u2715", st: dim, path: path };
+    var rows = [top].concat(body.map(function (r) {
+      return [{ ch: "\u2502", st: dim, path: path }].concat(blanks(1, EMPTY, path), padRow(r, inner, EMPTY, path), blanks(1, EMPTY, path), [{ ch: "\u2502", st: dim, path: path }]);
+    }), [run("\u2570" + repeat("\u2500", inner + 2) + "\u256f", dim, path)]);
+    return grid(rows);
+  }
+
+  // A Button as the 2.1.310 terminal draws it: a plain one is its hotkey in
+  // suggestion, `: `, then its label, or the label alone with no hotkey; any
+  // other is `[ label ]` bold, in suggestion for variant primary, and never
+  // shows its hotkey. Children, when there are any, draw in the label's place
+  // as inline runs (strings and Text), inside the brackets. The engine reads
+  // no colour or bold of a Button's own.
+  function layoutButton(node, width, path) {
     var p = node.props || {};
-    var st = styleOf({ color: p.color, dimColor: p.dimColor, bold: p.bold });
-    var label = p.label == null ? "" : String(p.label);
-    var body = p.plain ? label : "[ " + label + " ]";
-    var cells = [];
-    if (p.hotkey) cells = cells.concat(run(String(p.hotkey) + ": ", { color: "suggestion", bold: true, bg: "", dim: false, italic: false, underline: false, strikethrough: false, inverse: false }));
-    cells = cells.concat(run(body, st));
+    var st = styleOf(p.plain ? { dimColor: p.dimColor } : { dimColor: p.dimColor, bold: true, color: p.variant === "primary" ? "suggestion" : "" });
+    var drawn = (node.children || []).some(function (k) { return k != null && k !== false && k !== ""; });
+    var body = drawn ? textCells({ props: {}, children: node.children }, st, path) : run(p.label == null ? "" : String(p.label), st, path);
+    var cells;
+    if (!p.plain) cells = run("[ ", st, path).concat(body, run(" ]", st, path));
+    else if (p.hotkey) cells = run(String(p.hotkey), mergeStyle(st, { color: "suggestion" }), path).concat(run(": ", st, path), body);
+    else cells = body;
     return grid([cells.slice(0, Math.max(0, width))]);
   }
 
-  function layoutBox(node, width) {
+  function layoutBox(node, width, path, fill) {
     var p = node.props || {};
     if (p.display === "none") return grid([]);
     var m = margins(p), pd = pads(p);
@@ -147,48 +205,64 @@
     // Room the children get: an explicit width fixes it, else what is left of
     // the band after this Box's own margins and chrome.
     var inner = outer ? Math.max(0, outer - chrome) : Math.max(0, width - m.l - m.r - chrome);
+    // The fewest cells a stretched Box's content takes: all it was given.
+    var least = !outer && fill ? inner : 0;
 
-    var kids = (node.children || []).filter(Boolean);
     var gap = num(p.gap);
     var dir = String(p.flexDirection || "row");
     var column = dir.indexOf("column") === 0;
     var reverse = /-reverse$/.test(dir);
 
     // Every child measures against the full inner room; a row that overruns it
-    // overflows (the terminal clips) rather than starving its later children.
-    var blocks = kids.map(function (kid) { return { node: kid, g: layout(kid, inner) }; });
+    // overflows rather than starving its later children. The engine shrinks
+    // them instead (Box and Text default to flexShrink 1); this layout does not.
+    // A child's path keeps its index among all the children, falsy ones too.
+    // An absolute child takes no room in the flow, and the lab does not yet
+    // draw it at its top and left, so it is left out.
+    var blocks = [];
+    (node.children || []).forEach(function (kid, i) { if (kid && (kid.props || {}).position !== "absolute") blocks.push({ node: kid, g: layout(kid, inner, path.concat([i])), at: path.concat([i]) }); });
     if (reverse) blocks.reverse();
+    // A column stretches each Box it holds that sets no width of its own to
+    // the column's width, unless the column aligns its items otherwise.
+    if (column && (p.alignItems === undefined || p.alignItems === "stretch")) {
+      var colWidth = outer ? inner : Math.max(least, blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0));
+      blocks.forEach(function (b) { if (b.node.type === "Box" && typeof (b.node.props || {}).width !== "number") b.g = layout(b.node, colWidth, b.at, true); });
+    }
 
-    var body = column ? stackColumn(blocks, inner, gap, p, outer) : stackRow(blocks, inner, gap, p, outer);
+    var body = column ? stackColumn(blocks, inner, gap, p, outer, path, least) : stackRow(blocks, inner, gap, p, outer, path, least);
 
     // Height: an explicit height pads or (with overflow hidden) clips the body.
     var bodyRows = body.rows;
+    // An explicit width holds the content open even when nothing in the flow fills it.
+    var w = outer ? Math.max(inner, body.w) : body.w;
     if (typeof p.height === "number") {
       var room = Math.max(0, p.height - (border ? 2 : 0) - pd.t - pd.b);
       if (bodyRows.length > room && p.overflow === "hidden") bodyRows = bodyRows.slice(0, room);
-      while (bodyRows.length < room) bodyRows.push(blanks(body.w));
+      while (bodyRows.length < room) bodyRows.push(blanks(w, EMPTY, path));
     }
 
-    var w = body.w;
     // The background sits under everything the Box holds: every cell a child
     // drew without a background of its own takes it, as the padding does.
-    if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w), p.backgroundColor); });
-    var rows = bodyRows.map(function (r) { return blanks(pd.l, fillSt).concat(padRow(r, w, fillSt), blanks(pd.r, fillSt)); });
-    for (var i = 0; i < pd.t; i++) rows.unshift(blanks(w + pd.l + pd.r, fillSt));
-    for (var j = 0; j < pd.b; j++) rows.push(blanks(w + pd.l + pd.r, fillSt));
+    if (p.backgroundColor) bodyRows = bodyRows.map(function (r) { return underpaint(padRow(r, w, EMPTY, path), p.backgroundColor); });
+    var rows = bodyRows.map(function (r) { return blanks(pd.l, fillSt, path).concat(padRow(r, w, fillSt, path), blanks(pd.r, fillSt, path)); });
+    for (var i = 0; i < pd.t; i++) rows.unshift(blanks(w + pd.l + pd.r, fillSt, path));
+    for (var j = 0; j < pd.b; j++) rows.push(blanks(w + pd.l + pd.r, fillSt, path));
 
     if (border) {
       var g = BORDERS[border], iw = w + pd.l + pd.r;
-      rows = rows.map(function (r) { return [{ ch: g.l, st: edgeSt }].concat(r, [{ ch: g.r, st: edgeSt }]); });
-      rows.unshift(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt));
-      rows.push(run(g.bl + repeat(g.b, iw) + g.br, edgeSt));
+      rows = rows.map(function (r) { return [{ ch: g.l, st: edgeSt, path: path }].concat(r, [{ ch: g.r, st: edgeSt, path: path }]); });
+      rows.unshift(run(g.tl + repeat(g.t, iw) + g.tr, edgeSt, path));
+      rows.push(run(g.bl + repeat(g.b, iw) + g.br, edgeSt, path));
     }
 
-    if (m.l || m.r) rows = rows.map(function (r) { return blanks(m.l).concat(r, blanks(m.r)); });
+    if (m.l || m.r) rows = rows.map(function (r) { return blanks(m.l, EMPTY, path).concat(r, blanks(m.r, EMPTY, path)); });
     var mw = rows.length ? rows[0].length : 0;
-    for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw));
-    for (var b = 0; b < m.b; b++) rows.push(blanks(mw));
-    return grid(rows);
+    for (var t = 0; t < m.t; t++) rows.unshift(blanks(mw, EMPTY, path));
+    for (var b = 0; b < m.b; b++) rows.push(blanks(mw, EMPTY, path));
+    var out = grid(rows);
+    // A Box with no rows still takes its explicit width, as Yoga sizes it.
+    if (!rows.length && outer) out.w = outer + m.l + m.r;
+    return out;
   }
 
   function underpaint(row, bg) {
@@ -196,7 +270,7 @@
       if (c.st && c.st.bg) return c;
       var st = {}; for (var k in (c.st || EMPTY)) st[k] = (c.st || EMPTY)[k];
       st.bg = bg;
-      return { ch: c.ch, st: st };
+      return { ch: c.ch, st: st, path: c.path };
     });
   }
 
@@ -214,21 +288,20 @@
     return { lead: 0, between: 0, tail: free };
   }
 
-  function alignRow(g, h, align, st) {
+  function alignRow(g, h, align, st, path) {
     if (g.h >= h) return g;
     var slack = h - g.h, rows = g.rows.slice();
     var top = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-    for (var i = 0; i < top; i++) rows.unshift(blanks(g.w, st));
-    while (rows.length < h) rows.push(blanks(g.w, st));
+    for (var i = 0; i < top; i++) rows.unshift(blanks(g.w, st, path));
+    while (rows.length < h) rows.push(blanks(g.w, st, path));
     return grid(rows);
   }
 
-  function stackRow(blocks, inner, gap, p, outer) {
+  function stackRow(blocks, inner, gap, p, outer, path, least) {
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
     var h = blocks.reduce(function (a, b) { return Math.max(a, b.g.h); }, 0) || (blocks.length ? 1 : 0);
     var content = blocks.reduce(function (a, b) { return a + b.g.w; }, 0) + gap * Math.max(0, blocks.length - 1);
-    var fixed = outer || (p.width === undefined && inner ? 0 : inner);
-    var room = outer ? inner : (fixed || content);
+    var room = outer ? inner : Math.max(least, content);
 
     // flexGrow shares the slack before justifyContent sees any of it.
     var grows = blocks.map(function (b) { return num((b.node.props || {}).flexGrow); });
@@ -244,29 +317,29 @@
 
     var rows = [];
     for (var y = 0; y < h; y++) {
-      var row = blanks(s.lead, fillSt);
+      var row = blanks(s.lead, fillSt, path);
       blocks.forEach(function (b, i) {
-        if (i) row = row.concat(blanks(gap + s.between, fillSt));
-        var a = alignRow(b.g, h, p.alignItems, fillSt);
-        row = row.concat(a.rows[y] || blanks(b.g.w, fillSt), blanks(extra[i], fillSt));
+        if (i) row = row.concat(blanks(gap + s.between, fillSt, path));
+        var a = alignRow(b.g, h, p.alignItems, fillSt, path);
+        row = row.concat(a.rows[y] || blanks(b.g.w, fillSt, path), blanks(extra[i], fillSt, path));
       });
       rows.push(row);
     }
     var w = outer ? inner : Math.max(room, rows.reduce(function (a, r) { return Math.max(a, r.length); }, 0));
-    return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt) : padRow(r, w, fillSt); }));
+    return grid(rows.map(function (r) { return p.overflow === "hidden" || outer ? padRow(r, w, fillSt, path) : padRow(r, w, fillSt, path); }));
   }
 
-  function stackColumn(blocks, inner, gap, p, outer) {
+  function stackColumn(blocks, inner, gap, p, outer, path, least) {
     var fillSt = { color: "", bg: p.backgroundColor || "", bold: false, dim: false, italic: false, underline: false, strikethrough: false, inverse: false };
     var natural = blocks.reduce(function (a, b) { return Math.max(a, b.g.w); }, 0);
-    var w = outer ? inner : natural;
+    var w = outer ? inner : Math.max(least, natural);
     var rows = [];
     blocks.forEach(function (b, i) {
-      if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt));
+      if (i && gap) for (var n = 0; n < gap; n++) rows.push(blanks(w, fillSt, path));
       var slack = Math.max(0, w - b.g.w);
       var align = p.alignItems;
       var lead = align === "center" ? Math.floor(slack / 2) : align === "flex-end" ? slack : 0;
-      b.g.rows.forEach(function (r) { rows.push(padRow(blanks(lead, fillSt).concat(r), w, fillSt)); });
+      b.g.rows.forEach(function (r) { rows.push(padRow(blanks(lead, fillSt, path).concat(r), w, fillSt, path)); });
     });
     return grid(rows);
   }
@@ -345,23 +418,29 @@
     return name + "={" + jsString(s) + "}";
   }
 
+  // A Text's or a Button's children on one line: strings as literals, Text as tags.
+  function inline(node) {
+    var kids = (node.children || []).filter(function (k) { return k !== null && k !== undefined && k !== false; });
+    return kids.map(function (k) {
+      return typeof k === "string" || typeof k === "number" ? textLiteral(String(k)) : toJsx(k, "");
+    }).join("");
+  }
+
   function toJsx(node, indent) {
     var pad = indent || "";
     if (!node) return "";
-    if (node.type === "Button") return pad + "<Button" + attrs(node.props) + " onPress={press} />";
-    if (node.type === "Text") {
-      var kids = (node.children || []).filter(function (k) { return k !== null && k !== undefined && k !== false; });
-      var inner = kids.map(function (k) {
-        return typeof k === "string" || typeof k === "number" ? textLiteral(String(k)) : toJsx(k, "");
-      }).join("");
-      return pad + "<Text" + attrs(node.props) + ">" + inner + "</Text>";
+    if (node.type === "Button") {
+      var drawn = inline(node);
+      return pad + "<Button" + attrs(node.props) + " onPress={press}" + (drawn ? ">" + drawn + "</Button>" : " />");
     }
+    if (node.type === "Text") return pad + "<Text" + attrs(node.props) + ">" + inline(node) + "</Text>";
     if (node.type === "Box") {
       var kidsB = (node.children || []).filter(Boolean);
       var open = pad + "<Box" + attrs(node.props) + ">";
       if (!kidsB.length) return pad + "<Box" + attrs(node.props) + " />";
       return [open].concat(kidsB.map(function (k) { return toJsx(k, pad + "  "); }), pad + "</Box>").join("\n");
     }
+    if (node.type === "Markdown" || node.type === "Code") return pad + "<" + node.type + attrs(node.props) + " />";
     return "";
   }
 
@@ -385,7 +464,7 @@
     return out;
   }
 
-  var api = { layout: layout, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
+  var api = { layout: layout, layoutScreen: layoutScreen, layoutPane: layoutPane, toText: toText, validate: validate, toJsx: toJsx, BORDERS: BORDERS, EMPTY: EMPTY, blanks: blanks };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ModLayout = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
