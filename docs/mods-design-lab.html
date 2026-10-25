@@ -168,7 +168,24 @@ body.app .rail,body.app .head{display:none}
 .appbar .fit{font-family:"JetBrains Mono",monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 .appbar .fit.no,p.why.no{color:var(--error)}
 .appbar :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.designer{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:0}
+.designer{display:grid;grid-template-columns:240px minmax(0,1fr) 340px;min-height:0}
+.layers{background:var(--panel);border-right:1px solid var(--line);padding:4px 0 12px;font-size:12.5px}
+.pane-h{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);padding:10px 12px 4px}
+.frow,.lrow{display:flex;align-items:center;gap:7px;width:100%;min-height:26px;padding:0 10px 0 calc(12px + var(--d,0) * 14px);background:none;border:0;font:inherit;color:var(--fg);text-align:left;cursor:pointer}
+.frow:hover,.lrow:hover,.lrow.hov{background:var(--page)}
+.frow.on,.lrow.on{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.frow:focus-visible,.lrow:focus-visible,.seed select:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.frow .lname,.lrow .lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .lname.words{font-family:"JetBrains Mono",monospace;font-size:11.5px}
+.frow .badge{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+#bd-frames .fname-edit{width:calc(100% - 20px);margin:1px 10px;font:inherit;padding:2px 4px}
+.seed{padding:4px 12px 2px}
+.seed select{width:100%;font-size:12px;padding:3px 4px}
+.g{flex:none;width:11px;height:11px;display:inline-grid;place-items:center;color:var(--fg2)}
+.g-Box{border:1.5px solid currentColor;border-radius:1px}
+.g-Text::before{content:"T";font:700 11px/1 "IBM Plex Sans",sans-serif}
+.g-Button{width:13px;height:9px;border:1.5px solid currentColor;border-radius:5px}
+.frame .hovl{position:absolute;outline:1px solid color-mix(in srgb,var(--accent) 50%,transparent);pointer-events:none}
 .designer > *{min-height:0;overflow:auto}
 .canvas-pane{padding:16px 20px}
 .designer .props{background:var(--panel);border-left:1px solid var(--line);padding:12px}
@@ -254,7 +271,6 @@ body.app .rail,body.app .head{display:none}
   </div>
   <div class="bar-c" id="bd-title" title="The frame that exports"></div>
   <div class="bar-r">
-    <label title="A frame is one drawing: start one empty or from a Band variants drawing in the picked state"><span class="vh">new frame from</span><select id="bd-seed"></select></label>
     <label title="The state a new frame is drawn in">State <select id="bd-state"></select></label>
     <label title="The band's width, for every frame">Cols <input id="bd-cols" type="number" min="40" max="200" value="80"></label>
     <button type="button" id="bd-theme"></button>
@@ -263,6 +279,13 @@ body.app .rail,body.app .head{display:none}
   </div>
 </header>
 <div class="designer">
+  <aside class="layers" aria-label="layers">
+    <div class="pane-h">Frames</div>
+    <div id="bd-frames"></div>
+    <div class="seed" title="A frame is one drawing: start one empty or from a Band variants drawing in the picked state"><select id="bd-seed" aria-label="new frame from"></select></div>
+    <div class="pane-h">Layers</div>
+    <div id="bd-layers"></div>
+  </aside>
   <div class="canvas-pane"><p class="refuse" id="bd-note" hidden></p><div class="canvas" id="bd-canvas"></div><pre class="spec" id="cp-spec"></pre></div>
   <aside class="props"><div id="bd-props"></div><div class="hist"><div class="legend">History</div><div id="bd-hist"></div></div></aside>
 </div>
@@ -1277,14 +1300,58 @@ function fitWords(w,c){ return `measures ${w} cells of ${c}`+(w>c?`: clipped at 
 // A grid wider than the band, cut at the band's edge as the terminal cuts it.
 function clipTo(g,c){ return g.w>c?{w:c,h:g.h,rows:g.rows.map(r=>r.slice(0,c))}:g; }
 
+// Where a node's cells sit inside its strip, as an absolute box; the cells'
+// own rects, so it follows whatever size the strip is drawn at.
+function bdSpanBox(strip,s){
+  const at=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
+  const base=strip.getBoundingClientRect(), a=at(s.top,s.left), b=at(s.bottom,s.right);
+  return `left:${a.left-base.left}px;top:${a.top-base.top}px;width:${b.right-a.left}px;height:${b.bottom-a.top}px`;
+}
 // The outline and the type-and-key tag over the selected node's cells.
 function bdChrome(strip,g,path,node){
   const s=BandEditor.spanOf(g,path); if(!s) return;
-  const at=(r,c)=>strip.querySelector(`[data-r="${r}"][data-c="${c}"]`).getBoundingClientRect();
-  const base=strip.getBoundingClientRect(), a=at(s.top,s.left), b=at(s.bottom,s.right);
-  const box=`left:${a.left-base.left}px;top:${a.top-base.top}px;width:${b.right-a.left}px;height:${b.bottom-a.top}px`;
-  strip.insertAdjacentHTML("beforeend",`<div class="sel" style="${box}"><span class="tag">${esc(node.type+(node.props.key?" "+node.props.key:""))}</span></div>`);
+  strip.insertAdjacentHTML("beforeend",`<div class="sel" style="${bdSpanBox(strip,s)}"><span class="tag">${esc(node.type+(node.props.key?" "+node.props.key:""))}</span></div>`);
 }
+// The node under the pointer, on the strip or in Layers: a faint outline,
+// drawn over the strip without redrawing it, so a click in flight keeps its
+// target. The selected node has its own outline and gets none.
+let bdHover=null;
+function bdHoverDraw(){
+  $("bd-canvas").querySelectorAll(".hovl").forEach(el=>el.remove());
+  $("bd-layers").querySelectorAll(".lrow.hov").forEach(el=>el.classList.remove("hov"));
+  const h=bdHover, sel=bdDocNow().selection;
+  if(!h||!bdGrids[h.frame]||(sel&&sel.frame===h.frame&&samePath(sel.path,h.path))) return;
+  const s=BandEditor.spanOf(bdGrids[h.frame],h.path), strip=$("bd-canvas").querySelector(`[data-frame="${h.frame}"] .strip`);
+  if(!s||!strip) return;
+  strip.insertAdjacentHTML("beforeend",`<div class="hovl" style="${bdSpanBox(strip,s)}"></div>`);
+  $("bd-layers").querySelector(`.lrow[data-path="${h.path.join(",")}"]`)?.classList.add("hov");
+}
+function bdHoverSet(h){
+  const same=h&&bdHover&&h.frame===bdHover.frame&&samePath(h.path,bdHover.path);
+  if(same||(!h&&!bdHover)) return;
+  bdHover=h; bdHoverDraw();
+}
+// Layers: the frames as pages, then the shown frame's nodes in document
+// order, indented by depth. The shown frame is the selection's, else the
+// export frame.
+function bdLayerLabel(n){
+  if(n.type==="Text") return `<span class="lname words">${esc(n.props.text||"")}</span>`;
+  if(n.type==="Button") return `<span class="lname">${esc(n.props.key||n.props.label||"Button")}</span>`;
+  return `<span class="lname">${esc(n.props.key||n.props.flexDirection||"row")}</span>`;
+}
+function bdLayers(){
+  const doc=bdDocNow(), sel=doc.selection, shown=sel?sel.frame:doc.exportFrame;
+  $("bd-frames").innerHTML=doc.frames.map(f=>`<button type="button" class="frow${f.id===shown?" on":""}" data-frame-row="${f.id}" title="Double-click to rename"><span class="lname">${esc(f.name)}</span>${f.id===doc.exportFrame?`<span class="badge">export</span>`:""}</button>`).join("");
+  const rows=[], walk=(n,path)=>{ rows.push({n,path}); n.kids.forEach((k,i)=>walk(k,path.concat([i]))); };
+  walk(bdFrame(shown).tree,[]);
+  $("bd-layers").innerHTML=rows.map(({n,path})=>{
+    const on=sel&&sel.frame===shown&&samePath(sel.path,path);
+    return `<button type="button" class="lrow${on?" on":""}"${on?` aria-current="true"`:""} data-path="${path.join(",")}" style="--d:${path.length}" aria-label="${n.type} ${esc(n.props.key||n.props.text||n.props.label||"")}"><span class="g g-${n.type}" aria-hidden="true"></span>${bdLayerLabel(n)}</button>`;
+  }).join("");
+  $("bd-layers").dataset.frame=shown;
+  $("bd-layers").querySelector(".lrow.on")?.scrollIntoView({block:"nearest"});
+}
+const bdRowPath=row=>row.dataset.path?row.dataset.path.split(",").map(Number):[];
 function bdFrameCard(f){
   const tree=BandEditor.toEngine(f.tree), c=cols();
   const refused=ModLayout.validate(tree);
@@ -1316,6 +1383,7 @@ function composeRender(){
   $("bd-canvas").innerHTML=doc.frames.map(bdFrameCard).join("");
   const sel=doc.selection;
   if(sel) bdChrome($("bd-canvas").querySelector(`[data-frame="${sel.frame}"] .strip`),bdGrids[sel.frame],sel.path,bdSelected());
+  bdLayers(); bdHoverDraw();
   if(bdPanelStale){ $("bd-props").innerHTML=cpInspector(bdSelected(),sel&&sel.path); bdPanelStale=false; }
   $("cp-spec").textContent=ModLayout.toJsx(BandEditor.toEngine(bdFrame(doc.exportFrame).tree));
   const fitFrame=bdFrame(sel?sel.frame:doc.exportFrame), fitW=ModLayout.layout(BandEditor.toEngine(fitFrame.tree),cols()).w;
@@ -1395,10 +1463,10 @@ function bdSeed(id){
   bdEdit({type:"addFrame",tree:drawn?BandEditor.fromEngine(drawn):{type:"Box",props:{flexDirection:"column"},kids:[]},name:`${v.name} · ${st.id}`});
 }
 // A frame's name, retyped in place: Enter or leaving commits, Esc drops it.
-function bdRename(frame,button){
-  const was=bdFrame(frame).name;
-  button.outerHTML=`<input class="fname-edit" name="frame-name" aria-label="frame name" value="${esc(was).replace(/"/g,"&quot;")}">`;
-  const input=$("bd-canvas").querySelector(`[data-frame="${frame}"] .fname-edit`);
+function bdRename(frame,el){
+  const was=bdFrame(frame).name, host=el.parentElement;
+  el.outerHTML=`<input class="fname-edit" name="frame-name" aria-label="frame name" value="${esc(was).replace(/"/g,"&quot;")}">`;
+  const input=host.querySelector(".fname-edit");
   input.focus(); input.select();
   let done=false;
   const finish=keep=>{ if(done) return; done=true; if(keep&&input.value.trim()&&input.value!==was) bdEdit({type:"renameFrame",frame,name:input.value}); else composeRender(); };
@@ -1540,6 +1608,7 @@ function bdKeys(e){
   const doc=bdDocNow(), sel=doc.selection;
   if(!$("p-compose").classList.contains("on")) return;
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"")||$("finder")?.classList.contains("on")||$("bd-help").open) return;
+  if((e.key==="Enter"||e.key===" ")&&document.activeElement?.closest?.("button,a")) return;
   if(e.key==="?"){ e.preventDefault(); e.stopImmediatePropagation(); return $("bd-help").showModal(); }
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="z"){ e.preventDefault(); e.stopImmediatePropagation(); return bdTravel(e.shiftKey?1:-1); }
   if(!sel) return;
@@ -1582,6 +1651,11 @@ function composeUI(){
     bdDraft=BandEditor.apply(bdDocNow(),{type:"setProp",path:bdDocNow().selection.path,name:el.dataset.prop,value:fieldValue(el)});
     composeRender();
   });
+  $("bd-frames").addEventListener("click",e=>{ const row=e.target.closest("[data-frame-row]"); if(row&&e.detail<2) bdDispatch({type:"selectFrame",frame:row.dataset.frameRow}); });
+  $("bd-frames").addEventListener("dblclick",e=>{ const row=e.target.closest("[data-frame-row]"); if(row) bdRename(row.dataset.frameRow,row); });
+  $("bd-layers").addEventListener("click",e=>{ const row=e.target.closest(".lrow"); if(row) bdDispatch({type:"select",frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}); });
+  $("bd-layers").addEventListener("mouseover",e=>{ const row=e.target.closest(".lrow"); bdHoverSet(row?{frame:$("bd-layers").dataset.frame,path:bdRowPath(row)}:null); });
+  $("bd-layers").addEventListener("mouseleave",()=>bdHoverSet(null));
   $("bd-help-open").onclick=()=>$("bd-help").showModal();
   $("bd-help-close").onclick=()=>$("bd-help").close();
   $("bd-help").addEventListener("click",e=>{ if(e.target===$("bd-help")) $("bd-help").close(); });
