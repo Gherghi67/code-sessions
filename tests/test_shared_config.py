@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -461,6 +462,63 @@ print(migration.merge_jsonl(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[
         with self.assertRaises(FileExistsError):
             migration.migrate(self.home, True)
         self.assertEqual(target.read_text(), '{"projects":{}}')
+
+    def test_project_lock_takeover_preserves_successor_config_and_lock(self):
+        self.put(self.profile, ".claude/.claude.json", '{"projects":{"new":{}}}')
+        target = self.put(self.home, ".claude.json", '{"oauthAccount":"normal","projects":{}}')
+        lock = self.home / ".claude.json.lock"
+        abandoned = self.home / ".claude.json.abandoned-lock"
+        dump = json.dump
+
+        def takeover(document, stream, **options):
+            lock.rename(abandoned)
+            lock.mkdir()
+            target.write_text('{"oauthAccount":"successor","projects":{"native":{}}}')
+            return dump(document, stream, **options)
+
+        with mock.patch.object(migration.json, "dump", side_effect=takeover):
+            with self.assertRaisesRegex(ValueError, "Lost Claude config lock"):
+                migration.merge_project_settings(self.profile, self.home, True)
+        self.assertEqual(target.read_text(), '{"oauthAccount":"successor","projects":{"native":{}}}')
+        self.assertTrue(lock.is_dir())
+        self.assertEqual(list(lock.iterdir()), [])
+
+    def test_project_lock_heartbeats_while_config_is_serialized(self):
+        self.put(self.profile, ".claude/.claude.json", '{"projects":{"new":{}}}')
+        target = self.put(self.home, ".claude.json", '{"projects":{}}')
+        lock = self.home / ".claude.json.lock"
+        dump = json.dump
+
+        def slow_dump(document, stream, **options):
+            os.utime(lock, ns=(0, 0))
+            deadline = time.monotonic() + 0.5
+            while lock.stat().st_mtime_ns == 0 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            self.assertGreater(lock.stat().st_mtime_ns, 0, "native config lock became stale during serialization")
+            return dump(document, stream, **options)
+
+        with mock.patch.object(migration, "CLAUDE_LOCK_HEARTBEAT_SECONDS", 0.01, create=True), \
+                mock.patch.object(migration.json, "dump", side_effect=slow_dump):
+            self.assertEqual(migration.merge_project_settings(self.profile, self.home, True), 1)
+        self.assertEqual(json.loads(target.read_text())["projects"], {"new": {}})
+        self.assertFalse(lock.exists())
+
+    def test_project_import_counts_only_entries_missing_after_lock_acquisition(self):
+        self.put(self.profile, ".claude/.claude.json", '{"projects":{"new":"old"}}')
+        target = self.put(self.home, ".claude.json", '{"projects":{}}')
+        lock = self.home / ".claude.json.lock"
+        mkdir = Path.mkdir
+
+        def native_update(path, *args, **options):
+            result = mkdir(path, *args, **options)
+            if path == lock:
+                target.write_text('{"projects":{"new":"normal"}}')
+            return result
+
+        with mock.patch.object(Path, "mkdir", native_update):
+            count = migration.merge_project_settings(self.profile, self.home, True)
+        self.assertEqual(count, 0)
+        self.assertEqual(json.loads(target.read_text())["projects"], {"new": "normal"})
 
 
 if __name__ == "__main__":

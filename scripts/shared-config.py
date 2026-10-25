@@ -5,7 +5,7 @@ ABOUTME: Preserves existing records, imports missing conversations and Codex thr
 ABOUTME: Leaves credentials, user preferences, session folders and the old profile in place.
 """
 import argparse
-from contextlib import closing
+from contextlib import closing, contextmanager
 import datetime
 import errno
 import fcntl
@@ -15,8 +15,13 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tempfile
+import threading
+
+
+CLAUDE_LOCK_HEARTBEAT_SECONDS = 2
 
 
 def digest(path):
@@ -253,6 +258,61 @@ def merge_jsonl_records(source, target, stream, apply):
     return len(additions)
 
 
+@contextmanager
+def claude_config_lock(lock):
+    """Keep Claude's empty native lock alive and release only its acquired inode."""
+    lock.mkdir(mode=0o700)
+    identity = None
+    descriptor = None
+    heartbeat = None
+    stop = threading.Event()
+    compromised = threading.Event()
+
+    def owned():
+        try:
+            current = lock.lstat()
+        except FileNotFoundError:
+            return False
+        return stat.S_ISDIR(current.st_mode) and (current.st_dev, current.st_ino) == identity
+
+    def verify():
+        if compromised.is_set() or not owned():
+            raise ValueError(f"Lost Claude config lock: {lock}; retry after its writer finishes")
+
+    def refresh():
+        while not stop.wait(CLAUDE_LOCK_HEARTBEAT_SECONDS):
+            try:
+                verify()
+                # Use the retained directory fd, never a successor's path.
+                os.utime(descriptor, None)
+            except (OSError, ValueError):
+                compromised.set()
+                return
+
+    try:
+        acquired = lock.lstat()
+        identity = (acquired.st_dev, acquired.st_ino)
+        descriptor = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        retained = os.fstat(descriptor)
+        if (retained.st_dev, retained.st_ino) != identity:
+            raise ValueError(f"Lost Claude config lock: {lock}; retry after its writer finishes")
+        verify()
+        os.utime(descriptor, None)
+        heartbeat = threading.Thread(target=refresh, name="claude-config-lock", daemon=True)
+        heartbeat.start()
+        yield verify
+    finally:
+        stop.set()
+        if heartbeat is not None:
+            heartbeat.join()
+        try:
+            if identity is not None and owned():
+                lock.rmdir()
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+
 def merge_project_settings(profile, home, apply):
     """Keep trusted project entries without copying account or user preferences."""
     source = profile / ".claude/.claude.json"
@@ -265,26 +325,26 @@ def merge_project_settings(profile, home, apply):
     projects = current.get("projects", {})
     missing = {key: value for key, value in incoming.items() if key not in projects}
     if missing and apply:
-        # Claude's native writer uses this sibling lock too. Refuse rather
-        # than overwrite a concurrent account switch or project update.
         lock = target.with_name(target.name + ".lock")
-        lock.mkdir(mode=0o700)
         temporary = None
-        try:
-            current = json.loads(target.read_text()) if target.is_file() else {}
-            for key, value in missing.items():
-                current.setdefault("projects", {}).setdefault(key, value)
-            fd, temporary = tempfile.mkstemp(dir=home, prefix=".claude.json.shared-")
-            with os.fdopen(fd, "w") as stream:
-                json.dump(current, stream, indent=2)
-                stream.write("\n")
-            if target.exists():
-                shutil.copymode(target, temporary)
-            os.replace(temporary, target)
-        finally:
-            if temporary and os.path.exists(temporary):
-                os.unlink(temporary)
-            lock.rmdir()
+        with claude_config_lock(lock) as verify:
+            try:
+                current = json.loads(target.read_text()) if target.is_file() else {}
+                missing = {key: value for key, value in incoming.items() if key not in current.get("projects", {})}
+                if not missing:
+                    return 0
+                current.setdefault("projects", {}).update(missing)
+                fd, temporary = tempfile.mkstemp(dir=home, prefix=".claude.json.shared-")
+                with os.fdopen(fd, "w") as stream:
+                    json.dump(current, stream, indent=2)
+                    stream.write("\n")
+                if target.exists():
+                    shutil.copymode(target, temporary)
+                verify()
+                os.replace(temporary, target)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
     return len(missing)
 
 
