@@ -498,12 +498,12 @@ the prompt, two columns in where Claude Code draws its own footer, with a
 blank line above it, in two zones. At the left, after a mark, stand the
 actions, what a key or a press does now; at the line's right edge stand the
 words that say what the session is, then the prompt the rail names, then the
-rail of prompts, its last dot in the line's last cell. Items in a zone stand three cells apart, and the line's free
+rail of prompts, its last tick in the line's last cell. Items in a zone stand three cells apart, and the line's free
 cells fall between the zones, never fewer than three, so the right edge holds
 still while the actions come and go. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `⣿ ctrl+x 1 rotate   2 wrap   #4 say four   ○○○●` on the narrowest line
+colour: `⣿ ctrl+x 1 rotate   2 wrap   #4 say four   ╷╷╷┃` on the narrowest line
 that holds it. Chords that differ are spelled whole. In order, and each
 only when it applies, the actions are `rotate` (or `/clear now` once a
 handoff is armed, then `in Ns`, the armed handoff's count), `wrap`, `feed`
@@ -528,15 +528,16 @@ of its own, and not while a survey holds the band.
 
 The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
 off by default; see [configuration.md](configuration.md#band-settings)).
-It is one dot per prompt the person sent in this conversation: `○` dim, `●` in the session's colour for the prompt the band
-names, `◌` dim for a prompt the engine refused to scroll to. Dots side by
-side stay apart, so each reads as a prompt of its own. The band names
+It is one ruler tick per prompt the person sent in this conversation: `╷` dim, `┃` bold in the session's colour for the prompt the band
+names, `╵` dim for a prompt the engine refused to scroll to. The named tick
+stands out by its height; the others are short stubs, which side by side read
+as separate ticks rather than a fence. The band names
 the newest prompt; with the `/config` row `cs.bandPrompt` set to `read` it
 names the prompt being read instead (the prompt whose row stands highest on
 screen, from the engine's own on-screen reports of the transcript's rows)
 and follows the scroll (see
-[configuration.md](configuration.md#band-settings)). A press on a dot scrolls the transcript so that
-prompt's row is at the top. The band's focus ring never lands on a dot:
+[configuration.md](configuration.md#band-settings)). A press on a tick scrolls the transcript so that
+prompt's row is at the top. The band's focus ring never lands on a tick:
 the keyboard route is `/cs next`, `/cs prev`, `/cs first`, `/cs last` and
 `/cs N`, which move the same way from the prompt being read, mid-turn too,
 for keybindings. A
@@ -549,31 +550,31 @@ modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
-are not prompts. The dots end in the line's last cell, so the actions at the
-left never move them while the line has room for every dot. At
-most `cs.bandBars` dots draw (10 by default), in what the line leaves after
+are not prompts. The ticks end in the line's last cell, so the actions at the
+left never move them while the line has room for every tick. At
+most `cs.bandBars` ticks draw (10 by default), in what the line leaves after
 the inset and the words; the older prompts collapse into one dim `…N` run at
-the rail's start, a cell before the first dot. The rail keeps its least:
-every prompt but the named one folded into `…N` before the named dot, and
+the rail's start, a cell before the first tick. The rail keeps its least:
+every prompt but the named one folded into `…N` before the named tick, and
 three cells before that. The words fit what that leaves, so the right edge's
 words drop and shorten and the keys lose their words before the rail goes:
-`⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ●`
+`⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ┃`
 on a 75-column line with fourteen prompts, every action, the features word
 and `mail 1`: the mail word drops, the shared prefix goes and the features
 word shortens. The
 actions outrank the rail: where one would leave the line whole beside that
 least, the words take the whole line, the rail draws in what they leave, and
-a line too narrow for any dot draws no rail. Three cells before the dots, and three cells after any
+a line too narrow for any tick draws no rail. Three cells before the ticks, and three cells after any
 word before it, the band names its prompt, `#N` and its first line (up to 80
 characters),
 dim italic, cut with `…` when the line is narrower, counted in terminal cells
 so a wide character takes two; under ten cells left it names none, and the
-dots still end in the line's last cell. The three cells keep a `…N` run from
+ticks still end in the line's last cell. The three cells keep a `…N` run from
 reading as the end of a cut name. The name
-is as wide as the widest prompt it can show, the named one or a drawn dot's,
-padded on its left so it ends three cells before the dots, so a swap never
-moves the dots or the words before it. On the
-terminal a dot under the pointer swaps its own prompt into that place,
+is as wide as the widest prompt it can show, the named one or a drawn tick's,
+padded on its left so it ends three cells before the ticks, so a swap never
+moves the ticks or the words before it. On the
+terminal a tick under the pointer swaps its own prompt into that place,
 italic, until the pointer leaves; the swap follows the mouse, so it
 needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
 them off). Other
@@ -609,7 +610,7 @@ stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
 draws. Every word takes its terminal cells from what the prompt's name is
-left: `⣿ ▤ queue 2   mail 1   #4 say four   ○○○●` on the narrowest line that
+left: `⣿ ▤ queue 2   mail 1   #4 say four   ╷╷╷┃` on the narrowest line that
 holds it; a wider line puts its free cells between the mark and the counts.
 The task in progress is
 Claude Code's own task list's to show, above the band; the band does not
