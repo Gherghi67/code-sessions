@@ -167,6 +167,13 @@
       ] })
     ] });
   }
+  function inlineToast(plugin, text, cols) {
+    const el = elements();
+    return el.Box({ width: cols, paddingX: 2, flexDirection: "column", alignItems: "flex-end", children: [
+      el.Text({ dimColor: true, wrap: "truncate", children: `${plugin}: ${oneLine(text)}` })
+    ] });
+  }
+  var oneLine = (text) => text.replace(/[\n\r\u2028\u2029]/g, "�");
   function commandReply(plugin, command, args, reply) {
     const el = elements();
     return el.Box({ flexDirection: "column", children: [
@@ -261,7 +268,8 @@ checksum mismatch` }) },
     },
     chromeSurface("toast", [
       { id: "declined", name: "launching after declining the update cs offered", draw: (cols) => toast("cs-update", TOASTS.declined("2026.11.2"), cols) },
-      { id: "not-recorded", name: "finishing an update whose outcome cannot be written down", draw: (cols) => toast("cs-update", TOASTS.notRecorded("ENOSPC: no space left on device"), cols) }
+      { id: "not-recorded", name: "finishing an update whose outcome cannot be written down", draw: (cols) => toast("cs-update", TOASTS.notRecorded("ENOSPC: no space left on device"), cols) },
+      { id: "declined-inline", name: "launching after declining the update, outside the fullscreen renderer", draw: (cols) => inlineToast("cs-update", TOASTS.declined("2026.11.2"), cols) }
     ]),
     chromeSurface("command", [
       { id: "not-lead", name: "running /cs-update in a teammate conversation", draw: () => commandReply("cs-update", "cs-update", "", REPLIES.notLead) },

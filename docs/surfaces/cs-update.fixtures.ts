@@ -2,7 +2,7 @@
 // ABOUTME: Typed against the mod's exports, so a change to PaneView breaks this file at type-check.
 import { COMMANDS, REPLIES, TOASTS, drawPane, parseSpan, type PaneView } from '../../mods/cs-update/hooks/register.tsx'
 import { SESSION_PALETTE } from '../../mods/cs/hooks/register.tsx'
-import { commandReply, menuRows, toast } from './chrome.ts'
+import { commandReply, inlineToast, menuRows, toast } from './chrome.ts'
 import { elements, type State, type Surface } from './registry.ts'
 
 const NOTES = [
@@ -45,6 +45,7 @@ export const surfaces: Surface[] = [{
   chromeSurface('toast', [
     { id: 'declined', name: 'launching after declining the update cs offered', draw: cols => toast('cs-update', TOASTS.declined('2026.11.2'), cols) },
     { id: 'not-recorded', name: 'finishing an update whose outcome cannot be written down', draw: cols => toast('cs-update', TOASTS.notRecorded('ENOSPC: no space left on device'), cols) },
+    { id: 'declined-inline', name: 'launching after declining the update, outside the fullscreen renderer', draw: cols => inlineToast('cs-update', TOASTS.declined('2026.11.2'), cols) },
   ]),
   chromeSurface('command', [
     { id: 'not-lead', name: 'running /cs-update in a teammate conversation', draw: () => commandReply('cs-update', 'cs-update', '', REPLIES.notLead) },

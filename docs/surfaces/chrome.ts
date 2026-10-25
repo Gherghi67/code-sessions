@@ -67,6 +67,27 @@ export function toast(plugin: string, text: string, cols: number): RenderElement
   ] })
 }
 
+// A toast outside the fullscreen renderer, where 2.1.310's toast() hands it
+// to addNotification as `text:U7e(plugin,text)`, `${fJ(e)}: ${$7e(n)}`, and
+// Pwe draws it: `e(n,{color:a.color,dimColor:!a.color,wrap:"truncate",
+// children:a.text})`, one row, dim since a toast has no colour, cut with `…`.
+// It sits first in the footer's right-hand column (uhe: `alignItems:
+// "flex-end"`, `children:[x,Ge]`, the notification above the modes), the
+// footer row two cells in from each side. Drawn alone: the prompt hint on the
+// left and the modes under it are not. Two other places draw it, both
+// fullscreen only: the row above the prompt when its hint is a timed one, and
+// a pane header's `▔` rule (Uu).
+export function inlineToast(plugin: string, text: string, cols: number): RenderElement {
+  const el = elements()
+  return el.Box({ width: cols, paddingX: 2, flexDirection: 'column', alignItems: 'flex-end', children: [
+    el.Text({ dimColor: true, wrap: 'truncate', children: `${plugin}: ${oneLine(text)}` }),
+  ] })
+}
+
+// $7e: a toast's text with every line break as U+FFFD (Sa:
+// `n.replace(/[\n\r\u2028\u2029]/g,"\uFFFD")`), so it is one line.
+const oneLine = (text: string): string => text.replace(/[\n\r\u2028\u2029]/g, '\uFFFD')
+
 // A rule across the terminal (Ql with no title): `─` in the inactive ink.
 const rule = (cols: number): RenderElement => elements().Text({ color: 'inactive', children: '─'.repeat(cols) })
 

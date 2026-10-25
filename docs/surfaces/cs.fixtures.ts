@@ -6,7 +6,7 @@ import {
   bandState, buildBandEntries, countdownColor, drawBand, featuresWordOf, finishToast, paletteColor,
   type BandView, type FeatureRecord, type FinishRecord,
 } from '../../mods/cs/hooks/register.tsx'
-import { askDialog, commandReply, logRow, menuRows, toast } from './chrome.ts'
+import { askDialog, commandReply, inlineToast, logRow, menuRows, toast } from './chrome.ts'
 import { elements, type State, type Surface, type Theme } from './registry.ts'
 
 // What the AbovePrompt hook has read by the time it builds the band: its
@@ -203,6 +203,12 @@ const FINISH_STATES: State[] = [
   { id: 'retired', name: 'seeing /finish retire a feature', draw: csToast(finishToast({ ...FINISH, step: 'retired' })) },
 ]
 
+// The same toast outside the fullscreen renderer, one that fits and one cut.
+const INLINE_STATES: State[] = [
+  { id: 'queued-inline', name: 'queuing a task with /queue, outside the fullscreen renderer', draw: cols => inlineToast('cs', TOASTS.queued('fix the login redirect'), cols) },
+  { id: 'force-below-start-inline', name: 'starting past the forced rotation, outside the fullscreen renderer', draw: cols => inlineToast('cs', TOASTS.forceBelowStart(70, 75), cols) },
+]
+
 const ASK_STATES: State[] = [
   { id: 'wrap', name: 'pressing the wrap key', draw: cols => askDialog(ASKS.wrap, cols) },
   { id: 'wrap-not-now', name: 'moving to Not now in the wrap dialog', draw: cols => askDialog(ASKS.wrap, cols, 1) },
@@ -260,7 +266,7 @@ export const surfaces: Surface[] = [{
     { id: 'prompt-label', name: 'prompt label', state: 'rail-few', path: [1, 0, 2] },
   ],
 },
-  chromeSurface('toast', [...chromeStates(TOAST_STATES), ...FINISH_STATES]),
+  chromeSurface('toast', [...chromeStates(TOAST_STATES), ...FINISH_STATES, ...INLINE_STATES]),
   chromeSurface('ask', ASK_STATES),
   chromeSurface('command', COMMAND_STATES),
   chromeSurface('menu', MENU_STATES),

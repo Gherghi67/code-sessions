@@ -865,7 +865,14 @@ components, and fills it with the words the mod exports: cs and cs-update
 keep every toast, dialog, notice, reply and menu row in tables in
 `register.tsx` (`TOASTS`, `ASKS`, `LOGS`, `REPLIES`, `COMMANDS`), and cs-feed
 keeps its own in `words.ts`. Each of these states opens as a reference
-frame, since a mod hands Claude Code only the words.
+frame, since a mod hands Claude Code only the words. A toast has two
+renderings, and the lab draws both. The fullscreen renderer draws a round
+box at the transcript's top right, the plugin's name dim on its own
+row and the words under it in at most three rows. The inline renderer draws
+one dim row at the right of the footer, `<plugin>: <words>`, cut with
+`…` where the footer ends; its states end in `-inline`. A toast, a notice and
+a command reply all reach the screen led by the plugin's name, which Claude
+Code adds, so the mods' lines never start with it.
 `tests/test_lab_surfaces.sh` fails when a call site writes such a line inline
 instead of naming its table, so the lab never misses one.
 Cmd/Ctrl+Z undoes, and the page keeps the frames in the browser's

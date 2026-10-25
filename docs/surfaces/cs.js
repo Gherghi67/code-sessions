@@ -511,6 +511,13 @@ ${tail}`,
       ] })
     ] });
   }
+  function inlineToast(plugin, text, cols) {
+    const el = elements();
+    return el.Box({ width: cols, paddingX: 2, flexDirection: "column", alignItems: "flex-end", children: [
+      el.Text({ dimColor: true, wrap: "truncate", children: `${plugin}: ${oneLine(text)}` })
+    ] });
+  }
+  var oneLine = (text) => text.replace(/[\n\r\u2028\u2029]/g, "�");
   var rule = (cols) => elements().Text({ color: "inactive", children: "─".repeat(cols) });
   function askDialog(dialog, cols, focus = 0) {
     const el = elements();
@@ -765,6 +772,10 @@ ${tail}`,
     { id: "finish-refused", name: "seeing /finish refuse a feature", draw: csToast(finishToast({ ...FINISH, step: "refused", reason: "the gate failed: 2 suites red" })) },
     { id: "retired", name: "seeing /finish retire a feature", draw: csToast(finishToast({ ...FINISH, step: "retired" })) }
   ];
+  var INLINE_STATES = [
+    { id: "queued-inline", name: "queuing a task with /queue, outside the fullscreen renderer", draw: (cols) => inlineToast("cs", TOASTS.queued("fix the login redirect"), cols) },
+    { id: "force-below-start-inline", name: "starting past the forced rotation, outside the fullscreen renderer", draw: (cols) => inlineToast("cs", TOASTS.forceBelowStart(70, 75), cols) }
+  ];
   var ASK_STATES = [
     { id: "wrap", name: "pressing the wrap key", draw: (cols) => askDialog(ASKS.wrap, cols) },
     { id: "wrap-not-now", name: "moving to Not now in the wrap dialog", draw: (cols) => askDialog(ASKS.wrap, cols, 1) },
@@ -818,7 +829,7 @@ ${tail}`,
         { id: "prompt-label", name: "prompt label", state: "rail-few", path: [1, 0, 2] }
       ]
     },
-    chromeSurface("toast", [...chromeStates(TOAST_STATES), ...FINISH_STATES]),
+    chromeSurface("toast", [...chromeStates(TOAST_STATES), ...FINISH_STATES, ...INLINE_STATES]),
     chromeSurface("ask", ASK_STATES),
     chromeSurface("command", COMMAND_STATES),
     chromeSurface("menu", MENU_STATES),

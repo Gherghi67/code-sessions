@@ -61,6 +61,19 @@ test('a toast past three rows joins the rest into the third and cuts it', () => 
   ])
 })
 
+// Outside the fullscreen renderer a toast is a notification (Pwe): one dim
+// row, `<plugin>: <text>` (U7e), cut with `…` (wrap "truncate"), at the
+// right of the footer's right-hand column (uhe), two cells in from the edge.
+test('a toast outside the fullscreen renderer is one dim row at the right of the footer, led by the plugin name', () => {
+  expect(screen('cs.toast/queued-inline')).toEqual([`${' '.repeat(44)}cs: queued: fix the login redirect`])
+  expect(grid('cs.toast/queued-inline').rows[0][44].st.dim).toBe(true)
+})
+
+test('an inline toast wider than the footer room is cut to it with an ellipsis', () => {
+  expect(screen('cs.toast/force-below-start-inline')).toEqual([`  cs: CS_ROTATE_FORCE_CTX=70 is below this conversation's starting context (7…`])
+  expect(screen('cs-update.toast/declined-inline')).toEqual(['  cs-update: cs 2026.11.2 is available · run cs -update to install it, or /cs…'])
+})
+
 // M9 with Bw's single-question chips (hideSubmitTab: one question, not
 // multiSelect): no arrows, no Submit; options numbered with the typed-text
 // row counted, `Chat about this` after it, then the key hints.
@@ -169,9 +182,9 @@ test('cs-update hands the engine its toast, its replies and its menu row', () =>
 
 test('every toast, log line, reply and dialog the mods export has its own state', () => {
   const ids = (id: string) => surface(id).states.map((s: any) => s.id)
-  expect(ids('cs.toast').length).toBe(26)
+  expect(ids('cs.toast').length).toBe(28)
   expect(ids('cs.log').length).toBe(7)
   expect(ids('cs-feed.log').length).toBe(6)
-  expect(ids('cs-update.toast')).toEqual(['declined', 'not-recorded'])
+  expect(ids('cs-update.toast')).toEqual(['declined', 'not-recorded', 'declined-inline'])
   expect(ids('cs-update.command')).toEqual(['not-lead', 'nothing-pending', 'notes-open'])
 })
