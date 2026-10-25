@@ -3373,8 +3373,30 @@ test('a cut that lands after a space drops the space before the ellipsis, in the
   expect(textOf(gapLabel(drawBand(view({ bodyColumns: 18, rail: railOf(shop) }), EL)))).toBe('#2 go to… ')
 })
 
-test('when even the keys overrun, the band cuts the line from the right and keeps the mark', () => {
-  expect(lineAt(everything, 20)).toBe('  ● 3…  ·  1  ·  2')
+test('when even the keys overrun, the features press and then the queue press leave whole, then the chords right to left, and the mark stays', () => {
+  expect(lineAt(everything, 31)).toBe('  ● 3…  ·  1  ·  2  ·  3  ·  ▤…')
+  expect(lineAt(everything, 30)).toBe('  ● 1  ·  2  ·  3  ·  ▤…')
+  expect(lineAt(everything, 24)).toBe('  ● 1  ·  2  ·  3  ·  ▤…')
+  expect(lineAt(everything, 23)).toBe('  ● 1  ·  2  ·  3')
+  expect(lineAt(everything, 20)).toBe('  ● 1  ·  2  ·  3')
+  expect(lineAt(everything, 17)).toBe('  ● 1  ·  2  ·  3')
+  expect(lineAt(everything, 16)).toBe('  ● 1  ·  2')
+  expect(lineAt(everything, 10)).toBe('  ● 1')
+  expect(lineAt(everything, 5)).toBe('  ● 1')
+  // A line with no entry left draws nothing, the mark with it.
+  expect(drawBand(view({ entries: everything, bodyColumns: 4 }), EL)).toBe(DRAWN)
+})
+
+test('the queue press never shortens past `▤…`: it leaves whole, and a line it was alone on draws nothing', () => {
+  const queue = buildBandEntries({ ...quiet, waiting: 3 })
+  expect(lineAt(queue, 6)).toBe('  ● ▤…')
+  expect(drawBand(view({ entries: queue, bodyColumns: 5 }), EL)).toBe(DRAWN)
+})
+
+test('the countdown is free text: it leaves before the presses, and the clear key takes its word back', () => {
+  const counting = buildBandEntries({ ...quiet, featured: { label: '3 features · fix-auth ready', onPress: noPress }, countdown: { seconds: 30, ink: OWN }, rotating: true, armed: true, feed: { on: true, color: OWN, onPress: noPress }, queued: 2, mail: 1 })
+  expect(lineAt(counting, 36)).toBe('  ● 3…  ·  /clear in 30s  ·  1  ·  3')
+  expect(lineAt(counting, 35)).toBe('  ● 3…  ·  1 /clear now  ·  3')
 })
 
 test('the band drops mail, the queue count, an unpressable features word, the gate word and then the chord prefix, in that order', () => {
@@ -3387,13 +3409,26 @@ test('the band drops mail, the queue count, an unpressable features word, the ga
   expect(lineAt(droppable, 22)).toBe('  ● 1 rotate  ·  2')
 })
 
-test('chords that differ fall back to their whole chord, right to left, and a cut that leaves one keeps it whole', () => {
+test('chords that differ fall back to their whole chord, right to left; the last leaves whole, and the one left takes its word back when it fits', () => {
   const differ = { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2' }
   const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: buildBandEntries({ ...quiet, rotating: true, wrapping: true }), bodyColumns }), EL))
   expect(at(37)).toBe('  ● ctrl+x 1 rotate  ·  ctrl+w 2 wrap')
   expect(at(32)).toBe('  ● ctrl+x 1 rotate  ·  ctrl+w 2')
   expect(at(30)).toBe('  ● ctrl+x 1  ·  ctrl+w 2')
+  expect(at(25)).toBe('  ● ctrl+x 1  ·  ctrl+w 2')
+  expect(at(24)).toBe('  ● ctrl+x 1 rotate')
   expect(at(16)).toBe('  ● ctrl+x 1')
+})
+
+test('with chords that differ, every chord outlives the features and queue presses', () => {
+  const differ = { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2', 'strip:jump3': 'alt+shift+f' }
+  const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: everything, bodyColumns }), EL))
+  expect(at(55)).toBe('  ● 3…  ·  ctrl+x 1  ·  ctrl+w 2  ·  alt+shift+f  ·  ▤…')
+  expect(at(54)).toBe('  ● ctrl+x 1  ·  ctrl+w 2  ·  alt+shift+f  ·  ▤…')
+  expect(at(47)).toBe('  ● ctrl+x 1  ·  ctrl+w 2  ·  alt+shift+f')
+  expect(at(41)).toBe('  ● ctrl+x 1  ·  ctrl+w 2  ·  alt+shift+f')
+  // The last chord leaves, and the two left take their words back.
+  expect(at(40)).toBe('  ● ctrl+x 1 rotate  ·  ctrl+w 2 wrap')
 })
 
 test('the rail takes what the line leaves once the band has dropped its words', () => {

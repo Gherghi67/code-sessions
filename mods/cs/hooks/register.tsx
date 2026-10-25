@@ -635,8 +635,8 @@ export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'B
 
 // The words that leave an overrunning line first, first to last, each only as
 // a word: a features word that can be pressed is a press and stays. After
-// them the shared chord prefix goes; the mark, the countdown, the chords and
-// the presses never leave.
+// them the shared chord prefix goes. The countdown, the presses and the
+// chords leave only whole and last (LEAVE_ORDER); the mark never leaves.
 const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
 const SEP = '  ·  '
 
@@ -680,18 +680,43 @@ function wordCellsOf(entries: FittedEntry[], chords: Record<string, string>, { p
 const SHORTEN_ORDER = ['cs-features', 'cs-queue']
 const SHORTEST_CELLS = 2
 
+// The entries that leave whole, first to last, once the words are short and
+// every bound chord is its key: the countdown's free text before the actions,
+// the presses before the chords. Only chords are left after them.
+const LEAVE_ORDER = ['cs-countdown', 'cs-features', 'cs-queue']
+
 // The entries a line of `room` cells draws, and whether it spells the chord
 // prefix. The engine's Buttons never shrink, so a line wider than its room
 // would squeeze the band's Texts to a cell each and wrap them down: the band
-// draws one line, and each step below runs only while the line still
-// overruns. Words leave (DROP_ORDER, then the prefix); the features and queue
-// words shorten (SHORTEN_ORDER); chords fall back to their key alone, right to
-// left, so the actions outlive the free text; last, the line is cut from the
-// right: the last entry's label ends in `…`, and an entry with no cell left
-// for its label goes, the cut moving to the one before it. The mark is never
-// an entry, so it is never cut.
+// draws one line. While it overruns, the entries leave in LEAVE_ORDER, then
+// the chords right to left, and the line is fitted again from what stays, so
+// a chord left after one leaves takes its word back when it fits. A Button
+// that leaves the tree takes its chord with it, so the chords leave last. An
+// unbound chord has no key to fall back to: the last one cuts its word to end
+// in `…` before it leaves. The mark is never an entry, so it is never cut.
 export function fitBand(all: BandEntry[], chords: Record<string, string>, room: number): { entries: FittedEntry[]; prefixed: boolean } {
   const spelling = chordSpelling(all, chords)
+  for (let kept = all; ;) {
+    const fitted = shortenBand(kept, chords, spelling, room)
+    const excess = wordCellsOf(fitted.entries, chords, spelling, fitted.prefixed) - room
+    const last = fitted.entries[fitted.entries.length - 1]
+    if (excess <= 0 || last === undefined) return fitted
+    const leaving = LEAVE_ORDER.find(key => fitted.entries.some(entry => entry.key === key))
+    if (leaving === undefined) {
+      if (last.kind !== 'chord') throw new Error(`cs: the band left ${last.key} for last, where only chords stay`)
+      const keep = (last.keyOnly ? 0 : cellWidth(last.label)) - excess
+      if (keep >= 1) return { entries: [...fitted.entries.slice(0, -1), { ...last, label: cutToCells(last.label, keep), ink: undefined }], prefixed: false }
+    }
+    kept = kept.filter(entry => entry.key !== (leaving ?? last.key))
+  }
+}
+
+// The entries of a line of `room` cells before any leaves whole: each step
+// runs only while the line still overruns. Words leave (DROP_ORDER, then the
+// prefix); the features and queue words shorten (SHORTEN_ORDER); bound chords
+// fall back to their key alone, right to left, so the actions outlive the
+// free text. What it returns may still overrun.
+function shortenBand(all: BandEntry[], chords: Record<string, string>, spelling: ChordSpelling, room: number): { entries: FittedEntry[]; prefixed: boolean } {
   const over = (entries: FittedEntry[], prefixed: boolean) => wordCellsOf(entries, chords, spelling, prefixed) - room
   let entries: FittedEntry[] = all
   for (const key of DROP_ORDER) {
@@ -711,17 +736,7 @@ export function fitBand(all: BandEntry[], chords: Record<string, string>, room: 
     if (over(entries, false) <= 0) return { entries, prefixed: false }
     entries = entries.map((entry, j) => (j === i && entry.kind === 'chord' && spelling.spelled(entry.action) !== undefined ? { ...entry, keyOnly: true } : entry))
   }
-  for (;;) {
-    const excess = over(entries, false)
-    const last = entries[entries.length - 1]
-    if (excess <= 0 || last === undefined) return { entries, prefixed: false }
-    const keep = (last.keyOnly ? 0 : cellWidth(last.label)) - excess
-    if (keep >= 1) {
-      const label = cutToCells(last.label, keep)
-      return { entries: [...entries.slice(0, -1), last.kind === 'chord' ? { ...last, label, ink: undefined } : { ...last, label }], prefixed: false }
-    }
-    entries = entries.slice(0, -1)
-  }
+  return { entries, prefixed: false }
 }
 
 export function drawBand(v: BandView, el: BandElements): RenderElement {
