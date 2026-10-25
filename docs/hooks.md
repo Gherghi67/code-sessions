@@ -549,7 +549,8 @@ drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
 teammate's message and the interrupt the engine writes when you stop a turn
 are not prompts. The bars stand at the line's right edge, three cells after
-any word before them there, so the actions at the left never move them. At
+any word before them there, so the actions at the left never move them while
+the line has room for every bar. At
 most `cs.bandBars` bars draw (10 by default), in what the line leaves after
 the inset and the words; the older prompts collapse into one dim `…N` run at
 the rail's start, and a line too narrow for any tick draws no rail. One cell
