@@ -1954,9 +1954,8 @@ function composeUI(){
   // (blur or Enter for text, at once for a select or a checkbox) commits it.
   const fieldValue=el=>el.dataset.kind==="bool"?el.checked:el.dataset.kind==="num"?(el.value===""?undefined:+el.value):el.value;
   $("bd-props").addEventListener("input",e=>{
-    const el=e.target, sel=bdDocNow().selection; if(!el.dataset.prop) return;
-    if(bdReadOnly(sel.frame)) return bdRefuse(sel.frame);
-    bdDraft=BandEditor.apply(bdDocNow(),{type:"setProp",path:sel.path,name:el.dataset.prop,value:fieldValue(el)});
+    const el=e.target; if(!el.dataset.prop) return;
+    bdDraft=BandEditor.apply(bdDocNow(),{type:"setProp",path:bdDocNow().selection.path,name:el.dataset.prop,value:fieldValue(el)});
     composeRender();
   });
   $("bd-frames").addEventListener("click",e=>{ const row=e.target.closest("[data-frame-row]"); if(row&&e.detail<2) bdDispatch({type:"selectFrame",frame:row.dataset.frameRow}); });
