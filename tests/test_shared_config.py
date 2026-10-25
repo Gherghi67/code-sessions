@@ -110,6 +110,50 @@ class SharedConfigTests(unittest.TestCase):
         self.assertEqual(result["conflicts_kept_in_profile"], [])
         self.assertEqual(list(target.parent.iterdir()), [target])
 
+    def test_new_engine_history_paths_are_private_under_permissive_umask(self):
+        self.put(self.profile, ".claude/projects/project/thread.jsonl", '{}\n').chmod(0o644)
+        self.put(self.profile, ".claude/history.jsonl", '{"id":1}\n')
+        self.put(self.profile, ".codex/sessions/2026/10/rollout.jsonl", '{}\n').chmod(0o644)
+        self.put(self.profile, ".codex/history.jsonl", '{"id":1}\n')
+        self.put(self.profile, ".codex/session_index.jsonl", '{"id":1}\n')
+        self.database(self.profile, [("legacy", "/rollout", "private")])
+        previous = os.umask(0o022)
+        try:
+            migration.migrate(self.home, True)
+        finally:
+            os.umask(previous)
+        for engine in (".claude", ".codex"):
+            root = self.home / engine
+            for path in (root, *root.rglob("*")):
+                with self.subTest(path=path.relative_to(self.home)):
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o700 if path.is_dir() else 0o600)
+
+    def test_cross_device_copy_does_not_publish_public_history_permissions(self):
+        source = self.put(self.profile, ".codex/sessions/rollout.jsonl", '{}\n')
+        source.chmod(0o664)
+        target = self.home / ".codex/sessions/rollout.jsonl"
+        link = os.link
+
+        def cross_device_link(src, dst):
+            if Path(src) == source:
+                raise OSError(errno.EXDEV, "different filesystems")
+            return link(src, dst)
+
+        with mock.patch.object(migration.os, "link", side_effect=cross_device_link):
+            migration.migrate(self.home, True)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+    def test_existing_engine_directory_and_readonly_source_permissions_are_preserved(self):
+        source = self.put(self.profile, ".codex/sessions/rollout.jsonl", '{}\n')
+        source.chmod(0o400)
+        engine = self.home / ".codex"
+        engine.mkdir(mode=0o755)
+        engine.chmod(0o755)
+        migration.migrate(self.home, True)
+        self.assertEqual(engine.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(source.stat().st_mode & 0o777, 0o400)
+        self.assertEqual((engine / "sessions/rollout.jsonl").stat().st_mode & 0o777, 0o400)
+
     def test_unexpected_link_failure_does_not_fall_back_to_copy(self):
         self.put(self.profile, ".codex/sessions/rollout.jsonl", '{"old":1}\n')
         target = self.home / ".codex/sessions/rollout.jsonl"

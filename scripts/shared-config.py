@@ -35,6 +35,22 @@ def safe_target(path, root):
     raise ValueError(f"Destination outside home: {path}")
 
 
+def private_directory(path, home):
+    """Create each missing parent privately without changing existing directories."""
+    safe_target(path, home)
+    current = home
+    for part in path.relative_to(home).parts:
+        current /= part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            safe_target(current, home)
+            if not current.is_dir():
+                raise
+        else:
+            current.chmod(0o700)
+
+
 def backup(home, checkout):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     root = home / ".local/share/code-sessions/backups" / stamp
@@ -75,6 +91,9 @@ def matching_import(source, target):
 
 def publish_missing(source, target):
     # Links preserve live appends, and fail rather than replace a competing file.
+    # A hardlink shares permissions with its source: remove public bits before
+    # publication, retaining any more restrictive owner permissions.
+    source.chmod(source.stat().st_mode & 0o600)
     try:
         os.link(source, target)
         return
@@ -111,7 +130,7 @@ def import_tree(source, target, home, apply, conflicts):
                 conflicts.append(str(dst.relative_to(home)))
                 continue
             if apply:
-                dst.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                private_directory(dst.parent, home)
                 try:
                     publish_missing(src, dst)
                 except FileExistsError:
@@ -140,8 +159,9 @@ def merge_jsonl(source, target, home, apply):
         seen.add(line)
         additions.append(line)
     if apply and additions:
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with target.open("ab") as stream:
+        private_directory(target.parent, home)
+        descriptor = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "ab") as stream:
             if target.stat().st_size:
                 with target.open("rb") as existing:
                     existing.seek(-1, os.SEEK_END)
@@ -194,7 +214,7 @@ def merge_threads(source, target, home, apply, backup_dir):
         if not apply:
             with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as src:
                 return src.execute("SELECT count(*) FROM threads").fetchone()[0]
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        private_directory(target.parent, home)
         descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".shared-state-")
         os.close(descriptor)
         try:
@@ -223,6 +243,8 @@ def merge_threads(source, target, home, apply, backup_dir):
         if not apply or not incoming:
             return len(incoming)
         if backup_dir:
+            descriptor = os.open(backup_dir / "codex-state.sqlite", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(descriptor)
             with closing(sqlite3.connect(backup_dir / "codex-state.sqlite")) as saved:
                 dst.backup(saved)
         tables = ("thread_sections", "projects", "project_roots", "project_idempotency_keys", "threads",
