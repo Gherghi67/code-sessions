@@ -416,6 +416,62 @@ test_spawn_window_command_is_quoted_absolute() {
     assert_file_contains "$FAKE_TMUX_DIR/log" "'worker'" "name quoted" || return 1
 }
 
+_spawn_environment_probe() {
+    local probe="$TEST_TMPDIR/probe ' command" captured=""
+    cat > "$probe" <<'PROBE'
+#!/bin/bash
+for key in PATH CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME \
+    CODE_SESSIONS_HOME CODE_SESSIONS_ORIGINAL_ROOT CS_INSTALL_DIR CS_CLAUDE_DIR \
+    CS_HOOKS_DIR CS_SESSIONS_ROOT CS_SECRETS_DIR CS_SECRETS_KEYCHAIN_PREFIX \
+    CS_DATA_DIR CS_TMUX_SOCKET CS_TMUX_SESSION CS_SPAWN_TOKEN; do
+    printf '%s=%s:%s\n' "$key" "${!key+x}" "${!key-}"
+done
+printf 'argument=%s\n' "$@"
+PROBE
+    chmod +x "$probe"
+    source "$SCRIPT_DIR/../lib/52-spawn.sh"
+    _cs_self() { printf '%s' "$probe"; }
+    _cs_tmux_window() { captured="$2"; _CS_TMUX_WID=@fixture; }
+    info() { :; }
+    _spawn_window worker "$OWN_TOKEN"
+    env PATH="/old/profile/bin:$PATH" CLAUDE_CONFIG_DIR=/old/profile/.claude CODEX_HOME=/old/profile/.codex \
+        CLAUDE_SECURESTORAGE_CONFIG_DIR=/old/profile/.claude \
+        CODE_SESSIONS_HOME=/old/profile CODE_SESSIONS_ORIGINAL_ROOT=/old/original \
+        CS_INSTALL_DIR=/old/profile/bin CS_CLAUDE_DIR=/old/profile/.claude \
+        CS_HOOKS_DIR=/old/profile/hooks CS_SESSIONS_ROOT=/old/profile/sessions \
+        CS_SECRETS_DIR=/old/profile/secrets CS_SECRETS_KEYCHAIN_PREFIX=old \
+        CS_DATA_DIR=/old/profile/data CS_TMUX_SOCKET=old CS_TMUX_SESSION=old \
+        /bin/bash -c "$captured"
+}
+
+test_spawn_carries_normalized_environment_into_a_stale_server() (
+    unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME
+    unset CODE_SESSIONS_HOME CODE_SESSIONS_ORIGINAL_ROOT CS_CLAUDE_DIR CS_HOOKS_DIR
+    export CS_INSTALL_DIR="$TEST_TMPDIR/normal ' bin"
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/manager ' sessions"
+    export CS_SECRETS_DIR="$TEST_TMPDIR/manager ' secrets" CS_SECRETS_KEYCHAIN_PREFIX=code-sessions
+    export CS_DATA_DIR="$TEST_TMPDIR/manager ' data" CS_TMUX_SOCKET=code-sessions CS_TMUX_SESSION=code-sessions
+    local output expected
+    output=$(_spawn_environment_probe) || return 1
+    expected=$(printf '%s\n' "PATH=x:$PATH" 'CLAUDE_CONFIG_DIR=:' 'CLAUDE_SECURESTORAGE_CONFIG_DIR=:' 'CODEX_HOME=:' \
+        'CODE_SESSIONS_HOME=:' 'CODE_SESSIONS_ORIGINAL_ROOT=:' "CS_INSTALL_DIR=x:$TEST_TMPDIR/normal ' bin" \
+        'CS_CLAUDE_DIR=:' 'CS_HOOKS_DIR=:' "CS_SESSIONS_ROOT=x:$TEST_TMPDIR/manager ' sessions" \
+        "CS_SECRETS_DIR=x:$TEST_TMPDIR/manager ' secrets" 'CS_SECRETS_KEYCHAIN_PREFIX=x:code-sessions' \
+        "CS_DATA_DIR=x:$TEST_TMPDIR/manager ' data" 'CS_TMUX_SOCKET=x:code-sessions' \
+        'CS_TMUX_SESSION=x:code-sessions' "CS_SPAWN_TOKEN=x:$OWN_TOKEN" 'argument=worker')
+    assert_eq "$expected" "$output" "the caller's values and unsets replace stale server selectors"
+)
+
+test_spawn_preserves_custom_native_configuration_and_empty_storage_selector() (
+    export CLAUDE_CONFIG_DIR="$TEST_TMPDIR/custom ' claude" CODEX_HOME="$TEST_TMPDIR/custom ' codex"
+    export CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+    local output
+    output=$(_spawn_environment_probe) || return 1
+    assert_output_contains "$output" "CLAUDE_CONFIG_DIR=x:$TEST_TMPDIR/custom ' claude" || return 1
+    assert_output_contains "$output" "CODEX_HOME=x:$TEST_TMPDIR/custom ' codex" || return 1
+    assert_output_contains "$output" 'CLAUDE_SECURESTORAGE_CONFIG_DIR=x:'
+)
+
 # Work handed to a session that already exists goes through that session's
 # user: another session's tasks or brief would otherwise be queued, armed and
 # kicked by the spawn's own window with nobody asked.
@@ -1144,6 +1200,8 @@ run_test test_spawn_rejects_multiline_and_empty_task
 run_test test_spawn_refuses_unmanaged_cs_session
 run_test test_spawn_refuses_duplicate_window
 run_test test_spawn_window_command_is_quoted_absolute
+run_test test_spawn_carries_normalized_environment_into_a_stale_server
+run_test test_spawn_preserves_custom_native_configuration_and_empty_storage_selector
 run_test test_spawn_refuses_another_sessions_tasks_for_an_existing_session
 run_test test_spawn_from_a_terminal_still_hands_an_existing_session_its_tasks
 run_test test_spawn_from_the_base_still_briefs_its_existing_feature

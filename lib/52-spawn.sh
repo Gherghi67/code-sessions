@@ -145,14 +145,31 @@ _spawn_attach_hint() {
 }
 
 _spawn_window() {  # name, token
-    local name="$1" token="$2" cmd
+    local name="$1" token="$2" cmd="env" assignments="" selector
+    # An existing tmux server retains the environment that started it. Carry
+    # the caller's configuration, including unsets, without copying credentials.
+    # env options must precede its assignments on both BSD and GNU env.
+    for selector in HOME PATH XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME \
+        CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME \
+        CODE_SESSIONS_HOME CODE_SESSIONS_ORIGINAL_ROOT CS_BIN CS_INSTALL_DIR \
+        CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_CLAUDE_DIR CS_HOOKS_DIR \
+        CS_COMMANDS_DIR CS_SKILLS_DIR CS_TRANSCRIPTS_DIR CS_SESSIONS_ROOT \
+        CS_SECRETS_DIR CS_SECRETS_KEYCHAIN_PREFIX CS_SECRETS_BACKEND \
+        CS_TMUX_SOCKET CS_TMUX_SESSION CS_TMUX_BIN CLAUDE_CODE_BIN CODEX_BIN \
+        CS_CODEX_THREAD_BIN CS_DEFAULT_ENGINE; do
+        if [ "${!selector+x}" = x ]; then
+            assignments="$assignments $(_sq "$selector=${!selector}")"
+        else
+            cmd="$cmd -u $selector"
+        fi
+    done
     # The token proves to the launch that this window is the spawn's own, so
     # only it consumes the seed unasked (see the seed consumer in
     # lib/75-launch.sh). It is correlation, not a secret: anyone who can read
     # the seed can read it, and `ps` shows it for as long as the launch runs.
     # `env` rather than a VAR=value prefix, which tmux's default-shell need
     # not understand.
-    cmd="env $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
+    cmd="$cmd$assignments $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
     _cs_tmux_window "$name" "$cmd"
     info "spawned $name in tmux session ${CS_TMUX_SESSION:-cs} (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
 }
