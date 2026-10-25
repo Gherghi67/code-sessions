@@ -108,3 +108,39 @@ test('cs-feed draws the Chat view pane from the mod\'s FIELDS', () => {
   expect(rows('cs-feed.Pane.cs-feed/raw', 80)[1]).toBe('[ Feed ] off')
   expect(rows('cs-feed.Pane.cs-feed/kinds-hidden', 80).at(-2)).toContain('[ \u25cb peer ]')
 })
+
+// The band, read off drawBand by hand: a blank row (marginTop 1), the 2-cell
+// inset, the mark and its gap, the shared prefix and its two cells, each key
+// and one cell, the labels, the dim separator. The hook hands it the terminal
+// less the five `[-]` cells, so at 80 cols bodyColumns is 75.
+test('cs draws the rotate-due band as the mod does', () => {
+  expect(rows('cs.AbovePrompt/rotate-due', 80)).toEqual(['', '  ● ctrl+x  1 rotate  ·  2 wrap'])
+})
+
+// 14 prompts, cs.bandBars 10, no words: the budget is 75 - 2 - 2 = 71;
+// railTicks folds 14 - 10 = 4 and 10 bars + `…4` is 12 <= 71. The label
+// takes 71 - 12 - 2 = 57 cells, padded.
+test('cs folds the oldest four of fourteen prompts and names the newest in what bodyColumns leaves', () => {
+  const label = '#14 run the full suite and fix what fails'
+  const line = toText(layout(state('cs.AbovePrompt/rail-many').draw(80, 'light'), 80))[1]
+  expect(line).toBe('  ● …4│┆│││││││┃  ' + label + ' '.repeat(57 - label.length))
+})
+
+// register.tsx's inks: the mark amber (AMBER_LIGHT 180,83,9) while a rotation
+// is due, blue (106,155,204) while the queue runs, green (22,163,74) when
+// nothing is due; keys and the feed check in the session colour (orange
+// 217,119,87); a 7 s count amber, bold.
+test('cs paints the mark, the keys, the feed check and the count in the mod\'s inks', () => {
+  const line = (id: string, theme = 'light') => layout(state(`cs.AbovePrompt/${id}`).draw(80, theme), 80).rows[1]
+  expect(line('rotate-due')[2]).toMatchObject({ ch: '●', st: { color: 'rgb(180,83,9)' } })
+  expect(line('rotate-due', 'dark')[2]).toMatchObject({ ch: '●', st: { color: 'rgb(253,230,138)' } })
+  expect(line('queue-running')[2]).toMatchObject({ st: { color: 'rgb(106,155,204)' } })
+  expect(line('mail')[2]).toMatchObject({ st: { color: 'rgb(22,163,74)' } })
+  expect(line('rotate-due')[12]).toMatchObject({ ch: '1', st: { color: 'rgb(217,119,87)', bold: true } })
+  expect(line('feed-on')[19]).toMatchObject({ ch: '✓', st: { color: 'rgb(217,119,87)' } })
+  expect(line('countdown')[4]).toMatchObject({ ch: '/', st: { color: 'rgb(180,83,9)', bold: true } })
+})
+
+test('cs draws nothing of its own when the band has nothing to say', () => {
+  expect(layout(state('cs.AbovePrompt/idle').draw(80, 'light'), 80).h).toBe(0)
+})

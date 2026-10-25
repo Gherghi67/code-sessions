@@ -3,7 +3,7 @@
 (function (root) {
   "use strict";
   // One global per mod bundle, in the order the Components panel lists them.
-  var GLOBALS = ["CsFeedSurfaces", "CsUpdateSurfaces"];
+  var GLOBALS = ["CsSurfaces", "CsFeedSurfaces", "CsUpdateSurfaces"];
   var surfaces = [];
   GLOBALS.forEach(function (name) {
     var bundle = root[name];
