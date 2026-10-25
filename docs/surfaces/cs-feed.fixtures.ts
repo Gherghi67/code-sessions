@@ -8,7 +8,7 @@ import { callId, type CallId, type FiledCall, type Outcome, type Run, type Trans
 import { decideSpinner, sessionModes, type BandVerdict, type CallVerdict, type CallView, type Context, type GroupVerdict, type HelperBlock, type ReplyVerdict, type UserVerdict } from '../../mods/cs-feed/hooks/verdict.ts'
 import { commands, errorLine, helperCounts, logs, marks, replies } from '../../mods/cs-feed/hooks/words.ts'
 import { backgroundHint, commandReply, footerModes, logRow, menuRows, nothing, turnLine, workingLine } from './chrome.ts'
-import { TIMER_LENGTH, elements, type State, type Surface, type Theme } from './registry.ts'
+import { elements, timer, type State, type Surface, type Theme } from './registry.ts'
 
 // ---- one turn's transcript: three shell commands and a read, one refused run, a helper ----
 const id = (n: number): CallId => callId(`toolu_${String(n).padStart(2, '0')}`)
@@ -52,7 +52,7 @@ type Draw = (cols: number, theme: Theme, t?: number) => RenderElement
 const state = (id: string, name: string, draw: Draw): State => ({ id, name, draw })
 // A state whose clock runs: `draw` reads `t` as the ms since it began, as
 // the hook reads Date.now(), and the mod redraws it every `tick` ms.
-const moving = (id: string, name: string, tick: number, draw: Draw): State => ({ id, name, draw, motion: { tick, duration: TIMER_LENGTH } })
+const moving = (id: string, name: string, tick: number, draw: Draw): State => ({ id, name, draw, motion: timer(tick) })
 // The pulse (session.ts PULSE: an animation frame, 70 ms) and the tick (1 s).
 const PULSE = 70, TICK = 1000
 

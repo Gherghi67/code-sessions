@@ -962,7 +962,7 @@
   }
 
   // docs/surfaces/registry.ts
-  var TIMER_LENGTH = 5 * 60 * 1000;
+  var timer = (tick) => ({ tick, duration: Math.ceil(5 * 60 * 1000 / tick) * tick });
   function elements() {
     const el = globalThis.LabElements;
     if (el === undefined)
@@ -1132,7 +1132,7 @@
     return { el: elements(), ink: inks(theme === "light"), room: cx.room, pad: over.pad ?? PAD, clickable: over.clickable ?? false, press: async () => {}, helpers: async () => {}, cx: { ...cx, clickable: over.clickable ?? false } };
   };
   var state = (id, name, draw) => ({ id, name, draw });
-  var moving = (id, name, tick, draw) => ({ id, name, draw, motion: { tick, duration: TIMER_LENGTH } });
+  var moving = (id, name, tick, draw) => ({ id, name, draw, motion: timer(tick) });
   var PULSE = 70;
   var TICK = 1000;
   var PROMPT_AT = new Date(2026, 9, 25, 9, 41).getTime();

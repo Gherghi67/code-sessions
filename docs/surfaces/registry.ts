@@ -6,13 +6,14 @@ export type Elements = ReturnType<EngineInterface['ui']['resolve']>
 export type Theme = 'light' | 'dark'
 
 // A state that moves: `tick` is the step the mod's own clock redraws at, in
-// ms; `duration` how long the lab plays it, a countdown to its zero or a
-// clock that counts up for TIMER_LENGTH, holding there after; `count` the
-// words the scrubber reads beside t, where the state counts something down.
+// ms; `duration` how long the lab plays it, a whole number of ticks, holding
+// there after; `count` the words the scrubber reads beside t, where the
+// state counts something down.
 export type Motion = { tick: number; duration: number; count?: (t: number) => string }
 
-// How long the lab plays a clock that only counts up.
-export const TIMER_LENGTH = 5 * 60 * 1000
+// A clock that only counts up plays five minutes, rounded up to a whole tick
+// so the scrubber's last step lands on the end.
+export const timer = (tick: number): Motion => ({ tick, duration: Math.ceil(5 * 60 * 1000 / tick) * tick })
 
 // One state, named for what a person is doing. `cols` is the terminal's
 // width; the draw function takes off what the engine reserves. `t` is the

@@ -109,10 +109,13 @@ test("the working line breathes its glyph over two seconds and counts its time a
 
 // Every state that moves names the step its mod redraws at and how long the
 // lab plays it: the 70 ms pulse, the 1 s tick, the working line's 64 ms
-// clock (112 ms while Claude writes), and the countdown's own length.
+// clock (112 ms while Claude writes), and the countdown's own length. A
+// clock that counts up plays five minutes rounded up to a whole tick, so the
+// scrubber's last step is the state's end: 4286 x 70 = 300020, 4688 x 64 =
+// 300032, 2679 x 112 = 300048.
 test('each moving state declares its tick and length, and every other state is still', () => {
   const moving = SURFACES.flatMap((s: any) => s.states.filter((st: any) => st.motion).map((st: any) => `${s.id}/${st.id} ${st.motion.tick} ${st.motion.duration}`))
-  const pulse = 70, second = 1000, minutes = 300000
+  const pulse = '70 300020', second = 1000, minutes = 300000
   expect(moving).toEqual([
     `cs.AbovePrompt/countdown ${second} 7000`,
     `cs.AbovePrompt/gate-running ${second} ${minutes}`,
@@ -120,24 +123,24 @@ test('each moving state declares its tick and length, and every other state is s
     `cs.AbovePrompt/countdown-crit ${second} 3000`,
     `cs.AbovePrompt/survey-gate ${second} ${minutes}`,
     `cs-feed.ToolUse/helper-running ${second} ${minutes}`,
-    `cs-feed.ToolGroup/batch-running ${pulse} ${minutes}`,
-    `cs-feed.ToolGroup/batch-opened ${pulse} ${minutes}`,
-    `cs-feed.AbovePrompt/helpers-running ${pulse} ${minutes}`,
+    `cs-feed.ToolGroup/batch-running ${pulse}`,
+    `cs-feed.ToolGroup/batch-opened ${pulse}`,
+    `cs-feed.AbovePrompt/helpers-running ${pulse}`,
     `cs-feed.AbovePrompt/helpers-settled ${second} ${minutes}`,
-    `cs-feed.AbovePrompt/helpers-overflow ${pulse} ${minutes}`,
-    `cs-feed.AbovePrompt/background ${pulse} ${minutes}`,
-    `cs-feed.AbovePrompt/background-test ${pulse} ${minutes}`,
-    `cs-feed.AbovePrompt/background-narrow ${pulse} ${minutes}`,
+    `cs-feed.AbovePrompt/helpers-overflow ${pulse}`,
+    `cs-feed.AbovePrompt/background ${pulse}`,
+    `cs-feed.AbovePrompt/background-test ${pulse}`,
+    `cs-feed.AbovePrompt/background-narrow ${pulse}`,
     `cs-feed.AbovePrompt/desktop ${second} ${minutes}`,
     `cs-feed.Pane.cs-feed-helpers/working ${second} ${minutes}`,
     `cs-feed.Pane.cs-feed-helpers/mixed ${second} ${minutes}`,
-    `cs-feed.Spinner/engine 64 ${minutes}`,
-    `cs-feed.Spinner/engine-ellipsis 64 ${minutes}`,
-    `cs-feed.Spinner/thinking 64 ${minutes}`,
-    `cs-feed.Spinner/working 64 ${minutes}`,
-    `cs-feed.Spinner/call 64 ${minutes}`,
-    `cs-feed.Spinner/writing 112 ${minutes}`,
-    `cs-feed.Spinner/helpers 64 ${minutes}`,
+    `cs-feed.Spinner/engine 64 300032`,
+    `cs-feed.Spinner/engine-ellipsis 64 300032`,
+    `cs-feed.Spinner/thinking 64 300032`,
+    `cs-feed.Spinner/working 64 300032`,
+    `cs-feed.Spinner/call 64 300032`,
+    `cs-feed.Spinner/writing 112 300048`,
+    `cs-feed.Spinner/helpers 64 300032`,
   ])
 })
 

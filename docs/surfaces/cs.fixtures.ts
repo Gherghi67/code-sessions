@@ -7,7 +7,7 @@ import {
   type BandView, type FeatureRecord, type FinishRecord,
 } from '../../mods/cs/hooks/register.tsx'
 import { askDialog, commandReply, inlineToast, logRow, menuRows, toast } from './chrome.ts'
-import { TIMER_LENGTH, elements, type Motion, type State, type Surface, type Theme } from './registry.ts'
+import { elements, timer, type Motion, type State, type Surface, type Theme } from './registry.ts'
 
 // What the AbovePrompt hook has read by the time it builds the band: its
 // buildBandEntries facts without the presses, and what else drawBand is
@@ -129,7 +129,7 @@ function factsAt(f: Facts, t: number): Facts {
 function motionOf(f: Facts): Motion | undefined {
   const start = f.countdown?.seconds
   if (start !== undefined) return { tick: 1000, duration: start * 1000, count: t => `${Math.max(0, start - Math.floor(t / 1000))}s left` }
-  if (f.gate !== undefined) return { tick: 1000, duration: TIMER_LENGTH }
+  if (f.gate !== undefined) return timer(1000)
   return undefined
 }
 

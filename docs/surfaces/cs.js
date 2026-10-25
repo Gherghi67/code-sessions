@@ -444,7 +444,7 @@ ${tail}`,
   }
 
   // docs/surfaces/registry.ts
-  var TIMER_LENGTH = 5 * 60 * 1000;
+  var timer = (tick) => ({ tick, duration: Math.ceil(5 * 60 * 1000 / tick) * tick });
   function elements() {
     const el = globalThis.LabElements;
     if (el === undefined)
@@ -703,7 +703,7 @@ ${tail}`,
     if (start !== undefined)
       return { tick: 1000, duration: start * 1000, count: (t) => `${Math.max(0, start - Math.floor(t / 1000))}s left` };
     if (f.gate !== undefined)
-      return { tick: 1000, duration: TIMER_LENGTH };
+      return timer(1000);
     return;
   }
   var feature = (state, ahead = 2) => ({ task: "fix-auth", ahead, state });
