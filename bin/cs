@@ -11432,7 +11432,7 @@ _doctor_check_hook_drift() {
     _drift_scan "Skill" "$skills_dir" skills/*/SKILL.md skills/*/scripts/*.sh
     local mod_srcs=() kept src
     for src in mods/*/.claude-plugin/plugin.json mods/*/hooks/*; do
-        for kept in "${CS_MODS_KEPT_OUT[@]}"; do
+        for kept in ${CS_MODS_KEPT_OUT[@]+"${CS_MODS_KEPT_OUT[@]}"}; do
             case "$src" in "mods/$kept/"*) continue 2 ;; esac
         done
         mod_srcs+=("$src")

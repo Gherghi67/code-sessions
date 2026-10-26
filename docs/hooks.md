@@ -554,7 +554,7 @@ of fourteen prompts named under `cs.bandPrompt` `read` and `cs.bandBars` at 5. T
 least: the named bar alone, the older prompts folded into `…N` before it
 and the newer into `M…` after it, and three cells before that. The words fit what that leaves, so the queue count and the right edge's
 words drop, a right-edge word shortens, and the keys lose their words before the rail goes:
-`1 rotate   2 wrap   3 feed ✓ · ▤ run 2 queued tasks   3 features…   …13 ┃`
+`1 rotate   2 wrap · ▤ run 2 queued tasks   3 features · fix-auth…   …13 ┃`
 on a 75-column line with fourteen prompts, every action, the features word
 and `mail 1`: the mail word drops, the shared prefix goes and the features
 word shortens. A right-edge word never shortens past its head, the words

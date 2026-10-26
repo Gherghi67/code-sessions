@@ -3625,6 +3625,9 @@ test('the rail keeps its least, `…N ┃` three cells after the words, while th
   expect(lineAt(typical, 75, REFUSED)).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓ · ▤ run 2 queued tasks${gap(7)}…9 ││┆│┃`)
   // With the features press too, the mail word drops, the prefix goes and the press shortens, so `…13 ┃` stays.
   expect(lineAt(everything, 75, REFUSED)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤ run 2 queued tasks   3 features…   …13 ┃')
+  // Without the feed key, as an install with no cs-feed draws it (docs/hooks.md), the features press keeps more of its word.
+  const noFeed = buildBandEntries({ ...quiet, featured: { label: '3 features · fix-auth ready', onPress: noPress }, rotating: true, wrapping: true, waiting: 2, mail: 1 })
+  expect(lineAt(noFeed, 75, REFUSED)).toBe('  1 rotate   2 wrap · ▤ run 2 queued tasks   3 features · fix-auth…   …13 ┃')
   // 36 columns: the features press would cut into its head and leaves, the queue press shortens to a cell and `…`, and the feed key loses its word.
   expect(lineAt(everything, 36, REFUSED)).toBe('  1 rotate   2 wrap   3 · ▤…   …13 ┃')
   // 40 columns (35 after the [-]): the wrap key loses its word too, and the cells the words leave past the least go to bars.
