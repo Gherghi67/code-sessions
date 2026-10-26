@@ -1024,8 +1024,8 @@ _sgr() {
                 amber)
                     if _parse_rgb_triplet "${CS_TERM_BG_RGB:-}"; then
                         _luminance
-                        [ "$_LUM" -ge 1530000 ] && rgb="180;83;9" || rgb="253;230;138"
-                    elif [ "$SL_THEME" = "dark" ]; then rgb="253;230;138"
+                        [ "$_LUM" -ge 1530000 ] && rgb="180;83;9" || rgb="251;191;36"
+                    elif [ "$SL_THEME" = "dark" ]; then rgb="251;191;36"
                     else rgb="180;83;9"; fi ;;
                 # Primary text on the capsule surface: a 35% shade of the
                 # surface on a light one, the soft white on a dark one — the same
