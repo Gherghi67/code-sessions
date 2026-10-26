@@ -450,6 +450,13 @@ test_install_refuses_settings_json_that_is_not_an_object() {
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
     assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
     _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
+    printf '{}\n{}\n' > "$f"
+    rc=0
+    HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/listjson.out" 2>&1 < /dev/null || rc=$?
+    out=$(cat "$TEST_TMPDIR/listjson.out")
+    assert_eq "1" "$rc" "install must stop on a settings.json holding two objects" || return 1
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") holds more than one JSON value, not one object; left it unchanged; nothing was installed$" \
+        "two values are named as such, on one line" || { echo "$out"; return 1; }
 }
 
 # A settings.json that is not a regular file, here a FIFO, is never read:
