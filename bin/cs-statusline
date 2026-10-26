@@ -2556,21 +2556,20 @@ _quiet_run_ink() {
 }
 
 # The chip's fill in _R/_G/_B: the band's colour (CS_STATUSLINE_BAND, else the
-# session's) at a quarter of its saturation, its gray at most 70: a dim tone
-# that sits low on a dark terminal and still holds white text on a light one,
-# the theme detected at launch notwithstanding. With no colour it is a dim
-# gray.
+# session's) at half its saturation, its gray at most 55: a dim tone that sits
+# low on a dark terminal and still holds white text on a light one, the theme
+# detected at launch notwithstanding. With no colour it is a dim gray.
 _quiet_chip_fill() {
     _BAND_NEUTRAL=""
     _band_from
     if [ -n "$_BAND_NEUTRAL" ]; then
-        _R=70; _G=70; _B=70
+        _R=55; _G=55; _B=55
         return 0
     fi
     local lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
-    _R=$(( lum + (_R - lum) / 4 )); _G=$(( lum + (_G - lum) / 4 )); _B=$(( lum + (_B - lum) / 4 ))
-    if [ "$lum" -gt 70 ]; then
-        _R=$(( _R * 70 / lum )); _G=$(( _G * 70 / lum )); _B=$(( _B * 70 / lum ))
+    _R=$(( lum + (_R - lum) / 2 )); _G=$(( lum + (_G - lum) / 2 )); _B=$(( lum + (_B - lum) / 2 ))
+    if [ "$lum" -gt 55 ]; then
+        _R=$(( _R * 55 / lum )); _G=$(( _G * 55 / lum )); _B=$(( _B * 55 / lum ))
     fi
 }
 
