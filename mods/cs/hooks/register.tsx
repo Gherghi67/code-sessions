@@ -314,6 +314,8 @@ type BandFacts = {
 }
 
 const QUEUE_GLYPH = '\u25a4'
+// The queue press's head: its glyph, its verb and its count.
+const QUEUE_COUNT = /^\u25a4 run \d+/
 
 export function buildBandEntries(facts: BandFacts): BandEntry[] {
   const entries: BandEntry[] = []
@@ -831,7 +833,7 @@ function shortenBand(all: BandEntry[], chords: Record<string, string>, spelling:
     if (excess <= 0) return { entries, prefixed: false }
     entries = entries.map(entry => {
       const cells = cellWidth(entry.label)
-      return entry.key !== key || cells <= SHORTEST_CELLS ? entry : { ...entry, label: cutToCells(entry.label, Math.max(SHORTEST_CELLS, cells - excess)) }
+      return entry.key !== key || cells <= SHORTEST_CELLS ? entry : { ...entry, label: shortened(entry.label, Math.max(SHORTEST_CELLS, cells - excess)) }
     })
   }
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -1225,6 +1227,14 @@ function cellWidth(text: string): number {
 
 // `text` at most `width` cells wide, ending in `…` when anything was cut; a
 // cut that lands after a space drops the space, so the `…` sits on the word.
+// A label cut to `cells`, or to its glyph where the cut would land inside the
+// queue press's count: `▤ run 1…` of twelve tasks names another number.
+function shortened(label: string, cells: number): string {
+  const cut = cutToCells(label, cells)
+  const count = QUEUE_COUNT.exec(label)?.[0]
+  return count !== undefined && cellWidth(cut) <= cellWidth(count) ? cutToCells(label, SHORTEST_CELLS) : cut
+}
+
 function cutToCells(text: string, width: number): string {
   if (cellWidth(text) <= width) return text
   let fitted = ''
