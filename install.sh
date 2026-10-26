@@ -259,7 +259,7 @@ CS_MOD_FILES=(
 
 # The cs tips file as install.sh names it in settings.json's
 # spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
-# tips, and cs's says how to turn on the band's prompt ticks. Deployed with the
+# tips, and cs's says how to turn on the band's prompt bars. Deployed with the
 # cs mod as cs/tips.json under ~/.claude/skills.
 # shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
 CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
@@ -1355,7 +1355,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "970c6e5ddcdd17f0ba4f31e1745cf33af5bebed4883c22f685560e341ff7c83e  bin/cs"
+    "19d5ec2f10ace0d6d97cb804ad80b258908805cb95aed5d5d176c66d7bcc2837  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "125476ec64a7d7cf0cfde7968f0e148d19bd85768bbcac0cbafdeacd158ec724  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1386,10 +1386,10 @@ CS_PAYLOAD_SHA256=(
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
     "a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8  skills/finish/scripts/finish.sh"
-    "0b4b87eed972a6a5669e25c84d9e4fe52f9c7202c8d4354fdb0b8b52537fa54c  mods/cs/.claude-plugin/plugin.json"
+    "8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "e98a16c0332e414c2ec8622675a2499cfd1c0e61145593f457e040a9f3a9cbb6  mods/cs/hooks/register.tsx"
-    "08a8354d6222494d094c98b2a34386245c12451497ceb9469e73cf63c4bdaf1d  mods/cs/tips.json"
+    "9a20328c03e955a1d9d6afecfb59056e39df8ec8d83f46700df0b3ccf5897110  mods/cs/hooks/register.tsx"
+    "c77a32327a72a6fd3ad703bb121007a380c1687b1c726b46cf825a503ca8b753  mods/cs/tips.json"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "cfe8c63090aeb6d585b47ef65cae403fa214d8e466036eebb2e1b8ef654ee764  mods/cs-update/hooks/register.tsx"
@@ -2391,7 +2391,7 @@ else
         fi
     fi
     # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
-    # on the band's prompt ticks. It is named in settings.json only while no
+    # on the band's prompt bars. It is named in settings.json only while no
     # file is named there, the deployed tips file is a regular file (Claude
     # Code refuses a link), and the record allows it: "named" once cs named
     # it, "declined" once the person took it out, so cs -update never puts it
@@ -2436,7 +2436,7 @@ else
     _tips_name=""
     case "$_tips_record:$_tips_state" in
         *:foreign)
-            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt ticks in /config) is left out"
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
             ;;
         *:not-object)
             warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
