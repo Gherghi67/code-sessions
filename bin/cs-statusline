@@ -2534,8 +2534,13 @@ _quiet_fade() {
 # The foreground for run $1 of $2 after the chip, in _QUIET_FG: from 35 to 55
 # percent of the way to the background, the first run darkest; further, the
 # last labels lose the contrast to be read on a light terminal. Below
-# truecolor there is no fade, only the secondary ink.
+# truecolor there is no fade: the secondary ink at 256 colours, bright black
+# at basic.
 _quiet_run_ink() {
+    if [ "$LEVEL" = "basic" ]; then
+        _QUIET_FG=90
+        return 0
+    fi
     if [ -z "$_QUIET_TRUE" ]; then
         _sgr 38 ink2; _QUIET_FG="$_SGR"
         return 0
@@ -2586,6 +2591,10 @@ _render_quiet() {
     else
         _sgr 48 surface; chipbg="$_SGR"
         _sgr 38 ink; chipfg="$_SGR"; valfg="$_SGR"
+        # The basic inks are made for the capsules' surface: off it, white
+        # vanishes on a light terminal, so readings take the terminal's own
+        # foreground (labels take bright black, _quiet_run_ink).
+        [ "$LEVEL" = "basic" ] && valfg=39
     fi
     for ((i = 0; i < n; i++)); do
         _quiet_new_run "$i" && runs=$((runs + 1))
