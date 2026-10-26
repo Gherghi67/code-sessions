@@ -4201,7 +4201,7 @@ test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflict() {
     printf '%s\n' "$doc" | cmp -s - "$kb" || { echo "  FAIL: the file was changed"; return 1; }
     grep -qF "Rotate/wrap keys: ctrl+x r is already bound to chat:submit in $kb; left as it is." \
         "$TEST_TMPDIR/ok-move-conflict.out" || { echo "  FAIL: the conflict warning is missing or reworded"; return 1; }
-    if grep -q 'moved' "$TEST_TMPDIR/ok-move-conflict.out"; then
+    if grep -q 'Rotate/wrap keys: .* to the .* context' "$TEST_TMPDIR/ok-move-conflict.out"; then
         echo "  FAIL: a key in conflict was reported as moved"; return 1
     fi
 }
