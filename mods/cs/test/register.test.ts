@@ -2245,6 +2245,13 @@ test('the live branch of a linear transcript lists every prompt, first line trim
   ])
 })
 
+test('the cut keeps whole graphemes: an emoji at the cut is kept whole, never half a surrogate pair', () => {
+  const long = prompt('u5', 'a4', `${'a'.repeat(RAIL_TEXT_CHARS - 2)}\u{1F600}${'b'.repeat(10)}`)
+  const text = parsePrompts(`${[...LINEAR, long].join('\n')}\n`).at(-1)!.text
+  expect(text).toBe(`${'a'.repeat(RAIL_TEXT_CHARS - 2)}\u{1F600}…`)
+  expect(text.isWellFormed()).toBe(true)
+})
+
 test('a /rewind leaves its abandoned prompts off the branch: the walk follows parentUuid back from the last row', () => {
   const forked = [...LINEAR, prompt('u5', 'a2', 'say five instead'), reply('a5', 'u5')]
   expect(parsePrompts(forked.join('\n')).map(p => p.text)).toEqual(['say one', 'say two', 'say five instead'])
