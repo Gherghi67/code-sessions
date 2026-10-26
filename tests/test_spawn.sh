@@ -1042,6 +1042,42 @@ FAKE
     assert_output_contains "$out" "token=unset" "the token is dropped before claude starts" || return 1
 }
 
+# Nobody sits at the window cs -spawn opens, so its launch asks nothing about
+# a pending release and claude starts. The window's input stays open and
+# silent, as a tmux pane's does, where a question waits for good; the run is
+# cut at 10 s (status 142). curl answers the signature probe, so the window's
+# mark alone keeps the question away. The session still learns the release,
+# for its update pane.
+test_spawned_window_starts_claude_without_asking_about_an_update() {
+    local home="$TEST_TMPDIR/update-home" bin="$TEST_TMPDIR/update-bin" cmd out rc=0
+    mkdir -p "$home/.cache/cs" "$bin"
+    printf '%s 2026.99.3\n' "$(date +%s)" > "$home/.cache/cs/update-check"
+    : > "$home/.cache/cs/update-notes-2026.99.3"
+    : > "$home/.cache/cs/update-notes-full-2026.99.3"
+    printf '#!/bin/sh\ncase "$*" in *"/download/v2026.99.3/SHA256SUMS.sig -o "*) exit 0 ;; esac\nexit 22\n' > "$bin/curl"
+    cat > "$bin/claude" << 'FAKE'
+#!/bin/bash
+echo "UPDATE_AVAILABLE=${CS_UPDATE_AVAILABLE-unset}"
+echo "UPDATE_DECLINED=${CS_UPDATE_DECLINED-unset}"
+echo "CS_UNATTENDED=${CS_UNATTENDED-unset}"
+FAKE
+    chmod +x "$bin/curl" "$bin/claude"
+    "$CS_BIN" -spawn worker >/dev/null 2>&1 || return 1
+    cmd=$(sed -n 's/^new-session -d -s cs -n worker -P -F #{window_id} //p' "$FAKE_TMUX_DIR/log")
+    [ -n "$cmd" ] || { echo "  FAIL: no window was opened"; cat "$FAKE_TMUX_DIR/log"; return 1; }
+    mkfifo "$TEST_TMPDIR/silent"
+    exec 5<>"$TEST_TMPDIR/silent"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$bin/claude" \
+        _run_bounded 10 sh -c "$cmd" <&5 2>&1) || rc=$?
+    exec 5<&-
+    assert_eq "0" "$rc" "the window's launch runs claude to its end" || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" "the window is not asked" || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" "the session still learns the release" || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=unset" "nothing is declined on the person's behalf" || return 1
+    assert_output_contains "$out" "CS_UNATTENDED=unset" "the window's mark never reaches claude" || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" "no declined record" || return 1
+}
+
 # An encrypted session keeps its queue behind .cs/private; a seed consumed into
 # .cs/local was plaintext the drain never read.
 _make_worker_vaulted() {
@@ -1138,6 +1174,7 @@ run_test test_launch_foreign_seed_escape_declines
 run_test test_launch_foreign_seed_declined_is_set_aside
 run_test test_launch_seed_control_characters_are_shown_flat
 run_test test_launch_token_never_reaches_claude
+run_test test_spawned_window_starts_claude_without_asking_about_an_update
 run_test test_launch_seed_queues_into_the_vault
 
 # Drain harness (same recipe as tests/test_queue_supervision.sh): the Stop

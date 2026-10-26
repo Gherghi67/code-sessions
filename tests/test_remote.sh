@@ -67,6 +67,7 @@ meta="${CLAUDE_SESSION_META_DIR:-}"
     printf 'CLAUDE_COWORK_MEMORY_PATH_OVERRIDE=%s\n' "${CLAUDE_COWORK_MEMORY_PATH_OVERRIDE:+set}"
     printf 'CS_LEAD_PID=%s\n' "${CS_LEAD_PID:+set}"
     printf 'CS_REMOTE_WINDOW=%s\n' "${CS_REMOTE_WINDOW+present}"
+    printf 'CS_UNATTENDED=%s\n' "${CS_UNATTENDED+present}"
     printf 'pwd=%s\n' "$(pwd -P)"
     printf 'pid=%s\n' "$$"
     printf 'ppid=%s\n' "$(ps -o ppid= -p $$ | tr -d ' ')"
@@ -349,7 +350,7 @@ start_unrelated_process() {
 window_command() {
     local self
     self="$(cd "$SCRIPT_DIR/../bin" && pwd)/cs"
-    printf '%s' "sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 'CS_SESSIONS_ROOT=$CS_SESSIONS_ROOT' 'CLAUDE_CODE_BIN=$TEST_TMPDIR/bin/claude' '$self' 'demo' --remote --permission-mode 'plan'"
+    printf '%s' "env CS_UNATTENDED=1 sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 'CS_SESSIONS_ROOT=$CS_SESSIONS_ROOT' 'CLAUDE_CODE_BIN=$TEST_TMPDIR/bin/claude' '$self' 'demo' --remote --permission-mode 'plan'"
 }
 
 strip_ansi() {
@@ -993,6 +994,30 @@ test_remote_window_serves_the_callers_root_with_the_callers_claude() {
     [ ! -e "$other_root/demo" ] || { echo "  FAIL: the window created demo under the tmux server's root"; return 1; }
 }
 
+# Nobody sits at the server's window, so its launch asks nothing about a
+# pending release, records no answer for the person and serves. Here the
+# window's input ends at once; on an open input the question would wait for
+# good. curl answers the signature probe, so the window's mark alone keeps
+# the question away.
+test_remote_window_serves_without_asking_about_an_update() {
+    local cmd
+    mkdir -p "$HOME/.cache/cs"
+    printf '%s 2026.99.3\n' "$(date +%s)" > "$HOME/.cache/cs/update-check"
+    : > "$HOME/.cache/cs/update-notes-2026.99.3"
+    : > "$HOME/.cache/cs/update-notes-full-2026.99.3"
+    printf '#!/bin/sh\ncase "$*" in *"/download/v2026.99.3/SHA256SUMS.sig -o "*) exit 0 ;; esac\nexit 22\n' > "$TEST_TMPDIR/bin/curl"
+    chmod +x "$TEST_TMPDIR/bin/curl"
+    TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
+    cmd=$(sed -n 's/^new-session -d -s cs -n remote:demo -P -F #{window_id} //p' "$FAKE_TMUX_LOG")
+    [ -n "$cmd" ] || { echo "  FAIL: no window was opened"; cat "$FAKE_TMUX_LOG"; return 1; }
+    CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 TMUX="/tmp/fake,1,0" run_in_its_own_group sh -c "$cmd" || return 1
+    assert_eq "0" "$CS_RC" "the window's server ran" || { cat "$TEST_TMPDIR/out"; return 1; }
+    assert_output_not_contains "$(cat "$TEST_TMPDIR/out")" "Update now?" "the window is not asked" || return 1
+    assert_not_exists "$HOME/.cache/cs/update-declined" "no declined record" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" "the server runs in the window" || return 1
+    assert_eq "" "$(log_value CS_UNATTENDED)" "the window's mark never reaches the server" || return 1
+}
+
 test_remote_inside_tmux_without_tmux_names_remote() {
     local rc=0 out
     out=$(CS_TMUX_BIN="$TEST_TMPDIR/no-such-tmux" TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
@@ -1182,6 +1207,7 @@ run_test test_remote_release_detaches_the_vault_its_open_mounted
 run_test test_remote_inside_tmux_refuses_an_open_or_served_session_on_the_callers_terminal
 run_test test_remote_in_its_window_serves_there_instead_of_opening_another
 run_test test_remote_window_serves_the_callers_root_with_the_callers_claude
+run_test test_remote_window_serves_without_asking_about_an_update
 run_test test_remote_failure_in_its_window_waits_for_enter
 run_test test_remote_window_close_reaches_the_server
 run_test test_live_shows_a_served_session_as_remote_with_the_server_pid
