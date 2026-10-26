@@ -228,6 +228,17 @@ CS_SKILL_FILES=(
     finish/scripts/finish.sh
 )
 
+# Mod directories under mods/ the installer keeps out: experimental, their
+# source and tests in the checkout only. cs-feed is one, so the cs band, which
+# draws its feed key only beside cs-feed's /feed, draws none. Every file under
+# mods/ outside these and their test/ is in CS_MOD_FILES below
+# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
+# scan skips them.
+# shellcheck disable=SC2034  # read by cs -doctor and tests/test_install.sh
+CS_MODS_KEPT_OUT=(
+    cs-feed
+)
+
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
 CS_MOD_FILES=(
@@ -245,16 +256,6 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
-    cs-feed/.claude-plugin/plugin.json
-    cs-feed/hooks/hooks.json
-    cs-feed/hooks/draw.tsx
-    cs-feed/hooks/register.tsx
-    cs-feed/hooks/session.ts
-    cs-feed/hooks/settings.ts
-    cs-feed/hooks/state.d.ts
-    cs-feed/hooks/transcript.ts
-    cs-feed/hooks/verdict.ts
-    cs-feed/hooks/words.ts
 )
 
 # The cs tips file as install.sh names it in settings.json's
@@ -343,15 +344,16 @@ _strip_hook_registration() {
 }
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
-# "command:<name>" actions, which submit /<name>. Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 bind
+# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear), wrap and feed keys. KEEP IN SYNC with
-# ROTATE_ACTION, WRAP_ACTION and FEED_ACTION in mods/cs/hooks/register.tsx. install.sh
+# band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
+# WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
+# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
 # asks once per machine and binds each in the context block Claude Code wants
 # it in (home, below): the command keys in Chat, the chords in Global, where
 # the mod reads them. cs -uninstall takes back only the keys that still hold
 # these values, and cs -doctor reports them.
-CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}'
+CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
 # iTerm2 selects panes with Option+number, so there they never reach Claude
@@ -1366,7 +1368,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "df0d429fff28fa71bece75493da68b394adf459dbbb37840173fe0c3ca588249  bin/cs"
+    "c91007643978677d1b0e1373a5ec93c7a32e37efc9a75cbe1152cd48f7140cfd  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "a43f91d9106057b00ba4a416e058e3c00593df6a58ebbddfee852617563151f4  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1400,7 +1402,7 @@ CS_PAYLOAD_SHA256=(
     "8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "95933b86459fd36959a13b0bf642e1e49b2697750895b48614dabc5f0fb99107  mods/cs/hooks/register.tsx"
-    "c77a32327a72a6fd3ad703bb121007a380c1687b1c726b46cf825a503ca8b753  mods/cs/tips.json"
+    "f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e  mods/cs/tips.json"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "cfe8c63090aeb6d585b47ef65cae403fa214d8e466036eebb2e1b8ef654ee764  mods/cs-update/hooks/register.tsx"
@@ -1411,16 +1413,6 @@ CS_PAYLOAD_SHA256=(
     "fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
-    "44bdc6baba3512597a77b1bcff81d23806724b14fae4aac65e99564f202722dd  mods/cs-feed/.claude-plugin/plugin.json"
-    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-feed/hooks/hooks.json"
-    "73fb37201e9572ea9da733d3dfcbdfef3e6034322b04269aa718ea6aeb383da2  mods/cs-feed/hooks/draw.tsx"
-    "b0b3e716f1926401f1bc3fc347263e5304c643b808e7cfdf5778112a2e448083  mods/cs-feed/hooks/register.tsx"
-    "2322fb1fe4351f2eef65a08abe8ed2a03275a97dd1b33c7ea67bbf7dbd286d8d  mods/cs-feed/hooks/session.ts"
-    "d295580c301fac9a8c6e139ec071238b8325b7923682c429ad5a71d85e0a504f  mods/cs-feed/hooks/settings.ts"
-    "1ce533ee58e6ce894c76d1c16522a622e112d9d8f967b548944da38d61ad4248  mods/cs-feed/hooks/state.d.ts"
-    "bd96c958d0985810f5d509f2e856c9633e02f4030644cfe6c26547fc88c0ec2f  mods/cs-feed/hooks/transcript.ts"
-    "dbef075c4fceec08cd66b20c41916a96e687139464f80c9ab4d39894ee352e57  mods/cs-feed/hooks/verdict.ts"
-    "cc4128cfde894e980a28800685da91d2e91031f562bed74dc01e11b6bfb51c9c  mods/cs-feed/hooks/words.ts"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"
 )
@@ -2677,7 +2669,7 @@ else
                 # one key, so an Enter typed after one of them is still queued
                 # and would answer this one. EOF leaves it unanswered.
                 while :; do
-                    echo -en "   Bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band in Claude Code? [y/n] "
+                    echo -en "   Bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band in Claude Code? [y/n] "
                     if ! read -n 1 -r; then echo ""; break; fi
                     echo ""
                     case "$REPLY" in
@@ -2694,7 +2686,7 @@ else
                     info "Rotate/wrap keys: not bound. You won't be asked again; to change that, remove $_rotate_wrap_keys_answer_file and run cs -update."
                 fi
             else
-                info "Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band, run cs -update in a terminal."
+                info "Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band, run cs -update in a terminal."
             fi
             ;;
     esac

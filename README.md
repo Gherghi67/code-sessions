@@ -68,7 +68,6 @@ The [statusline guide](docs/statusline.md) covers the quiet default layout, the 
 | Writing skills | Judges prose or drafts from a writing profile. | [Skills](docs/hooks.md#skills) |
 | Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
 | Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
-| Chat feed | Folds each turn's tool calls into one line beside your messages and Claude's replies, off until you turn it on per session with the band's `ctrl+x 3` or `/feed on`. | [Feed mod](docs/hooks.md#cs-feed-not-a-hook-script--a-claude-code-mod) |
 | Release notes | Shows pending release notes in-session through `/cs-update`. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
 | Other front ends | Session hooks also work in desktop and IDE conversations opened in a `.cs/` workspace. | [Session resolution](docs/hooks.md#how-a-hook-finds-its-session-cs-resolvesh) |
 

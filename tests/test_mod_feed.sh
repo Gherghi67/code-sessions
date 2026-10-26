@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Tests for the cs-feed mod under mods/cs-feed (a Claude Code function-hooks plugin that restyles the chat per session).
-# ABOUTME: Pins the manifest and the installer listing, lints the hook source, and runs plugin validate, tsc and the engine test kit when claude is present.
+# ABOUTME: Pins the manifest, keeps the mod out of the installer, lints the hook source, and runs plugin validate, tsc and the engine test kit when claude is present.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
@@ -29,18 +29,19 @@ test_mod_manifest_names_the_plugin_its_module_and_its_state_types() {
     assert_eq "false" "$(jq 'has("userConfig")' "$manifest")" "no userConfig" || return 1
 }
 
-test_mod_is_deployed_by_the_installer() {
+# The feed is experimental: the mod's source stays here, and the installer,
+# which lists every mod file it deploys (cs-mermaid's among them), lists none
+# of cs-feed's.
+test_mod_is_kept_out_of_the_installer() {
     local file
     for file in .claude-plugin/plugin.json hooks/hooks.json hooks/draw.tsx hooks/register.tsx hooks/session.ts hooks/settings.ts hooks/state.d.ts hooks/transcript.ts hooks/verdict.ts hooks/words.ts; do
         assert_file_exists "$MOD/$file" "the mod has $file" || return 1
-        grep -qF "cs-feed/$file" "$SCRIPT_DIR/../install.sh" \
-            || { echo "  FAIL: install.sh does not deploy cs-feed/$file"; return 1; }
     done
-    # Every module file under hooks/ is deployed, so a new one cannot be left out.
-    for file in "$MOD"/hooks/*; do
-        grep -qF "cs-feed/hooks/$(basename "$file")" "$SCRIPT_DIR/../install.sh" \
-            || { echo "  FAIL: install.sh does not deploy cs-feed/hooks/$(basename "$file")"; return 1; }
-    done
+    grep -qF "cs-mermaid/hooks/register.tsx" "$SCRIPT_DIR/../install.sh" \
+        || { echo "  FAIL: install.sh lists no mod files to deploy"; return 1; }
+    if grep -qF "cs-feed/" "$SCRIPT_DIR/../install.sh"; then
+        echo "  FAIL: install.sh deploys cs-feed: $(grep -nF "cs-feed/" "$SCRIPT_DIR/../install.sh" | head -1)"; return 1
+    fi
 }
 
 # Nothing the feed registers awaits across a tool call or a stream, it never
@@ -118,7 +119,7 @@ test_mod_unit_tests_pass_under_the_engine_test_kit() {
 }
 
 run_test test_mod_manifest_names_the_plugin_its_module_and_its_state_types
-run_test test_mod_is_deployed_by_the_installer
+run_test test_mod_is_kept_out_of_the_installer
 run_test test_mod_source_never_spells_the_refused_events_or_command_run
 run_test test_mod_validate_inventories_the_one_shape
 run_test test_mod_typechecks_against_the_engine_contract
