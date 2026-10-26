@@ -316,6 +316,24 @@ test_doctor_warns_on_mod_drift() {
     assert_output_not_contains "$output" "Mod drift" "in sync: silent" || return 1
 }
 
+# The cs mod's spinner tips deploy beside its hooks as cs/tips.json, so an
+# edited or missing tips file is drift too.
+test_doctor_warns_on_mod_tips_drift() {
+    local checkout="$TEST_TMPDIR/tipsco" deployed="$TEST_TMPDIR/tipsdep" skills="$TEST_TMPDIR/tipsskills"
+    make_fake_checkout "$checkout" "$deployed"
+    mkdir -p "$checkout/mods/cs" "$skills/cs"
+    echo '{"tips":["one"]}' > "$checkout/mods/cs/tips.json"
+    echo '{"tips":["two"]}' > "$skills/cs/tips.json"
+    local output
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" CS_SKILLS_DIR="$skills" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Mod drift: deployed copy differs from source: cs/tips.json" \
+        "an edited tips file the installer has not copied is drift" || return 1
+    rm "$skills/cs/tips.json"
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" CS_SKILLS_DIR="$skills" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Mod drift: not deployed: cs/tips.json" \
+        "a tips file the installer never copied is drift" || return 1
+}
+
 # A mod the installer keeps out (CS_MODS_KEPT_OUT, cs-feed) is never deployed,
 # so its source is not drift: no "not deployed" row names it.
 test_doctor_drift_skips_a_kept_out_mod() {
@@ -1599,6 +1617,7 @@ run_test test_doctor_drift_advice_follows_whose_the_deployed_copy_is
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift
+run_test test_doctor_warns_on_mod_tips_drift
 run_test test_doctor_drift_skips_a_kept_out_mod
 run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_command_drift
