@@ -562,8 +562,7 @@ least, the words take the whole line, the rail draws in what they leave, and
 a line too narrow for any bar draws no rail. Three cells before the bars, and three cells after any
 word before it, the band names its prompt, `#N` and its first line (up to 80
 characters),
-italic, dim for the newest prompt and in the session's colour for an older
-one, cut with `…` when the line is narrower, counted in terminal cells
+dim italic, cut with `…` when the line is narrower, counted in terminal cells
 so a wide character takes two; under ten cells left it names none, and the
 rail still ends in the line's last cell. The three cells keep a `…N` run from
 reading as the end of a cut name. The name
@@ -571,7 +570,7 @@ is as wide as the widest prompt it can show, the named one or a drawn bar's,
 padded on its left so it ends three cells before the bars, so a swap never
 moves the bars or the words before it. On the
 terminal a bar under the pointer swaps its own prompt into that place,
-italic and in the session's colour, until the pointer leaves; the swap follows the mouse, so it
+italic, until the pointer leaves; the swap follows the mouse, so it
 needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
 them off). Other
 surfaces name the band's own prompt only, since the desktop app paints a card
