@@ -1111,7 +1111,7 @@ _sgr() {
                 periwinkle) [ "$SL_THEME" = "dark" ] && idx=147 || idx=55 ;;
                 rowname) [ "$SL_THEME" = "dark" ] && idx=231 || idx=235 ;;
                 rowmeta) [ "$SL_THEME" = "dark" ] && idx=248 || idx=244 ;;
-                amber)   [ "$SL_THEME" = "dark" ] && idx=221 || idx=130 ;;
+                amber)   [ "$SL_THEME" = "dark" ] && idx=214 || idx=130 ;;
                 ink)     [ "$SL_THEME" = "dark" ] && idx=255 || idx=236 ;;
                 ink2)    [ "$SL_THEME" = "dark" ] && idx=250 || idx=241 ;;
                 crit)    [ "$SL_THEME" = "dark" ] && idx=203 || idx=160 ;;

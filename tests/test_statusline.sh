@@ -3373,7 +3373,7 @@ test_sgr_ink_tokens_256_and_basic() {
     _sgr 38 ink;        assert_eq "38;5;255" "$_SGR" "ink 256 dark" || return 1
     _sgr 38 ink2;    assert_eq "38;5;250" "$_SGR" "ink2 256 dark" || return 1
     _sgr 38 periwinkle; assert_eq "38;5;147" "$_SGR" "periwinkle 256 dark" || return 1
-    _sgr 38 amber;   assert_eq "38;5;221" "$_SGR" "amber 256 dark" || return 1
+    _sgr 38 amber;   assert_eq "38;5;214" "$_SGR" "amber 256 dark" || return 1
     _sgr 48 crit;    assert_eq "48;5;203" "$_SGR" "crit 256 dark" || return 1
     _sgr 38 critink; assert_eq "38;5;231" "$_SGR" "critink 256 dark is white" || return 1
     LEVEL=basic; SL_THEME=light
@@ -5295,7 +5295,7 @@ test_band_256_is_a_flat_fill() {
     assert_eq 80 "$(band_cells "$out")" "a flat band is 80 cells" || return 1
     assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
     assert_eq "[48;5;237m" "$(band_first_cell "$out")" "the band is the 256 surface" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;221;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;214;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
     assert_output_contains_f "$out" "${ESC_}[48;5;203;38;5;231;1m ◷ 5h 95% ⋮ ◶ wk 60% " "the crit island in 256 tokens" || return 1
 }
 
