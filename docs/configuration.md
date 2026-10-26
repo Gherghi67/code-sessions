@@ -340,8 +340,12 @@ The installer offers, once per machine, to bind five keys in Claude Code's
 file instead, the one that session links:
 
 ```json
-{"bindings": [{"context": "Global", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap", "ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2", "ctrl+x 3": "strip:jump3"}}]}
+{"bindings": [{"context": "Chat", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap"}}, {"context": "Global", "bindings": {"ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2", "ctrl+x 3": "strip:jump3"}}]}
 ```
+
+The two command keys sit in the `Chat` context, where Claude Code wants a
+`command:` binding (2.1.310 warns of one in any other named context), and the
+three band chords in `Global`, where the `cs` mod reads them.
 
 Ctrl+X then R submits `/rotate`, and Ctrl+X then W submits `/wrap`, band or no
 band. Ctrl+X then 1, 2 or 3 presses the `cs` mod's band above the
@@ -354,8 +358,12 @@ Ctrl+X 2 reach the band only because Claude Code mounts no handler of its own
 for `strip:jump1` and `strip:jump2` (measured on 2.1.291 and 2.1.292); a
 release that mounts one takes the chord from the band without a warning.
 
-- A yes merges the five keys into the file's first `Global` block (or adds one,
-  creating the file when there is none). cs never replaces a key you already
+- A yes merges the two command keys into the file's first `Chat` block and
+  the three chords into its first `Global` block (adding a block where there
+  is none, and creating the file when there is none). A cs key that sits in a
+  block of the other context, as an earlier cs put every key in `Global`, is
+  moved into its own, and the install says so (`moved ctrl+x r, ctrl+x w to
+  the Chat context`). cs never replaces a key you already
   bind to something else, in any context: it keeps your action and names the
   key in a warning. A bare `ctrl+x` you bind counts too: Claude Code would
   wait for a second key and never run yours, so cs binds none of the chords
@@ -384,13 +392,14 @@ release that mounts one takes the chord from the band without a warning.
   (or `./install.sh`) in a terminal; it asks again. To drop the keys after a
   `yes`, answer `no` there and delete the five entries from `keybindings.json`.
 - `cs -uninstall` removes only the keys that still hold cs's values, the
-  chords and an earlier cs's `alt+1` and `alt+2` alike, drops a `Global` block
+  chords and an earlier cs's `alt+1` and `alt+2` alike, drops any block
   that leaves empty, deletes the file when it holds nothing else (a symlinked
   file keeps its link and gets `{"bindings": []}` written through it), and
   removes the recorded answer.
 - `cs -doctor` reports the state: bound, declined, not asked, a conflict on
   one of the chords (or on a bare `ctrl+x`), a key not bound yet (as on
-  a machine that still has the Option keys, until its next `cs -update`), cs's
+  a machine that still has the Option keys, until its next `cs -update`), a
+  key outside its context (until its next `cs -update`), cs's
   `alt+1` or `alt+2` still there beside the chords, or an unparseable file.
 - cs reads keys the way Claude Code does: `Ctrl+X`, `control+x` and
   `ctrl+x  r` with two spaces are the same keys as `ctrl+x` and `ctrl+x r`,

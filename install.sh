@@ -347,8 +347,10 @@ _strip_hook_registration() {
 # the engine actions the cs mod's band Buttons answer to: they press the
 # band's rotate (or /clear), wrap and feed keys. KEEP IN SYNC with
 # ROTATE_ACTION, WRAP_ACTION and FEED_ACTION in mods/cs/hooks/register.tsx. install.sh
-# asks once per machine and binds them. cs -uninstall takes back only the
-# keys that still hold these values, and cs -doctor reports them.
+# asks once per machine and binds each in the context block Claude Code wants
+# it in (home, below): the command keys in Chat, the chords in Global, where
+# the mod reads them. cs -uninstall takes back only the keys that still hold
+# these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -365,7 +367,10 @@ CS_RETIRED_OPTION_KEYS='{"alt+1":"command:rotate","alt+2":"command:wrap"}'
 # any order, and a chord's keys split on any run of spaces. It keeps meta
 # apart from alt and leaves space and arrow glyphs as typed, which no cs key
 # uses. cs's own keys are already in that form. ours: whether a to_entries pair from a context block is one of
-# the bindings in $cs, key and value both.
+# the bindings in $cs, key and value both. home: the context block an action
+# belongs in, as Claude Code rules it (2.1.310 warns of a "command:" binding
+# in any named context but "Chat"): Chat for a command, Global for anything
+# else.
 _CS_KEYBINDING_DEFS='
     def keynorm:
         ["alt", "cmd", "ctrl", "meta", "shift"] as $mods
@@ -378,6 +383,7 @@ _CS_KEYBINDING_DEFS='
             | join("+")]
         | join(" ");
     def ours: . as $e | ($e.key | keynorm) as $k | $cs | has($k) and .[$k] == $e.value;
+    def home: if type == "string" and startswith("command:") then "Chat" else "Global" end;
 '
 
 # Claude Code reads its keybindings from its config dir. Inside an encrypted
@@ -417,27 +423,31 @@ _cs_keybindings_shape_ok() {  # file
 }
 
 # Reads a keybindings document that passed the shape check on stdin and prints
-# one line per cs key: "bound<TAB>key" when every binding of it, in any
-# context, holds cs's value; "free<TAB>key" when nothing binds it; and
-# "conflict<TAB>key<TAB>action" when something else does. A chord also
-# conflicts when its first key is bound on its own to an action, which
-# Claude Code would stop reaching once it waits for the chord's second key:
-# "conflict<TAB>key<TAB>action<TAB>prefix". Keys compare as keynorm spells
-# them. An action that is not a non-empty string (a null that unbinds the
-# key, an empty "") prints as JSON, so no field is ever empty; a null on the
-# prefix is no conflict, as it binds nothing.
+# one line per cs key: "bound<TAB>key" when every binding of it holds cs's
+# value and sits in a block of the action's home context; "misplaced<TAB>key<TAB>home"
+# when every binding holds cs's value but one sits in a block of another
+# context (a block with no context counts as another); "free<TAB>key" when
+# nothing binds it; and "conflict<TAB>key<TAB>action" when something else
+# does, in any context. A chord also conflicts when its first key is bound on
+# its own to an action, which Claude Code would stop reaching once it waits
+# for the chord's second key: "conflict<TAB>key<TAB>action<TAB>prefix". Keys
+# compare as keynorm spells them. An action that is not a non-empty string (a
+# null that unbinds the key, an empty "") prints as JSON, so no field is ever
+# empty; a null on the prefix is no conflict, as it binds nothing.
 _cs_rotate_wrap_keys_status() {
     jq -r --argjson cs "$CS_ROTATE_WRAP_KEYS" "$_CS_KEYBINDING_DEFS"'
         def show: if type == "string" and length > 0 then . else tojson end;
-        [.bindings[] | (.bindings // {}) | to_entries[] | .key |= keynorm] as $all
+        [.bindings[] | .context as $ctx | (.bindings // {}) | to_entries[] | .key |= keynorm | .ctx = $ctx] as $all
         | $cs | to_entries[] | . as $c
-        | [$all[] | select(.key == $c.key) | .value] as $vals
+        | [$all[] | select(.key == $c.key)] as $hits
+        | [$hits[] | .value] as $vals
         | ($c.key | split(" ") | if length > 1 then .[0] else null end) as $prefix
         | [$all[] | select(.key == $prefix and .value != null) | .value] as $pvals
         | if any($vals[]; . != $c.value) then
             "conflict\t\($c.key)\t\([$vals[] | select(. != $c.value)][0] | show)"
           elif ($pvals | length) > 0 then "conflict\t\($c.key)\t\($pvals[0] | show)\t\($prefix)"
           elif ($vals | length) == 0 then "free\t\($c.key)"
+          elif any($hits[]; .ctx != ($c.value | home)) then "misplaced\t\($c.key)\t\($c.value | home)"
           else "bound\t\($c.key)"
           end'
 }
@@ -452,13 +462,14 @@ _cs_keybindings_held() {  # bindings-json
 
 # Prints a keybindings document on stdin, compact, without the bindings in the
 # JSON object $1 (key and value both; a key bound to anything else stays). A
-# Global block left empty goes; another context keeps its block.
+# block that held one of them and is left empty goes, whatever its context; a
+# block that held none is never touched, so a user's own empty block stays.
 _cs_keybindings_strip() {  # bindings-json
     jq -c --argjson cs "$1" "$_CS_KEYBINDING_DEFS"'
         .bindings |= map(
             if any((.bindings // {}) | to_entries[]; ours) then
                 .bindings |= with_entries(select(ours | not))
-                | select(.bindings != {} or .context != "Global")
+                | select(.bindings != {})
             else . end)'
 }
 
@@ -1355,7 +1366,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "19d5ec2f10ace0d6d97cb804ad80b258908805cb95aed5d5d176c66d7bcc2837  bin/cs"
+    "d47e6cb462ac65fbbd75f0e515472c376292a17608b837d94e1b1353755462d8  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "125476ec64a7d7cf0cfde7968f0e148d19bd85768bbcac0cbafdeacd158ec724  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -2525,10 +2536,14 @@ else
         installed "status line" "cs-statusline + cs-subagent-statusline"
     fi
 
-    # Add cs's keys that nothing binds yet to keybindings.json: into its first
-    # Global block, or a Global block of their own, creating the file when
-    # there is none. A key bound to anything else, in any context, is the
-    # user's and is reported, never replaced; so is a bare key a chord would
+    # Add cs's keys that nothing binds yet to keybindings.json, each into the
+    # first block of the context Claude Code wants it in (Chat for the
+    # command keys, Global for the chords), or a block of that context of
+    # its own, creating the file when there is none. A cs key that sits in a
+    # block of another context is moved: its cs bindings leave that block
+    # (which goes if that empties it) and the key joins its own context. A
+    # key bound to anything else, in any context, is the user's and is
+    # reported, never replaced or moved; so is a bare key a chord would
     # shadow. cs's own Option+1 / Option+2 bindings stood for /rotate and
     # /wrap, so they make way unless Ctrl+X R or Ctrl+X W conflicts: then
     # both stay, so the command whose chord is taken keeps a key. A conflict
@@ -2540,6 +2555,7 @@ else
     # dotfiles manager's) rewritten through its link.
     _bind_rotate_wrap_keys() {
         local file doc status state key action prefix added="" command_conflicts=0 retired="" add
+        local moved="" moved_chat="" moved_global="" payload="" line=""
         local shadowed="" shadowed_prefix="" shadowed_action=""
         file="$(_cs_keybindings_file)"
         if [ -e "$file" ]; then
@@ -2569,6 +2585,16 @@ else
                     ;;
                 free)
                     added="${added:+$added, }$key"
+                    payload="${payload:+$payload, }$key"
+                    ;;
+                misplaced)
+                    moved="${moved:+$moved, }$key"
+                    payload="${payload:+$payload, }$key"
+                    case "$action" in
+                        Chat) moved_chat="${moved_chat:+$moved_chat, }$key" ;;
+                        Global) moved_global="${moved_global:+$moved_global, }$key" ;;
+                        *) warn "Rotate/wrap keys: no such context as \"$action\" for $key; $file left as it is."; return 1 ;;
+                    esac
                     ;;
             esac
         done <<< "$status"
@@ -2583,9 +2609,9 @@ else
                     || { warn "Rotate/wrap keys: could not read the bindings in $file"; return 1; }
             fi
         fi
-        [ -n "$added" ] || [ -n "$retired" ] || return 0
-        add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg added "$added" \
-            '$cs | with_entries(select(.key as $k | $added | split(", ") | any(.[]; . == $k)))') \
+        [ -n "$payload" ] || [ -n "$retired" ] || return 0
+        add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg keys "$payload" \
+            '$cs | with_entries(select(.key as $k | $keys | split(", ") | any(.[]; . == $k)))') \
             || { warn "Rotate/wrap keys: could not build the bindings for $file"; return 1; }
         # The payload's copy, as above: never the deployed one.
         # shellcheck source=hooks/cs-shared.sh
@@ -2594,21 +2620,36 @@ else
             return 1
         fi
         mkdir -p "$(dirname "$file")" 2>/dev/null || true
-        if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson add "$add" '
-            if $add == {} then .
-            else (first(.bindings | to_entries[] | select(.value.context == "Global") | .key) // null) as $i
-                | if $i == null then .bindings += [{context: "Global", bindings: $add}]
-                  else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + $add) end
-            end'; then
+        # A moved key's cs bindings leave every block of a context that is
+        # not the action's home, then the payload joins the first block of
+        # each home context, Chat before Global when both are created.
+        if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson cs "$CS_ROTATE_WRAP_KEYS" \
+            --argjson add "$add" --arg moved "$moved" "$_CS_KEYBINDING_DEFS"'
+            def astray($ctx): ours and ((.key | keynorm) as $k | $moved | split(", ") | any(.[]; . == $k))
+                and (.value | home) != $ctx;
+            .bindings |= map(. as $b
+                | if any((.bindings // {}) | to_entries[]; astray($b.context)) then
+                    .bindings |= with_entries(select(astray($b.context) | not)) | select(.bindings != {})
+                  else . end)
+            | reduce ("Chat", "Global") as $ctx (.;
+                ($add | with_entries(select(.value | home == $ctx))) as $part
+                | if $part == {} then .
+                  else (first(.bindings | to_entries[] | select(.value.context == $ctx) | .key) // null) as $i
+                    | if $i == null then .bindings += [{context: $ctx, bindings: $part}]
+                      else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + $part) end
+                  end)'; then
             warn "Rotate/wrap keys: could not write $file"
             return 1
         fi
-        if [ -z "$retired" ]; then
-            info "Rotate/wrap keys: bound $added in $file"
-        elif [ -z "$added" ]; then
+        [ -z "$added" ] || line="bound $added"
+        [ -z "$moved_chat" ] || line="${line:+$line and }moved $moved_chat to the Chat context"
+        [ -z "$moved_global" ] || line="${line:+$line and }moved $moved_global to the Global context"
+        if [ -z "$line" ]; then
             info "Rotate/wrap keys: removed cs's $retired from $file"
+        elif [ -z "$retired" ]; then
+            info "Rotate/wrap keys: $line in $file"
         else
-            info "Rotate/wrap keys: bound $added in $file (replacing cs's $retired)"
+            info "Rotate/wrap keys: $line in $file (replacing cs's $retired)"
         fi
     }
 

@@ -255,8 +255,10 @@ _strip_hook_registration() {
 # the engine actions the cs mod's band Buttons answer to: they press the
 # band's rotate (or /clear), wrap and feed keys. KEEP IN SYNC with
 # ROTATE_ACTION, WRAP_ACTION and FEED_ACTION in mods/cs/hooks/register.tsx. install.sh
-# asks once per machine and binds them. cs -uninstall takes back only the
-# keys that still hold these values, and cs -doctor reports them.
+# asks once per machine and binds each in the context block Claude Code wants
+# it in (home, below): the command keys in Chat, the chords in Global, where
+# the mod reads them. cs -uninstall takes back only the keys that still hold
+# these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -273,7 +275,10 @@ CS_RETIRED_OPTION_KEYS='{"alt+1":"command:rotate","alt+2":"command:wrap"}'
 # any order, and a chord's keys split on any run of spaces. It keeps meta
 # apart from alt and leaves space and arrow glyphs as typed, which no cs key
 # uses. cs's own keys are already in that form. ours: whether a to_entries pair from a context block is one of
-# the bindings in $cs, key and value both.
+# the bindings in $cs, key and value both. home: the context block an action
+# belongs in, as Claude Code rules it (2.1.310 warns of a "command:" binding
+# in any named context but "Chat"): Chat for a command, Global for anything
+# else.
 _CS_KEYBINDING_DEFS='
     def keynorm:
         ["alt", "cmd", "ctrl", "meta", "shift"] as $mods
@@ -286,6 +291,7 @@ _CS_KEYBINDING_DEFS='
             | join("+")]
         | join(" ");
     def ours: . as $e | ($e.key | keynorm) as $k | $cs | has($k) and .[$k] == $e.value;
+    def home: if type == "string" and startswith("command:") then "Chat" else "Global" end;
 '
 
 # Claude Code reads its keybindings from its config dir. Inside an encrypted
@@ -325,27 +331,31 @@ _cs_keybindings_shape_ok() {  # file
 }
 
 # Reads a keybindings document that passed the shape check on stdin and prints
-# one line per cs key: "bound<TAB>key" when every binding of it, in any
-# context, holds cs's value; "free<TAB>key" when nothing binds it; and
-# "conflict<TAB>key<TAB>action" when something else does. A chord also
-# conflicts when its first key is bound on its own to an action, which
-# Claude Code would stop reaching once it waits for the chord's second key:
-# "conflict<TAB>key<TAB>action<TAB>prefix". Keys compare as keynorm spells
-# them. An action that is not a non-empty string (a null that unbinds the
-# key, an empty "") prints as JSON, so no field is ever empty; a null on the
-# prefix is no conflict, as it binds nothing.
+# one line per cs key: "bound<TAB>key" when every binding of it holds cs's
+# value and sits in a block of the action's home context; "misplaced<TAB>key<TAB>home"
+# when every binding holds cs's value but one sits in a block of another
+# context (a block with no context counts as another); "free<TAB>key" when
+# nothing binds it; and "conflict<TAB>key<TAB>action" when something else
+# does, in any context. A chord also conflicts when its first key is bound on
+# its own to an action, which Claude Code would stop reaching once it waits
+# for the chord's second key: "conflict<TAB>key<TAB>action<TAB>prefix". Keys
+# compare as keynorm spells them. An action that is not a non-empty string (a
+# null that unbinds the key, an empty "") prints as JSON, so no field is ever
+# empty; a null on the prefix is no conflict, as it binds nothing.
 _cs_rotate_wrap_keys_status() {
     jq -r --argjson cs "$CS_ROTATE_WRAP_KEYS" "$_CS_KEYBINDING_DEFS"'
         def show: if type == "string" and length > 0 then . else tojson end;
-        [.bindings[] | (.bindings // {}) | to_entries[] | .key |= keynorm] as $all
+        [.bindings[] | .context as $ctx | (.bindings // {}) | to_entries[] | .key |= keynorm | .ctx = $ctx] as $all
         | $cs | to_entries[] | . as $c
-        | [$all[] | select(.key == $c.key) | .value] as $vals
+        | [$all[] | select(.key == $c.key)] as $hits
+        | [$hits[] | .value] as $vals
         | ($c.key | split(" ") | if length > 1 then .[0] else null end) as $prefix
         | [$all[] | select(.key == $prefix and .value != null) | .value] as $pvals
         | if any($vals[]; . != $c.value) then
             "conflict\t\($c.key)\t\([$vals[] | select(. != $c.value)][0] | show)"
           elif ($pvals | length) > 0 then "conflict\t\($c.key)\t\($pvals[0] | show)\t\($prefix)"
           elif ($vals | length) == 0 then "free\t\($c.key)"
+          elif any($hits[]; .ctx != ($c.value | home)) then "misplaced\t\($c.key)\t\($c.value | home)"
           else "bound\t\($c.key)"
           end'
 }
@@ -360,13 +370,14 @@ _cs_keybindings_held() {  # bindings-json
 
 # Prints a keybindings document on stdin, compact, without the bindings in the
 # JSON object $1 (key and value both; a key bound to anything else stays). A
-# Global block left empty goes; another context keeps its block.
+# block that held one of them and is left empty goes, whatever its context; a
+# block that held none is never touched, so a user's own empty block stays.
 _cs_keybindings_strip() {  # bindings-json
     jq -c --argjson cs "$1" "$_CS_KEYBINDING_DEFS"'
         .bindings |= map(
             if any((.bindings // {}) | to_entries[]; ours) then
                 .bindings |= with_entries(select(ours | not))
-                | select(.bindings != {} or .context != "Global")
+                | select(.bindings != {})
             else . end)'
 }
 

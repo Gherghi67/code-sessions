@@ -726,9 +726,9 @@ _doctor_check_statusline() {
 # The Ctrl+X bindings the installer offers: the answer this
 # machine gave, and whether keybindings.json still holds cs's keys. Not asked
 # and declined are healthy; a key the user binds to something else (or a bare
-# ctrl+x a chord would shadow), a yes whose keys are gone or are still an
-# earlier cs's Option+1 / Option+2, and a file Claude Code cannot read either
-# are warnings.
+# ctrl+x a chord would shadow), a yes whose keys are gone, sit outside the
+# context Claude Code wants them in, or are still an earlier cs's Option+1 /
+# Option+2, and a file Claude Code cannot read either are warnings.
 _doctor_check_rotate_wrap_keys() {
     local file answer_file answer status state key action prefix retired bound=0 total=0 commands_bound=0
     file="$(_cs_keybindings_file)"
@@ -776,6 +776,7 @@ _doctor_check_rotate_wrap_keys() {
                         fi
                         ;;
                     free) _doctor_warn "Rotate/wrap keys: $key not bound (run cs -update to bind it)" ;;
+                    misplaced) _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (run cs -update to move it)" ;;
                 esac
             done <<< "$status"
             # With /rotate and /wrap on their chords, the next update takes
