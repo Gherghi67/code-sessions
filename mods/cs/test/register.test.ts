@@ -26,8 +26,6 @@ let existing: Set<string>
 let files: Record<string, string>
 let sessionId: string
 let envVars: Record<string, string | undefined>
-// Every name `$.env.get` was asked for, in order.
-let envReads: string[]
 // The conversation's working directory, and where each path lands as `$.fs.stat` resolves it
 // (a path absent here does not exist).
 let cwdPath: string
@@ -69,7 +67,7 @@ const timer = (kind: 'after' | 'every') => (ms: number, fn: () => void) => {
   return { cancel: () => { t.cancelled = true } }
 }
 const $ = {
-  env: { get: async (name: string) => { envReads.push(name); return envVars[name] } },
+  env: { get: async (name: string) => envVars[name] },
   session: {
     usage: async () => ({ context: { percent } }),
     cwd: async () => cwdPath,
@@ -170,7 +168,6 @@ beforeEach(() => {
   // /work sits under the default sessions root by its own name, and the launch
   // said where cs is, as every cs launch does.
   envVars = { HOME: '/home', CS_BIN: '/opt/cs/bin/cs' }
-  envReads = []
   cwdPath = '/work'
   realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
   files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
