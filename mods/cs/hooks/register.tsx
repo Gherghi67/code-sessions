@@ -1256,7 +1256,8 @@ function fitRight(text: string, width: number): string {
 
 function firstLine(text: string): string {
   const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-  return line.length > RAIL_TEXT_CHARS ? `${line.slice(0, RAIL_TEXT_CHARS - 1)}\u2026` : line
+  const pieces = graphemes(line)
+  return pieces.length > RAIL_TEXT_CHARS ? `${pieces.slice(0, RAIL_TEXT_CHARS - 1).join('')}\u2026` : line
 }
 
 // Scrolls the transcript to prompt `i`'s row, from a press or a typed /cs,
