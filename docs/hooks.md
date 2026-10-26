@@ -625,8 +625,8 @@ The band's keys are chords, never a bare digit: a digit typed to answer a
 numbered question belongs to the prompt and to other mods. Each Button answers
 an engine action, `strip:jump1` for the rotate (or `/clear`) key,
 `strip:jump2` for the wrap key and `strip:jump3` for feed.
-The installer binds Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3
-to them in `keybindings.json` (see
+The installer binds Ctrl+X 1 and Ctrl+X 2
+to the first two in `keybindings.json` (see
 [configuration.md](configuration.md#rotate-and-wrap-keys)). The band spells,
 bold in the session's colour, whatever chord that file binds to each action,
 as written there, and nothing where none does; the Buttons still answer a click
@@ -635,18 +635,15 @@ chord bound after launch works at once (measured on 2.1.292). An encrypted
 session launched before `keybindings.json` existed gets the file at its next
 launch.
 
-The installer binds Ctrl+X 3 to `strip:jump3` for the feed key.
-It draws after wrap when cs-feed advertises `/feed`, while the lead session
-is idle, with no survey or armed handoff. The installer always installs and
-registers cs-feed, with no global install switch. The band reads the command list without running
-a status command. With all three chords bound, the shared prefix draws once:
-`ctrl+x 1 rotate   2 wrap   3 feed`. If the feed chord is unbound,
-its label still draws and the other keys keep their shared prefix:
-`ctrl+x 1 rotate   2 wrap   feed`. With a recorded yes to keybindings,
-`cs -update` binds the third chord without another prompt. A recorded no
-keeps the keys unbound. To change that answer, remove `~/.config/cs/option-keys`
-and run `cs -update` in a terminal, as described in
-[configuration.md](configuration.md#rotate-and-wrap-keys).
+The feed key draws after wrap when cs-feed advertises `/feed`, while the lead
+session is idle, with no survey or armed handoff. The installer does not deploy
+cs-feed, which is experimental (see [cs-feed](#cs-feed-not-a-hook-script--a-claude-code-mod)),
+so an installed band draws no feed key; this paragraph and the ones after it
+describe the band beside cs-feed. The band reads the command list without
+running a status command. The installer binds no chord to `strip:jump3`, so
+the feed label draws bare and the other keys keep their shared prefix:
+`ctrl+x 1 rotate   2 wrap   feed`. With a chord you bind to `strip:jump3`
+yourself, the shared prefix draws once: `ctrl+x 1 rotate   2 wrap   3 feed`.
 
 The key reads `feed` while off and `feed ✓` while on, the check in the
 session's colour. A press asks `cs -vet-session` before it writes, as the
@@ -1085,7 +1082,9 @@ instruction and tombstone, and `tests/test_migrate_claude_md.sh` covers migratio
 
 ## cs-feed (not a hook script — a Claude Code mod)
 
-`mods/cs-feed/` is a Claude Code function-hooks plugin, deployed and gated
+`mods/cs-feed/` is a Claude Code function-hooks plugin. It is experimental:
+the installer does not deploy it (it is not in `CS_MOD_FILES`), and its source
+and tests stay in this repository. It is gated
 the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
 `cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It restyles
 the chat: your messages, Claude's replies, and the tool calls between them
@@ -1095,7 +1094,8 @@ session is off, every hook passes Claude Code's own drawing through.
 
 The switch is per session:
 
-- `ctrl+x 3 feed`, the cs band's feed key (see the band above): this session
+- `feed`, the cs band's feed key (see the band above), pressed by a click,
+  Ctrl+X Tab, or a chord you bind to `strip:jump3`: this session
   on or off. It shows while the lead session is idle and no handoff is armed.
 - `/feed on` and `/feed off` do the same, typed. `/feed` is an immediate
   command, so it runs mid-turn too.

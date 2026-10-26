@@ -21,7 +21,7 @@ The installer deploys these components:
 | Hooks and wrap passes | `~/.claude/hooks/cs/`, including the memory and summary passes that `/wrap` reads. |
 | Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
 | Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
-| Mods | `cs`, `cs-update`, `cs-mermaid`, and `cs-feed` in `~/.claude/skills/`. |
+| Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
 | Spinner tip | `~/.claude/skills/cs/tips.json`, named in `settings.json` as `spinnerTipsOverride.tipsFile`. See [band settings](#band-settings). |
 
 See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
@@ -334,25 +334,25 @@ export CS_PLATFORM_OVERRIDE="linux"   # macos, wsl, or linux
 
 ## Rotate and wrap keys
 
-The installer offers, once per machine, to bind five keys in Claude Code's
+The installer offers, once per machine, to bind four keys in Claude Code's
 `keybindings.json` (in `$CLAUDE_CONFIG_DIR` when you set it, otherwise
 `~/.claude/keybindings.json`). Run inside an encrypted session, where
 `CLAUDE_CONFIG_DIR` is the session's `.cs/claude-config`, cs writes the shell's
 file instead, the one that session links:
 
 ```json
-{"bindings": [{"context": "Chat", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap"}}, {"context": "Global", "bindings": {"ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2", "ctrl+x 3": "strip:jump3"}}]}
+{"bindings": [{"context": "Chat", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap"}}, {"context": "Global", "bindings": {"ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2"}}]}
 ```
 
 The two command keys sit in the `Chat` context, where Claude Code wants a
 `command:` binding (2.1.310 warns of one in any other named context), and the
-three band chords in `Global`, where the `cs` mod reads them.
+two band chords in `Global`, where the `cs` mod reads them.
 
 Ctrl+X then R submits `/rotate`, and Ctrl+X then W submits `/wrap`, band or no
-band. Ctrl+X then 1, 2 or 3 presses the `cs` mod's band above the
-prompt: 1 its rotate key, or its `/clear` after arming a handoff, 2 its
-wrap key and 3 its feed key. The band has no key of its own, so a digit you type to answer a
-question never presses it; without these three chords it answers only a click or
+band. Ctrl+X then 1 or 2 presses the `cs` mod's band above the
+prompt: 1 its rotate key, or its `/clear` after arming a handoff, and 2 its
+wrap key. The band has no key of its own, so a digit you type to answer a
+question never presses it; without these two chords it answers only a click or
 Ctrl+X Tab. Text you are typing stays in the prompt. Claude Code drops a Ctrl+X that gets no second
 key within 3 seconds. The chords need no terminal setting. Ctrl+X 1 and
 Ctrl+X 2 reach the band only because Claude Code mounts no handler of its own
@@ -360,7 +360,7 @@ for `strip:jump1` and `strip:jump2` (measured on 2.1.291 and 2.1.292); a
 release that mounts one takes the chord from the band without a warning.
 
 - A yes merges the two command keys into the file's first `Chat` block and
-  the three chords into its first `Global` block (adding a block where there
+  the two chords into its first `Global` block (adding a block where there
   is none, and creating the file when there is none). A cs key that sits in a
   block of the other context, as an earlier cs put every key in `Global`, is
   moved into its own, and the install says so (`moved ctrl+x r, ctrl+x w to
@@ -382,7 +382,7 @@ release that mounts one takes the chord from the band without a warning.
   `no`; `$XDG_CONFIG_HOME/cs/option-keys` when you set that). After a `no` it
   never asks again. After a `yes`, every install and `cs -update` adds any of
   the keys nothing binds, so a machine that bound Ctrl+X R and Ctrl+X W before
-  gets Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 on its next update, without another
+  gets Ctrl+X 1 and Ctrl+X 2 on its next update, without another
   prompt. Claude Code picks the file up
   without a relaunch. An encrypted session launched before the file existed
   gets it at its next launch, when cs links it into the session.
@@ -425,7 +425,7 @@ one toast; the rest of the mod runs.
 
 ### Spinner tip
 
-Claude Code's spinner tips say how to turn on the prompt bars and the feed. The installer
+Claude Code's spinner tips say how to turn on the prompt bars. The installer
 names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
 
 ```json
@@ -466,17 +466,6 @@ instruction lives under `cs:mermaid-diagrams` in a cs session's `CLAUDE.local.md
 neither this toggle nor `.cs/local/disabled` removes it. To opt out of the
 instruction, delete its prose but keep the `<!-- cs:mermaid-diagrams -->`
 comment so migration does not add it again.
-
-The feed (the `cs-feed` mod) is a per-session switch, not a `/config` row: it
-has no `userConfig`, and nothing in `settings.json` turns it on or off. Each
-session keeps its choice in its own `.cs/local`: `.cs/local/feed` holds
-exactly `on\n` for on (anything else is off), and `.cs/local/feed-view` holds
-the view, one JSON object with `group`, `clear`, `keep`, `style`, `commands`,
-`after` and `hide`, then a newline (absent, it reads as `clean`). Turn it on
-with the band's feed key (`ctrl+x 3`) or `/feed on`, and pick a view with
-`/feed clean`, `/feed normal` or one setting at a time; `/feed raw` turns it
-off. Every write asks `cs -vet-session` first, so a session cs refuses
-changes nothing. See [hooks.md](hooks.md#cs-feed-not-a-hook-script--a-claude-code-mod).
 
 ## Environment variables cs sets for you
 

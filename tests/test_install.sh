@@ -3754,10 +3754,10 @@ test_rewake_labels_do_not_claim_the_wake_is_mail() {
 # ============================================================================
 
 # cs's blocks, as `jq -c` prints them: the two command keys in the Chat
-# context, where Claude Code wants command bindings, and the three band
+# context, where Claude Code wants command bindings, and the two band
 # chords in Global, where the cs mod reads them.
 _OK_CHAT_BLOCK='{"context":"Chat","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}}'
-_OK_GLOBAL_BLOCK='{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}'
+_OK_GLOBAL_BLOCK='{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}'
 _OK_CS_BLOCKS="$_OK_CHAT_BLOCK,$_OK_GLOBAL_BLOCK"
 
 _need_expect() {
@@ -3801,7 +3801,7 @@ test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_blocks() {
 }
 
 # 2. The user's existing Chat block takes the two command keys and their
-# existing Global block the three chords, each beside the user's own; every
+# existing Global block the two chords, each beside the user's own; every
 # other key is kept, and no second block of either context appears.
 test_rotate_wrap_keys_merge_into_the_existing_blocks() {
     _need_expect || return $?
@@ -3811,7 +3811,7 @@ test_rotate_wrap_keys_merge_into_the_existing_blocks() {
         > "$home/.claude/keybindings.json"
     _install_answering_rotate_wrap_keys ok-merge "$home" y \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq '{"$schema":"https://example.com/kb.json","bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"$schema":"https://example.com/kb.json","bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$home/.claude/keybindings.json" 2>&1)" \
         "the command keys join the user's Chat block, the chords their Global block, and nothing else changes" || return 1
 }
@@ -3826,7 +3826,7 @@ test_rotate_wrap_keys_never_overwrite_a_user_binding() {
         > "$home/.claude/keybindings.json"
     _install_answering_rotate_wrap_keys ok-conflict "$home" y \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$home/.claude/keybindings.json" 2>&1)" \
         "ctrl+x r keeps the user's action and the other keys are added" || return 1
     grep -q 'ctrl+x r.*chat:submit' "$TEST_TMPDIR/ok-conflict.out" \
@@ -3911,7 +3911,7 @@ test_rotate_wrap_keys_reinstall_after_yes_is_idempotent() {
     env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$home" bash "$INSTALL_SH" < /dev/null > /dev/null 2>&1 \
         || { echo "  FAIL: the third install exited non-zero"; return 1; }
     cmp -s "$TEST_TMPDIR/again.after1" "$kb" || { echo "  FAIL: a re-install changed the file"; return 1; }
-    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+t\":\"app:toggleTodos\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\"}},$_OK_CHAT_BLOCK]}" \
+    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+t\":\"app:toggleTodos\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\"}},$_OK_CHAT_BLOCK]}" \
         "$(jq -c . "$kb" 2>&1)" "one block per context, each key once" || return 1
 }
 
@@ -3964,7 +3964,7 @@ test_rotate_wrap_keys_uninstall_drops_only_the_blocks_it_empties() {
     kb="$home/.claude/keybindings.json"
     mkdir -p "$home/.claude" "$home/.config/cs"
     printf 'yes\n' > "$home/.config/cs/option-keys"
-    printf '%s\n' "{\"bindings\":[$_OK_CHAT_BLOCK,{\"context\":\"Global\",\"bindings\":{\"ctrl+t\":\"app:toggleTodos\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\"}}]}" > "$kb"
+    printf '%s\n' "{\"bindings\":[$_OK_CHAT_BLOCK,{\"context\":\"Global\",\"bindings\":{\"ctrl+t\":\"app:toggleTodos\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\"}}]}" > "$kb"
     printf 'y\n' | env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$home" "$CS_BIN" -uninstall > /dev/null 2>&1 \
         || { echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
     assert_eq '{"bindings":[{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos"}}]}' \
@@ -4005,7 +4005,7 @@ test_rotate_wrap_keys_write_through_a_symlink() {
     _install_answering_rotate_wrap_keys ok-link "$home" y \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     [ -L "$home/.claude/keybindings.json" ] || { echo "  FAIL: the link was replaced by a file"; return 1; }
-    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+t\":\"app:toggleTodos\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\"}},$_OK_CHAT_BLOCK]}" \
+    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+t\":\"app:toggleTodos\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\"}},$_OK_CHAT_BLOCK]}" \
         "$(jq -c . "$target" 2>&1)" "the link's target takes the keys" || return 1
     assert_eq "600" "$(_file_mode "$target")" "the target keeps its mode" || return 1
 }
@@ -4053,9 +4053,9 @@ test_rotate_wrap_keys_replace_cs_option_keys() {
     kb="$home/.claude/keybindings.json"
     _install_with_recorded_yes ok-mig "$home" '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","alt+1":"command:rotate","alt+2":"command:wrap"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$kb" 2>&1)" "alt+1 and alt+2 are gone and the chords are bound" || return 1
-    grep -qxF "   · Rotate/wrap keys: bound ctrl+x r, ctrl+x w, ctrl+x 1, ctrl+x 2, ctrl+x 3 in $kb (replacing cs's alt+1, alt+2)" \
+    grep -qxF "   · Rotate/wrap keys: bound ctrl+x r, ctrl+x w, ctrl+x 1, ctrl+x 2 in $kb (replacing cs's alt+1, alt+2)" \
         "$TEST_TMPDIR/ok-mig.out" || { echo "  FAIL: the replacement line is missing or reworded"; return 1; }
 }
 
@@ -4066,7 +4066,7 @@ test_rotate_wrap_keys_migration_keeps_a_users_alt_key() {
     kb="$home/.claude/keybindings.json"
     _install_with_recorded_yes ok-mig2 "$home" '{"bindings":[{"context":"Global","bindings":{"alt+1":"chat:submit","alt+2":"command:wrap"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"alt+1\":\"chat:submit\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\"}},$_OK_CHAT_BLOCK]}" \
+    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"alt+1\":\"chat:submit\",\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\"}},$_OK_CHAT_BLOCK]}" \
         "$(jq -c . "$kb" 2>&1)" "the user's alt+1 stays, cs's alt+2 goes" || return 1
 }
 
@@ -4088,7 +4088,7 @@ test_rotate_wrap_keys_never_shadow_a_users_ctrl_x() {
         _install_with_recorded_yes "$label" "$home" "$doc" \
             || { echo "  FAIL: install.sh exited non-zero ($label)"; return 1; }
         printf '%s\n' "$doc" | cmp -s - "$kb" || { echo "  FAIL: the file was changed ($label)"; return 1; }
-        grep -qF "Rotate/wrap keys: ctrl+x r, ctrl+x w, ctrl+x 1, ctrl+x 2, ctrl+x 3 would shadow ctrl+x, which is bound to chat:externalEditor in $kb; left as they are." \
+        grep -qF "Rotate/wrap keys: ctrl+x r, ctrl+x w, ctrl+x 1, ctrl+x 2 would shadow ctrl+x, which is bound to chat:externalEditor in $kb; left as they are." \
             "$TEST_TMPDIR/$label.out" || { echo "  FAIL: no warning naming the chords and the ctrl+x they would shadow ($label)"; return 1; }
         assert_eq "1" "$(grep -c 'would shadow' "$TEST_TMPDIR/$label.out")" "one shadow warning for the file ($label)" || return 1
     done
@@ -4099,7 +4099,7 @@ test_rotate_wrap_keys_never_shadow_a_users_ctrl_x() {
 test_rotate_wrap_keys_take_back_option_keys_beside_bound_chords() {
     local home="$TEST_TMPDIR/home-ok-left" kb
     kb="$home/.claude/keybindings.json"
-    _install_with_recorded_yes ok-left "$home" "{\"bindings\":[$_OK_CHAT_BLOCK,{\"context\":\"Global\",\"bindings\":{\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\",\"alt+1\":\"command:rotate\",\"alt+2\":\"command:wrap\"}}]}" \
+    _install_with_recorded_yes ok-left "$home" "{\"bindings\":[$_OK_CHAT_BLOCK,{\"context\":\"Global\",\"bindings\":{\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"alt+1\":\"command:rotate\",\"alt+2\":\"command:wrap\"}}]}" \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     assert_eq "{\"bindings\":[$_OK_CS_BLOCKS]}" \
         "$(jq -c . "$kb" 2>&1)" "only the chords are left" || return 1
@@ -4114,7 +4114,7 @@ test_rotate_wrap_keys_one_conflict_keeps_option_keys() {
     kb="$home/.claude/keybindings.json"
     _install_with_recorded_yes ok-half "$home" '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit"}},{"context":"Global","bindings":{"alt+1":"command:rotate","alt+2":"command:wrap"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"alt+1":"command:rotate","alt+2":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"alt+1":"command:rotate","alt+2":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$kb" 2>&1)" "the free chords are added and the alt keys stay" || return 1
 }
 
@@ -4132,13 +4132,13 @@ test_rotate_wrap_keys_read_keys_as_claude_code_does() {
     home="$TEST_TMPDIR/home-ok-spell2"; kb="$home/.claude/keybindings.json"
     _install_with_recorded_yes ok-spell2 "$home" '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X  R":"command:rotate"}},{"context":"Global","bindings":{"Option+1":"command:rotate","OPT+2":"command:wrap"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero (Option+1)"; return 1; }
-    assert_eq '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X  R":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X  R":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$kb" 2>&1)" "Option+1 / OPT+2 are taken back and Ctrl+X  R counts as bound" || return 1
 
     home="$TEST_TMPDIR/home-ok-spell3"; kb="$home/.claude/keybindings.json"
     _install_with_recorded_yes ok-spell3 "$home" '{"bindings":[{"context":"Global","bindings":{"ctrl+x":null}}]}' \
         || { echo "  FAIL: install.sh exited non-zero (null)"; return 1; }
-    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+x\":null,\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\"}},$_OK_CHAT_BLOCK]}" \
+    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+x\":null,\"ctrl+x 1\":\"strip:jump1\",\"ctrl+x 2\":\"strip:jump2\"}},$_OK_CHAT_BLOCK]}" \
         "$(jq -c . "$kb" 2>&1)" "a null ctrl+x leaves every chord free" || return 1
 }
 
@@ -4150,22 +4150,22 @@ test_rotate_wrap_keys_band_chord_conflict_still_retires_option_keys() {
     kb="$home/.claude/keybindings.json"
     _install_with_recorded_yes ok-band "$home" '{"bindings":[{"context":"Global","bindings":{"ctrl+x 1":"app:redraw","alt+1":"command:rotate","alt+2":"command:wrap"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+x 1\":\"app:redraw\",\"ctrl+x 2\":\"strip:jump2\",\"ctrl+x 3\":\"strip:jump3\"}},$_OK_CHAT_BLOCK]}" \
+    assert_eq "{\"bindings\":[{\"context\":\"Global\",\"bindings\":{\"ctrl+x 1\":\"app:redraw\",\"ctrl+x 2\":\"strip:jump2\"}},$_OK_CHAT_BLOCK]}" \
         "$(jq -c . "$kb" 2>&1)" "the user's ctrl+x 1 stays, the alt keys go, the free chords are bound" || return 1
-    grep -qxF "   · Rotate/wrap keys: bound ctrl+x r, ctrl+x w, ctrl+x 2, ctrl+x 3 in $kb (replacing cs's alt+1, alt+2)" \
+    grep -qxF "   · Rotate/wrap keys: bound ctrl+x r, ctrl+x w, ctrl+x 2 in $kb (replacing cs's alt+1, alt+2)" \
         "$TEST_TMPDIR/ok-band.out" || { echo "  FAIL: the replacement line is missing or reworded"; return 1; }
 }
 
 # 19. A file an earlier cs wrote, every key in one Global block: Claude Code
 # wants command bindings in the Chat context, so an install moves the two
-# command keys into the user's Chat block, leaves the three chords and every
+# command keys into the user's Chat block, leaves the two chords and every
 # user key where they are, and says what moved.
 test_rotate_wrap_keys_move_command_keys_to_the_chat_context() {
     local home="$TEST_TMPDIR/home-ok-move" kb
     kb="$home/.claude/keybindings.json"
-    _install_with_recorded_yes ok-move "$home" '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    _install_with_recorded_yes ok-move "$home" '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"ctrl+e":"chat:externalEditor","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+t":"app:toggleTodos","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$kb" 2>&1)" "the command keys move to the Chat block; the chords and the user's keys stay" || return 1
     grep -qxF "   · Rotate/wrap keys: moved ctrl+x r, ctrl+x w to the Chat context in $kb" \
         "$TEST_TMPDIR/ok-move.out" || { echo "  FAIL: the move line is missing or reworded"; return 1; }
@@ -4176,7 +4176,7 @@ test_rotate_wrap_keys_move_command_keys_to_the_chat_context() {
 test_rotate_wrap_keys_move_is_idempotent() {
     local home="$TEST_TMPDIR/home-ok-move2" kb
     kb="$home/.claude/keybindings.json"
-    _install_with_recorded_yes ok-move2a "$home" '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    _install_with_recorded_yes ok-move2a "$home" '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     assert_eq "{\"bindings\":[$_OK_GLOBAL_BLOCK,$_OK_CHAT_BLOCK]}" "$(jq -c . "$kb" 2>&1)" \
         "the command keys get a Chat block of their own" || return 1
@@ -4195,7 +4195,7 @@ test_rotate_wrap_keys_move_is_idempotent() {
 test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflict() {
     local home="$TEST_TMPDIR/home-ok-move-conflict" kb doc
     kb="$home/.claude/keybindings.json"
-    doc='{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}'
+    doc='{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}'
     _install_with_recorded_yes ok-move-conflict "$home" "$doc" \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     printf '%s\n' "$doc" | cmp -s - "$kb" || { echo "  FAIL: the file was changed"; return 1; }
@@ -4213,9 +4213,9 @@ test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflict() {
 test_rotate_wrap_keys_move_never_doubles_a_key_its_context_holds() {
     local home="$TEST_TMPDIR/home-ok-move-spelt" kb
     kb="$home/.claude/keybindings.json"
-    _install_with_recorded_yes ok-move-spelt "$home" '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X R":"command:rotate"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    _install_with_recorded_yes ok-move-spelt "$home" '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X R":"command:rotate"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_eq '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X R":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X R":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' \
         "$(jq -c . "$kb" 2>&1)" "the Chat block keeps Ctrl+X R once and gains only ctrl+x w; the Global copy goes" || return 1
     grep -qxF "   · Rotate/wrap keys: bound ctrl+x w and moved ctrl+x r to the Chat context in $kb" \
         "$TEST_TMPDIR/ok-move-spelt.out" || { echo "  FAIL: the move line is missing or reworded"; return 1; }

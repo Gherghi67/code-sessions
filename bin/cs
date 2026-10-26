@@ -177,6 +177,8 @@ CS_SKILL_FILES=(
 
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
+# mods/cs-feed is experimental and not deployed, so the cs band, which draws
+# its feed key only beside cs-feed's /feed, draws none.
 CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
@@ -192,16 +194,6 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
-    cs-feed/.claude-plugin/plugin.json
-    cs-feed/hooks/hooks.json
-    cs-feed/hooks/draw.tsx
-    cs-feed/hooks/register.tsx
-    cs-feed/hooks/session.ts
-    cs-feed/hooks/settings.ts
-    cs-feed/hooks/state.d.ts
-    cs-feed/hooks/transcript.ts
-    cs-feed/hooks/verdict.ts
-    cs-feed/hooks/words.ts
 )
 
 # The cs tips file as install.sh names it in settings.json's
@@ -290,15 +282,16 @@ _strip_hook_registration() {
 }
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
-# "command:<name>" actions, which submit /<name>. Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 bind
+# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear), wrap and feed keys. KEEP IN SYNC with
-# ROTATE_ACTION, WRAP_ACTION and FEED_ACTION in mods/cs/hooks/register.tsx. install.sh
+# band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
+# WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
+# cs-feed is not deployed (CS_MOD_FILES above). install.sh
 # asks once per machine and binds each in the context block Claude Code wants
 # it in (home, below): the command keys in Chat, the chords in Global, where
 # the mod reads them. cs -uninstall takes back only the keys that still hold
 # these values, and cs -doctor reports them.
-CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}'
+CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
 # iTerm2 selects panes with Option+number, so there they never reach Claude
@@ -11967,7 +11960,7 @@ _doctor_check_rotate_wrap_keys() {
         if [ -n "$retired" ]; then
             _doctor_warn "Rotate/wrap keys: $retired still hold cs's earlier bindings in $file (run cs -update to remove them)"
         elif [ "$misplaced" = 0 ]; then
-            _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1, Ctrl+X 2 and Ctrl+X 3 press the cs band)"
+            _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)"
         fi
         return
     fi
