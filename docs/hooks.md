@@ -495,7 +495,7 @@ directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 or not a number, the band follows the bar's own warn band
 (`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
 the prompt, two columns in where Claude Code draws its own footer, with a
-blank line above it, in two zones. At the left, after a mark, stand the
+blank line above it, in two zones. At the left stand the
 actions, what a key or a press does now; at the line's right edge stand the
 words that say what the session is, then the prompt the rail names, then the
 rail of prompts, ending in the line's last cell. Items in a zone stand three cells apart, and the line's free
@@ -503,7 +503,7 @@ cells fall between the zones, never fewer than three, so the right edge holds
 still while the actions come and go. Where the keys'
 chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
 dim, and each key's own last word stands beside its label in the session's
-colour: `⣿ ctrl+x 1 rotate   2 wrap   #4 say four   ╷╷╷┃` on the narrowest line
+colour: `ctrl+x 1 rotate   2 wrap   #4 say four   ╷╷╷┃` on the narrowest line
 that holds it. Chords that differ are spelled whole. In order, and each
 only when it applies, the actions are `rotate` (or `/clear now` once a
 handoff is armed, then `in Ns`, the armed handoff's count, which leaves the
@@ -512,20 +512,9 @@ and the queue's start key, `▤ start N`; the right edge carries the features
 word, `finishing <task> · gate <elapsed>` while a `/finish` gate runs, and
 the two counts below. The band
 paints nothing from the measured background (`CS_TERM_BG_RGB`) and reads no
-caps answer; only the amber of the count and of the mark still reads the
+caps answer; only the amber of the count still reads the
 measurement. The percentage itself stays on the status bar: the band does not
 repeat it.
-
-The mark is one `⣿` whose colour says what is due. Blue says a `/finish`
-gate runs, or the cs queue holds tasks and is armed or draining. Amber says a
-rotation is due: the context is at or past the band's threshold, even while a
-turn runs and the keys wait for it to end, or a handoff is armed. Green says
-neither. A running gate or queue outranks a due rotation. Blue and green are the session palette's (Claude Code's
-`/color` values, drawn on light and dark alike); the amber is the status
-bar's, pivoted on the measured background and then on `CS_TERM_THEME` as the
-count's is. The mark and its space take two cells from what the rail and the
-named prompt are left. It draws on every line the band draws, never on a line
-of its own, and not while a survey holds the band.
 
 The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
 off by default; see [configuration.md](configuration.md#band-settings)).
@@ -563,7 +552,7 @@ of fourteen prompts named under `cs.bandPrompt` `read` and `cs.bandBars` at 5. T
 least: the named tick alone, the older prompts folded into `…N` before it
 and the newer into `M…` after it, and three cells before that. The words fit what that leaves, so the right edge's
 words drop and shorten and the keys lose their words before the rail goes:
-`⣿ 1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-au…   …13 ┃`
+`1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-auth…   …13 ┃`
 on a 75-column line with fourteen prompts, every action, the features word
 and `mail 1`: the mail word drops, the shared prefix goes and the features
 word shortens. A right-edge word never shortens past its head, the words
@@ -618,8 +607,8 @@ stands alone), and `mail N`, the `.json` files in the session's mailbox
 `mail/new/` that `cs -msg` has not read yet. Both are read behind `.cs/private`
 in an encrypted session and in `.cs/local` otherwise, each time the band
 draws. Every word takes its terminal cells from what the prompt's name is
-left: `⣿ ▤ queue 2   mail 1   #4 say four   ╷╷╷┃` on the narrowest line that
-holds it; a wider line puts its free cells between the mark and the counts.
+left: `▤ queue 2   mail 1   #4 say four   ╷╷╷┃` on the narrowest line that
+holds it; a wider line puts its free cells before the counts.
 The task in progress is
 Claude Code's own task list's to show, above the band; the band does not
 repeat it.
@@ -645,9 +634,9 @@ It draws after wrap when cs-feed advertises `/feed`, while the lead session
 is idle, with no survey or armed handoff. The installer always installs and
 registers cs-feed, with no global install switch. The band reads the command list without running
 a status command. With all three chords bound, the shared prefix draws once:
-`⣿ ctrl+x 1 rotate   2 wrap   3 feed`. If the feed chord is unbound,
+`ctrl+x 1 rotate   2 wrap   3 feed`. If the feed chord is unbound,
 its label still draws and the other keys keep their shared prefix:
-`⣿ ctrl+x 1 rotate   2 wrap   feed`. With a recorded yes to keybindings,
+`ctrl+x 1 rotate   2 wrap   feed`. With a recorded yes to keybindings,
 `cs -update` binds the third chord without another prompt. A recorded no
 keeps the keys unbound. To change that answer, remove `~/.config/cs/option-keys`
 and run `cs -update` in a terminal, as described in
