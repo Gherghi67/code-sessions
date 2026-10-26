@@ -3467,6 +3467,9 @@ test('an entry the band has no zone for is a programmer error, named', () => {
 // each combination meets every variant.
 // Where the rail is on and every action still fits a line that holds the
 // rail's least, `…13 ┃` and the three cells before it, the named bar draws.
+// A sweep draws 82,432 lines: about 20 s on a Mac, three times that and more
+// on a CI macOS runner. The limit only catches a hang.
+const SWEEP_TIMEOUT = 180000
 const ACTION_KEYS = ['cs-rotate', 'cs-countdown', 'cs-wrap', 'cs-feed', 'cs-queue']
 const RAIL_LEAST = 8
 test('every combination of entries at every width from 40 to 200 draws one row no wider than the line, and keeps the rail whenever the actions leave it room', () => {
@@ -3505,7 +3508,7 @@ test('every combination of entries at every width from 40 to 200 draws one row n
   // The rail is on at 80 widths; at 240 of their 40960 lines beside its
   // least the words lose an action the whole line keeps, and there it may go.
   expect(railKept).toBe(80 * 512 - 240)
-}, 60000)
+}, SWEEP_TIMEOUT)
 
 // The same lines with cs.bandPrompt read, the named prompt anywhere: wherever
 // the rail draws, its named bar draws, and wherever every action fits a line
@@ -3543,7 +3546,7 @@ test('with cs.bandPrompt read, every combination of entries at every width from 
     }
   }
   expect(railed).toBeGreaterThan(0)
-}, 60000)
+}, SWEEP_TIMEOUT)
 
 // The rail with cs.bandPrompt read at 120 columns and on narrow lines: the
 // drawn bars are the newest that fit, slid back only as far as the named
