@@ -1577,7 +1577,7 @@ test('on a dark terminal the ramp takes the bar\'s dark inks', async () => {
   await startGrace()
   expect(countText(await band()).props.color).toBe('rgb(8,145,178)')
   await tick(10)
-  expect(countText(await band()).props.color).toBe('rgb(253,230,138)')
+  expect(countText(await band()).props.color).toBe('rgb(251,191,36)')
   await tick(6)
   expect(countText(await band()).props.color).toBe('rgb(255,69,58)')
 })
@@ -2999,13 +2999,13 @@ test('the queue word stands at the left after the key words, a dim middle dot be
 test('the queue glyph takes the status line\'s amber, light on a dark terminal and dark on a light one, on the start key and the queue word alike', async () => {
   queueTasks(2)
   envVars.CS_TERM_THEME = 'dark'
-  expect(queueKey(await band()).children).toEqual([{ type: 'Text', props: { color: 'rgb(253,230,138)' }, children: ['▤'] }, ' run 2 queued tasks'])
+  expect(queueKey(await band()).children).toEqual([{ type: 'Text', props: { color: 'rgb(251,191,36)' }, children: ['▤'] }, ' run 2 queued tasks'])
   // A measured light background outranks the theme's name.
   envVars.CS_TERM_BG_RGB = '252;247;229'
   expect(queueKey(await band()).children).toEqual([{ type: 'Text', props: { color: 'rgb(180,83,9)' }, children: ['▤'] }, ' run 2 queued tasks'])
   delete envVars.CS_TERM_BG_RGB
   files['/work/.cs/local/queue.state'] = 'draining\n'
-  expect(queueWordInks(await band())).toEqual([[{ color: 'rgb(253,230,138)' }, '▤'], [{ dimColor: true }, ' queue 2 running']])
+  expect(queueWordInks(await band())).toEqual([[{ color: 'rgb(251,191,36)' }, '▤'], [{ dimColor: true }, ' queue 2 running']])
 })
 
 // cs delivers each mail as one file in the mailbox's new/, where it stays

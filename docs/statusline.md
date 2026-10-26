@@ -174,7 +174,7 @@ Color depth is detected per render, in priority order: `FORCE_COLOR=0`, `NO_COLO
 | `brand` | the mark | `217;119;87` | 173 | 33 |
 | `brandshade` | the mark while the attention marker exists | `184;101;74` | 167 | 31 |
 | `periwinkle` | the subagent rows' model capsule | light: `76;29;149`; dark: `196;181;253` | 55/147 | 35/95 |
-| `amber` | hot numbers, notes and mail counts | light: `180;83;9`; dark: `253;230;138` — light/dark by the measured `CS_TERM_BG_RGB`, by theme only when unmeasured | 130/221 | 33/93 |
+| `amber` | hot numbers, notes and mail counts | light: `180;83;9`; dark: `251;191;36` — light/dark by the measured `CS_TERM_BG_RGB`, by theme only when unmeasured | 130/214 | 33/93 |
 | `crit` | inverted capsule fill | light: `215;0;21`; dark: `255;69;58` | 160/203 | 31 |
 | `critink` | inverted capsule text | `255;255;255` on both themes | 231 | 97 |
 | `effort-*` | the effort word | Claude Code's /effort picker colours, pixel-sampled; lifted a third toward white on dark; `effort-max-1..3` are the gradient stops | 136/179, 28/71, 63/105, 93/135, 110·140·175 / 153·183·218 | 33, 32, 34, 35, 36·35·95 |

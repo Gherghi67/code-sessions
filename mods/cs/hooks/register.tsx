@@ -28,7 +28,7 @@ export const SESSION_PALETTE: Record<string, string> = {
   purple: '130,125,189', orange: '217,119,87', pink: '196,102,134', cyan: '8,145,178',
 }
 export const AMBER_LIGHT = '180,83,9'
-export const AMBER_DARK = '253,230,138'
+export const AMBER_DARK = '251,191,36'
 export const CRIT_LIGHT = '215,0,21'
 export const CRIT_DARK = '255,69,58'
 // Seconds left at which the count turns amber, and then crit (below CRIT_AT).

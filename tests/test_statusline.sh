@@ -3323,7 +3323,7 @@ test_sgr_ink_tokens_truecolor_dark() {
     _load_sl_functions
     LEVEL=truecolor; SL_THEME=dark; _SURFACE_RGB="46;48;50"
     _sgr 38 ink2;    assert_eq "38;2;160;161;162" "$_SGR" "ink2 dark" || return 1
-    _sgr 38 amber;   assert_eq "38;2;253;230;138"  "$_SGR" "amber ink dark" || return 1
+    _sgr 38 amber;   assert_eq "38;2;251;191;36"  "$_SGR" "amber ink dark" || return 1
     _sgr 48 crit;    assert_eq "48;2;255;69;58"   "$_SGR" "crit fill dark" || return 1
     _sgr 38 critink; assert_eq "38;2;255;255;255" "$_SGR" "crit ink is white on dark too" || return 1
 }
@@ -3336,14 +3336,14 @@ test_sgr_amber_follows_surface_luminance_not_the_theme() {
     LEVEL=truecolor; SL_THEME=dark; CS_TERM_BG_RGB="253;246;227"
     _sgr 38 amber; assert_eq "38;2;180;83;9" "$_SGR" "light background takes the light amber under a dark theme" || return 1
     SL_THEME=light; CS_TERM_BG_RGB="30;30;30"
-    _sgr 38 amber; assert_eq "38;2;253;230;138" "$_SGR" "dark background takes the dark amber under a light theme" || return 1
+    _sgr 38 amber; assert_eq "38;2;251;191;36" "$_SGR" "dark background takes the dark amber under a light theme" || return 1
     SL_THEME=dark; CS_TERM_BG_RGB=""
-    _sgr 38 amber; assert_eq "38;2;253;230;138" "$_SGR" "no measurement: the theme decides" || return 1
+    _sgr 38 amber; assert_eq "38;2;251;191;36" "$_SGR" "no measurement: the theme decides" || return 1
     # A mid-grey terminal (luminance between the shading pivot and the ink
-    # pivot) gets white ink on its surface, so amber must take the pale shade
+    # pivot) gets white ink on its surface, so amber must take the dark-theme shade
     # there too: the two inks flip at the same brightness.
     SL_THEME=light; CS_TERM_BG_RGB="128;128;128"
-    _sgr 38 amber; assert_eq "38;2;253;230;138" "$_SGR" "mid-grey background: pale amber, like white ink" || return 1
+    _sgr 38 amber; assert_eq "38;2;251;191;36" "$_SGR" "mid-grey background: the dark-theme amber, like white ink" || return 1
 }
 
 test_sgr_ink_follows_surface_luminance() {
@@ -3373,7 +3373,7 @@ test_sgr_ink_tokens_256_and_basic() {
     _sgr 38 ink;        assert_eq "38;5;255" "$_SGR" "ink 256 dark" || return 1
     _sgr 38 ink2;    assert_eq "38;5;250" "$_SGR" "ink2 256 dark" || return 1
     _sgr 38 periwinkle; assert_eq "38;5;147" "$_SGR" "periwinkle 256 dark" || return 1
-    _sgr 38 amber;   assert_eq "38;5;221" "$_SGR" "amber 256 dark" || return 1
+    _sgr 38 amber;   assert_eq "38;5;214" "$_SGR" "amber 256 dark" || return 1
     _sgr 48 crit;    assert_eq "48;5;203" "$_SGR" "crit 256 dark" || return 1
     _sgr 38 critink; assert_eq "38;5;231" "$_SGR" "critink 256 dark is white" || return 1
     LEVEL=basic; SL_THEME=light
@@ -5185,7 +5185,7 @@ test_band_amber_reading_is_ink() {
     local out
     out=$(run_sl "$(band_fixture 45 23.5 41.2)")
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;41;44;65;38;2;253;230;138;1m4" "the ctx number at warn is amber ink on the gradient" || return 1
+        "${ESC_}[48;2;41;44;65;38;2;251;191;36;1m4" "the ctx number at warn is amber ink on the gradient" || return 1
     assert_output_contains_f "$out" \
         "%${ESC_}[48;2;40;43;63;38;2;150;165;200;22m " "the joiner follows on the next cell" || return 1
     assert_eq 80 "$(band_cells "$out")" "the amber cells are counted" || return 1
@@ -5295,7 +5295,7 @@ test_band_256_is_a_flat_fill() {
     assert_eq 80 "$(band_cells "$out")" "a flat band is 80 cells" || return 1
     assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
     assert_eq "[48;5;237m" "$(band_first_cell "$out")" "the band is the 256 surface" || return 1
-    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;221;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
+    assert_output_contains_f "$out" "${ESC_}[48;5;237;38;5;214;1m45%" "the amber number in 256 tokens on the flat fill" || return 1
     assert_output_contains_f "$out" "${ESC_}[48;5;203;38;5;231;1m ◷ 5h 95% ⋮ ◶ wk 60% " "the crit island in 256 tokens" || return 1
 }
 
@@ -5490,7 +5490,7 @@ test_quiet_amber_reading_is_bold_amber() {
     quiet_env
     local out
     out=$(run_sl "$(band_fixture 45 23.5 41.2)")
-    assert_output_contains_f "$out" "${ESC_}[0;38;2;253;230;138;1m45%" "ctx at warn is bold pale amber" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;251;191;36;1m45%" "ctx at warn is bold dark-theme amber" || return 1
     export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
     out=$(run_sl "$(band_fixture 45 23.5 41.2)")
     assert_output_contains_f "$out" "${ESC_}[0;38;2;180;83;9;1m45%" "ctx at warn on cream is bold amber" || return 1
