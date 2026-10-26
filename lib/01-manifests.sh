@@ -142,6 +142,7 @@ CS_SKILL_FILES=(
 # mods/ outside these and their test/ is in CS_MOD_FILES below
 # (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
 # scan skips them.
+# shellcheck disable=SC2034  # read by cs -doctor and tests/test_install.sh
 CS_MODS_KEPT_OUT=(
     cs-feed
 )
