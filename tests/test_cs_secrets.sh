@@ -5580,6 +5580,23 @@ test_secrets_every_other_sibling_write_waits_for_the_live_feature() {
     assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
 }
 
+# A new name passes a live feature only from a sibling: another session's
+# set waits for it whatever the name.
+test_secrets_another_session_adding_a_name_waits_for_a_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set NEW_KEY 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the write from sender exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
 # A volume that ignores letter case keeps receiver's store under RECEIVER too,
 # so a write to RECEIVER waits for receiver's live feature on every route.
 test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature() {
@@ -5706,6 +5723,7 @@ run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
 run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
 run_test test_secrets_a_sibling_name_exporting_as_a_held_one_waits_for_the_live_feature
 run_test test_secrets_every_other_sibling_write_waits_for_the_live_feature
+run_test test_secrets_another_session_adding_a_name_waits_for_a_live_feature
 run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
 run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
 run_test test_secrets_writes_to_a_base_not_held_by_another_base_live_feature
