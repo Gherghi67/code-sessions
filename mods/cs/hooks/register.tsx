@@ -1,7 +1,7 @@
 /* @jsxRuntime classic */
 /* @jsx h */
 /* @jsxFrag Fragment */
-// ABOUTME: cs mod: keys above the prompt, after a mark whose colour says what is due: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
+// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
 // ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read heavy; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
@@ -52,26 +52,6 @@ export function amberColor(bg: string | undefined, theme: string | undefined): s
   const light = measured ? 2126 * rgb[0] + 7152 * rgb[1] + 722 * rgb[2] >= 1530000 : theme !== 'dark'
   return `rgb(${light ? AMBER_LIGHT : AMBER_DARK})`
 }
-
-// What the band's mark says is due, highest precedence first: a /finish gate
-// or the cs queue is running, a rotation is due (context past the band's
-// threshold, or a handoff armed), or nothing is.
-export type BandState = 'running' | 'due' | 'clear'
-
-export function bandState(facts: { gate: boolean; queueRunning: boolean; rotationDue: boolean }): BandState {
-  if (facts.gate || facts.queueRunning) return 'running'
-  return facts.rotationDue ? 'due' : 'clear'
-}
-
-// The mark's colour for each state, by the terminal's background and theme:
-// the session palette's blue and green, which Claude Code paints on light and
-// dark alike, and the bar's amber, which pivots as the count's does.
-export const MARK_INK: Record<BandState, (bg: string | undefined, theme: string | undefined) => string> = {
-  running: () => `rgb(${SESSION_PALETTE.blue})`,
-  due: amberColor,
-  clear: () => `rgb(${SESSION_PALETTE.green})`,
-}
-const MARK = '\u28ff'
 
 // A session colour name as an rgb() the engine paints, or undefined for a name
 // outside the palette (state hand-edited, or from a newer Claude Code).
@@ -606,13 +586,12 @@ export function register(on: On, options: PluginOptions) {
     const gate = await gateWord($)
     // The band draws on every redraw and asks cs nothing: it shows the last
     // answer cs gave (sessionVetted), which every step that acts asks afresh.
-    // A handoff armed is due mid-turn too; its clear key waits for the turn to end.
+    // An armed handoff makes the rotation due at any context.
     const handoff = lastRefusal === undefined && (await handoffArmed($))
     const armed = bandIdle && handoff
     const { context } = await $.session.usage()
     const percent = context.percent
-    // Due is said mid-turn too, while the keys wait for the turn to end.
-    let due = handoff || (percent !== undefined && percent >= (await threshold($)))
+    const due = handoff || (percent !== undefined && percent >= (await threshold($)))
     let rotating = bandIdle && due
     // Tasks queued and nothing running them, at any context, draw the start
     // key; an armed handoff draws its clear key alone. Tasks queued that the
@@ -638,7 +617,7 @@ export function register(on: On, options: PluginOptions) {
     // running gate already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
     let feedEligible = bandIdle && !armed
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
@@ -663,16 +642,8 @@ export function register(on: On, options: PluginOptions) {
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
     })
-    // A line with no words and no room for a tick draws nothing, and asks
-    // nothing more: a hook on env.get sees every read, so the mark's two reads
-    // wait until drawBand has a line to draw. With no words, drawBand's budget
-    // is the line less the inset and the mark.
     const rail = railing && bars !== undefined ? { prompts, named, denied, bars, jump: (i: number) => jumpTo($, i) } : undefined
-    const markCells = e.props.hasSurvey ? 0 : cellWidth(MARK) + 1
-    if (entries.length === 0 && (rail === undefined || railTicks(rail.prompts.length, e.props.bodyColumns - 2 - markCells, rail.bars, rail.named) === undefined)) return drawn
-    const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
-    const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
-    return drawBand({ drawn, entries, chords, own, markColor, hasSurvey: e.props.hasSurvey, bodyColumns: e.props.bodyColumns, surface: e.surface, rail }, { Box, Text, Button })
+    return drawBand({ drawn, entries, chords, own, bodyColumns: e.props.bodyColumns, surface: e.surface, rail }, { Box, Text, Button })
   })
 
   // A rail tick never takes the band's focus ring: the ring draws as an
@@ -686,14 +657,12 @@ export function register(on: On, options: PluginOptions) {
 
 // What the band's line is drawn from, as the AbovePrompt handler read it: the
 // engine's own tree, the entries, the bound chords by action, the session
-// colour, the mark's ink, and the rail when cs.bandPrompts draws one.
+// colour, and the rail when cs.bandPrompts draws one.
 export type BandView = {
   drawn: RenderElement
   entries: BandEntry[]
   chords: Record<string, string>
   own: string | undefined
-  markColor: string
-  hasSurvey: boolean
   bodyColumns: number
   surface: RenderSurface
   rail?: { prompts: Prompt[]; named: number; denied: Set<string>; bars: number; jump: (i: number) => Promise<void> }
@@ -704,11 +673,11 @@ export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'B
 // a word: a features word that can be pressed is a press and stays. After
 // them the shared chord prefix goes. The countdown, the presses and the
 // chords leave only whole: last (LEAVE_ORDER), or earlier where what the line
-// would draw of them says nothing (mutedBy); the mark never leaves.
+// would draw of them says nothing (mutedBy).
 const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
 
 // Which side of the line each entry draws on: the actions, what a chord or a
-// press does now, at the left after the mark; what the session is, at the
+// press does now, at the left; what the session is, at the
 // right edge beside the rail. The line's free cells stand between the two.
 type Zone = 'actions' | 'status'
 const ZONES = new Map<string, Zone>([
@@ -791,8 +760,7 @@ const LEAVE_ORDER = ['cs-countdown', 'cs-features', 'cs-queue']
 // that leaves the tree takes its chord with it, so the chords leave last. An
 // unbound chord has no key to fall back to: the last one cuts its word to end
 // in `…` before it leaves. An entry that says nothing as fitted (mutedBy)
-// leaves first, overrun or not, and the line is fitted again without it. The
-// mark is never an entry, so it is never cut.
+// leaves first, overrun or not, and the line is fitted again without it.
 export function fitBand(all: BandEntry[], chords: Record<string, string>, room: number): { entries: FittedEntry[]; prefixed: boolean } {
   const spelling = chordSpelling(all, chords)
   for (let kept = all; ;) {
@@ -866,11 +834,8 @@ function shortenBand(all: BandEntry[], chords: Record<string, string>, spelling:
 export function drawBand(v: BandView, el: BandElements): RenderElement {
   const { Box, Text, Button } = el
   const { chords, own } = v
-  // The mark and its space, first on every line the band draws but under a
-  // survey, which owns the band.
-  const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
-  // The line starts two cells in; the mark and the words share the rest.
-  const room = v.bodyColumns - 2 - markCells
+  // The line starts two cells in; the words have the rest.
+  const room = v.bodyColumns - 2
   // A rail keeps its least, the named tick alone, the older prompts folded
   // into `…N ` before it and the newer into ` M…` after it, and the three
   // cells before it: the words fit what that leaves, so the status words drop
@@ -986,8 +951,6 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
       {v.drawn}
       <Box marginTop={1}>
         <Box key="cs-rotate-band" marginLeft={2} {...(right ? { width: v.bodyColumns - 2 } : {})}>
-          {/* the mark: its colour says what is due (bandState) */}
-          {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={v.markColor}>{MARK}</Text></Box>}
           {drawZone(actions)}
           {right && <Box key="cs-spacer" flexGrow={1} />}
           {right && (
