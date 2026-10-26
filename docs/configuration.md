@@ -64,6 +64,8 @@ Preserved files have these rules:
 - An update refuses an installer that drops any revoked key from the installed list. Minisign is not used.
 - `cs -update --check` prints the full pending release notes.
 - A terminal launch offers a pending release once (`Update now? [y/N]`); a declined version is kept in `~/.cache/cs/update-declined` and not asked about again until a newer one is pending. In the session the update mod then names it in one line instead of opening its pane.
+- The launch asks only once the release's `SHA256SUMS.sig` downloads (the same file `cs -update` verifies, fetched with the update check's 2 s connect and 4 s total timeouts). Until the signature is up, or when the check fails offline, the launch asks nothing and records nothing, so a later launch asks once the signature is there.
+- A launch in a tmux window cs opened itself (`cs -spawn`, `cs <name> --remote` inside tmux) is not asked, since nobody sits at that window to answer. The banner line and the update mod still name the release there.
 - The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).
 
 ## Environment variables you set
@@ -327,6 +329,12 @@ export CS_TMUX_BIN="/opt/homebrew/bin/tmux"
 # the absolute claude the caller checked, since tmux starts a window with the
 # tmux server's environment.
 # export CS_REMOTE_WINDOW
+
+# Not a setting. Every tmux window cs opens (cs -spawn, cs <name> --remote
+# inside tmux) runs its command with this set to 1, since nobody sits at that
+# window: the launch there does not ask about a pending update. cs drops it
+# before claude or the server starts.
+# export CS_UNATTENDED
 
 # Force the detected platform instead of probing for it; any other
 # value is rejected. Read by cs -secrets only, to choose between the
