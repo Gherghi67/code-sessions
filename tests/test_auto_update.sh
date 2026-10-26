@@ -833,23 +833,37 @@ exit 0
 SCRIPT
     chmod +x "$1"
 }
+# A curl that serves the signature of each release named and refuses every
+# other request: the launch asks only about a release whose signature is up.
+_signed_curl() {  # dir, version...
+    local dir="$1" v arms=""
+    shift
+    for v in "$@"; do
+        arms="$arms    *\"/download/v$v/SHA256SUMS.sig -o \"*) exit 0 ;;
+"
+    done
+    mkdir -p "$dir"
+    printf '#!/bin/sh\ncase "$*" in\n%sesac\nexit 22\n' "$arms" > "$dir/curl"
+    chmod +x "$dir/curl"
+}
 test_launch_offers_the_update_once_per_version_on_a_terminal() {
-    local home stub out
+    local home stub bin out
     home=$(_launch_update_home offer)
     stub="$TEST_TMPDIR/offer-claude"; _env_stub "$stub"
-    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-session <<< "n" 2>&1) || { echo "$out"; return 1; }
+    bin="$TEST_TMPDIR/offer-bin"; _signed_curl "$bin" 2026.99.3 2026.99.4
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-session <<< "n" 2>&1) || { echo "$out"; return 1; }
     assert_output_contains "$out" 'cs 2026.99.3 is available (you have [0-9.]*). Update now? \[y/N\]' 'the launch asks before the session opens' || return 1
     assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the session still learns the release' || return 1
     assert_output_contains "$out" "UPDATE_DECLINED=2026.99.3" 'and that it was declined' || return 1
     assert_eq "2026.99.3" "$(cat "$home/.cache/cs/update-declined")" 'the declined version is recorded' || return 1
-    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-again <<< "" 2>&1) || { echo "$out"; return 1; }
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-again <<< "" 2>&1) || { echo "$out"; return 1; }
     assert_output_not_contains "$out" "Update now?" 'a declined version is not asked about again' || return 1
     assert_output_contains "$out" "UPDATE_DECLINED=2026.99.3" 'and the session is told it was declined' || return 1
     assert_output_contains "$out" "2026.99.3.*available" "the banner still names the release" || return 1
     # A newer release than the declined one is asked about afresh.
     printf '%s 2026.99.4\n' "$(date +%s)" > "$home/.cache/cs/update-check"
     : > "$home/.cache/cs/update-notes-2026.99.4"; : > "$home/.cache/cs/update-notes-full-2026.99.4"
-    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-newer <<< "n" 2>&1) || { echo "$out"; return 1; }
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-newer <<< "n" 2>&1) || { echo "$out"; return 1; }
     assert_output_contains "$out" "cs 2026.99.4 is available" 'a newer release is offered again' || return 1
 }
 
@@ -870,14 +884,50 @@ test_launch_does_not_ask_without_a_terminal() {
 test_launch_update_that_fails_continues_with_this_cs() {
     local home stub bin out
     home=$(_launch_update_home fails)
-    bin="$TEST_TMPDIR/fails-bin"; mkdir -p "$bin"
-    printf '#!/bin/sh\nexit 22\n' > "$bin/curl"; chmod +x "$bin/curl"
+    bin="$TEST_TMPDIR/fails-bin"; _signed_curl "$bin" 2026.99.3
     stub="$TEST_TMPDIR/fails-claude"; _env_stub "$stub"
     out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" fails-session <<< "y" 2>&1) || { echo "$out"; return 1; }
     assert_output_contains "$out" "Failed to fetch update" 'the update'"'"'s own refusal is shown' || return 1
     assert_output_contains "$out" "cs -update did not finish; continuing with cs [0-9.]*" 'the launch says it goes on' || return 1
     assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the pane can still offer it' || return 1
     assert_not_exists "$home/.cache/cs/update-declined" 'a failed yes is not a no' || return 1
+}
+
+# A release goes up a few minutes before its SHA256SUMS.sig, and cs -update
+# refuses it until the signature is there. Until then the launch asks
+# nothing, records no answer and caches nothing, so the first launch after
+# the signature lands asks. Its one request is the signature cs -update
+# downloads, bounded by the update check's timeouts.
+test_launch_offers_a_release_only_once_its_signature_is_up() {
+    local home stub bin out listing
+    home=$(_launch_update_home unsigned)
+    stub="$TEST_TMPDIR/unsigned-claude"; _env_stub "$stub"
+    bin="$TEST_TMPDIR/unsigned-bin"; mkdir -p "$bin"
+    cat > "$bin/curl" << STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$bin/calls"
+out=""; prev=""
+for a in "\$@"; do [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"; done
+case "\$*" in
+    *" -w "*) printf '%s' "https://example.com/releases/tag/v2026.99.3"; exit 0 ;;
+    *"/download/v2026.99.3/SHA256SUMS.sig -o "*) [ -f "$bin/signed" ] || exit 22; : > "\$out"; exit 0 ;;
+    *"/download/v2026.99.3/install.sh -o "*|*"/download/v2026.99.3/SHA256SUMS -o "*) : > "\$out"; exit 0 ;;
+esac
+exit 22
+STUB
+    chmod +x "$bin/curl"
+    listing=$(ls -A "$home/.cache/cs")
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" unsigned-session <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'no question before the signature is up' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the session still learns the release' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=unset" 'and nothing is declined on the person'"'"'s behalf' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'no declined record' || return 1
+    assert_eq "$listing" "$(ls -A "$home/.cache/cs")" 'nothing is cached' || return 1
+    assert_eq "-fsSL --connect-timeout 2 --max-time 4 https://github.com/hex/claude-sessions/releases/download/v2026.99.3/SHA256SUMS.sig -o /dev/null" \
+        "$(cat "$bin/calls")" 'the one request is the signature, bounded' || return 1
+    touch "$bin/signed"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" signed-session <<< "n" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" 'cs 2026.99.3 is available (you have [0-9.]*). Update now? \[y/N\]' 'once signed, the launch asks' || return 1
 }
 
 # y, and the update lands: the same launch runs again on the new cs, with
@@ -927,6 +977,7 @@ run_test test_launch_exports_update_verdict_to_the_mod
 run_test test_launch_offers_the_update_once_per_version_on_a_terminal
 run_test test_launch_does_not_ask_without_a_terminal
 run_test test_launch_update_that_fails_continues_with_this_cs
+run_test test_launch_offers_a_release_only_once_its_signature_is_up
 run_test test_launch_update_relaunches_the_same_command_on_the_new_cs
 run_test test_notify_writes_notes_cache
 run_test test_notify_writes_notes_cache_past_stale_tmp_files
