@@ -1,7 +1,7 @@
 /* @jsxRuntime classic */
 /* @jsx h */
 /* @jsxFrag Fragment */
-// ABOUTME: cs mod: keys above the prompt, after a mark whose colour says what is due: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
+// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
 // ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
@@ -52,26 +52,6 @@ export function amberColor(bg: string | undefined, theme: string | undefined): s
   const light = measured ? 2126 * rgb[0] + 7152 * rgb[1] + 722 * rgb[2] >= 1530000 : theme !== 'dark'
   return `rgb(${light ? AMBER_LIGHT : AMBER_DARK})`
 }
-
-// What the band's mark says is due, highest precedence first: a /finish gate
-// or the cs queue is running, a rotation is due (context past the band's
-// threshold, or a handoff armed), or nothing is.
-export type BandState = 'running' | 'due' | 'clear'
-
-export function bandState(facts: { gate: boolean; queueRunning: boolean; rotationDue: boolean }): BandState {
-  if (facts.gate || facts.queueRunning) return 'running'
-  return facts.rotationDue ? 'due' : 'clear'
-}
-
-// The mark's colour for each state, by the terminal's background and theme:
-// the session palette's blue and green, which Claude Code paints on light and
-// dark alike, and the bar's amber, which pivots as the count's does.
-export const MARK_INK: Record<BandState, (bg: string | undefined, theme: string | undefined) => string> = {
-  running: () => `rgb(${SESSION_PALETTE.blue})`,
-  due: amberColor,
-  clear: () => `rgb(${SESSION_PALETTE.green})`,
-}
-const MARK = '\u25cf'
 
 // A session colour name as an rgb() the engine paints, or undefined for a name
 // outside the palette (state hand-edited, or from a newer Claude Code).
@@ -303,7 +283,7 @@ let finishShown = new Set<string>()
 let finishGate: { task: string; since: number } | undefined
 let finishProblemShown = false
 
-// The features word: what the band's left says of the session's feature
+// The features word: what the band's right edge says of the session's feature
 // worktrees, as cs last answered, and the task a press finishes ('' for bare
 // /finish, which lists them and asks; absent, no press). One reading at a
 // time; the idle clock that reads again; the last complaint logged.
@@ -331,18 +311,18 @@ type BandFacts = {
 
 export function buildBandEntries(facts: BandFacts): BandEntry[] {
   const entries: BandEntry[] = []
-  // The features word takes the left; only a ready feature can be pressed.
+  if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
+  // The grace follows the clear key whose press stops it.
+  if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
+  if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
+  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
+  // The queue has no chord: a click or Enter under the band's focus starts it.
+  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 start ${facts.waiting}`, onPress: facts.queue })
+  // The features word leads what the session is; only a ready feature can be pressed.
   if (facts.featured !== undefined) {
     const { label, onPress } = facts.featured
     entries.push(onPress === undefined ? { key: 'cs-features', kind: 'word', label } : { key: 'cs-features', kind: 'press', label, onPress })
   }
-  // The grace belongs before the clear key whose press stops it.
-  if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `/clear in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
-  if (facts.rotating) entries.push({ key: 'cs-rotate', kind: 'chord', label: facts.armed ? '/clear now' : 'rotate', action: ROTATE_ACTION, onPress: facts.rotate })
-  if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
-  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
-  // The queue has no chord: a click or Enter under the band's focus starts it.
-  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 queue ${facts.waiting} \u00b7 start`, onPress: facts.queue })
   if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
   if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `\u25a4 queue ${facts.queued}` })
   if (facts.mail > 0) entries.push({ key: 'cs-mail', kind: 'word', label: `mail ${facts.mail}` })
@@ -359,7 +339,7 @@ let featuresComplaint: string | undefined
 export type Prompt = { uuid: string; text: string }
 // How much of a prompt's first line a tick carries as its text.
 export const RAIL_TEXT_CHARS = 80
-// The fewest cells after the rail that name a prompt.
+// The fewest cells before the rail that name a prompt.
 const RAIL_LABEL_MIN = 10
 // `$.fs.read` refuses a file over this; a longer transcript is read from its tail.
 const READ_CAP = 4 * 1024 * 1024
@@ -385,7 +365,7 @@ let redrawPending = false
 // The band's /config rows (plugin.json userConfig), as this activation got
 // them: whether it draws the prompt bars at all (off by default), the prompt
 // it names, `latest` (the newest) or `read` (the one being read), and the
-// most bars it draws before older prompts fold into `…N`. A
+// most bars it draws before the prompts past them fold into `…N` or `M…`. A
 // change reloads the plugin and register runs again. A stored value the band
 // cannot draw leaves it without bars (undefined), said once, and the rest of
 // the mod running: a throw from register would unload all of it.
@@ -606,13 +586,12 @@ export function register(on: On, options: PluginOptions) {
     const gate = await gateWord($)
     // The band draws on every redraw and asks cs nothing: it shows the last
     // answer cs gave (sessionVetted), which every step that acts asks afresh.
-    // A handoff armed is due mid-turn too; its clear key waits for the turn to end.
+    // An armed handoff makes the rotation due at any context.
     const handoff = lastRefusal === undefined && (await handoffArmed($))
     const armed = bandIdle && handoff
     const { context } = await $.session.usage()
     const percent = context.percent
-    // Due is said mid-turn too, while the keys wait for the turn to end.
-    let due = handoff || (percent !== undefined && percent >= (await threshold($)))
+    const due = handoff || (percent !== undefined && percent >= (await threshold($)))
     let rotating = bandIdle && due
     // Tasks queued and nothing running them, at any context, draw the start
     // key; an armed handoff draws its clear key alone. Tasks queued that the
@@ -634,11 +613,11 @@ export function register(on: On, options: PluginOptions) {
       bandProblemSaid = true
       $.ui.toast(TOASTS.bandOption(bandProblem))
     }
-    // The features word takes the left, before any key word; a running gate
-    // already names the feature it lands.
+    // The features word leads what the session is, at the line's right; a
+    // running gate already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
     let feedEligible = bandIdle && !armed
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; due = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
@@ -663,16 +642,8 @@ export function register(on: On, options: PluginOptions) {
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
     })
-    // A line with no words and no room for a tick draws nothing, and asks
-    // nothing more: a hook on env.get sees every read, so the mark's two reads
-    // wait until drawBand has a line to draw. With no words, drawBand's budget
-    // is the line less the inset and the mark.
     const rail = railing && bars !== undefined ? { prompts, named, denied, bars, jump: (i: number) => jumpTo($, i) } : undefined
-    const markCells = e.props.hasSurvey ? 0 : cellWidth(MARK) + 1
-    if (entries.length === 0 && (rail === undefined || railTicks(rail.prompts.length, e.props.bodyColumns - 2 - markCells, rail.bars) === undefined)) return drawn
-    const state = bandState({ gate: gate !== undefined, queueRunning: queueStarted, rotationDue: due })
-    const markColor = MARK_INK[state](await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
-    return drawBand({ drawn, entries, chords, own, markColor, hasSurvey: e.props.hasSurvey, bodyColumns: e.props.bodyColumns, surface: e.surface, rail }, { Box, Text, Button })
+    return drawBand({ drawn, entries, chords, own, bodyColumns: e.props.bodyColumns, surface: e.surface, rail }, { Box, Text, Button })
   })
 
   // A rail tick never takes the band's focus ring: the ring draws as an
@@ -686,14 +657,12 @@ export function register(on: On, options: PluginOptions) {
 
 // What the band's line is drawn from, as the AbovePrompt handler read it: the
 // engine's own tree, the entries, the bound chords by action, the session
-// colour, the mark's ink, and the rail when cs.bandPrompts draws one.
+// colour, and the rail when cs.bandPrompts draws one.
 export type BandView = {
   drawn: RenderElement
   entries: BandEntry[]
   chords: Record<string, string>
   own: string | undefined
-  markColor: string
-  hasSurvey: boolean
   bodyColumns: number
   surface: RenderSurface
   rail?: { prompts: Prompt[]; named: number; denied: Set<string>; bars: number; jump: (i: number) => Promise<void> }
@@ -703,9 +672,32 @@ export type BandElements = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'B
 // The words that leave an overrunning line first, first to last, each only as
 // a word: a features word that can be pressed is a press and stays. After
 // them the shared chord prefix goes. The countdown, the presses and the
-// chords leave only whole and last (LEAVE_ORDER); the mark never leaves.
+// chords leave only whole: last (LEAVE_ORDER), or earlier where what the line
+// would draw of them says nothing (mutedBy).
 const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
-const SEP = '  ·  '
+
+// Which side of the line each entry draws on: the actions, what a chord or a
+// press does now, at the left; what the session is, at the
+// right edge beside the rail. The line's free cells stand between the two.
+type Zone = 'actions' | 'status'
+const ZONES = new Map<string, Zone>([
+  ['cs-rotate', 'actions'], ['cs-countdown', 'actions'], ['cs-wrap', 'actions'], ['cs-feed', 'actions'], ['cs-queue', 'actions'],
+  ['cs-features', 'status'], ['cs-gate', 'status'], ['cs-queued', 'status'], ['cs-mail', 'status'],
+])
+// The cells between two entries of a zone, and the fewest between the zones.
+const GAP = 3
+const SEP = ' '.repeat(GAP)
+
+// The entries of each zone, in the line's order.
+function zonesOf<T extends BandEntry>(entries: T[]): Record<Zone, T[]> {
+  const zones: Record<Zone, T[]> = { actions: [], status: [] }
+  for (const entry of entries) {
+    const zone = ZONES.get(entry.key)
+    if (zone === undefined) throw new Error(`cs: the band has no zone for ${entry.key}`)
+    zones[zone].push(entry)
+  }
+  return zones
+}
 
 // The chords that share a prefix (`ctrl+x 1`, `ctrl+x 2`): the prefix, and
 // each chord's own key after it, or the chord whole when they differ.
@@ -727,19 +719,26 @@ const firstChordOf = (entries: BandEntry[], chords: Record<string, string>) =>
 // draws as its key alone.
 export type FittedEntry = BandEntry & { keyOnly?: true }
 
-// What the words take, in cells, as the tree draws them: a separator between
-// entries, the prefix once before the first bound chord with its two-cell
-// margin, each chord's key with its one-cell margin, then the label.
+// What the words take, in cells, as the tree draws them: in each zone a
+// separator between entries, the prefix once before the first bound chord
+// with its one-cell margin, each chord's key with its one-cell margin, then
+// the label; and the fewest cells between the zones when both draw.
 // `spelling` is the whole line's: a cut that leaves fewer chords keeps them
 // spelled as the full line spells them.
 type ChordSpelling = ReturnType<typeof chordSpelling>
 function wordCellsOf(entries: FittedEntry[], chords: Record<string, string>, { prefix, spelled }: ChordSpelling, prefixed: boolean): number {
-  const firstChord = firstChordOf(entries, chords)
-  return cellWidth(entries.map((entry, index) => {
-    const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
-    const keyed = chord === undefined ? entry.label : entry.keyOnly ? chord : `${chord} ${entry.label}`
-    return `${index === firstChord && prefixed && prefix !== undefined ? `${prefix}  ` : ''}${keyed}`
-  }).join(SEP))
+  const cellsOfZone = (zone: FittedEntry[]) => {
+    const firstChord = firstChordOf(zone, chords)
+    return cellWidth(zone.map((entry, index) => {
+      const chord = entry.kind === 'chord' ? spelled(entry.action) : undefined
+      const keyed = chord === undefined ? entry.label : entry.keyOnly ? chord : `${chord} ${entry.label}`
+      return `${index === firstChord && prefixed && prefix !== undefined ? `${prefix} ` : ''}${keyed}`
+    }).join(SEP))
+  }
+  const { actions, status } = zonesOf(entries)
+  const actionCells = cellsOfZone(actions)
+  const statusCells = cellsOfZone(status)
+  return actionCells + statusCells + (actionCells > 0 && statusCells > 0 ? GAP : 0)
 }
 
 // The keepers whose words are free text, shortened first to last before any
@@ -760,11 +759,17 @@ const LEAVE_ORDER = ['cs-countdown', 'cs-features', 'cs-queue']
 // a chord left after one leaves takes its word back when it fits. A Button
 // that leaves the tree takes its chord with it, so the chords leave last. An
 // unbound chord has no key to fall back to: the last one cuts its word to end
-// in `…` before it leaves. The mark is never an entry, so it is never cut.
+// in `…` before it leaves. An entry that says nothing as fitted (mutedBy)
+// leaves first, overrun or not, and the line is fitted again without it.
 export function fitBand(all: BandEntry[], chords: Record<string, string>, room: number): { entries: FittedEntry[]; prefixed: boolean } {
   const spelling = chordSpelling(all, chords)
   for (let kept = all; ;) {
     const fitted = shortenBand(kept, chords, spelling, room)
+    const mute = mutedBy(fitted.entries, kept)
+    if (mute !== undefined) {
+      kept = kept.filter(entry => entry.key !== mute)
+      continue
+    }
     const excess = wordCellsOf(fitted.entries, chords, spelling, fitted.prefixed) - room
     const last = fitted.entries[fitted.entries.length - 1]
     if (excess <= 0 || last === undefined) return fitted
@@ -776,6 +781,26 @@ export function fitBand(all: BandEntry[], chords: Record<string, string>, room: 
     }
     kept = kept.filter(entry => entry.key !== (leaving ?? last.key))
   }
+}
+
+// The entry a fitted line draws that says nothing, which leaves before the
+// line is fitted again: a status word cut shorter than its head, the words
+// before its first ` · `, and `…`, which names nothing (`1…` of `1 feature ·
+// fix-auth ready`); then the countdown beside a clear key drawn bare (`1   in
+// 18s` counts down to nothing the line names, so it leaves before
+// `/clear now` loses its word). The cut word goes first: the cells it took
+// may be what bared the key. `kept` holds each entry's whole label.
+function mutedBy(fitted: FittedEntry[], kept: BandEntry[]): string | undefined {
+  const stub = fitted.find(entry => {
+    if (ZONES.get(entry.key) !== 'status') return false
+    const whole = kept.find(k => k.key === entry.key)?.label
+    if (whole === undefined) throw new Error(`cs: the band fitted ${entry.key}, an entry it was not given`)
+    const head = whole.split(' · ')[0] ?? whole
+    return entry.label !== whole && cellWidth(entry.label) < cellWidth(head) + 1
+  })
+  if (stub !== undefined) return stub.key
+  const bareClear = fitted.some(entry => entry.key === 'cs-rotate' && entry.keyOnly)
+  return bareClear && fitted.some(entry => entry.key === 'cs-countdown') ? 'cs-countdown' : undefined
 }
 
 // The entries of a line of `room` cells before any leaves whole: each step
@@ -809,22 +834,32 @@ function shortenBand(all: BandEntry[], chords: Record<string, string>, spelling:
 export function drawBand(v: BandView, el: BandElements): RenderElement {
   const { Box, Text, Button } = el
   const { chords, own } = v
-  // The mark and its space, first on every line the band draws but under a
-  // survey, which owns the band.
-  const markCells = v.hasSurvey ? 0 : cellWidth(MARK) + 1
-  // The line starts two cells in; the mark and the words share the rest.
-  const { entries, prefixed } = fitBand(v.entries, chords, v.bodyColumns - 2 - markCells)
+  // The line starts two cells in; the words have the rest.
+  const room = v.bodyColumns - 2
+  // A rail keeps its least, the named bar alone, the older prompts folded
+  // into `…N ` before it and the newer into ` M…` after it, and the three
+  // cells before it: the words fit what that leaves, so the status words drop
+  // and the keys shorten before the rail goes. The actions outrank the rail:
+  // where the words beside its least lose an action the whole line would
+  // keep, they fit the whole line, and the rail takes what they leave, or
+  // nothing. An action the whole line drops too (the count beside a bare
+  // clear key) is no reason for the rail to go.
+  const reserved = v.rail === undefined ? 0 : railCells(v.rail.prompts.length, leastWindow(v.rail.named)) + GAP
+  const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.map(entry => entry.key)
+  const besideRail = fitBand(v.entries, chords, room - reserved)
+  const keptActions = actionKeys(besideRail.entries)
+  const wholeLine = fitBand(v.entries, chords, room)
+  const { entries, prefixed } = actionKeys(wholeLine.entries).every(key => keptActions.includes(key)) ? besideRail : wholeLine
   // The Buttons carry no hotkey: a bare digit pressed them from an empty
   // composer, where a digit typed as the answer to a numbered question
   // belongs. A chord bound to each Button's action presses it instead, and
   // the engine draws a Button with no hotkey as its label alone, so the key
   // is spelled beside it, and only when keybindings.json binds one. Chords
-  // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
+  // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, bold in the theme's light gray, and
   // each Button its own key; chords that differ are spelled whole.
   const spelling = chordSpelling(v.entries, chords)
   const { spelled } = spelling
   const prefix = prefixed ? spelling.prefix : undefined
-  const firstChord = firstChordOf(entries, chords)
   const key = (action: string) => {
     const text = spelled(action)
     return text !== undefined && <Box marginRight={1}><Text bold color={own}>{text}</Text></Box>
@@ -838,81 +873,112 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   }
   // What the words take, in cells, so the rail knows what the line leaves it.
   const wordCells = wordCellsOf(entries, chords, spelling, prefixed)
-  // The rail: one upright bar per prompt after the words, `┃` for
-  // the one the band names, `┆` for one a jump was refused, `│` otherwise
-  // (side by side, flat ticks run together into one line), each a Button
-  // (the named one a Text: a
-  // Button takes no colour, and there is nowhere to jump). It draws at most
+  // The rail: one upright bar per prompt, flush at the line's right edge, `┃`
+  // for the one the band names, `┆` for one a jump was refused, `│`
+  // otherwise (side by side, flat ticks run together into one line), each a
+  // Button (the named one a Text, as dim as the rest: there is nowhere to
+  // jump, and its heavier stroke alone marks it). It draws at most
   // cs.bandBars bars in what the line leaves after the inset, the gaps and
-  // the words; the older prompts collapse into one `…N` run. The named tick
-  // is remembered so a report that moves it can redraw the band.
-  const budget = v.bodyColumns - 2 - markCells - (wordCells > 0 ? 3 + wordCells : 0)
+  // the words, always the named one among them (railTicks); the older prompts
+  // collapse into one `…N` run, a cell before the first bar, and any newer
+  // than the drawn bars into one `M…` run, a cell after the last. The named
+  // tick is remembered so a report that moves it can redraw the band.
+  const budget = room - (wordCells > 0 ? GAP + wordCells : 0)
   const rail = v.rail
-  const counted = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars)
-  const ticks = rail === undefined || counted === undefined ? undefined : { ...rail, hidden: counted.hidden }
-  // After the bars the band names a prompt in what the line leaves: the
-  // newest or the one being read (cs.bandPrompt), or the one under the
+  const shown = rail === undefined ? undefined : railTicks(rail.prompts.length, budget, rail.bars, rail.named)
+  const ticks = rail === undefined || shown === undefined ? undefined : { ...rail, ...shown }
+  const drawnTick = (i: number) => ticks !== undefined && i >= ticks.from && i < ticks.to
+  // Left of the rail, GAP cells before it so the `…N` run never reads as
+  // the cut name's own `…`, the band names a prompt in what the line leaves:
+  // the newest or the one being read (cs.bandPrompt), or the one under the
   // pointer. Too little left to name one names none.
-  const railCells = ticks === undefined ? 0 : (ticks.hidden > 0 ? `…${ticks.hidden}`.length : 0) + ticks.prompts.length - ticks.hidden
-  const labelCells = ticks === undefined ? 0 : budget - railCells - 2
-  const labeled = labelCells >= RAIL_LABEL_MIN
+  const railWidth = ticks === undefined ? 0 : railCells(ticks.prompts.length, ticks)
+  const labelRoom = ticks === undefined ? 0 : budget - railWidth - GAP
+  const labeled = labelRoom >= RAIL_LABEL_MIN
   // A bar under the pointer swaps its prompt in over the named one, on the
   // terminal only: the desktop app paints a card over a line without hiding
   // what is under it, so both prompts would show at once.
   const hovering = labeled && v.surface === 'terminal'
-  const label = (prompts: Prompt[], i: number) => {
+  const name = (prompts: Prompt[], i: number) => {
     const p = prompts[i]
     if (p === undefined) throw new Error(`cs: the band named prompt ${i} of ${prompts.length}`)
-    return fitLeft(`#${i + 1} ${p.text}`, labelCells)
+    return `#${i + 1} ${p.text}`
   }
+  // The name is as wide as the widest prompt it can show, the named one or a
+  // drawn bar's under the pointer, and no wider than the room: a name sized
+  // to the one it shows would move the words before it whenever a swap shows
+  // a longer or shorter one. It is padded on its left, so it hugs the gap
+  // before the bars.
+  const labelCells = ticks === undefined || !labeled ? 0 : Math.min(labelRoom, Math.max(...[ticks.named, ...(hovering ? ticks.prompts.map((_, i) => i).filter(drawnTick) : [])]
+    .map(i => cellWidth(name(ticks.prompts, i)))))
+  // Each name fills the width, so a card over the named one paints every
+  // cell of it: a shorter one would leave the named one's head showing.
+  const label = (prompts: Prompt[], i: number) => fitRight(name(prompts, i), labelCells)
   // A line too narrow for any tick, with nothing else to say, draws nothing.
   if (entries.length === 0 && ticks === undefined) return v.drawn
   // One thin line, a blank line above it so it reads apart from the
-  // transcript: only the words that need a key now, the keys in the
-  // session colour and the rest dim, then the rail. The context percentage is the bar's to carry;
-  // the band does not repeat it. It starts two columns in, where Claude Code
-  // draws the bar and the mode line under the prompt. A Button is a block:
-  // nested in a Text the engine refuses the whole tree (measured), so each
-  // separator stands beside its Button.
+  // transcript, in two zones: at the left the actions, only the words that
+  // need a key now, the keys in the session colour and the rest dim; at the
+  // right edge what the session is, dim, then the prompt's name, then the
+  // rail, ending in the line's last cell. A spacer that grows
+  // takes the line's free cells between them, so the rail stays put as the
+  // actions come and go; the row is the line's whole width for it to grow
+  // into, and a line with nothing at the right draws no spacer. The context
+  // percentage is the bar's to carry; the band does not repeat it. It starts
+  // two columns in, where Claude Code draws the bar and the mode line under
+  // the prompt. A Button is a block: nested in a Text the engine refuses the
+  // whole tree (measured), so each separator stands beside its Button.
+  const { actions, status } = zonesOf(entries)
+  const right = status.length > 0 || ticks !== undefined
+  const drawZone = (zone: FittedEntry[]) => {
+    const firstChord = firstChordOf(zone, chords)
+    return zone.flatMap((entry, index) => [
+      index > 0 && <Text dimColor>{SEP}</Text>,
+      index === firstChord && prefix !== undefined && <Box marginRight={1}><Text bold color="subtle">{prefix}</Text></Box>,
+      entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
+      entry.kind === 'word'
+        ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
+        : entry.kind === 'chord'
+          ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
+            ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
+            : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
+          : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
+    ])
+  }
   return (
     <Box flexDirection="column">
       {v.drawn}
       <Box marginTop={1}>
-        <Box key="cs-rotate-band" marginLeft={2}>
-          {/* the mark: its colour says what is due (bandState) */}
-          {markCells > 0 && <Box key="cs-mark" marginRight={1}><Text color={v.markColor}>{MARK}</Text></Box>}
-          {entries.flatMap((entry, index) => [
-            index > 0 && <Text dimColor>{SEP}</Text>,
-            index === firstChord && prefix !== undefined && <Box marginRight={2}><Text dimColor>{prefix}</Text></Box>,
-            entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
-            entry.kind === 'word'
-              ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
-              : entry.kind === 'chord'
-                ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
-                  ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
-                  : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
-                : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
-          ])}
-          {ticks !== undefined && (
-            <Box key="cs-rail" marginLeft={wordCells > 0 ? 3 : 0}>
-              {ticks.hidden > 0 && <Text dimColor>{`…${ticks.hidden}`}</Text>}
-              {ticks.prompts.slice(ticks.hidden).map((p, j) => {
-                const i = ticks.hidden + j
-                if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
-                return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
-                               hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
-              })}
-            </Box>
-          )}
-          {ticks !== undefined && labeled && (
-            <Box width={labelCells} marginLeft={2}>
-              <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
-              {/* a card for each drawn bar but the named one: a prompt folded into `…N` has no bar to hover */}
-              {hovering && ticks.prompts.map((_, i) => i >= ticks.hidden && i !== ticks.named && (
-                <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                  <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+        <Box key="cs-rotate-band" marginLeft={2} {...(right ? { width: v.bodyColumns - 2 } : {})}>
+          {drawZone(actions)}
+          {right && <Box key="cs-spacer" flexGrow={1} />}
+          {right && (
+            <Box key="cs-status" marginLeft={actions.length > 0 ? GAP : 0}>
+              {drawZone(status)}
+              {ticks !== undefined && labeled && (
+                <Box width={labelCells} marginLeft={status.length > 0 ? GAP : 0}>
+                  {/* the theme's lightest text gray, `subtle`, which follows light and dark: the name stays quieter than the dim words before it */}
+                  <Text color="subtle" italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
+                  {/* a card for each drawn bar but the named one: a prompt folded into `…N` or `M…` has no bar to hover */}
+                  {hovering && ticks.prompts.map((_, i) => drawnTick(i) && i !== ticks.named && (
+                    <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
+                      <Text color="subtle" italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+                    </Box>
+                  ))}
                 </Box>
-              ))}
+              )}
+              {ticks !== undefined && (
+                <Box key="cs-rail" marginLeft={status.length > 0 || labeled ? GAP : 0}>
+                  {ticks.from > 0 && <Box marginRight={1}><Text dimColor>{`…${ticks.from}`}</Text></Box>}
+                  {ticks.prompts.slice(ticks.from, ticks.to).map((p, j) => {
+                    const i = ticks.from + j
+                    if (i === ticks.named) return <Text dimColor>{'┃'}</Text>
+                    return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
+                                   hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
+                  })}
+                  {ticks.to < ticks.prompts.length && <Box marginLeft={1}><Text dimColor>{`${ticks.prompts.length - ticks.to}\u2026`}</Text></Box>}
+                </Box>
+              )}
             </Box>
           )}
         </Box>
@@ -935,8 +1001,6 @@ export function sharedPrefix(chords: (string | undefined)[]): string | undefined
   return first !== undefined && prefixes.every(prefix => prefix === first) ? first : undefined
 }
 
-// How many of `count` ticks fit in `budget` cells: all of them, or the newest
-// after a `…N` run naming the rest; undefined when not even that fits.
 // One `-features --porcelain` record, as _feature_readiness prints it.
 export type FeatureRecord = { task: string; ahead: number; state: string }
 // Every state _feature_readiness prints (lib/30-worktree.sh).
@@ -1045,13 +1109,39 @@ async function hasFeatureDirs($: EngineInterface, base: string): Promise<boolean
   return entries.some(entry => entry.name.startsWith(`${base}@`))
 }
 
-// How many of `count` prompts fold into the rail's `…N` run so that at most
-// `most` bars draw and the rail fits `budget` cells; undefined when no bar fits.
-export function railTicks(count: number, budget: number, most: number): { hidden: number } | undefined {
-  for (let hidden = Math.max(0, count - most); hidden < count; hidden++) {
-    if (count - hidden + (hidden > 0 ? `\u2026${hidden}`.length : 0) <= budget) return { hidden }
+// The prompts the rail draws a bar for, `from` up to but not including
+// `to`: those before fold into its `…N` run, those after into its `M…` run.
+type RailWindow = { from: number; to: number }
+
+// The bars the rail draws of `count` prompts: the most, up to `most`, that
+// fit `budget` cells with their runs, and always the named one. They end at
+// the newest prompt, slid back only as far as the named one, where it is the
+// first; undefined when not even the named bar fits.
+export function railTicks(count: number, budget: number, most: number, named: number): RailWindow | undefined {
+  if (!Number.isInteger(named) || named < 0 || named >= count) throw new Error(`cs: the rail named prompt ${named} of ${count}`)
+  for (let drawn = Math.min(most, count); drawn >= 1; drawn--) {
+    const from = Math.min(count - drawn, named)
+    const shown = { from, to: from + drawn }
+    if (railCells(count, shown) <= budget) return shown
   }
   return undefined
+}
+
+// The rail's least: the named bar alone.
+function leastWindow(named: number): RailWindow {
+  return { from: named, to: named + 1 }
+}
+
+// The cells the rail takes: its bars, and each run with the space between it
+// and the bars.
+function railCells(count: number, { from, to }: RailWindow): number {
+  return foldCells(from) + to - from + foldCells(count - to)
+}
+
+// The cells of a run of folded prompts, `…N ` before the bars or ` N…`
+// after them, the space included; none when no prompt folds.
+function foldCells(folded: number): number {
+  return folded > 0 ? `\u2026${folded}`.length + 1 : 0
 }
 
 // The prompt the band names: the newest, or the one being read (cs.bandPrompt).
@@ -1132,10 +1222,10 @@ function cutToCells(text: string, width: number): string {
   return `${fitted.trimEnd()}\u2026`
 }
 
-// `text` cut to `width` cells, with spaces after it to fill `width`.
-function fitLeft(text: string, width: number): string {
+// `text` cut to `width` cells, with spaces before it to fill `width`.
+function fitRight(text: string, width: number): string {
   const fitted = cutToCells(text, width)
-  return fitted + ' '.repeat(Math.max(0, width - cellWidth(fitted)))
+  return ' '.repeat(Math.max(0, width - cellWidth(fitted))) + fitted
 }
 
 function firstLine(text: string): string {
