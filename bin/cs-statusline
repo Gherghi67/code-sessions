@@ -2605,7 +2605,7 @@ _render_quiet() {
         fi
         if [ "$i" -gt 0 ]; then
             join="${_SEG_JOIN[i]}"
-            [ "${_SEG_GROUP[i]}" != "${_SEG_GROUP[$((i - 1))]}" ] && join=dot
+            [ "${_SEG_GROUP[i]}" != "${_SEG_GROUP[$((i - 1))]}" ] && join="dot"
             _band_joiner "$join"
             # A red chip's own pad stands for one space of a two-space joiner
             # beside it; a one-space joiner keeps its space.
