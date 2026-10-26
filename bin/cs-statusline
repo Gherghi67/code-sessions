@@ -2556,21 +2556,15 @@ _quiet_run_ink() {
 }
 
 # The chip's fill in _R/_G/_B: the band's colour (CS_STATUSLINE_BAND, else the
-# session's) at half its saturation, its gray at most 55: a dim tone that sits
-# low on a dark terminal and still holds white text on a light one, the theme
-# detected at launch notwithstanding. With no colour it is a dim gray.
+# session's) seen through the terminal background (_band_bg), 35% of it on a
+# dark terminal and 15% on a light one, so the chip holds the terminal's own
+# ink either way. With no colour it is the neutral step off the background.
 _quiet_chip_fill() {
     _BAND_NEUTRAL=""
     _band_from
-    if [ -n "$_BAND_NEUTRAL" ]; then
-        _R=55; _G=55; _B=55
-        return 0
-    fi
-    local lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
-    _R=$(( lum + (_R - lum) / 2 )); _G=$(( lum + (_G - lum) / 2 )); _B=$(( lum + (_B - lum) / 2 ))
-    if [ "$lum" -gt 55 ]; then
-        _R=$(( _R * 55 / lum )); _G=$(( _G * 55 / lum )); _B=$(( _B * 55 / lum ))
-    fi
+    [ -z "$_BAND_NEUTRAL" ] || return 0
+    if [ "$SL_THEME" = "dark" ]; then _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 65
+    else _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 85; fi
 }
 
 # Whether item $1 belongs in a red chip: a crit reading, or the label just
@@ -2605,7 +2599,10 @@ _render_quiet() {
         else
             _QI_R=$((_BG_R * 24 / 100)); _QI_G=$((_BG_G * 24 / 100)); _QI_B=$((_BG_B * 24 / 100))
         fi
-        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg="38;2;255;255;255"
+        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg=39
+    elif [ "$SL_THEME" != "dark" ]; then
+        chipfg=39
+        if [ "$LEVEL" = "256" ]; then chipbg="48;5;253"; else chipbg=47; fi
     elif [ "$LEVEL" = "256" ]; then
         chipbg="48;5;241"; chipfg="38;5;231"
     else
