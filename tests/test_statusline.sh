@@ -2826,7 +2826,7 @@ test_fable_segment_costs_nothing_off_fable() {
     # Sentinels the gate must leave alone: _fable_read clears all three on its
     # first lines, so surviving values prove it was never entered.
     _FABLE_PCT=sentinel; _FABLE_RESET=sentinel; _FABLE_DUE=sentinel
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
     _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     _seg_limits
     assert_eq "sentinel" "$_FABLE_PCT" "a non-fable model must not read the cache" || return 1
@@ -2961,7 +2961,7 @@ test_fable_segment_does_not_spawn_a_refresher_without_curl() {
     seed_usage_cache org-abc 86 "2026-08-29T03:59:59Z" 1787816000 1787816300
     SL_MODEL_ID="claude-fable-5"
     SL_5H=""; SL_WK=""
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
     _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     local nocurl="$TEST_TMPDIR/nocurl"; mkdir -p "$nocurl"
     # Symlink, not copy: macOS kills a copied system binary whose code
@@ -2982,7 +2982,7 @@ test_fable_segment_does_spawn_when_curl_is_present() {
     seed_usage_cache org-abc 42 "2026-08-29T03:59:59Z" 1787816000 1787816300
     SL_MODEL_ID="claude-fable-5"
     SL_5H=""; SL_WK=""
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
     _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     CS_STATUSLINE_NOW=1787816400 _NOW="" _SL_NOW_READY="" PATH="$USAGE_BINDIR:$PATH" _seg_limits
     assert_eq "1" "$_FABLE_KICKED" "a due cache with curl available must kick a refresher" || return 1
@@ -3823,7 +3823,7 @@ test_fable_hidden_below_seventy_but_cache_still_read() {
     # the two existing kick tests, moved onto _seg_limits in Step 4).
     _load_sl_functions
     SL_MODEL_ID="claude-fable-5"; SL_5H=""; SL_WK=""; _NOW=1787816400; _SL_NOW_READY=1; LEVEL=plain
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=(); _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     _seg_limits
     assert_eq "1" "${_FABLE_DUE:-}" "the cache was read and found due even though nothing rendered" || return 1
     assert_eq "0" "${#_SEG_TEXT[@]}" "nothing was added for a 25% window" || return 1
@@ -5482,6 +5482,25 @@ test_quiet_256_has_no_fade() {
         "the last label is the same ink, the reading the 256 primary" || return 1
 }
 
+# At basic colours quiet draws on the terminal's own background, where the
+# capsules' white inks vanish on a light theme: its labels are bright black
+# and its readings the terminal's own foreground, on either theme.
+test_quiet_basic_inks_read_on_the_terminal() {
+    quiet_env
+    unset COLORTERM
+    export TERM=xterm CS_TERM_THEME=light CS_TERM_BG_RGB="252;247;229"
+    local out
+    out=$(run_sl "$(band_fixture 8 23.5 41.2)")
+    assert_output_not_contains_f "$out" "${ESC_}[0;37m" "no white label on a light terminal" || return 1
+    assert_output_not_contains_f "$out" "${ESC_}[0;97" "no bright white reading on a light terminal" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;90m  ·  ${ESC_}[0;90m○ ctx${ESC_}[0m ${ESC_}[0;39;1m8%" \
+        "a label in bright black, the reading in the terminal's foreground, bold" || return 1
+    export CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40"
+    out=$(run_sl "$(band_fixture 8 23.5 41.2)")
+    assert_output_contains_f "$out" "${ESC_}[0;90m  ·  ${ESC_}[0;90m○ ctx${ESC_}[0m ${ESC_}[0;39;1m8%" \
+        "the same inks on a dark terminal" || return 1
+}
+
 test_quiet_plain_level_prints_the_plain_line() {
     quiet_env
     export NO_COLOR=1
@@ -5500,6 +5519,7 @@ run_test test_quiet_crit_reading_and_its_label_are_one_red_chip
 run_test test_quiet_two_crit_groups_are_two_chips
 run_test test_quiet_model_glyph_wears_the_effort_colour
 run_test test_quiet_256_has_no_fade
+run_test test_quiet_basic_inks_read_on_the_terminal
 run_test test_quiet_plain_level_prints_the_plain_line
 
 report_results
