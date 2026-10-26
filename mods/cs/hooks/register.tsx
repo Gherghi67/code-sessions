@@ -876,8 +876,8 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // The rail: one upright bar per prompt, flush at the line's right edge, `┃`
   // for the one the band names, `┆` for one a jump was refused, `│`
   // otherwise (side by side, flat ticks run together into one line), each a
-  // Button (the named one a Text: a
-  // Button takes no colour, and there is nowhere to jump). It draws at most
+  // Button (the named one a Text, as dim as the rest: there is nowhere to
+  // jump, and its heavier stroke alone marks it). It draws at most
   // cs.bandBars bars in what the line leaves after the inset, the gaps and
   // the words, always the named one among them (railTicks); the older prompts
   // collapse into one `…N` run, a cell before the first bar, and any newer
@@ -971,7 +971,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
                   {ticks.from > 0 && <Box marginRight={1}><Text dimColor>{`…${ticks.from}`}</Text></Box>}
                   {ticks.prompts.slice(ticks.from, ticks.to).map((p, j) => {
                     const i = ticks.from + j
-                    if (i === ticks.named) return own === undefined ? <Text bold>{'┃'}</Text> : <Text bold color={own}>{'┃'}</Text>
+                    if (i === ticks.named) return <Text dimColor>{'┃'}</Text>
                     return <Button key={`cs-rail-${i}`} plain dimColor label={ticks.denied.has(p.uuid) ? '┆' : '│'}
                                    hover={hovering ? { scope: `cs-rail-${i}`, dimColor: false } : undefined} onPress={() => ticks.jump(i)} />
                   })}

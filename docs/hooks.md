@@ -518,8 +518,8 @@ repeat it.
 
 The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
 off by default; see [configuration.md](configuration.md#band-settings)).
-It is one upright bar per prompt the person sent in this conversation: `│` dim, `┃` bold in the session's colour for the prompt the band
-names, `┆` dim for a prompt the engine refused to scroll to. The band names
+It is one upright bar per prompt the person sent in this conversation: `│` dim, `┃` dim too for the prompt the band
+names (its heavier stroke marks it), `┆` dim for a prompt the engine refused to scroll to. The band names
 the newest prompt; with the `/config` row `cs.bandPrompt` set to `read` it
 names the prompt being read instead (the prompt whose row stands highest on
 screen, from the engine's own on-screen reports of the transcript's rows)

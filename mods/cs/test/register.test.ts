@@ -2282,7 +2282,7 @@ test('after a turn ends the band draws one tick per prompt, the newest thick whi
   for (const b of tickButtons(tree)) expect(b.props).toMatchObject({ plain: true, dimColor: true })
   expect(tickButtons(tree).some((b: any) => b.props.hotkey !== undefined)).toBe(false)
   expect(buttonsUnderText(tree)).toBe(0)
-  expect(texts(boxes(tree).find((b: any) => b.props.key === 'cs-rail')).find((t: any) => textOf(t) === '\u2503').props).toEqual({ bold: true, color: 'rgb(220,38,38)' })
+  expect(texts(boxes(tree).find((b: any) => b.props.key === 'cs-rail')).find((t: any) => textOf(t) === '\u2503').props).toEqual({ dimColor: true })
   // Below the threshold the rail still draws, with no key words, its last bar in the line's last cell and the
   // read prompt three cells before it; the name holds the widest prompt a bar can swap in, `#3 say three`.
   expect(restingWords(tree)).toEqual([' #4 say four', '\u2503'])
