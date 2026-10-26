@@ -5670,7 +5670,10 @@ test_quiet_follows_the_iterm_profile_across_appearances() {
 }
 
 # A profile with one background is light or dark by that background: navy is
-# dark although cs measured cream at launch and macOS is light.
+# dark although cs measured cream at launch and macOS is light. A component
+# below zero, as a colour outside the profile's colour space stores it, reads
+# as 0: red -0.2 makes the background 0;24;40, so blue keeps 35% over it,
+# 106+(0-106)*65/100 = 38, so 38;70;98.
 test_quiet_iterm_single_background_sets_the_theme() {
     iterm_tool || return $?
     iterm_env light
@@ -5680,6 +5683,11 @@ test_quiet_iterm_single_background_sets_the_theme() {
     out=$(run_sl "$FIXTURE_DOCS")
     chip=$(quiet_chip "51;70;98" "195;215;234")
     assert_eq "$chip" "${out:0:${#chip}}" "the dark chip over the profile's navy" || return 1
+    rm -rf "$HOME/Library/Preferences/com.googlecode.iterm2.plist" "$HOME/.cache/cs/iterm-profile"
+    iterm_prefs 0 Work "-51;24;40"
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "38;70;98" "195;215;234")
+    assert_eq "$chip" "${out:0:${#chip}}" "a component below zero reads as 0" || return 1
 }
 
 # The profile is not read over ssh, where the preferences on disk are not the
