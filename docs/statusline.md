@@ -203,7 +203,7 @@ A reading (the ctx and quota percentages, the cost) keeps the quiet ink itself, 
 
 The model's glyph `✦` takes the color of the effort word after it, `effort-max-1` for `max`. The effort word keeps its own color. With no effort the glyph takes its run's fade, like the model name.
 
-Below truecolor there is no fade. The chip is the `surface` fill with `ink` text, labels and joiners are `ink2`, and readings are `ink`, bold, all in the level's tokens. Plain mode (`NO_COLOR` and the rest) ignores the layout and prints the plain line the capsules print.
+Below truecolor there is no fade. The chip is the `surface` fill with `ink` text, in the level's tokens. At 256 colors labels and joiners are `ink2` and readings are `ink`, bold. At basic, whose `ink` and `ink2` are white tokens made for the capsules' fill, labels and joiners are bright black (90) and readings the terminal's own foreground (39), bold, so both read on a light or a dark terminal. Plain mode (`NO_COLOR` and the rest) ignores the layout and prints the plain line the capsules print.
 
 ## Band layout
 
