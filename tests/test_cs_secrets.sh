@@ -5502,18 +5502,20 @@ cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
 }
 
 # A base's secrets are its features' too, so while one of its features is
-# live they are written only by the base itself, by that live feature (its
-# own secrets) and from a plain terminal: another base and a sibling feature
-# are refused. receiver is closed here.
+# live they are written by the base itself, by that live feature (its own
+# secrets) and from a plain terminal. A sibling feature only adds a name the
+# base does not hold yet, and another base is refused. receiver is closed
+# here.
 test_secrets_writes_to_a_base_wait_for_its_live_feature() {
     _live_receiver || return 1
     _stop_receiver
     mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
     sleep 300 &
-    local pid=$! out sibling rc=0 sibling_rc=0
+    local pid=$! out sibling rc=0 sibling_rc=0 held held_rc=0
     echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
     out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set API_KEY 2>&1) || rc=$?
     sibling=$(printf 'v3' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set SIBLING_KEY 2>&1) || sibling_rc=$?
+    held=$(printf 'v7' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set API_KEY 2>&1) || held_rc=$?
     local base=0 own=0 plain=0
     printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set BASE_KEY >/dev/null 2>&1 || base=$?
     printf 'v5' | CLAUDE_SESSION_NAME=receiver@x CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set OWN_KEY >/dev/null 2>&1 || own=$?
@@ -5522,14 +5524,118 @@ test_secrets_writes_to_a_base_wait_for_its_live_feature() {
     assert_eq "1" "$rc" "the write from sender exits 1" || return 1
     assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
         "$out" "the refusal names the live feature" || return 1
-    assert_eq "1" "$sibling_rc" "the write from the sibling feature receiver@y exits 1" || return 1
-    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
-        "$sibling" "the sibling's refusal names the live feature" || return 1
+    assert_eq "0" "$sibling_rc" "the sibling feature receiver@y adds a new name: $sibling" || return 1
+    assert_eq "Stored secret: SIBLING_KEY" "$sibling" "the sibling's new name is stored" || return 1
+    assert_eq "1" "$held_rc" "the sibling's change to a stored name exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first. A feature adds only a name receiver does not hold yet while another feature runs; receiver already stores API_KEY, exported as CS_SECRET_API_KEY." \
+        "$held" "the refusal names the live feature and the stored name" || return 1
     assert_eq "0 0 0" "$base $own $plain" "the base, the live feature itself and a plain terminal write" || return 1
     assert_eq "export CS_SECRET_API_KEY=v1
 export CS_SECRET_BASE_KEY=v4
 export CS_SECRET_OWN_KEY=v5
-export CS_SECRET_PLAIN_KEY=v6" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused writes are missing" || return 1
+export CS_SECRET_PLAIN_KEY=v6
+export CS_SECRET_SIBLING_KEY=v3" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused writes are missing" || return 1
+}
+
+# A sibling's name is held when a stored one exports as the same variable:
+# api-key beside receiver's API_KEY would make the live feature's
+# `cs -secrets export` refuse both.
+test_secrets_a_sibling_name_exporting_as_a_held_one_waits_for_the_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set api-key 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the sibling's write exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first. A feature adds only a name receiver does not hold yet while another feature runs; receiver already stores API_KEY, exported as CS_SECRET_API_KEY." \
+        "$out" "the refusal names the stored secret and its variable" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
+# Only set and store add a name past a live sibling; every other write from a
+# sibling feature waits for it, refused before it looks at any name.
+test_secrets_every_other_sibling_write_waits_for_the_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! cmd out rc
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    local refusal="Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first."
+    local cmds=("delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend keychain --delete-source" "export-file" \
+        "age add age1example" "age remove alice" "age rm alice")
+    for cmd in "${cmds[@]}"; do
+        rc=0
+        # shellcheck disable=SC2086 # each entry carries its own arguments
+        out=$(printf 'v2' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" $cmd 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$cmd exits 1" || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; }
+        assert_eq "$refusal" "$out" "$cmd is refused" || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; }
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
+# A new name passes a live feature only from a sibling: another session's
+# set waits for it whatever the name.
+test_secrets_another_session_adding_a_name_waits_for_a_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set NEW_KEY 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the write from sender exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
+# The Keychain store replaces a held name in place, so a sibling's set there
+# waits for the live feature the same way; a new name is added.
+test_secrets_a_sibling_keychain_write_adds_only_a_new_name_while_a_feature_is_live() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs" "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    printf 'v1' > "$TEST_TMPDIR/v1"
+    printf 'v2' > "$TEST_TMPDIR/v2"
+    CLAUDE_SESSION_NAME=receiver _kc_secrets set API_KEY < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed receiver's secret"; return 1; }
+    sleep 300 &
+    local pid=$! held held_rc=0 added added_rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    held=$(CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver _kc_secrets set API_KEY < "$TEST_TMPDIR/v2" 2>&1) || held_rc=$?
+    added=$(CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver _kc_secrets set NEW_KEY < "$TEST_TMPDIR/v2" 2>&1) || added_rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$held_rc" "the sibling's change to a stored name exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first. A feature adds only a name receiver does not hold yet while another feature runs; receiver already stores API_KEY, exported as CS_SECRET_API_KEY." \
+        "$held" "the refusal names the stored secret" || return 1
+    assert_eq "v1" "$(CLAUDE_SESSION_NAME=receiver _kc_secrets get API_KEY 2>&1)" "the stored value is as it was" || return 1
+    assert_eq "0" "$added_rc" "the sibling's new name exits 0: $added" || return 1
+    assert_eq "cs:receiver:API_KEY
+cs:receiver:NEW_KEY" "$(_kc_services)" "the new name is added beside the stored one" || return 1
+}
+
+# A sibling's new name needs the names its base holds; when the store cannot
+# list them the write waits for the live feature rather than store blind.
+test_secrets_a_sibling_write_waits_when_the_held_names_cannot_be_read() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs" "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    printf 'v2' > "$TEST_TMPDIR/v2"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver FAKE_SECURITY_MODE=fail _kc_secrets set NEW_KEY < "$TEST_TMPDIR/v2" 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the sibling's write exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first. A feature adds only a name receiver does not hold yet while another feature runs, and the names receiver holds could not be read." \
+        "$out" "the refusal says the names could not be read" || return 1
+    assert_eq "" "$(_kc_services)" "nothing was stored" || return 1
 }
 
 # A volume that ignores letter case keeps receiver's store under RECEIVER too,
@@ -5656,6 +5762,11 @@ run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
 run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
 run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
 run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
+run_test test_secrets_a_sibling_name_exporting_as_a_held_one_waits_for_the_live_feature
+run_test test_secrets_every_other_sibling_write_waits_for_the_live_feature
+run_test test_secrets_another_session_adding_a_name_waits_for_a_live_feature
+run_test test_secrets_a_sibling_keychain_write_adds_only_a_new_name_while_a_feature_is_live
+run_test test_secrets_a_sibling_write_waits_when_the_held_names_cannot_be_read
 run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
 run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
 run_test test_secrets_writes_to_a_base_not_held_by_another_base_live_feature
