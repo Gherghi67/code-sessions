@@ -221,15 +221,15 @@ _sl_tmux_client() {
 # appearance (so does iTerm's own, unless its theme is pinned light or dark in
 # Settings, which this cannot see); any other profile is light or dark by its
 # one background. Sets SL_THEME and _SL_LIVE_BG; 1 when this is not a local
-# iTerm pane or its profile cannot be read. The profile is read at most once in
-# ITERM_PROFILE_CACHE_TTL, a miss included, and the appearance once in
-# MACOS_APPEARANCE_CACHE_TTL.
+# iTerm pane, CS_NO_ITERM2 is set, or the profile cannot be read. The profile
+# is read at most once in ITERM_PROFILE_CACHE_TTL, a miss included, and the
+# appearance once in MACOS_APPEARANCE_CACHE_TTL.
 ITERM_PREFS="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
 ITERM_PROFILE_CACHE_TTL=60
 MACOS_APPEARANCE_CACHE_TTL=5
 _SL_LIVE_BG=""
 _sl_theme_from_iterm() {
-    [ -n "${ITERM_PROFILE:-}" ] && [ -z "${SSH_CONNECTION:-}" ] || return 1
+    [ -n "${ITERM_PROFILE:-}" ] && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${CS_NO_ITERM2:-}" ] || return 1
     [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || [ "${LC_TERMINAL:-}" = "iTerm2" ] || return 1
     # _parse_rgb_triplet is defined further down than this runs.
     local colours dark light bg rgb='^([0-9]+);([0-9]+);([0-9]+)$'
@@ -2629,15 +2629,14 @@ _render_band() {
 #
 # The default layout (CS_STATUSLINE_LAYOUT unset, quiet or any value other
 # than band and capsules): the items as text on the terminal's own
-# background. The mark and the session name sit in one chip of the session's
-# colour, muted to a mid tone with white text; the readings are bold in the
-# terminal's own foreground and the branch is its own green. All of it reads
-# on whatever background the terminal wears now: the theme detected at launch
-# goes stale when macOS switches to dark mode mid-session. The labels and
-# joiners fade, run by run, toward the background on mid grays that read on
-# either. An amber reading is bold amber; a crit reading and its label are a
-# red chip of their own. The brand mark keeps its coral, and the model's glyph
-# wears the effort's colour beside the effort word.
+# background. The mark and the session name sit in one chip tinted with the
+# session's colour, the name in a shade of it (_quiet_chip_fill). The readings
+# are bold in the terminal's own foreground and the branch is the terminal's
+# green, so they read on whatever background the terminal wears, the theme
+# detected at launch notwithstanding. The labels and joiners fade, run by run,
+# toward the background. An amber reading is bold amber; a crit reading and its
+# label are a red chip of their own. The brand mark keeps its coral, and the
+# model's glyph wears the effort's colour beside the effort word.
 
 # The quiet ink $1 percent of the way to the background, as foreground
 # parameters in _QUIET_FG.
@@ -2769,7 +2768,7 @@ _render_quiet() {
             fi
         fi
         # The mark is Claude's coral in the chip, the waiting session's shade
-        # included; the session name is white and bold on the chip's fill.
+        # included; the session name is bold in the chip's ink.
         if [ "${_SEG_ROLE[i]}" = "chip" ]; then
             [ -n "$inchip" ] || out+="${e}[0;${chipbg}m "
             inchip=1
@@ -2794,7 +2793,9 @@ _render_quiet() {
                 */*) head="${name%/*}/"; leaf="${name##*/}" ;;
                 *)   leaf="$name" ;;
             esac
-            out+="${e}[0;32m${glyph}${e}[0;2;32m${head}${e}[0;32m${leaf}"
+            out+="${e}[0;32m${glyph}"
+            [ -z "$head" ] || out+="${e}[0;2;32m${head}${e}[0;32m"
+            out+="$leaf"
             [ -z "$marks" ] || out+="${e}[0;${_QUIET_FG}m${marks}"
             continue
         fi

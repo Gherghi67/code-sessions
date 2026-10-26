@@ -25,7 +25,7 @@ setup() {
     local _v
     while IFS='=' read -r _v _; do
         case "$_v" in
-            CS_*|CLAUDE_*|NO_COLOR|COLORTERM|TERM_PROGRAM|FORCE_COLOR|TMUX|TMUX_PANE|COLORFGBG)
+            CS_*|CLAUDE_*|NO_COLOR|COLORTERM|TERM_PROGRAM|FORCE_COLOR|TMUX|TMUX_PANE|COLORFGBG|ITERM_PROFILE|LC_TERMINAL|SSH_CONNECTION)
                 unset "$_v" 2>/dev/null || true ;;
         esac
     done < <(env)
@@ -5357,21 +5357,71 @@ test_layout_unset_empty_or_unknown_is_quiet() {
     assert_eq "$want" "$out" "an unset layout is quiet" || return 1
 }
 
-# The mark and the session name share one chip filled with the band's start,
-# here session blue pulled to 44;52;70, the name in the band's dark primary.
-# The mark stays Claude's coral 217;119;87 while the attention marker would
-# shade it on the capsules.
+# The line opening with one chip of mark and name, filled $1 and the name in
+# ink $2 (both r;g;b), the mark in Claude's coral 217;119;87.
+quiet_chip() {
+    local chip="${ESC_}[0m${ESC_}[0;48;2;$1m ${ESC_}[48;2;$1;38;2;217;119;87;1m✳"
+    chip+="${ESC_}[48;2;$1m ${ESC_}[48;2;$1;38;2;$2;1mmy-session"
+    printf '%s' "$chip${ESC_}[48;2;$1m ${ESC_}[0m"
+}
+
+# The mark and the session name share one chip: the session colour seen
+# through the background, the name in a shade of that colour. Session blue
+# 106;155;204 on the dark 21;24;40 keeps 35%, 106+(21-106)*65/100 = 51, so
+# 51;70;98, and the name is 60% of the way to white, 106+149*60/100 = 195, so
+# 195;215;234. On cream 253;246;227 it keeps 15%, 106+147*85/100 = 230, so
+# 230;232;223, and the name is halfway to black, 53;78;102. The mark stays
+# Claude's coral while the attention marker would shade it on the capsules.
 test_quiet_chip_holds_the_mark_and_the_session_name() {
     quiet_env
     band_session_colour blue
     touch "$CS_SESSIONS_ROOT/band-sess/.cs/local/attention"
     local out chip
     out=$(run_sl "$FIXTURE_DOCS")
-    chip="${ESC_}[0m${ESC_}[0;48;2;44;52;70m ${ESC_}[48;2;44;52;70;38;2;217;119;87;1m✳"
-    chip+="${ESC_}[48;2;44;52;70m ${ESC_}[48;2;44;52;70;38;2;255;255;255;22mmy-session"
-    chip+="${ESC_}[48;2;44;52;70m ${ESC_}[0m"
+    chip=$(quiet_chip "51;70;98" "195;215;234")
     assert_eq "$chip" "${out:0:${#chip}}" "the line opens with one chip of mark and name" || return 1
     assert_output_not_contains_f "$out" "184;101;74" "the mark is not the attention shade" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "230;232;223" "53;78;102")
+    assert_eq "$chip" "${out:0:${#chip}}" "on cream the chip is a pale tint, the name a dark shade" || return 1
+}
+
+# With no session colour the chip is the background's neutral step, lighter on
+# a dark terminal (21;24;40 lifted to 61;64;90) and darker on a light one
+# (253;246;227 less 30, 223;216;197), the name in the terminal's own ink.
+test_quiet_chip_without_a_session_colour_is_neutral() {
+    quiet_env
+    local out chip
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip="${ESC_}[0m${ESC_}[0;48;2;61;64;90m ${ESC_}[48;2;61;64;90;38;2;217;119;87;1m✳"
+    chip+="${ESC_}[48;2;61;64;90m ${ESC_}[48;2;61;64;90;39;1mmy-session"
+    assert_eq "$chip" "${out:0:${#chip}}" "the dark neutral chip" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip="${ESC_}[0m${ESC_}[0;48;2;223;216;197m ${ESC_}[48;2;223;216;197;38;2;217;119;87;1m✳"
+    chip+="${ESC_}[48;2;223;216;197m ${ESC_}[48;2;223;216;197;39;1mmy-session"
+    assert_eq "$chip" "${out:0:${#chip}}" "the light neutral chip" || return 1
+}
+
+# The branch is the terminal's green: its glyph and its name, the path before
+# the last / the same green faint, and the marks after it in the fade of its
+# run, the first after the chip, 35%: 147;153;170.
+test_quiet_branch_is_the_terminal_green() {
+    quiet_env
+    local work json out
+    work=$(make_git_work)
+    git -C "$work" checkout -q -b feat/ui/chip
+    json=$(jq -c --arg dir "$work" '.workspace.current_dir = $dir' <<< "$FIXTURE_DOCS")
+    out=$(run_sl "$json")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;32m⎇ ${ESC_}[0;2;32mfeat/ui/${ESC_}[0;32mchip${ESC_}[0;38;2;147;153;170m +1!1" \
+        "glyph and name green, the path faint, the marks faded" || return 1
+    git -C "$work" checkout -q main
+    rm -rf "$HOME/.cache/cs"
+    out=$(run_sl "$json")
+    assert_output_contains_f "$out" "${ESC_}[0;32m⎇ main${ESC_}[0;38;2;147;153;170m +1!1" \
+        "a name with no path is green throughout" || return 1
 }
 
 # Labels and joiners fade from the quiet ink toward the background, run by
@@ -5399,16 +5449,17 @@ test_quiet_labels_and_joiners_fade_run_by_run() {
         "the last run on cream" || return 1
 }
 
-# A reading keeps the quiet ink itself, bold, whatever its run.
-test_quiet_readings_are_bold_full_ink() {
+# A reading is the terminal's own foreground, bold, whatever its run and
+# whatever theme cs believes the terminal wears.
+test_quiet_readings_are_bold_terminal_ink() {
     quiet_env
     local out
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" "${ESC_}[0;38;2;214;222;240;1m8%" "the ctx reading" || return 1
-    assert_output_contains_f "$out" "${ESC_}[0;38;2;214;222;240;1m23%" "the 5h reading in the last run" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;39;1m8%" "the ctx reading" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;39;1m23%" "the 5h reading in the last run" || return 1
     export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
     out=$(run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" "${ESC_}[0;38;2;60;59;54;1m8%" "the ctx reading on cream" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;39;1m8%" "the ctx reading on cream" || return 1
 }
 
 test_quiet_amber_reading_is_bold_amber() {
@@ -5432,7 +5483,7 @@ test_quiet_crit_reading_and_its_label_are_one_red_chip() {
         "${ESC_}[0;38;2;108;114;130m  · ${ESC_}[0;48;2;255;69;58m ${red}◷ 5h${red} ${red}95%${ESC_}[48;2;255;69;58m ${ESC_}[0m" \
         "the 5h label and reading are one red chip" || return 1
     assert_output_contains_f "$out" \
-        "${ESC_}[48;2;255;69;58m ${ESC_}[0m${ESC_}[0;38;2;108;114;130m ⋮ ${ESC_}[0;38;2;108;114;130m◶ wk${ESC_}[0m ${ESC_}[0;38;2;214;222;240;1m60%" \
+        "${ESC_}[48;2;255;69;58m ${ESC_}[0m${ESC_}[0;38;2;108;114;130m ⋮ ${ESC_}[0;38;2;108;114;130m◶ wk${ESC_}[0m ${ESC_}[0;39;1m60%" \
         "wk follows outside the chip" || return 1
 }
 
@@ -5467,8 +5518,10 @@ test_quiet_model_glyph_wears_the_effort_colour() {
         "no effort: the glyph in the fade" || return 1
 }
 
-# Below truecolor there is no fade: the chip is the 256 surface, labels and
-# joiners the secondary ink, readings the primary ink, bold.
+# Below truecolor there is no fade and no session tint: the chip is a gray,
+# dark with white text on a dark terminal and light with the terminal's ink on
+# a light one; labels and joiners are the secondary ink, readings the
+# terminal's foreground, bold.
 test_quiet_256_has_no_fade() {
     quiet_env
     unset COLORTERM
@@ -5476,10 +5529,17 @@ test_quiet_256_has_no_fade() {
     out=$(run_sl "$(band_fixture 45 95 60)")
     assert_output_not_contains_f "$out" "38;2;" "no truecolor ink" || return 1
     assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
-    assert_output_contains_f "$out" "${ESC_}[0;48;5;237m ${ESC_}[48;5;237;38;5;173;1m✳" "the chip is the 256 surface" || return 1
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;48;5;241m ${ESC_}[48;5;241;38;5;173;1m✳${ESC_}[48;5;241m ${ESC_}[48;5;241;38;5;231;1mmy-session" \
+        "the chip is a dark gray with white text" || return 1
     assert_output_contains_f "$out" "${ESC_}[0;38;5;250m  ·  ${ESC_}[0;38;5;250m◑ ctx" "a label is the 256 secondary ink" || return 1
-    assert_output_contains_f "$out" "${ESC_}[0;38;5;250m ⋮ ${ESC_}[0;38;5;250m◶ wk${ESC_}[0m ${ESC_}[0;38;5;255;1m60%" \
-        "the last label is the same ink, the reading the 256 primary" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;5;250m ⋮ ${ESC_}[0;38;5;250m◶ wk${ESC_}[0m ${ESC_}[0;39;1m60%" \
+        "the last label is the same ink, the reading the terminal's foreground" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$(band_fixture 45 95 60)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;48;5;253m ${ESC_}[48;5;253;38;5;173;1m✳${ESC_}[48;5;253m ${ESC_}[48;5;253;39;1mmy-session" \
+        "on a light terminal the chip is a light gray in the terminal's ink" || return 1
 }
 
 # At basic colours quiet draws on the terminal's own background, where the
@@ -5495,10 +5555,14 @@ test_quiet_basic_inks_read_on_the_terminal() {
     assert_output_not_contains_f "$out" "${ESC_}[0;97" "no bright white reading on a light terminal" || return 1
     assert_output_contains_f "$out" "${ESC_}[0;90m  ·  ${ESC_}[0;90m○ ctx${ESC_}[0m ${ESC_}[0;39;1m8%" \
         "a label in bright black, the reading in the terminal's foreground, bold" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;47m ${ESC_}[47;33;1m✳${ESC_}[47m ${ESC_}[47;39;1mmy-session" \
+        "the chip is white with the terminal's ink" || return 1
     export CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40"
     out=$(run_sl "$(band_fixture 8 23.5 41.2)")
     assert_output_contains_f "$out" "${ESC_}[0;90m  ·  ${ESC_}[0;90m○ ctx${ESC_}[0m ${ESC_}[0;39;1m8%" \
         "the same inks on a dark terminal" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;100m ${ESC_}[100;33;1m✳${ESC_}[100m ${ESC_}[100;97;1mmy-session" \
+        "on a dark terminal the chip is bright black with bright white text" || return 1
 }
 
 test_quiet_plain_level_prints_the_plain_line() {
@@ -5510,10 +5574,119 @@ test_quiet_plain_level_prints_the_plain_line() {
     assert_eq "$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")" "$out" "plain ignores the layout" || return 1
 }
 
+# The iTerm tests write real preferences with PlistBuddy, which only macOS has.
+iterm_tool() {
+    [ -x /usr/libexec/PlistBuddy ] && return 0
+    echo "    SKIP: /usr/libexec/PlistBuddy missing"
+    SKIP_REASON="/usr/libexec/PlistBuddy missing"
+    return 77
+}
+
+# Add background colour $3 (r;g;b) at key path $2 of preferences file $1, each
+# component a fraction of 255 the way iTerm stores it.
+iterm_colour() {
+    local r g b
+    IFS=';' read -r r g b <<< "$3"
+    /usr/libexec/PlistBuddy -c "Add '$2' dict" \
+        -c "Add '$2:Red Component' real $(awk -v v="$r" 'BEGIN { printf "%.6f", v / 255 }')" \
+        -c "Add '$2:Green Component' real $(awk -v v="$g" 'BEGIN { printf "%.6f", v / 255 }')" \
+        -c "Add '$2:Blue Component' real $(awk -v v="$b" 'BEGIN { printf "%.6f", v / 255 }')" \
+        "$1" >/dev/null
+}
+
+# Write iTerm's preferences under the test HOME: $1 other profiles, then the
+# profile named $2 with background $3, or with separate dark $3 and light $4.
+iterm_prefs() {
+    local f="$HOME/Library/Preferences/com.googlecode.iterm2.plist" i p=":New Bookmarks:$1"
+    mkdir -p "$HOME/Library/Preferences"
+    /usr/libexec/PlistBuddy -c "Add ':New Bookmarks' array" "$f" >/dev/null
+    for ((i = 0; i < $1; i++)); do
+        /usr/libexec/PlistBuddy -c "Add ':New Bookmarks:$i' dict" \
+            -c "Add ':New Bookmarks:$i:Name' string other-$i" "$f" >/dev/null
+    done
+    /usr/libexec/PlistBuddy -c "Add '$p' dict" -c "Add '$p:Name' string $2" "$f" >/dev/null
+    if [ -n "${4:-}" ]; then
+        /usr/libexec/PlistBuddy -c "Add '$p:Use Separate Colors for Light and Dark Mode' bool true" "$f" >/dev/null
+        iterm_colour "$f" "$p:Background Color (Dark)" "$3"
+        iterm_colour "$f" "$p:Background Color (Light)" "$4"
+    else
+        iterm_colour "$f" "$p:Background Color" "$3"
+    fi
+}
+
+# A local iTerm pane on profile Work that cs launched on cream, so the launch
+# theme is a measured light, with macOS in appearance $1 as of the clock.
+iterm_env() {
+    quiet_env
+    export CS_TERM_THEME=light CS_TERM_THEME_AUTO=1 CS_TERM_BG_RGB="253;246;227" \
+        ITERM_PROFILE=Work LC_TERMINAL=iTerm2 CS_STATUSLINE_NOW=1000
+    mkdir -p "$HOME/.cache/cs/macos-appearance"
+    printf '1000\tglobal\n%s\n' "$1" > "$HOME/.cache/cs/macos-appearance/global"
+}
+
+# In iTerm the theme and the background come from the pane's profile, read
+# live, so a dark-mode switch after launch reaches the line. A profile with
+# separate light and dark colours follows macOS: in dark mode the chip is the
+# dark one over the profile's 21;24;40 (as in the chip test), in light mode
+# session blue keeps 15% over the profile's white, 106+149*85/100 = 232, so
+# 232;240;247. The profile sits tenth, past the first eight names read.
+test_quiet_follows_the_iterm_profile_across_appearances() {
+    iterm_tool || return $?
+    iterm_env dark
+    band_session_colour blue
+    iterm_prefs 9 Work "21;24;40" "255;255;255"
+    local out chip
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "51;70;98" "195;215;234")
+    assert_eq "$chip" "${out:0:${#chip}}" "macOS dark: the dark chip over the profile's dark background" || return 1
+    printf '1000\tglobal\nlight\n' > "$HOME/.cache/cs/macos-appearance/global"
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "232;240;247" "53;78;102")
+    assert_eq "$chip" "${out:0:${#chip}}" "macOS light: the light chip over the profile's light background" || return 1
+}
+
+# A profile with one background is light or dark by that background: navy is
+# dark although cs measured cream at launch and macOS is light.
+test_quiet_iterm_single_background_sets_the_theme() {
+    iterm_tool || return $?
+    iterm_env light
+    band_session_colour blue
+    iterm_prefs 0 Work "21;24;40"
+    local out chip
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "51;70;98" "195;215;234")
+    assert_eq "$chip" "${out:0:${#chip}}" "the dark chip over the profile's navy" || return 1
+}
+
+# The profile is not read over ssh, where the preferences on disk are not the
+# terminal's, nor with CS_NO_ITERM2 set, and a profile missing from the
+# preferences reads as nothing: the launch theme and background stand. A
+# background set by hand outranks the profile's, under the profile's theme:
+# 106+(30-106)*65/100 = 57, so 57;74;91.
+test_quiet_iterm_profile_stands_down() {
+    iterm_tool || return $?
+    iterm_env dark
+    band_session_colour blue
+    iterm_prefs 0 Work "21;24;40" "253;246;227"
+    local out light chip
+    light=$(quiet_chip "230;232;223" "53;78;102")
+    out=$(SSH_CONNECTION="192.0.2.1 50000 192.0.2.2 22" run_sl "$FIXTURE_DOCS")
+    assert_eq "$light" "${out:0:${#light}}" "over ssh the launch theme stands" || return 1
+    out=$(CS_NO_ITERM2=1 run_sl "$FIXTURE_DOCS")
+    assert_eq "$light" "${out:0:${#light}}" "CS_NO_ITERM2 keeps the launch theme" || return 1
+    out=$(ITERM_PROFILE=Elsewhere run_sl "$FIXTURE_DOCS")
+    assert_eq "$light" "${out:0:${#light}}" "a profile not in the preferences keeps the launch theme" || return 1
+    out=$(CS_TERM_THEME="" CS_TERM_THEME_AUTO="" CS_TERM_BG_RGB="30;30;30" run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "57;74;91" "195;215;234")
+    assert_eq "$chip" "${out:0:${#chip}}" "a background set by hand outranks the profile's" || return 1
+}
+
 run_test test_layout_unset_empty_or_unknown_is_quiet
 run_test test_quiet_chip_holds_the_mark_and_the_session_name
+run_test test_quiet_chip_without_a_session_colour_is_neutral
+run_test test_quiet_branch_is_the_terminal_green
 run_test test_quiet_labels_and_joiners_fade_run_by_run
-run_test test_quiet_readings_are_bold_full_ink
+run_test test_quiet_readings_are_bold_terminal_ink
 run_test test_quiet_amber_reading_is_bold_amber
 run_test test_quiet_crit_reading_and_its_label_are_one_red_chip
 run_test test_quiet_two_crit_groups_are_two_chips
@@ -5521,5 +5694,8 @@ run_test test_quiet_model_glyph_wears_the_effort_colour
 run_test test_quiet_256_has_no_fade
 run_test test_quiet_basic_inks_read_on_the_terminal
 run_test test_quiet_plain_level_prints_the_plain_line
+run_test test_quiet_follows_the_iterm_profile_across_appearances
+run_test test_quiet_iterm_single_background_sets_the_theme
+run_test test_quiet_iterm_profile_stands_down
 
 report_results
