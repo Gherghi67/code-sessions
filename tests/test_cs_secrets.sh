@@ -5555,6 +5555,31 @@ test_secrets_a_sibling_name_exporting_as_a_held_one_waits_for_the_live_feature()
     assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
 }
 
+# Only set and store add a name past a live sibling; every other write from a
+# sibling feature waits for it, refused before it looks at any name.
+test_secrets_every_other_sibling_write_waits_for_the_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! cmd out rc
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    local refusal="Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first."
+    local cmds=("delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend keychain --delete-source" "export-file" \
+        "age add age1example" "age remove alice" "age rm alice")
+    for cmd in "${cmds[@]}"; do
+        rc=0
+        # shellcheck disable=SC2086 # each entry carries its own arguments
+        out=$(printf 'v2' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" $cmd 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$cmd exits 1" || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; }
+        assert_eq "$refusal" "$out" "$cmd is refused" || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; }
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
 # A volume that ignores letter case keeps receiver's store under RECEIVER too,
 # so a write to RECEIVER waits for receiver's live feature on every route.
 test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature() {
@@ -5680,6 +5705,7 @@ run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
 run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
 run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
 run_test test_secrets_a_sibling_name_exporting_as_a_held_one_waits_for_the_live_feature
+run_test test_secrets_every_other_sibling_write_waits_for_the_live_feature
 run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
 run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
 run_test test_secrets_writes_to_a_base_not_held_by_another_base_live_feature
