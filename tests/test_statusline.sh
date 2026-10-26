@@ -5340,6 +5340,8 @@ test_layout_unset_empty_or_unknown_is_quiet() {
     quiet_env
     local want out
     want=$(run_sl "$FIXTURE_DOCS")
+    assert_eq " ✳ my-session   ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%" \
+        "$(printf '%s' "$want" | sed "s/$ESC_\[[0-9;]*m//g")" "quiet draws the items with no fill after them" || return 1
     out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
     assert_eq "$want" "$out" "an empty layout is quiet" || return 1
     out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
@@ -5355,6 +5357,149 @@ test_layout_unset_empty_or_unknown_is_quiet() {
     assert_eq "$want" "$out" "an unset layout is quiet" || return 1
 }
 
+# The mark and the session name share one chip filled with the band's start,
+# here session blue pulled to 44;52;70, the name in the band's dark primary.
+# The mark stays Claude's coral 217;119;87 while the attention marker would
+# shade it on the capsules.
+test_quiet_chip_holds_the_mark_and_the_session_name() {
+    quiet_env
+    band_session_colour blue
+    touch "$CS_SESSIONS_ROOT/band-sess/.cs/local/attention"
+    local out chip
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip="${ESC_}[0m${ESC_}[0;48;2;44;52;70m ${ESC_}[48;2;44;52;70;38;2;217;119;87;1m✳"
+    chip+="${ESC_}[48;2;44;52;70m ${ESC_}[48;2;44;52;70;38;2;255;255;255;22mmy-session"
+    chip+="${ESC_}[48;2;44;52;70m ${ESC_}[0m"
+    assert_eq "$chip" "${out:0:${#chip}}" "the line opens with one chip of mark and name" || return 1
+    assert_output_not_contains_f "$out" "184;101;74" "the mark is not the attention shade" || return 1
+}
+
+# Labels and joiners fade from the quiet ink toward the background, run by
+# run: a run starts at each group and at each item a dot joins. The docs
+# fixture has three runs after the chip (model, ctx, limits) at 35%, 45% and
+# 55%. Dark: from 214;222;240 to 21;24;40, so 214+(21-214)*35/100 = 147 and
+# 147;153;170, then 128;133;150 and 108;114;130. Cream 253;246;227: the quiet
+# ink is 24% of the background, 60;59;54, so 127;124;114, 146;143;131 and
+# 166;161;149.
+test_quiet_labels_and_joiners_fade_run_by_run() {
+    quiet_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;147;153;170m  ·  " "the first run's joiner at 35%" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;128;133;150m  ·  ${ESC_}[0;38;2;128;133;150m○ ctx" \
+        "the second run's joiner and label at 45%" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;108;114;130m  ·  ${ESC_}[0;38;2;108;114;130m◷ 5h" \
+        "the last run's joiner and label at 55%" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;127;124;114m  ·  " "the first run on cream" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;146;143;131m  ·  ${ESC_}[0;38;2;146;143;131m○ ctx" \
+        "the second run on cream" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;166;161;149m  ·  ${ESC_}[0;38;2;166;161;149m◷ 5h" \
+        "the last run on cream" || return 1
+}
+
+# A reading keeps the quiet ink itself, bold, whatever its run.
+test_quiet_readings_are_bold_full_ink() {
+    quiet_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;214;222;240;1m8%" "the ctx reading" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;214;222;240;1m23%" "the 5h reading in the last run" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;60;59;54;1m8%" "the ctx reading on cream" || return 1
+}
+
+test_quiet_amber_reading_is_bold_amber() {
+    quiet_env
+    local out
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;253;230;138;1m45%" "ctx at warn is bold pale amber" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;180;83;9;1m45%" "ctx at warn on cream is bold amber" || return 1
+}
+
+# 5h at crit: its label and reading are one red chip, critink bold on crit, a
+# fill space on each side. The chip's pad stands for one space of the dot
+# joiner before it, and wk, joined by a bar, stays outside in its fade.
+test_quiet_crit_reading_and_its_label_are_one_red_chip() {
+    quiet_env
+    local out red="${ESC_}[48;2;255;69;58;38;2;255;255;255;1m"
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;38;2;108;114;130m  · ${ESC_}[0;48;2;255;69;58m ${red}◷ 5h${red} ${red}95%${ESC_}[48;2;255;69;58m ${ESC_}[0m" \
+        "the 5h label and reading are one red chip" || return 1
+    assert_output_contains_f "$out" \
+        "${ESC_}[48;2;255;69;58m ${ESC_}[0m${ESC_}[0;38;2;108;114;130m ⋮ ${ESC_}[0;38;2;108;114;130m◶ wk${ESC_}[0m ${ESC_}[0;38;2;214;222;240;1m60%" \
+        "wk follows outside the chip" || return 1
+}
+
+# ctx and 5h both at crit: two chips, the dot joiner between them single-spaced
+# since each chip's pad stands for one of its spaces.
+test_quiet_two_crit_groups_are_two_chips() {
+    quiet_env
+    local out red="${ESC_}[48;2;255;69;58;38;2;255;255;255;1m"
+    out=$(run_sl "$(band_fixture 95 95 60)")
+    assert_output_contains_f "$out" \
+        "${red}95%${ESC_}[48;2;255;69;58m ${ESC_}[0m${ESC_}[0;38;2;108;114;130m · ${ESC_}[0;48;2;255;69;58m ${red}◷ 5h" \
+        "the ctx chip closes, a single-spaced dot, the 5h chip opens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;48;2;255;69;58m ${red}● ctx${red} ${red}95%" "ctx is a chip of its own" || return 1
+}
+
+# The model's glyph wears the effort's colour, max's first letter for max,
+# and the effort word keeps its own; with no effort the glyph is the run's
+# fade like the model name.
+test_quiet_model_glyph_wears_the_effort_colour() {
+    quiet_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;38;2;146;158;250m✦${ESC_}[0;38;2;147;153;170m Opus${ESC_}[0m ${ESC_}[0;38;2;146;158;250mhigh" \
+        "high: the glyph and the word in effort-high, the name in the fade" || return 1
+    out=$(run_sl "$(jq -c '.effort.level = "max"' <<< "$FIXTURE_DOCS")")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;38;2;174;200;232m✦${ESC_}[0;38;2;147;153;170m Opus${ESC_}[0m ${ESC_}[0;38;2;174;200;232mm${ESC_}[0m${ESC_}[0;38;2;190;174;219ma${ESC_}[0m${ESC_}[0;38;2;219;174;206mx" \
+        "max: the glyph in effort-max-1, the word letter by letter" || return 1
+    out=$(run_sl "$(jq -c 'del(.effort)' <<< "$FIXTURE_DOCS")")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;147;153;170m✦ Opus${ESC_}[0;38;2;128;133;150m" \
+        "no effort: the glyph in the fade" || return 1
+}
+
+# Below truecolor there is no fade: the chip is the 256 surface, labels and
+# joiners the secondary ink, readings the primary ink, bold.
+test_quiet_256_has_no_fade() {
+    quiet_env
+    unset COLORTERM
+    local out
+    out=$(run_sl "$(band_fixture 45 95 60)")
+    assert_output_not_contains_f "$out" "38;2;" "no truecolor ink" || return 1
+    assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;48;5;237m ${ESC_}[48;5;237;38;5;173;1m✳" "the chip is the 256 surface" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;5;250m  ·  ${ESC_}[0;38;5;250m◑ ctx" "a label is the 256 secondary ink" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;5;250m ⋮ ${ESC_}[0;38;5;250m◶ wk${ESC_}[0m ${ESC_}[0;38;5;255;1m60%" \
+        "the last label is the same ink, the reading the 256 primary" || return 1
+}
+
+test_quiet_plain_level_prints_the_plain_line() {
+    quiet_env
+    export NO_COLOR=1
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "my-session · ✦ Opus high > ○ ctx 8% > ◷ 5h 23%" "$out" "plain prints the plain line" || return 1
+    assert_eq "$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")" "$out" "plain ignores the layout" || return 1
+}
+
 run_test test_layout_unset_empty_or_unknown_is_quiet
+run_test test_quiet_chip_holds_the_mark_and_the_session_name
+run_test test_quiet_labels_and_joiners_fade_run_by_run
+run_test test_quiet_readings_are_bold_full_ink
+run_test test_quiet_amber_reading_is_bold_amber
+run_test test_quiet_crit_reading_and_its_label_are_one_red_chip
+run_test test_quiet_two_crit_groups_are_two_chips
+run_test test_quiet_model_glyph_wears_the_effort_colour
+run_test test_quiet_256_has_no_fade
+run_test test_quiet_plain_level_prints_the_plain_line
 
 report_results
