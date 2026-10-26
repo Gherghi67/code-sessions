@@ -2995,6 +2995,18 @@ test('the queue word stands at the left after the key words, a dim middle dot be
   expect(bandLine(tree, 110)).toBe('  rotate   wrap · ▤ queue 2 running')
 })
 
+test('the queue glyph takes the status line\'s amber, light on a dark terminal and dark on a light one, on the start key and the queue word alike', async () => {
+  queueTasks(2)
+  envVars.CS_TERM_THEME = 'dark'
+  expect(queueKey(await band()).children).toEqual([{ type: 'Text', props: { color: 'rgb(253,230,138)' }, children: ['▤'] }, ' run 2 queued tasks'])
+  // A measured light background outranks the theme's name.
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  expect(queueKey(await band()).children).toEqual([{ type: 'Text', props: { color: 'rgb(180,83,9)' }, children: ['▤'] }, ' run 2 queued tasks'])
+  delete envVars.CS_TERM_BG_RGB
+  files['/work/.cs/local/queue.state'] = 'draining\n'
+  expect(queueWordInks(await band())).toEqual([[{ color: 'rgb(253,230,138)' }, '▤'], [{ dimColor: true }, ' queue 2 running']])
+})
+
 // cs delivers each mail as one file in the mailbox's new/, where it stays
 // until `cs -msg` reads it, behind .cs/private in an encrypted session.
 const MAIL = '/work/.cs/local/mail'
@@ -3412,6 +3424,29 @@ test('with no action to offer, what the session is still stands at the right edg
   const tree = drawBand(view({ entries: buildBandEntries({ ...quiet, gate: 'finishing fix-auth · gate 3s', mail: 1 }), bodyColumns: 120 }), EL)
   expect(bandLine(tree, 120)).toBe(`  ${gap(81)}finishing fix-auth · gate 3s   mail 1`)
   expect(bandBody(tree).map((k: any) => k.props.key ?? textOf(k))).toEqual(['cs-spacer', 'finishing fix-auth · gate 3s', '   ', 'mail 1'])
+})
+
+test('the queue word draws at the left, where its start key would stand, across the spacer from the right edge', () => {
+  const tree = drawBand(view({ entries: buildBandEntries({ ...quiet, queued: 2, mail: 1 }), bodyColumns: 120 }), EL)
+  // 118 cells less `▤ queue 2` (9) and `mail 1` (6) leave 103 between them.
+  expect(bandLine(tree, 120)).toBe(`  ▤ queue 2${gap(103)}mail 1`)
+  expect(bandBody(tree).map((k: any) => k.props.key ?? textOf(k))).toEqual(['▤ queue 2', 'cs-spacer', 'mail 1'])
+  expect(queueWordInks(tree)).toEqual([[{ color: 'rgb(180,83,9)' }, '▤'], [{ dimColor: true }, ' queue 2']])
+})
+
+test('a dim middle dot parts the keys, the clear key\'s count among them, from the presses and words after them, and stands nowhere else', () => {
+  const dots = (tree: any) => texts(tree).filter((t: any) => textOf(t) === ' · ').map((t: any) => t.props)
+  const after = drawBand(view({ entries: buildBandEntries({ ...quiet, rotating: true, armed: true, countdown: { seconds: 18, ink: OWN }, queued: 2 }), bodyColumns: 120 }), EL)
+  expect(bandLine(after, 120)).toBe('  ctrl+x 1 /clear now   in 18s · ▤ queue 2')
+  expect(dots(after)).toEqual([{ dimColor: true }])
+  // A chord with no key bound is still a key.
+  expect(bandLine(drawBand(view({ chords: {}, entries: buildBandEntries({ ...quiet, rotating: true, waiting: 1 }), bodyColumns: 120 }), EL), 120)).toBe('  rotate · ▤ run 1 queued task')
+  // Keys alone, a count after its clear key, and a press with no key before it draw no dot.
+  expect(lineAt(buildBandEntries({ ...quiet, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress } }), 120)).toBe('  ctrl+x 1 rotate   2 wrap   3 feed ✓')
+  expect(lineAt(buildBandEntries({ ...quiet, rotating: true, armed: true, countdown: { seconds: 18, ink: OWN } }), 120)).toBe('  ctrl+x 1 /clear now   in 18s')
+  const keyless = drawBand(view({ entries: buildBandEntries({ ...quiet, waiting: 2, mail: 1 }), bodyColumns: 120 }), EL)
+  expect(bandLine(keyless, 120)).toBe(`  ▤ run 2 queued tasks${gap(92)}mail 1`)
+  expect(dots(keyless)).toEqual([])
 })
 
 test('with only actions to offer, the line ends at its last action: no spacer, no right edge, and the row only as wide as its words', () => {
