@@ -914,6 +914,12 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // Each name fills the width, so a card over the named one paints every
   // cell of it: a shorter one would leave the named one's head showing.
   const label = (prompts: Prompt[], i: number) => fitRight(name(prompts, i), labelCells)
+  // An older prompt's name is the session's colour, so a name the reader
+  // moved back to reads apart from the newest; the newest named is dim, and
+  // a card for the newest (the named one older) keeps the plain ink.
+  const nameInk = (i: number) => ticks !== undefined && i < ticks.prompts.length - 1 && own !== undefined
+    ? { color: own }
+    : i === ticks?.named ? { dimColor: true } : {}
   // A line too narrow for any tick, with nothing else to say, draws nothing.
   if (entries.length === 0 && ticks === undefined) return v.drawn
   // One thin line, a blank line above it so it reads apart from the
@@ -957,11 +963,11 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
               {drawZone(status)}
               {ticks !== undefined && labeled && (
                 <Box width={labelCells} marginLeft={status.length > 0 ? GAP : 0}>
-                  <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
+                  <Text {...nameInk(ticks.named)} italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
                   {/* a card for each drawn bar but the named one: a prompt folded into `…N` or `M…` has no bar to hover */}
                   {hovering && ticks.prompts.map((_, i) => drawnTick(i) && i !== ticks.named && (
                     <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                      <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+                      <Text {...nameInk(i)} italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
                     </Box>
                   ))}
                 </Box>

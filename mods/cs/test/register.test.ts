@@ -2558,6 +2558,8 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
 // Before the rail the band names a prompt: the one being read, dim italic; a
 // bar under the pointer swaps in its own.
 const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
+// An older prompt named there is the session's colour (red in these fixtures), not dim.
+const olderLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.color === 'rgb(220,38,38)' && !t.props.dimColor && t.props.wrap === 'truncate-end' && !boxes(tree).some((b: any) => b.props.display === 'none' && texts(b).includes(t)))
 
 test('before the bars the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
   register(on as any, READING)
@@ -2575,13 +2577,15 @@ test('before the bars the band names the prompt being read, dim italic, whether 
   expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   │││┃`)
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   const moved = await band()
-  expect(textOf(gapLabel(moved))).toBe('  #2 say two')
+  // An older prompt's name is the session's colour, the newest's dim.
+  expect(gapLabel(moved)).toBeUndefined()
+  expect(textOf(olderLabel(moved))).toBe('  #2 say two')
   expect(bandLine(moved, 110)).toBe(`  ${' '.repeat(91)}#2 say two   │┃││`)
   // A word on the left leaves the bars and the prompt where they stand: 108 cells less `▤ start 1`
   // (9), three cells, the name (12), three cells and the bars (4) leave 77 between them.
   queueTasks(1)
   const queued = await band()
-  expect(textOf(gapLabel(queued))).toBe('  #2 say two')
+  expect(textOf(olderLabel(queued))).toBe('  #2 say two')
   expect(bandLine(queued, 110)).toBe(`  ▤ start 1${' '.repeat(82)}#2 say two   │┃││`)
 })
 
@@ -2596,9 +2600,9 @@ test('each bar under the pointer swaps its own prompt into the gap, italic, cove
     position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
   })))
   expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
-    [['  #1 say one', { italic: true, wrap: 'truncate-end' }]],
-    [['  #2 say two', { italic: true, wrap: 'truncate-end' }]],
-    [['#3 say three', { italic: true, wrap: 'truncate-end' }]],
+    [['  #1 say one', { italic: true, wrap: 'truncate-end', color: 'rgb(220,38,38)' }]],
+    [['  #2 say two', { italic: true, wrap: 'truncate-end', color: 'rgb(220,38,38)' }]],
+    [['#3 say three', { italic: true, wrap: 'truncate-end', color: 'rgb(220,38,38)' }]],
   ])
   // The cards sit in the label's own Box, as wide as the widest of them, so a card covers the read
   // prompt cell for cell and a swap moves nothing.
@@ -3075,7 +3079,7 @@ test('with cs.bandPrompt read the band names the prompt being read and draws its
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   const tree = await band()
-  expect(textOf(gapLabel(tree))).toBe('  #2 say two')
+  expect(textOf(olderLabel(tree))).toBe('  #2 say two')
   expect(rail(tree)).toEqual(['│', '┃', '│', '│'])
 })
 
