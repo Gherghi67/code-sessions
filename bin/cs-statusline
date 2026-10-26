@@ -2518,9 +2518,10 @@ _render_band() {
 #
 # The default layout (CS_STATUSLINE_LAYOUT unset, quiet or any value other
 # than band and capsules): the items as text on the terminal's own
-# background, with no fill. The session name and the readings are bold in the
-# terminal's own foreground, and the branch is its own green, so they read on
-# whatever background the terminal wears now: the theme detected at launch
+# background. The mark and the session name sit in one chip of the session's
+# colour, muted to a mid tone with white text; the readings are bold in the
+# terminal's own foreground and the branch is its own green. All of it reads
+# on whatever background the terminal wears now: the theme detected at launch
 # goes stale when macOS switches to dark mode mid-session. The labels and
 # joiners fade, run by run, toward the background on mid grays that read on
 # either. An amber reading is bold amber; a crit reading and its label are a
@@ -2554,6 +2555,25 @@ _quiet_run_ink() {
     _quiet_fade $((35 + 20 * (run - 1) / span))
 }
 
+# The chip's fill in _R/_G/_B: the band's colour (CS_STATUSLINE_BAND, else the
+# session's) desaturated halfway toward its own gray and darkened until white
+# text reads on it, so it holds on a light terminal and a dark one alike, the
+# theme detected at launch notwithstanding. With no colour it is a mid gray.
+_quiet_chip_fill() {
+    _BAND_NEUTRAL=""
+    _band_from
+    if [ -n "$_BAND_NEUTRAL" ]; then
+        _R=110; _G=110; _B=110
+        return 0
+    fi
+    local lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
+    _R=$(( (_R + lum) / 2 )); _G=$(( (_G + lum) / 2 )); _B=$(( (_B + lum) / 2 ))
+    lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
+    if [ "$lum" -gt 110 ]; then
+        _R=$(( _R * 110 / lum )); _G=$(( _G * 110 / lum )); _B=$(( _B * 110 / lum ))
+    fi
+}
+
 # Whether item $1 belongs in a red chip: a crit reading, or the label just
 # before one in its group.
 _quiet_in_crit() {
@@ -2575,7 +2595,7 @@ _quiet_new_run() {
 _render_quiet() {
     local n=${#_SEG_TEXT[@]}
     [ "$n" -gt 0 ] || return 0
-    local e=$'\033' out=$'\033[0m' i runs=0 run=0 join critchip="" critbg critfg
+    local e=$'\033' out=$'\033[0m' i runs=0 run=0 join critchip="" critbg critfg chipbg chipfg inchip=""
     _sgr 48 crit; critbg="$_SGR"; _sgr 38 critink; critfg="$_SGR"
     _QUIET_TRUE=""
     [ "$LEVEL" = "truecolor" ] && _QUIET_TRUE=1
@@ -2586,6 +2606,11 @@ _render_quiet() {
         else
             _QI_R=$((_BG_R * 24 / 100)); _QI_G=$((_BG_G * 24 / 100)); _QI_B=$((_BG_B * 24 / 100))
         fi
+        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg="38;2;255;255;255"
+    elif [ "$LEVEL" = "256" ]; then
+        chipbg="48;5;241"; chipfg="38;5;231"
+    else
+        chipbg=100; chipfg=97
     fi
     for ((i = 0; i < n; i++)); do
         _quiet_new_run "$i" && runs=$((runs + 1))
@@ -2595,6 +2620,10 @@ _render_quiet() {
             run=$((run + 1))
         fi
         _quiet_run_ink "$run" "$runs"
+        # The chip closes before the first item that is not part of it.
+        if [ -n "$inchip" ] && [ "${_SEG_ROLE[i]}" != "chip" ]; then
+            out+="${e}[${chipbg}m ${e}[0m"; inchip=""
+        fi
         local closed=""
         if [ -n "$critchip" ] && { [ "${_SEG_GROUP[i]}" != "$critchip" ] || ! _quiet_in_crit "$i"; }; then
             out+="${e}[${critbg}m ${e}[0m"; critchip=""; closed=1
@@ -2609,7 +2638,9 @@ _render_quiet() {
             if [ -z "$critchip" ] && _quiet_in_crit "$i"; then
                 case "$_JOIN_TEXT" in *"  ") _JOIN_TEXT="${_JOIN_TEXT% }" ;; esac
             fi
-            if [ -n "$critchip" ]; then
+            if [ -n "$inchip" ]; then
+                out+="${e}[${chipbg}m${_JOIN_TEXT}"
+            elif [ -n "$critchip" ]; then
                 out+="${e}[${critbg};${critfg};1m${_JOIN_TEXT}"
             elif [ -n "$_JOIN_INKED" ]; then
                 out+="${e}[0;${_QUIET_FG}m${_JOIN_TEXT}"
@@ -2617,12 +2648,14 @@ _render_quiet() {
                 out+="${e}[0m${_JOIN_TEXT}"
             fi
         fi
-        # The mark is Claude's coral, the waiting session's shade included;
-        # the session name is the terminal's own ink, bold.
+        # The mark is Claude's coral in the chip, the waiting session's shade
+        # included; the session name is white and bold on the chip's fill.
         if [ "${_SEG_ROLE[i]}" = "chip" ]; then
+            [ -n "$inchip" ] || out+="${e}[0;${chipbg}m "
+            inchip=1
             case "${_SEG_INK[i]}" in
-                brand|brandshade) _sgr 38 brand; out+="${e}[0;${_SGR};1m${_SEG_TEXT[i]}" ;;
-                *)                out+="${e}[0;39;1m${_SEG_TEXT[i]}" ;;
+                brand|brandshade) _sgr 38 brand; out+="${e}[${chipbg};${_SGR};1m${_SEG_TEXT[i]}" ;;
+                *)                out+="${e}[${chipbg};${chipfg};1m${_SEG_TEXT[i]}" ;;
             esac
             continue
         fi
@@ -2664,6 +2697,7 @@ _render_quiet() {
             out+="${e}[0;${_QUIET_FG}m${_SEG_TEXT[i]}"
         fi
     done
+    [ -n "$inchip" ] && out+="${e}[${chipbg}m "
     [ -n "$critchip" ] && out+="${e}[${critbg}m "
     printf '%s\033[0m\n' "$out"
 }
