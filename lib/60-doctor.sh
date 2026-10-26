@@ -232,7 +232,14 @@ _doctor_check_hook_drift() {
     _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png hooks/*.md
     _drift_scan "Command" "$commands_dir" commands/*.md
     _drift_scan "Skill" "$skills_dir" skills/*/SKILL.md skills/*/scripts/*.sh
-    _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*
+    local mod_srcs=() kept src
+    for src in mods/*/.claude-plugin/plugin.json mods/*/hooks/*; do
+        for kept in "${CS_MODS_KEPT_OUT[@]}"; do
+            case "$src" in "mods/$kept/"*) continue 2 ;; esac
+        done
+        mod_srcs+=("$src")
+    done
+    _drift_scan "Mod" "$skills_dir" ${mod_srcs[@]+"${mod_srcs[@]}"}
 
     if [ "$clean" = "1" ]; then
         _doctor_ok "Deploy drift: hooks, commands, skills, and mods match checkout source"

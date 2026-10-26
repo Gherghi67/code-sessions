@@ -136,10 +136,18 @@ CS_SKILL_FILES=(
     finish/scripts/finish.sh
 )
 
+# Mod directories under mods/ the installer keeps out: experimental, their
+# source and tests in the checkout only. cs-feed is one, so the cs band, which
+# draws its feed key only beside cs-feed's /feed, draws none. Every file under
+# mods/ outside these and their test/ is in CS_MOD_FILES below
+# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
+# scan skips them.
+CS_MODS_KEPT_OUT=(
+    cs-feed
+)
+
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
-# mods/cs-feed is experimental and not deployed, so the cs band, which draws
-# its feed key only beside cs-feed's /feed, draws none.
 CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
@@ -247,7 +255,7 @@ _strip_hook_registration() {
 # the engine actions the cs mod's band Buttons answer to: they press the
 # band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
 # WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
-# cs-feed is not deployed (CS_MOD_FILES above). install.sh
+# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
 # asks once per machine and binds each in the context block Claude Code wants
 # it in (home, below): the command keys in Chat, the chords in Global, where
 # the mod reads them. cs -uninstall takes back only the keys that still hold

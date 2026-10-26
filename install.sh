@@ -228,10 +228,18 @@ CS_SKILL_FILES=(
     finish/scripts/finish.sh
 )
 
+# Mod directories under mods/ the installer keeps out: experimental, their
+# source and tests in the checkout only. cs-feed is one, so the cs band, which
+# draws its feed key only beside cs-feed's /feed, draws none. Every file under
+# mods/ outside these and their test/ is in CS_MOD_FILES below
+# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
+# scan skips them.
+CS_MODS_KEPT_OUT=(
+    cs-feed
+)
+
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
-# mods/cs-feed is experimental and not deployed, so the cs band, which draws
-# its feed key only beside cs-feed's /feed, draws none.
 CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
@@ -339,7 +347,7 @@ _strip_hook_registration() {
 # the engine actions the cs mod's band Buttons answer to: they press the
 # band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
 # WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
-# cs-feed is not deployed (CS_MOD_FILES above). install.sh
+# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
 # asks once per machine and binds each in the context block Claude Code wants
 # it in (home, below): the command keys in Chat, the chords in Global, where
 # the mod reads them. cs -uninstall takes back only the keys that still hold
@@ -1359,7 +1367,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "3eec15244f2860ae5b1566000d8e4301028337c520ed3c2477af6c532e6066ef  bin/cs"
+    "ce9dd8f5e722025f9e84717b3efb87a6260101ed09c7d476c9f1c0b3e5eabe8a  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "14bf62c025cc0b604f9689c718e468e9955698467b7703178d8c214d251bb821  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -2660,7 +2668,7 @@ else
                 # one key, so an Enter typed after one of them is still queued
                 # and would answer this one. EOF leaves it unanswered.
                 while :; do
-                    echo -en "   Bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band in Claude Code? [y/n] "
+                    echo -en "   Bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band in Claude Code? [y/n] "
                     if ! read -n 1 -r; then echo ""; break; fi
                     echo ""
                     case "$REPLY" in
@@ -2677,7 +2685,7 @@ else
                     info "Rotate/wrap keys: not bound. You won't be asked again; to change that, remove $_rotate_wrap_keys_answer_file and run cs -update."
                 fi
             else
-                info "Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band, run cs -update in a terminal."
+                info "Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band, run cs -update in a terminal."
             fi
             ;;
     esac

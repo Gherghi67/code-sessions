@@ -316,6 +316,21 @@ test_doctor_warns_on_mod_drift() {
     assert_output_not_contains "$output" "Mod drift" "in sync: silent" || return 1
 }
 
+# A mod the installer keeps out (CS_MODS_KEPT_OUT, cs-feed) is never deployed,
+# so its source is not drift: no "not deployed" row names it.
+test_doctor_drift_skips_a_kept_out_mod() {
+    local checkout="$TEST_TMPDIR/keptmodco" deployed="$TEST_TMPDIR/keptmoddep" skills="$TEST_TMPDIR/keptmodskills"
+    make_fake_checkout "$checkout" "$deployed"
+    mkdir -p "$checkout/mods/cs/hooks" "$checkout/mods/cs-feed/hooks" "$skills/cs/hooks"
+    echo 'export const CRIT_PERCENT = 65' > "$checkout/mods/cs/hooks/register.tsx"
+    cp "$checkout/mods/cs/hooks/register.tsx" "$skills/cs/hooks/register.tsx"
+    echo 'export const FEED = 1' > "$checkout/mods/cs-feed/hooks/register.tsx"
+    local output
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" CS_SKILLS_DIR="$skills" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Deploy drift" "the scan ran to its verdict" || return 1
+    assert_output_not_contains "$output" "Mod drift" "the kept-out mod is not drift" || return 1
+}
+
 test_doctor_drift_skipped_outside_checkout() {
     local plain="$TEST_TMPDIR/not-a-checkout" deployed="$TEST_TMPDIR/deployed"
     mkdir -p "$plain" "$deployed"
@@ -1584,6 +1599,7 @@ run_test test_doctor_drift_advice_follows_whose_the_deployed_copy_is
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift
+run_test test_doctor_drift_skips_a_kept_out_mod
 run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_command_drift
 run_test test_doctor_warns_on_skill_script_drift

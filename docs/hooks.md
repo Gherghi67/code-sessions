@@ -1222,15 +1222,17 @@ result row where fullscreen raises one tool group; with cs-feed alone, 62 and
 plugin's pane open. A helper spawn adds one hop, and so does a press of the
 band key.
 
-`install.sh` deploys the mod's ten files (`.claude-plugin/plugin.json`,
-`hooks/hooks.json`, `hooks/register.tsx`, `hooks/session.ts`,
-`hooks/settings.ts`, `hooks/transcript.ts`, `hooks/verdict.ts`,
-`hooks/words.ts`, `hooks/draw.tsx` and the state types `hooks/state.d.ts`)
-under `~/.claude/skills/cs-feed/`, and `cs -uninstall` removes the directory.
-The mod writes no heartbeat, so `cs -doctor` has no "last ran" row for it.
+The mod has ten files (`.claude-plugin/plugin.json`, `hooks/hooks.json`,
+`hooks/register.tsx`, `hooks/session.ts`, `hooks/settings.ts`,
+`hooks/transcript.ts`, `hooks/verdict.ts`, `hooks/words.ts`, `hooks/draw.tsx`
+and the state types `hooks/state.d.ts`). `CS_MODS_KEPT_OUT` in
+`lib/01-manifests.sh` keeps it out of the installer, so `install.sh` deploys
+none of them and `cs -doctor`'s drift scan skips it. The mod writes no
+heartbeat, so `cs -doctor` has no "last ran" row for it.
 
-Tests: `tests/test_mod_feed.sh` pins the manifest and the installer listing,
-checks that the source never names the events and calls the mod must not
+Tests: `tests/test_mod_feed.sh` pins the manifest, checks that the installer
+lists none of the mod's files, checks that the source never names the events
+and calls the mod must not
 use (`tool.call`, `turn.step`, `classic.*`, `prompt.compose`, `config.set`,
 `$.command.run`), runs `claude plugin
 validate` and pins its exact hook inventory, type-checks the mod against the

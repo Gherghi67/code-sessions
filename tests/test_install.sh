@@ -1048,17 +1048,24 @@ test_manifest_arrays_match_repo_files() {
 # mod needs (manifest, hooks list, module) is listed; the bun tests are not.
 # The repo's files are the ones git sees (tracked, or new and not ignored):
 # Claude Code generates .claude-plugin/types/ inside a mod it loads, ignored
-# by its own .gitignore, and a walk of the disk counted those.
+# by its own .gitignore, and a walk of the disk counted those. A mod the
+# installer keeps out (CS_MODS_KEPT_OUT) is a directory under mods/, and none
+# of its files is listed.
 test_mod_files_manifest_matches_the_repo() {
-    local entry listed actual
+    local entry listed actual kept
     for entry in $(extract_array "$SCRIPT_DIR/../install.sh" CS_MOD_FILES); do
         [ -f "$SCRIPT_DIR/../mods/$entry" ] \
             || { echo "  FAIL: CS_MOD_FILES entry missing from repo: mods/$entry"; return 1; }
     done
     listed=$(extract_array "$SCRIPT_DIR/../install.sh" CS_MOD_FILES | sort)
     actual=$(git -C "$SCRIPT_DIR/../mods" ls-files --cached --others --exclude-standard | grep -v '/test/' | sort)
+    for kept in $(extract_array "$SCRIPT_DIR/../install.sh" CS_MODS_KEPT_OUT); do
+        [ -d "$SCRIPT_DIR/../mods/$kept" ] \
+            || { echo "  FAIL: CS_MODS_KEPT_OUT names no directory under mods/: $kept"; return 1; }
+        actual=$(printf '%s\n' "$actual" | grep -v "^$kept/")
+    done
     if [ "$listed" != "$actual" ]; then
-        echo "  FAIL: CS_MOD_FILES does not match the files under mods/ (test/ excluded)"
+        echo "  FAIL: CS_MOD_FILES does not match the files under mods/ (test/ and kept-out mods excluded)"
         diff <(echo "$listed") <(echo "$actual") | head -10
         return 1
     fi
@@ -3892,7 +3899,7 @@ test_rotate_wrap_keys_non_interactive_writes_nothing_and_says_how() {
     assert_eq "1" "$(grep -c 'Ctrl+X R' "$TEST_TMPDIR/ok-pipe.out")" "exactly one line mentions Ctrl+X R" || return 1
     # The whole line: the installer's notes sit in the three-space gutter
     # behind a dot, like every other line it prints.
-    grep -qxF '   · Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2/3 to the cs band, run cs -update in a terminal.' \
+    grep -qxF '   · Rotate/wrap keys: not bound. To bind Ctrl+X R to /rotate, Ctrl+X W to /wrap and Ctrl+X 1/2 to the cs band, run cs -update in a terminal.' \
         "$TEST_TMPDIR/ok-pipe.out" || { echo "  FAIL: the hint line is missing, reworded or out of the gutter"; return 1; }
 }
 
