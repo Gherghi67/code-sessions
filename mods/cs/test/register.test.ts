@@ -249,11 +249,12 @@ const bandWords = (tree: any): string[] => {
   if (tree.type === 'Button') return [tree.props.label]
   return (tree.children ?? []).flatMap(bandWords)
 }
-// The words drawn while no pointer rests on the band: a hover card's stay hidden.
+// The words drawn while no pointer rests on the band: a hover card's stay hidden,
+// and a Button's ink is part of its press, not a word.
 const restingWords = (tree: any): string[] => {
   if (!tree || typeof tree !== 'object') return []
   if (Array.isArray(tree)) return tree.flatMap(restingWords)
-  if (tree.props?.display === 'none') return []
+  if (tree.props?.display === 'none' || tree.type === 'Button') return []
   if (tree.type === 'Text') return [textOf(tree)]
   return (tree.children ?? []).flatMap(restingWords)
 }
@@ -2975,7 +2976,7 @@ test('tasks queued while the queue runs, or while a turn runs, draw a queue word
   expect(queueWordInks(working)).toEqual([[{ color: 'rgb(180,83,9)' }, '▤'], [{ dimColor: true }, ' queue 3']])
   const idle = await band()
   expect(queueKey(idle).props.label).toBe('▤ run 3 queued tasks')
-  expect(restingWords(idle)).toEqual(['▤'])
+  expect(restingWords(idle)).toEqual([])
   files['/work/.cs/local/queue.state'] = 'armed\n'
   sessionId = 'uuid-teammate'
   expect(await band()).toBe(DRAWN)
@@ -3040,7 +3041,7 @@ test('the mail word comes last, after the queue and key words, and never under a
   files['/work/.cs/local/queue.state'] = 'idle\n'
   const keyed = await band()
   expect(buttons(keyed).map((b: any) => b.props.key)).toEqual(['cs-queue'])
-  expect(restingWords(keyed)).toEqual(['▤', 'mail 1'])
+  expect(restingWords(keyed)).toEqual(['mail 1'])
   expect(await band({ hasSurvey: true })).toBe(DRAWN)
   sessionId = 'uuid-teammate'
   expect(await band()).toBe(DRAWN)
@@ -3606,6 +3607,14 @@ test('with every entry on, the band leaves out its lowest words, then shortens t
   // At 60 the features press would cut into its head: it leaves, and the actions fit without the prefix.
   expect(lineAt(everything, 55)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤ run 2 queued tasks')
   expect(lineAt(everything, 35)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤…')
+})
+
+test('a shortened queue press keeps its count whole, or cuts to its glyph: cut inside `▤ run N` it would name another number', () => {
+  const twelve = buildBandEntries({ ...quiet, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress }, waiting: 12 })
+  expect(lineAt(twelve, 54)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤ run 12 queued tasks')
+  expect(lineAt(twelve, 42)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤ run 12…')
+  expect(lineAt(twelve, 41)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤…')
+  expect(lineAt(twelve, 38)).toBe('  1 rotate   2 wrap   3 feed ✓ · ▤…')
 })
 
 test('the rail keeps its least, `…N ┃` three cells after the words, while the words can drop and shorten and still keep every action', () => {
