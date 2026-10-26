@@ -2209,10 +2209,10 @@ _render() {
 
 # --- band layout -------------------------------------------------------------
 #
-# The default layout (CS_STATUSLINE_LAYOUT unset or band): the same items as the
-# capsules, on one row W cells wide whose fill fades from the band colour at
-# cell 0 to the terminal background at cell W-1. Items start at cell 1, groups
-# are joined by the dot joiner, and blank fill carries the fade to the end.
+# CS_STATUSLINE_LAYOUT=band: the same items as the capsules, on one row W
+# cells wide whose fill fades from the band colour at cell 0 to the terminal
+# background at cell W-1. Items start at cell 1, groups are joined by the dot
+# joiner, and blank fill carries the fade to the end.
 
 # Whether $1 is a usable column count: a whole number from 1 to 9999.
 _is_cols() {
@@ -2515,7 +2515,8 @@ _render_band() {
 
 # --- quiet layout ------------------------------------------------------------
 #
-# CS_STATUSLINE_LAYOUT=quiet: the items as text on the terminal's own
+# The default layout (CS_STATUSLINE_LAYOUT unset, quiet or any value other
+# than band and capsules): the items as text on the terminal's own
 # background, with no fill. The mark and the session name sit in one chip of
 # the band's colour; after it the labels and joiners fade, run by run, toward
 # the background, while the readings keep full ink and bold, so the numbers
@@ -2711,17 +2712,17 @@ main() {
         esac
     done
 
-    # The band is the layout unless CS_STATUSLINE_LAYOUT asks for the
-    # capsules; the band needs colour to draw, so plain prints what the
-    # capsules print.
+    # Quiet is the layout unless CS_STATUSLINE_LAYOUT names the band or the
+    # capsules; quiet and the band need colour to draw, so plain prints what
+    # the capsules print.
     if [ "$LEVEL" = "plain" ]; then
         _render
         return 0
     fi
-    case "${CS_STATUSLINE_LAYOUT:-band}" in
+    case "${CS_STATUSLINE_LAYOUT:-}" in
         capsules) _render ;;
-        quiet)    _render_quiet ;;
-        *)        _render_band ;;
+        band)     _render_band ;;
+        *)        _render_quiet ;;
     esac
 }
 
