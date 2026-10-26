@@ -404,18 +404,18 @@ prompt (the cs plugin's `userConfig`, stored by Claude Code in
 
 | Row | Values | Default | What it does |
 |-----|--------|---------|--------------|
-| `cs.bandPrompts` | on, off | off | Draws the rail: a tick per prompt and the name of one prompt before the ticks; a press on a tick scrolls to its prompt. The band's other words draw either way. |
-| `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its tick as `┃`. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
-| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt ticks the band draws, the named prompt's always among them; older prompts fold into one `…N` run, and newer ones into one `M…` run when the named prompt is older than the ticks reach. |
+| `cs.bandPrompts` | on, off | off | Draws the rail: a bar per prompt and the name of one prompt before the bars; a press on a bar scrolls to its prompt. The band's other words draw either way. |
+| `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its bar thick. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
+| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt bars the band draws, the named prompt's always among them; older prompts fold into one `…N` run, and newer ones into one `M…` run when the named prompt is older than the bars reach. |
 
-`/config` refuses a value the band cannot draw (a tick count under 1 or not
+`/config` refuses a value the band cannot draw (a bar count under 1 or not
 whole), naming the row beside it. A bad value stored some other way, such
 as by editing `settings.json`, leaves the band without the rail and says so in
 one toast; the rest of the mod runs.
 
 ### Spinner tip
 
-Claude Code's spinner tips say how to turn on the prompt ticks and the feed. The installer
+Claude Code's spinner tips say how to turn on the prompt bars and the feed. The installer
 names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
 
 ```json
