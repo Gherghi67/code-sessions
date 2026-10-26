@@ -339,7 +339,7 @@ test('the band starts in the status bar\'s column, two in from the prompt\'s rul
 // The chord is the one pressable thing a word has, so it alone wears the
 // session colour; the labels are the engine's plain Buttons and the
 // separators dim.
-test('the keys are in the session colour, the prefix and the separators dim, and nothing else is coloured', async () => {
+test('the keys are in the session colour, the prefix bold light gray, the separators dim, and nothing else is coloured', async () => {
   envVars.HOME = '/home'
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   percent = 40
@@ -347,11 +347,11 @@ test('the keys are in the session colour, the prefix and the separators dim, and
   for (const key of ['1', '2']) {
     expect(texts(tree).find((t: any) => textOf(t) === key).props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
   }
-  expect(texts(tree).find((t: any) => textOf(t) === 'ctrl+x').props).toEqual({ dimColor: true })
+  expect(texts(tree).find((t: any) => textOf(t) === 'ctrl+x').props).toEqual({ bold: true, color: 'subtle' })
   const separators = texts(tree).filter((t: any) => textOf(t) === '   ')
   expect(separators).toHaveLength(1)
   expect(separators[0].props).toEqual({ dimColor: true })
-  expect(texts(tree).filter((t: any) => t.props.color !== undefined).map(textOf)).toEqual(['1', '2'])
+  expect(texts(tree).filter((t: any) => t.props.color !== undefined && t.props.color !== 'subtle').map(textOf)).toEqual(['1', '2'])
 })
 
 test('the band draws no rule: its first word stands where the line starts', async () => {
@@ -369,7 +369,7 @@ test('with no palette colour the keys are bold in the terminal\'s ink, and nothi
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   percent = 40
   const tree = await band()
-  expect(texts(tree).filter((t: any) => t.props.color !== undefined).map(textOf)).toEqual([])
+  expect(texts(tree).filter((t: any) => t.props.color !== undefined && t.props.color !== 'subtle').map(textOf)).toEqual([])
 })
 
 // With a handoff armed and its count running, the line reads

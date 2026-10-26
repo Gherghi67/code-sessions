@@ -855,7 +855,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // belongs. A chord bound to each Button's action presses it instead, and
   // the engine draws a Button with no hotkey as its label alone, so the key
   // is spelled beside it, and only when keybindings.json binds one. Chords
-  // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, dim, and
+  // that share a prefix (`ctrl+x 1`, `ctrl+x 2`) spell it once, bold in the theme's light gray, and
   // each Button its own key; chords that differ are spelled whole.
   const spelling = chordSpelling(v.entries, chords)
   const { spelled } = spelling
@@ -934,7 +934,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
     const firstChord = firstChordOf(zone, chords)
     return zone.flatMap((entry, index) => [
       index > 0 && <Text dimColor>{SEP}</Text>,
-      index === firstChord && prefix !== undefined && <Box marginRight={1}><Text dimColor>{prefix}</Text></Box>,
+      index === firstChord && prefix !== undefined && <Box marginRight={1}><Text bold color="subtle">{prefix}</Text></Box>,
       entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
       entry.kind === 'word'
         ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
