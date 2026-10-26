@@ -2555,11 +2555,11 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
   expect(await hooks['ui.focus:AbovePrompt']($, e('cs-rotate'), async () => ({ moved: true }))).toEqual({ moved: true })
 })
 
-// Before the rail the band names a prompt: the one being read, dim italic; a
+// Before the rail the band names a prompt: the one being read, light gray italic; a
 // bar under the pointer swaps in its own.
-const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
+const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.color === 'subtle')
 
-test('before the bars the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
+test('before the bars the band names the prompt being read, light gray italic, whether or not words stand before them', async () => {
   register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
@@ -2570,7 +2570,7 @@ test('before the bars the band names the prompt being read, dim italic, whether 
   expect(kids.slice(-2).map((k: any) => k.props.key ?? 'label')).toEqual(['label', 'cs-rail'])
   expect(kids[kids.length - 2].props).toEqual({ width: 12, marginLeft: 0 })
   expect(kids[kids.length - 1].props).toEqual({ key: 'cs-rail', marginLeft: 3 })
-  expect(kids[kids.length - 2].children.filter((c: any) => c.type === 'Text' && c.props.dimColor).map(textOf)).toEqual([' #4 say four'])
+  expect(kids[kids.length - 2].children.filter((c: any) => c.type === 'Text' && c.props.color === 'subtle').map(textOf)).toEqual([' #4 say four'])
   // A row reporting moves the name with the read bar, and the bars stay in their column.
   expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   │││┃`)
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
@@ -2596,9 +2596,9 @@ test('each bar under the pointer swaps its own prompt into the gap, italic, cove
     position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
   })))
   expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
-    [['  #1 say one', { dimColor: true, italic: true, wrap: 'truncate-end' }]],
-    [['  #2 say two', { dimColor: true, italic: true, wrap: 'truncate-end' }]],
-    [['#3 say three', { dimColor: true, italic: true, wrap: 'truncate-end' }]],
+    [['  #1 say one', { color: 'subtle', italic: true, wrap: 'truncate-end' }]],
+    [['  #2 say two', { color: 'subtle', italic: true, wrap: 'truncate-end' }]],
+    [['#3 say three', { color: 'subtle', italic: true, wrap: 'truncate-end' }]],
   ])
   // The cards sit in the label's own Box, as wide as the widest of them, so a card covers the read
   // prompt cell for cell and a swap moves nothing.

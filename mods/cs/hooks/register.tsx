@@ -957,11 +957,12 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
               {drawZone(status)}
               {ticks !== undefined && labeled && (
                 <Box width={labelCells} marginLeft={status.length > 0 ? GAP : 0}>
-                  <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
+                  {/* the theme's lightest text gray, `subtle`, which follows light and dark: the name stays quieter than the dim words before it */}
+                  <Text color="subtle" italic wrap="truncate-end">{label(ticks.prompts, ticks.named)}</Text>
                   {/* a card for each drawn bar but the named one: a prompt folded into `…N` or `M…` has no bar to hover */}
                   {hovering && ticks.prompts.map((_, i) => drawnTick(i) && i !== ticks.named && (
                     <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                      <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+                      <Text color="subtle" italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
                     </Box>
                   ))}
                 </Box>
