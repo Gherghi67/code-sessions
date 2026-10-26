@@ -1366,7 +1366,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "d47e6cb462ac65fbbd75f0e515472c376292a17608b837d94e1b1353755462d8  bin/cs"
+    "7b45ecf39f1c50fdfcf0716164e24f16a10595764658b8e8e73f1d8a2514199e  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "125476ec64a7d7cf0cfde7968f0e148d19bd85768bbcac0cbafdeacd158ec724  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -2622,7 +2622,9 @@ else
         mkdir -p "$(dirname "$file")" 2>/dev/null || true
         # A moved key's cs bindings leave every block of a context that is
         # not the action's home, then the payload joins the first block of
-        # each home context, Chat before Global when both are created.
+        # each home context, Chat before Global when both are created. A key
+        # some block of its home context already holds, under any spelling,
+        # is not added again.
         if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson cs "$CS_ROTATE_WRAP_KEYS" \
             --argjson add "$add" --arg moved "$moved" "$_CS_KEYBINDING_DEFS"'
             def astray($ctx): ours and ((.key | keynorm) as $k | $moved | split(", ") | any(.[]; . == $k))
@@ -2632,7 +2634,8 @@ else
                     .bindings |= with_entries(select(astray($b.context) | not)) | select(.bindings != {})
                   else . end)
             | reduce ("Chat", "Global") as $ctx (.;
-                ($add | with_entries(select(.value | home == $ctx))) as $part
+                [.bindings[] | select(.context == $ctx) | (.bindings // {}) | to_entries[] | select(ours) | .key | keynorm] as $held
+                | ($add | with_entries(select((.value | home == $ctx) and (.key as $k | $held | any(.[]; . == $k) | not)))) as $part
                 | if $part == {} then .
                   else (first(.bindings | to_entries[] | select(.value.context == $ctx) | .key) // null) as $i
                     | if $i == null then .bindings += [{context: $ctx, bindings: $part}]
