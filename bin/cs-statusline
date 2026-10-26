@@ -214,6 +214,109 @@ _sl_tmux_client() {
     esac
 }
 
+# The theme and background of the iTerm2 profile this pane was opened with,
+# read from iTerm's preferences. iTerm reports no theme to tmux, and the theme
+# cs measured at launch goes stale when macOS flips between light and dark
+# mode. A profile with separate light and dark colours follows the macOS
+# appearance (so does iTerm's own, unless its theme is pinned light or dark in
+# Settings, which this cannot see); any other profile is light or dark by its
+# one background. Sets SL_THEME and _SL_LIVE_BG; 1 when this is not a local
+# iTerm pane or its profile cannot be read. The profile is read at most once in
+# ITERM_PROFILE_CACHE_TTL, a miss included, and the appearance once in
+# MACOS_APPEARANCE_CACHE_TTL.
+ITERM_PREFS="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
+ITERM_PROFILE_CACHE_TTL=60
+MACOS_APPEARANCE_CACHE_TTL=5
+_SL_LIVE_BG=""
+_sl_theme_from_iterm() {
+    [ -n "${ITERM_PROFILE:-}" ] && [ -z "${SSH_CONNECTION:-}" ] || return 1
+    [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || [ "${LC_TERMINAL:-}" = "iTerm2" ] || return 1
+    # _parse_rgb_triplet is defined further down than this runs.
+    local colours dark light bg rgb='^([0-9]+);([0-9]+);([0-9]+)$'
+    if _cache_read iterm-profile "$ITERM_PROFILE" "$ITERM_PROFILE_CACHE_TTL"; then
+        colours="$_CACHE_TEXT"
+    else
+        _sl_iterm_profile_colours
+        colours="$_ITERM_COLOURS"
+        _cache_write iterm-profile "$ITERM_PROFILE" "$colours"
+    fi
+    case "$colours" in
+        separate\ *\ *)
+            dark="${colours#separate }"; light="${dark#* }"; dark="${dark%% *}"
+            _sl_macos_appearance
+            if [ "$_MACOS_APPEARANCE" = "dark" ]; then bg="$dark"; else bg="$light"; fi
+            [[ "$bg" =~ $rgb ]] || return 1
+            SL_THEME="$_MACOS_APPEARANCE" ;;
+        single\ *)
+            bg="${colours#single }"
+            [[ "$bg" =~ $rgb ]] || return 1
+            if [ $(( (BASH_REMATCH[1] * 299 + BASH_REMATCH[2] * 587 + BASH_REMATCH[3] * 114) / 1000 )) -lt 128 ]; then
+                SL_THEME="dark"
+            else
+                SL_THEME="light"
+            fi ;;
+        *) return 1 ;;
+    esac
+    _SL_LIVE_BG="$bg"
+}
+
+# The background colours of the profile named ITERM_PROFILE, in _ITERM_COLOURS:
+# `separate <dark r;g;b> <light r;g;b>`, `single <r;g;b>`, or `none` when the
+# preferences, the profile or its colours cannot be read. Each value is printed
+# on its own line and a missing one prints nothing, so the components count as
+# read only when all of them are there. PlistBuddy prints nothing at all for a
+# call of 15 or more commands, so the names are read 8 at a time.
+_sl_iterm_profile_colours() {
+    _ITERM_COLOURS="none"
+    local pb=/usr/libexec/PlistBuddy i start idx="" name names sep key rgbs args=() sets=()
+    [ -x "$pb" ] && [ -f "$ITERM_PREFS" ] || return 0
+    for ((start = 0; start < 64; start += 8)); do
+        args=()
+        for ((i = start; i < start + 8; i++)); do args+=(-c "Print ':New Bookmarks:$i:Name'"); done
+        names=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null)
+        [ -n "$names" ] || return 0
+        i=$start
+        while IFS= read -r name; do
+            [ "$name" = "$ITERM_PROFILE" ] && { idx=$i; break 2; }
+            i=$((i + 1))
+        done <<< "$names"
+        [ "$i" -eq $((start + 8)) ] || return 0
+    done
+    [ -n "$idx" ] || return 0
+    sep=$("$pb" -c "Print ':New Bookmarks:$idx:Use Separate Colors for Light and Dark Mode'" "$ITERM_PREFS" 2>/dev/null)
+    if [ "$sep" = "true" ]; then
+        sets=("Background Color (Dark)" "Background Color (Light)")
+    else
+        sets=("Background Color")
+    fi
+    args=()
+    for key in "${sets[@]}"; do
+        args+=(-c "Print ':New Bookmarks:$idx:$key:Red Component'"
+               -c "Print ':New Bookmarks:$idx:$key:Green Component'"
+               -c "Print ':New Bookmarks:$idx:$key:Blue Component'")
+    done
+    rgbs=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null | awk -v want=$((3 * ${#sets[@]})) '
+        $0 !~ /^[0-9]*\.?[0-9]+$/ { bad = 1 }
+        { v[NR] = int($0 * 255 + 0.5); if (v[NR] > 255) v[NR] = 255 }
+        END {
+            if (bad || NR != want) exit
+            for (i = 1; i <= NR; i += 3) printf "%s%d;%d;%d", (i > 1 ? " " : ""), v[i], v[i + 1], v[i + 2]
+        }')
+    [ -n "$rgbs" ] || return 0
+    if [ "$sep" = "true" ]; then _ITERM_COLOURS="separate $rgbs"; else _ITERM_COLOURS="single $rgbs"; fi
+}
+
+# The macOS appearance in _MACOS_APPEARANCE, dark or light: AppleInterfaceStyle
+# reads Dark in dark mode and is absent in light mode.
+_sl_macos_appearance() {
+    if _cache_read macos-appearance global "$MACOS_APPEARANCE_CACHE_TTL"; then
+        case "$_CACHE_TEXT" in dark|light) _MACOS_APPEARANCE="$_CACHE_TEXT"; return 0 ;; esac
+    fi
+    _MACOS_APPEARANCE="light"
+    [ "$(defaults read -g AppleInterfaceStyle 2>/dev/null)" = "Dark" ] && _MACOS_APPEARANCE="dark"
+    _cache_write macos-appearance global "$_MACOS_APPEARANCE"
+}
+
 # COLORFGBG, outside tmux only. Inside it is the tmux server's start-time
 # snapshot and goes stale across theme changes — 15;0 has been observed there
 # under a light terminal — which is why the launch detector consults it in its
@@ -511,6 +614,7 @@ _sl_theme_from_client_cache() {
 _sl_detect_theme() {
     # One tmux query serves every rung of this pass; a later pass asks again.
     _TMUX_CLIENT_ASKED=""
+    _SL_LIVE_BG=""
     # An explicit pin outranks every measurement, so it is read before the probe
     # file is allowed to overwrite anything.
     if [ -n "${CS_TERM_THEME:-}" ] && [ -z "${CS_TERM_THEME_AUTO:-}" ]; then
@@ -530,6 +634,8 @@ _sl_detect_theme() {
     fi
     if [ -n "${TMUX:-}" ] && _sl_theme_from_tmux_client; then
         : # SL_THEME set from the attached client's own reported theme
+    elif _sl_theme_from_iterm; then
+        : # SL_THEME and the background read live from the iTerm profile
     elif [ -z "${TMUX:-}" ] && [ -n "${COLORFGBG:-}" ] && _sl_theme_from_colorfgbg; then
         : # SL_THEME set from the terminal's own statement about itself
     elif _sl_theme_from_client_cache; then
@@ -2269,10 +2375,15 @@ _band_width() {
     [ "$_BAND_W" -ge 20 ] || _BAND_W=20
 }
 
-# The terminal background the band fades into, in _BG_R/_BG_G/_BG_B: the
-# measured one, else the background the surface token assumes for the theme.
+# The terminal background the band fades into, in _BG_R/_BG_G/_BG_B: the one
+# read live from iTerm unless a background was set by hand, the measured one,
+# else the background the surface token assumes for the theme.
 _band_bg() {
-    if ! _parse_rgb_triplet "${CS_TERM_BG_RGB:-}"; then
+    local rgb="${CS_TERM_BG_RGB:-}"
+    if [ -n "$_SL_LIVE_BG" ] && { [ -z "$rgb" ] || [ -n "${CS_TERM_THEME_AUTO:-}" ]; }; then
+        rgb="$_SL_LIVE_BG"
+    fi
+    if ! _parse_rgb_triplet "$rgb"; then
         if [ "$SL_THEME" = "dark" ]; then _parse_rgb_triplet "28;28;28"
         else _parse_rgb_triplet "255;255;255"; fi
     fi
@@ -2555,16 +2666,29 @@ _quiet_run_ink() {
     _quiet_fade $((35 + 20 * (run - 1) / span))
 }
 
-# The chip's fill in _R/_G/_B: the band's colour (CS_STATUSLINE_BAND, else the
-# session's) seen through the terminal background (_band_bg), 35% of it on a
-# dark terminal and 15% on a light one, so the chip holds the terminal's own
-# ink either way. With no colour it is the neutral step off the background.
+# The chip's fill in _R/_G/_B and its text in _CHIP_INK, both from the band's
+# colour (CS_STATUSLINE_BAND, else the session's). The fill is that colour seen
+# through the terminal background (_band_bg), 35% of it on a dark terminal and
+# 15% on a light one; the text is the colour lifted toward white on a dark
+# terminal and pressed toward black on a light one. With no colour the fill is
+# the neutral step off the background and the text the terminal's own ink.
 _quiet_chip_fill() {
+    _CHIP_INK=39
     _BAND_NEUTRAL=""
     _band_from
     [ -z "$_BAND_NEUTRAL" ] || return 0
-    if [ "$SL_THEME" = "dark" ]; then _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 65
-    else _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 85; fi
+    local r="$_R" g="$_G" b="$_B"
+    if [ "$SL_THEME" = "dark" ]; then
+        _band_toward 255 255 255 60
+        _CHIP_INK="38;2;$_R;$_G;$_B"
+        _R="$r"; _G="$g"; _B="$b"
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 65
+    else
+        _band_toward 0 0 0 50
+        _CHIP_INK="38;2;$_R;$_G;$_B"
+        _R="$r"; _G="$g"; _B="$b"
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 85
+    fi
 }
 
 # Whether item $1 belongs in a red chip: a crit reading, or the label just
@@ -2599,7 +2723,7 @@ _render_quiet() {
         else
             _QI_R=$((_BG_R * 24 / 100)); _QI_G=$((_BG_G * 24 / 100)); _QI_B=$((_BG_B * 24 / 100))
         fi
-        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg=39
+        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg="$_CHIP_INK"
     elif [ "$SL_THEME" != "dark" ]; then
         chipfg=39
         if [ "$LEVEL" = "256" ]; then chipbg="48;5;253"; else chipbg=47; fi
