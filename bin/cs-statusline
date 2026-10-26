@@ -177,25 +177,31 @@ _sl_theme_from_tmux_client() {
 }
 
 # Ask the tmux server, once per theme pass, what the attached client reports
-# as its theme, which tty it is on, and how wide this pane is: one query for the
-# three rungs that need them (the band layout reads the width). Tab-separated
-# so an empty theme (most terminals report none) still leaves the tty in its
-# own field. The answer is kept for
+# as its theme, which tty it is on, how wide this pane is, whether the client
+# is in control mode and what terminal tmux learned it is: one query for the
+# rungs that need them (the band layout reads the width, the iTerm rung the
+# last two). Tab-separated so an empty field (most terminals report no theme)
+# still leaves the ones after it in their places. The answer is kept for
 # TMUX_CLIENT_CACHE_TTL under the parent pid and the TMUX claim, so renders
 # while Claude works ask tmux once in five seconds: a theme toggle or a
 # re-attach from another terminal shows at the next render after that,
-# within a minute while idle. Sets _TMUX_CLIENT_THEME, _TMUX_CLIENT_TTY and
-# _TMUX_CLIENT_WIDTH; all empty when tmux cannot answer. The bucket is
-# tmux-client2 because its entries hold three fields: a two-field entry of the
-# tmux-client bucket can never be read as one.
+# within a minute while idle. Sets _TMUX_CLIENT_THEME, _TMUX_CLIENT_TTY,
+# _TMUX_CLIENT_WIDTH, _TMUX_CLIENT_CONTROL and _TMUX_CLIENT_TERMTYPE; all empty
+# when tmux cannot answer. The bucket is tmux-client3 because its entries hold
+# five fields: an entry of the tmux-client or tmux-client2 bucket, with two or
+# three, can never be read as one.
 TMUX_CLIENT_CACHE_TTL=5
 _TMUX_CLIENT_ASKED=""; _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""; _TMUX_CLIENT_WIDTH=""
+_TMUX_CLIENT_CONTROL=""; _TMUX_CLIENT_TERMTYPE=""
 _sl_tmux_client() {
     [ -z "$_TMUX_CLIENT_ASKED" ] || return 0
     _TMUX_CLIENT_ASKED=1
-    local out rest fmt='#{client_theme}'$'\t''#{client_tty}'$'\t''#{pane_width}'
+    _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""; _TMUX_CLIENT_WIDTH=""
+    _TMUX_CLIENT_CONTROL=""; _TMUX_CLIENT_TERMTYPE=""
+    local out rest t=$'\t'
+    local fmt="#{client_theme}$t#{client_tty}$t#{pane_width}$t#{client_control_mode}$t#{client_termtype}"
     _sl_parent_pid
-    if _cache_read tmux-client2 "$_PARENT,${TMUX:-}" "$TMUX_CLIENT_CACHE_TTL"; then
+    if _cache_read tmux-client3 "$_PARENT,${TMUX:-}" "$TMUX_CLIENT_CACHE_TTL"; then
         out="$_CACHE_TEXT"
     else
         if [ -n "${TMUX_PANE:-}" ]; then
@@ -203,15 +209,16 @@ _sl_tmux_client() {
         else
             out=$(tmux display-message -p "$fmt" 2>/dev/null) || return 0
         fi
-        case "$out" in *$'\t'*) _cache_write tmux-client2 "$_PARENT,${TMUX:-}" "$out" ;; esac
+        case "$out" in *"$t"*) _cache_write tmux-client3 "$_PARENT,${TMUX:-}" "$out" ;; esac
     fi
-    case "$out" in
-        *$'\t'*)
-            _TMUX_CLIENT_THEME="${out%%$'\t'*}"
-            rest="${out#*$'\t'}"
-            _TMUX_CLIENT_TTY="${rest%%$'\t'*}"
-            case "$rest" in *$'\t'*) _TMUX_CLIENT_WIDTH="${rest#*$'\t'}" ;; esac ;;
-    esac
+    case "$out" in *"$t"*) ;; *) return 0 ;; esac
+    _TMUX_CLIENT_THEME="${out%%"$t"*}"; rest="${out#*"$t"}"
+    _TMUX_CLIENT_TTY="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) rest="${rest#*"$t"}" ;; *) return 0 ;; esac
+    _TMUX_CLIENT_WIDTH="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) rest="${rest#*"$t"}" ;; *) return 0 ;; esac
+    _TMUX_CLIENT_CONTROL="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) _TMUX_CLIENT_TERMTYPE="${rest#*"$t"}" ;; esac
 }
 
 # The theme and background of the iTerm2 profile this pane was opened with,
@@ -220,10 +227,14 @@ _sl_tmux_client() {
 # mode. A profile with separate light and dark colours follows the macOS
 # appearance (so does iTerm's own, unless its theme is pinned light or dark in
 # Settings, which this cannot see); any other profile is light or dark by its
-# one background. Sets SL_THEME and _SL_LIVE_BG; 1 when this is not a local
-# iTerm pane, CS_NO_ITERM2 is set, or the profile cannot be read. The profile
-# is read at most once in ITERM_PROFILE_CACHE_TTL, a miss included, and the
-# appearance once in MACOS_APPEARANCE_CACHE_TTL.
+# one background. Inside tmux, ITERM_PROFILE and LC_TERMINAL are what the pane
+# was started with, and the client attached now may be another terminal, so the
+# profile answers only while that client is iTerm2: in control mode (iTerm's
+# tmux integration) or of a terminal type tmux reports as iTerm2. Sets SL_THEME
+# and _SL_LIVE_BG; 1 when this is not a local iTerm pane, CS_NO_ITERM2 is set,
+# or the profile cannot be read. The profile is read at most once in
+# ITERM_PROFILE_CACHE_TTL, a miss included, and the appearance once in
+# MACOS_APPEARANCE_CACHE_TTL.
 ITERM_PREFS="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
 ITERM_PROFILE_CACHE_TTL=60
 MACOS_APPEARANCE_CACHE_TTL=5
@@ -231,6 +242,10 @@ _SL_LIVE_BG=""
 _sl_theme_from_iterm() {
     [ -n "${ITERM_PROFILE:-}" ] && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${CS_NO_ITERM2:-}" ] || return 1
     [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || [ "${LC_TERMINAL:-}" = "iTerm2" ] || return 1
+    if [ -n "${TMUX:-}" ]; then
+        _sl_tmux_client
+        [ "$_TMUX_CLIENT_CONTROL" = "1" ] || [[ "$_TMUX_CLIENT_TERMTYPE" == iTerm2* ]] || return 1
+    fi
     # _parse_rgb_triplet is defined further down than this runs.
     local colours dark light bg rgb='^([0-9]+);([0-9]+);([0-9]+)$'
     if _cache_read iterm-profile "$ITERM_PROFILE" "$ITERM_PROFILE_CACHE_TTL"; then
@@ -265,12 +280,15 @@ _sl_theme_from_iterm() {
 # preferences, the profile or its colours cannot be read. Each value is printed
 # on its own line and a missing one prints nothing, so the components count as
 # read only when all of them are there. PlistBuddy prints nothing at all for a
-# call of 15 or more commands, so the names are read 8 at a time.
+# call of 15 or more commands, so the names are read 8 at a time, until a batch
+# comes back short: the end of the profiles. A profile with no name shortens
+# its batch the same way, so the name is read back at the index found, and a
+# mismatch is a profile that cannot be read.
 _sl_iterm_profile_colours() {
     _ITERM_COLOURS="none"
-    local pb=/usr/libexec/PlistBuddy i start idx="" name names sep key rgbs args=() sets=()
+    local pb=/usr/libexec/PlistBuddy i start idx="" name names out sep key rgbs args=() sets=()
     [ -x "$pb" ] && [ -f "$ITERM_PREFS" ] || return 0
-    for ((start = 0; start < 64; start += 8)); do
+    for ((start = 0; ; start += 8)); do
         args=()
         for ((i = start; i < start + 8; i++)); do args+=(-c "Print ':New Bookmarks:$i:Name'"); done
         names=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null)
@@ -282,8 +300,11 @@ _sl_iterm_profile_colours() {
         done <<< "$names"
         [ "$i" -eq $((start + 8)) ] || return 0
     done
-    [ -n "$idx" ] || return 0
-    sep=$("$pb" -c "Print ':New Bookmarks:$idx:Use Separate Colors for Light and Dark Mode'" "$ITERM_PREFS" 2>/dev/null)
+    out=$("$pb" -c "Print ':New Bookmarks:$idx:Name'" \
+        -c "Print ':New Bookmarks:$idx:Use Separate Colors for Light and Dark Mode'" "$ITERM_PREFS" 2>/dev/null)
+    [ "${out%%$'\n'*}" = "$ITERM_PROFILE" ] || return 0
+    sep=""
+    case "$out" in *$'\n'*) sep="${out#*$'\n'}" ;; esac
     if [ "$sep" = "true" ]; then
         sets=("Background Color (Dark)" "Background Color (Light)")
     else
@@ -296,8 +317,8 @@ _sl_iterm_profile_colours() {
                -c "Print ':New Bookmarks:$idx:$key:Blue Component'")
     done
     rgbs=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null | awk -v want=$((3 * ${#sets[@]})) '
-        $0 !~ /^[0-9]*\.?[0-9]+$/ { bad = 1 }
-        { v[NR] = int($0 * 255 + 0.5); if (v[NR] > 255) v[NR] = 255 }
+        $0 !~ /^-?[0-9]*\.?[0-9]+$/ { bad = 1 }
+        { v[NR] = int($0 * 255 + 0.5); if (v[NR] > 255) v[NR] = 255; if (v[NR] < 0) v[NR] = 0 }
         END {
             if (bad || NR != want) exit
             for (i = 1; i <= NR; i += 3) printf "%s%d;%d;%d", (i > 1 ? " " : ""), v[i], v[i + 1], v[i + 2]
@@ -658,15 +679,22 @@ _sl_detect_theme() {
     fi
 }
 
+# Whether CS_TERM_BG_RGB is the user's own: set with no launch detection
+# behind it, or set before a launch that detected the theme, which marks it with
+# CS_TERM_BG_RGB_PINNED since CS_TERM_THEME_AUTO speaks for the theme alone.
+_sl_bg_pinned() {
+    [ -n "${CS_TERM_BG_RGB:-}" ] && { [ -z "${CS_TERM_THEME_AUTO:-}" ] || [ -n "${CS_TERM_BG_RGB_PINNED:-}" ]; }
+}
+
 # Blank CS_TERM_BG_RGB when the launch-captured background is stale: once the
 # live theme (SL_THEME) has switched away from the theme cs detected at launch
 # (CS_TERM_THEME, present with the auto marker), the RGB no longer matches the
 # terminal, so drop it and let the gauge surface fall back to
 # theme-based values instead of tinting toward the old background (which could
-# leave light text on a near-light surface). A manually-set RGB carries no auto
-# marker and is never dropped.
+# leave light text on a near-light surface). An RGB the user set
+# (_sl_bg_pinned) is never dropped.
 _sl_invalidate_stale_bg() {
-    if [ -n "${CS_TERM_BG_RGB:-}" ] && [ -n "${CS_TERM_THEME_AUTO:-}" ] &&
+    if [ -n "${CS_TERM_BG_RGB:-}" ] && ! _sl_bg_pinned &&
        { [ -n "${SL_ENV_FOREIGN:-}" ] || [ "$SL_THEME" != "${CS_TERM_THEME:-}" ]; }; then
         CS_TERM_BG_RGB=""
     fi
@@ -1497,7 +1525,7 @@ _refresh_usage() {
     # idle. The render never forks to sweep, so this worker does it. The other
     # buckets are keyed on identities that repeat and stay small.
     local bucket
-    for bucket in tmux-client tmux-client2 tmux-real tmux-walking tty stty; do
+    for bucket in tmux-client tmux-client2 tmux-client3 tmux-real tmux-walking tty stty; do
         [ -d "$HOME/.cache/cs/$bucket" ] || continue
         find "$HOME/.cache/cs/$bucket" -maxdepth 1 -type f -mmin +60 -delete 2>/dev/null
     done
@@ -2380,9 +2408,7 @@ _band_width() {
 # else the background the surface token assumes for the theme.
 _band_bg() {
     local rgb="${CS_TERM_BG_RGB:-}"
-    if [ -n "$_SL_LIVE_BG" ] && { [ -z "$rgb" ] || [ -n "${CS_TERM_THEME_AUTO:-}" ]; }; then
-        rgb="$_SL_LIVE_BG"
-    fi
+    [ -z "$_SL_LIVE_BG" ] || _sl_bg_pinned || rgb="$_SL_LIVE_BG"
     if ! _parse_rgb_triplet "$rgb"; then
         if [ "$SL_THEME" = "dark" ]; then _parse_rgb_triplet "28;28;28"
         else _parse_rgb_triplet "255;255;255"; fi
@@ -2779,8 +2805,8 @@ _render_quiet() {
             continue
         fi
         # The branch is the terminal's own green, the path before its last
-        # `/` (feat/, fix/) the same green faint; the marks after it fade
-        # with the labels.
+        # `/` (feat/, fix/) the same green faint; the marks after it, ahead
+        # and behind arrows included, fade with the labels.
         if [ "${_SEG_ROLE[i]}" = "branch" ]; then
             local glyph="$ICON_GIT" body name marks="" head="" leaf
             case "${_SEG_TEXT[i]}" in
@@ -2789,6 +2815,10 @@ _render_quiet() {
             esac
             name="${body%% *}"
             [ "$name" = "$body" ] || marks=" ${body#* }"
+            case "$name" in
+                *↑*) marks="↑${name#*↑}$marks"; name="${name%%↑*}" ;;
+                *↓*) marks="↓${name#*↓}$marks"; name="${name%%↓*}" ;;
+            esac
             case "$name" in
                 */*) head="${name%/*}/"; leaf="${name##*/}" ;;
                 *)   leaf="$name" ;;

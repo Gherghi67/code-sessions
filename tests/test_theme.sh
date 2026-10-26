@@ -222,7 +222,22 @@ test_export_term_theme_exports_theme_and_auto_marker() {
       local child; child=$(env)
       case "$child" in *"CS_TERM_THEME=light"*) : ;; *) echo "  FAIL: CS_TERM_THEME not exported for cs's UI and the picker"; return 1;; esac
       case "$child" in *"CS_TERM_THEME_AUTO=1"*) : ;; *) echo "  FAIL: CS_TERM_THEME_AUTO presence marker not exported"; return 1;; esac
-      case "$child" in *"CS_TERM_BG_RGB=250;248;242"*) : ;; *) echo "  FAIL: CS_TERM_BG_RGB not exported"; return 1;; esac )
+      case "$child" in *"CS_TERM_BG_RGB=250;248;242"*) : ;; *) echo "  FAIL: CS_TERM_BG_RGB not exported"; return 1;; esac
+      case "$child" in *"CS_TERM_BG_RGB_PINNED="*) echo "  FAIL: a measured background marked pinned"; return 1;; esac )
+}
+
+# A background set before launch is the user's: detection leaves it and marks
+# it pinned, since the theme's auto marker beside it speaks for the theme alone.
+test_export_term_theme_marks_a_set_background_pinned() {
+    ( _load_cs_functions
+      unset CS_TERM_THEME CS_TERM_THEME_AUTO CS_TERM_BG_RGB_PINNED 2>/dev/null || true
+      export CS_TERM_BG_RGB="1;2;3"
+      detect_term_theme_and_bg() { echo "light 250;248;242"; }
+      _export_term_theme
+      local child; child=$(env)
+      case "$child" in *"CS_TERM_THEME_AUTO=1"*) : ;; *) echo "  FAIL: the theme lost its auto marker"; return 1;; esac
+      case "$child" in *"CS_TERM_BG_RGB=1;2;3"*) : ;; *) echo "  FAIL: the set background was replaced"; return 1;; esac
+      case "$child" in *"CS_TERM_BG_RGB_PINNED=1"*) : ;; *) echo "  FAIL: the set background was not marked pinned"; return 1;; esac )
 }
 
 # A user-set CS_TERM_THEME is an explicit override: it propagates to children
@@ -329,6 +344,7 @@ run_test test_detect_no_tmux_prefers_colorfgbg_over_os_appearance
 run_test test_detect_theme_graceful_no_tmux
 run_test test_cs_term_theme_override_wins
 run_test test_export_term_theme_exports_theme_and_auto_marker
+run_test test_export_term_theme_marks_a_set_background_pinned
 run_test test_export_term_theme_user_pin_passes_through
 run_test test_export_term_theme_caches_under_the_client_tty
 run_test test_export_term_theme_caches_under_its_own_tty_outside_tmux

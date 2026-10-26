@@ -1431,6 +1431,19 @@ test_sl_bg_rgb_kept_for_manual_value_when_foreign() {
         "a manually-set RGB is never dropped, foreign environment included" || return 1 )
 }
 
+# An RGB set before a launch that detected the theme sits beside the theme's
+# auto marker; the launch marks it pinned, and a theme switch keeps it.
+test_sl_bg_rgb_kept_when_pinned_beside_an_auto_theme() {
+    ( _load_sl_functions
+      export CS_TERM_THEME=light CS_TERM_THEME_AUTO=1 CS_TERM_BG_RGB="1;2;3" CS_TERM_BG_RGB_PINNED=1
+      SL_THEME=dark
+      _sl_invalidate_stale_bg
+      assert_eq "1;2;3" "$CS_TERM_BG_RGB" "a pinned RGB survives a theme switch" || return 1
+      unset CS_TERM_BG_RGB_PINNED
+      _sl_invalidate_stale_bg
+      assert_eq "" "$CS_TERM_BG_RGB" "a measured RGB is dropped on the same switch" || return 1 )
+}
+
 # Fake `ps` tables for render-level tests, where the walk starts inside the
 # cs-statusline process and its pid cannot be known in advance.
 #   real   : every process's parent is rewritten to the server, so the walk
@@ -2353,6 +2366,7 @@ run_test test_sl_theme_uses_client_rung_when_tmux_is_real
 run_test test_sl_env_foreign_ignores_inherited_value
 run_test test_sl_bg_rgb_dropped_when_foreign_despite_matching_theme
 run_test test_sl_bg_rgb_kept_for_manual_value_when_foreign
+run_test test_sl_bg_rgb_kept_when_pinned_beside_an_auto_theme
 
 # --- Fable usage segment ----------------------------------------------------
 
@@ -2547,27 +2561,29 @@ test_refresh_reclaims_an_abandoned_lock() {
     assert_not_exists "$CS_USAGE_DIR/.lock" "the reclaiming refresher must release the lock" || return 1
 }
 
-# The caches keyed on the parent pid (tmux-client2 and the tmux-client entries
-# written before it, tmux-real, tty, stty) mint a new entry per conversation
+# The caches keyed on the parent pid (tmux-client3 and the tmux-client and
+# tmux-client2 entries written before it, tmux-real, tty, stty) mint a new entry per conversation
 # and nothing on the render path may fork to remove them, so the refresher
 # sweeps them. Only those: a cache keyed on a repeating identity is left alone.
 test_refresh_prunes_the_pid_keyed_caches() {
     make_usage_shims 200 "$USAGE_BODY"
     use_scratch_usage_env
     local cache="$HOME/.cache/cs"
-    mkdir -p "$cache/tmux-client" "$cache/tmux-client2" "$cache/tmux-real" "$cache/tmux-walking" "$cache/tty" "$cache/stty" "$cache/git"
-    TZ=UTC touch -t 202608270730.00 "$cache/tmux-client/old" "$cache/tmux-client2/old" "$cache/tmux-real/old" "$cache/tmux-walking/old" "$cache/tty/old" "$cache/stty/old" "$cache/git/old"
-    touch "$cache/tmux-client/fresh" "$cache/tmux-client2/fresh" "$cache/tmux-real/fresh" "$cache/tty/fresh" "$cache/stty/fresh"
+    mkdir -p "$cache/tmux-client" "$cache/tmux-client2" "$cache/tmux-client3" "$cache/tmux-real" "$cache/tmux-walking" "$cache/tty" "$cache/stty" "$cache/git"
+    TZ=UTC touch -t 202608270730.00 "$cache/tmux-client/old" "$cache/tmux-client2/old" "$cache/tmux-client3/old" "$cache/tmux-real/old" "$cache/tmux-walking/old" "$cache/tty/old" "$cache/stty/old" "$cache/git/old"
+    touch "$cache/tmux-client/fresh" "$cache/tmux-client2/fresh" "$cache/tmux-client3/fresh" "$cache/tmux-real/fresh" "$cache/tty/fresh" "$cache/stty/fresh"
     PATH="$USAGE_BINDIR:$PATH" CS_STATUSLINE_NOW=1787816000 bash "$SL" --refresh-usage
     assert_not_exists "$cache/tmux-client/old" "an old tmux-client entry must be swept" || return 1
     assert_not_exists "$cache/tmux-real/old" "an old tmux-real entry must be swept" || return 1
     assert_not_exists "$cache/tty/old" "an old tty entry must be swept" || return 1
     assert_not_exists "$cache/tmux-client2/old" "an old tmux-client2 entry must be swept" || return 1
+    assert_not_exists "$cache/tmux-client3/old" "an old tmux-client3 entry must be swept" || return 1
     assert_not_exists "$cache/stty/old" "an old stty entry must be swept" || return 1
     assert_exists "$cache/tmux-client/fresh" "a fresh tmux-client entry must survive" || return 1
     assert_exists "$cache/tmux-real/fresh" "a fresh tmux-real entry must survive" || return 1
     assert_exists "$cache/tty/fresh" "a fresh tty entry must survive" || return 1
     assert_exists "$cache/tmux-client2/fresh" "a fresh tmux-client2 entry must survive" || return 1
+    assert_exists "$cache/tmux-client3/fresh" "a fresh tmux-client3 entry must survive" || return 1
     assert_exists "$cache/stty/fresh" "a fresh stty entry must survive" || return 1
     assert_exists "$cache/git/old" "the sweep must not touch a cache keyed on a repeating identity" || return 1
 }
@@ -5422,6 +5438,14 @@ test_quiet_branch_is_the_terminal_green() {
     out=$(run_sl "$json")
     assert_output_contains_f "$out" "${ESC_}[0;32m⎇ main${ESC_}[0;38;2;147;153;170m +1!1" \
         "a name with no path is green throughout" || return 1
+    git init -q --bare "$TEST_TMPDIR/origin.git"
+    git -C "$work" remote add origin "$TEST_TMPDIR/origin.git"
+    git -C "$work" push -q -u origin main 2>/dev/null
+    git -C "$work" commit -q -m two
+    rm -rf "$HOME/.cache/cs"
+    out=$(run_sl "$json")
+    assert_output_contains_f "$out" "${ESC_}[0;32m⎇ main${ESC_}[0;38;2;147;153;170m↑1 !1" \
+        "the ahead arrow fades with the marks" || return 1
 }
 
 # Labels and joiners fade from the quiet ink toward the background, run by
@@ -5629,12 +5653,12 @@ iterm_env() {
 # separate light and dark colours follows macOS: in dark mode the chip is the
 # dark one over the profile's 21;24;40 (as in the chip test), in light mode
 # session blue keeps 15% over the profile's white, 106+149*85/100 = 232, so
-# 232;240;247. The profile sits tenth, past the first eight names read.
+# 232;240;247. The profile sits 65th, past eight batches of names.
 test_quiet_follows_the_iterm_profile_across_appearances() {
     iterm_tool || return $?
     iterm_env dark
     band_session_colour blue
-    iterm_prefs 9 Work "21;24;40" "255;255;255"
+    iterm_prefs 64 Work "21;24;40" "255;255;255"
     local out chip
     out=$(run_sl "$FIXTURE_DOCS")
     chip=$(quiet_chip "51;70;98" "195;215;234")
@@ -5660,15 +5684,17 @@ test_quiet_iterm_single_background_sets_the_theme() {
 
 # The profile is not read over ssh, where the preferences on disk are not the
 # terminal's, nor with CS_NO_ITERM2 set, and a profile missing from the
-# preferences reads as nothing: the launch theme and background stand. A
-# background set by hand outranks the profile's, under the profile's theme:
-# 106+(30-106)*65/100 = 57, so 57;74;91.
+# preferences reads as nothing: the launch theme and background stand. So does
+# a profile behind a nameless one, rather than the nameless one's colours
+# (white, which would draw 232;240;247). A background set by hand outranks the
+# profile's, under the profile's theme, whether or not a launch detected the
+# theme beside it: 106+(30-106)*65/100 = 57, so 57;74;91.
 test_quiet_iterm_profile_stands_down() {
     iterm_tool || return $?
     iterm_env dark
     band_session_colour blue
-    iterm_prefs 0 Work "21;24;40" "253;246;227"
-    local out light chip
+    iterm_prefs 1 Work "21;24;40" "253;246;227"
+    local out light chip f="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
     light=$(quiet_chip "230;232;223" "53;78;102")
     out=$(SSH_CONNECTION="192.0.2.1 50000 192.0.2.2 22" run_sl "$FIXTURE_DOCS")
     assert_eq "$light" "${out:0:${#light}}" "over ssh the launch theme stands" || return 1
@@ -5676,9 +5702,39 @@ test_quiet_iterm_profile_stands_down() {
     assert_eq "$light" "${out:0:${#light}}" "CS_NO_ITERM2 keeps the launch theme" || return 1
     out=$(ITERM_PROFILE=Elsewhere run_sl "$FIXTURE_DOCS")
     assert_eq "$light" "${out:0:${#light}}" "a profile not in the preferences keeps the launch theme" || return 1
-    out=$(CS_TERM_THEME="" CS_TERM_THEME_AUTO="" CS_TERM_BG_RGB="30;30;30" run_sl "$FIXTURE_DOCS")
     chip=$(quiet_chip "57;74;91" "195;215;234")
+    out=$(CS_TERM_THEME="" CS_TERM_THEME_AUTO="" CS_TERM_BG_RGB="30;30;30" run_sl "$FIXTURE_DOCS")
     assert_eq "$chip" "${out:0:${#chip}}" "a background set by hand outranks the profile's" || return 1
+    out=$(CS_TERM_BG_RGB="30;30;30" CS_TERM_BG_RGB_PINNED=1 run_sl "$FIXTURE_DOCS")
+    assert_eq "$chip" "${out:0:${#chip}}" "so does one set before a launch that detected the theme" || return 1
+    /usr/libexec/PlistBuddy -c "Delete ':New Bookmarks:0:Name'" "$f" >/dev/null
+    iterm_colour "$f" ":New Bookmarks:0:Background Color" "255;255;255"
+    rm -rf "$HOME/.cache/cs/iterm-profile"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$light" "${out:0:${#light}}" "a profile behind a nameless one keeps the launch theme" || return 1
+}
+
+# Inside tmux the pane's ITERM_PROFILE is the one it was started with, so the
+# profile answers only while the attached client is iTerm2: in control mode,
+# iTerm's tmux integration, or of a terminal type tmux reports as iTerm2. A
+# client tmux knows as another terminal leaves the rung to the ones after it.
+test_quiet_iterm_profile_inside_tmux_needs_an_iterm_client() {
+    iterm_tool || return $?
+    iterm_prefs 0 Work "21;24;40"
+    ( export ITERM_PROFILE=Work LC_TERMINAL=iTerm2 TMUX="/tmp/fake,1,0"
+      _load_sl_functions
+      tmux() { printf '\t/dev/ttys002\t80\t0\tghostty 1.2.0\n'; }
+      if _sl_theme_from_iterm; then
+          echo "    FAIL: another terminal attached, yet the profile answered"; return 1
+      fi
+      rm -rf "$HOME/.cache/cs/tmux-client3"; _TMUX_CLIENT_ASKED=""
+      tmux() { printf '\t/dev/ttys002\t80\t1\t\n'; }
+      _sl_theme_from_iterm || { echo "    FAIL: iTerm's tmux integration attached, yet the profile did not answer"; return 1; }
+      assert_eq "dark 21;24;40" "$SL_THEME $_SL_LIVE_BG" "the profile answers in control mode" || return 1
+      rm -rf "$HOME/.cache/cs/tmux-client3"; _TMUX_CLIENT_ASKED=""; SL_THEME=""; _SL_LIVE_BG=""
+      tmux() { printf '\t/dev/ttys002\t80\t0\tiTerm2 3.5.0\n'; }
+      _sl_theme_from_iterm || { echo "    FAIL: an iTerm2 client attached, yet the profile did not answer"; return 1; }
+      assert_eq "dark 21;24;40" "$SL_THEME $_SL_LIVE_BG" "the profile answers for an iTerm2 client" || return 1 )
 }
 
 run_test test_layout_unset_empty_or_unknown_is_quiet
@@ -5697,5 +5753,6 @@ run_test test_quiet_plain_level_prints_the_plain_line
 run_test test_quiet_follows_the_iterm_profile_across_appearances
 run_test test_quiet_iterm_single_background_sets_the_theme
 run_test test_quiet_iterm_profile_stands_down
+run_test test_quiet_iterm_profile_inside_tmux_needs_an_iterm_client
 
 report_results
