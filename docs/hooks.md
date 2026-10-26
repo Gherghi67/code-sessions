@@ -560,7 +560,9 @@ and `mail 1`: the mail word drops, the shared prefix goes and the features
 word shortens. A right-edge word never shortens past its head, the words
 before its first `·`, and `…` (`3 features…`): a cut into the head, such as
 `1…`, says nothing, so the word leaves instead and the band fits the line
-again without it. The
+again without it. The queue's start button keeps its count whole when it
+shortens: `▤ run 12…` fits, and a cut into the count, such as `▤ run 1…`,
+would name another number, so the button cuts to `▤…` instead. The
 actions outrank the rail: where one would leave the line whole beside that
 least, the words take the whole line, the rail draws in what they leave, and
 a line too narrow for any bar draws no rail. Three cells before the bars, and three cells after any
