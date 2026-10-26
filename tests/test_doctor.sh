@@ -1177,7 +1177,7 @@ test_doctor_rotate_wrap_keys_row_names_the_state() {
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x 1 not bound (run cs -update to bind it)" \
         "the chords an earlier cs bound, without the band's: the next update binds them" || return 1
 
-    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit"}},{"context":"Global","bindings":{"ctrl+x w":"command:wrap"}}]}' > "$kb"
+    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: conflict on ctrl+x r (bound to chat:submit in $kb)" \
         "a user binding on ctrl+x r: conflict" || return 1
