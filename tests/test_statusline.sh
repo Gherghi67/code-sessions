@@ -61,8 +61,9 @@ setup() {
     export XDG_CONFIG_HOME="$TEST_TMPDIR/xdg"
     mkdir -p "$XDG_CONFIG_HOME/cs"
     printf 'on\n' > "$XDG_CONFIG_HOME/cs/statusline-caps"
-    # The capsule pins below predate the band, which is the default layout
-    # now; the band tests export the band for themselves in band_env.
+    # The capsule pins below predate the band and the quiet layout, which is
+    # the default; the band and quiet tests export their layout by name in
+    # band_env and quiet_env.
     export CS_STATUSLINE_LAYOUT=capsules
 }
 
@@ -2825,7 +2826,7 @@ test_fable_segment_costs_nothing_off_fable() {
     # Sentinels the gate must leave alone: _fable_read clears all three on its
     # first lines, so surviving values prove it was never entered.
     _FABLE_PCT=sentinel; _FABLE_RESET=sentinel; _FABLE_DUE=sentinel
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
     _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     _seg_limits
     assert_eq "sentinel" "$_FABLE_PCT" "a non-fable model must not read the cache" || return 1
@@ -2960,7 +2961,7 @@ test_fable_segment_does_not_spawn_a_refresher_without_curl() {
     seed_usage_cache org-abc 86 "2026-08-29T03:59:59Z" 1787816000 1787816300
     SL_MODEL_ID="claude-fable-5"
     SL_5H=""; SL_WK=""
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
     _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     local nocurl="$TEST_TMPDIR/nocurl"; mkdir -p "$nocurl"
     # Symlink, not copy: macOS kills a copied system binary whose code
@@ -2981,7 +2982,7 @@ test_fable_segment_does_spawn_when_curl_is_present() {
     seed_usage_cache org-abc 42 "2026-08-29T03:59:59Z" 1787816000 1787816300
     SL_MODEL_ID="claude-fable-5"
     SL_5H=""; SL_WK=""
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
     _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     CS_STATUSLINE_NOW=1787816400 _NOW="" _SL_NOW_READY="" PATH="$USAGE_BINDIR:$PATH" _seg_limits
     assert_eq "1" "$_FABLE_KICKED" "a due cache with curl available must kick a refresher" || return 1
@@ -3822,7 +3823,7 @@ test_fable_hidden_below_seventy_but_cache_still_read() {
     # the two existing kick tests, moved onto _seg_limits in Step 4).
     _load_sl_functions
     SL_MODEL_ID="claude-fable-5"; SL_5H=""; SL_WK=""; _NOW=1787816400; _SL_NOW_READY=1; LEVEL=plain
-    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
+    _SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=(); _GROUPS=(); _GROUPS_SEEN=""; _CRIT_GROUPS=""
     _seg_limits
     assert_eq "1" "${_FABLE_DUE:-}" "the cache was read and found due even though nothing rendered" || return 1
     assert_eq "0" "${#_SEG_TEXT[@]}" "nothing was added for a 25% window" || return 1
@@ -5259,22 +5260,6 @@ test_band_inks_on_a_light_terminal() {
     assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
 }
 
-test_band_layout_unset_or_unknown_is_the_band() {
-    band_env
-    local want out
-    want=$(run_sl "$FIXTURE_DOCS")
-    assert_output_not_contains "$want" "$CAPL" "the band draws no capsule cap" || return 1
-    out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an empty layout is the band" || return 1
-    unset CS_STATUSLINE_LAYOUT
-    out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an unset layout is the band" || return 1
-    out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an unknown layout is the band" || return 1
-    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" "$CAPL" "capsules draws the capsules" || return 1
-}
-
 test_band_plain_level_prints_the_plain_line() {
     band_env
     export NO_COLOR=1
@@ -5336,9 +5321,205 @@ run_test test_band_crit_group_is_one_red_island
 run_test test_band_inks_on_a_dark_terminal
 run_test test_band_inks_on_a_light_terminal
 run_test test_band_ink_roles_per_theme
-run_test test_band_layout_unset_or_unknown_is_the_band
 run_test test_band_plain_level_prints_the_plain_line
 run_test test_band_256_is_a_flat_fill
 run_test test_band_basic_is_a_flat_fill
+
+# --- quiet layout ------------------------------------------------------------
+
+# The quiet tests' common ground: the docs fixture on a dark terminal of a
+# known background, truecolor.
+quiet_env() {
+    export CS_STATUSLINE_LAYOUT=quiet CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40" \
+        COLORTERM=truecolor
+}
+
+# Quiet is the default: unset, empty and unknown layouts draw it, and the band
+# and the capsules are drawn only when named.
+test_layout_unset_empty_or_unknown_is_quiet() {
+    quiet_env
+    local want out
+    want=$(run_sl "$FIXTURE_DOCS")
+    assert_eq " ✳ my-session   ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%" \
+        "$(printf '%s' "$want" | sed "s/$ESC_\[[0-9;]*m//g")" "quiet draws the items with no fill after them" || return 1
+    out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an empty layout is quiet" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unknown layout is quiet" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=band CS_STATUSLINE_COLS=80 run_sl "$FIXTURE_DOCS")
+    assert_eq 80 "$(band_cells "$out")" "band draws the 80-cell band" || return 1
+    local tail="${ESC_}[48;2;21;24;40m ${ESC_}[0m"
+    assert_eq "$tail" "${out: -${#tail}}" "the band fades to the background" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "$CAPL" "capsules draws the capsules" || return 1
+    unset CS_STATUSLINE_LAYOUT
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unset layout is quiet" || return 1
+}
+
+# The mark and the session name share one chip filled with the band's start,
+# here session blue pulled to 44;52;70, the name in the band's dark primary.
+# The mark stays Claude's coral 217;119;87 while the attention marker would
+# shade it on the capsules.
+test_quiet_chip_holds_the_mark_and_the_session_name() {
+    quiet_env
+    band_session_colour blue
+    touch "$CS_SESSIONS_ROOT/band-sess/.cs/local/attention"
+    local out chip
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip="${ESC_}[0m${ESC_}[0;48;2;44;52;70m ${ESC_}[48;2;44;52;70;38;2;217;119;87;1m✳"
+    chip+="${ESC_}[48;2;44;52;70m ${ESC_}[48;2;44;52;70;38;2;255;255;255;22mmy-session"
+    chip+="${ESC_}[48;2;44;52;70m ${ESC_}[0m"
+    assert_eq "$chip" "${out:0:${#chip}}" "the line opens with one chip of mark and name" || return 1
+    assert_output_not_contains_f "$out" "184;101;74" "the mark is not the attention shade" || return 1
+}
+
+# Labels and joiners fade from the quiet ink toward the background, run by
+# run: a run starts at each group and at each item a dot joins. The docs
+# fixture has three runs after the chip (model, ctx, limits) at 35%, 45% and
+# 55%. Dark: from 214;222;240 to 21;24;40, so 214+(21-214)*35/100 = 147 and
+# 147;153;170, then 128;133;150 and 108;114;130. Cream 253;246;227: the quiet
+# ink is 24% of the background, 60;59;54, so 127;124;114, 146;143;131 and
+# 166;161;149.
+test_quiet_labels_and_joiners_fade_run_by_run() {
+    quiet_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;147;153;170m  ·  " "the first run's joiner at 35%" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;128;133;150m  ·  ${ESC_}[0;38;2;128;133;150m○ ctx" \
+        "the second run's joiner and label at 45%" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;108;114;130m  ·  ${ESC_}[0;38;2;108;114;130m◷ 5h" \
+        "the last run's joiner and label at 55%" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;127;124;114m  ·  " "the first run on cream" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;146;143;131m  ·  ${ESC_}[0;38;2;146;143;131m○ ctx" \
+        "the second run on cream" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;166;161;149m  ·  ${ESC_}[0;38;2;166;161;149m◷ 5h" \
+        "the last run on cream" || return 1
+}
+
+# A reading keeps the quiet ink itself, bold, whatever its run.
+test_quiet_readings_are_bold_full_ink() {
+    quiet_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;214;222;240;1m8%" "the ctx reading" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;214;222;240;1m23%" "the 5h reading in the last run" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;60;59;54;1m8%" "the ctx reading on cream" || return 1
+}
+
+test_quiet_amber_reading_is_bold_amber() {
+    quiet_env
+    local out
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;253;230;138;1m45%" "ctx at warn is bold pale amber" || return 1
+    export CS_TERM_THEME=light CS_TERM_BG_RGB="253;246;227"
+    out=$(run_sl "$(band_fixture 45 23.5 41.2)")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;180;83;9;1m45%" "ctx at warn on cream is bold amber" || return 1
+}
+
+# 5h at crit: its label and reading are one red chip, critink bold on crit, a
+# fill space on each side. The chip's pad stands for one space of the dot
+# joiner before it, and wk, joined by a bar, stays outside in its fade.
+test_quiet_crit_reading_and_its_label_are_one_red_chip() {
+    quiet_env
+    local out red="${ESC_}[48;2;255;69;58;38;2;255;255;255;1m"
+    out=$(run_sl "$(band_fixture 8 95 60)")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;38;2;108;114;130m  · ${ESC_}[0;48;2;255;69;58m ${red}◷ 5h${red} ${red}95%${ESC_}[48;2;255;69;58m ${ESC_}[0m" \
+        "the 5h label and reading are one red chip" || return 1
+    assert_output_contains_f "$out" \
+        "${ESC_}[48;2;255;69;58m ${ESC_}[0m${ESC_}[0;38;2;108;114;130m ⋮ ${ESC_}[0;38;2;108;114;130m◶ wk${ESC_}[0m ${ESC_}[0;38;2;214;222;240;1m60%" \
+        "wk follows outside the chip" || return 1
+}
+
+# ctx and 5h both at crit: two chips, the dot joiner between them single-spaced
+# since each chip's pad stands for one of its spaces.
+test_quiet_two_crit_groups_are_two_chips() {
+    quiet_env
+    local out red="${ESC_}[48;2;255;69;58;38;2;255;255;255;1m"
+    out=$(run_sl "$(band_fixture 95 95 60)")
+    assert_output_contains_f "$out" \
+        "${red}95%${ESC_}[48;2;255;69;58m ${ESC_}[0m${ESC_}[0;38;2;108;114;130m · ${ESC_}[0;48;2;255;69;58m ${red}◷ 5h" \
+        "the ctx chip closes, a single-spaced dot, the 5h chip opens" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;48;2;255;69;58m ${red}● ctx${red} ${red}95%" "ctx is a chip of its own" || return 1
+}
+
+# The model's glyph wears the effort's colour, max's first letter for max,
+# and the effort word keeps its own; with no effort the glyph is the run's
+# fade like the model name.
+test_quiet_model_glyph_wears_the_effort_colour() {
+    quiet_env
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;38;2;146;158;250m✦${ESC_}[0;38;2;147;153;170m Opus${ESC_}[0m ${ESC_}[0;38;2;146;158;250mhigh" \
+        "high: the glyph and the word in effort-high, the name in the fade" || return 1
+    out=$(run_sl "$(jq -c '.effort.level = "max"' <<< "$FIXTURE_DOCS")")
+    assert_output_contains_f "$out" \
+        "${ESC_}[0;38;2;174;200;232m✦${ESC_}[0;38;2;147;153;170m Opus${ESC_}[0m ${ESC_}[0;38;2;174;200;232mm${ESC_}[0m${ESC_}[0;38;2;190;174;219ma${ESC_}[0m${ESC_}[0;38;2;219;174;206mx" \
+        "max: the glyph in effort-max-1, the word letter by letter" || return 1
+    out=$(run_sl "$(jq -c 'del(.effort)' <<< "$FIXTURE_DOCS")")
+    assert_output_contains_f "$out" "${ESC_}[0;38;2;147;153;170m✦ Opus${ESC_}[0;38;2;128;133;150m" \
+        "no effort: the glyph in the fade" || return 1
+}
+
+# Below truecolor there is no fade: the chip is the 256 surface, labels and
+# joiners the secondary ink, readings the primary ink, bold.
+test_quiet_256_has_no_fade() {
+    quiet_env
+    unset COLORTERM
+    local out
+    out=$(run_sl "$(band_fixture 45 95 60)")
+    assert_output_not_contains_f "$out" "38;2;" "no truecolor ink" || return 1
+    assert_output_not_contains_f "$out" "48;2;" "no truecolor fill" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;48;5;237m ${ESC_}[48;5;237;38;5;173;1m✳" "the chip is the 256 surface" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;5;250m  ·  ${ESC_}[0;38;5;250m◑ ctx" "a label is the 256 secondary ink" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;38;5;250m ⋮ ${ESC_}[0;38;5;250m◶ wk${ESC_}[0m ${ESC_}[0;38;5;255;1m60%" \
+        "the last label is the same ink, the reading the 256 primary" || return 1
+}
+
+# At basic colours quiet draws on the terminal's own background, where the
+# capsules' white inks vanish on a light theme: its labels are bright black
+# and its readings the terminal's own foreground, on either theme.
+test_quiet_basic_inks_read_on_the_terminal() {
+    quiet_env
+    unset COLORTERM
+    export TERM=xterm CS_TERM_THEME=light CS_TERM_BG_RGB="252;247;229"
+    local out
+    out=$(run_sl "$(band_fixture 8 23.5 41.2)")
+    assert_output_not_contains_f "$out" "${ESC_}[0;37m" "no white label on a light terminal" || return 1
+    assert_output_not_contains_f "$out" "${ESC_}[0;97" "no bright white reading on a light terminal" || return 1
+    assert_output_contains_f "$out" "${ESC_}[0;90m  ·  ${ESC_}[0;90m○ ctx${ESC_}[0m ${ESC_}[0;39;1m8%" \
+        "a label in bright black, the reading in the terminal's foreground, bold" || return 1
+    export CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40"
+    out=$(run_sl "$(band_fixture 8 23.5 41.2)")
+    assert_output_contains_f "$out" "${ESC_}[0;90m  ·  ${ESC_}[0;90m○ ctx${ESC_}[0m ${ESC_}[0;39;1m8%" \
+        "the same inks on a dark terminal" || return 1
+}
+
+test_quiet_plain_level_prints_the_plain_line() {
+    quiet_env
+    export NO_COLOR=1
+    local out
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "my-session · ✦ Opus high > ○ ctx 8% > ◷ 5h 23%" "$out" "plain prints the plain line" || return 1
+    assert_eq "$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")" "$out" "plain ignores the layout" || return 1
+}
+
+run_test test_layout_unset_empty_or_unknown_is_quiet
+run_test test_quiet_chip_holds_the_mark_and_the_session_name
+run_test test_quiet_labels_and_joiners_fade_run_by_run
+run_test test_quiet_readings_are_bold_full_ink
+run_test test_quiet_amber_reading_is_bold_amber
+run_test test_quiet_crit_reading_and_its_label_are_one_red_chip
+run_test test_quiet_two_crit_groups_are_two_chips
+run_test test_quiet_model_glyph_wears_the_effort_colour
+run_test test_quiet_256_has_no_fade
+run_test test_quiet_basic_inks_read_on_the_terminal
+run_test test_quiet_plain_level_prints_the_plain_line
 
 report_results
