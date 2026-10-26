@@ -1105,8 +1105,11 @@ cs_settings_check() {  # file
     [ -s "$1" ] || return 0
     if reason=$(jq -e . 2>&1 >/dev/null < "$1"); then
         reason=$(jq -r 'type' < "$1")
-        [ "$reason" != object ] || return 0
-        CS_SETTINGS_ERROR="$1 holds a JSON $reason, not an object; left it unchanged"
+        case "$reason" in
+            object) return 0 ;;
+            *$'\n'*) CS_SETTINGS_ERROR="$1 holds more than one JSON value, not one object; left it unchanged" ;;
+            *) CS_SETTINGS_ERROR="$1 holds a JSON $reason, not an object; left it unchanged" ;;
+        esac
         return 1
     fi
     reason="${reason%%$'\n'*}"

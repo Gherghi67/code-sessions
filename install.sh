@@ -1368,12 +1368,12 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "3001f2f3467ce66927b262c53006cddd6d72b79bcb49788d4bf1c41cc62c08dd  bin/cs"
+    "e7fa1e9c8735e7b68a3c2b473dcd7b49e91931112298f293db290de5e7d7aae7  bin/cs"
     "b32d0e75fbb6f077e4a90ae157f973bedb90f74ce587a35065f00b65ed95743f  bin/cs-secrets"
     "68be4cb037652baf60d5dac8c7088eeb606bfa338a92c8d81395c281f210e86b  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
-    "1fb7092492a6944d3261ee4684572321f38c71e9515630dae4f7c02bff20e0c4  hooks/cs-shared.sh"
+    "85a1e25d7953943ec6fbd53b65765a928b06a59595abaf71e2d86e7888c8dd8c  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "21988bf58bb6fea15c6435445f4abc3a38f4c4a9a7db78c4ff4797650709ba3f  hooks/memory-index-guard.sh"
     "130983fa75e1843db59007cc01bc02edd94ce873155ea0d410db02993f780351  hooks/prompt-rewriter.sh"
@@ -1394,7 +1394,7 @@ CS_PAYLOAD_SHA256=(
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f  skills/rotate/SKILL.md"
-    "e1cb7881dd04223fef4e8bdcb829701588429d44c1178d1a2a8ce5c138e7a238  skills/finish/SKILL.md"
+    "c3abc90866d30594959e68f8259d5155bbf0b9ed3d27b69da63fe78a116c712d  skills/finish/SKILL.md"
     "77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
