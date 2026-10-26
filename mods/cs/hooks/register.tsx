@@ -853,9 +853,10 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // where the words beside its least lose an action the whole line would
   // keep, they fit the whole line, and the rail takes what they leave, or
   // nothing. An action the whole line drops too (the count beside a bare
-  // clear key) is no reason for the rail to go.
+  // clear key) is no reason for the rail to go, nor is a word the band drops
+  // (the queue word draws among the actions, but leaves before the rail).
   const reserved = v.rail === undefined ? 0 : railCells(v.rail.prompts.length, leastWindow(v.rail.named)) + GAP
-  const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.map(entry => entry.key)
+  const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.filter(entry => entry.kind !== 'word' || !DROP_ORDER.includes(entry.key)).map(entry => entry.key)
   const besideRail = fitBand(v.entries, chords, room - reserved)
   const keptActions = actionKeys(besideRail.entries)
   const wholeLine = fitBand(v.entries, chords, room)
