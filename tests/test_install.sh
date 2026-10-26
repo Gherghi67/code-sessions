@@ -4206,6 +4206,42 @@ test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflict() {
     fi
 }
 
+# 22. A command key the Chat block already holds under another spelling and
+# the Global block holds too: the Global copy goes, the Chat block keeps its
+# one spelling and takes only the key it lacks, and the second install
+# changes nothing.
+test_rotate_wrap_keys_move_never_doubles_a_key_its_context_holds() {
+    local home="$TEST_TMPDIR/home-ok-move-spelt" kb
+    kb="$home/.claude/keybindings.json"
+    _install_with_recorded_yes ok-move-spelt "$home" '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X R":"command:rotate"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq '{"bindings":[{"context":"Chat","bindings":{"Ctrl+X R":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","ctrl+x 3":"strip:jump3"}}]}' \
+        "$(jq -c . "$kb" 2>&1)" "the Chat block keeps Ctrl+X R once and gains only ctrl+x w; the Global copy goes" || return 1
+    grep -qxF "   · Rotate/wrap keys: bound ctrl+x w and moved ctrl+x r to the Chat context in $kb" \
+        "$TEST_TMPDIR/ok-move-spelt.out" || { echo "  FAIL: the move line is missing or reworded"; return 1; }
+    cp "$kb" "$TEST_TMPDIR/move-spelt.after1"
+    env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/ok-move-spelt2.out" 2>&1 \
+        || { echo "  FAIL: the second install exited non-zero"; return 1; }
+    cmp -s "$TEST_TMPDIR/move-spelt.after1" "$kb" || { echo "  FAIL: the second install changed the file"; return 1; }
+}
+
+# 23. A command key held by a later Chat block and by the Global block: the
+# Global copy goes (and its block with it, emptied), the key is not added to
+# the first Chat block too, the free keys land in the first Chat block and a
+# Global block of their own, and the second install changes nothing.
+test_rotate_wrap_keys_move_never_doubles_a_key_a_later_block_holds() {
+    local home="$TEST_TMPDIR/home-ok-move-later" kb
+    kb="$home/.claude/keybindings.json"
+    _install_with_recorded_yes ok-move-later "$home" '{"bindings":[{"context":"Chat","bindings":{"ctrl+s":"submit"}},{"context":"Chat","bindings":{"ctrl+x r":"command:rotate"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate"}}]}' \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq "{\"bindings\":[{\"context\":\"Chat\",\"bindings\":{\"ctrl+s\":\"submit\",\"ctrl+x w\":\"command:wrap\"}},{\"context\":\"Chat\",\"bindings\":{\"ctrl+x r\":\"command:rotate\"}},$_OK_GLOBAL_BLOCK]}" \
+        "$(jq -c . "$kb" 2>&1)" "ctrl+x r stays in the later Chat block only; the Global block it emptied goes" || return 1
+    cp "$kb" "$TEST_TMPDIR/move-later.after1"
+    env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/ok-move-later2.out" 2>&1 \
+        || { echo "  FAIL: the second install exited non-zero"; return 1; }
+    cmp -s "$TEST_TMPDIR/move-later.after1" "$kb" || { echo "  FAIL: the second install changed the file"; return 1; }
+}
+
 run_test test_install_survives_an_unwritable_declined_marker_dir
 run_test test_install_previews_the_status_line_before_asking
 run_test test_declining_says_permanence_on_its_own_line
@@ -4288,4 +4324,6 @@ run_test test_rotate_wrap_keys_band_chord_conflict_still_retires_option_keys
 run_test test_rotate_wrap_keys_move_command_keys_to_the_chat_context
 run_test test_rotate_wrap_keys_move_is_idempotent
 run_test test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflict
+run_test test_rotate_wrap_keys_move_never_doubles_a_key_its_context_holds
+run_test test_rotate_wrap_keys_move_never_doubles_a_key_a_later_block_holds
 report_results

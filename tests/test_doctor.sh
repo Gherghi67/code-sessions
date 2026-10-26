@@ -1172,6 +1172,25 @@ test_doctor_rotate_wrap_keys_row_names_the_state() {
         "both command keys are named" || return 1
     assert_output_not_contains "$output" "Rotate/wrap keys: bound" "a file with a misplaced key is not reported bound" || return 1
 
+    # The same file under a no, and under no answer: the installer touches
+    # the file only on a recorded yes, so the advice is to move the key by
+    # hand, and the row is still a WARN, never the OK of a declined machine.
+    printf 'no\n' > "$xdg/cs/option-keys"
+    output=$(_ok_doctor)
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x r is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "answered no: the misplaced key is still named, with the move to make by hand" || return 1
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x w is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "answered no: both command keys are named" || return 1
+    assert_output_not_contains "$output" "OK.*Rotate/wrap keys" "answered no: a misplaced key is no OK row" || return 1
+    rm "$xdg/cs/option-keys"
+    output=$(_ok_doctor)
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x r is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "not asked: the misplaced key is still named, with the move to make by hand" || return 1
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x w is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "not asked: both command keys are named" || return 1
+    assert_output_not_contains "$output" "OK.*Rotate/wrap keys" "not asked: a misplaced key is no OK row" || return 1
+    printf 'yes\n' > "$xdg/cs/option-keys"
+
     printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x 1 not bound (run cs -update to bind it)" \
