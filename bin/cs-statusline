@@ -265,7 +265,9 @@ _sl_theme_from_iterm() {
         single\ *)
             bg="${colours#single }"
             [[ "$bg" =~ $rgb ]] || return 1
-            if [ $(( (BASH_REMATCH[1] * 299 + BASH_REMATCH[2] * 587 + BASH_REMATCH[3] * 114) / 1000 )) -lt 128 ]; then
+            # The launch's BT.709 line (lib/70-statusline.sh) and _luminance's,
+            # so a mid tone reads as the theme the launch measured.
+            if [ $(( 2126 * BASH_REMATCH[1] + 7152 * BASH_REMATCH[2] + 722 * BASH_REMATCH[3] )) -lt 1275000 ]; then
                 SL_THEME="dark"
             else
                 SL_THEME="light"

@@ -5673,7 +5673,9 @@ test_quiet_follows_the_iterm_profile_across_appearances() {
 # dark although cs measured cream at launch and macOS is light. A component
 # below zero, as a colour outside the profile's colour space stores it, reads
 # as 0: red -0.2 makes the background 0;24;40, so blue keeps 35% over it,
-# 106+(0-106)*65/100 = 38, so 38;70;98.
+# 106+(0-106)*65/100 = 38, so 38;70;98. A mid tone is split at the launch's
+# BT.709 line: 140;120;140 is dark there (1256960 < 1275000), so blue keeps
+# 35% over it, 106+(140-106)*65/100 = 128, so 128;133;163.
 test_quiet_iterm_single_background_sets_the_theme() {
     iterm_tool || return $?
     iterm_env light
@@ -5688,6 +5690,11 @@ test_quiet_iterm_single_background_sets_the_theme() {
     out=$(run_sl "$FIXTURE_DOCS")
     chip=$(quiet_chip "38;70;98" "195;215;234")
     assert_eq "$chip" "${out:0:${#chip}}" "a component below zero reads as 0" || return 1
+    rm -rf "$HOME/Library/Preferences/com.googlecode.iterm2.plist" "$HOME/.cache/cs/iterm-profile"
+    iterm_prefs 0 Work "140;120;140"
+    out=$(run_sl "$FIXTURE_DOCS")
+    chip=$(quiet_chip "128;133;163" "195;215;234")
+    assert_eq "$chip" "${out:0:${#chip}}" "a mid tone is dark by the launch's luminance line" || return 1
 }
 
 # The profile is not read over ssh, where the preferences on disk are not the
