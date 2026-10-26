@@ -1,6 +1,6 @@
 # Status line
 
-`cs-statusline` is the Claude Code status line shipped with cs. It reads the JSON Claude Code pipes to the registered `statusLine.command` on every render and prints exactly one line: by default the [band](#band-layout), a full-width row fading from the session's colour into the terminal; with `CS_STATUSLINE_LAYOUT=capsules`, the rounded capsules on the terminal's own background described next.
+`cs-statusline` is the Claude Code status line shipped with cs. It reads the JSON Claude Code pipes to the registered `statusLine.command` on every render and prints exactly one line: by default the [quiet layout](#quiet-layout), the items as text on the terminal's own background; with `CS_STATUSLINE_LAYOUT=band`, the [band](#band-layout), a full-width row fading from the session's color into the terminal; with `CS_STATUSLINE_LAYOUT=capsules`, the rounded capsules on the terminal's own background described next.
 
 ```
 ✳ claude-sessions  ·  ⎇ main↑1 +2!1  ·  ✦ Fable 5.1 medium  ◑ ctx 42%  ◷ 5h 31% ⋮ ◶ wk 84% · 5d16h
@@ -8,7 +8,7 @@
 
 One capsule carries identity — the Claude mark, the session, the branch, the model — and one carries the context gauge. The quota capsule (5h, joined by a vertical ellipsis to wk once wk reaches 50) is always there; the Fable window gets its own capsule at 50. Colour is state: bold amber ink on a number past its warn threshold, and the capsule inverts to red at crit, its text white on the red. The plain form (`NO_COLOR=1`) is `claude-sessions · ⎇ main↑1 +2!1 · ✦ Fable 5.1 medium > ◑ ctx 42% > ◷ 5h 31% ⋮ ◶ wk 84% · 5d16h`.
 
-The capsules are the second of two layouts; the default, the [band](#band-layout), draws the same items on one full-width row that fades from the session's color into the terminal background. The segment table below holds for both.
+The capsules are one of three layouts. The default, the [quiet layout](#quiet-layout), draws the same items as text on the terminal background, and the [band](#band-layout) draws them on one full-width row that fades from the session's color into the terminal background. The segment table below holds for all three.
 
 ## Segments
 
@@ -187,9 +187,27 @@ Capsule ends are the Powerline glyphs U+E0B6 and U+E0B4, drawn as fill-colored i
 
 Inside tmux, Claude Code mutes its own branding and any truecolor status line to a fallback palette. cs sets `CLAUDE_CODE_TMUX_TRUECOLOR=1` in claude's environment at launch (unless you set it yourself) to keep these colors at full saturation, and inside tmux publishes the same value into the session's environment so teammate panes claude opens get it as well.
 
+## Quiet layout
+
+The quiet layout is the default: an unset `CS_STATUSLINE_LAYOUT`, an empty value, `quiet` and any value other than `band` and `capsules` draw it. It draws the same items as the capsules as text on the terminal's own background, with no fill. It has no width, so `CS_STATUSLINE_COLS` and `CS_STATUSLINE_FRAME` do not apply to it.
+
+```
+ ✳ my-session   ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%
+```
+
+The mark and the session name, with the lock of an encrypted session, sit in one chip with a fill space on each side. Its fill is the band's first cell, picked by the [band's color rules](#band-layout): `CS_STATUSLINE_BAND`, else the session's own color, else the neutral. Its text is the band's primary ink at regular weight. The mark is always Claude's coral `217;119;87`, bold, even while the attention marker shades it on the capsules.
+
+After the chip the line falls into runs. A run starts at each new group and at each item that `  ·  ` joins. Labels, joiners and every other item without a role of its own, such as the model name and the branch, take one fade ink per run. The first run is 35% of the way from the quiet ink to the terminal background, the last run 55%, and the runs between step evenly from one to the other. The quiet ink is `214;222;240` on a dark terminal and 24% of each background channel on a light one. With three runs on a dark `21;24;40` the fades are `147;153;170`, `128;133;150` and `108;114;130`; on cream `253;246;227` they are `127;124;114`, `146;143;131` and `166;161;149`. The background is `CS_TERM_BG_RGB` when it parses, else the one the band assumes.
+
+A reading (the ctx and quota percentages, the cost) keeps the quiet ink itself, bold, in every run, so the numbers stay the easiest thing on the line to read. An item in amber ink (a reading past its warn threshold, the notes and mail counts) is bold `amber`. A reading at crit and the label just before it in its group are one red chip, `critink` bold on `crit`, with a fill space on each side. The chip closes at the first item that is not part of it, so `wk` after a crit `5h` stays outside. A two-space joiner beside a red chip loses one space to the chip's fill space, so the dot between two crit groups is ` · `.
+
+The model's glyph `✦` takes the color of the effort word after it, `effort-max-1` for `max`. The effort word keeps its own color. With no effort the glyph takes its run's fade, like the model name.
+
+Below truecolor there is no fade. The chip is the `surface` fill with `ink` text, labels and joiners are `ink2`, and readings are `ink`, bold, all in the level's tokens. Plain mode (`NO_COLOR` and the rest) ignores the layout and prints the plain line the capsules print.
+
 ## Band layout
 
-`CS_STATUSLINE_LAYOUT=band` draws the same items as the capsules on one full-width band instead. The band's fill fades, cell by cell, from the band color at the left edge to the terminal background at the right: a strip of the session's color that dissolves into the terminal. The band is the default layout: an unset `CS_STATUSLINE_LAYOUT`, an empty value, `band` and any other value all draw the band; only `capsules` draws the capsules.
+`CS_STATUSLINE_LAYOUT=band` draws the same items as the capsules on one full-width band instead. The band's fill fades, cell by cell, from the band color at the left edge to the terminal background at the right: a strip of the session's color that dissolves into the terminal. The band is opt-in: only `band` draws it, and an unset `CS_STATUSLINE_LAYOUT`, an empty value and any value other than `band` and `capsules` draw the [quiet layout](#quiet-layout).
 
 ```
  ✳ my-session  ·  ✦ Opus high  ·  ○ ctx 8%  ·  ◷ 5h 23%
@@ -302,8 +320,9 @@ export CS_SUBAGENT_STATUSLINE_DISABLE=1
 # Choose and order segments
 export CS_STATUSLINE_SEGMENTS="session,ctx,git,limits"
 
-# The layout: band (the default, see Band layout) or capsules
-export CS_STATUSLINE_LAYOUT="capsules"
+# The layout: quiet (the default, see Quiet layout), band (see Band layout)
+# or capsules
+export CS_STATUSLINE_LAYOUT="band"
 
 # The band's color: a session-palette name, brand, periwinkle, an r;g;b
 # triplet, session (the session's own color, the default) or none (neutral)

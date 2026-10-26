@@ -119,11 +119,12 @@ export CS_STATUSLINE_SEGMENTS="logo,session,notes,mail,git,model,ctx,limits"  # 
 
 export CS_STATUSLINE_DISABLE="1"
 
-# Status line layout: band (the default), one full-width row that fades from
-# the band color into the terminal background (docs/statusline.md, Band
-# layout), or capsules. The band's color, final width and the frame Claude
-# Code draws around the line:
-export CS_STATUSLINE_LAYOUT="capsules"
+# Status line layout: quiet (the default), the items as text on the terminal
+# background (docs/statusline.md, Quiet layout); band, one full-width row that
+# fades from the band color into the terminal background (Band layout); or
+# capsules. The band's color, which also fills quiet's session chip, its final
+# width and the frame Claude Code draws around the line:
+export CS_STATUSLINE_LAYOUT="band"
 export CS_STATUSLINE_BAND="periwinkle"   # palette name, brand, periwinkle, r;g;b, session, none
 export CS_STATUSLINE_COLS=160            # final width in cells; unset: measured, less the frame
 export CS_STATUSLINE_FRAME=4             # columns the prompt frame takes from a measured width
