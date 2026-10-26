@@ -122,7 +122,7 @@ export CS_STATUSLINE_DISABLE="1"
 # Status line layout: quiet (the default), the items as text on the terminal
 # background (docs/statusline.md, Quiet layout); band, one full-width row that
 # fades from the band color into the terminal background (Band layout); or
-# capsules. The band's color, which also fills quiet's session chip, its final
+# capsules. The band's color, which also tints quiet's session chip, its final
 # width and the frame Claude Code draws around the line:
 export CS_STATUSLINE_LAYOUT="band"
 export CS_STATUSLINE_BAND="periwinkle"   # palette name, brand, periwinkle, r;g;b, session, none
@@ -289,7 +289,9 @@ export CS_NO_ROTATION_WAKE="1"
 # with shell integration, until the next prompt, and the attention marker
 # the status line reads). Under tmux it also starts
 # claude as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no
-# progress line and no Claude icon. Unset, cs enables both under tmux.
+# progress line and no Claude icon. Unset, cs enables both under tmux. The
+# status line also stops reading its theme and background from the iTerm2
+# profile (docs/statusline.md, Terminal theme).
 # cs -doctor reports the integration state.
 export CS_NO_ITERM2="1"
 

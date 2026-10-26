@@ -332,7 +332,11 @@ _export_term_theme() {
     # hard override everywhere.
     export CS_TERM_THEME="$theme"
     export CS_TERM_THEME_AUTO=1
-    if [[ "$out" == *" "* ]] && [ -z "${CS_TERM_BG_RGB:-}" ]; then
+    # A background already set is the user's: CS_TERM_BG_RGB_PINNED tells the
+    # statusline so, which the theme's auto marker beside it would not.
+    if [ -n "${CS_TERM_BG_RGB:-}" ]; then
+        export CS_TERM_BG_RGB_PINNED=1
+    elif [[ "$out" == *" "* ]]; then
         export CS_TERM_BG_RGB="${out#* }"
     fi
     _write_term_cache "$theme" "${CS_TERM_BG_RGB:-}"

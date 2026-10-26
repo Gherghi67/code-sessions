@@ -177,25 +177,31 @@ _sl_theme_from_tmux_client() {
 }
 
 # Ask the tmux server, once per theme pass, what the attached client reports
-# as its theme, which tty it is on, and how wide this pane is: one query for the
-# three rungs that need them (the band layout reads the width). Tab-separated
-# so an empty theme (most terminals report none) still leaves the tty in its
-# own field. The answer is kept for
+# as its theme, which tty it is on, how wide this pane is, whether the client
+# is in control mode and what terminal tmux learned it is: one query for the
+# rungs that need them (the band layout reads the width, the iTerm rung the
+# last two). Tab-separated so an empty field (most terminals report no theme)
+# still leaves the ones after it in their places. The answer is kept for
 # TMUX_CLIENT_CACHE_TTL under the parent pid and the TMUX claim, so renders
 # while Claude works ask tmux once in five seconds: a theme toggle or a
 # re-attach from another terminal shows at the next render after that,
-# within a minute while idle. Sets _TMUX_CLIENT_THEME, _TMUX_CLIENT_TTY and
-# _TMUX_CLIENT_WIDTH; all empty when tmux cannot answer. The bucket is
-# tmux-client2 because its entries hold three fields: a two-field entry of the
-# tmux-client bucket can never be read as one.
+# within a minute while idle. Sets _TMUX_CLIENT_THEME, _TMUX_CLIENT_TTY,
+# _TMUX_CLIENT_WIDTH, _TMUX_CLIENT_CONTROL and _TMUX_CLIENT_TERMTYPE; all empty
+# when tmux cannot answer. The bucket is tmux-client3 because its entries hold
+# five fields: an entry of the tmux-client or tmux-client2 bucket, with two or
+# three, can never be read as one.
 TMUX_CLIENT_CACHE_TTL=5
 _TMUX_CLIENT_ASKED=""; _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""; _TMUX_CLIENT_WIDTH=""
+_TMUX_CLIENT_CONTROL=""; _TMUX_CLIENT_TERMTYPE=""
 _sl_tmux_client() {
     [ -z "$_TMUX_CLIENT_ASKED" ] || return 0
     _TMUX_CLIENT_ASKED=1
-    local out rest fmt='#{client_theme}'$'\t''#{client_tty}'$'\t''#{pane_width}'
+    _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""; _TMUX_CLIENT_WIDTH=""
+    _TMUX_CLIENT_CONTROL=""; _TMUX_CLIENT_TERMTYPE=""
+    local out rest t=$'\t'
+    local fmt="#{client_theme}$t#{client_tty}$t#{pane_width}$t#{client_control_mode}$t#{client_termtype}"
     _sl_parent_pid
-    if _cache_read tmux-client2 "$_PARENT,${TMUX:-}" "$TMUX_CLIENT_CACHE_TTL"; then
+    if _cache_read tmux-client3 "$_PARENT,${TMUX:-}" "$TMUX_CLIENT_CACHE_TTL"; then
         out="$_CACHE_TEXT"
     else
         if [ -n "${TMUX_PANE:-}" ]; then
@@ -203,15 +209,133 @@ _sl_tmux_client() {
         else
             out=$(tmux display-message -p "$fmt" 2>/dev/null) || return 0
         fi
-        case "$out" in *$'\t'*) _cache_write tmux-client2 "$_PARENT,${TMUX:-}" "$out" ;; esac
+        case "$out" in *"$t"*) _cache_write tmux-client3 "$_PARENT,${TMUX:-}" "$out" ;; esac
     fi
-    case "$out" in
-        *$'\t'*)
-            _TMUX_CLIENT_THEME="${out%%$'\t'*}"
-            rest="${out#*$'\t'}"
-            _TMUX_CLIENT_TTY="${rest%%$'\t'*}"
-            case "$rest" in *$'\t'*) _TMUX_CLIENT_WIDTH="${rest#*$'\t'}" ;; esac ;;
+    case "$out" in *"$t"*) ;; *) return 0 ;; esac
+    _TMUX_CLIENT_THEME="${out%%"$t"*}"; rest="${out#*"$t"}"
+    _TMUX_CLIENT_TTY="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) rest="${rest#*"$t"}" ;; *) return 0 ;; esac
+    _TMUX_CLIENT_WIDTH="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) rest="${rest#*"$t"}" ;; *) return 0 ;; esac
+    _TMUX_CLIENT_CONTROL="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) _TMUX_CLIENT_TERMTYPE="${rest#*"$t"}" ;; esac
+}
+
+# The theme and background of the iTerm2 profile this pane was opened with,
+# read from iTerm's preferences. iTerm reports no theme to tmux, and the theme
+# cs measured at launch goes stale when macOS flips between light and dark
+# mode. A profile with separate light and dark colours follows the macOS
+# appearance (so does iTerm's own, unless its theme is pinned light or dark in
+# Settings, which this cannot see); any other profile is light or dark by its
+# one background. Inside tmux, ITERM_PROFILE and LC_TERMINAL are what the pane
+# was started with, and the client attached now may be another terminal, so the
+# profile answers only while that client is iTerm2: in control mode (iTerm's
+# tmux integration) or of a terminal type tmux reports as iTerm2. Sets SL_THEME
+# and _SL_LIVE_BG; 1 when this is not a local iTerm pane, CS_NO_ITERM2 is set,
+# or the profile cannot be read. The profile is read at most once in
+# ITERM_PROFILE_CACHE_TTL, a miss included, and the appearance once in
+# MACOS_APPEARANCE_CACHE_TTL.
+ITERM_PREFS="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
+ITERM_PROFILE_CACHE_TTL=60
+MACOS_APPEARANCE_CACHE_TTL=5
+_SL_LIVE_BG=""
+_sl_theme_from_iterm() {
+    [ -n "${ITERM_PROFILE:-}" ] && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${CS_NO_ITERM2:-}" ] || return 1
+    [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || [ "${LC_TERMINAL:-}" = "iTerm2" ] || return 1
+    if [ -n "${TMUX:-}" ]; then
+        _sl_tmux_client
+        [ "$_TMUX_CLIENT_CONTROL" = "1" ] || [[ "$_TMUX_CLIENT_TERMTYPE" == iTerm2* ]] || return 1
+    fi
+    # _parse_rgb_triplet is defined further down than this runs.
+    local colours dark light bg rgb='^([0-9]+);([0-9]+);([0-9]+)$'
+    if _cache_read iterm-profile "$ITERM_PROFILE" "$ITERM_PROFILE_CACHE_TTL"; then
+        colours="$_CACHE_TEXT"
+    else
+        _sl_iterm_profile_colours
+        colours="$_ITERM_COLOURS"
+        _cache_write iterm-profile "$ITERM_PROFILE" "$colours"
+    fi
+    case "$colours" in
+        separate\ *\ *)
+            dark="${colours#separate }"; light="${dark#* }"; dark="${dark%% *}"
+            _sl_macos_appearance
+            if [ "$_MACOS_APPEARANCE" = "dark" ]; then bg="$dark"; else bg="$light"; fi
+            [[ "$bg" =~ $rgb ]] || return 1
+            SL_THEME="$_MACOS_APPEARANCE" ;;
+        single\ *)
+            bg="${colours#single }"
+            [[ "$bg" =~ $rgb ]] || return 1
+            if [ $(( (BASH_REMATCH[1] * 299 + BASH_REMATCH[2] * 587 + BASH_REMATCH[3] * 114) / 1000 )) -lt 128 ]; then
+                SL_THEME="dark"
+            else
+                SL_THEME="light"
+            fi ;;
+        *) return 1 ;;
     esac
+    _SL_LIVE_BG="$bg"
+}
+
+# The background colours of the profile named ITERM_PROFILE, in _ITERM_COLOURS:
+# `separate <dark r;g;b> <light r;g;b>`, `single <r;g;b>`, or `none` when the
+# preferences, the profile or its colours cannot be read. Each value is printed
+# on its own line and a missing one prints nothing, so the components count as
+# read only when all of them are there. PlistBuddy prints nothing at all for a
+# call of 15 or more commands, so the names are read 8 at a time, until a batch
+# comes back short: the end of the profiles. A profile with no name shortens
+# its batch the same way, so the name is read back at the index found, and a
+# mismatch is a profile that cannot be read.
+_sl_iterm_profile_colours() {
+    _ITERM_COLOURS="none"
+    local pb=/usr/libexec/PlistBuddy i start idx="" name names out sep key rgbs args=() sets=()
+    [ -x "$pb" ] && [ -f "$ITERM_PREFS" ] || return 0
+    for ((start = 0; ; start += 8)); do
+        args=()
+        for ((i = start; i < start + 8; i++)); do args+=(-c "Print ':New Bookmarks:$i:Name'"); done
+        names=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null)
+        [ -n "$names" ] || return 0
+        i=$start
+        while IFS= read -r name; do
+            [ "$name" = "$ITERM_PROFILE" ] && { idx=$i; break 2; }
+            i=$((i + 1))
+        done <<< "$names"
+        [ "$i" -eq $((start + 8)) ] || return 0
+    done
+    out=$("$pb" -c "Print ':New Bookmarks:$idx:Name'" \
+        -c "Print ':New Bookmarks:$idx:Use Separate Colors for Light and Dark Mode'" "$ITERM_PREFS" 2>/dev/null)
+    [ "${out%%$'\n'*}" = "$ITERM_PROFILE" ] || return 0
+    sep=""
+    case "$out" in *$'\n'*) sep="${out#*$'\n'}" ;; esac
+    if [ "$sep" = "true" ]; then
+        sets=("Background Color (Dark)" "Background Color (Light)")
+    else
+        sets=("Background Color")
+    fi
+    args=()
+    for key in "${sets[@]}"; do
+        args+=(-c "Print ':New Bookmarks:$idx:$key:Red Component'"
+               -c "Print ':New Bookmarks:$idx:$key:Green Component'"
+               -c "Print ':New Bookmarks:$idx:$key:Blue Component'")
+    done
+    rgbs=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null | awk -v want=$((3 * ${#sets[@]})) '
+        $0 !~ /^-?[0-9]*\.?[0-9]+$/ { bad = 1 }
+        { v[NR] = int($0 * 255 + 0.5); if (v[NR] > 255) v[NR] = 255; if (v[NR] < 0) v[NR] = 0 }
+        END {
+            if (bad || NR != want) exit
+            for (i = 1; i <= NR; i += 3) printf "%s%d;%d;%d", (i > 1 ? " " : ""), v[i], v[i + 1], v[i + 2]
+        }')
+    [ -n "$rgbs" ] || return 0
+    if [ "$sep" = "true" ]; then _ITERM_COLOURS="separate $rgbs"; else _ITERM_COLOURS="single $rgbs"; fi
+}
+
+# The macOS appearance in _MACOS_APPEARANCE, dark or light: AppleInterfaceStyle
+# reads Dark in dark mode and is absent in light mode.
+_sl_macos_appearance() {
+    if _cache_read macos-appearance global "$MACOS_APPEARANCE_CACHE_TTL"; then
+        case "$_CACHE_TEXT" in dark|light) _MACOS_APPEARANCE="$_CACHE_TEXT"; return 0 ;; esac
+    fi
+    _MACOS_APPEARANCE="light"
+    [ "$(defaults read -g AppleInterfaceStyle 2>/dev/null)" = "Dark" ] && _MACOS_APPEARANCE="dark"
+    _cache_write macos-appearance global "$_MACOS_APPEARANCE"
 }
 
 # COLORFGBG, outside tmux only. Inside it is the tmux server's start-time
@@ -511,6 +635,7 @@ _sl_theme_from_client_cache() {
 _sl_detect_theme() {
     # One tmux query serves every rung of this pass; a later pass asks again.
     _TMUX_CLIENT_ASKED=""
+    _SL_LIVE_BG=""
     # An explicit pin outranks every measurement, so it is read before the probe
     # file is allowed to overwrite anything.
     if [ -n "${CS_TERM_THEME:-}" ] && [ -z "${CS_TERM_THEME_AUTO:-}" ]; then
@@ -530,6 +655,8 @@ _sl_detect_theme() {
     fi
     if [ -n "${TMUX:-}" ] && _sl_theme_from_tmux_client; then
         : # SL_THEME set from the attached client's own reported theme
+    elif _sl_theme_from_iterm; then
+        : # SL_THEME and the background read live from the iTerm profile
     elif [ -z "${TMUX:-}" ] && [ -n "${COLORFGBG:-}" ] && _sl_theme_from_colorfgbg; then
         : # SL_THEME set from the terminal's own statement about itself
     elif _sl_theme_from_client_cache; then
@@ -552,15 +679,22 @@ _sl_detect_theme() {
     fi
 }
 
+# Whether CS_TERM_BG_RGB is the user's own: set with no launch detection
+# behind it, or set before a launch that detected the theme, which marks it with
+# CS_TERM_BG_RGB_PINNED since CS_TERM_THEME_AUTO speaks for the theme alone.
+_sl_bg_pinned() {
+    [ -n "${CS_TERM_BG_RGB:-}" ] && { [ -z "${CS_TERM_THEME_AUTO:-}" ] || [ -n "${CS_TERM_BG_RGB_PINNED:-}" ]; }
+}
+
 # Blank CS_TERM_BG_RGB when the launch-captured background is stale: once the
 # live theme (SL_THEME) has switched away from the theme cs detected at launch
 # (CS_TERM_THEME, present with the auto marker), the RGB no longer matches the
 # terminal, so drop it and let the gauge surface fall back to
 # theme-based values instead of tinting toward the old background (which could
-# leave light text on a near-light surface). A manually-set RGB carries no auto
-# marker and is never dropped.
+# leave light text on a near-light surface). An RGB the user set
+# (_sl_bg_pinned) is never dropped.
 _sl_invalidate_stale_bg() {
-    if [ -n "${CS_TERM_BG_RGB:-}" ] && [ -n "${CS_TERM_THEME_AUTO:-}" ] &&
+    if [ -n "${CS_TERM_BG_RGB:-}" ] && ! _sl_bg_pinned &&
        { [ -n "${SL_ENV_FOREIGN:-}" ] || [ "$SL_THEME" != "${CS_TERM_THEME:-}" ]; }; then
         CS_TERM_BG_RGB=""
     fi
@@ -1066,7 +1200,7 @@ _add() {
 }
 
 # Give the item just added a role the quiet layout draws by: `chip` for the
-# mark and the session name, `value` for a reading.
+# mark and the session name, `value` for a reading, `model` and `branch`.
 _role() {
     _SEG_ROLE[$((${#_SEG_TEXT[@]} - 1))]="$1"
 }
@@ -1391,7 +1525,7 @@ _refresh_usage() {
     # idle. The render never forks to sweep, so this worker does it. The other
     # buckets are keyed on identities that repeat and stay small.
     local bucket
-    for bucket in tmux-client tmux-client2 tmux-real tmux-walking tty stty; do
+    for bucket in tmux-client tmux-client2 tmux-client3 tmux-real tmux-walking tty stty; do
         [ -d "$HOME/.cache/cs/$bucket" ] || continue
         find "$HOME/.cache/cs/$bucket" -maxdepth 1 -type f -mmin +60 -delete 2>/dev/null
     done
@@ -1938,6 +2072,7 @@ _seg_git() {
     local t="$_GIT_TEXT"
     [ -n "$t" ] || return 0
     _add "${ICON_GIT}${t}" identity ink bold
+    _role branch
 }
 
 # One rate-limit window: label in secondary ink, the number in the threshold
@@ -2268,10 +2403,13 @@ _band_width() {
     [ "$_BAND_W" -ge 20 ] || _BAND_W=20
 }
 
-# The terminal background the band fades into, in _BG_R/_BG_G/_BG_B: the
-# measured one, else the background the surface token assumes for the theme.
+# The terminal background the band fades into, in _BG_R/_BG_G/_BG_B: the one
+# read live from iTerm unless a background was set by hand, the measured one,
+# else the background the surface token assumes for the theme.
 _band_bg() {
-    if ! _parse_rgb_triplet "${CS_TERM_BG_RGB:-}"; then
+    local rgb="${CS_TERM_BG_RGB:-}"
+    [ -z "$_SL_LIVE_BG" ] || _sl_bg_pinned || rgb="$_SL_LIVE_BG"
+    if ! _parse_rgb_triplet "$rgb"; then
         if [ "$SL_THEME" = "dark" ]; then _parse_rgb_triplet "28;28;28"
         else _parse_rgb_triplet "255;255;255"; fi
     fi
@@ -2517,13 +2655,14 @@ _render_band() {
 #
 # The default layout (CS_STATUSLINE_LAYOUT unset, quiet or any value other
 # than band and capsules): the items as text on the terminal's own
-# background, with no fill. The mark and the session name sit in one chip of
-# the band's colour; after it the labels and joiners fade, run by run, toward
-# the background, while the readings keep full ink and bold, so the numbers
-# stay the easiest thing on the line to read. An amber reading is bold amber; a crit
-# reading and its label are a red chip of their own. The brand mark keeps its
-# colour, and the model's glyph wears the effort's colour beside the effort
-# word.
+# background. The mark and the session name sit in one chip tinted with the
+# session's colour, the name in a shade of it (_quiet_chip_fill). The readings
+# are bold in the terminal's own foreground and the branch is the terminal's
+# green, so they read on whatever background the terminal wears, the theme
+# detected at launch notwithstanding. The labels and joiners fade, run by run,
+# toward the background. An amber reading is bold amber; a crit reading and its
+# label are a red chip of their own. The brand mark keeps its coral, and the
+# model's glyph wears the effort's colour beside the effort word.
 
 # The quiet ink $1 percent of the way to the background, as foreground
 # parameters in _QUIET_FG.
@@ -2552,6 +2691,31 @@ _quiet_run_ink() {
     _quiet_fade $((35 + 20 * (run - 1) / span))
 }
 
+# The chip's fill in _R/_G/_B and its text in _CHIP_INK, both from the band's
+# colour (CS_STATUSLINE_BAND, else the session's). The fill is that colour seen
+# through the terminal background (_band_bg), 35% of it on a dark terminal and
+# 15% on a light one; the text is the colour lifted toward white on a dark
+# terminal and pressed toward black on a light one. With no colour the fill is
+# the neutral step off the background and the text the terminal's own ink.
+_quiet_chip_fill() {
+    _CHIP_INK=39
+    _BAND_NEUTRAL=""
+    _band_from
+    [ -z "$_BAND_NEUTRAL" ] || return 0
+    local r="$_R" g="$_G" b="$_B"
+    if [ "$SL_THEME" = "dark" ]; then
+        _band_toward 255 255 255 60
+        _CHIP_INK="38;2;$_R;$_G;$_B"
+        _R="$r"; _G="$g"; _B="$b"
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 65
+    else
+        _band_toward 0 0 0 50
+        _CHIP_INK="38;2;$_R;$_G;$_B"
+        _R="$r"; _G="$g"; _B="$b"
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 85
+    fi
+}
+
 # Whether item $1 belongs in a red chip: a crit reading, or the label just
 # before one in its group.
 _quiet_in_crit() {
@@ -2573,28 +2737,25 @@ _quiet_new_run() {
 _render_quiet() {
     local n=${#_SEG_TEXT[@]}
     [ "$n" -gt 0 ] || return 0
-    local e=$'\033' out=$'\033[0m' i runs=0 run=0 chipbg chipfg valfg ink weight inchip="" join critchip="" critbg critfg
+    local e=$'\033' out=$'\033[0m' i runs=0 run=0 join critchip="" critbg critfg chipbg chipfg inchip=""
     _sgr 48 crit; critbg="$_SGR"; _sgr 38 critink; critfg="$_SGR"
     _QUIET_TRUE=""
     [ "$LEVEL" = "truecolor" ] && _QUIET_TRUE=1
     if [ -n "$_QUIET_TRUE" ]; then
         _band_bg
-        _band_start
-        chipbg="48;2;$_FROM_R;$_FROM_G;$_FROM_B"
-        _band_ink ink bold; chipfg="$_BAND_FG"
         if [ "$SL_THEME" = "dark" ]; then
             _QI_R=214; _QI_G=222; _QI_B=240
         else
             _QI_R=$((_BG_R * 24 / 100)); _QI_G=$((_BG_G * 24 / 100)); _QI_B=$((_BG_B * 24 / 100))
         fi
-        valfg="38;2;$_QI_R;$_QI_G;$_QI_B"
+        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg="$_CHIP_INK"
+    elif [ "$SL_THEME" != "dark" ]; then
+        chipfg=39
+        if [ "$LEVEL" = "256" ]; then chipbg="48;5;253"; else chipbg=47; fi
+    elif [ "$LEVEL" = "256" ]; then
+        chipbg="48;5;241"; chipfg="38;5;231"
     else
-        _sgr 48 surface; chipbg="$_SGR"
-        _sgr 38 ink; chipfg="$_SGR"; valfg="$_SGR"
-        # The basic inks are made for the capsules' surface: off it, white
-        # vanishes on a light terminal, so readings take the terminal's own
-        # foreground (labels take bright black, _quiet_run_ink).
-        [ "$LEVEL" = "basic" ] && valfg=39
+        chipbg=100; chipfg=97
     fi
     for ((i = 0; i < n; i++)); do
         _quiet_new_run "$i" && runs=$((runs + 1))
@@ -2604,7 +2765,7 @@ _render_quiet() {
             run=$((run + 1))
         fi
         _quiet_run_ink "$run" "$runs"
-        # Each chip closes before the first item that is not part of it.
+        # The chip closes before the first item that is not part of it.
         if [ -n "$inchip" ] && [ "${_SEG_ROLE[i]}" != "chip" ]; then
             out+="${e}[${chipbg}m ${e}[0m"; inchip=""
         fi
@@ -2632,17 +2793,40 @@ _render_quiet() {
                 out+="${e}[0m${_JOIN_TEXT}"
             fi
         fi
+        # The mark is Claude's coral in the chip, the waiting session's shade
+        # included; the session name is bold in the chip's ink.
         if [ "${_SEG_ROLE[i]}" = "chip" ]; then
-            if [ -z "$inchip" ]; then
-                out+="${e}[0;${chipbg}m "; inchip=1
-            fi
-            ink="$chipfg"; weight=22
-            # The mark is Claude's coral in the chip, the waiting session's
-            # shade included: on the chip's tint that shade reads as mud.
+            [ -n "$inchip" ] || out+="${e}[0;${chipbg}m "
+            inchip=1
             case "${_SEG_INK[i]}" in
-                brand|brandshade) _sgr 38 brand; ink="$_SGR"; weight=1 ;;
+                brand|brandshade) _sgr 38 brand; out+="${e}[${chipbg};${_SGR};1m${_SEG_TEXT[i]}" ;;
+                *)                out+="${e}[${chipbg};${chipfg};1m${_SEG_TEXT[i]}" ;;
             esac
-            out+="${e}[${chipbg};${ink};${weight}m${_SEG_TEXT[i]}"
+            continue
+        fi
+        # The branch is the terminal's own green, the path before its last
+        # `/` (feat/, fix/) the same green faint; the marks after it, ahead
+        # and behind arrows included, fade with the labels.
+        if [ "${_SEG_ROLE[i]}" = "branch" ]; then
+            local glyph="$ICON_GIT" body name marks="" head="" leaf
+            case "${_SEG_TEXT[i]}" in
+                "$ICON_GIT"*) body="${_SEG_TEXT[i]#"$ICON_GIT"}" ;;
+                *)            glyph=""; body="${_SEG_TEXT[i]}" ;;
+            esac
+            name="${body%% *}"
+            [ "$name" = "$body" ] || marks=" ${body#* }"
+            case "$name" in
+                *↑*) marks="↑${name#*↑}$marks"; name="${name%%↑*}" ;;
+                *↓*) marks="↓${name#*↓}$marks"; name="${name%%↓*}" ;;
+            esac
+            case "$name" in
+                */*) head="${name%/*}/"; leaf="${name##*/}" ;;
+                *)   leaf="$name" ;;
+            esac
+            out+="${e}[0;32m${glyph}"
+            [ -z "$head" ] || out+="${e}[0;2;32m${head}${e}[0;32m"
+            out+="$leaf"
+            [ -z "$marks" ] || out+="${e}[0;${_QUIET_FG}m${marks}"
             continue
         fi
         if _quiet_in_crit "$i"; then
@@ -2673,7 +2857,7 @@ _render_quiet() {
             fi
         fi
         if [ "${_SEG_ROLE[i]}" = "value" ]; then
-            out+="${e}[0;${valfg};1m${_SEG_TEXT[i]}"
+            out+="${e}[0;39;1m${_SEG_TEXT[i]}"
         else
             out+="${e}[0;${_QUIET_FG}m${_SEG_TEXT[i]}"
         fi
