@@ -61,8 +61,9 @@ setup() {
     export XDG_CONFIG_HOME="$TEST_TMPDIR/xdg"
     mkdir -p "$XDG_CONFIG_HOME/cs"
     printf 'on\n' > "$XDG_CONFIG_HOME/cs/statusline-caps"
-    # The capsule pins below predate the band, which is the default layout
-    # now; the band tests export the band for themselves in band_env.
+    # The capsule pins below predate the band and the quiet layout, which is
+    # the default; the band and quiet tests export their layout by name in
+    # band_env and quiet_env.
     export CS_STATUSLINE_LAYOUT=capsules
 }
 
@@ -5259,22 +5260,6 @@ test_band_inks_on_a_light_terminal() {
     assert_output_contains_f "$out" ";38;2;124;120;110;22m○" "a label is the neutral's dim" || return 1
 }
 
-test_band_layout_unset_or_unknown_is_the_band() {
-    band_env
-    local want out
-    want=$(run_sl "$FIXTURE_DOCS")
-    assert_output_not_contains "$want" "$CAPL" "the band draws no capsule cap" || return 1
-    out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an empty layout is the band" || return 1
-    unset CS_STATUSLINE_LAYOUT
-    out=$(run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an unset layout is the band" || return 1
-    out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
-    assert_eq "$want" "$out" "an unknown layout is the band" || return 1
-    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
-    assert_output_contains_f "$out" "$CAPL" "capsules draws the capsules" || return 1
-}
-
 test_band_plain_level_prints_the_plain_line() {
     band_env
     export NO_COLOR=1
@@ -5336,9 +5321,40 @@ run_test test_band_crit_group_is_one_red_island
 run_test test_band_inks_on_a_dark_terminal
 run_test test_band_inks_on_a_light_terminal
 run_test test_band_ink_roles_per_theme
-run_test test_band_layout_unset_or_unknown_is_the_band
 run_test test_band_plain_level_prints_the_plain_line
 run_test test_band_256_is_a_flat_fill
 run_test test_band_basic_is_a_flat_fill
+
+# --- quiet layout ------------------------------------------------------------
+
+# The quiet tests' common ground: the docs fixture on a dark terminal of a
+# known background, truecolor.
+quiet_env() {
+    export CS_STATUSLINE_LAYOUT=quiet CS_TERM_THEME=dark CS_TERM_BG_RGB="21;24;40" \
+        COLORTERM=truecolor
+}
+
+# Quiet is the default: unset, empty and unknown layouts draw it, and the band
+# and the capsules are drawn only when named.
+test_layout_unset_empty_or_unknown_is_quiet() {
+    quiet_env
+    local want out
+    want=$(run_sl "$FIXTURE_DOCS")
+    out=$(CS_STATUSLINE_LAYOUT="" run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an empty layout is quiet" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=ribbon run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unknown layout is quiet" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=band CS_STATUSLINE_COLS=80 run_sl "$FIXTURE_DOCS")
+    assert_eq 80 "$(band_cells "$out")" "band draws the 80-cell band" || return 1
+    local tail="${ESC_}[48;2;21;24;40m ${ESC_}[0m"
+    assert_eq "$tail" "${out: -${#tail}}" "the band fades to the background" || return 1
+    out=$(CS_STATUSLINE_LAYOUT=capsules run_sl "$FIXTURE_DOCS")
+    assert_output_contains_f "$out" "$CAPL" "capsules draws the capsules" || return 1
+    unset CS_STATUSLINE_LAYOUT
+    out=$(run_sl "$FIXTURE_DOCS")
+    assert_eq "$want" "$out" "an unset layout is quiet" || return 1
+}
+
+run_test test_layout_unset_empty_or_unknown_is_quiet
 
 report_results
