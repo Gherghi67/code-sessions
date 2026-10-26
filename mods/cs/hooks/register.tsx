@@ -290,8 +290,9 @@ let finishProblemShown = false
 export type FeaturesWord = { label: string; finish?: string }
 type BandPress = () => void | Promise<unknown>
 export type BandEntry =
-  | { key: string; kind: 'word'; label: string; ink?: { color: string | undefined } }
-  | { key: string; kind: 'press'; label: string; onPress: BandPress }
+  // A word's ink colours the whole label, or only its `lead` glyph with the rest dim.
+  | { key: string; kind: 'word'; label: string; ink?: { color: string | undefined } | { lead: string; color: string } }
+  | { key: string; kind: 'press'; label: string; onPress: BandPress; ink?: { lead: string; color: string } }
   | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress; ink?: { text: string; color: string | undefined } }
 type BandFacts = {
   featured?: { label: string; onPress?: BandPress }
@@ -303,11 +304,18 @@ type BandFacts = {
   waiting: number
   gate?: string
   queued: number
+  queueRunning: boolean
+  // The queue glyph's amber, as the status line draws its queue count.
+  queueInk: string
   mail: number
   rotate: BandPress
   wrap: BandPress
   queue: BandPress
 }
+
+const QUEUE_GLYPH = '\u25a4'
+// The queue press's head: its glyph, its verb and its count.
+const QUEUE_COUNT = /^\u25a4 run \d+/
 
 export function buildBandEntries(facts: BandFacts): BandEntry[] {
   const entries: BandEntry[] = []
@@ -317,14 +325,14 @@ export function buildBandEntries(facts: BandFacts): BandEntry[] {
   if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
   if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
   // The queue has no chord: a click or Enter under the band's focus starts it.
-  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `\u25a4 start ${facts.waiting}`, onPress: facts.queue })
+  if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `${QUEUE_GLYPH} run ${facts.waiting} queued ${facts.waiting === 1 ? 'task' : 'tasks'}`, onPress: facts.queue, ink: { lead: QUEUE_GLYPH, color: facts.queueInk } })
   // The features word leads what the session is; only a ready feature can be pressed.
   if (facts.featured !== undefined) {
     const { label, onPress } = facts.featured
     entries.push(onPress === undefined ? { key: 'cs-features', kind: 'word', label } : { key: 'cs-features', kind: 'press', label, onPress })
   }
   if (facts.gate !== undefined) entries.push({ key: 'cs-gate', kind: 'word', label: facts.gate })
-  if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `\u25a4 queue ${facts.queued}` })
+  if (facts.queued > 0) entries.push({ key: 'cs-queued', kind: 'word', label: `${QUEUE_GLYPH} queue ${facts.queued}${facts.queueRunning ? ' running' : ''}`, ink: { lead: QUEUE_GLYPH, color: facts.queueInk } })
   if (facts.mail > 0) entries.push({ key: 'cs-mail', kind: 'word', label: `mail ${facts.mail}` })
   return entries
 }
@@ -636,7 +644,8 @@ export function register(on: On, options: PluginOptions) {
     const entries = buildBandEntries({
       featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
       countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
-      rotating, armed, wrapping, waiting, gate, queued, mail,
+      rotating, armed, wrapping, waiting, gate, queued, queueRunning: queueStarted, mail,
+      queueInk: amberColor(await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME")),
       feed: feeding ? { on: !feedVetRefused && await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
       rotate: armed ? () => pressClear($) : () => pressRotate($),
       wrap: () => askToWrap($),
@@ -681,12 +690,15 @@ const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
 // right edge beside the rail. The line's free cells stand between the two.
 type Zone = 'actions' | 'status'
 const ZONES = new Map<string, Zone>([
-  ['cs-rotate', 'actions'], ['cs-countdown', 'actions'], ['cs-wrap', 'actions'], ['cs-feed', 'actions'], ['cs-queue', 'actions'],
-  ['cs-features', 'status'], ['cs-gate', 'status'], ['cs-queued', 'status'], ['cs-mail', 'status'],
+  ['cs-rotate', 'actions'], ['cs-countdown', 'actions'], ['cs-wrap', 'actions'], ['cs-feed', 'actions'], ['cs-queue', 'actions'], ['cs-queued', 'actions'],
+  ['cs-features', 'status'], ['cs-gate', 'status'], ['cs-mail', 'status'],
 ])
 // The cells between two entries of a zone, and the fewest between the zones.
 const GAP = 3
 const SEP = ' '.repeat(GAP)
+// Between the keys (the chords and the clear key's countdown) and the presses
+// and words after them, in the same cells as SEP.
+const KEYS_END = ' \u00b7 '
 
 // The entries of each zone, in the line's order.
 function zonesOf<T extends BandEntry>(entries: T[]): Record<Zone, T[]> {
@@ -821,7 +833,7 @@ function shortenBand(all: BandEntry[], chords: Record<string, string>, spelling:
     if (excess <= 0) return { entries, prefixed: false }
     entries = entries.map(entry => {
       const cells = cellWidth(entry.label)
-      return entry.key !== key || cells <= SHORTEST_CELLS ? entry : { ...entry, label: cutToCells(entry.label, Math.max(SHORTEST_CELLS, cells - excess)) }
+      return entry.key !== key || cells <= SHORTEST_CELLS ? entry : { ...entry, label: shortened(entry.label, Math.max(SHORTEST_CELLS, cells - excess)) }
     })
   }
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -843,9 +855,10 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   // where the words beside its least lose an action the whole line would
   // keep, they fit the whole line, and the rail takes what they leave, or
   // nothing. An action the whole line drops too (the count beside a bare
-  // clear key) is no reason for the rail to go.
+  // clear key) is no reason for the rail to go, nor is a word the band drops
+  // (the queue word draws among the actions, but leaves before the rail).
   const reserved = v.rail === undefined ? 0 : railCells(v.rail.prompts.length, leastWindow(v.rail.named)) + GAP
-  const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.map(entry => entry.key)
+  const actionKeys = (all: BandEntry[]) => zonesOf(all).actions.filter(entry => entry.kind !== 'word' || !DROP_ORDER.includes(entry.key)).map(entry => entry.key)
   const besideRail = fitBand(v.entries, chords, room - reserved)
   const keptActions = actionKeys(besideRail.entries)
   const wholeLine = fitBand(v.entries, chords, room)
@@ -932,17 +945,22 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
   const right = status.length > 0 || ticks !== undefined
   const drawZone = (zone: FittedEntry[]) => {
     const firstChord = firstChordOf(zone, chords)
+    const afterKeys = zone.findLastIndex(entry => entry.kind === 'chord' || entry.key === 'cs-countdown') + 1
     return zone.flatMap((entry, index) => [
-      index > 0 && <Text dimColor>{SEP}</Text>,
+      index > 0 && <Text dimColor>{index === afterKeys ? KEYS_END : SEP}</Text>,
       index === firstChord && prefix !== undefined && <Box marginRight={1}><Text bold color="subtle">{prefix}</Text></Box>,
       entry.kind === 'chord' && !entry.keyOnly && key(entry.action),
       entry.kind === 'word'
-        ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text> : <Text bold color={entry.ink.color}>{entry.label}</Text>
+        ? entry.ink === undefined ? <Text dimColor>{entry.label}</Text>
+          : 'lead' in entry.ink ? <Text><Text color={entry.ink.color}>{entry.ink.lead}</Text><Text dimColor>{entry.label.slice(entry.ink.lead.length)}</Text></Text>
+          : <Text bold color={entry.ink.color}>{entry.label}</Text>
         : entry.kind === 'chord'
           ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
             ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
             : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
-          : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />,
+          : entry.ink === undefined
+            ? <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />
+            : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress}><Text color={entry.ink.color}>{entry.ink.lead}</Text>{entry.label.slice(entry.ink.lead.length)}</Button>,
     ])
   }
   return (
@@ -1209,6 +1227,14 @@ function cellWidth(text: string): number {
 
 // `text` at most `width` cells wide, ending in `…` when anything was cut; a
 // cut that lands after a space drops the space, so the `…` sits on the word.
+// A label cut to `cells`, or to its glyph where the cut would land inside the
+// queue press's count: `▤ run 1…` of twelve tasks names another number.
+function shortened(label: string, cells: number): string {
+  const cut = cutToCells(label, cells)
+  const count = QUEUE_COUNT.exec(label)?.[0]
+  return count !== undefined && cellWidth(cut) <= cellWidth(count) ? cutToCells(label, SHORTEST_CELLS) : cut
+}
+
 function cutToCells(text: string, width: number): string {
   if (cellWidth(text) <= width) return text
   let fitted = ''
