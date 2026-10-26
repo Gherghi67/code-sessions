@@ -570,7 +570,7 @@ is as wide as the widest prompt it can show, the named one or a drawn bar's,
 padded on its left so it ends three cells before the bars, so a swap never
 moves the bars or the words before it. On the
 terminal a bar under the pointer swaps its own prompt into that place,
-italic, until the pointer leaves; the swap follows the mouse, so it
+dim italic like the named one, until the pointer leaves; the swap follows the mouse, so it
 needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
 them off). Other
 surfaces name the band's own prompt only, since the desktop app paints a card

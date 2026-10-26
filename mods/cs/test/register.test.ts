@@ -2570,7 +2570,7 @@ test('before the bars the band names the prompt being read, dim italic, whether 
   expect(kids.slice(-2).map((k: any) => k.props.key ?? 'label')).toEqual(['label', 'cs-rail'])
   expect(kids[kids.length - 2].props).toEqual({ width: 12, marginLeft: 0 })
   expect(kids[kids.length - 1].props).toEqual({ key: 'cs-rail', marginLeft: 3 })
-  expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual([' #4 say four'])
+  expect(kids[kids.length - 2].children.filter((c: any) => c.type === 'Text' && c.props.dimColor).map(textOf)).toEqual([' #4 say four'])
   // A row reporting moves the name with the read bar, and the bars stay in their column.
   expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   │││┃`)
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
@@ -2596,9 +2596,9 @@ test('each bar under the pointer swaps its own prompt into the gap, italic, cove
     position: 'absolute', top: 0, left: 0, display: 'none', hover: { scope: `cs-rail-${i}`, display: 'flex' },
   })))
   expect(cards.map((c: any) => texts(c).map((t: any) => [textOf(t), t.props]))).toEqual([
-    [['  #1 say one', { italic: true, wrap: 'truncate-end' }]],
-    [['  #2 say two', { italic: true, wrap: 'truncate-end' }]],
-    [['#3 say three', { italic: true, wrap: 'truncate-end' }]],
+    [['  #1 say one', { dimColor: true, italic: true, wrap: 'truncate-end' }]],
+    [['  #2 say two', { dimColor: true, italic: true, wrap: 'truncate-end' }]],
+    [['#3 say three', { dimColor: true, italic: true, wrap: 'truncate-end' }]],
   ])
   // The cards sit in the label's own Box, as wide as the widest of them, so a card covers the read
   // prompt cell for cell and a swap moves nothing.

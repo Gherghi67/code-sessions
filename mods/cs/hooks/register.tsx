@@ -961,7 +961,7 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
                   {/* a card for each drawn bar but the named one: a prompt folded into `…N` or `M…` has no bar to hover */}
                   {hovering && ticks.prompts.map((_, i) => drawnTick(i) && i !== ticks.named && (
                     <Box position="absolute" top={0} left={0} display="none" hover={{ scope: `cs-rail-${i}`, display: 'flex' }}>
-                      <Text italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
+                      <Text dimColor italic wrap="truncate-end">{label(ticks.prompts, i)}</Text>
                     </Box>
                   ))}
                 </Box>
