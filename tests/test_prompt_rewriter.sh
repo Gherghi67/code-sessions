@@ -716,6 +716,15 @@ test_prose_slashes_abbreviations_and_hyphens_are_not_exact_strings() {
         "words around a slash, abbreviations, hyphenated words and bullets are prose"
 }
 
+test_a_dropped_file_name_is_named_whole() {
+    assert_eq "$(printf 'Read the notes.\n\nKept from the original: narrative.team-alpha.md, archive.tar.gz, docs/notes.v2-draft.md')" \
+        "$(rewrite_with 'read narrative.team-alpha.md, archive.tar.gz and docs/notes.v2-draft.md.' 'Read the notes.')" \
+        "a file name keeps every dot and hyphen up to its extension" || return 1
+    assert_eq 'Cast it.' \
+        "$(rewrite_with 'cast it to dtype.float16 in src/model.py-old' 'Cast it.')" \
+        "a dotted name that ends in no extension is no file name, and no part of it is named" || return 1
+}
+
 test_a_string_inside_a_longer_dropped_one_is_named_once() {
     assert_eq "$(printf 'Edit it.\n\nKept from the original: hooks/prompt_rewriter.sh, --force')" \
         "$(rewrite_with 'edit hooks/prompt_rewriter.sh with --force, then --force again' 'Edit it.')" \
@@ -833,6 +842,7 @@ run_test test_a_rewrite_that_drops_exact_strings_names_them_after_it
 run_test test_a_rewrite_that_keeps_every_exact_string_lands_alone
 run_test test_the_sentence_keeps_its_closing_punctuation
 run_test test_prose_slashes_abbreviations_and_hyphens_are_not_exact_strings
+run_test test_a_dropped_file_name_is_named_whole
 run_test test_a_string_inside_a_longer_dropped_one_is_named_once
 run_test test_a_quoted_phrase_or_code_span_is_carried_whatever_its_quotes
 run_test test_a_string_must_survive_exactly_case_included

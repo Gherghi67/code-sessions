@@ -464,18 +464,22 @@ rm -f "$out" 2>/dev/null
 # names and "quoted text". A string must start the prompt or follow a space or
 # an opening bracket, so "and/or" is no path and "well-known" no flag; a
 # trailing .,;:!?) is the sentence's, not the string's. BSD grep has no
-# lookbehind, so the boundary is matched and then dropped.
+# lookbehind, so the boundary is matched and then dropped. A relative path or
+# file name runs as far as its name characters go and counts only when it ends
+# in an extension, so a name like dtype.float16 is never cut to dtype.float1.
 _exact_strings() {  # text
     local text="$1" tok pos
     {
         grep -oE '`[^`]+`' <<<"$text"
         grep -oE 'https?://[^[:space:]<>"`]+' <<<"$text"
         grep -oE '(^|[[:space:](])(~|\.{1,2})?/[A-Za-z0-9_.@-]+(/[A-Za-z0-9_.@-]+)*' <<<"$text"
-        grep -oE '(^|[[:space:](])[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.[A-Za-z][A-Za-z0-9]{0,5}' <<<"$text"
+        grep -oE '(^|[[:space:](])[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+' <<<"$text" \
+            | grep -E '\.[A-Za-z][A-Za-z0-9]{0,5}\.*$'
         grep -oE '(^|[[:space:]])--?[A-Za-z][A-Za-z0-9-]*' <<<"$text"
         grep -oE '[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Za-z0-9]' <<<"$text"
         grep -oE '(^|[[:space:]])@[A-Za-z0-9_./-]+' <<<"$text"
-        grep -oE '(^|[[:space:](])[A-Za-z0-9_-]{2,}\.[A-Za-z][A-Za-z0-9]{0,5}' <<<"$text"
+        grep -oE '(^|[[:space:](])[A-Za-z0-9_-]{2,}(\.[A-Za-z0-9_-]+)+' <<<"$text" \
+            | grep -E '\.[A-Za-z][A-Za-z0-9]{0,5}$'
         grep -oE '"[^"]+"' <<<"$text"
     } | while IFS= read -r tok; do
         tok="${tok#[[:space:](]}"
