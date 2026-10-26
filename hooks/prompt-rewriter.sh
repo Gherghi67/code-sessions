@@ -487,13 +487,14 @@ _exact_strings() {  # text
 }
 
 # The prompt's exact strings the rewrite does not carry, joined by ", ". A
-# quoted string counts as carried when its words are, whatever the quotes; a
-# string inside a longer one that is missing is named once, by the longer.
+# quoted string or code span counts as carried when its words are, whatever the
+# quotes or backticks; a string inside a longer one that is missing is named
+# once, by the longer.
 _lost_strings() {  # original, rewrite
     local rewrite="$2" tok inner lost=''
     while IFS= read -r tok; do
         inner="$tok"
-        case "$tok" in \"*\") inner="${tok#\"}"; inner="${inner%\"}" ;; esac
+        case "$tok" in \"*\"|\`*\`) inner="${tok#?}"; inner="${inner%?}" ;; esac
         case "$rewrite" in *"$inner"*) continue ;; esac
         lost="${lost}${tok}"$'\n'
     done < <(_exact_strings "$1")
