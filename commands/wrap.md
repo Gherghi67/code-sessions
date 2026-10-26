@@ -38,7 +38,7 @@ if [ -n "$CLAUDE_CODE_SESSION_ID" ] && cs -vet-session . >/dev/null; then
 fi
 ```
 
-It names the conversation this wrap finished in (its own id, so a teammate's wrap never marks the lead), so the cs mod's band stops offering `wrap up this session` until the next prompt. Skip it if any pass failed: a wrap that did not finish should stay one key away. While git tracks the session's control files, cs says so and the pass writes nothing; the wrap still finished.
+It names the conversation this wrap finished in (its own id, so a teammate's wrap never marks the lead), so the cs mod's band stops offering `wrap` until the next prompt. Skip it if any pass failed: a wrap that did not finish should stay one key away. While git tracks the session's control files, cs says so and the pass writes nothing; the wrap still finished.
 
 ## Report
 

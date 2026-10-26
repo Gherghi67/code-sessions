@@ -184,7 +184,8 @@ export CS_REWRITE_DISABLE="1"
 # is on PATH — `codex` and `agy` respectively, both using your subscription — and
 # fall back to the vendor's API when it is not, reading OPENAI_API_KEY or
 # GEMINI_API_KEY from the environment. With neither a CLI nor a key, the rewrite
-# declines and your prompt stays as typed.
+# declines and your prompt stays as typed. `grok` (or `xai`) has no CLI to
+# prefer: it calls xAI's API, reading XAI_API_KEY or GROK_API_KEY.
 #
 # The CLI arms cost about ten seconds against about one for the API arms, and
 # the interface is frozen for that whole time. That is the trade the default
@@ -195,8 +196,9 @@ export CS_REWRITE_DISABLE="1"
 # codex both present, gemini 7.3s vs gemini-api 0.9s, openai 12.8s vs openai-api
 # 2.0s. `claude-api` calls Anthropic's Messages endpoint instead of driving the
 # whole Claude Code agent, which is why the bare `claude` default takes ~13s.
-# Every -api arm needs that vendor's key and declines without one.
-export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok
+# Every -api arm needs that vendor's key (`claude-api` reads ANTHROPIC_API_KEY)
+# and declines without one.
+export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok | xai
                                             # openai-api | gemini-api | claude-api reach a
                                             # vendor API past an installed CLI
 
@@ -212,8 +214,9 @@ export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok
 # accept declines the rewrite and leaves your prompt as typed — cs never
 # translates between the two namespaces.
 #
-# Defaults, used only where cs picks: claude-haiku-4-5-20251001 and, on the API
-# arms, gpt-4.1-mini and gemini-flash-lite-latest. Reasoning models are a poor
+# Defaults, used only where cs picks: claude-haiku-4-5-20251001 (the default
+# rewriter and claude-api) and, on the other API arms, gpt-4.1-mini,
+# gemini-flash-lite-latest and grok-4.3. Reasoning models are a poor
 # fit whatever the provider: they can spend most of the output budget on
 # reasoning and return a rewrite truncated mid-sentence, which cs declines — so
 # ctrl+g intermittently does nothing at all.
@@ -248,8 +251,8 @@ export CS_SUBAGENT_STATUSLINE_DISABLE="1"
 export CS_CTX_WARN_CTX="40"
 export CS_ROTATE_NUDGE_CTX="65"
 
-# Context percentage at which the rotate mod's "1: rotate this conversation"
-# button appears above the prompt (default: the status line's warn band).
+# Context percentage at which the cs mod's band draws its rotate key (Ctrl+X 1)
+# above the prompt (default: the status line's warn band, 40).
 # The mod reads it from the launched process's environment.
 export CS_ROTATE_BUTTON_CTX="40"
 
@@ -306,8 +309,8 @@ export CS_NO_ITERM2="1"
 export CS_NO_TASK_TOOLS="1"
 
 # Launch without CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, even when the shell
-# carries it. A cs launch exports it so the rotate mod the installer deployed
-# (the "1: rotate this conversation" button past 65% context) loads; the flag
+# carries it. A cs launch exports it so the cs mod the installer deployed
+# (the band's Ctrl+X 1 rotate key, past 40% context by default) loads; the flag
 # also loads any other function-hooks plugin on the machine. Without this knob
 # cs keeps a value already in the shell (0 keeps function hooks off).
 export CS_NO_FUNCTION_HOOKS="1"
@@ -401,7 +404,7 @@ release that mounts one takes the chord from the band without a warning.
   to run `cs -update` in a terminal.
 - To change the answer, remove `~/.config/cs/option-keys` and run `cs -update`
   (or `./install.sh`) in a terminal; it asks again. To drop the keys after a
-  `yes`, answer `no` there and delete the five entries from `keybindings.json`.
+  `yes`, answer `no` there and delete the four entries from `keybindings.json`.
 - `cs -uninstall` removes only the keys that still hold cs's values, the
   chords and an earlier cs's `alt+1` and `alt+2` alike, drops any block
   that leaves empty, deletes the file when it holds nothing else (a symlinked
@@ -494,4 +497,5 @@ process and its hooks can find the session:
 - `CLAUDE_CODE_AUTO_MEMORY_PATH` / `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` - Redirect [Claude Code auto memory](https://code.claude.com/docs/en/memory) into `<session>/.cs/memory/`. Claude Code owns the memory-file format and cs owns the storage path. See [memory records](session-layout.md#shared-files).
 - `CS_BIN` - Exported by every cs launch, never set by hand: the absolute path of the running cs, replacing any value inherited from a parent launch. The mods run cs through it (`cs -update`, `/queue`), since the claude process's `PATH` is not the launching shell's
 - `CS_UPDATE_AVAILABLE` - Exported by a cs launch, never set by hand: the version a newer cs was found at. The cs-update mod reads it to draw the release-notes pane. Absent when nothing is pending
+- `CS_UPDATE_DECLINED` - Exported by a cs launch, never set by hand: the pending version, when you declined it at a launch's offer to update. The cs-update mod then says in one line that the release is there instead of opening its pane. Absent otherwise
 - `CS_LIVE_LOCK_PID` - Set only for `.cs/local/pre-open`, never by hand: the pid in `.cs/session.lock` when that pid is a running process, empty otherwise. A pre-open reads it to tell whether the session is running instead of reading the lock (see [session-layout.md](session-layout.md))

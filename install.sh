@@ -1368,7 +1368,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "d957d76a94a880893af140ee5b27fd49bb7f78124d10dead6d5ae3a6647f1bc0  bin/cs"
+    "9f0ec3d939f9d2f55642902d0864f53b9d0543eb171bfd5f973a2389c0602472  bin/cs"
     "b32d0e75fbb6f077e4a90ae157f973bedb90f74ce587a35065f00b65ed95743f  bin/cs-secrets"
     "68be4cb037652baf60d5dac8c7088eeb606bfa338a92c8d81395c281f210e86b  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1390,7 +1390,7 @@ CS_PAYLOAD_SHA256=(
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"
     "e3a3063740a947db9a681ef0e5c0f90c3965dbc02345eb10312bb69273a1e54a  hooks/scope-prompt.sh"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
-    "3289ee46333156d2df18eb1eb7588edd2c6096cbc16211f4df3541d6e5660dbb  commands/wrap.md"
+    "a0e341d4bdc60072b25354256e751b320733cdcc31b91ac3d4a4f661c73b611e  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f  skills/rotate/SKILL.md"
