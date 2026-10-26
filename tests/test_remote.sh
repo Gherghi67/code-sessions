@@ -350,7 +350,7 @@ start_unrelated_process() {
 window_command() {
     local self
     self="$(cd "$SCRIPT_DIR/../bin" && pwd)/cs"
-    printf '%s' "sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 'CS_SESSIONS_ROOT=$CS_SESSIONS_ROOT' 'CLAUDE_CODE_BIN=$TEST_TMPDIR/bin/claude' '$self' 'demo' --remote --permission-mode 'plan'"
+    printf '%s' "env CS_UNATTENDED=1 sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 'CS_SESSIONS_ROOT=$CS_SESSIONS_ROOT' 'CLAUDE_CODE_BIN=$TEST_TMPDIR/bin/claude' '$self' 'demo' --remote --permission-mode 'plan'"
 }
 
 strip_ansi() {
@@ -1014,7 +1014,7 @@ test_remote_window_serves_without_asking_about_an_update() {
     assert_eq "0" "$CS_RC" "the window's server ran" || { cat "$TEST_TMPDIR/out"; return 1; }
     assert_output_not_contains "$(cat "$TEST_TMPDIR/out")" "Update now?" "the window is not asked" || return 1
     assert_not_exists "$HOME/.cache/cs/update-declined" "no declined record" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" "the server runs in the window" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" "the server runs in the window" || return 1
     assert_eq "" "$(log_value CS_UNATTENDED)" "the window's mark never reaches the server" || return 1
 }
 

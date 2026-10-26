@@ -515,6 +515,9 @@ main() {
     # anything below opens or claims the session.
     check_update_notify
     offer_update_at_launch ${launch_argv[@]+"${launch_argv[@]}"}
+    # The window mark _cs_tmux_window sets is the offer's alone: kept from
+    # everything this run starts.
+    unset CS_UNATTENDED
 
     if [ -n "$remote_flag" ]; then
         _remote_claude_bin "$remote_mode"

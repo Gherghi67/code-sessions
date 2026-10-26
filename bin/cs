@@ -3412,8 +3412,9 @@ _check_revocation_carry_forward() {
 # y runs the update and starts this same launch again on the new cs; any
 # other key records the version as declined, so the launch does not ask
 # again and the cs-update mod says the release is there in one line instead
-# of opening its pane, until a newer one is pending. No terminal, no
-# question: the banner's line and the pane carry the release.
+# of opening its pane, until a newer one is pending. No terminal, or a
+# window cs opened itself (cs -spawn, cs --remote inside tmux), no question:
+# the banner's line and the pane carry the release.
 # Takes the launch's own arguments, which the relaunch repeats; the relaunch
 # carries CS_UPDATE_PROMPTED so the new cs, should it still see the same
 # version pending (a checkout launch, which no update replaces), does not
@@ -3433,7 +3434,10 @@ offer_update_at_launch() {  # "$@": this launch's arguments
         UPDATE_DECLINED_PENDING=1
         return 0
     fi
-    cs_interactive || return 0
+    # _cs_tmux_window sets CS_UNATTENDED on every window it opens: a pane
+    # nobody watches is still a terminal, and the read below would wait there
+    # for good.
+    cs_interactive && [ -z "${CS_UNATTENDED:-}" ] || return 0
     local answer=""
     printf '\n  %bcs %s is available%b %b(you have %s)%b. Update now? %b[y/N]%b %b›%b ' \
         "$BOLD$GREEN" "$UPDATE_AVAILABLE" "$NC" "$DIM" "$VERSION" "$NC" "$DIM" "$NC" "$GOLD" "$NC"
@@ -9312,18 +9316,22 @@ _spawn_window() {  # name, token
 # Open a window named <window> running <cmd> in the cs-owned tmux session, and
 # leave its id in _CS_TMUX_WID. A global rather than printed: the options call
 # below would print into a capture, and error would end only the capture.
+# Nobody sits at a window cs opens, so <cmd> runs with CS_UNATTENDED=1: the
+# launch there does not offer a pending update (offer_update_at_launch),
+# whose question would hold it at that window for good.
 _CS_TMUX_WID=""
 _cs_tmux_window() {  # window, cmd
+    local cmd="env CS_UNATTENDED=1 $2"
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if _CS_TMUX_WID=$(_tmux new-session -d -s cs -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_tmux new-session -d -s cs -n "$1" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
         # exact 'cs' was just created by new-session, so this cannot misfire.
         _tmux set-option -t cs @cs_managed 1
         return 0
     fi
-    _CS_TMUX_WID=$(_tmux new-window -t =cs -n "$1" -P -F '#{window_id}' "$2") \
+    _CS_TMUX_WID=$(_tmux new-window -t =cs -n "$1" -P -F '#{window_id}' "$cmd") \
         || error "tmux new-window failed for $1"
 }
 
@@ -17149,6 +17157,9 @@ main() {
     # anything below opens or claims the session.
     check_update_notify
     offer_update_at_launch ${launch_argv[@]+"${launch_argv[@]}"}
+    # The window mark _cs_tmux_window sets is the offer's alone: kept from
+    # everything this run starts.
+    unset CS_UNATTENDED
 
     if [ -n "$remote_flag" ]; then
         _remote_claude_bin "$remote_mode"

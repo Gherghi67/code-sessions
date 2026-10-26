@@ -98,8 +98,9 @@ _check_revocation_carry_forward() {
 # y runs the update and starts this same launch again on the new cs; any
 # other key records the version as declined, so the launch does not ask
 # again and the cs-update mod says the release is there in one line instead
-# of opening its pane, until a newer one is pending. No terminal, no
-# question: the banner's line and the pane carry the release.
+# of opening its pane, until a newer one is pending. No terminal, or a
+# window cs opened itself (cs -spawn, cs --remote inside tmux), no question:
+# the banner's line and the pane carry the release.
 # Takes the launch's own arguments, which the relaunch repeats; the relaunch
 # carries CS_UPDATE_PROMPTED so the new cs, should it still see the same
 # version pending (a checkout launch, which no update replaces), does not
@@ -119,7 +120,10 @@ offer_update_at_launch() {  # "$@": this launch's arguments
         UPDATE_DECLINED_PENDING=1
         return 0
     fi
-    cs_interactive || return 0
+    # _cs_tmux_window sets CS_UNATTENDED on every window it opens: a pane
+    # nobody watches is still a terminal, and the read below would wait there
+    # for good.
+    cs_interactive && [ -z "${CS_UNATTENDED:-}" ] || return 0
     local answer=""
     printf '\n  %bcs %s is available%b %b(you have %s)%b. Update now? %b[y/N]%b %b›%b ' \
         "$BOLD$GREEN" "$UPDATE_AVAILABLE" "$NC" "$DIM" "$VERSION" "$NC" "$DIM" "$NC" "$GOLD" "$NC"

@@ -145,18 +145,22 @@ _spawn_window() {  # name, token
 # Open a window named <window> running <cmd> in the cs-owned tmux session, and
 # leave its id in _CS_TMUX_WID. A global rather than printed: the options call
 # below would print into a capture, and error would end only the capture.
+# Nobody sits at a window cs opens, so <cmd> runs with CS_UNATTENDED=1: the
+# launch there does not offer a pending update (offer_update_at_launch),
+# whose question would hold it at that window for good.
 _CS_TMUX_WID=""
 _cs_tmux_window() {  # window, cmd
+    local cmd="env CS_UNATTENDED=1 $2"
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if _CS_TMUX_WID=$(_tmux new-session -d -s cs -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_tmux new-session -d -s cs -n "$1" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
         # exact 'cs' was just created by new-session, so this cannot misfire.
         _tmux set-option -t cs @cs_managed 1
         return 0
     fi
-    _CS_TMUX_WID=$(_tmux new-window -t =cs -n "$1" -P -F '#{window_id}' "$2") \
+    _CS_TMUX_WID=$(_tmux new-window -t =cs -n "$1" -P -F '#{window_id}' "$cmd") \
         || error "tmux new-window failed for $1"
 }
 
