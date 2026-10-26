@@ -136,10 +136,10 @@ const $ = {
   },
 }
 
-// The options the engine hands register, with the prompt ticks turned on, as
+// The options the engine hands register, with the prompt bars turned on, as
 // most tests here are about them; plugin.json's defaults leave them off.
 const OPTIONS = { bandPrompts: true, bandPrompt: 'latest', bandBars: 10 }
-// The band following the reader's scroll, and drawing every tick that fits.
+// The band following the reader's scroll, and drawing every bar that fits.
 const READING = { ...OPTIONS, bandPrompt: 'read' }
 const UNCAPPED = { ...OPTIONS, bandBars: 100 }
 const DRAWN = { type: 'Survey', props: {}, children: [] }
@@ -2272,21 +2272,21 @@ test('tool results, command echoes, meta rows, sidechains, system-origin rows an
   expect(parsePrompts(noisy.join('\n')).map(p => p.text)).toEqual(['say one', 'say two'])
 })
 
-test('after a turn ends the band draws one tick per prompt, the newest heavy while no row has reported', async () => {
+test('after a turn ends the band draws one tick per prompt, the newest thick while no row has reported', async () => {
   transcript(LINEAR)
   await turnComplete()
   expect(invalidated).toContain('ui.render')
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2577', '\u2577', '\u2577', '\u2503'])
+  expect(rail(tree)).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
   expect(tickButtons(tree).map((b: any) => b.props.key)).toEqual(['cs-rail-0', 'cs-rail-1', 'cs-rail-2'])
   for (const b of tickButtons(tree)) expect(b.props).toMatchObject({ plain: true, dimColor: true })
   expect(tickButtons(tree).some((b: any) => b.props.hotkey !== undefined)).toBe(false)
   expect(buttonsUnderText(tree)).toBe(0)
   expect(texts(boxes(tree).find((b: any) => b.props.key === 'cs-rail')).find((t: any) => textOf(t) === '\u2503').props).toEqual({ bold: true, color: 'rgb(220,38,38)' })
-  // Below the threshold the rail still draws, with no key words, its last tick in the line's last cell and the
-  // read prompt three cells before it; the name holds the widest prompt a tick can swap in, `#3 say three`.
+  // Below the threshold the rail still draws, with no key words, its last bar in the line's last cell and the
+  // read prompt three cells before it; the name holds the widest prompt a bar can swap in, `#3 say three`.
   expect(restingWords(tree)).toEqual([' #4 say four', '\u2503'])
-  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   \u2577\u2577\u2577\u2503`)
+  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   \u2502\u2502\u2502\u2503`)
 })
 
 test('a conversation with one prompt draws no rail', async () => {
@@ -2341,17 +2341,17 @@ test('past the width budget the oldest prompts collapse into one dim …N run at
   // The two-column inset + `ctrl+x 1 rotate   2 wrap` (24) + `   ` (3) + rail: 35 columns leave 6 cells
   // for 30 ticks, so 28 collapse into `…28`, a cell, and two ticks follow.
   const glyphs = rail(await band({ bodyColumns: 35 }))
-  expect(glyphs).toEqual(['\u202628', '\u2577', '\u2503'])
+  expect(glyphs).toEqual(['\u202628', '\u2502', '\u2503'])
   expect(tickButtons(await band({ bodyColumns: 35 })).map((b: any) => b.props.key)).toEqual(['cs-rail-28'])
   expect(texts(await band({ bodyColumns: 35 })).find((t: any) => textOf(t) === '\u202628').props).toEqual({ dimColor: true })
-  expect(bandLine(await band({ bodyColumns: 35 }), 35)).toBe('  ctrl+x 1 rotate   2 wrap   \u202628 \u2577\u2503')
+  expect(bandLine(await band({ bodyColumns: 35 }), 35)).toBe('  ctrl+x 1 rotate   2 wrap   \u202628 \u2502\u2503')
   // A cell fewer folds one more: the cell after the run is the run's to keep.
   expect(bandLine(await band({ bodyColumns: 34 }), 34)).toBe('  ctrl+x 1 rotate   2 wrap   \u202629 \u2503')
   // Wide enough, every tick draws.
   expect(rail(await band({ bodyColumns: 110 }))).toHaveLength(30)
   // The rail keeps its least, `…29 ┃` and the three cells before it: at 33
-  // columns the shared prefix goes first, and the ticks take the cells it left.
-  expect(bandLine(await band({ bodyColumns: 33 }), 33)).toBe('  1 rotate   2 wrap   …23 ╷╷╷╷╷╷┃')
+  // columns the shared prefix goes first, and the bars take the cells it left.
+  expect(bandLine(await band({ bodyColumns: 33 }), 33)).toBe('  1 rotate   2 wrap   …23 ││││││┃')
   // The actions outrank it: where even their keys cannot stand beside that
   // least, they take the whole line and the rail goes.
   expect(bandLine(await band({ bodyColumns: 14 }), 14)).toBe('  1 rotate   2')
@@ -2366,17 +2366,17 @@ test('the prompt being read is the on-screen row drawn highest, the earliest on 
   await drawRow('u2', 'say two', { first: 3, last: 5, of: 6 })
   // A row's first render reports null before it is laid out: nothing changes.
   await drawRow('r3', 'say three\nwith a second line', null)
-  expect(rail(await band())).toEqual(['\u2577', '\u2503', '\u2577', '\u2577'])
+  expect(rail(await band())).toEqual(['\u2502', '\u2503', '\u2502', '\u2502'])
   // A null after a report is the row scrolled out of view: its report goes.
   await drawRow('u2', 'say two', null)
-  expect(rail(await band())).toEqual(['\u2503', '\u2577', '\u2577', '\u2577'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
   // Everything visible reports 0: the topmost, the earliest of them, is being read.
   await drawRow('u2', 'say two', { first: 0, last: 5, of: 6 })
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
-  expect(rail(await band())).toEqual(['\u2503', '\u2577', '\u2577', '\u2577'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
   // The person scrolled up: the first prompt's row is now the one cut at the top.
   await drawRow('u1', 'say one', { first: 2, last: 4, of: 6 })
-  expect(rail(await band())).toEqual(['\u2503', '\u2577', '\u2577', '\u2577'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
 })
 
 test('a report that moves the read prompt redraws the band from a timer, never from the render itself', async () => {
@@ -2391,7 +2391,7 @@ test('a report that moves the read prompt redraws the band from a timer, never f
   expect(invalidated).toEqual(['ui.render'])
 })
 
-test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal marks the tick as an upper stub and is toasted once a session', async () => {
+test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal marks the tick dotted and is toasted once a session', async () => {
   register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
@@ -2399,7 +2399,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await drawRow('r3', 'say three\nwith a second line', { first: 0, last: 1, of: 2 })
   // Both rows whole: the topmost, the first prompt, is being read, so its tick is no Button.
   const tree = await band()
-  expect(rail(tree)).toEqual(['\u2503', '\u2577', '\u2577', '\u2577'])
+  expect(rail(tree)).toEqual(['\u2503', '\u2502', '\u2502', '\u2502'])
   await tickButtons(tree)[0].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }])
   scrollResult = { deny: 'the window moved meanwhile' }
@@ -2407,7 +2407,7 @@ test('a tick\'s press scrolls the transcript to the prompt\'s row; a refusal mar
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls.slice(1)).toEqual([{ to: { requestId: 'r3' }, block: 'start' }, { to: { requestId: 'r3' }, block: 'start' }])
   expect(toasts).toEqual(['the window moved meanwhile'])
-  expect(rail(await band())).toEqual(['\u2503', '\u2577', '\u2575', '\u2577'])
+  expect(rail(await band())).toEqual(['\u2503', '\u2502', '\u2506', '\u2502'])
 })
 
 test('a prompt no row has drawn since a resume is dim, and its press says so once', async () => {
@@ -2419,7 +2419,7 @@ test('a prompt no row has drawn since a resume is dim, and its press says so onc
   await tickButtons(tree)[1].props.onPress()
   expect(scrolls).toEqual([{ to: { requestId: 'u2' }, block: 'start' }, { to: { requestId: 'u2' }, block: 'start' }])
   expect(toasts).toEqual(['that prompt is not on screen yet'])
-  expect(rail(await band())).toEqual(['\u2577', '\u2577', '\u2577', '\u2503'])
+  expect(rail(await band())).toEqual(['\u2502', '\u2502', '\u2502', '\u2503'])
 })
 
 test('/cs next, prev, first, last and N move along the rail from the prompt being read', async () => {
@@ -2474,10 +2474,10 @@ test('with no prompt row left in the viewport, the read tick stays on the prompt
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   await fireAfter()
-  expect(rail(await band())).toEqual(['╷', '┃', '╷', '╷'])
+  expect(rail(await band())).toEqual(['│', '┃', '│', '│'])
   await drawRow('u2', 'say two', null)
   await fireAfter()
-  expect(rail(await band())).toEqual(['╷', '┃', '╷', '╷'])
+  expect(rail(await band())).toEqual(['│', '┃', '│', '│'])
   expect(await cs('prev')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u1'])
 })
@@ -2494,7 +2494,7 @@ test('a prompt whose row has not been drawn is matched by its text only when tha
   await drawRow('u3', 'continue', { first: 0, last: 1, of: 2 })
   await drawRow('row-of-u4', 'say four', null)
   await fireAfter()
-  expect(rail(await band())).toEqual(['╷', '╷', '┃', '╷'])
+  expect(rail(await band())).toEqual(['│', '│', '┃', '│'])
   expect(await cs('1')).toEqual({})
   expect(await cs('4')).toEqual({})
   expect(scrolls.map(s => s.to.requestId)).toEqual(['u1', 'row-of-u4'])
@@ -2523,7 +2523,7 @@ test('a /clear empties the rail: the next conversation draws none of the last on
   expect(rail(await band())).toEqual([])
   expect(await cs('next')).toEqual({ text: 'the rail has no prompts' })
   await turnComplete()
-  expect(rail(await band())).toEqual(['╷', '╷', '╷', '┃'])
+  expect(rail(await band())).toEqual(['│', '│', '│', '┃'])
 })
 
 test('a line too narrow for any tick, with nothing else to say, draws nothing', async () => {
@@ -2532,7 +2532,7 @@ test('a line too narrow for any tick, with nothing else to say, draws nothing', 
   expect(await band({ bodyColumns: 4 })).toBe(DRAWN)
 })
 
-test('the rail ends in the line\'s last cell across the spacer from the words, as ticks, and the read prompt stands before it', async () => {
+test('the rail ends in the line\'s last cell across the spacer from the words, as upright bars, and the read prompt stands before it', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   transcript(LINEAR)
   percent = 80
@@ -2542,11 +2542,11 @@ test('the rail ends in the line\'s last cell across the spacer from the words, a
   expect(kids.slice(-3).map((k: any) => k.props.key ?? 'label')).toEqual(['cs-spacer', 'label', 'cs-rail'])
   expect(texts(kids[kids.length - 2]).includes(gapLabel(tree))).toBe(true)
   expect(boxes(tree).filter((b: any) => b.props.flexGrow !== undefined).map((b: any) => b.props)).toEqual([{ key: 'cs-spacer', flexGrow: 1 }])
-  expect(rail(tree)).toEqual(['╷', '╷', '╷', '┃'])
+  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
   // 108 cells after the inset: `ctrl+x 1 rotate   2 wrap` (24), three cells, the name sized to
-  // `#3 say three` (12), three cells and the ticks (4) leave 62 between the zones; the name is padded on its left.
+  // `#3 say three` (12), three cells and the bars (4) leave 62 between the zones; the name is padded on its left.
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
-  expect(bandLine(tree, 110)).toBe(`  ctrl+x 1 rotate   2 wrap${' '.repeat(66)}#4 say four   ╷╷╷┃`)
+  expect(bandLine(tree, 110)).toBe(`  ctrl+x 1 rotate   2 wrap${' '.repeat(66)}#4 say four   │││┃`)
 })
 
 test('the focus ring never lands on a rail tick: the keyboard route is /cs', async () => {
@@ -2556,40 +2556,40 @@ test('the focus ring never lands on a rail tick: the keyboard route is /cs', asy
 })
 
 // Before the rail the band names a prompt: the one being read, dim italic; a
-// tick under the pointer swaps in its own.
+// bar under the pointer swaps in its own.
 const gapLabel = (tree: any) => texts(tree).find((t: any) => t.props.italic && t.props.dimColor)
 
-test('before the ticks the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
+test('before the bars the band names the prompt being read, dim italic, whether or not words stand before them', async () => {
   register(on as any, READING)
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
-  // Three cells before the ticks, as wide as the widest prompt a tick can swap in, `#3 say three` (12), padded on its left.
+  // Three cells before the bars, as wide as the widest prompt a bar can swap in, `#3 say three` (12), padded on its left.
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
   const kids = bandBody(tree)
   expect(kids.slice(-2).map((k: any) => k.props.key ?? 'label')).toEqual(['label', 'cs-rail'])
   expect(kids[kids.length - 2].props).toEqual({ width: 12, marginLeft: 0 })
   expect(kids[kids.length - 1].props).toEqual({ key: 'cs-rail', marginLeft: 3 })
   expect(texts(kids[kids.length - 2]).filter((t: any) => t.props.dimColor).map(textOf)).toEqual([' #4 say four'])
-  // A row reporting moves the name with the read tick, and the ticks stay in their column.
-  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   ╷╷╷┃`)
+  // A row reporting moves the name with the read bar, and the bars stay in their column.
+  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(90)}#4 say four   │││┃`)
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   const moved = await band()
   expect(textOf(gapLabel(moved))).toBe('  #2 say two')
-  expect(bandLine(moved, 110)).toBe(`  ${' '.repeat(91)}#2 say two   ╷┃╷╷`)
-  // A word on the left leaves the ticks and the prompt where they stand: 108 cells less `▤ start 1`
-  // (9), three cells, the name (12), three cells and the ticks (4) leave 77 between them.
+  expect(bandLine(moved, 110)).toBe(`  ${' '.repeat(91)}#2 say two   │┃││`)
+  // A word on the left leaves the bars and the prompt where they stand: 108 cells less `▤ start 1`
+  // (9), three cells, the name (12), three cells and the bars (4) leave 77 between them.
   queueTasks(1)
   const queued = await band()
   expect(textOf(gapLabel(queued))).toBe('  #2 say two')
-  expect(bandLine(queued, 110)).toBe(`  ▤ start 1${' '.repeat(82)}#2 say two   ╷┃╷╷`)
+  expect(bandLine(queued, 110)).toBe(`  ▤ start 1${' '.repeat(82)}#2 say two   │┃││`)
 })
 
-test('each tick under the pointer swaps its own prompt into the gap, italic, covering the read one, and the ticks hold still', async () => {
+test('each bar under the pointer swaps its own prompt into the gap, italic, covering the read one, and the bars hold still', async () => {
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
-  // Tick i heats group cs-rail-<i>; the read tick is a Text the label already names.
+  // Bar i heats group cs-rail-<i>; the read bar is a Text the label already names.
   expect(tickButtons(tree).map((b: any) => b.props.hover)).toEqual([0, 1, 2].map(i => ({ scope: `cs-rail-${i}`, dimColor: false })))
   const cards = boxes(tree).filter((b: any) => b.props.display === 'none')
   expect(cards.map((c: any) => c.props)).toEqual([0, 1, 2].map(i => ({
@@ -2604,29 +2604,29 @@ test('each tick under the pointer swaps its own prompt into the gap, italic, cov
   // prompt cell for cell and a swap moves nothing.
   const labelBox = boxes(tree).find((b: any) => b.props.width === 12)
   expect(boxes(labelBox).filter((b: any) => b.props.display === 'none')).toHaveLength(3)
-  // The row as drawn at rest and with the pointer on each tick: only the name's cells change.
-  expect(bandRows(tree, 110)).toEqual([`  ${' '.repeat(90)}#4 say four   ╷╷╷┃`])
-  expect(bandRows(tree, 110, 'cs-rail-0')).toEqual([`  ${' '.repeat(91)}#1 say one   ╷╷╷┃`])
-  expect(bandRows(tree, 110, 'cs-rail-2')).toEqual([`  ${' '.repeat(89)}#3 say three   ╷╷╷┃`])
+  // The row as drawn at rest and with the pointer on each bar: only the name's cells change.
+  expect(bandRows(tree, 110)).toEqual([`  ${' '.repeat(90)}#4 say four   │││┃`])
+  expect(bandRows(tree, 110, 'cs-rail-0')).toEqual([`  ${' '.repeat(91)}#1 say one   │││┃`])
+  expect(bandRows(tree, 110, 'cs-rail-2')).toEqual([`  ${' '.repeat(89)}#3 say three   │││┃`])
 })
 
-test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cells names none and the ticks heat nothing', async () => {
+test('the gap\'s prompt is cut to the gap with an ellipsis; a gap under ten cells names none and the bars heat nothing', async () => {
   transcript([...LINEAR, prompt('u5', 'a4', 'x'.repeat(40))])
   await turnComplete()
-  // 27 columns: 25 after the inset, three cells and five ticks leave 17.
+  // 27 columns: 25 after the inset, three cells and five bars leave 17.
   const cut = await band({ bodyColumns: 27 })
   expect(textOf(gapLabel(cut))).toBe(`#5 ${'x'.repeat(13)}…`)
   expect(texts(boxes(cut).find((b: any) => b.props.hover?.scope === 'cs-rail-0')).map(textOf)).toEqual(['#1 say one'.padStart(17)])
-  expect(bandLine(cut, 27)).toBe(`  #5 ${'x'.repeat(13)}…   ╷╷╷╷┃`)
+  expect(bandLine(cut, 27)).toBe(`  #5 ${'x'.repeat(13)}…   ││││┃`)
   // 20 columns leave exactly ten.
   expect(textOf(gapLabel(await band({ bodyColumns: 20 })))).toBe(`#5 ${'x'.repeat(6)}…`)
-  // 19 leave nine: the ticks alone at the right edge, no card, no hover group.
+  // 19 leave nine: the bars alone at the right edge, no card, no hover group.
   const bare = await band({ bodyColumns: 19 })
-  expect(bandLine(bare, 19)).toBe(`  ${' '.repeat(12)}╷╷╷╷┃`)
+  expect(bandLine(bare, 19)).toBe(`  ${' '.repeat(12)}││││┃`)
   expect(gapLabel(bare)).toBeUndefined()
   expect(boxes(bare).filter((b: any) => b.props.display === 'none')).toEqual([])
   expect(tickButtons(bare).map((b: any) => b.props.hover)).toEqual([undefined, undefined, undefined, undefined])
-  expect(rail(bare)).toEqual(['╷', '╷', '╷', '╷', '┃'])
+  expect(rail(bare)).toEqual(['│', '│', '│', '│', '┃'])
 })
 
 test('a rail past its budget takes the whole gap: no prompt is named beside a collapsed run', async () => {
@@ -2635,13 +2635,13 @@ test('a rail past its budget takes the whole gap: no prompt is named beside a co
   for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
   transcript(many)
   await turnComplete()
-  // 27 columns leave 25 cells after the inset for 30 ticks: `…8`, its cell and 22 ticks, no gap.
+  // 27 columns leave 25 cells after the inset for 30 bars: `…8`, its cell and 22 bars, no gap.
   const tree = await band({ bodyColumns: 27 })
   expect(rail(tree)[0]).toBe('…8')
-  expect(bandLine(tree, 27)).toBe(`  …8 ${'╷'.repeat(21)}┃`)
+  expect(bandLine(tree, 27)).toBe(`  …8 ${'│'.repeat(21)}┃`)
   expect(gapLabel(tree)).toBeUndefined()
   expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toEqual([])
-  // 38 leave 36: every tick, the three-cell gap and three cells, under ten, so none either.
+  // 38 leave 36: every bar, the three-cell gap and three cells, under ten, so none either.
   expect(gapLabel(await band({ bodyColumns: 38 }))).toBeUndefined()
   // 45 leave ten, and the name takes the seven its widest prompt needs; 44 leave nine.
   expect(textOf(gapLabel(await band({ bodyColumns: 45 })))).toBe('#30 p30')
@@ -2667,7 +2667,7 @@ test('off the terminal the gap names the prompt being read and draws no hover ca
 test('the gap\'s prompt is measured and cut in cells: wide characters take two, an emoji is never split', async () => {
   transcript([...LINEAR, prompt('u5', 'a4', '\u4e00'.repeat(60))])
   await turnComplete()
-  // Five ticks and the three cells before them leave 100: `#5 ` and 48 two-cell characters are 99, a 49th would pass the 99 left before `…`.
+  // Five bars and the three cells before them leave 100: `#5 ` and 48 two-cell characters are 99, a 49th would pass the 99 left before `…`.
   expect(textOf(gapLabel(await band()))).toBe(`#5 ${'\u4e00'.repeat(48)}\u2026`)
   transcript([...LINEAR, prompt('u5', 'a4', `${'x'.repeat(13)}\u{1F600}tail`)], 2)
   await turnComplete()
@@ -2679,7 +2679,7 @@ test('the gap\'s prompt is measured and cut in cells: wide characters take two, 
   expect(gapLabel(await band()).props.wrap).toBe('truncate-end')
 })
 
-test('the right edge keeps its margins: three cells after the actions, three between the status words and the name, three between the name and the ticks', async () => {
+test('the right edge keeps its margins: three cells after the actions, three between the status words and the name, three between the name and the bars', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
   transcript(LINEAR)
   await turnComplete()
@@ -2695,9 +2695,9 @@ test('the right edge keeps its margins: three cells after the actions, three bet
   files['/work/.cs/local/mail/new/one.json'] = '{}'
   expect(margins(await band())).toEqual([3, 3, 3])
   delete files['/work/.cs/local/mail/new/one.json']
-  // No room to name a prompt: the ticks alone, three cells after the actions.
+  // No room to name a prompt: the bars alone, three cells after the actions.
   expect(margins(await band({ bodyColumns: 40 }))).toEqual([3, undefined, 0])
-  expect(bandLine(await band({ bodyColumns: 40 }), 40)).toBe(`  ctrl+x 1 rotate   2 wrap${' '.repeat(10)}╷╷╷┃`)
+  expect(bandLine(await band({ bodyColumns: 40 }), 40)).toBe(`  ctrl+x 1 rotate   2 wrap${' '.repeat(10)}│││┃`)
 })
 
 // ---------------------------------------------------------------------------
@@ -2810,17 +2810,17 @@ test('the features word leads the right edge before the rail, yields to a runnin
   transcript(LINEAR)
   await featuresTurn()
   // 108 cells after the inset less the word (26), three cells, the name sized to `#3 say three`
-  // (12), three cells and the ticks (4) leave the spacer 60.
+  // (12), three cells and the bars (4) leave the spacer 60.
   let tree = await band()
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
-  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(60)}1 feature · fix-auth ready    #4 say four   ╷╷╷┃`)
+  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(60)}1 feature · fix-auth ready    #4 say four   │││┃`)
   percent = 80
   tree = await band()
   const order = bandBody(tree).map((k: any) => k.type === 'Button' ? k.props.key : k.type === 'Text' ? textOf(k) : texts(k).map(textOf).join(''))
   expect(order.slice(0, 8)).toEqual(['ctrl+x', '1', 'cs-rotate', '   ', '2', 'cs-wrap', '', 'cs-features'])
-  // `ctrl+x 1 rotate   2 wrap` (24) and three cells come out of the spacer's 60: the ticks stay in their column.
+  // `ctrl+x 1 rotate   2 wrap` (24) and three cells come out of the spacer's 60: the bars stay in their column.
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
-  expect(bandLine(tree, 110)).toBe(`  ctrl+x 1 rotate   2 wrap${' '.repeat(36)}1 feature · fix-auth ready    #4 say four   ╷╷╷┃`)
+  expect(bandLine(tree, 110)).toBe(`  ctrl+x 1 rotate   2 wrap${' '.repeat(36)}1 feature · fix-auth ready    #4 say four   │││┃`)
   percent = undefined
   queueTasks(1)
   tree = await band()
@@ -3033,16 +3033,16 @@ test('the queue and mail words stand before the rail at the right edge, and the 
   files['/work/.cs/local/queue.state'] = 'armed\n'
   files[`${MAIL}/new/1-a.json`] = '{}'
   const tree = await band()
-  expect(rail(tree)).toEqual(['╷', '╷', '╷', '┃'])
+  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
   // 108 cells after the inset less `▤ queue 2   mail 1` (18), three cells, the name sized to
-  // `#3 say three` (12), three cells and the ticks (4) leave the spacer 68.
+  // `#3 say three` (12), three cells and the bars (4) leave the spacer 68.
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
-  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(68)}▤ queue 2   mail 1    #4 say four   ╷╷╷┃`)
+  expect(bandLine(tree, 110)).toBe(`  ${' '.repeat(68)}▤ queue 2   mail 1    #4 say four   │││┃`)
   percent = 80
   // No chord bound: `rotate   wrap` (13) and its three cells come out of the spacer.
   const keyed = await band()
   expect(textOf(gapLabel(keyed))).toBe(' #4 say four')
-  expect(bandLine(keyed, 110)).toBe(`  rotate   wrap${' '.repeat(55)}▤ queue 2   mail 1    #4 say four   ╷╷╷┃`)
+  expect(bandLine(keyed, 110)).toBe(`  rotate   wrap${' '.repeat(55)}▤ queue 2   mail 1    #4 say four   │││┃`)
 })
 
 test('the mail word counts neither a stray file nor a directory in new/', async () => {
@@ -3054,9 +3054,9 @@ test('the mail word counts neither a stray file nor a directory in new/', async 
 
 // ---------------------------------------------------------------------------
 // The band's /config rows: cs.bandPrompt picks the prompt it names (the newest,
-// or the one being read), cs.bandBars the most ticks before older prompts fold.
+// or the one being read), cs.bandBars the most bars before older prompts fold.
 
-test('by default the band names the newest prompt and draws its tick heavy, wherever the reader is; a scroll redraws nothing', async () => {
+test('by default the band names the newest prompt and draws its bar thick, wherever the reader is; a scroll redraws nothing', async () => {
   transcript(LINEAR)
   await turnComplete()
   await band()
@@ -3066,35 +3066,35 @@ test('by default the band names the newest prompt and draws its tick heavy, wher
   expect(invalidated).toEqual([])
   const tree = await band()
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
-  expect(rail(tree)).toEqual(['╷', '╷', '╷', '┃'])
+  expect(rail(tree)).toEqual(['│', '│', '│', '┃'])
 })
 
-test('with cs.bandPrompt read the band names the prompt being read and draws its tick heavy', async () => {
+test('with cs.bandPrompt read the band names the prompt being read and draws its bar thick', async () => {
   register(on as any, { ...OPTIONS, bandPrompt: 'read' })
   transcript(LINEAR)
   await turnComplete()
   await drawRow('u2', 'say two', { first: 0, last: 1, of: 2 })
   const tree = await band()
   expect(textOf(gapLabel(tree))).toBe('  #2 say two')
-  expect(rail(tree)).toEqual(['╷', '┃', '╷', '╷'])
+  expect(rail(tree)).toEqual(['│', '┃', '│', '│'])
 })
 
-test('at most cs.bandBars ticks draw; older prompts fold into …N and the prompt is still named', async () => {
+test('at most cs.bandBars bars draw; older prompts fold into …N and the prompt is still named', async () => {
   const many = [prompt('u1', null, 'p1')]
   for (let i = 2; i <= 30; i++) many.push(reply(`a${i - 1}`, `u${i - 1}`), prompt(`u${i}`, `a${i - 1}`, `p${i}`))
   transcript(many)
   await turnComplete()
   let tree = await band()
-  expect(rail(tree)).toEqual(['…20', ...Array(9).fill('╷'), '┃'])
-  // `…20`, its cell and ten ticks are 14 cells; the name is as wide as the widest prompt a drawn tick can swap in.
+  expect(rail(tree)).toEqual(['…20', ...Array(9).fill('│'), '┃'])
+  // `…20`, its cell and ten bars are 14 cells; the name is as wide as the widest prompt a drawn bar can swap in.
   expect(textOf(gapLabel(tree))).toBe('#30 p30')
   expect(boxes(tree).find((b: any) => (b.children ?? []).flat(Infinity).includes(gapLabel(tree))).props.width).toBe(7)
   register(on as any, { ...OPTIONS, bandBars: 3 })
   transcript(many, 2)
   await turnComplete()
   tree = await band()
-  expect(rail(tree)).toEqual(['…27', '╷', '╷', '┃'])
-  // A folded prompt has no tick to hover, so no card either.
+  expect(rail(tree)).toEqual(['…27', '│', '│', '┃'])
+  // A folded prompt has no bar to hover, so no card either.
   expect(boxes(tree).filter((b: any) => b.props.display === 'none')).toHaveLength(2)
 })
 
@@ -3103,7 +3103,7 @@ test('/config refuses a band value the band cannot draw, where it is typed, and 
     { key, value, previous: 10, provider: { plugin, tier: 'user' }, origin: { kind: 'composer' } },
     async (e: any) => ({ value: e.value }))
   for (const value of [0, -2, 2.5]) {
-    expect(await set('cs.bandBars', value)).toEqual({ deny: `cs.bandBars is the most ticks the band draws, a whole number of 1 or more; got ${value}` })
+    expect(await set('cs.bandBars', value)).toEqual({ deny: `cs.bandBars is the most bars the band draws, a whole number of 1 or more; got ${value}` })
   }
   expect(await set('cs.bandPrompt', 'first')).toEqual({ deny: 'cs.bandPrompt is latest or read; got first' })
   expect(await set('cs.bandPrompts', 'yes')).toEqual({ deny: 'cs.bandPrompts is on or off; got yes' })
@@ -3114,7 +3114,7 @@ test('/config refuses a band value the band cannot draw, where it is typed, and 
   expect(await set('theme', 'dark', 'engine')).toEqual({ value: 'dark' })
 })
 
-test('a bad band value already stored draws no ticks and says so once; the rest of the mod still runs', async () => {
+test('a bad band value already stored draws no bars and says so once; the rest of the mod still runs', async () => {
   expect(() => register(on as any, { ...OPTIONS, bandBars: 0 })).not.toThrow()
   transcript(LINEAR)
   await turnComplete()
@@ -3128,10 +3128,10 @@ test('a bad band value already stored draws no ticks and says so once; the rest 
   expect(rail(tree)).toEqual([])
   expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap'])
   await band()
-  expect(toasts).toEqual(['the band draws no prompt ticks: cs.bandBars is the most ticks the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
+  expect(toasts).toEqual(['the band draws no prompt bars: cs.bandBars is the most bars the band draws, a whole number of 1 or more; got 0. Set it in /config.'])
 })
 
-test('by plugin.json\'s defaults the band draws no prompt ticks and names no prompt; its other words still draw', async () => {
+test('by plugin.json\'s defaults the band draws no prompt bars and names no prompt; its other words still draw', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'))
   const defaults = Object.fromEntries(Object.entries(manifest.userConfig).map(([field, spec]: [string, any]) => [field, spec.default]))
   expect(defaults).toEqual({ bandPrompts: false, bandPrompt: 'latest', bandBars: 10 })
@@ -3147,7 +3147,7 @@ test('by plugin.json\'s defaults the band draws no prompt ticks and names no pro
   expect(toasts).toEqual([])
 })
 
-test('with the prompt ticks off, a scroll redraws nothing, whichever prompt the band would name', async () => {
+test('with the prompt bars off, a scroll redraws nothing, whichever prompt the band would name', async () => {
   register(on as any, { ...READING, bandPrompts: false })
   transcript(LINEAR)
   await turnComplete()
@@ -3169,17 +3169,17 @@ const gateRuns = async () => {
   await watchTick()
 }
 
-test('a rail alone stands at the right edge across the spacer, and the named prompt gives up its cells before the ticks', async () => {
+test('a rail alone stands at the right edge across the spacer, and the named prompt gives up its cells before the bars', async () => {
   transcript(LINEAR)
   await turnComplete()
   const tree = await band()
   expect(bandBody(tree).map((c: any) => c.props.key ?? c.type)).toEqual(['cs-spacer', 'Box', 'cs-rail'])
   expect(textOf(gapLabel(tree))).toBe(' #4 say four')
-  // 20 columns: 18 after the inset, three cells and four ticks leave 11, the named prompt whole.
-  expect(bandLine(await band({ bodyColumns: 20 }), 20)).toBe('  #4 say four   ╷╷╷┃')
-  // 19 leave ten, cut; 18 nine: the ticks alone.
-  expect(bandLine(await band({ bodyColumns: 19 }), 19)).toBe('  #4 say fo…   ╷╷╷┃')
-  expect(bandLine(await band({ bodyColumns: 18 }), 18)).toBe(`  ${' '.repeat(12)}╷╷╷┃`)
+  // 20 columns: 18 after the inset, three cells and four bars leave 11, the named prompt whole.
+  expect(bandLine(await band({ bodyColumns: 20 }), 20)).toBe('  #4 say four   │││┃')
+  // 19 leave ten, cut; 18 nine: the bars alone.
+  expect(bandLine(await band({ bodyColumns: 19 }), 19)).toBe('  #4 say fo…   │││┃')
+  expect(bandLine(await band({ bodyColumns: 18 }), 18)).toBe(`  ${' '.repeat(12)}│││┃`)
   expect(gapLabel(await band({ bodyColumns: 18 }))).toBeUndefined()
 })
 
@@ -3336,53 +3336,53 @@ const gap = (n: number) => ' '.repeat(n)
 const FOURTEEN = Array.from({ length: 14 }, (_, i) => ({ uuid: `t${i + 1}`, text: i === 13 ? 'the band is too busy' : `step ${i + 1}` }))
 const typical = buildBandEntries({ ...quiet, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress }, waiting: 2, mail: 1 })
 
-// The rail at 120 columns: fourteen prompts, five ticks, and the jump to the
+// The rail at 120 columns: fourteen prompts, five bars, and the jump to the
 // twelfth refused.
 const REFUSED = { ...railOf(FOURTEEN), bars: 5, denied: new Set(['t12']) }
 
-test('the band draws the actions at the left, and at the right edge the mail, the prompt\'s name, and the ticks in the last cells', () => {
+test('the band draws the actions at the left, and at the right edge the mail, the prompt\'s name, and the bars in the last cells', () => {
   // 118 cells after the inset: the actions 47, `mail 1` 6, three cells, the
-  // name 24, three cells, `…9 ` 3 and five ticks leave 27 between the zones.
-  expect(lineAt(typical, 120, REFUSED)).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   #14 the band is too busy   …9 ╷╷╵╷┃`)
+  // name 24, three cells, `…9 ` 3 and five bars leave 27 between the zones.
+  expect(lineAt(typical, 120, REFUSED)).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   #14 the band is too busy   …9 ││┆│┃`)
   // With the rail off the mail word alone holds the right edge: 118 less 47 and 6 leave 65.
   expect(lineAt(typical, 120)).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(65)}mail 1`)
 })
 
 test('with no actions the rail still ends in the line\'s last cell, the status words and the name before it', () => {
-  // The rail alone: 118 less the name 24, three cells, `…9 ` 3 and five ticks leave 83.
-  expect(lineAt([], 120, REFUSED)).toBe(`  ${gap(83)}#14 the band is too busy   …9 ╷╷╵╷┃`)
+  // The rail alone: 118 less the name 24, three cells, `…9 ` 3 and five bars leave 83.
+  expect(lineAt([], 120, REFUSED)).toBe(`  ${gap(83)}#14 the band is too busy   …9 ││┆│┃`)
   // `mail 1` and its three cells come out of the spacer.
   const mail = buildBandEntries({ ...quiet, mail: 1 })
-  expect(lineAt(mail, 120, REFUSED)).toBe(`  ${gap(74)}mail 1   #14 the band is too busy   …9 ╷╷╵╷┃`)
+  expect(lineAt(mail, 120, REFUSED)).toBe(`  ${gap(74)}mail 1   #14 the band is too busy   …9 ││┆│┃`)
 })
 
-test('a narrowing line cuts the name, then drops it, then folds the ticks into …N, and the ticks end in the last cell throughout', () => {
+test('a narrowing line cuts the name, then drops it, then folds the bars into …N, and the bars end in the last cell throughout', () => {
   const mail = buildBandEntries({ ...quiet, mail: 1 })
   const rail = { ...railOf(FOURTEEN), bars: 5 }
   // 32 columns leave the name ten cells, cut; 31 leave it nine, and none is named.
-  expect(lineAt(mail, 32, rail)).toBe('  mail 1   #14 the b…   …9 ╷╷╷╷┃')
-  expect(lineAt(mail, 31, rail)).toBe(`  ${gap(12)}mail 1   …9 ╷╷╷╷┃`)
-  // 19 columns hold `…9 ` and five ticks in the eight cells after the mail word; each cell fewer folds one more.
-  expect(lineAt(mail, 19, rail)).toBe('  mail 1   …9 ╷╷╷╷┃')
-  expect(lineAt(mail, 18, rail)).toBe('  mail 1   …11 ╷╷┃')
-  expect(lineAt(mail, 17, rail)).toBe('  mail 1   …12 ╷┃')
+  expect(lineAt(mail, 32, rail)).toBe('  mail 1   #14 the b…   …9 ││││┃')
+  expect(lineAt(mail, 31, rail)).toBe(`  ${gap(12)}mail 1   …9 ││││┃`)
+  // 19 columns hold `…9 ` and five bars in the eight cells after the mail word; each cell fewer folds one more.
+  expect(lineAt(mail, 19, rail)).toBe('  mail 1   …9 ││││┃')
+  expect(lineAt(mail, 18, rail)).toBe('  mail 1   …11 ││┃')
+  expect(lineAt(mail, 17, rail)).toBe('  mail 1   …12 │┃')
   expect(lineAt(mail, 16, rail)).toBe('  mail 1   …13 ┃')
   // A cell fewer holds the mail word and `…13 ┃` no more: the word leaves before the rail's least, and the rail takes the line.
-  expect(lineAt(mail, 15, rail)).toBe(`  ${gap(5)}…9 ╷╷╷╷┃`)
+  expect(lineAt(mail, 15, rail)).toBe(`  ${gap(5)}…9 ││││┃`)
 })
 
-test('a tick under the pointer swaps its prompt into the whole name box, and the ticks stay where they stand', () => {
+test('a bar under the pointer swaps its prompt into the whole name box, and the bars stay where they stand', () => {
   const tree = drawBand(view({ entries: typical, bodyColumns: 120, rail: REFUSED }), EL)
-  expect(bandRows(tree, 120, 'cs-rail-9')).toEqual([`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   ${gap(13)}#10 step 10   …9 ╷╷╵╷┃`])
-  // The refused tick hovers as any other; the named one is a Text with no hover, so nothing swaps.
-  expect(bandRows(tree, 120, 'cs-rail-11')).toEqual([`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   ${gap(13)}#12 step 12   …9 ╷╷╵╷┃`])
-  expect(bandRows(tree, 120, 'cs-rail-13')).toEqual([`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   #14 the band is too busy   …9 ╷╷╵╷┃`])
+  expect(bandRows(tree, 120, 'cs-rail-9')).toEqual([`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   ${gap(13)}#10 step 10   …9 ││┆│┃`])
+  // The refused bar hovers as any other; the named one is a Text with no hover, so nothing swaps.
+  expect(bandRows(tree, 120, 'cs-rail-11')).toEqual([`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   ${gap(13)}#12 step 12   …9 ││┆│┃`])
+  expect(bandRows(tree, 120, 'cs-rail-13')).toEqual([`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(27)}mail 1   #14 the band is too busy   …9 ││┆│┃`])
 })
 
 test('while a clear counts down, the count follows its clear key and the right edge stays where it was', () => {
   const counting = buildBandEntries({ ...quiet, rotating: true, armed: true, countdown: { seconds: 18, ink: OWN }, mail: 1 })
   // `ctrl+x 1 /clear now   in 18s` (28) leaves 46 between the zones.
-  expect(lineAt(counting, 120, { ...railOf(FOURTEEN), bars: 5 })).toBe(`  ctrl+x 1 /clear now   in 18s${gap(46)}mail 1   #14 the band is too busy   …9 ╷╷╷╷┃`)
+  expect(lineAt(counting, 120, { ...railOf(FOURTEEN), bars: 5 })).toBe(`  ctrl+x 1 /clear now   in 18s${gap(46)}mail 1   #14 the band is too busy   …9 ││││┃`)
 })
 
 test('the countdown never stands beside a bare clear key: it leaves before `/clear now` would lose its word, and the line is fitted again', () => {
@@ -3420,7 +3420,7 @@ test('an entry the band has no zone for is a programmer error, named', () => {
 // turns at the chords (shared, apart, unbound) and the rail (on, off), so
 // each combination meets every variant.
 // Where the rail is on and every action still fits a line that holds the
-// rail's least, `…13 ┃` and the three cells before it, the named tick draws.
+// rail's least, `…13 ┃` and the three cells before it, the named bar draws.
 const ACTION_KEYS = ['cs-rotate', 'cs-countdown', 'cs-wrap', 'cs-feed', 'cs-queue']
 const RAIL_LEAST = 8
 test('every combination of entries at every width from 40 to 200 draws one row no wider than the line, and keeps the rail whenever the actions leave it room', () => {
@@ -3462,11 +3462,11 @@ test('every combination of entries at every width from 40 to 200 draws one row n
 }, 60000)
 
 // The same lines with cs.bandPrompt read, the named prompt anywhere: wherever
-// the rail draws, its named tick draws, and wherever every action fits a line
-// that holds the rail's least for that prompt (the named tick, `…N ` before
+// the rail draws, its named bar draws, and wherever every action fits a line
+// that holds the rail's least for that prompt (the named bar, `…N ` before
 // it when older prompts fold, ` M…` after it when newer ones do, and the
 // three cells before the rail), the rail draws.
-test('with cs.bandPrompt read, every combination of entries at every width from 40 to 200 draws the named tick whenever the rail draws', () => {
+test('with cs.bandPrompt read, every combination of entries at every width from 40 to 200 draws the named bar whenever the rail draws', () => {
   const chordSets = [CHORDS, { 'strip:jump1': 'ctrl+x 1', 'strip:jump2': 'ctrl+w 2', 'strip:jump3': 'alt+shift+f' }, {}]
   const runCells = (folded: number) => (folded > 0 ? `${folded}`.length + 2 : 0)
   let railed = 0
@@ -3493,45 +3493,45 @@ test('with cs.bandPrompt read, every combination of entries at every width from 
       railed++
       const [row, ...more] = bandRows(tree, bodyColumns)
       if (row === undefined || more.length > 0 || [...row].length > bodyColumns) throw new Error(`entries ${bits} at ${bodyColumns} columns drew ${JSON.stringify([row, ...more])}`)
-      if (!row.includes('\u2503')) throw new Error(`entries ${bits} at ${bodyColumns} columns, prompt ${named + 1} named, drew a rail without its named tick: ${row}`)
+      if (!row.includes('\u2503')) throw new Error(`entries ${bits} at ${bodyColumns} columns, prompt ${named + 1} named, drew a rail without its named bar: ${row}`)
     }
   }
   expect(railed).toBeGreaterThan(0)
 }, 60000)
 
 // The rail with cs.bandPrompt read at 120 columns and on narrow lines: the
-// drawn ticks are the newest that fit, slid back only as far as the named
+// drawn bars are the newest that fit, slid back only as far as the named
 // one; the older prompts fold into `…N ` before them and the newer ones
 // into ` M…` after them.
 const reading = (named: number) => ({ ...railOf(FOURTEEN), bars: 5, named })
-test('with the oldest prompt named the ticks start at it and the newer prompts fold after them, ` M…` in the line\'s last cells', () => {
+test('with the oldest prompt named the bars start at it and the newer prompts fold after them, ` M…` in the line\'s last cells', () => {
   const mail = buildBandEntries({ ...quiet, mail: 1 })
-  expect(lineAt(mail, 120, reading(0))).toBe(`  ${gap(89)}mail 1   #1 step 1   ┃╷╷╷╷ 9…`)
-  expect(lineAt(mail, 19, reading(0))).toBe('  mail 1   ┃╷╷╷╷ 9…')
+  expect(lineAt(mail, 120, reading(0))).toBe(`  ${gap(89)}mail 1   #1 step 1   ┃││││ 9…`)
+  expect(lineAt(mail, 19, reading(0))).toBe('  mail 1   ┃││││ 9…')
   expect(lineAt(mail, 16, reading(0))).toBe('  mail 1   ┃ 13…')
 })
 
-test('with a middle prompt named the ticks slide back to start at it, the older prompts folded before them and the newer after', () => {
+test('with a middle prompt named the bars slide back to start at it, the older prompts folded before them and the newer after', () => {
   const mail = buildBandEntries({ ...quiet, mail: 1 })
-  // The name is as wide as `#11 step 11`, the widest drawn tick's.
-  expect(lineAt(mail, 120, reading(6))).toBe(`  ${gap(84)}mail 1   ${gap(2)}#7 step 7   …6 ┃╷╷╷╷ 3…`)
-  expect(lineAt(mail, 19, reading(6))).toBe('  mail 1   …6 ┃╷ 6…')
+  // The name is as wide as `#11 step 11`, the widest drawn bar's.
+  expect(lineAt(mail, 120, reading(6))).toBe(`  ${gap(84)}mail 1   ${gap(2)}#7 step 7   …6 ┃││││ 3…`)
+  expect(lineAt(mail, 19, reading(6))).toBe('  mail 1   …6 ┃│ 6…')
   // The least, `…6 ┃ 7…`, takes seven cells and three before them.
   expect(lineAt(mail, 18, reading(6))).toBe('  mail 1   …6 ┃ 7…')
   // A cell fewer holds the mail word and the least no more: the word leaves, and the rail takes the line.
-  expect(lineAt(mail, 17, reading(6))).toBe(`  ${gap(4)}…6 ┃╷╷╷╷ 3…`)
+  expect(lineAt(mail, 17, reading(6))).toBe(`  ${gap(4)}…6 ┃││││ 3…`)
 })
 
 test('with the newest prompt named the rail reads as it does with cs.bandPrompt latest', () => {
   const mail = buildBandEntries({ ...quiet, mail: 1 })
-  expect(lineAt(mail, 120, reading(13))).toBe(`  ${gap(74)}mail 1   #14 the band is too busy   …9 ╷╷╷╷┃`)
+  expect(lineAt(mail, 120, reading(13))).toBe(`  ${gap(74)}mail 1   #14 the band is too busy   …9 ││││┃`)
   expect(lineAt(mail, 16, reading(13))).toBe('  mail 1   …13 ┃')
 })
 
-test('a tick drawn after the named one hovers and jumps to its own prompt, and a folded prompt has no tick', async () => {
+test('a bar drawn after the named one hovers and jumps to its own prompt, and a folded prompt has no bar', async () => {
   const jumped: number[] = []
   const tree = drawBand(view({ entries: buildBandEntries({ ...quiet, mail: 1 }), bodyColumns: 120, rail: { ...reading(6), jump: async (i: number) => { jumped.push(i) } } }), EL)
-  expect(bandRows(tree, 120, 'cs-rail-10')).toEqual([`  ${gap(84)}mail 1   #11 step 11   …6 ┃╷╷╷╷ 3…`])
+  expect(bandRows(tree, 120, 'cs-rail-10')).toEqual([`  ${gap(84)}mail 1   #11 step 11   …6 ┃││││ 3…`])
   const ticks = buttons(tree).filter((b: any) => b.props.key?.startsWith('cs-rail-'))
   expect(ticks.map((b: any) => b.props.key)).toEqual(['cs-rail-7', 'cs-rail-8', 'cs-rail-9', 'cs-rail-10'])
   for (const tick of ticks) await tick.props.onPress()
@@ -3547,11 +3547,11 @@ test('every entry the band never drops stays whole at the narrowest line that ho
 test('a status word keeps at least its head, the words before its first `·`, and `…`: cut shorter it says nothing, so it leaves and the line is fitted again', () => {
   const oneReady = buildBandEntries({ ...quiet, featured: { label: '1 feature · fix-auth ready', onPress: noPress }, rotating: true, wrapping: true, feed: { on: true, color: OWN, onPress: noPress }, waiting: 3, mail: 1 })
   // `1 feature…` is the shortest the features press draws.
-  expect(lineAt(oneReady, 62, railOf(FOUR))).toBe('  1 rotate   2 wrap   3 feed ✓   ▤ start 3   1 feature…   ╷╷╷┃')
+  expect(lineAt(oneReady, 62, railOf(FOUR))).toBe('  1 rotate   2 wrap   3 feed ✓   ▤ start 3   1 feature…   │││┃')
   // A cell fewer would cut it into its head: it leaves, and the shared prefix comes back.
-  expect(lineAt(oneReady, 61, railOf(FOUR))).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(5)}   ╷╷╷┃`)
-  expect(lineAt(oneReady, 58, railOf(FOUR))).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(2)}   ╷╷╷┃`)
-  expect(lineAt(oneReady, 54, railOf(FOUR))).toBe(`  1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(5)}   ╷╷╷┃`)
+  expect(lineAt(oneReady, 61, railOf(FOUR))).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(5)}   │││┃`)
+  expect(lineAt(oneReady, 58, railOf(FOUR))).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(2)}   │││┃`)
+  expect(lineAt(oneReady, 54, railOf(FOUR))).toBe(`  1 rotate   2 wrap   3 feed ✓   ▤ start 3${gap(5)}   │││┃`)
 })
 
 test('with every entry on, the band leaves out its lowest words, then shortens the free text before the actions, until it fits one line', () => {
@@ -3564,14 +3564,14 @@ test('with every entry on, the band leaves out its lowest words, then shortens t
 })
 
 test('the rail keeps its least, `…N ┃` three cells after the words, while the words can drop and shorten and still keep every action', () => {
-  // 80 columns (75 after the [-]): the actions and the mail word leave the rail room for its five ticks.
-  expect(lineAt(typical, 75, REFUSED)).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(9)}mail 1   …9 ╷╷╵╷┃`)
+  // 80 columns (75 after the [-]): the actions and the mail word leave the rail room for its five bars.
+  expect(lineAt(typical, 75, REFUSED)).toBe(`  ctrl+x 1 rotate   2 wrap   3 feed ✓   ▤ start 2${gap(9)}mail 1   …9 ││┆│┃`)
   // With the features press too, the mail word drops, the prefix goes and the press shortens, so `…13 ┃` stays.
   expect(lineAt(everything, 75, REFUSED)).toBe('  1 rotate   2 wrap   3 feed ✓   ▤ start 2   3 features · fix-auth…   …13 ┃')
   // 36 columns: the features press would cut into its head and leaves, the queue press shortens to a cell and `…`, and the feed key loses its word.
   expect(lineAt(everything, 36, REFUSED)).toBe('  1 rotate   2 wrap   3   ▤…   …13 ┃')
-  // 40 columns (35 after the [-]): the wrap key loses its word too, and the cells the words leave past the least go to ticks.
-  expect(lineAt(everything, 35, REFUSED)).toBe('  1 rotate   2   3   ▤…    …9 ╷╷╵╷┃')
+  // 40 columns (35 after the [-]): the wrap key loses its word too, and the cells the words leave past the least go to bars.
+  expect(lineAt(everything, 35, REFUSED)).toBe('  1 rotate   2   3   ▤…    …9 ││┆│┃')
 })
 
 test('the actions outrank the rail: where an action would leave whole beside its least, the words take the whole line and the rail what they leave', () => {
@@ -3579,7 +3579,7 @@ test('the actions outrank the rail: where an action would leave whole beside its
   const at = (bodyColumns: number) => bandLine(drawBand(view({ chords: differ, entries: everything, bodyColumns, rail: REFUSED }), EL), bodyColumns)
   // The keys bare (38 cells), three cells and `…13 ┃` fill 48 columns.
   expect(at(48)).toBe('  ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…   …13 ┃')
-  // Two fewer and the queue press would leave: it stays, the features press would cut into its head and leaves, and no tick fits.
+  // Two fewer and the queue press would leave: it stays, the features press would cut into its head and leaves, and no bar fits.
   expect(at(46)).toBe('  ctrl+x 1   ctrl+w 2   alt+shift+f   ▤…')
 })
 
@@ -3679,14 +3679,14 @@ test('an unbound chord has no key to fall back to: the last one cuts its word to
 })
 
 test('the rail takes what the line leaves once the band has fitted its words', () => {
-  // Every word holds at 114, and the seven cells left after them and the three before the ticks hold four ticks and no name.
-  expect(lineAt(droppable, 114, railOf(FOUR))).toBe(`  ctrl+x 1 rotate   2 wrap${gap(6)}3 features · none ready   finishing fix-auth · gate 3s   ▤ queue 2   mail 1   ╷╷╷┃`)
+  // Every word holds at 114, and the seven cells left after them and the three before the bars hold four bars and no name.
+  expect(lineAt(droppable, 114, railOf(FOUR))).toBe(`  ctrl+x 1 rotate   2 wrap${gap(6)}3 features · none ready   finishing fix-auth · gate 3s   ▤ queue 2   mail 1   │││┃`)
 })
 
 test('a band with no words and no room for a tick draws nothing', async () => {
   transcript(LINEAR)
   await turnComplete()
-  // Five columns leave three cells after the inset, and `…3`, its cell and a tick take four.
+  // Five columns leave three cells after the inset, and `…3`, its cell and a bar take four.
   expect(await band({ bodyColumns: 5 })).toBe(DRAWN)
   expect(boxes(await band({ bodyColumns: 6 })).some((b: any) => b.props.key === 'cs-rail')).toBe(true)
 })
