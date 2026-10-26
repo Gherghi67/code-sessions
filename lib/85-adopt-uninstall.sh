@@ -626,7 +626,7 @@ adopt_worktrees() {  # [--dry-run]
 
 # Take back the Ctrl+X bindings the installer added, and the
 # Option+1 / Option+2 ones an earlier cs added, only where a key still holds
-# cs's value: a key bound to anything else is the user's. A Global block left
+# cs's value: a key bound to anything else is the user's. A block left
 # empty by that goes, and so does a file left as exactly {"bindings":[]},
 # unless it is a symlink, whose target is written through instead so a
 # dotfiles manager's copy does not keep cs's keys. The recorded answer goes
