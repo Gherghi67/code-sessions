@@ -2659,9 +2659,23 @@ _render_quiet() {
             esac
             continue
         fi
-        # The branch is the terminal's own green.
+        # The branch's glyph and its own name are the terminal's own green;
+        # the path before its last `/` (feat/, fix/) and the marks after it
+        # fade with the labels.
         if [ "${_SEG_ROLE[i]}" = "branch" ]; then
-            out+="${e}[0;32m${_SEG_TEXT[i]}"
+            local glyph="$ICON_GIT" body name marks="" head="" leaf
+            case "${_SEG_TEXT[i]}" in
+                "$ICON_GIT"*) body="${_SEG_TEXT[i]#"$ICON_GIT"}" ;;
+                *)            glyph=""; body="${_SEG_TEXT[i]}" ;;
+            esac
+            name="${body%% *}"
+            [ "$name" = "$body" ] || marks=" ${body#* }"
+            case "$name" in
+                */*) head="${name%/*}/"; leaf="${name##*/}" ;;
+                *)   leaf="$name" ;;
+            esac
+            out+="${e}[0;32m${glyph}${e}[0;${_QUIET_FG}m${head}${e}[0;32m${leaf}"
+            [ -z "$marks" ] || out+="${e}[0;${_QUIET_FG}m${marks}"
             continue
         fi
         if _quiet_in_crit "$i"; then
