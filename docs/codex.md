@@ -303,3 +303,10 @@ as `cs <name> --engine codex --model <model> --effort <level>` and by
 native defaults. Model names and effort levels are validated by the native CLI.
 Codex launches use `--approve-for-me` in a workspace-write sandbox by default;
 `--native-approval` leaves approval policy to Codex configuration.
+
+## Session memory
+
+Codex startup and resume refresh `.cs/memory/MEMORY.md` as reference context.
+The SessionStart hook refreshes it again after `/clear`, including a rotation.
+The shared reader includes at most 196 lines and 24,400 bytes, preserves UTF-8,
+labels truncation and skips missing or unreadable indexes.

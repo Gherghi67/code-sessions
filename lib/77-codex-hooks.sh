@@ -102,6 +102,7 @@ _codex_hook_session_start() {
     else
         context=$(_fresh_notice_codex "$actor")
     fi
+    context="$context$(cs_memory_index "$session_dir")"
     jq -n --arg context "$context" --arg sysmsg "$sysmsg" '
         {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $context}}
         + (if $sysmsg == "" then {} else {systemMessage: $sysmsg} end)' 2>/dev/null || true

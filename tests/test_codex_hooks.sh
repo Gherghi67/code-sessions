@@ -499,6 +499,34 @@ test_outside_a_cs_codex_run_the_turn_hooks_are_inert() {
     assert_file_exists "$STAMP" "nothing outside a cs Codex run touches the count" || return 1
 }
 
+test_clear_loads_bounded_memory_and_refreshes_after_edits() {
+    mkdir -p "$SESSION/.cs/memory"
+    printf 'remember this unique choice\n' > "$SESSION/.cs/memory/MEMORY.md"
+    local ctx
+    ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$ctx" 'remember this unique choice' || return 1
+    python3 -c 'import sys; print("line\n" * 196 + "must-not-load")' > "$SESSION/.cs/memory/MEMORY.md"
+    ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$ctx" 'Memory index truncated' || return 1
+    case "$ctx" in *must-not-load*) echo '  FAIL: memory line budget ignored'; return 1;; esac
+    # The byte budget ends one byte into the three-byte euro sign: the reader
+    # keeps the 24,399 whole characters before it and drops the split one.
+    python3 -c 'print("a" * 24399 + "€")' > "$SESSION/.cs/memory/MEMORY.md"
+    ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$ctx" 'Memory index truncated' || return 1
+    case "$ctx" in *$'\xef\xbf\xbd'*) echo '  FAIL: a split character became U+FFFD'; return 1;; esac
+    printf '%s\n' "$ctx" | sed -n '/^Workspace memory for reference/,/^\[Memory index truncated/p' \
+        | sed '1d;$d' > "$TEST_TMPDIR/kept"
+    python3 -c 'print("a" * 24399)' > "$TEST_TMPDIR/expected"
+    cmp -s "$TEST_TMPDIR/expected" "$TEST_TMPDIR/kept" \
+        || { echo '  FAIL: the kept memory is not the whole characters before the budget'; return 1; }
+    printf 'freshly edited memory\n' > "$SESSION/.cs/memory/MEMORY.md"
+    ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$ctx" 'freshly edited memory' || return 1
+}
+
+run_test test_clear_loads_bounded_memory_and_refreshes_after_edits
+
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
 run_test test_clear_without_a_handoff_rebinds_as_a_clean_break
 run_test test_a_stale_marker_is_dropped

@@ -180,16 +180,15 @@ test_capabilities_are_exact_and_runtime_independent() {
     cs_engine_supports codex startup_context || { echo '  FAIL: Codex startup context capability missing'; return 1; }
     cs_engine_supports codex feature_finish || { echo '  FAIL: Codex feature finish capability missing'; return 1; }
     # The session-manager features skills check before relying on an adapter.
-    # Claude hosts all four through its hooks and launch path. Codex hosts
-    # rotation (its SessionStart hook and the launch prompt's r); the rest it
-    # must decline rather than let a skill half-run.
+    # Verify delivered capabilities and keep unfinished integrations unsupported.
     local capability
     for capability in rotation spawn_brief memory_index mail_delivery; do
         cs_engine_supports claude "$capability" \
             || { echo "  FAIL: Claude must declare $capability"; return 1; }
     done
     cs_engine_supports codex rotation || { echo "  FAIL: Codex must declare rotation"; return 1; }
-    for capability in spawn_brief memory_index mail_delivery; do
+    cs_engine_supports codex memory_index || { echo "  FAIL: Codex must declare memory_index"; return 1; }
+    for capability in spawn_brief mail_delivery; do
         if cs_engine_supports codex "$capability"; then
             echo "  FAIL: Codex must not claim $capability before its adapter hosts it"
             return 1
