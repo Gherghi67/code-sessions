@@ -334,7 +334,8 @@ Codex retains a durable kickoff receipt in `.cs/local/spawn-kick.json` until
 native thread history confirms a turn started. A launch that fails before a turn
 retries the kickoff on the next open. A started turn spends it, including when
 the CLI later fails or the launcher is interrupted. If history cannot be read,
-cs preserves the receipt and refuses automatic replay until history is available.
+cs preserves the receipt and refuses automatic replay until history is available;
+the open stops before it binds a thread or spends a rotation handoff.
 Rotation and finish prompts take precedence and leave staged briefs pending. A
 receipt whose kickoff ran no turn returns to pending before such a prompt runs,
 so that prompt's turn does not spend the brief.

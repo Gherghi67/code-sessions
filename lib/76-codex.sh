@@ -333,6 +333,10 @@ _launch_codex_bound() {
             return 1
         }
     fi
+    # An earlier kickoff is settled before the launch answers the resume
+    # question, binds a thread or spends a handoff: a history that cannot be
+    # read stops it here with all three left for the retry.
+    _codex_spawn_reconcile "$session_dir" "$helper" "$codex_bin" || return 1
 
     # File-backed named profiles are advertised as CONFIG_PROFILE_V2. Older
     # builds keep their original launch behavior rather than getting a flag
@@ -570,10 +574,9 @@ _launch_codex_bound() {
     export CS_RUN_APPROVAL
     # shellcheck disable=SC2034 # shared seed delivery returns this dynamically
     local spawn_kick="" spawn_pending="$local_dir/spawn-kick.json" spawn_attempt=0 spawn_before=""
-    _codex_spawn_reconcile "$session_dir" "$helper" "$codex_bin" || return 1
     if [ -z "$kick" ]; then
-        # Reconcile an older receipt before taking a new seed. A pending kick
-        # wins over a newer seed, which stays staged for a later open.
+        # The older receipt was reconciled above. A pending kick wins over a
+        # newer seed, which stays staged for a later open.
         if [ ! -f "$spawn_pending" ] && [ -n "${SESSIONS_ROOT:-}" ] \
             && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
             _spawn_prepare_launch "$session_name" "$session_dir"

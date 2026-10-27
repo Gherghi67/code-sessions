@@ -1136,6 +1136,37 @@ test_a_finish_between_a_failed_kickoff_and_its_retry_leaves_the_brief_pending() 
 
 run_test test_a_finish_between_a_failed_kickoff_and_its_retry_leaves_the_brief_pending
 
+# A receipt whose history cannot be read stops the open before it binds a
+# thread or spends the rotation handoff, so --from-handoff can be retried.
+test_unreadable_spawn_history_leaves_the_rotation_handoff_for_retry() {
+    _rotation_fixture unconsumed
+    local h="$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" output status=0
+    jq -cn --arg thread "$ROTATION_OLD_THREAD" \
+        '{prompt: "read brief and begin", attempted: true, thread: $thread, turn_before: "turn "}' \
+        > "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json"
+    export CS_HELPER_TURN_FAIL_FROM=1
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    assert_eq 1 "$status" "$output" || return 1
+    assert_output_contains "$output" 'Cannot confirm whether the spawn brief started' || return 1
+    assert_not_exists "$CS_CODEX_LOG" 'Codex never starts' || return 1
+    assert_file_contains "$h" '^status: unconsumed$' 'the handoff is not spent' || return 1
+    assert_eq "$ROTATION_HANDOFF" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" 2>/dev/null)" \
+        'the handoff stays armed' || return 1
+    assert_eq "$ROTATION_OLD_THREAD" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" \
+        'no new thread is bound' || return 1
+    export CS_HELPER_TURN_FAIL_FROM=0
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    assert_eq 0 "$status" "--from-handoff retries once history reads: $output" || return 1
+    assert_eq "Continue from the pending rotation handoff: read .cs/handoffs/$ROTATION_HANDOFF first." \
+        "$(sed -n '7p' "$CS_CODEX_LOG")" 'the retry continues from the handoff' || return 1
+    assert_file_contains "$h" "^consumed_by: $CS_THREAD_ID$" || return 1
+    assert_eq false "$(jq -r .attempted "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json")" \
+        'the brief waits for a later open' || return 1
+}
+
+run_test test_unreadable_spawn_history_leaves_the_rotation_handoff_for_retry
+
 echo 'Codex launch tests'
 run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
