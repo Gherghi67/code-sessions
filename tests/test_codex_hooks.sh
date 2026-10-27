@@ -509,10 +509,17 @@ test_clear_loads_bounded_memory_and_refreshes_after_edits() {
     ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
     assert_output_contains "$ctx" 'Memory index truncated' || return 1
     case "$ctx" in *must-not-load*) echo '  FAIL: memory line budget ignored'; return 1;; esac
-    python3 -c 'print("é" * 13000)' > "$SESSION/.cs/memory/MEMORY.md"
+    # The byte budget ends one byte into the three-byte euro sign: the reader
+    # keeps the 24,399 whole characters before it and drops the split one.
+    python3 -c 'print("a" * 24399 + "€")' > "$SESSION/.cs/memory/MEMORY.md"
     ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
     assert_output_contains "$ctx" 'Memory index truncated' || return 1
-    [ "$(printf '%s' "$ctx" | wc -c)" -lt 26000 ] || return 1
+    case "$ctx" in *$'\xef\xbf\xbd'*) echo '  FAIL: a split character became U+FFFD'; return 1;; esac
+    printf '%s\n' "$ctx" | sed -n '/^Workspace memory for reference/,/^\[Memory index truncated/p' \
+        | sed '1d;$d' > "$TEST_TMPDIR/kept"
+    python3 -c 'print("a" * 24399)' > "$TEST_TMPDIR/expected"
+    cmp -s "$TEST_TMPDIR/expected" "$TEST_TMPDIR/kept" \
+        || { echo '  FAIL: the kept memory is not the whole characters before the budget'; return 1; }
     printf 'freshly edited memory\n' > "$SESSION/.cs/memory/MEMORY.md"
     ctx=$(_hook clear | jq -r '.hookSpecificOutput.additionalContext')
     assert_output_contains "$ctx" 'freshly edited memory' || return 1
