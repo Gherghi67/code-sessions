@@ -16948,7 +16948,13 @@ _codex_spawn_reconcile() {  # session_dir, helper, codex_bin
         _codex_launch_error "Cannot confirm whether the spawn brief started; kickoff retained at $pending. Retry when thread history is available."
         return 1
     }
-    [ "$after" = "$before" ] || rm -f "$pending"
+    if [ "$after" != "$before" ]; then
+        rm -f "$pending"
+        return
+    fi
+    # No turn ran, so the receipt goes back to pending: a rotation or finish
+    # prompt that takes this open would otherwise run the turn that spends it.
+    cs_write_atomic "$pending" jq 'del(.thread, .turn_before) | .attempted = false' "$pending"
 }
 
 # The actual cs process owns session.lock, so terminating that PID runs these

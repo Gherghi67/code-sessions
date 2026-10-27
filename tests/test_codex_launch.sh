@@ -1118,6 +1118,24 @@ test_spawn_retries_one_transient_native_history_read() {
 
 run_test test_spawn_retries_one_transient_native_history_read
 
+# A finish that takes the open after a kickoff ran no turn leaves the brief
+# pending: the finish's turn is not the brief's, so the next open sends it.
+test_a_finish_between_a_failed_kickoff_and_its_retry_leaves_the_brief_pending() {
+    _codex_brief_seed
+    export CS_CODEX_EXIT=9
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null 2>&1 || true
+    assert_file_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+    export CS_CODEX_EXIT=0 CS_CODEX_TURN=1
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false other-feature >/dev/null 2>&1 || return 1
+    assert_eq '$finish other-feature' "$(sed -n '7p' "$CS_CODEX_LOG")" 'the finish takes the open' || return 1
+    launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null 2>&1 || return 1
+    assert_output_contains "$(cat "$CS_CODEX_LOG")" 'Your brief is .cs/brief.md: read it first.' \
+        'the next open sends the brief' || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/spawn-kick.json" || return 1
+}
+
+run_test test_a_finish_between_a_failed_kickoff_and_its_retry_leaves_the_brief_pending
+
 echo 'Codex launch tests'
 run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
