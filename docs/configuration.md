@@ -22,6 +22,7 @@ The installer deploys these components:
 | Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
 | Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
 | Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
+| Spinner tip | `~/.claude/skills/cs/tips.json`, named in `settings.json` as `spinnerTipsOverride.tipsFile`. See [band settings](#band-settings). |
 
 See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
 
@@ -57,9 +58,14 @@ Preserved files have these rules:
 
 ### Release verification and notes
 
-- Updates come from GitHub Releases with SHA-256 verification.
-- [minisign](https://jedisct1.github.io/minisign/) verification runs when both minisign and a release signature are available.
+- Updates authenticate `SHA256SUMS` with `SHA256SUMS.sig` using `ssh-keygen -Y verify`, then check the installer's SHA-256 digest.
+- Web installs apply the same check to the picker binary. Missing verification tools, assets, or manifest entries and failed checks refuse the download.
+- The verifier requires SSH signature support, the `release` identity, and the release's own `cs-release-vX.Y.Z` namespace, so a signature made for one tag never verifies another. `cs -update` refuses a release older than the installed cs. Embedded allowed signers and revoked public keys define which keys it trusts.
+- An update refuses an installer that drops any revoked key from the installed list. Minisign is not used.
 - `cs -update --check` prints the full pending release notes.
+- A terminal launch offers a pending release once (`Update now? [y/N]`); a declined version is kept in `~/.cache/cs/update-declined` and not asked about again until a newer one is pending. In the session the update mod then names it in one line instead of opening its pane.
+- The launch asks only once the release's `SHA256SUMS.sig` downloads (the same file `cs -update` verifies, fetched with the update check's 2 s connect and 4 s total timeouts). Until the signature is up, or when the check fails offline, the launch asks nothing and records nothing, so a later launch asks once the signature is there.
+- A launch in a tmux window cs opened itself (`cs -spawn`, `cs <name> --remote` inside tmux) is not asked, since nobody sits at that window to answer. The banner line and the update mod still name the release there.
 - The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).
 
 ## Environment variables you set
@@ -140,8 +146,8 @@ export CS_TERM_THEME="light"   # or "dark"
 
 # Override the terminal's real background color (default: auto-detected via
 # the same OSC 11 query as CS_TERM_THEME, when it succeeds). The statusline's
-# capsule surface is a shade of it; unset, the surface falls back to a fixed
-# warm taupe per theme.
+# capsule surface is a shade of it; unset, it shades an assumed dark or light
+# background by 10%.
 export CS_TERM_BG_RGB="250;248;242"   # r;g;b, 0-255 each
 
 # Disable colors (see https://no-color.org)
@@ -151,6 +157,16 @@ export NO_COLOR="1"
 export CS_STATUSLINE_SEGMENTS="logo,session,notes,mail,git,model,ctx,limits"  # this is the default
 
 export CS_STATUSLINE_DISABLE="1"
+
+# Status line layout: quiet (the default), the items as text on the terminal
+# background (docs/statusline.md, Quiet layout); band, one full-width row that
+# fades from the band color into the terminal background (Band layout); or
+# capsules. The band's color, which also tints quiet's session chip, its final
+# width and the frame Claude Code draws around the line:
+export CS_STATUSLINE_LAYOUT="band"
+export CS_STATUSLINE_BAND="periwinkle"   # palette name, brand, periwinkle, r;g;b, session, none
+export CS_STATUSLINE_COLS=160            # final width in cells; unset: measured, less the frame
+export CS_STATUSLINE_FRAME=4             # columns the prompt frame takes from a measured width
 
 # Force the Powerline rounded caps (U+E0B6/U+E0B4) on (1) or off (0),
 # overriding this machine's recorded answer in ~/.config/cs/statusline-caps
@@ -205,7 +221,8 @@ export CS_REWRITE_DISABLE="1"
 # is on PATH — `codex` and `agy` respectively, both using your subscription — and
 # fall back to the vendor's API when it is not, reading OPENAI_API_KEY or
 # GEMINI_API_KEY from the environment. With neither a CLI nor a key, the rewrite
-# declines and your prompt stays as typed.
+# declines and your prompt stays as typed. `grok` (or `xai`) has no CLI to
+# prefer: it calls xAI's API, reading XAI_API_KEY or GROK_API_KEY.
 #
 # The CLI arms cost about ten seconds against about one for the API arms, and
 # the interface is frozen for that whole time. That is the trade the default
@@ -216,8 +233,9 @@ export CS_REWRITE_DISABLE="1"
 # codex both present, gemini 7.3s vs gemini-api 0.9s, openai 12.8s vs openai-api
 # 2.0s. `claude-api` calls Anthropic's Messages endpoint instead of driving the
 # whole Claude Code agent, which is why the bare `claude` default takes ~13s.
-# Every -api arm needs that vendor's key and declines without one.
-export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok
+# Every -api arm needs that vendor's key (`claude-api` reads ANTHROPIC_API_KEY)
+# and declines without one.
+export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok | xai
                                             # openai-api | gemini-api | claude-api reach a
                                             # vendor API past an installed CLI
 
@@ -233,8 +251,9 @@ export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok
 # accept declines the rewrite and leaves your prompt as typed — cs never
 # translates between the two namespaces.
 #
-# Defaults, used only where cs picks: claude-haiku-4-5-20251001 and, on the API
-# arms, gpt-4.1-mini and gemini-flash-lite-latest. Reasoning models are a poor
+# Defaults, used only where cs picks: claude-haiku-4-5-20251001 (the default
+# rewriter and claude-api) and, on the other API arms, gpt-4.1-mini,
+# gemini-flash-lite-latest and grok-4.3. Reasoning models are a poor
 # fit whatever the provider: they can spend most of the output budget on
 # reasoning and return a rewrite truncated mid-sentence, which cs declines — so
 # ctrl+g intermittently does nothing at all.
@@ -269,8 +288,8 @@ export CS_SUBAGENT_STATUSLINE_DISABLE="1"
 export CS_CTX_WARN_CTX="40"
 export CS_ROTATE_NUDGE_CTX="65"
 
-# Context percentage at which the rotate mod's "1: rotate this conversation"
-# button appears above the prompt (default: the status line's warn band).
+# Context percentage at which the cs mod's band draws its rotate key (Ctrl+X 1)
+# above the prompt (default: the status line's warn band, 40).
 # The mod reads it from the launched process's environment.
 export CS_ROTATE_BUTTON_CTX="40"
 
@@ -310,11 +329,11 @@ export CS_NO_ROTATION_WAKE="1"
 
 # Disable the iTerm2 attention bounce (the dock bounce a finished turn starts
 # with shell integration, until the next prompt, and the attention marker
-# the status line reads). The tab tint uses the session color and is NOT gated
-# by this: set_tab_title emits the iTerm2 escapes unconditionally at launch,
-# and the colour resets when the session exits. Under tmux it also starts
+# the status line reads). Under tmux it also starts
 # claude as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no
-# progress line and no Claude icon. Unset, cs enables both under tmux.
+# progress line and no Claude icon. Unset, cs enables both under tmux. The
+# status line also stops reading its theme and background from the iTerm2
+# profile (docs/statusline.md, Terminal theme).
 # cs -doctor reports the integration state.
 export CS_NO_ITERM2="1"
 
@@ -327,8 +346,8 @@ export CS_NO_ITERM2="1"
 export CS_NO_TASK_TOOLS="1"
 
 # Launch without CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, even when the shell
-# carries it. A cs launch exports it so the rotate mod the installer deployed
-# (the "1: rotate this conversation" button past 65% context) loads; the flag
+# carries it. A cs launch exports it so the cs mod the installer deployed
+# (the band's Ctrl+X 1 rotate key, past 40% context by default) loads; the flag
 # also loads any other function-hooks plugin on the machine. Without this knob
 # cs keeps a value already in the shell (0 keeps function hooks off).
 export CS_NO_FUNCTION_HOOKS="1"
@@ -363,6 +382,12 @@ export CS_TMUX_SOCKET="code-sessions"
 # tmux server's environment.
 # export CS_REMOTE_WINDOW
 
+# Not a setting. Every tmux window cs opens (cs -spawn, cs <name> --remote
+# inside tmux) runs its command with this set to 1, since nobody sits at that
+# window: the launch there does not ask about a pending update. cs drops it
+# before claude or the server starts.
+# export CS_UNATTENDED
+
 # Force the detected platform instead of probing for it; any other
 # value is rejected. Read by cs -secrets only, to choose between the
 # macOS keychain and the encrypted file
@@ -378,12 +403,16 @@ The installer offers, once per machine, to bind four keys in Claude Code's
 file instead, the one that session links:
 
 ```json
-{"bindings": [{"context": "Global", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap", "ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2"}}]}
+{"bindings": [{"context": "Chat", "bindings": {"ctrl+x r": "command:rotate", "ctrl+x w": "command:wrap"}}, {"context": "Global", "bindings": {"ctrl+x 1": "strip:jump1", "ctrl+x 2": "strip:jump2"}}]}
 ```
 
+The two command keys sit in the `Chat` context, where Claude Code wants a
+`command:` binding (2.1.310 warns of one in any other named context), and the
+two band chords in `Global`, where the `cs` mod reads them.
+
 Ctrl+X then R submits `/rotate`, and Ctrl+X then W submits `/wrap`, band or no
-band. Ctrl+X then 1 and Ctrl+X then 2 press the `cs` mod's band above the
-prompt: 1 its rotate key, or its `/clear` once a handoff is armed, and 2 its
+band. Ctrl+X then 1 or 2 presses the `cs` mod's band above the
+prompt: 1 its rotate key, or its `/clear` after arming a handoff, and 2 its
 wrap key. The band has no key of its own, so a digit you type to answer a
 question never presses it; without these two chords it answers only a click or
 Ctrl+X Tab. Text you are typing stays in the prompt. Claude Code drops a Ctrl+X that gets no second
@@ -392,8 +421,12 @@ Ctrl+X 2 reach the band only because Claude Code mounts no handler of its own
 for `strip:jump1` and `strip:jump2` (measured on 2.1.291 and 2.1.292); a
 release that mounts one takes the chord from the band without a warning.
 
-- A yes merges the four keys into the file's first `Global` block (or adds one,
-  creating the file when there is none). cs never replaces a key you already
+- A yes merges the two command keys into the file's first `Chat` block and
+  the two chords into its first `Global` block (adding a block where there
+  is none, and creating the file when there is none). A cs key that sits in a
+  block of the other context, as an earlier cs put every key in `Global`, is
+  moved into its own, and the install says so (`moved ctrl+x r, ctrl+x w to
+  the Chat context`). cs never replaces a key you already
   bind to something else, in any context: it keeps your action and names the
   key in a warning. A bare `ctrl+x` you bind counts too: Claude Code would
   wait for a second key and never run yours, so cs binds none of the chords
@@ -411,7 +444,8 @@ release that mounts one takes the chord from the band without a warning.
   `no`; `$XDG_CONFIG_HOME/cs/option-keys` when you set that). After a `no` it
   never asks again. After a `yes`, every install and `cs -update` adds any of
   the keys nothing binds, so a machine that bound Ctrl+X R and Ctrl+X W before
-  gets Ctrl+X 1 and Ctrl+X 2 on its next update. Claude Code picks the file up
+  gets Ctrl+X 1 and Ctrl+X 2 on its next update, without another
+  prompt. Claude Code picks the file up
   without a relaunch. An encrypted session launched before the file existed
   gets it at its next launch, when cs links it into the session.
 - With no terminal attached (CI, a pipe) and no recorded answer, the installer
@@ -421,17 +455,64 @@ release that mounts one takes the chord from the band without a warning.
   (or `./install.sh`) in a terminal; it asks again. To drop the keys after a
   `yes`, answer `no` there and delete the four entries from `keybindings.json`.
 - `cs -uninstall` removes only the keys that still hold cs's values, the
-  chords and an earlier cs's `alt+1` and `alt+2` alike, drops a `Global` block
+  chords and an earlier cs's `alt+1` and `alt+2` alike, drops any block
   that leaves empty, deletes the file when it holds nothing else (a symlinked
   file keeps its link and gets `{"bindings": []}` written through it), and
   removes the recorded answer.
 - `cs -doctor` reports the state: bound, declined, not asked, a conflict on
   one of the chords (or on a bare `ctrl+x`), a key not bound yet (as on
-  a machine that still has the Option keys, until its next `cs -update`), cs's
+  a machine that still has the Option keys, until its next `cs -update`), a
+  key outside its context (until its next `cs -update`), cs's
   `alt+1` or `alt+2` still there beside the chords, or an unparseable file.
 - cs reads keys the way Claude Code does: `Ctrl+X`, `control+x` and
   `ctrl+x  r` with two spaces are the same keys as `ctrl+x` and `ctrl+x r`,
   and `Option+1` is `alt+1`.
+
+## Band settings
+
+Three rows of Claude Code's `/config` menu shape the cs mod's band above the
+prompt (the cs plugin's `userConfig`, stored by Claude Code in
+`settings.json`). A change reloads the mod.
+
+| Row | Values | Default | What it does |
+|-----|--------|---------|--------------|
+| `cs.bandPrompts` | on, off | off | Draws the rail: a bar per prompt and the name of one prompt before the bars; a press on a bar scrolls to its prompt. The band's other words draw either way. |
+| `cs.bandPrompt` | `latest`, `read` | `latest` | `latest` names the newest prompt and draws its bar thick. `read` names the prompt being read, the one whose row stands highest on screen, and follows your scroll. |
+| `cs.bandBars` | a whole number, 1 or more | `10` | The most prompt bars the band draws, the named prompt's always among them; older prompts fold into one `…N` run, and newer ones into one `M…` run when the named prompt is older than the bars reach. |
+
+`/config` refuses a value the band cannot draw (a bar count under 1 or not
+whole), naming the row beside it. A bad value stored some other way, such
+as by editing `settings.json`, leaves the band without the rail and says so in
+one toast; the rest of the mod runs.
+
+### Spinner tip
+
+Claude Code's spinner tips say how to turn on the prompt bars. The installer
+names cs's tips file, `~/.claude/skills/cs/tips.json`, in `settings.json`:
+
+```json
+{"spinnerTipsOverride": {"tipsFile": "~/.claude/skills/cs/tips.json"}}
+```
+
+- The installer writes `tipsFile` only when `settings.json` names no tips
+  file. Claude Code reads one tips file, so a file you named stays, and the
+  installer says that Claude Code does not show cs's tip.
+- The installer never changes `tips`, `label`, `excludeDefault`, or
+  `spinnerTipsEnabled`. With `spinnerTipsEnabled` set to `false`, Claude Code
+  shows no tips, cs's included.
+- Claude Code picks a tip during one turn and shows it under the spinner of
+  the next turn. It reads the tips file once per session, so a session
+  started before an edit to the file shows the old tips.
+- `cs -uninstall` removes `tipsFile` when it names cs's file and the file is
+  gone. If you changed the file, uninstall keeps the file and the setting.
+
+To turn cs's tip off, delete the `tipsFile` line or set it to `""`. The
+installer records each choice in `~/.config/cs/tips-file` (under
+`$XDG_CONFIG_HOME` when you set it): `named` after it names cs's file, and
+`declined` after you take the file out. `cs -update` then leaves the setting
+alone. To get cs's tip back, delete `~/.config/cs/tips-file` and run
+`cs -update`. The installer reads a record that holds any other value as
+`declined` and warns. `cs -uninstall` deletes the record.
 
 ## In-session switches
 
@@ -442,9 +523,11 @@ or `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=0` withholds the mod, since otherwise
 the mod shows the full notes in the session.
 
 Mermaid drawing is a Claude Code `/config` row, `cs-mermaid.drawDiagrams` (on by
-default). Off, ` ```mermaid ` fences in replies show as source and the system
-prompt no longer says they draw. `.cs/local/disabled` turns off only the prompt
-section, as it does every other cs injection into the model's context.
+default). Off, ` ```mermaid ` fences in replies show as source. The diagram
+instruction lives under `cs:mermaid-diagrams` in a cs session's `CLAUDE.local.md`;
+neither this toggle nor `.cs/local/disabled` removes it. To opt out of the
+instruction, delete its prose but keep the `<!-- cs:mermaid-diagrams -->`
+comment so migration does not add it again.
 
 ## Environment variables cs sets for you
 
@@ -465,6 +548,8 @@ process and its hooks can find the session:
 - `CODE_SESSIONS_HOME` - Legacy private-profile marker, retained for already-running sessions. The shared-config launcher unsets it. The fork's compiled `CS_FORK` marker prevents upstream updates regardless of this variable.
 - `CODE_SESSIONS_ORIGINAL_ROOT` - Legacy containment-guard input. The shared-config launcher unsets it; both session stores now use the same installed manager.
 - `CS_UPDATE_AVAILABLE` - Exported by a cs launch, never set by hand: the version a newer cs was found at. The cs-update mod reads it to draw the release-notes pane. Absent when nothing is pending
+- `CS_UPDATE_DECLINED` - Exported by a cs launch, never set by hand: the pending version, when you declined it at a launch's offer to update. The cs-update mod then says in one line that the release is there instead of opening its pane. Absent otherwise
+- `CS_LIVE_LOCK_PID` - Set only for `.cs/local/pre-open`, never by hand: the pid in `.cs/session.lock` when that pid is a running process, empty otherwise. A pre-open reads it to tell whether the session is running instead of reading the lock (see [session-layout.md](session-layout.md))
 
 ## Adapter installation
 

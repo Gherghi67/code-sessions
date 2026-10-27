@@ -177,30 +177,167 @@ _sl_theme_from_tmux_client() {
 }
 
 # Ask the tmux server, once per theme pass, what the attached client reports
-# as its theme and which tty it is on, one query for the two rungs that need
-# them. Tab-separated so an empty theme (most terminals report none) still
-# leaves the tty in its own field. The answer is kept for
+# as its theme, which tty it is on, how wide this pane is, whether the client
+# is in control mode and what terminal tmux learned it is: one query for the
+# rungs that need them (the band layout reads the width, the iTerm rung the
+# last two). Tab-separated so an empty field (most terminals report no theme)
+# still leaves the ones after it in their places. The answer is kept for
 # TMUX_CLIENT_CACHE_TTL under the parent pid and the TMUX claim, so renders
 # while Claude works ask tmux once in five seconds: a theme toggle or a
 # re-attach from another terminal shows at the next render after that,
-# within a minute while idle. Sets _TMUX_CLIENT_THEME and
-# _TMUX_CLIENT_TTY; both empty when tmux cannot answer.
+# within a minute while idle. Sets _TMUX_CLIENT_THEME, _TMUX_CLIENT_TTY,
+# _TMUX_CLIENT_WIDTH, _TMUX_CLIENT_CONTROL and _TMUX_CLIENT_TERMTYPE; all empty
+# when tmux cannot answer. The bucket is tmux-client3 because its entries hold
+# five fields: an entry of the tmux-client or tmux-client2 bucket, with two or
+# three, can never be read as one.
 TMUX_CLIENT_CACHE_TTL=5
-_TMUX_CLIENT_ASKED=""; _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""
+_TMUX_CLIENT_ASKED=""; _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""; _TMUX_CLIENT_WIDTH=""
+_TMUX_CLIENT_CONTROL=""; _TMUX_CLIENT_TERMTYPE=""
 _sl_tmux_client() {
     [ -z "$_TMUX_CLIENT_ASKED" ] || return 0
     _TMUX_CLIENT_ASKED=1
-    local out
+    _TMUX_CLIENT_THEME=""; _TMUX_CLIENT_TTY=""; _TMUX_CLIENT_WIDTH=""
+    _TMUX_CLIENT_CONTROL=""; _TMUX_CLIENT_TERMTYPE=""
+    local out rest t=$'\t'
+    local fmt="#{client_theme}$t#{client_tty}$t#{pane_width}$t#{client_control_mode}$t#{client_termtype}"
     _sl_parent_pid
-    if _cache_read tmux-client "$_PARENT,${TMUX:-}" "$TMUX_CLIENT_CACHE_TTL"; then
+    if _cache_read tmux-client3 "$_PARENT,${TMUX:-}" "$TMUX_CLIENT_CACHE_TTL"; then
         out="$_CACHE_TEXT"
     else
-        out=$(tmux display-message -p '#{client_theme}'$'\t''#{client_tty}' 2>/dev/null) || return 0
-        case "$out" in *$'\t'*) _cache_write tmux-client "$_PARENT,${TMUX:-}" "$out" ;; esac
+        if [ -n "${TMUX_PANE:-}" ]; then
+            out=$(tmux display-message -p -t "$TMUX_PANE" "$fmt" 2>/dev/null) || return 0
+        else
+            out=$(tmux display-message -p "$fmt" 2>/dev/null) || return 0
+        fi
+        case "$out" in *"$t"*) _cache_write tmux-client3 "$_PARENT,${TMUX:-}" "$out" ;; esac
     fi
-    case "$out" in
-        *$'\t'*) _TMUX_CLIENT_THEME="${out%%$'\t'*}"; _TMUX_CLIENT_TTY="${out#*$'\t'}" ;;
+    case "$out" in *"$t"*) ;; *) return 0 ;; esac
+    _TMUX_CLIENT_THEME="${out%%"$t"*}"; rest="${out#*"$t"}"
+    _TMUX_CLIENT_TTY="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) rest="${rest#*"$t"}" ;; *) return 0 ;; esac
+    _TMUX_CLIENT_WIDTH="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) rest="${rest#*"$t"}" ;; *) return 0 ;; esac
+    _TMUX_CLIENT_CONTROL="${rest%%"$t"*}"
+    case "$rest" in *"$t"*) _TMUX_CLIENT_TERMTYPE="${rest#*"$t"}" ;; esac
+}
+
+# The theme and background of the iTerm2 profile this pane was opened with,
+# read from iTerm's preferences. iTerm reports no theme to tmux, and the theme
+# cs measured at launch goes stale when macOS flips between light and dark
+# mode. A profile with separate light and dark colours follows the macOS
+# appearance (so does iTerm's own, unless its theme is pinned light or dark in
+# Settings, which this cannot see); any other profile is light or dark by its
+# one background. Inside tmux, ITERM_PROFILE and LC_TERMINAL are what the pane
+# was started with, and the client attached now may be another terminal, so the
+# profile answers only while that client is iTerm2: in control mode (iTerm's
+# tmux integration) or of a terminal type tmux reports as iTerm2. Sets SL_THEME
+# and _SL_LIVE_BG; 1 when this is not a local iTerm pane, CS_NO_ITERM2 is set,
+# or the profile cannot be read. The profile is read at most once in
+# ITERM_PROFILE_CACHE_TTL, a miss included, and the appearance once in
+# MACOS_APPEARANCE_CACHE_TTL.
+ITERM_PREFS="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
+ITERM_PROFILE_CACHE_TTL=60
+MACOS_APPEARANCE_CACHE_TTL=5
+_SL_LIVE_BG=""
+_sl_theme_from_iterm() {
+    [ -n "${ITERM_PROFILE:-}" ] && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${CS_NO_ITERM2:-}" ] || return 1
+    [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || [ "${LC_TERMINAL:-}" = "iTerm2" ] || return 1
+    if [ -n "${TMUX:-}" ]; then
+        _sl_tmux_client
+        [ "$_TMUX_CLIENT_CONTROL" = "1" ] || [[ "$_TMUX_CLIENT_TERMTYPE" == iTerm2* ]] || return 1
+    fi
+    # _parse_rgb_triplet is defined further down than this runs.
+    local colours dark light bg rgb='^([0-9]+);([0-9]+);([0-9]+)$'
+    if _cache_read iterm-profile "$ITERM_PROFILE" "$ITERM_PROFILE_CACHE_TTL"; then
+        colours="$_CACHE_TEXT"
+    else
+        _sl_iterm_profile_colours
+        colours="$_ITERM_COLOURS"
+        _cache_write iterm-profile "$ITERM_PROFILE" "$colours"
+    fi
+    case "$colours" in
+        separate\ *\ *)
+            dark="${colours#separate }"; light="${dark#* }"; dark="${dark%% *}"
+            _sl_macos_appearance
+            if [ "$_MACOS_APPEARANCE" = "dark" ]; then bg="$dark"; else bg="$light"; fi
+            [[ "$bg" =~ $rgb ]] || return 1
+            SL_THEME="$_MACOS_APPEARANCE" ;;
+        single\ *)
+            bg="${colours#single }"
+            [[ "$bg" =~ $rgb ]] || return 1
+            # The launch's BT.709 line (lib/70-statusline.sh) and _luminance's,
+            # so a mid tone reads as the theme the launch measured.
+            if [ $(( 2126 * BASH_REMATCH[1] + 7152 * BASH_REMATCH[2] + 722 * BASH_REMATCH[3] )) -lt 1275000 ]; then
+                SL_THEME="dark"
+            else
+                SL_THEME="light"
+            fi ;;
+        *) return 1 ;;
     esac
+    _SL_LIVE_BG="$bg"
+}
+
+# The background colours of the profile named ITERM_PROFILE, in _ITERM_COLOURS:
+# `separate <dark r;g;b> <light r;g;b>`, `single <r;g;b>`, or `none` when the
+# preferences, the profile or its colours cannot be read. Each value is printed
+# on its own line and a missing one prints nothing, so the components count as
+# read only when all of them are there. PlistBuddy prints nothing at all for a
+# call of 15 or more commands, so the names are read 8 at a time, until a batch
+# comes back short: the end of the profiles. A profile with no name shortens
+# its batch the same way, so the name is read back at the index found, and a
+# mismatch is a profile that cannot be read.
+_sl_iterm_profile_colours() {
+    _ITERM_COLOURS="none"
+    local pb=/usr/libexec/PlistBuddy i start idx="" name names out sep key rgbs args=() sets=()
+    [ -x "$pb" ] && [ -f "$ITERM_PREFS" ] || return 0
+    for ((start = 0; ; start += 8)); do
+        args=()
+        for ((i = start; i < start + 8; i++)); do args+=(-c "Print ':New Bookmarks:$i:Name'"); done
+        names=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null)
+        [ -n "$names" ] || return 0
+        i=$start
+        while IFS= read -r name; do
+            [ "$name" = "$ITERM_PROFILE" ] && { idx=$i; break 2; }
+            i=$((i + 1))
+        done <<< "$names"
+        [ "$i" -eq $((start + 8)) ] || return 0
+    done
+    out=$("$pb" -c "Print ':New Bookmarks:$idx:Name'" \
+        -c "Print ':New Bookmarks:$idx:Use Separate Colors for Light and Dark Mode'" "$ITERM_PREFS" 2>/dev/null)
+    [ "${out%%$'\n'*}" = "$ITERM_PROFILE" ] || return 0
+    sep=""
+    case "$out" in *$'\n'*) sep="${out#*$'\n'}" ;; esac
+    if [ "$sep" = "true" ]; then
+        sets=("Background Color (Dark)" "Background Color (Light)")
+    else
+        sets=("Background Color")
+    fi
+    args=()
+    for key in "${sets[@]}"; do
+        args+=(-c "Print ':New Bookmarks:$idx:$key:Red Component'"
+               -c "Print ':New Bookmarks:$idx:$key:Green Component'"
+               -c "Print ':New Bookmarks:$idx:$key:Blue Component'")
+    done
+    rgbs=$("$pb" "${args[@]}" "$ITERM_PREFS" 2>/dev/null | awk -v want=$((3 * ${#sets[@]})) '
+        $0 !~ /^-?[0-9]*\.?[0-9]+$/ { bad = 1 }
+        { v[NR] = int($0 * 255 + 0.5); if (v[NR] > 255) v[NR] = 255; if (v[NR] < 0) v[NR] = 0 }
+        END {
+            if (bad || NR != want) exit
+            for (i = 1; i <= NR; i += 3) printf "%s%d;%d;%d", (i > 1 ? " " : ""), v[i], v[i + 1], v[i + 2]
+        }')
+    [ -n "$rgbs" ] || return 0
+    if [ "$sep" = "true" ]; then _ITERM_COLOURS="separate $rgbs"; else _ITERM_COLOURS="single $rgbs"; fi
+}
+
+# The macOS appearance in _MACOS_APPEARANCE, dark or light: AppleInterfaceStyle
+# reads Dark in dark mode and is absent in light mode.
+_sl_macos_appearance() {
+    if _cache_read macos-appearance global "$MACOS_APPEARANCE_CACHE_TTL"; then
+        case "$_CACHE_TEXT" in dark|light) _MACOS_APPEARANCE="$_CACHE_TEXT"; return 0 ;; esac
+    fi
+    _MACOS_APPEARANCE="light"
+    [ "$(defaults read -g AppleInterfaceStyle 2>/dev/null)" = "Dark" ] && _MACOS_APPEARANCE="dark"
+    _cache_write macos-appearance global "$_MACOS_APPEARANCE"
 }
 
 # COLORFGBG, outside tmux only. Inside it is the tmux server's start-time
@@ -500,6 +637,7 @@ _sl_theme_from_client_cache() {
 _sl_detect_theme() {
     # One tmux query serves every rung of this pass; a later pass asks again.
     _TMUX_CLIENT_ASKED=""
+    _SL_LIVE_BG=""
     # An explicit pin outranks every measurement, so it is read before the probe
     # file is allowed to overwrite anything.
     if [ -n "${CS_TERM_THEME:-}" ] && [ -z "${CS_TERM_THEME_AUTO:-}" ]; then
@@ -519,6 +657,8 @@ _sl_detect_theme() {
     fi
     if [ -n "${TMUX:-}" ] && _sl_theme_from_tmux_client; then
         : # SL_THEME set from the attached client's own reported theme
+    elif _sl_theme_from_iterm; then
+        : # SL_THEME and the background read live from the iTerm profile
     elif [ -z "${TMUX:-}" ] && [ -n "${COLORFGBG:-}" ] && _sl_theme_from_colorfgbg; then
         : # SL_THEME set from the terminal's own statement about itself
     elif _sl_theme_from_client_cache; then
@@ -541,15 +681,22 @@ _sl_detect_theme() {
     fi
 }
 
+# Whether CS_TERM_BG_RGB is the user's own: set with no launch detection
+# behind it, or set before a launch that detected the theme, which marks it with
+# CS_TERM_BG_RGB_PINNED since CS_TERM_THEME_AUTO speaks for the theme alone.
+_sl_bg_pinned() {
+    [ -n "${CS_TERM_BG_RGB:-}" ] && { [ -z "${CS_TERM_THEME_AUTO:-}" ] || [ -n "${CS_TERM_BG_RGB_PINNED:-}" ]; }
+}
+
 # Blank CS_TERM_BG_RGB when the launch-captured background is stale: once the
 # live theme (SL_THEME) has switched away from the theme cs detected at launch
 # (CS_TERM_THEME, present with the auto marker), the RGB no longer matches the
 # terminal, so drop it and let the gauge surface fall back to
 # theme-based values instead of tinting toward the old background (which could
-# leave light text on a near-light surface). A manually-set RGB carries no auto
-# marker and is never dropped.
+# leave light text on a near-light surface). An RGB the user set
+# (_sl_bg_pinned) is never dropped.
 _sl_invalidate_stale_bg() {
-    if [ -n "${CS_TERM_BG_RGB:-}" ] && [ -n "${CS_TERM_THEME_AUTO:-}" ] &&
+    if [ -n "${CS_TERM_BG_RGB:-}" ] && ! _sl_bg_pinned &&
        { [ -n "${SL_ENV_FOREIGN:-}" ] || [ "$SL_THEME" != "${CS_TERM_THEME:-}" ]; }; then
         CS_TERM_BG_RGB=""
     fi
@@ -573,9 +720,13 @@ fi
 # Parsed stdin fields (filled by _parse_stdin).
 SL_SESSION=""; SL_CTX=""; SL_MODEL=""; SL_EFFORT=""
 SL_5H=""; SL_5H_RESET=""; SL_WK=""; SL_WK_RESET=""; SL_COST=""; SL_DIR=""
+SL_COLUMNS=""
+# The session's machine-local directory (.cs/local), empty outside a cs
+# session: the stamps write there and the band reads its colour from there.
+SL_LOCAL_DIR=""
 
 # Collected segments (parallel arrays) and chosen color level.
-_SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=()
+_SEG_TEXT=(); _SEG_GROUP=(); _SEG_INK=(); _SEG_BOLD=(); _SEG_JOIN=(); _SEG_ROLE=()
 _GROUPS=(); _GROUPS_SEEN=""
 LEVEL="basic"
 
@@ -642,6 +793,8 @@ _parse_stdin() {
     local input="$1" fields
     command -v jq >/dev/null 2>&1 || return 1
     [ -n "$input" ] || return 1
+    SL_LOCAL_DIR=""
+    [ -n "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" ] && SL_LOCAL_DIR="$SESSIONS_ROOT/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}/.cs/local"
     # A here-string, not a `printf |` pipe: each side of a pipeline is its own
     # process, so the pipe cost two births a render on top of jq's.
     fields=$(jq -r '
@@ -656,7 +809,8 @@ _parse_stdin() {
           (.rate_limits.seven_day.used_percentage // "" | tostring),
           (.rate_limits.seven_day.resets_at // "" | tostring),
           (.cost.total_cost_usd // "" | tostring),
-          (.workspace.current_dir // .cwd // "")
+          (.workspace.current_dir // .cwd // ""),
+          (.columns // "" | tostring)
         ] | .[]' <<< "$input" 2>/dev/null) || return 1
     {
         IFS= read -r SL_SESSION_ID
@@ -683,7 +837,7 @@ _parse_stdin() {
         # and making the whole path would build the removed session again. A
         # .cs/local a hook made in between is the directory the stamp wanted.
         if [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${SL_CTX:-}" ] && ! _session_files_tracked; then
-            _pctdir="$SESSIONS_ROOT/$CLAUDE_SESSION_NAME/.cs/local"
+            _pctdir="$SL_LOCAL_DIR"
             if [ -d "$_pctdir" ] || mkdir "$_pctdir" 2>/dev/null || [ -d "$_pctdir" ]; then
                 _read_state_key "$_pctdir/state" claude_session_id
                 if [ -z "$_STATE_VALUE" ] || [ "$_STATE_VALUE" = "${SL_SESSION_ID:-}" ]; then
@@ -712,13 +866,14 @@ _parse_stdin() {
         IFS= read -r SL_WK_RESET
         IFS= read -r SL_COST
         IFS= read -r SL_DIR
+        IFS= read -r SL_COLUMNS
     } <<EOF
 $fields
 EOF
     # Stamp rate-limit state for cs -usage window anchoring. Same partition
     # rules as context-pct: machine-local, atomic, best-effort.
     if [ -n "${CLAUDE_SESSION_NAME:-}" ] && { [ -n "${SL_5H:-}" ] || [ -n "${SL_WK:-}" ]; } && ! _session_files_tracked; then
-        _limdir="$SESSIONS_ROOT/$CLAUDE_SESSION_NAME/.cs/local"
+        _limdir="$SL_LOCAL_DIR"
         if [ -d "$_limdir" ] || mkdir "$_limdir" 2>/dev/null || [ -d "$_limdir" ]; then
             _sl_now
             _stamp_due "$_limdir/limits" "${SL_5H%%.*} ${SL_5H_RESET:-} ${SL_WK%%.*} ${SL_WK_RESET:-}"
@@ -833,9 +988,9 @@ _sgr() {
             local rgb
             case "$name" in
                 # Session-color palette: Claude Code's own /color values (the
-                # shared dark/light theme `*_FOR_SUBAGENTS_ONLY` tokens): the tab
-                # color and Claude Code's own session accent share this palette.
-                # KEEP IN SYNC with _session_color_rgb in bin/cs (tab color).
+                # shared dark/light theme `*_FOR_SUBAGENTS_ONLY` tokens): the
+                # session pill and Claude Code's own session accent share this
+                # palette. KEEP IN SYNC with _session_color_rgb in bin/cs (the pill).
                 red)    rgb="220;38;38" ;;
                 blue)   rgb="106;155;204" ;;
                 green)  rgb="22;163;74" ;;
@@ -859,21 +1014,22 @@ _sgr() {
                     [ "$SL_THEME" = "dark" ] && rgb="170;161;148" || rgb="128;116;106" ;;
                 # Inks. `amber` is a foreground: the hot number's colour on
                 # the neutral capsule, dark enough to hold contrast on cream and
-                # bright enough on a dark surface. Nothing paints amber as a fill.
+                # bright enough on a dark surface. Nothing paints amber as a
+                # fill.
                 # It pivots on the measured terminal background when there is
                 # one (the bar's surface is a shade of it, the agent rows sit on
                 # it directly) and on the theme flag only without a measurement:
                 # a light background under a theme that resolved dark would
-                # otherwise get the pale amber on cream. The pivot is `ink`'s
+                # otherwise get the dark-theme amber on cream. The pivot is `ink`'s
                 # (1530000), not `_bg_shade`'s: a mid-grey terminal gets white
-                # ink, so its amber must be the pale one too.
+                # ink, so its amber must be the dark-theme one too.
                 amber)
                     if _parse_rgb_triplet "${CS_TERM_BG_RGB:-}"; then
                         _luminance
-                        [ "$_LUM" -ge 1530000 ] && rgb="180;83;9" || rgb="253;230;138"
-                    elif [ "$SL_THEME" = "dark" ]; then rgb="253;230;138"
+                        [ "$_LUM" -ge 1530000 ] && rgb="180;83;9" || rgb="251;191;36"
+                    elif [ "$SL_THEME" = "dark" ]; then rgb="251;191;36"
                     else rgb="180;83;9"; fi ;;
-                # Primary text on the capsule surface: a warm 35% shade of the
+                # Primary text on the capsule surface: a 35% shade of the
                 # surface on a light one, the soft white on a dark one — the same
                 # contrast pivot the old surface text used, resolved from the
                 # surface's own luminance rather than the theme flag.
@@ -884,8 +1040,8 @@ _sgr() {
                     elif [ "$SL_THEME" = "dark" ]; then rgb="230;230;230"
                     else rgb="255;255;255"; fi ;;
                 # Secondary text: separators, effort, gauge labels, resting
-                # numbers. A shade of the surface like `ink`, so it tracks both
-                # the measured background and the taupe fallback; the 256 and
+                # numbers. A shade of the surface like `ink`, so it tracks the
+                # measured or assumed background; the 256 and
                 # basic arms instead pick fixed values that contrast their
                 # fixed fills.
                 ink2)
@@ -898,7 +1054,7 @@ _sgr() {
                         rgb="$((_R + (255 - _R) * 55 / 100));$((_G + (255 - _G) * 55 / 100));$((_B + (255 - _B) * 55 / 100))"
                     fi ;;
                 # The inverted capsule at crit. Its own token, never the session
-                # palette's red: that palette is the tab colour and may change.
+                # palette's red: that palette is the session pill's and may change.
                 crit)
                     [ "$SL_THEME" = "dark" ] && rgb="255;69;58" || rgb="215;0;21" ;;
                 # White on the red fill whatever the theme: the fill is the
@@ -929,19 +1085,18 @@ _sgr() {
                     # so they harmonize with it instead of sitting on top: a
                     # shade of CS_TERM_BG_RGB (darker on a light terminal,
                     # lighter on a dark one), resolved once per render and cached
-                    # since every gauge shares it. Falls back to the warm neutral
-                    # when the real background is unknown (no OSC 11 at launch).
+                    # since every gauge shares it. Without a measurement, shade
+                    # an assumed background in the theme's family.
                     if [ -z "$_SURFACE_RGB" ]; then
-                        if _bg_shade "${CS_TERM_BG_RGB:-}"; then _SURFACE_RGB="$_R;$_G;$_B"
-                        elif [ "$SL_THEME" = "dark" ]; then _SURFACE_RGB="140;132;122"
-                        else _SURFACE_RGB="128;120;110"; fi
+                        if ! _bg_shade "${CS_TERM_BG_RGB:-}"; then
+                            if [ "$SL_THEME" = "dark" ]; then _bg_shade "28;28;28"
+                            else _bg_shade "255;255;255"; fi
+                        fi
+                        _SURFACE_RGB="$_R;$_G;$_B"
                     fi
                     rgb="$_SURFACE_RGB" ;;
-                *)
-                    # Warm neutral (R>G>B) so the quiet blocks read as taupe,
-                    # not steel; light enough that the gauges recede beside the
-                    # identity capsule's ink while white label text holds.
-                    [ "$SL_THEME" = "dark" ] && rgb="140;132;122" || rgb="128;120;110" ;;
+                # Unreachable from rendering; unknown names use the surface.
+                *) _sgr "$kind" surface; return ;;
             esac
             _SGR="${kind};2;${rgb}"; _RGB="$rgb" ;;
         256)
@@ -958,7 +1113,7 @@ _sgr() {
                 periwinkle) [ "$SL_THEME" = "dark" ] && idx=147 || idx=55 ;;
                 rowname) [ "$SL_THEME" = "dark" ] && idx=231 || idx=235 ;;
                 rowmeta) [ "$SL_THEME" = "dark" ] && idx=248 || idx=244 ;;
-                amber)   [ "$SL_THEME" = "dark" ] && idx=221 || idx=130 ;;
+                amber)   [ "$SL_THEME" = "dark" ] && idx=214 || idx=130 ;;
                 ink)     [ "$SL_THEME" = "dark" ] && idx=255 || idx=236 ;;
                 ink2)    [ "$SL_THEME" = "dark" ] && idx=250 || idx=241 ;;
                 crit)    [ "$SL_THEME" = "dark" ] && idx=203 || idx=160 ;;
@@ -1041,8 +1196,15 @@ _add() {
     _SEG_INK+=("${3:-ink2}")
     _SEG_BOLD+=("${4:-}")
     _SEG_JOIN+=("${5:-dot}")
+    _SEG_ROLE+=("")
     # First-seen group order, the order capsules render in.
     case " ${_GROUPS_SEEN:-} " in *" $2 "*) ;; *) _GROUPS+=("$2"); _GROUPS_SEEN="${_GROUPS_SEEN:-} $2" ;; esac
+}
+
+# Give the item just added a role the quiet layout draws by: `chip` for the
+# mark and the session name, `value` for a reading, `model` and `branch`.
+_role() {
+    _SEG_ROLE[$((${#_SEG_TEXT[@]} - 1))]="$1"
 }
 
 # Mark a capsule crit: the renderer fills it with `crit` and paints every item
@@ -1385,7 +1547,7 @@ _refresh_usage() {
     # idle. The render never forks to sweep, so this worker does it. The other
     # buckets are keyed on identities that repeat and stay small.
     local bucket
-    for bucket in tmux-client tmux-real tmux-walking tty; do
+    for bucket in tmux-client tmux-client2 tmux-client3 tmux-real tmux-walking tty stty; do
         [ -d "${CS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/cs}/$bucket" ] || continue
         find "${CS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/cs}/$bucket" -maxdepth 1 -type f -mmin +60 -delete 2>/dev/null
     done
@@ -1756,6 +1918,7 @@ _seg_logo() {
         ink=brandshade
     fi
     _add "${ICON_LOGO}" identity "$ink" bold
+    _role chip
 }
 
 # The session name, bold, in primary ink.
@@ -1767,6 +1930,7 @@ _seg_session() {
         name="${dir##*/}"
     fi
     _add "${name}" identity ink bold space
+    _role chip
     _session_encrypted "$name" || return 0
     # The lock is a private-use glyph, so it waits on the same font consent as
     # the capsule caps; unconfirmed fonts get a word instead of a box.
@@ -1775,6 +1939,7 @@ _seg_session() {
     else
         _add "enc" identity ink2 "" space
     fi
+    _role chip
 }
 
 # True when the session's README frontmatter lists the `encrypted` tag, the
@@ -1900,6 +2065,7 @@ _seg_ctx() {
     _ctx_pie "$v" "$warn" "$crit"
     _add "${_PIE}ctx" ctx ink2 "" none
     _add "${v}%" ctx "$_COLOR" "$_HOT_WEIGHT" space
+    _role value
 }
 
 # The effort word after the model wears Claude Code's own /effort colour for
@@ -1908,6 +2074,7 @@ _seg_ctx() {
 _seg_model() {
     [ -n "$SL_MODEL" ] || return 0
     _add "${ICON_MODEL}${SL_MODEL}" identity ink bold
+    _role model
     [ -n "$SL_EFFORT" ] || return 0
     case "$SL_EFFORT" in
         low|medium|high|xhigh)
@@ -1927,6 +2094,7 @@ _seg_git() {
     local t="$_GIT_TEXT"
     [ -n "$t" ] || return 0
     _add "${ICON_GIT}${t}" identity ink bold
+    _role branch
 }
 
 # One rate-limit window: label in secondary ink, the number in the threshold
@@ -1948,6 +2116,7 @@ _limits_render() {
     fi
     _add "${icon}${name}" "$group" ink2 "" "$join"
     _add "$label" "$group" "$_COLOR" "$_HOT_WEIGHT" space
+    _role value
 }
 
 # Read the Fable window into the candidate list. Model-scoped, so it is only
@@ -2027,6 +2196,7 @@ _seg_cost() {
     local formatted
     printf -v formatted '$%.2f' "$SL_COST" 2>/dev/null || return 0
     _add "$formatted" cost
+    _role value
 }
 
 # --- color math --------------------------------------------------------------
@@ -2041,8 +2211,8 @@ _seg_cost() {
 # continuation bytes: the count is the same either way. The shell's own
 # locale is never changed, because a bash linked against libintl can die
 # setting one inside a command substitution. No subprocess. Used by
-# bin/cs-subagent-statusline (_fixed_width and _truncate); no caller in this
-# file.
+# the band layout's cell count and by bin/cs-subagent-statusline (_fixed_width
+# and _truncate).
 _display_width() {
     local s="${1//[$'\x80'-$'\xBF']/}"
     _WIDTH=${#s}
@@ -2194,6 +2364,531 @@ _render() {
     printf '%s\n' "$out"
 }
 
+# --- band layout -------------------------------------------------------------
+#
+# CS_STATUSLINE_LAYOUT=band: the same items as the capsules, on one row W
+# cells wide whose fill fades from the band colour at cell 0 to the terminal
+# background at cell W-1. Items start at cell 1, groups are joined by the dot
+# joiner, and blank fill carries the fade to the end.
+
+# Whether $1 is a usable column count: a whole number from 1 to 9999.
+_is_cols() {
+    case "$1" in ''|0*|*[!0-9]*|?????*) return 1 ;; esac
+}
+
+# The terminal's width in columns from stty, in _TTY_COLS; empty when there is
+# no terminal to ask. Cached under the parent pid like _sl_own_tty, so a
+# conversation forks for it once in OWN_TTY_MAX_AGE, and a resize inside that
+# window shows when the entry expires.
+_sl_tty_cols() {
+    _TTY_COLS=""
+    _sl_parent_pid
+    # A cached answer is checked like a fresh one: an entry that is not a
+    # count (hand-edited, torn, another writer's shape) must not reach `[`
+    # or the fill loop, so it reads as no terminal.
+    if _cache_read stty "$_PARENT" "$OWN_TTY_MAX_AGE"; then
+        _TTY_COLS="$_CACHE_TEXT"
+        _is_cols "$_TTY_COLS" || _TTY_COLS=""
+        return 0
+    fi
+    local size
+    size=$( { stty size </dev/tty; } 2>/dev/null ) || size=""
+    _TTY_COLS="${size#* }"
+    _is_cols "$_TTY_COLS" || _TTY_COLS=""
+    _cache_write stty "$_PARENT" "$_TTY_COLS"
+}
+
+# The band's width in cells, in _BAND_W, never under 20: CS_STATUSLINE_COLS
+# as given, since a caller that sets it already knows the cells it may use;
+# else a measured width, stdin's .columns, the pane's width inside a tmux this
+# process is really in, the terminal's, or 120, less the frame Claude Code
+# draws around the status line (CS_STATUSLINE_FRAME, default 4: two columns
+# each side, more with statusLine.padding).
+_band_width() {
+    local cols=""
+    if _is_cols "${CS_STATUSLINE_COLS:-}"; then
+        _BAND_W="$CS_STATUSLINE_COLS"
+    else
+        if _is_cols "${SL_COLUMNS:-}"; then
+            cols="$SL_COLUMNS"
+        elif [ -n "${TMUX:-}" ] && [ -z "${SL_ENV_FOREIGN:-}" ]; then
+            _sl_tmux_client
+            _is_cols "$_TMUX_CLIENT_WIDTH" && cols="$_TMUX_CLIENT_WIDTH"
+        fi
+        if [ -z "$cols" ]; then
+            _sl_tty_cols
+            cols="${_TTY_COLS:-120}"
+        fi
+        _num_or "${CS_STATUSLINE_FRAME:-}" 4
+        _BAND_W=$(( 10#$cols - 10#$_NUM ))
+    fi
+    [ "$_BAND_W" -ge 20 ] || _BAND_W=20
+}
+
+# The terminal background the band fades into, in _BG_R/_BG_G/_BG_B: the one
+# read live from iTerm unless a background was set by hand, the measured one,
+# else the background the surface token assumes for the theme.
+_band_bg() {
+    local rgb="${CS_TERM_BG_RGB:-}"
+    [ -z "$_SL_LIVE_BG" ] || _sl_bg_pinned || rgb="$_SL_LIVE_BG"
+    if ! _parse_rgb_triplet "$rgb"; then
+        if [ "$SL_THEME" = "dark" ]; then _parse_rgb_triplet "28;28;28"
+        else _parse_rgb_triplet "255;255;255"; fi
+    fi
+    _BG_R="$_R"; _BG_G="$_G"; _BG_B="$_B"
+}
+
+# The band colour in _R/_G/_B, before its pull toward the background, first
+# match winning: CS_STATUSLINE_BAND as a palette name, `brand`, `periwinkle` or
+# an r;g;b triplet (`none` asks for the neutral outright); the session's own
+# colour from its state file; the neutral. An override that names none of these
+# is the session colour, so a typo never breaks the bar.
+SESSION_PALETTE="red blue green yellow purple orange pink cyan"
+_band_from() {
+    local want="${CS_STATUSLINE_BAND:-session}"
+    # One word only: the list match below would take "red blue" as a name.
+    case "$want" in *[[:space:]]*) want=session ;; esac
+    case " $SESSION_PALETTE brand periwinkle " in
+        *" $want "*) _sgr 48 "$want"; _parse_rgb_triplet "$_RGB"; return 0 ;;
+    esac
+    [ "$want" = "none" ] && { _band_neutral; return 0; }
+    _parse_rgb_triplet "$want" && return 0
+    if [ -n "$SL_LOCAL_DIR" ]; then
+        _read_state_key "$SL_LOCAL_DIR/state" claude_session_color
+        case " $SESSION_PALETTE " in
+            *" $_STATE_VALUE "*)
+                if [ -n "$_STATE_VALUE" ]; then
+                    _sgr 48 "$_STATE_VALUE"; _parse_rgb_triplet "$_RGB"; return 0
+                fi ;;
+        esac
+    fi
+    _band_neutral
+}
+
+# The neutral band colour in _R/_G/_B: the background lifted a step, lighter
+# on a dark terminal and darker on a light one. _BAND_NEUTRAL says it was
+# picked.
+_band_neutral() {
+    _BAND_NEUTRAL=1
+    if [ "$SL_THEME" = "dark" ]; then
+        _R=$((_BG_R + 40)); _G=$((_BG_G + 40)); _B=$((_BG_B + 50))
+        [ "$_R" -le 255 ] || _R=255; [ "$_G" -le 255 ] || _G=255; [ "$_B" -le 255 ] || _B=255
+    else
+        _R=$((_BG_R - 30)); _G=$((_BG_G - 30)); _B=$((_BG_B - 30))
+        [ "$_R" -ge 0 ] || _R=0; [ "$_G" -ge 0 ] || _G=0; [ "$_B" -ge 0 ] || _B=0
+    fi
+}
+
+# _R/_G/_B moved $4 percent of the way toward $1;$2;$3.
+_band_toward() {  # r g b percent
+    _R=$((_R + ($1 - _R) * $4 / 100))
+    _G=$((_G + ($2 - _G) * $4 / 100))
+    _B=$((_B + ($3 - _B) * $4 / 100))
+}
+
+# The band's first cell in _FROM_R/_G/_B, and the colour it is made from in
+# _HUE_R/_G/_B. A hue is moved halfway to the grey of its own luminance, then
+# 78% of the way to the background, so the band is a tint of the terminal and
+# ink reads on its start; the neutral is already a step off the background and
+# is used as it is.
+_band_start() {
+    _BAND_NEUTRAL=""
+    _band_from
+    _HUE_R="$_R"; _HUE_G="$_G"; _HUE_B="$_B"
+    if [ -z "$_BAND_NEUTRAL" ]; then
+        local lum=$(( (_R * 299 + _G * 587 + _B * 114) / 1000 ))
+        _band_toward "$lum" "$lum" "$lum" 50
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 78
+    fi
+    _FROM_R="$_R"; _FROM_G="$_G"; _FROM_B="$_B"
+}
+
+# The foreground parameters for item ink $1 (weight $2, "bold" or empty) on the
+# band, in _BAND_FG. On truecolor the band has inks of its own, since it is
+# brighter than the capsule surface at one end and the terminal at the other:
+# a primary for bold text, a secondary for regular text, a dim one for labels
+# and joiners. On a light theme they are dark shades of the band's hue
+# (_HUE_R/_G/_B), so the text carries the colour the pale band only hints at.
+# Tokens with a colour of their own (the brand mark, the effort word, the
+# session palette) keep it. Other levels take the capsules' tokens.
+_band_ink() {  # token bold
+    local role rgb pct=""
+    if [ "$LEVEL" = "truecolor" ]; then
+        case "$1" in
+            white) role=primary ;;
+            ink)   role=secondary; [ -n "$2" ] && role=primary ;;
+            ink2)  role=dim ;;
+        esac
+    fi
+    if [ -z "${role:-}" ]; then
+        _sgr 38 "$1"; _BAND_FG="$_SGR"
+        return 0
+    fi
+    case "$SL_THEME:$role" in
+        dark:primary)    rgb="255;255;255" ;;
+        dark:secondary)  rgb="214;222;240" ;;
+        dark:dim)        rgb="150;165;200" ;;
+        *:primary)       pct=34 ;;
+        *:secondary)     pct=44 ;;
+        *:dim)           pct=56 ;;
+    esac
+    [ -z "$pct" ] || rgb="$((_HUE_R * pct / 100));$((_HUE_G * pct / 100));$((_HUE_B * pct / 100))"
+    _BAND_FG="38;2;$rgb"
+}
+
+# The fill under cell _BAND_POS in _CELL_BG: the flat fill below truecolor,
+# else the gradient's colour there. A cell past the band's end takes the end's.
+_band_cell_bg() {
+    if [ -n "$_BAND_FLAT" ]; then
+        _CELL_BG="$_BAND_FLAT"
+        return 0
+    fi
+    local p="$_BAND_POS" span=$((_BAND_W - 1))
+    [ "$p" -le "$span" ] || p="$span"
+    _CELL_BG="48;2;$((_FROM_R + (_BG_R - _FROM_R) * p / span));$((_FROM_G + (_BG_G - _FROM_G) * p / span));$((_FROM_B + (_BG_B - _FROM_B) * p / span))"
+}
+
+# Paint text $1 on the band with foreground parameters $2 (empty for blank
+# fill) at weight $3. On the gradient each character is its own cell with its
+# own fill; a UTF-8 continuation byte, which bash hands over on its own under
+# a C locale, stays in its character's cell, the same count _display_width
+# makes. On a flat fill the text is one run.
+_band_text() {  # text fg weight
+    local s="$1" tail="" i c n=${#1}
+    [ -n "$2" ] && tail=";$2;$3"
+    if [ -n "$_BAND_FLAT" ]; then
+        _display_width "$s"
+        _BAND_OUT+=$'\033['"${_BAND_FLAT}${tail}m${s}"
+        _BAND_POS=$((_BAND_POS + _WIDTH))
+        return 0
+    fi
+    for ((i = 0; i < n; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [$'\x80'-$'\xBF']) _BAND_OUT+="$c"; continue ;;
+        esac
+        _band_cell_bg
+        _BAND_OUT+=$'\033['"${_CELL_BG}${tail}m${c}"
+        _BAND_POS=$((_BAND_POS + 1))
+    done
+}
+
+# A solid island: text $3 on fill $1 in ink $2, bold, one run with no gradient
+# under it; its cells still count toward the band's positions.
+_band_island() {  # fill fg text
+    _display_width "$3"
+    _BAND_OUT+=$'\033['"$1;$2;1m$3"
+    _BAND_POS=$((_BAND_POS + _WIDTH))
+}
+
+# The text joiner $1 puts between two items of a group, in _JOIN_TEXT, and in
+# _JOIN_INKED whether it is a glyph drawn in the dim ink rather than blank fill.
+_band_joiner() {
+    _JOIN_INKED=""
+    case "$1" in
+        dot)   _JOIN_TEXT="  ·  "; _JOIN_INKED=1 ;;
+        bar)   _JOIN_TEXT=" ⋮ ";  _JOIN_INKED=1 ;;
+        pad)   _JOIN_TEXT="  " ;;
+        space) _JOIN_TEXT=" " ;;
+        *)     _JOIN_TEXT="" ;;
+    esac
+}
+
+# $1 cells of blank fill as one run, coloured at its first cell.
+_band_blank() {
+    _band_cell_bg
+    local pad
+    printf -v pad '%*s' "$1" ''
+    _BAND_OUT+=$'\033['"${_CELL_BG}m${pad}"
+    _BAND_POS=$((_BAND_POS + $1))
+}
+
+_render_band() {
+    local n=${#_SEG_TEXT[@]}
+    [ "$n" -gt 0 ] || return 0
+    _band_width
+    _BAND_OUT=$'\033[0m'; _BAND_POS=0; _BAND_FLAT=""
+    if [ "$LEVEL" = "truecolor" ]; then
+        _band_bg
+        _band_start
+    else
+        _sgr 48 surface; _BAND_FLAT="$_SGR"
+    fi
+    _band_blank 1
+    local i k g first weight island fill
+    for ((k = 0; k < ${#_GROUPS[@]}; k++)); do
+        g="${_GROUPS[k]}"
+        if [ "$k" -gt 0 ]; then
+            _band_ink ink2 ""; _band_text "  ·  " "$_BAND_FG" 22
+        fi
+        # A crit group is one red island, its joiners inside it.
+        case "$_CRIT_GROUPS" in
+            *" $g "*)
+                island=" "; first=1
+                for ((i = 0; i < n; i++)); do
+                    [ "${_SEG_GROUP[i]}" = "$g" ] || continue
+                    if [ -z "$first" ]; then
+                        _band_joiner "${_SEG_JOIN[i]}"; island+="$_JOIN_TEXT"
+                    fi
+                    first=""
+                    island+="${_SEG_TEXT[i]}"
+                done
+                _sgr 48 crit; fill="$_SGR"; _sgr 38 critink
+                _band_island "$fill" "$_SGR" "$island "
+                continue ;;
+        esac
+        first=1
+        for ((i = 0; i < n; i++)); do
+            [ "${_SEG_GROUP[i]}" = "$g" ] || continue
+            if [ -z "$first" ]; then
+                _band_joiner "${_SEG_JOIN[i]}"
+                if [ -n "$_JOIN_INKED" ]; then
+                    _band_ink ink2 ""; _band_text "$_JOIN_TEXT" "$_BAND_FG" 22
+                else
+                    _band_text "$_JOIN_TEXT" "" ""
+                fi
+            fi
+            first=""
+            # An amber item is amber ink, bold on either theme, as on the
+            # capsules.
+            if [ "${_SEG_INK[i]}" = "amber" ]; then
+                _sgr 38 amber; _band_text "${_SEG_TEXT[i]}" "$_SGR" 1
+                continue
+            fi
+            weight=22
+            [ -n "${_SEG_BOLD[i]}" ] && [ "$SL_THEME" = "dark" ] && weight=1
+            _band_ink "${_SEG_INK[i]}" "${_SEG_BOLD[i]}"
+            _band_text "${_SEG_TEXT[i]}" "$_BAND_FG" "$weight"
+        done
+    done
+    # The fade runs on to the last cell in runs of up to four, and the last
+    # cell is a run of its own so it lands exactly on the background.
+    local last=$((_BAND_W - 1)) step
+    while [ "$_BAND_POS" -lt "$last" ]; do
+        step=$((last - _BAND_POS))
+        [ "$step" -le 4 ] || step=4
+        _band_blank "$step"
+    done
+    [ "$_BAND_POS" -eq "$last" ] && _band_blank 1
+    printf '%s\033[0m\n' "$_BAND_OUT"
+}
+
+# --- quiet layout ------------------------------------------------------------
+#
+# The default layout (CS_STATUSLINE_LAYOUT unset, quiet or any value other
+# than band and capsules): the items as text on the terminal's own
+# background. The mark and the session name sit in one chip tinted with the
+# session's colour, the name in a shade of it (_quiet_chip_fill). The readings
+# are bold in the terminal's own foreground and the branch is the terminal's
+# green, so they read on whatever background the terminal wears, the theme
+# detected at launch notwithstanding. The labels and joiners fade, run by run,
+# toward the background. An amber reading is bold amber; a crit reading and its
+# label are a red chip of their own. The brand mark keeps its coral, and the
+# model's glyph wears the effort's colour beside the effort word.
+
+# The quiet ink $1 percent of the way to the background, as foreground
+# parameters in _QUIET_FG.
+_quiet_fade() {
+    _QUIET_FG="38;2;$((_QI_R + (_BG_R - _QI_R) * $1 / 100));$((_QI_G + (_BG_G - _QI_G) * $1 / 100));$((_QI_B + (_BG_B - _QI_B) * $1 / 100))"
+}
+
+# The foreground for run $1 of $2 after the chip, in _QUIET_FG: from 35 to 55
+# percent of the way to the background, the first run darkest; further, the
+# last labels lose the contrast to be read on a light terminal. Below
+# truecolor there is no fade: the secondary ink at 256 colours, bright black
+# at basic.
+_quiet_run_ink() {
+    if [ "$LEVEL" = "basic" ]; then
+        _QUIET_FG=90
+        return 0
+    fi
+    if [ -z "$_QUIET_TRUE" ]; then
+        _sgr 38 ink2; _QUIET_FG="$_SGR"
+        return 0
+    fi
+    local span=$(($2 - 1))
+    [ "$span" -ge 1 ] || span=1
+    local run="$1"
+    [ "$run" -ge 1 ] || run=1
+    _quiet_fade $((35 + 20 * (run - 1) / span))
+}
+
+# The chip's fill in _R/_G/_B and its text in _CHIP_INK, both from the band's
+# colour (CS_STATUSLINE_BAND, else the session's). The fill is that colour seen
+# through the terminal background (_band_bg), 35% of it on a dark terminal and
+# 15% on a light one; the text is the colour lifted toward white on a dark
+# terminal and pressed toward black on a light one. With no colour the fill is
+# the neutral step off the background and the text the terminal's own ink.
+_quiet_chip_fill() {
+    _CHIP_INK=39
+    _BAND_NEUTRAL=""
+    _band_from
+    [ -z "$_BAND_NEUTRAL" ] || return 0
+    local r="$_R" g="$_G" b="$_B"
+    if [ "$SL_THEME" = "dark" ]; then
+        _band_toward 255 255 255 60
+        _CHIP_INK="38;2;$_R;$_G;$_B"
+        _R="$r"; _G="$g"; _B="$b"
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 65
+    else
+        _band_toward 0 0 0 50
+        _CHIP_INK="38;2;$_R;$_G;$_B"
+        _R="$r"; _G="$g"; _B="$b"
+        _band_toward "$_BG_R" "$_BG_G" "$_BG_B" 85
+    fi
+}
+
+# Whether item $1 belongs in a red chip: a crit reading, or the label just
+# before one in its group.
+_quiet_in_crit() {
+    [ "${_SEG_INK[$1]}" = "crit" ] && return 0
+    local next=$(($1 + 1))
+    [ "$next" -lt "${#_SEG_TEXT[@]}" ] || return 1
+    [ "${_SEG_INK[$next]}" = "crit" ] && [ "${_SEG_ROLE[$next]}" = "value" ] \
+        && [ "${_SEG_GROUP[$next]}" = "${_SEG_GROUP[$1]}" ]
+}
+
+# Whether item $1 starts a new run: the first item of a group after the
+# first, or an item joined by a dot.
+_quiet_new_run() {
+    [ "$1" -gt 0 ] || return 1
+    [ "${_SEG_GROUP[$1]}" != "${_SEG_GROUP[$(($1 - 1))]}" ] && return 0
+    [ "${_SEG_JOIN[$1]}" = "dot" ]
+}
+
+_render_quiet() {
+    local n=${#_SEG_TEXT[@]}
+    [ "$n" -gt 0 ] || return 0
+    local e=$'\033' out=$'\033[0m' i runs=0 run=0 join critchip="" critbg critfg chipbg chipfg inchip=""
+    _sgr 48 crit; critbg="$_SGR"; _sgr 38 critink; critfg="$_SGR"
+    _QUIET_TRUE=""
+    [ "$LEVEL" = "truecolor" ] && _QUIET_TRUE=1
+    if [ -n "$_QUIET_TRUE" ]; then
+        _band_bg
+        if [ "$SL_THEME" = "dark" ]; then
+            _QI_R=214; _QI_G=222; _QI_B=240
+        else
+            _QI_R=$((_BG_R * 24 / 100)); _QI_G=$((_BG_G * 24 / 100)); _QI_B=$((_BG_B * 24 / 100))
+        fi
+        _quiet_chip_fill; chipbg="48;2;$_R;$_G;$_B"; chipfg="$_CHIP_INK"
+    elif [ "$SL_THEME" != "dark" ]; then
+        chipfg=39
+        if [ "$LEVEL" = "256" ]; then chipbg="48;5;253"; else chipbg=47; fi
+    elif [ "$LEVEL" = "256" ]; then
+        chipbg="48;5;241"; chipfg="38;5;231"
+    else
+        chipbg=100; chipfg=97
+    fi
+    for ((i = 0; i < n; i++)); do
+        _quiet_new_run "$i" && runs=$((runs + 1))
+    done
+    for ((i = 0; i < n; i++)); do
+        if _quiet_new_run "$i"; then
+            run=$((run + 1))
+        fi
+        _quiet_run_ink "$run" "$runs"
+        # The chip closes before the first item that is not part of it.
+        if [ -n "$inchip" ] && [ "${_SEG_ROLE[i]}" != "chip" ]; then
+            out+="${e}[${chipbg}m ${e}[0m"; inchip=""
+        fi
+        local closed=""
+        if [ -n "$critchip" ] && { [ "${_SEG_GROUP[i]}" != "$critchip" ] || ! _quiet_in_crit "$i"; }; then
+            out+="${e}[${critbg}m ${e}[0m"; critchip=""; closed=1
+        fi
+        if [ "$i" -gt 0 ]; then
+            join="${_SEG_JOIN[i]}"
+            [ "${_SEG_GROUP[i]}" != "${_SEG_GROUP[$((i - 1))]}" ] && join="dot"
+            _band_joiner "$join"
+            # A red chip's own pad stands for one space of a two-space joiner
+            # beside it; a one-space joiner keeps its space.
+            case "$closed:$_JOIN_TEXT" in 1:"  "*) _JOIN_TEXT="${_JOIN_TEXT# }" ;; esac
+            if [ -z "$critchip" ] && _quiet_in_crit "$i"; then
+                case "$_JOIN_TEXT" in *"  ") _JOIN_TEXT="${_JOIN_TEXT% }" ;; esac
+            fi
+            if [ -n "$inchip" ]; then
+                out+="${e}[${chipbg}m${_JOIN_TEXT}"
+            elif [ -n "$critchip" ]; then
+                out+="${e}[${critbg};${critfg};1m${_JOIN_TEXT}"
+            elif [ -n "$_JOIN_INKED" ]; then
+                out+="${e}[0;${_QUIET_FG}m${_JOIN_TEXT}"
+            else
+                out+="${e}[0m${_JOIN_TEXT}"
+            fi
+        fi
+        # The mark is Claude's coral in the chip, the waiting session's shade
+        # included; the session name is bold in the chip's ink.
+        if [ "${_SEG_ROLE[i]}" = "chip" ]; then
+            [ -n "$inchip" ] || out+="${e}[0;${chipbg}m "
+            inchip=1
+            case "${_SEG_INK[i]}" in
+                brand|brandshade) _sgr 38 brand; out+="${e}[${chipbg};${_SGR};1m${_SEG_TEXT[i]}" ;;
+                *)                out+="${e}[${chipbg};${chipfg};1m${_SEG_TEXT[i]}" ;;
+            esac
+            continue
+        fi
+        # The branch is the terminal's own green, the path before its last
+        # `/` (feat/, fix/) the same green faint; the marks after it, ahead
+        # and behind arrows included, fade with the labels.
+        if [ "${_SEG_ROLE[i]}" = "branch" ]; then
+            local glyph="$ICON_GIT" body name marks="" head="" leaf
+            case "${_SEG_TEXT[i]}" in
+                "$ICON_GIT"*) body="${_SEG_TEXT[i]#"$ICON_GIT"}" ;;
+                *)            glyph=""; body="${_SEG_TEXT[i]}" ;;
+            esac
+            name="${body%% *}"
+            [ "$name" = "$body" ] || marks=" ${body#* }"
+            case "$name" in
+                *↑*) marks="↑${name#*↑}$marks"; name="${name%%↑*}" ;;
+                *↓*) marks="↓${name#*↓}$marks"; name="${name%%↓*}" ;;
+            esac
+            case "$name" in
+                */*) head="${name%/*}/"; leaf="${name##*/}" ;;
+                *)   leaf="$name" ;;
+            esac
+            out+="${e}[0;32m${glyph}"
+            [ -z "$head" ] || out+="${e}[0;2;32m${head}${e}[0;32m"
+            out+="$leaf"
+            [ -z "$marks" ] || out+="${e}[0;${_QUIET_FG}m${marks}"
+            continue
+        fi
+        if _quiet_in_crit "$i"; then
+            [ -n "$critchip" ] || out+="${e}[0;${critbg}m "
+            critchip="${_SEG_GROUP[i]}"
+            out+="${e}[${critbg};${critfg};1m${_SEG_TEXT[i]}"
+            continue
+        fi
+        case "${_SEG_INK[i]}" in
+            amber)
+                _sgr 38 amber; out+="${e}[0;${_SGR};1m${_SEG_TEXT[i]}"
+                continue ;;
+            ink|ink2|white) ;;
+            *)
+                _sgr 38 "${_SEG_INK[i]}"; out+="${e}[0;${_SGR}m${_SEG_TEXT[i]}"
+                continue ;;
+        esac
+        if [ "${_SEG_ROLE[i]}" = "model" ]; then
+            local glyph="${ICON_MODEL% }" next=$((i + 1))
+            case "${_SEG_TEXT[i]}" in "$ICON_MODEL"*) ;; *) glyph="" ;; esac
+            if [ -n "$glyph" ] && [ "$next" -lt "$n" ]; then
+                case "${_SEG_INK[$next]}" in
+                    effort-*)
+                        _sgr 38 "${_SEG_INK[$next]}"
+                        out+="${e}[0;${_SGR}m${glyph}${e}[0;${_QUIET_FG}m${_SEG_TEXT[i]#"$glyph"}"
+                        continue ;;
+                esac
+            fi
+        fi
+        if [ "${_SEG_ROLE[i]}" = "value" ]; then
+            out+="${e}[0;39;1m${_SEG_TEXT[i]}"
+        else
+            out+="${e}[0;${_QUIET_FG}m${_SEG_TEXT[i]}"
+        fi
+    done
+    [ -n "$inchip" ] && out+="${e}[${chipbg}m "
+    [ -n "$critchip" ] && out+="${e}[${critbg}m "
+    printf '%s\033[0m\n' "$out"
+}
+
 # --- main ------------------------------------------------------------------
 
 main() {
@@ -2232,7 +2927,18 @@ main() {
         esac
     done
 
-    _render
+    # Quiet is the layout unless CS_STATUSLINE_LAYOUT names the band or the
+    # capsules; quiet and the band need colour to draw, so plain prints what
+    # the capsules print.
+    if [ "$LEVEL" = "plain" ]; then
+        _render
+        return 0
+    fi
+    case "${CS_STATUSLINE_LAYOUT:-}" in
+        capsules) _render ;;
+        band)     _render_band ;;
+        *)        _render_quiet ;;
+    esac
 }
 
 # Sourced with CS_STATUSLINE_LIB=1, this file is a library: the palette, color

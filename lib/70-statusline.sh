@@ -207,8 +207,7 @@ _theme_from_colorfgbg() {
 # terminal instead of being answered by tmux itself: bracket with `\ePtmux;` …
 # `\e\\` and double every ESC in the payload. Requires `allow-passthrough on`
 # in the user's tmux; without it tmux drops the sequence and the query times out.
-# Handles arbitrary multi-ESC payloads (e.g. an ST-terminated OSC query);
-# _send_escape covers the single-ESC, BEL-terminated tab-color case separately.
+# Handles arbitrary multi-ESC payloads (e.g. an ST-terminated OSC query).
 _tmux_passthrough() {
     local seq="$1"
     local escaped=${seq//$'\033'/$'\033\033'}
@@ -370,7 +369,11 @@ _export_term_theme() {
     # hard override everywhere.
     export CS_TERM_THEME="$theme"
     export CS_TERM_THEME_AUTO=1
-    if [[ "$out" == *" "* ]] && [ -z "${CS_TERM_BG_RGB:-}" ]; then
+    # A background already set is the user's: CS_TERM_BG_RGB_PINNED tells the
+    # statusline so, which the theme's auto marker beside it would not.
+    if [ -n "${CS_TERM_BG_RGB:-}" ]; then
+        export CS_TERM_BG_RGB_PINNED=1
+    elif [[ "$out" == *" "* ]]; then
         export CS_TERM_BG_RGB="${out#* }"
     fi
     _write_term_cache "$theme" "${CS_TERM_BG_RGB:-}"

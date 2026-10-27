@@ -231,7 +231,14 @@ _doctor_check_hook_drift() {
     _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png hooks/*.md
     local skill_sources=(skills/*/SKILL.md skills/*/scripts/*.sh skills/*/agents/*.yaml)
     _drift_scan "Skill" "$skills_dir" "${skill_sources[@]}"
-    _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*
+    local mod_srcs=() kept src
+    for src in mods/*/.claude-plugin/plugin.json mods/*/hooks/* mods/*/tips.json; do
+        for kept in ${CS_MODS_KEPT_OUT[@]+"${CS_MODS_KEPT_OUT[@]}"}; do
+            case "$src" in "mods/$kept/"*) continue 2 ;; esac
+        done
+        mod_srcs+=("$src")
+    done
+    _drift_scan "Mod" "$skills_dir" ${mod_srcs[@]+"${mod_srcs[@]}"}
 
     # Codex gets the same skills in its own home. A machine where Codex never
     # ran has no such home, and nothing there to compare.
@@ -322,17 +329,17 @@ _doctor_check_tui_build() {
     fi
 }
 
-# iTerm2 awareness, reported only when running inside iTerm2: tab color and
-# title ship via native escapes regardless; the attention dock bounce needs
-# the it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
+# iTerm2 awareness, reported only when running inside iTerm2: the tab title
+# ships via native escapes regardless; the attention dock bounce needs the
+# it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
 _doctor_check_iterm2() {
     [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || return 0
     if [ -n "${CS_NO_ITERM2:-}" ]; then
         _doctor_ok "iTerm2: integrations disabled (CS_NO_ITERM2)"
     elif [ -x "${CS_IT2_DIR:-$HOME/.iterm2}/it2attention" ]; then
-        _doctor_ok "iTerm2: tab color + attention bounce active (it2 utilities found)"
+        _doctor_ok "iTerm2: attention bounce active (it2 utilities found)"
     else
-        _doctor_ok "iTerm2: tab color active; attention bounce off (shell integration not installed)"
+        _doctor_ok "iTerm2: attention bounce off (shell integration not installed)"
     fi
 }
 
@@ -657,6 +664,28 @@ _doctor_check_claude_audit() {
     _doctor_ok "Audit: ${hooks_count} hooks, ${mcps_count} MCPs, ${perms_count} perm rules, ${env_count} env vars in settings.json"
 }
 
+# Twin: _statusline_chains_to_cs in install.sh.in.
+# Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
+_statusline_chains_to_cs() {
+    local file rest
+    read -r file rest <<< "$1"
+    file="${file/#\~/$HOME}"
+    [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+}
+
+_doctor_statusline_caps_row() {
+    # The rounded caps are drawn only once this machine has answered
+    # the font question; until then the bar shows square ends.
+    local caps_file caps=""
+    caps_file="$(_statusline_caps_file)"
+    [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
+    case "$caps" in
+        on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
+        off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
+        *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
+    esac
+}
+
 _doctor_check_statusline() {
     local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
     local settings="$claude_dir/settings.json"
@@ -683,23 +712,15 @@ _doctor_check_statusline() {
             else
                 _doctor_fail "Statusline: registered as $cmd but the binary is missing or not executable"
             fi
-            # The rounded caps are drawn only once this machine has answered
-            # the font question; until then the bar shows square ends.
-            local caps_file caps=""
-            caps_file="$(_statusline_caps_file)"
-            [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
-            case "$caps" in
-                on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
-                off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
-                *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
-            esac
+            _doctor_statusline_caps_row
             ;;
         *)
             # A foreign command can chain to cs-statusline (a bridge that runs
             # the original), so inside a session the file itself decides: a
             # context-pct inside the heartbeat window means the gates are fed.
             # An empty or non-numeric file feeds no gate, however fresh.
-            local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" now age reading=""
+            local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" now age reading="" chains=""
+            _statusline_chains_to_cs "$cmd" && chains=1
             now=$(date +%s)
             [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
             case "$reading" in ''|*[!0-9]*) reading="" ;; esac
@@ -707,9 +728,12 @@ _doctor_check_statusline() {
                 age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
                 [ "$age" -ge 0 ] || age=0
                 _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
+            elif [ -n "$chains" ]; then
+                _doctor_ok "Statusline: $cmd chains to cs-statusline"
             else
                 _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating, unless it chains to cs-statusline"
             fi
+            [ -z "$chains" ] || _doctor_statusline_caps_row
             ;;
     esac
 }
@@ -717,11 +741,14 @@ _doctor_check_statusline() {
 # The Ctrl+X bindings the installer offers: the answer this
 # machine gave, and whether keybindings.json still holds cs's keys. Not asked
 # and declined are healthy; a key the user binds to something else (or a bare
-# ctrl+x a chord would shadow), a yes whose keys are gone or are still an
-# earlier cs's Option+1 / Option+2, and a file Claude Code cannot read either
-# are warnings.
+# ctrl+x a chord would shadow), a yes whose keys are gone, sit outside the
+# context Claude Code wants them in, or are still an earlier cs's Option+1 /
+# Option+2, and a file Claude Code cannot read either are warnings. A file
+# that holds every cs key but has one outside its context is a warning
+# whatever the answer: the installer rewrites the file only on a recorded
+# yes, so under any other answer the advice is the move to make by hand.
 _doctor_check_rotate_wrap_keys() {
-    local file answer_file answer status state key action prefix retired bound=0 total=0 commands_bound=0
+    local file answer_file answer status state key action prefix retired bound=0 misplaced=0 total=0 commands_bound=0
     file="$(_cs_keybindings_file)"
     answer_file="$(_cs_rotate_wrap_keys_answer_file)"
     if ! command -v jq >/dev/null 2>&1; then
@@ -740,18 +767,29 @@ _doctor_check_rotate_wrap_keys() {
     while IFS=$'\t' read -r state key action prefix; do
         [ -n "$state" ] || continue
         total=$((total + 1))
-        if [ "$state" = bound ]; then bound=$((bound + 1)); fi
+        case "$state" in
+            bound) bound=$((bound + 1)) ;;
+            misplaced) misplaced=$((misplaced + 1)) ;;
+        esac
     done <<< "$status"
-    if [ "$total" -gt 0 ] && [ "$bound" = "$total" ]; then
+    answer=$(cat "$answer_file" 2>/dev/null) || answer=""
+    if [ "$total" -gt 0 ] && [ "$((bound + misplaced))" = "$total" ]; then
+        while IFS=$'\t' read -r state key action prefix; do
+            [ "$state" = misplaced ] || continue
+            if [ "$answer" = yes ]; then
+                _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (run cs -update to move it)"
+            else
+                _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (move it into a block with \"context\": \"$action\")"
+            fi
+        done <<< "$status"
         retired=$(_cs_keybindings_held "$CS_RETIRED_OPTION_KEYS" < "$file") || retired=""
         if [ -n "$retired" ]; then
             _doctor_warn "Rotate/wrap keys: $retired still hold cs's earlier bindings in $file (run cs -update to remove them)"
-        else
+        elif [ "$misplaced" = 0 ]; then
             _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)"
         fi
         return
     fi
-    answer=$(cat "$answer_file" 2>/dev/null) || answer=""
     case "$answer" in
         yes)
             while IFS=$'\t' read -r state key action prefix; do
@@ -767,6 +805,7 @@ _doctor_check_rotate_wrap_keys() {
                         fi
                         ;;
                     free) _doctor_warn "Rotate/wrap keys: $key not bound (run cs -update to bind it)" ;;
+                    misplaced) _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (run cs -update to move it)" ;;
                 esac
             done <<< "$status"
             # With /rotate and /wrap on their chords, the next update takes
@@ -868,14 +907,14 @@ _doctor_check_narrative_size() {
 # resolved its own session ID. The recorded UUID is the source of truth for
 # cs and hooks; doctor surfaces the divergence so the user can decide whether
 # to relaunch via cs or accept the drift.
-# Every place a cs hook changes what the model sees, with the switch that turns
+# Every place cs changes what the model sees, with the switch that turns
 # it off. The consent rule covers what the user looks at — status line, titles —
 # but a hook that injects context installs silently, so this is where that
 # authority is made visible. State is read live, not from config: a switch that
 # is set shows the injection as off.
 _doctor_check_hook_authority() {
     echo ""
-    echo "  Authority — hooks that inject into the model's context:"
+    echo "  Authority — instructions cs adds to the model's context:"
     local disabled_all=""
     if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/disabled" ]; then
         disabled_all=1
@@ -898,9 +937,21 @@ _doctor_check_hook_authority() {
     _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
     _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
     _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
-    # CS_NO_FUNCTION_HOOKS withholds the mod at launch; the /config row is Claude Code's, not read here.
-    _doctor_authority_row "diagrams"      "cs-mermaid mod"     '/config cs-mermaid.drawDiagrams' "${CS_NO_FUNCTION_HOOKS:+1}"
-    echo "    .cs/local/disabled turns every row off for that session."
+    # Local instructions remain in the prompt even when session hooks are disabled.
+    disabled_all=""
+    local diagrams_off=1
+    local dir="${CLAUDE_SESSION_DIR:-$PWD}"
+    if [ -n "$dir" ] && [ -f "$dir/CLAUDE.local.md" ] && awk '
+        /^<!-- cs:mermaid-diagrams -->$/ { section=1; next }
+        section == 1 && /^## Diagrams$/ { section=2; next }
+        /^<!-- cs:/ || /^## / { section=0 }
+        section && /[^[:space:]]/ && !/^[[:space:]]*(#|<!--)/ { prose=1 }
+        END { exit !prose }
+    ' "$dir/CLAUDE.local.md"; then
+        diagrams_off=""
+    fi
+    _doctor_authority_row "diagrams" "CLAUDE.local.md" 'delete the prose under cs:mermaid-diagrams' "$diagrams_off"
+    echo "    .cs/local/disabled turns the hook rows off; CLAUDE.local.md still applies."
 }
 
 # setup_merge_attributes writes the per-clone merge driver with `|| true`, so a

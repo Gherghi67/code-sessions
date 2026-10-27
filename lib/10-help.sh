@@ -68,7 +68,7 @@ Commands:
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
   -vet-session <dir>  Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
   -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but from inside a session not for another session's live one, nor for a base with a live feature unless run from that base; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
-  -secrets <cmd>      Manage current session secrets (requires CS_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live, and a feature's write to its base's while a sibling feature is live)
+  -secrets <cmd>      Manage current session secrets (requires CS_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live, and a feature's write to its base's while a sibling feature is live, except a set of a name the base does not hold yet)
   -update             Update cs to latest version
     --check, -c       Check for updates without installing
     --force, -f       Force reinstall even if up to date
@@ -101,6 +101,10 @@ Environment:
   CS_STATUSLINE_SEGMENTS  Status line segments, csv order (default:
                           logo,session,notes,mail,git,model,ctx,limits;
                           'cost' also available, off by default)
+  CS_STATUSLINE_LAYOUT    Status line layout: quiet (default), the items as
+                          text on the terminal; band, a full-width row fading
+                          from CS_STATUSLINE_BAND (a palette name, r;g;b,
+                          session, none) into the terminal; or capsules
   CS_TERM_THEME           Override terminal theme detection (light|dark);
                           cs -detect-theme shows what detection yields.
                           Under tmux, detection queries the outer terminal via

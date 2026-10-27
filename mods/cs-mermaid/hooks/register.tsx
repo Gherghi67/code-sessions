@@ -1,5 +1,5 @@
-// ABOUTME: cs-mermaid mod: draws each mermaid flowchart fence in a reply inline, as coloured blocks and line glyphs, and tells the model they draw.
-// ABOUTME: One /config row (`cs-mermaid.drawDiagrams`, on by default) turns off both the drawing and the system prompt section.
+// ABOUTME: cs-mermaid mod: draws each mermaid flowchart fence in a reply inline, as coloured blocks and line glyphs.
+// ABOUTME: One /config row (`cs-mermaid.drawDiagrams`, on by default) controls the drawing; CLAUDE.local.md carries the diagram instruction.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { layout } from './layout'
@@ -8,21 +8,8 @@ import { parse } from './parse'
 import type { Graph, GraphNode, ParseError } from './parse'
 import { cellWidth, padToWidth, truncateToWidth } from './text'
 
-// The /config row (`cs-mermaid.drawDiagrams`): off, fences stay source and the
-// model is not told they draw.
+// The /config row (`cs-mermaid.drawDiagrams`): off, fences stay source.
 export const OPTION = 'drawDiagrams'
-
-// Part of every request's system prompt: kept short, and narrow enough that
-// task lists and numbered steps never draw. prompt.compose needs Claude Code
-// 2.1.300 or later; an older one refuses this whole module.
-export const PROMPT_SECTION = {
-  id: 'cs-mermaid:diagrams',
-  text: 'Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.',
-  scope: 'session',
-} as const
-
-// cs's per-session opt-out of everything it injects (`cs -doctor`'s authority rows).
-export const DISABLED = '.cs/local/disabled'
 
 // A mermaid fence opens and closes on its own line with exactly three backticks. A line of four
 // or more backticks, or of three tildes, opens an outer block that quotes what it holds, closed by
@@ -133,7 +120,7 @@ export function blockRows(label: string, width: number, height: number): string[
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
 
 // The diagram as coloured blocks and line glyphs.
-function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Graph; palette: Palette; elements: Elements }) {
+export function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Graph; palette: Palette; elements: Elements }) {
   const { Box, Text } = elements
   return (
     <Box width={drawn.width} height={drawn.height} position="relative">
@@ -155,6 +142,17 @@ function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Gr
       {drawn.labels.map(label => (
         <Box position="absolute" top={label.y} left={label.x}><Text italic color={labelColor(label.text, palette)}>{label.text}</Text></Box>
       ))}
+    </Box>
+  )
+}
+
+// A fence the drawing cannot take: its source as it was written, the reason under it.
+export function drawFence(source: string, error: string, elements: Elements) {
+  const { Box, Text, Code } = elements
+  return (
+    <Box flexDirection="column">
+      <Code source={source} language="mermaid" />
+      <Text dimColor>mermaid: {error}</Text>
     </Box>
   )
 }
@@ -193,22 +191,13 @@ export function fitSource(source: string, columns: number): Fitted | ParseError 
 export const register: Register = (on, options) => {
   if (options[OPTION] === false) return
 
-  // Only a prompt for a session that draws in a terminal says fences draw; `--bare` keeps its one section.
-  // A session's .cs/local/disabled turns off every cs injection into the model's context, this one too.
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    if (!e.surfaces.includes('terminal') || e.traits.includes('bare')) return composed
-    if (await $.fs.exists(`${await $.session.cwd()}/${DISABLED}`)) return composed
-    return { sections: [...composed.sections, PROMPT_SECTION] }
-  })
-
   // The prose around a fence goes back to the engine, so the reply keeps its bullet.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
     if (fencesOf(e.props.text).length === 0) return next(e)
     // Draw each fence inline, in the room the terminal has; one that does not fit stays a fence.
     const elements = $.ui.resolve(e)
-    const { Box, Text, Code } = elements
+    const { Box } = elements
     const theme = (await $.config.list()).find(row => row.key === 'theme')?.value
     const palette = paletteFor(theme)
     const columns = Math.max(20, (e.viewport?.columns ?? 80) - 6)
@@ -222,14 +211,7 @@ export const register: Register = (on, options) => {
         {parts.map((part, index) => {
           if (part.kind === 'text') return prose[index]
           const fitted = fitSource(part.body, columns)
-          if ('error' in fitted) {
-            return (
-              <Box flexDirection="column">
-                <Code source={part.body} language="mermaid" />
-                <Text dimColor>mermaid: {fitted.error}</Text>
-              </Box>
-            )
-          }
+          if ('error' in fitted) return drawFence(part.body, fitted.error, elements)
           return <Box marginY={1}><Drawing drawn={fitted.drawn} graph={fitted.graph} palette={palette} elements={elements} /></Box>
         })}
       </Box>

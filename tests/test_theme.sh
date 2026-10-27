@@ -222,7 +222,22 @@ test_export_term_theme_exports_theme_and_auto_marker() {
       local child; child=$(env)
       case "$child" in *"CS_TERM_THEME=light"*) : ;; *) echo "  FAIL: CS_TERM_THEME not exported for cs's UI and the picker"; return 1;; esac
       case "$child" in *"CS_TERM_THEME_AUTO=1"*) : ;; *) echo "  FAIL: CS_TERM_THEME_AUTO presence marker not exported"; return 1;; esac
-      case "$child" in *"CS_TERM_BG_RGB=250;248;242"*) : ;; *) echo "  FAIL: CS_TERM_BG_RGB not exported"; return 1;; esac )
+      case "$child" in *"CS_TERM_BG_RGB=250;248;242"*) : ;; *) echo "  FAIL: CS_TERM_BG_RGB not exported"; return 1;; esac
+      case "$child" in *"CS_TERM_BG_RGB_PINNED="*) echo "  FAIL: a measured background marked pinned"; return 1;; esac )
+}
+
+# A background set before launch is the user's: detection leaves it and marks
+# it pinned, since the theme's auto marker beside it speaks for the theme alone.
+test_export_term_theme_marks_a_set_background_pinned() {
+    ( _load_cs_functions
+      unset CS_TERM_THEME CS_TERM_THEME_AUTO CS_TERM_BG_RGB_PINNED 2>/dev/null || true
+      export CS_TERM_BG_RGB="1;2;3"
+      detect_term_theme_and_bg() { echo "light 250;248;242"; }
+      _export_term_theme
+      local child; child=$(env)
+      case "$child" in *"CS_TERM_THEME_AUTO=1"*) : ;; *) echo "  FAIL: the theme lost its auto marker"; return 1;; esac
+      case "$child" in *"CS_TERM_BG_RGB=1;2;3"*) : ;; *) echo "  FAIL: the set background was replaced"; return 1;; esac
+      case "$child" in *"CS_TERM_BG_RGB_PINNED=1"*) : ;; *) echo "  FAIL: the set background was not marked pinned"; return 1;; esac )
 }
 
 # A user-set CS_TERM_THEME is an explicit override: it propagates to children
@@ -331,49 +346,12 @@ run_test test_detect_no_tmux_prefers_colorfgbg_over_os_appearance
 run_test test_detect_theme_graceful_no_tmux
 run_test test_cs_term_theme_override_wins
 run_test test_export_term_theme_exports_theme_and_auto_marker
+run_test test_export_term_theme_marks_a_set_background_pinned
 run_test test_export_term_theme_user_pin_passes_through
 run_test test_export_term_theme_caches_under_the_client_tty
 run_test test_export_term_theme_caches_under_its_own_tty_outside_tmux
 run_test test_tmux_truecolor_exported_at_launch
-# The tab color is derived from a digest of the session name, and the point is
-# determinism: the same name always gets the same color. Without any digest tool
-# the digest is empty, every name collapses onto one color, and the missing
-# command complains on stderr at every tab change. coreutils-only Linux and WSL
-# ship sha256sum but no shasum, so this is a real host, not a hypothetical.
-test_color_from_name_survives_a_missing_shasum() {
-    local stub="$TEST_TMPDIR/nodigest"
-    mkdir -p "$stub"
-    _stub_tools "$stub" cut cksum; case $? in 2) return 77 ;; 0) ;; *) return 1 ;; esac
-    # The fallback under test IS cksum, so verify it actually runs through the
-    # stub PATH before drawing conclusions from a colour. A host without a
-    # usable cksum produces the exact symptom this test reports as a defect —
-    # every name on one colour — for a reason that is not the code's fault.
-    if ! PATH="$stub" "${BASH:-/bin/bash}" -c 'printf x | cksum' >/dev/null 2>&1; then
-        echo "    SKIP (no usable cksum here: the cksum fallback cannot be exercised)"
-        return 77
-    fi
 
-    local errfile="$TEST_TMPDIR/nodigest.err" a c
-    a=$(PATH="$stub" "${BASH:-/bin/bash}" -c \
-        "source '$SCRIPT_DIR/../lib/05-term.sh' 2>/dev/null; _color_from_name alpha" 2>"$errfile")
-    c=$(PATH="$stub" "${BASH:-/bin/bash}" -c \
-        "source '$SCRIPT_DIR/../lib/05-term.sh' 2>/dev/null; _color_from_name gamma" 2>>"$errfile")
-
-    case "$a" in
-        [0-9]*,[0-9]*,[0-9]*) : ;;
-        *) echo "  FAIL: expected an r,g,b triple, got: [$a]"; return 1 ;;
-    esac
-    if [ "$a" = "$c" ]; then
-        echo "  FAIL: every name collapsed onto $a — the mapping is no longer deterministic by name"
-        return 1
-    fi
-    if [ -s "$errfile" ]; then
-        echo "  FAIL: wrote to stderr: $(cat "$errfile")"
-        return 1
-    fi
-}
-
-run_test test_color_from_name_survives_a_missing_shasum
 run_test test_tmux_truecolor_respects_user_value
 run_test test_cs_term_bg_rgb_absent_when_theme_unknown
 run_test test_cs_term_bg_rgb_respects_user_value

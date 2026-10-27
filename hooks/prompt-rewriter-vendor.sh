@@ -93,6 +93,8 @@ Preserve verbatim every explicit constraint, file path, @mention, command, ident
 Stay close to the original length. A one-line request rewrites to about one line.
 
 Output only the rewritten request. No preamble, no quotes, no commentary, no markdown fences.
+
+If the request is already precise and needs no change, reply with = alone.
 SYS
 
 # A vendor CLI reads the working directory as its project: codex loads AGENTS.md

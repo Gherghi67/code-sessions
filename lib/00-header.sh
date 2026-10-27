@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.10.10"
+VERSION="2026.10.11"
 # This build is code-sessions, a fork of cs, installed with the user's normal
 # engine configuration. install.sh uses this marker to identify the fork;
 # update checks use it to avoid replacing the fork with an upstream release.

@@ -316,6 +316,39 @@ test_doctor_warns_on_mod_drift() {
     assert_output_not_contains "$output" "Mod drift" "in sync: silent" || return 1
 }
 
+# The cs mod's spinner tips deploy beside its hooks as cs/tips.json, so an
+# edited or missing tips file is drift too.
+test_doctor_warns_on_mod_tips_drift() {
+    local checkout="$TEST_TMPDIR/tipsco" deployed="$TEST_TMPDIR/tipsdep" skills="$TEST_TMPDIR/tipsskills"
+    make_fake_checkout "$checkout" "$deployed"
+    mkdir -p "$checkout/mods/cs" "$skills/cs"
+    echo '{"tips":["one"]}' > "$checkout/mods/cs/tips.json"
+    echo '{"tips":["two"]}' > "$skills/cs/tips.json"
+    local output
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" CS_SKILLS_DIR="$skills" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Mod drift: deployed copy differs from source: cs/tips.json" \
+        "an edited tips file the installer has not copied is drift" || return 1
+    rm "$skills/cs/tips.json"
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" CS_SKILLS_DIR="$skills" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Mod drift: not deployed: cs/tips.json" \
+        "a tips file the installer never copied is drift" || return 1
+}
+
+# A mod the installer keeps out (CS_MODS_KEPT_OUT, cs-feed) is never deployed,
+# so its source is not drift: no "not deployed" row names it.
+test_doctor_drift_skips_a_kept_out_mod() {
+    local checkout="$TEST_TMPDIR/keptmodco" deployed="$TEST_TMPDIR/keptmoddep" skills="$TEST_TMPDIR/keptmodskills"
+    make_fake_checkout "$checkout" "$deployed"
+    mkdir -p "$checkout/mods/cs/hooks" "$checkout/mods/cs-feed/hooks" "$skills/cs/hooks"
+    echo 'export const CRIT_PERCENT = 65' > "$checkout/mods/cs/hooks/register.tsx"
+    cp "$checkout/mods/cs/hooks/register.tsx" "$skills/cs/hooks/register.tsx"
+    echo 'export const FEED = 1' > "$checkout/mods/cs-feed/hooks/register.tsx"
+    local output
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" CS_SKILLS_DIR="$skills" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Deploy drift" "the scan ran to its verdict" || return 1
+    assert_output_not_contains "$output" "Mod drift" "the kept-out mod is not drift" || return 1
+}
+
 test_doctor_drift_skipped_outside_checkout() {
     local plain="$TEST_TMPDIR/not-a-checkout" deployed="$TEST_TMPDIR/deployed"
     mkdir -p "$plain" "$deployed"
@@ -1164,7 +1197,7 @@ test_doctor_statusline_caps_row_names_the_answer_or_the_ask() {
 # One row for cs's Ctrl+X bindings: the installer's recorded answer
 # and what keybindings.json holds. A healthy state is OK; a binding the user
 # holds on cs's key or on its ctrl+x prefix, keys an older cs bound that the
-# next update replaces, or a file Claude Code cannot read, is a WARN.
+# next update replaces or moves, or a file Claude Code cannot read, is a WARN.
 test_doctor_rotate_wrap_keys_row_names_the_state() {
     local cfg="$TEST_TMPDIR/ok-cfg" xdg="$TEST_TMPDIR/ok-xdg" output kb
     kb="$cfg/keybindings.json"
@@ -1180,17 +1213,44 @@ test_doctor_rotate_wrap_keys_row_names_the_state() {
     assert_output_contains "$output" "OK.*Rotate/wrap keys: declined" "answered no: declined" || return 1
 
     printf 'yes\n' > "$xdg/cs/option-keys"
-    printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' > "$kb"
+    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "OK.*Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)" \
-        "every key holds cs's values: bound" || return 1
+        "every key holds cs's values in its context: bound" || return 1
 
-    printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}}]}' > "$kb"
+    printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' > "$kb"
+    output=$(_ok_doctor)
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x r is bound outside the Chat context in $kb (run cs -update to move it)" \
+        "a command key an earlier cs put in the Global block: the next update moves it" || return 1
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x w is bound outside the Chat context in $kb (run cs -update to move it)" \
+        "both command keys are named" || return 1
+    assert_output_not_contains "$output" "Rotate/wrap keys: bound" "a file with a misplaced key is not reported bound" || return 1
+
+    # The same file under a no, and under no answer: the installer touches
+    # the file only on a recorded yes, so the advice is to move the key by
+    # hand, and the row is still a WARN, never the OK of a declined machine.
+    printf 'no\n' > "$xdg/cs/option-keys"
+    output=$(_ok_doctor)
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x r is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "answered no: the misplaced key is still named, with the move to make by hand" || return 1
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x w is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "answered no: both command keys are named" || return 1
+    assert_output_not_contains "$output" "OK.*Rotate/wrap keys" "answered no: a misplaced key is no OK row" || return 1
+    rm "$xdg/cs/option-keys"
+    output=$(_ok_doctor)
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x r is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "not asked: the misplaced key is still named, with the move to make by hand" || return 1
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x w is bound outside the Chat context in $kb (move it into a block with \"context\": \"Chat\")" \
+        "not asked: both command keys are named" || return 1
+    assert_output_not_contains "$output" "OK.*Rotate/wrap keys" "not asked: a misplaced key is no OK row" || return 1
+    printf 'yes\n' > "$xdg/cs/option-keys"
+
+    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x 1 not bound (run cs -update to bind it)" \
         "the chords an earlier cs bound, without the band's: the next update binds them" || return 1
 
-    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit"}},{"context":"Global","bindings":{"ctrl+x w":"command:wrap"}}]}' > "$kb"
+    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"chat:submit","ctrl+x w":"command:wrap"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: conflict on ctrl+x r (bound to chat:submit in $kb)" \
         "a user binding on ctrl+x r: conflict" || return 1
@@ -1205,7 +1265,7 @@ test_doctor_rotate_wrap_keys_row_names_the_state() {
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: conflict on ctrl+x r (ctrl+x is bound to \"\" in $kb)" \
         "an empty action on the prefix is named as JSON" || return 1
 
-    printf '%s\n' '{"bindings":[{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","alt+1":"command:rotate","alt+2":"command:wrap"}}]}' > "$kb"
+    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2","alt+1":"command:rotate","alt+2":"command:wrap"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: alt+1, alt+2 still hold cs's earlier bindings in $kb (run cs -update to remove them)" \
         "chords bound beside cs's alt keys: the alt keys are named" || return 1
@@ -1215,7 +1275,7 @@ test_doctor_rotate_wrap_keys_row_names_the_state() {
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: ctrl+x r not bound (run cs -update to bind it)" \
         "an older cs's alt+1/alt+2: the next update binds the chords" || return 1
 
-    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x 1":"app:redraw"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 2":"strip:jump2","alt+1":"command:rotate","alt+2":"command:wrap"}}]}' > "$kb"
+    printf '%s\n' '{"bindings":[{"context":"Chat","bindings":{"ctrl+x 1":"app:redraw","ctrl+x r":"command:rotate","ctrl+x w":"command:wrap"}},{"context":"Global","bindings":{"ctrl+x 2":"strip:jump2","alt+1":"command:rotate","alt+2":"command:wrap"}}]}' > "$kb"
     output=$(_ok_doctor)
     assert_output_contains "$output" "WARN.*Rotate/wrap keys: conflict on ctrl+x 1 (bound to app:redraw in $kb)" \
         "a user binding on a band chord: conflict" || return 1
@@ -1327,6 +1387,48 @@ test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct() {
     line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
     assert_eq "  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline" "$line" \
         "a fresh context-pct holding no reading leaves the hedged WARN" || return 1
+}
+
+test_doctor_statusline_caps_follow_a_readable_bridge() {
+    # shellcheck disable=SC2088  # the literal path is the value under test
+    local home="$TEST_TMPDIR/bridge-home" cmd='~/bridge.sh --example'
+    local state output line expected
+    mkdir -p "$home/.claude" "$home/config/cs"
+    for state in unrelated missing chains rounded; do
+        # shellcheck disable=SC2088  # the literal path is the value under test
+        cmd='~/bridge.sh --example'
+        case "$state" in
+            unrelated) printf '%s\n' '#!/bin/sh' 'printf bar' > "$home/bridge.sh" ;;
+            missing)
+                # shellcheck disable=SC2088  # the literal path is the value under test
+                cmd='~/absent.sh --example'
+                ;;
+            chains) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh" ;;
+            rounded) printf '%s\n' '#!/bin/sh' 'exec cs-statusline' > "$home/bridge.sh"
+                printf '%s\n' on > "$home/config/cs/statusline-caps" ;;
+        esac
+        jq -n --arg cmd "$cmd" '{statusLine:{command:$cmd}}' > "$home/.claude/settings.json"
+        output=$(env -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME \
+            HOME="$home" XDG_CONFIG_HOME="$home/config" CS_CLAUDE_DIR="$home/.claude" \
+            "$CS_BIN" -doctor 2> "$TEST_TMPDIR/doctor.stderr") || true
+        line=$(printf '%s\n' "$output" | grep -E 'Statusline(:| caps:)' \
+            | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+        case "$state" in
+            unrelated|missing)
+                expected="  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline"
+                ;;
+            chains)
+                expected="  [ OK ] Statusline: $cmd chains to cs-statusline
+  [WARN] Statusline caps: square until answered — run: cs -statusline caps ask"
+                ;;
+            rounded)
+                expected="  [ OK ] Statusline: $cmd chains to cs-statusline
+  [ OK ] Statusline caps: rounded (this machine's font has the Powerline caps)"
+                ;;
+        esac
+        assert_eq "$expected" "$line" "$state bridge reports its status and caps accurately" || return 1
+        assert_eq '' "$(cat "$TEST_TMPDIR/doctor.stderr")" "$state bridge produces no stderr" || return 1
+    done
 }
 
 test_doctor_subagent_statusline_ok_when_registered_and_executable() {
@@ -1557,6 +1659,7 @@ test_doctor_checks_the_tmux_session_on_the_configured_server() {
 }
 
 echo "Running doctor tests..."
+run_test test_doctor_statusline_caps_follow_a_readable_bridge
 run_test test_doctor_subcommand_exists
 run_test test_doctor_runs_default_checks_from_session
 run_test test_doctor_reports_pass_for_healthy_session
@@ -1575,6 +1678,8 @@ run_test test_doctor_drift_advice_follows_whose_the_deployed_copy_is
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift
+run_test test_doctor_warns_on_mod_tips_drift
+run_test test_doctor_drift_skips_a_kept_out_mod
 run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_skill_script_drift
 run_test test_doctor_warns_on_skill_drift
@@ -1920,11 +2025,66 @@ test_doctor_lists_every_context_injecting_hook_with_its_switch() {
     assert_output_contains "$output" "CS_CLARIFY_DISABLE" "Should name the clarify off-switch" || return 1
     assert_output_contains "$output" "CS_DATE_REMINDER_DISABLE" "Should name the date reminder off-switch" || return 1
     assert_output_contains "$output" "CS_REWRITE_DISABLE" "Should name the rewriter off-switch" || return 1
-    assert_output_contains "$output" "cs-mermaid.drawDiagrams" "Should name the diagrams section's off-switch" || return 1
-    assert_output_contains "$output" "on   diagrams" "The diagrams section reads on while function hooks are not withheld" || return 1
-    output=$(CS_NO_FUNCTION_HOOKS=1 CS_CLAUDE_DIR="$TEST_TMPDIR/claude-auth" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" "off  diagrams" "CS_NO_FUNCTION_HOOKS withholds the mod, so the section reads off" || return 1
-    assert_output_contains "$output" ".cs/local/disabled" "Should name the universal off-switch" || return 1
+    assert_output_contains "$output" ".cs/local/disabled" "Should name the hooks' off-switch" || return 1
+}
+
+_doctor_diagrams_row() {
+    local output
+    output=$("$CS_BIN" -doctor 2>&1) || true
+    printf '%s\n' "$output" | awk '$2 == "diagrams" {$1=$1; print}'
+}
+
+test_doctor_reports_the_diagram_instruction_as_on() {
+    cat > "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
+<!-- cs:mermaid-diagrams -->
+## Diagrams
+
+Mermaid flowchart fences draw in this terminal.
+EOF
+    local row
+    touch "$CLAUDE_SESSION_META_DIR/local/disabled"
+    row=$(CS_NO_FUNCTION_HOOKS=1 _doctor_diagrams_row)
+    assert_eq "on diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "the file's instruction stays on when hooks and drawing are disabled" || return 1
+    row=$(cd "$CLAUDE_SESSION_DIR" && unset CLAUDE_SESSION_DIR && _doctor_diagrams_row)
+    assert_eq "on diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "doctor finds the diagram instruction from the session working directory" || return 1
+}
+
+test_doctor_reports_the_diagram_tombstone_as_off() {
+    local row
+    unset CS_NO_FUNCTION_HOOKS
+    # shellcheck source=lib/35-claudemd.sh
+    source "$SCRIPT_DIR/../lib/35-claudemd.sh"
+    _emit_session_claude_md | sed '/^## Diagrams$/d; /^Mermaid flowchart fences /d; /^To opt out,.*cs:mermaid-diagrams/d' \
+        > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "the diagram tombstone has no instruction" || return 1
+    cat >> "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
+## Additional instructions
+
+Keep a record of the session outcome.
+EOF
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "an unmarked heading ends the diagram section" || return 1
+    printf '<!-- cs:mermaid-diagrams -->\n\n' > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
+    cat >> "$CLAUDE_SESSION_DIR/CLAUDE.local.md" << 'EOF'
+## Diagrams
+
+<!-- cs:session-commits -->
+## Committing session files
+
+Commit session files when wrapping up.
+EOF
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "a heading and another managed section do not supply diagram prose" || return 1
+    printf 'Unrelated session instructions.\n' > "$CLAUDE_SESSION_DIR/CLAUDE.local.md"
+    row=$(_doctor_diagrams_row)
+    assert_eq "off diagrams CLAUDE.local.md off: delete the prose under cs:mermaid-diagrams" "$row" \
+        "a file without the diagram sentinel has no diagram instruction" || return 1
 }
 
 test_doctor_authority_section_shows_a_disabled_injection_as_off() {
@@ -1956,6 +2116,8 @@ test_doctor_authority_section_shows_a_zero_switch_as_on() {
 }
 
 run_test test_doctor_lists_every_context_injecting_hook_with_its_switch
+run_test test_doctor_reports_the_diagram_instruction_as_on
+run_test test_doctor_reports_the_diagram_tombstone_as_off
 run_test test_doctor_authority_section_shows_a_zero_switch_as_on
 run_test test_doctor_authority_section_shows_a_disabled_injection_as_off
 

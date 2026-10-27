@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.10.10"
+VERSION="2026.10.11"
 # This build is code-sessions, a fork of cs, installed with the user's normal
 # engine configuration. install.sh uses this marker to identify the fork;
 # update checks use it to avoid replacing the fork with an upstream release.
@@ -189,12 +189,24 @@ CS_SKILL_FILES=(
     sweep/scripts/cs-shared.sh  # build.sh's copy of hooks/cs-shared.sh, which the guard sources
 )
 
+# Mod directories under mods/ the installer keeps out: experimental, their
+# source and tests in the checkout only. cs-feed is one, so the cs band, which
+# draws its feed key only beside cs-feed's /feed, draws none. Every file under
+# mods/ outside these and their test/ is in CS_MOD_FILES below
+# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
+# scan skips them.
+# shellcheck disable=SC2034  # read by cs -doctor and tests/test_install.sh
+CS_MODS_KEPT_OUT=(
+    cs-feed
+)
+
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
 CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
     cs/hooks/register.tsx
+    cs/tips.json
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
@@ -206,6 +218,19 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
 )
+
+# The cs tips file as install.sh names it in settings.json's
+# spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
+# tips, and cs's says how to turn on the band's prompt bars. Deployed with the
+# cs mod as cs/tips.json under ~/.claude/skills.
+# shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
+CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
+
+# Whether cs named its tips file, as install.sh records it: "named", or
+# "declined" once the person took the pointer out, so cs -update leaves it out.
+_cs_tips_record_file() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/cs/tips-file"
+}
 
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install
@@ -605,10 +630,13 @@ _codex_status_line_remove() {  # codex_dir
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
 # "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear) key and its wrap key. KEEP IN SYNC with
-# ROTATE_ACTION and WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
-# asks once per machine and binds them. cs -uninstall takes back only the
-# keys that still hold these values, and cs -doctor reports them.
+# band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
+# WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
+# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
+# asks once per machine and binds each in the context block Claude Code wants
+# it in (home, below): the command keys in Chat, the chords in Global, where
+# the mod reads them. cs -uninstall takes back only the keys that still hold
+# these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -625,7 +653,10 @@ CS_RETIRED_OPTION_KEYS='{"alt+1":"command:rotate","alt+2":"command:wrap"}'
 # any order, and a chord's keys split on any run of spaces. It keeps meta
 # apart from alt and leaves space and arrow glyphs as typed, which no cs key
 # uses. cs's own keys are already in that form. ours: whether a to_entries pair from a context block is one of
-# the bindings in $cs, key and value both.
+# the bindings in $cs, key and value both. home: the context block an action
+# belongs in, as Claude Code rules it (2.1.310 warns of a "command:" binding
+# in any named context but "Chat"): Chat for a command, Global for anything
+# else.
 _CS_KEYBINDING_DEFS='
     def keynorm:
         ["alt", "cmd", "ctrl", "meta", "shift"] as $mods
@@ -638,6 +669,7 @@ _CS_KEYBINDING_DEFS='
             | join("+")]
         | join(" ");
     def ours: . as $e | ($e.key | keynorm) as $k | $cs | has($k) and .[$k] == $e.value;
+    def home: if type == "string" and startswith("command:") then "Chat" else "Global" end;
 '
 
 # Claude Code reads its keybindings from its config dir. Inside an encrypted
@@ -684,27 +716,31 @@ _cs_keybindings_shape_ok() {  # file
 }
 
 # Reads a keybindings document that passed the shape check on stdin and prints
-# one line per cs key: "bound<TAB>key" when every binding of it, in any
-# context, holds cs's value; "free<TAB>key" when nothing binds it; and
-# "conflict<TAB>key<TAB>action" when something else does. A chord also
-# conflicts when its first key is bound on its own to an action, which
-# Claude Code would stop reaching once it waits for the chord's second key:
-# "conflict<TAB>key<TAB>action<TAB>prefix". Keys compare as keynorm spells
-# them. An action that is not a non-empty string (a null that unbinds the
-# key, an empty "") prints as JSON, so no field is ever empty; a null on the
-# prefix is no conflict, as it binds nothing.
+# one line per cs key: "bound<TAB>key" when every binding of it holds cs's
+# value and sits in a block of the action's home context; "misplaced<TAB>key<TAB>home"
+# when every binding holds cs's value but one sits in a block of another
+# context (a block with no context counts as another); "free<TAB>key" when
+# nothing binds it; and "conflict<TAB>key<TAB>action" when something else
+# does, in any context. A chord also conflicts when its first key is bound on
+# its own to an action, which Claude Code would stop reaching once it waits
+# for the chord's second key: "conflict<TAB>key<TAB>action<TAB>prefix". Keys
+# compare as keynorm spells them. An action that is not a non-empty string (a
+# null that unbinds the key, an empty "") prints as JSON, so no field is ever
+# empty; a null on the prefix is no conflict, as it binds nothing.
 _cs_rotate_wrap_keys_status() {
     jq -r --argjson cs "$CS_ROTATE_WRAP_KEYS" "$_CS_KEYBINDING_DEFS"'
         def show: if type == "string" and length > 0 then . else tojson end;
-        [.bindings[] | (.bindings // {}) | to_entries[] | .key |= keynorm] as $all
+        [.bindings[] | .context as $ctx | (.bindings // {}) | to_entries[] | .key |= keynorm | .ctx = $ctx] as $all
         | $cs | to_entries[] | . as $c
-        | [$all[] | select(.key == $c.key) | .value] as $vals
+        | [$all[] | select(.key == $c.key)] as $hits
+        | [$hits[] | .value] as $vals
         | ($c.key | split(" ") | if length > 1 then .[0] else null end) as $prefix
         | [$all[] | select(.key == $prefix and .value != null) | .value] as $pvals
         | if any($vals[]; . != $c.value) then
             "conflict\t\($c.key)\t\([$vals[] | select(. != $c.value)][0] | show)"
           elif ($pvals | length) > 0 then "conflict\t\($c.key)\t\($pvals[0] | show)\t\($prefix)"
           elif ($vals | length) == 0 then "free\t\($c.key)"
+          elif any($hits[]; .ctx != ($c.value | home)) then "misplaced\t\($c.key)\t\($c.value | home)"
           else "bound\t\($c.key)"
           end'
 }
@@ -719,13 +755,14 @@ _cs_keybindings_held() {  # bindings-json
 
 # Prints a keybindings document on stdin, compact, without the bindings in the
 # JSON object $1 (key and value both; a key bound to anything else stays). A
-# Global block left empty goes; another context keeps its block.
+# block that held one of them and is left empty goes, whatever its context; a
+# block that held none is never touched, so a user's own empty block stays.
 _cs_keybindings_strip() {  # bindings-json
     jq -c --argjson cs "$1" "$_CS_KEYBINDING_DEFS"'
         .bindings |= map(
             if any((.bindings // {}) | to_entries[]; ours) then
                 .bindings |= with_entries(select(ours | not))
-                | select(.bindings != {} or .context != "Global")
+                | select(.bindings != {})
             else . end)'
 }
 
@@ -931,7 +968,9 @@ CS_KNOWN_SHA256=(
     1e4acc72345786a71a0b5a6ce90f548244461d58e62900f63107f23f14b07844
     1e7c8bad72a05236a0e6f5105ddda4c039cfb32968be3201632e87b3e60770bf
     1f549cd11c1de9844b5be3dd812915d980eb9dcced03e2ae3eb14ca079551b76
+    1fa475982564ec70f12bf5295b874989dd95f89224f27bb6be4854cc5b8674e3
     204b2d932f67a7466dfea7693788be0f3d58ff4da4e5c28aa7672320cf159290
+    21988bf58bb6fea15c6435445f4abc3a38f4c4a9a7db78c4ff4797650709ba3f
     21fb7eb420f27d31852065fadd4e5c95d5fd1a5f3eea492c36e90fc9b850571a
     22004c7b13bf5e590c5fa6ad503f4ecdb7f669716d3040f31ba2f1e44d98fc9d
     224d290a440af47aee9e4a9f5da3c3171d7ef552cefef4036b3f4c795cdd4941
@@ -971,6 +1010,7 @@ CS_KNOWN_SHA256=(
     2ab644f66e9ef38772c7e8dd195f198f183f4b985fdad6b3ca0c7660208773d1
     2ae3d6cd2229f809fae6682aa6736afbf4ceae98b652c7f9949a3ea6554d5900
     2b00f626623f3da472b4c9616bd76e5a2a5299ec023b774c31cf361d48c2d228
+    2b0d7ce6873d4b62ca3ed52d5f6c7ffa98bdeda7e9bb5d393e70ab516b943cd7
     2b30c9ecc0cbc5299f6a30acc1ed7529eb9718599c63eb681496e47b519276f7
     2c31f90f9bc790547ea62c2e3053e04f0e0542d1ae2a0fe098ecd0e71e380b8d
     2d24e2758eb1b80a3173dfc87fe4c2b82ca01b028bf8c70791279a6ddc97c99d
@@ -1046,6 +1086,7 @@ CS_KNOWN_SHA256=(
     426b2cc21275aa4e1744dc6aec7637e28252376575888abb75a80f36fd4e1220
     42a14da239b23981c7d266ec0a263a26b1f718a753609c40cc0ebc3ede323f19
     42c11ba435180ff88af18b4a0b6cb873915e33d2bd730667b8e867b8f049f638
+    42e81979965715204eb41428c1a227f170a14ab3919f2a6122cddd688425377f
     434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a
     4365c08a58d5f8e516f616b2e6f50cbe74fd5e79c7b702a15cd2f16e94f88cf0
     437556e188d3eb18f1ea91b6d110ecc8ff9421e0ece220150cb7d5918fafdd5f
@@ -1103,6 +1144,7 @@ CS_KNOWN_SHA256=(
     560dda6b6a482b42ccbd4d49e9c8289bec99484ccc19fbd53776620f3422ff5c
     562178fcf7c507791833069cb453df8749267b563f0666fa369145e77873c289
     56eb3b809c4e772f901a63b4130ce022f0d40dc801e096fba0c53d9f0bd42a1f
+    57b11a23b9eaba0c4487db3e4e294f1b7e1c339fdec2551163c0a9b9f5e55dd5
     57de68f2ef5018795e838ff74e56e612e14ce9a36163b32460d972bd227018e2
     57dfa07fad29450b172ecbaa948b34bc7427e0ec6ec321039cd628df20c4cb0e
     5860bb2ea5ce7059f687cb70882510db5b7a0d05bc254fc82f1d761f0a40e2d2
@@ -1120,6 +1162,7 @@ CS_KNOWN_SHA256=(
     5c77b343097cf6e2593e8711fe2a44e2b851dc9a8bcdaff8dbb73f3d71e3a149
     5cf7063b197810dac48087880266e13830a6c049823012ed3ff2bfe8d83f0a87
     5d4ef723adff8fa8731f28c11d85564aa8ecdf289a9cba5b21e5e28941e8364b
+    5d5a289944d88a3b255095d9341172f893690a205fa77f486d3f812967b3133c
     5d68a36006f7de3b41197fff595ccadfbe03156b522fb957df54040cbea414db
     5d6fd0c8f276a375a81ef901169bf5089b44acd3b21effd6e6a8ad3f797df716
     5d931edefcafb3f8b878ed1329cfdd88a7b3629c9748e83c613e2e5e11c660dd
@@ -1200,6 +1243,7 @@ CS_KNOWN_SHA256=(
     77087584b6ea2557b4d10d834e7438ba9696667adcfc7ff65a72b838405b9bcc
     7710e311b213a88b6582d21a46257d7cd41b309e483b1122827085d59a7ee14e
     7727af041972b9eb7379b9a99e3c3741f5a5a259b84f7b71f99b46a6eb87290a
+    77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084
     77d28d2de360759d5c53e919e2ffbd3a4f280d5e16a24ca45b3cb601ee515ec6
     78923b486ec6e119b2690077c5270355a7b6609ff13be7507fdcb725040c396f
     7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922
@@ -1249,6 +1293,7 @@ CS_KNOWN_SHA256=(
     82f39a577629a00c02ff690ee1658932eec10600db8b946f2b2c91378d1b6341
     833807fa71c0b4d6acfd7530ab5c770fe03b433aedc4d6a6a1ca5885e8bfc526
     8374df476483cc2c2d08525d368880796c095505dc4ed57232fc8ff10fa43465
+    8377b722bd856d5ca918bb9ffea2cfb3e0a0077ee0b9441a1f52461fd7282739
     838b1be43a8cfaa0403c4124018d911d2f8ca1f94947df9e221ec3a3dd525e19
     83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085
     8453f115c8074712bfeb17db0b78103f8372bac8307a8e0a9d921676f17b5777
@@ -1256,6 +1301,7 @@ CS_KNOWN_SHA256=(
     84f1aa5ff1891164aa705a086b40b135c065fab27a1dc86b0d5517119cfb7189
     855718f4de58685684c57676168c473e4789d1ee1fb87adb53fbe916ba8176b6
     857f8f99f445977770250660a0970de8d27795998013700f86afc7f0b4170fa1
+    85a1e25d7953943ec6fbd53b65765a928b06a59595abaf71e2d86e7888c8dd8c
     85c0b95b6d2f26b307f1b5f02afd1d7be75deacbf8372013a5bd70c6ed22f5dd
     85eed2ed78ad31901e690f600aa10b13b5e600cd181c67cf30224c271ca06eb2
     862f4e1c5d4f98ddce0f443f65e3ffb95e0efd942e7bf1bf757729f1186d4e84
@@ -1286,6 +1332,7 @@ CS_KNOWN_SHA256=(
     8da12449f3607f9c942a8a9d40e23bfbac45da442eedc385a378ad1194460b72
     8de41999f6035d8ec0c1eb1c0e7871221379da9b9f33037f13bea39a8cd641b2
     8e2613a762baad5c0d336262f6127e6048997331112dbbd5560726cf78b0a06b
+    8e4c93e404bcc99dc8a2651ac1dd5d064779216e44a40c1250e88c7a52d9d81d
     8eae23e70f8beb9093d2d50ac2e38653b696b1a431a0456bffac36579ba0f6bb
     8f1d91ea88758660427516a7f21fa5a6f103e4d6fe0faa701f6b5bf3f6c5f286
     8f3a4ed524b5394135490ecfbe9dab188a6862be0bc5bb95123ef07072be9722
@@ -1294,6 +1341,7 @@ CS_KNOWN_SHA256=(
     8fa1e49f6495e929657b17d4d2e1363a6c6d76d02570b683e0835123a5124a81
     8faa6f4b66eca22b81120262f36ca96798cb043fb648f46f6885ce535812dc23
     8fb93e147c6a039e5e2f894cd8b47d6f97e5e3c22ede3e39b7bda8bc7dd6ad25
+    8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f
     901de4ef794f18d507eeb9ace66fdcde1916a0c91b30d936d89be70a1c7728eb
     9095b5959a41bfc59d99f31bef728913eed4d64aa117dcc0b27a4e8759591504
     919de3573a871a679c241f7f34ca32c35eff5650095d8aa9fe8f3fa9142ad744
@@ -1340,6 +1388,7 @@ CS_KNOWN_SHA256=(
     a023106422b7da72b416e657a69a14f11228c3d83ecbf5014c89de3de8830d1f
     a044d10d8318387cfd8bb32c139091441e4e212ac86de555a19e51243a8d261b
     a0dab6b308937978b9667d2a2e637147e4964f3bca13f8a88a3b019bd8d8a787
+    a0e341d4bdc60072b25354256e751b320733cdcc31b91ac3d4a4f661c73b611e
     a1c982069b82b0f7ddfcca4aaceecb816956b1d5cb24201b04b250fba21fdd42
     a1d2c2be60ba9898eda0d093883860c64b86286c90916d7aec2f36a5d0f79e9c
     a1d8b9b5021ba8071bebdb7e47d3da458629435c64603b7b0afd92dba94572bd
@@ -1356,6 +1405,7 @@ CS_KNOWN_SHA256=(
     a3c49a03923b0229fcb316cbef98e8028a6f3c5037ff0bcbace384d91cda3d0d
     a3e3d24f6ff2394336e5c54bb0755198b7f8af3e6f440c756aecf80e58131f86
     a3faacf9d06adcc0127b6dacbf9f360488f0d1695add299aaa94cdb7541649bd
+    a4486c60d3db91c0a466fb154602eec888ffeb5a9942d74d2c8aac92b8dd7c32
     a47433266497d2a7c77c58e626448cb3732b00101447864e47662a9e7730ca50
     a4fa7ea3be9dd335f8959abbd3adf71e18f7eea563b49305ceb715090b7a2bf7
     a4fef399d4c84c5b30e2a13c1f6b9a3a062c78136d3365b131aa0f041f455a98
@@ -1454,6 +1504,7 @@ CS_KNOWN_SHA256=(
     c256ccde30abcb1fa303c031107de458e3c93698127cf2ca7c5efee62ec6a80e
     c265f33ee7863e4d5ce2691c62f7eda90c6f7b6b315f7a864781ff9ceee40d3c
     c2af6154d1152c7ea99ae879bf09dc33f6fe05e4690675f2f54df73110eb77d1
+    c3abc90866d30594959e68f8259d5155bbf0b9ed3d27b69da63fe78a116c712d
     c44867e1f7f1fe6107d1d6d10232888d538402387da5ad0fbe29e9a8fa046978
     c4688a9bc8cfb8f906a73aebc4ecf8d81fb70db4e2f0bfb4a15ce7c1df1aa01e
     c48345ba1cb8d6b70c50dc7031fc66f4d180df819e8f735639e13780d0d51cc1
@@ -1487,6 +1538,7 @@ CS_KNOWN_SHA256=(
     cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112
     cf9a1df777a17e3357afa961119d4679e278d601eae1be9a9f669dffa804de6b
     cfa6e2a49680a2ceaad9b83680f4a237a5fe3e4ceb3d5e13c329e6676a334c69
+    cfe8c63090aeb6d585b47ef65cae403fa214d8e466036eebb2e1b8ef654ee764
     d02a72080f391a3c3a43abac5c2e6c970740f81d0ec2806f91a2e79edf7a23e6
     d08d59e89b945b670e0f8de873a6ee8d312df3c92cc9b4c5d27c91bde04ed04f
     d10f43e48dbd9f1f8237312a8b57a35f9c37643ec3fccc39718193c569fdc643
@@ -1538,6 +1590,7 @@ CS_KNOWN_SHA256=(
     e2af3787bbe2b388935eaf3fecf78cb1ffbe6f5f7378cd31ed591a1332342654
     e2b6c941d81d92e86aff4d52ff20ae67f684fa2768e7523894ea7e69f16de813
     e31756429720365401dd7382d2950624eb50785fa5289b522ae7e356d64a355e
+    e31c75e10bc0cc8490691c61862c7865e7cda831f1ac1ec841e5ebe831204ea2
     e37ee1992d0e21c0367aa4f343d4731336e85b6485b53c4f98800e0e188b6d9c
     e391cc894446ae6df04a74458858a48a28621939d1af6968bf1a785c3e88fc06
     e39739a76769350d67a4b7c54cf8ae86acdf18816e33a49c1a683e87a53f6f75
@@ -1595,6 +1648,7 @@ CS_KNOWN_SHA256=(
     f7f7f0a7d02bb3d33ef03a93bda2cbaf4bc1576e98619bd7b423af052c11927b
     f8070db302a21fcc3f76890379ad48a1b1c4b586aa60960e1755b2ec806923f6
     f8202c20e7f98a8b6b349098e2c506277eb4216334ee2b55f77a158ff7b2eb83
+    f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e
     f84b42e11a850d734890099ebef7a91f9851b016e24736c0f344e6149140f06c
     f89a953b96b7869fcf27973120976f7a97f2095980b4bee010b1bb83abea6104
     f8d03e72b9208f5ba2f3c696b4878602c8a15807b2bed6a39275f5f9cc81b5e8
@@ -1606,6 +1660,7 @@ CS_KNOWN_SHA256=(
     fb0e8187671a15daa8246d3f677adb948b09ea6ce39a2eaf4f21ead6148b307d
     fb33250d3abde8e902bcea4cf47e972b886dcbfe377e1a052b933017677b6432
     fb469f4c48f7f5349d37de997fc49db00f1fc34ecabdc7f9f3aa970d65966921
+    fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054
     fbb3ca4863c2032e0e2bbe9a409cb0a515f2b5d308519f2b5e2111423331764b
     fc0f047f5cec5ba2ff999c7c16275df474ea7c364ba5fee76306da11d8addbff
     fc2a73985eab32b26946f2501cfc6d124d280fcdc6097dca768f880adedcfaf3
@@ -2795,6 +2850,9 @@ cs_vault_holder_drop() {  # holders, pid
 # "<file> is not a regular file, so cs did not read it; left it unchanged".
 # That test comes first: -s is false for a FIFO or a device, as for a
 # missing file, so the size alone would pass one as a file cs creates.
+# Claude Code reads the file as one object, and every cs filter indexes it as
+# one, so valid JSON of another type returns 1 with "<file> holds a JSON
+# <type>, not an object; left it unchanged".
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 cs_settings_check() {  # file
     local reason
@@ -2804,7 +2862,15 @@ cs_settings_check() {  # file
         return 1
     fi
     [ -s "$1" ] || return 0
-    reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
+    if reason=$(jq -e . 2>&1 >/dev/null < "$1"); then
+        reason=$(jq -r 'type' < "$1")
+        case "$reason" in
+            object) return 0 ;;
+            *$'\n'*) CS_SETTINGS_ERROR="$1 holds more than one JSON value, not one object; left it unchanged" ;;
+            *) CS_SETTINGS_ERROR="$1 holds a JSON $reason, not an object; left it unchanged" ;;
+        esac
+        return 1
+    fi
     reason="${reason%%$'\n'*}"
     reason="${reason#jq: }"
     [ -n "$reason" ] || reason="jq found no JSON value in it, or only null or false"
@@ -3072,8 +3138,11 @@ cs_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypted se
     ' 2>/dev/null) || MAIL_DIGEST=""
     MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | env LC_ALL=C tr -d '\000-\010\013-\037\177')
 }
-# Minisign public key for verifying signed releases
-CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
+CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+# Revoked release keys, one per line. cs -update reads this declaration out
+# of a downloaded installer as data: exactly one declaration, single-quoted.
+CS_RELEASE_REVOKED=''
+
 # Colors - Claude warm palette (rust → orange → gold). Theme-aware: the dark
 # values assume a dark canvas; on a light terminal the muted tones (comment,
 # white, dim) would wash out, so light gets darker ink mirroring the TUI palette.
@@ -3176,80 +3245,9 @@ _trim() {  # text
     printf '%s' "$s"
 }
 
-# Detect the outer terminal, even when running inside tmux.
-# tmux overrides TERM_PROGRAM, so we check LC_TERMINAL and ITERM_SESSION_ID as fallbacks.
-_detect_terminal() {
-    local term="${TERM_PROGRAM:-}"
-    if [ "$term" = "tmux" ] || [ -n "${TMUX:-}" ]; then
-        # Inside tmux: check env vars that survive from the outer terminal
-        if [ "${LC_TERMINAL:-}" = "iTerm2" ] || [ -n "${ITERM_SESSION_ID:-}" ]; then
-            echo "iTerm.app"
-        elif [ "${LC_TERMINAL:-}" = "WezTerm" ]; then
-            echo "WezTerm"
-        else
-            echo "tmux"
-        fi
-    else
-        echo "$term"
-    fi
-}
-
-# Send an escape sequence, using tmux DCS passthrough when inside tmux.
-# tmux intercepts proprietary escape sequences (like iTerm2 tab color) unless
-# wrapped in: ESC P tmux ; ESC ESC <payload> ESC backslash
-# (ESC must be doubled inside the DCS payload per tmux protocol)
-_send_escape() {
-    if [ -n "${TMUX:-}" ]; then
-        printf '\033Ptmux;\033\033%b\033\\' "$1"
-    else
-        printf '\033%b' "$1"
-    fi
-}
-
-# Pick a tab color deterministically from a string (e.g., session name).
-# Same name always produces the same color for visual consistency across launches.
-_color_from_name() {
-    local name="$1"
-    local colors=(
-        "255,82,82"     # red
-        "255,152,0"     # orange
-        "255,193,7"     # amber
-        "198,255,0"     # chartreuse
-        "76,175,80"     # green
-        "0,150,136"     # teal
-        "0,188,212"     # cyan
-        "3,169,244"     # sky blue
-        "92,107,192"    # indigo
-        "149,117,205"   # purple
-        "236,64,122"    # pink
-        "255,138,101"   # coral
-    )
-    # shasum first, so a box that has it keeps the colors it already shows;
-    # coreutils-only Linux and WSL carry sha256sum instead, and cksum is the
-    # POSIX floor beneath both. With none of them the digest is empty, every
-    # name lands on the same color, and the missing command complains on stderr
-    # at every tab change — the determinism above is the whole point.
-    local hash=""
-    if command -v shasum >/dev/null 2>&1; then
-        hash=$(printf '%s' "$name" | shasum | cut -d' ' -f1)
-    elif command -v sha256sum >/dev/null 2>&1; then
-        hash=$(printf '%s' "$name" | sha256sum | cut -d' ' -f1)
-    fi
-    local index
-    if [ -n "$hash" ]; then
-        index=$(( 16#${hash:0:8} % ${#colors[@]} ))
-    else
-        local sum
-        sum=$(printf '%s' "$name" | cksum 2>/dev/null | cut -d' ' -f1) || sum=""
-        case "$sum" in ''|*[!0-9]*) sum=0 ;; esac
-        index=$(( sum % ${#colors[@]} ))
-    fi
-    echo "${colors[$index]}"
-}
-
-# Map a claude_session_color name to its RGB (comma form for set_tab_title).
+# Map a claude_session_color name to its RGB (comma form, for the session pill).
 # These are Claude Code's own /color palette (the shared dark/light theme
-# `*_FOR_SUBAGENTS_ONLY` tokens): the tab color and Claude Code's own session
+# `*_FOR_SUBAGENTS_ONLY` tokens): the pill and Claude Code's own session
 # accent share the statusline's eight-color palette. KEEP IN SYNC with the
 # session palette in _sgr (bin/cs-statusline).
 _session_color_rgb() {
@@ -3286,7 +3284,7 @@ _session_pill() {
         "$ICON_LOGO" "$rgb" "$name"
 }
 
-# Set terminal tab title and optional tab color.
+# Set terminal tab title.
 # Uses standard xterm escape sequences (works in iTerm2, Terminal.app, Ghostty, Alacritty, WezTerm, etc.)
 # Also sets tmux window name when running inside tmux.
 set_tab_title() {
@@ -3297,10 +3295,7 @@ set_tab_title() {
     [ -t 1 ] || return 0
 
     local title="$1"
-    local color="${2:-}"  # optional: "blue", r,g,b values, or "auto:name" to hash from name
-    local session="${3:-}"  # optional: the cs session, to share a tmux window's name with its other panes
-    local outer_term
-    outer_term=$(_detect_terminal)
+    local session="${2:-}"  # optional: the cs session, to share a tmux window's name with its other panes
 
     # Standard xterm OSC 0: set window and tab title (also sets tmux pane title)
     printf '\033]0;%s\007' "$title"
@@ -3319,33 +3314,9 @@ set_tab_title() {
         tmux set-window-option ${TMUX_PANE:+-t "$TMUX_PANE"} allow-set-title off 2>/dev/null || true
     fi
 
-    # Tab color via iTerm2 escape sequences (also supported by WezTerm)
-    if [ -n "$color" ]; then
-        case "$outer_term" in
-            iTerm.app|WezTerm)
-                local r g b
-                case "$color" in
-                    auto:*)
-                        # Derive color from name hash
-                        IFS=',' read -r r g b <<< "$(_color_from_name "${color#auto:}")"
-                        ;;
-                    blue) r=66  g=133 b=244 ;;
-                    *)
-                        # Accept r,g,b format
-                        IFS=',' read -r r g b <<< "$color"
-                        ;;
-                esac
-                if [ -n "${r:-}" ] && [ -n "${g:-}" ] && [ -n "${b:-}" ]; then
-                    _send_escape "]6;1;bg;red;brightness;${r}\a"
-                    _send_escape "]6;1;bg;green;brightness;${g}\a"
-                    _send_escape "]6;1;bg;blue;brightness;${b}\a"
-                fi
-                ;;
-        esac
-    fi
 }
 
-# Reset terminal tab title and color to defaults
+# Reset terminal tab title to its default
 reset_tab_title() {
     # Symmetric with set_tab_title: skip when not on a TTY
     [ -t 1 ] || return 0
@@ -3365,14 +3336,6 @@ reset_tab_title() {
         tmux set-window-option allow-set-title on 2>/dev/null || true
     fi
 
-    # Reset tab color (iTerm2/WezTerm)
-    local outer_term
-    outer_term=$(_detect_terminal)
-    case "$outer_term" in
-        iTerm.app|WezTerm)
-            _send_escape ']6;1;bg;*;default\a'
-            ;;
-    esac
 }
 
 show_help() {
@@ -3442,7 +3405,7 @@ Commands:
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
   -vet-session <dir>  Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
   -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but from inside a session not for another session's live one, nor for a base with a live feature unless run from that base; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
-  -secrets <cmd>      Manage current session secrets (requires CS_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live, and a feature's write to its base's while a sibling feature is live)
+  -secrets <cmd>      Manage current session secrets (requires CS_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live, and a feature's write to its base's while a sibling feature is live, except a set of a name the base does not hold yet)
   -update             Update cs to latest version
     --check, -c       Check for updates without installing
     --force, -f       Force reinstall even if up to date
@@ -3475,6 +3438,10 @@ Environment:
   CS_STATUSLINE_SEGMENTS  Status line segments, csv order (default:
                           logo,session,notes,mail,git,model,ctx,limits;
                           'cost' also available, off by default)
+  CS_STATUSLINE_LAYOUT    Status line layout: quiet (default), the items as
+                          text on the terminal; band, a full-width row fading
+                          from CS_STATUSLINE_BAND (a palette name, r;g;b,
+                          session, none) into the terminal; or capsules
   CS_TERM_THEME           Override terminal theme detection (light|dark);
                           cs -detect-theme shows what detection yields.
                           Under tmux, detection queries the outer terminal via
@@ -4125,15 +4092,48 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
 }
 # --- Release verification ---
 
+# Verifies a release manifest against its signature: manifest, signature,
+# release version. The signature is bound to the release through its
+# namespace, cs-release-v<version>, so a manifest signed for one tag never
+# verifies another.
+_verify_manifest() {  # manifest, signature, version
+    (
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
+            exit 1
+        fi
+        trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
+        trap 'rm -rf "$trust_dir"' EXIT
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
+        local revocation_args=()
+        [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
+            -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            # The verifier's own reason, then the fixed diagnostic last.
+            tail -n 5 "$trust_dir/verify.log" >&2
+            printf '%s\n' 'Release manifest signature verification failed.' >&2
+            exit 1
+        fi
+    )
+}
+
 # Verify SHA-256 checksum (hard gate — always runs)
 verify_checksum() {
-    local file="$1" checksumfile="$2"
+    local file="$1" checksumfile="$2" asset="${3:-${1##*/}}"
     local expected actual
-    expected=$(awk '{print $1}' "$checksumfile")
+    expected=$(awk -v asset="$asset" '
+        $2 == asset {
+            count++
+            if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) bad=1
+            digest=$1
+        }
+        END { if (count != 1 || bad) exit 1; print digest }
+    ' "$checksumfile") || return 1
     if command -v sha256sum &>/dev/null; then
-        actual=$(sha256sum "$file" | awk '{print $1}')
+        actual=$(sha256sum "$file" | awk '{print $1}') || return 1
     elif command -v shasum &>/dev/null; then
-        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+        actual=$(shasum -a 256 "$file" | awk '{print $1}') || return 1
     else
         # Fail closed: a verification gate that can't verify must not pass.
         echo "Error: no sha256sum or shasum found — cannot verify download. Install one and retry." >&2
@@ -4142,13 +4142,105 @@ verify_checksum() {
     [ "$expected" = "$actual" ]
 }
 
-# Verify minisign signature (soft gate — only if minisign installed)
-verify_signature() {
-    local file="$1" sigfile="$2"
-    local ms_bin
-    ms_bin=$(command -v minisign 2>/dev/null) || ms_bin="${CS_INSTALL_DIR:-$HOME/.local/bin}/minisign"
-    [ -x "$ms_bin" ] || return 0
-    "$ms_bin" -Vm "$file" -P "$CS_SIGN_PUBKEY" -x "$sigfile" >/dev/null 2>&1
+_check_revocation_carry_forward() {
+    local installer="$1" key installed
+    # Parse the literal declaration as data, without executing the installer.
+    awk -v quote="'" '
+        function keyline(line, parts, n) {
+            if (line == "") return
+            n=split(line, parts, /[ \t]+/)
+            if (n < 2 || parts[1] != "ssh-ed25519" || parts[2] ~ /[^A-Za-z0-9+\/=]/) {
+                bad=1
+                return
+            }
+            print parts[1] " " parts[2]
+        }
+        /^[[:space:]]*(export[[:space:]]+)?CS_RELEASE_REVOKED[[:space:]]*=/ {
+            count++
+            if (active || index($0, "CS_RELEASE_REVOKED=" quote) != 1) { bad=1; next }
+            active=1
+            $0=substr($0, length("CS_RELEASE_REVOKED=" quote)+1)
+        }
+        active {
+            end=index($0, quote)
+            if (end) {
+                if (end != length($0)) bad=1
+                keyline(substr($0, 1, end-1))
+                active=0
+            } else keyline($0)
+        }
+        END { if (count != 1 || active || bad) exit 1 }
+    ' "$installer" > "$installer.revoked" || error "Malformed CS_RELEASE_REVOKED in downloaded installer."
+    installed=$(printf '%s\n' "$CS_RELEASE_REVOKED" | awk '
+        NF {
+            if (NF < 2 || $1 != "ssh-ed25519" || $2 ~ /[^A-Za-z0-9+\/=]/) exit 1
+            print $1 " " $2
+        }
+    ') || error "Malformed installed CS_RELEASE_REVOKED."
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        grep -qxF "$key" "$installer.revoked" || error "Release dropped revoked key: $key"
+    done <<< "$installed"
+}
+
+# Offers a pending release once, on a terminal, before the session opens:
+# y runs the update and starts this same launch again on the new cs; any
+# other key records the version as declined, so the launch does not ask
+# again and the cs-update mod says the release is there in one line instead
+# of opening its pane, until a newer one is pending. No terminal, or a
+# window cs opened itself (cs -spawn, cs --remote inside tmux), no question:
+# the banner's line and the pane carry the release. Nor is a release asked
+# about before its SHA256SUMS.sig downloads, which cs -update needs.
+# Takes the launch's own arguments, which the relaunch repeats; the relaunch
+# carries CS_UPDATE_PROMPTED so the new cs, should it still see the same
+# version pending (a checkout launch, which no update replaces), does not
+# ask in its turn. code-sessions never asks: cs -update would replace the fork
+# with the original cs (refuse_in_code_sessions), so check_update_notify's
+# notice, which names the sync script, is all it shows.
+offer_update_at_launch() {  # "$@": this launch's arguments
+    [ -n "$UPDATE_AVAILABLE" ] || return 0
+    [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ] || return 0
+    if [ "${CS_UPDATE_PROMPTED:-}" = "$UPDATE_AVAILABLE" ]; then
+        unset CS_UPDATE_PROMPTED
+        return 0
+    fi
+    unset CS_UPDATE_PROMPTED
+    local declined=""
+    if [ -f "$UPDATE_DECLINED" ]; then
+        IFS= read -r declined < "$UPDATE_DECLINED" || true
+    fi
+    if [ "$declined" = "$UPDATE_AVAILABLE" ]; then
+        UPDATE_DECLINED_PENDING=1
+        return 0
+    fi
+    # _cs_tmux_window sets CS_UNATTENDED on every window it opens: a pane
+    # nobody watches is still a terminal, and the read below would wait there
+    # for good.
+    cs_interactive && [ -z "${CS_UNATTENDED:-}" ] || return 0
+    # A release goes up a few minutes before its manifest signature, and
+    # cs -update refuses it until then. A signature that does not download
+    # (not up yet, offline, too slow) means no question this launch and
+    # nothing kept, so the first launch after it lands asks.
+    curl -fsSL --connect-timeout 2 --max-time 4 \
+        "${RELEASES_BASE}/download/v${UPDATE_AVAILABLE}/SHA256SUMS.sig" -o /dev/null 2>/dev/null \
+        || return 0
+    local answer=""
+    printf '\n  %bcs %s is available%b %b(you have %s)%b. Update now? %b[y/N]%b %b›%b ' \
+        "$BOLD$GREEN" "$UPDATE_AVAILABLE" "$NC" "$DIM" "$VERSION" "$NC" "$DIM" "$NC" "$GOLD" "$NC"
+    IFS= read -rsn1 answer || answer=""
+    echo
+    case "$answer" in
+        [yY])
+            if "$0" -update; then
+                CS_UPDATE_PROMPTED="$UPDATE_AVAILABLE" exec "$0" "$@"
+            fi
+            warn "cs -update did not finish; continuing with cs $VERSION (run cs -update later)"
+            ;;
+        *)
+            cs_write_atomic "$UPDATE_DECLINED" printf '%s\n' "$UPDATE_AVAILABLE" || true
+            UPDATE_DECLINED_PENDING=1
+            ;;
+    esac
 }
 
 # --- Update mechanism ---
@@ -4417,6 +4509,8 @@ do_update() {
     local is_upgrade=false
     if version_greater "$remote_version" "$VERSION"; then
         is_upgrade=true
+    elif version_greater "$VERSION" "$remote_version"; then
+        error "Release v${remote_version} is older than the installed cs ${VERSION}. Update aborted."
     fi
 
     echo ""
@@ -4436,28 +4530,28 @@ do_update() {
     trap 'rm -rf "$_CS_UPDATE_TMPDIR"' EXIT
     local tmpdir="$_CS_UPDATE_TMPDIR"
 
-    # Download install.sh + checksum + signature from release assets
     curl -fsSL "$releases_url/install.sh" -o "$tmpdir/install.sh" || {
         error "Failed to download installer."
     }
-    curl -fsSL "$releases_url/install.sh.sha256" -o "$tmpdir/install.sh.sha256" || {
-        error "Failed to download checksum."
+    curl -fsSL "$releases_url/SHA256SUMS" -o "$tmpdir/SHA256SUMS" || {
+        error "Failed to download release manifest."
     }
-    # Signature file is optional (best-effort): a release without one is
-    # checked by its checksum alone, so a failed fetch must not end the update.
-    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null || true
+    curl -fsSL "$releases_url/SHA256SUMS.sig" -o "$tmpdir/SHA256SUMS.sig" || {
+        error "Failed to download release manifest signature."
+    }
 
-    # Verify checksum (hard gate)
-    if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/install.sh.sha256"; then
+    if ! _verify_manifest "$tmpdir/SHA256SUMS" "$tmpdir/SHA256SUMS.sig" "$remote_version"; then
+        error "Release manifest signature verification failed. Update aborted."
+    fi
+    if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/SHA256SUMS"; then
         error "Checksum verification failed. Update aborted."
     fi
-
-    # Verify signature if minisign available (soft enhancement)
-    if [ -f "$tmpdir/install.sh.minisig" ]; then
-        if ! verify_signature "$tmpdir/install.sh" "$tmpdir/install.sh.minisig"; then
-            error "Signature verification failed. Update aborted."
-        fi
+    # The installer fetches its payload from the ref it names; a verified
+    # installer pinned to another tag would install another release.
+    if ! grep -qxF "CS_DEFAULT_REF=v${remote_version}" "$tmpdir/install.sh"; then
+        error "Downloaded installer is not pinned to v${remote_version}. Update aborted."
     fi
+    _check_revocation_carry_forward "$tmpdir/install.sh"
 
     info "Verified"
 
@@ -4497,6 +4591,14 @@ do_update() {
 UPDATE_CACHE="${CS_CACHE_DIR:-$HOME/.cache/cs}/update-check"
 UPDATE_CHECK_INTERVAL=3600  # 1 hour in seconds
 UPDATE_AVAILABLE=""  # Set by check_update_notify if update available
+# The one pending version the person answered "no" to at launch: that version
+# is not offered again, at launch or by the cs-update pane.
+UPDATE_DECLINED="${CS_CACHE_DIR:-$HOME/.cache/cs}/update-declined"
+# Set when the pending release is the one declined at launch: the cs-update
+# mod then says so in one line instead of opening its pane. Read by the
+# launch's exports in lib/75-launch.sh.
+# shellcheck disable=SC2034
+UPDATE_DECLINED_PENDING=""
 
 check_update_notify() {
     # Opt out of the network check + cache write (tests set this so a session
@@ -5514,7 +5616,9 @@ _feature_readiness() {  # base_name task
 
     # State is the first blocker retire_feature_worktree would hit, in its order.
     local state="ready"
-    if [ "$lock" != "none" ]; then
+    if [ "$lock" = "worktree" ] && [ -f "$base_dir/.cs/local/retire-staged/$task" ]; then
+        state="staged"
+    elif [ "$lock" != "none" ]; then
         state="locked"
     elif [ "$wt_dirty" = 1 ]; then
         state="dirty"
@@ -5597,6 +5701,10 @@ create_worktree_session() {
         error "Session '$base_name' is itself a worktree; create features from the main checkout"
     fi
     _require_base_commit "$base_dir" "$base_name"
+    # The feature lands on the base's branch at /finish; a detached base has
+    # none, so refuse now rather than after the work is done.
+    git -C "$base_dir" symbolic-ref -q HEAD >/dev/null 2>&1 \
+        || error "Session '$base_name' is detached (no branch checked out), so a feature would have no branch to land on. Check out the branch the feature should land on, then try again."
     # Who carries .cs from the feature back to the base: git (tracked) or the
     # record fuse (ignored). Git's answer wins once it tracks .cs. Otherwise a
     # mode the base records decides (adopt and the flat-layout migration
@@ -5624,6 +5732,11 @@ create_worktree_session() {
     fi
 
     if git -C "$base_dir" rev-parse -q --verify "refs/heads/$branch" >/dev/null 2>&1; then
+        # The branch's own tip, not the base's HEAD, is where the feature
+        # starts; say so, with how far behind the base that tip sits.
+        local behind
+        behind=$(git -C "$base_dir" rev-list --count "$branch..HEAD" 2>/dev/null) || behind="?"
+        warn "Branch $branch already exists; the feature starts from its tip, $behind commit$([ "$behind" = 1 ] || printf s) behind $base_name" >&2
         git -C "$base_dir" worktree add "$wt_dir" "$branch" >/dev/null \
             || error "git worktree add failed (is branch '$branch' checked out in another worktree?)"
     else
@@ -5879,14 +5992,15 @@ _retire_trashed_note() {  # heading_end
 # on GitHub's evidence that the PR merged, since the branch is then never an
 # ancestor — and every other refusal still applies. Every refusal names what
 # the user has to do next, in their own words; the skill prints them verbatim.
-retire_feature_worktree() {  # base_name task sha [--force]
-    local usage="Usage: cs <base> -retire-feature <task> <sha> [--force]"
+retire_feature_worktree() {  # base_name task sha [--force] [--staged]
+    local usage="Usage: cs <base> -retire-feature <task> <sha> [--force] [--staged]"
     [ $# -ge 3 ] || error "$usage"
-    local base_name="$1" task="$2" sha="$3" force=""
+    local base_name="$1" task="$2" sha="$3" force="" staged=""
     shift 3
     while [ $# -gt 0 ]; do
         case "$1" in
             --force) force=1; shift ;;
+            --staged) staged=1; shift ;;
             *) error "$usage" ;;
         esac
     done
@@ -5934,14 +6048,39 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "$n_after commit(s) on $branch after $sha are not integrated; run $fin $task again before retiring"
     fi
 
-    local pid
+    # --staged runs a stage this base wrote earlier, from its Stop hook, which
+    # is no descendant of the base's claude once detached: the stage, written
+    # only after the base-lock check below passed, stands in for that
+    # ancestry. It must exist and record this very decision.
+    local pid stage="$base_dir/.cs/local/retire-staged/$task"
+    if [ -n "$staged" ]; then
+        local force_word=0
+        [ -z "$force" ] || force_word=1
+        [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
+force: $force_word" ] || error "No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
+    else
+        pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
+        if [ -n "$pid" ]; then
+            error "Base session '$base_name' is open elsewhere (PID $pid); run $fin $task from that conversation"
+        fi
+    fi
     pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
     if [ -n "$pid" ]; then
-        error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
-    fi
-    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
-    if [ -n "$pid" ]; then
-        error "Base session '$base_name' is open elsewhere (PID $pid); run $fin $task from that conversation"
+        # A Codex base has no Stop hook that runs a stage, so it keeps the
+        # refusal: the person closes the feature and runs $finish again.
+        if [ "$(_read_local_state "$base_dir/.cs/local/state" engine)" = codex ]; then
+            error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+        fi
+        # A directory can't be removed from under a running engine, so the
+        # decision this retire already made (the commit, --force or not) is
+        # staged in the base, and the base's Stop hook runs this entry again
+        # once that conversation's lock is gone. Every refusal below runs
+        # then as it would now.
+        _write_retire_stage "$stage" "$sha" "$force" \
+            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+        printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
+            "$task" "$sha" "$wt_name" "$pid"
+        return 0
     fi
 
     # git worktree remove --force recurses into a mount, so a volume mounted
@@ -6073,6 +6212,23 @@ $missing"
             || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish $task again."
         error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
+    # The removal below runs under the feature's openers' mutex, from the
+    # first file it moves to the worktree's end: an open that began after the
+    # lock check above would otherwise take session.lock in the middle of it
+    # and lose the directory from under its claude. Taken here, the opener
+    # waits at the mutex and then finds no worktree. The lock is read once
+    # more under it, since a conversation can have reopened meanwhile.
+    _cs_lock "$wt_dir/.cs/session.mutex.lock" \
+        || error "Could not take the openers' mutex of $wt_dir (another cs is opening or closing it); nothing was removed. Run $fin $task again."
+    pid=$(live_lock_pid "$wt_dir/.cs")
+    if [ -n "$pid" ]; then
+        _cs_unlock "$wt_dir/.cs/session.mutex.lock"
+        _write_retire_stage "$stage" "$sha" "$force" \
+            || error "The '$wt_name' conversation reopened its worktree (PID $pid) before the removal, and cs could not stage it again at $stage; nothing was removed. Run $fin $task here again once it closes."
+        printf "staged %s %s: the '%s' conversation reopened its worktree (PID %s) before the removal; the worktree and branch are removed from this session once that conversation closes\n" \
+            "$task" "$sha" "$wt_name" "$pid"
+        return 0
+    fi
     _retire_trash_ignored_work "$wt_dir" "$task"
     local trashed nl=$'\n'
     trashed=$(_retire_trashed_note " before this failed")
@@ -6094,6 +6250,7 @@ $remove_err${trashed:+$nl$trashed}"
         error "git worktree remove failed for $wt_dir; nothing was fused or deleted
 $remove_err${trashed:+$nl$trashed}"
     fi
+    _cs_unlock "$wt_dir/.cs/session.mutex.lock"
     if [ -n "$aside" ]; then
         ( fuse_session_records "$aside/cs" "$base_dir/.cs" "$task" ) \
             || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory.${trashed:+$nl$trashed}"
@@ -6115,7 +6272,20 @@ $remove_err${trashed:+$nl$trashed}"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     _retire_trashed_note ""
+    # A staged run leaves the stage for the base's Stop hook, which reports
+    # the outcome and drops it; a direct retire has no hook behind it.
+    [ -n "$staged" ] || rm -f "$stage"
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# Record a retire the base's Stop hook finishes once the feature conversation
+# closes: the captured commit and whether --force applied. Backs the stage
+# retire_feature_worktree writes while that conversation holds the worktree.
+_write_retire_stage() {  # stage_path sha force
+    local force=0
+    [ -z "$3" ] || force=1
+    cs_mkdir_inside "${1%/*}" || return 1
+    cs_write_atomic "$1" printf 'sha: %s\nforce: %s\n' "$2" "$force"
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault
@@ -7482,6 +7652,18 @@ To opt out, delete the prose above but keep the `cs:session-commits` HTML commen
 EOF
 }
 
+# The diagram instruction shared by the session template and migration Phase 17.
+_emit_mermaid_diagrams_block() {
+    cat << 'EOF'
+<!-- cs:mermaid-diagrams -->
+## Diagrams
+
+Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.
+
+To opt out, delete the prose above but keep the `cs:mermaid-diagrams` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
 # The protocol for an encrypted session: migrate_session appends it once
 # .cs/private exists. It overrides the README instructions of the base
 # protocol, which every session gets from _emit_session_claude_md.
@@ -7576,6 +7758,8 @@ EOF
     _emit_memory_note_block
     echo
     _emit_wrap_cues_block
+    echo
+    _emit_mermaid_diagrams_block
 }
 
 # Write the session protocol template to the given directory (create path).
@@ -9501,7 +9685,7 @@ _claude_migrate_session_documents() {  # session_dir
 
 }
 
-# Phases 9, 10, 14, 15 and 16: the cs sections of CLAUDE.local.md.
+# Phases 9, 10, 14, 15, 16 and 17: the cs sections of CLAUDE.local.md.
 _claude_ensure_local_sections() {  # session_dir
     local session_dir="$1"
 
@@ -9595,6 +9779,12 @@ _claude_ensure_local_sections() {  # session_dir
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
         { echo; _emit_session_commits_block; } >> "$claude_md_p9"
         notice CLAUDE.local.md "added the session-commits rule"
+    fi
+
+    # Phase 17: the diagram instruction; a sentinel without prose is an opt-out.
+    if [ -f "$claude_md_p9" ] && ! grep -q 'cs:mermaid-diagrams' "$claude_md_p9"; then
+        { echo; _emit_mermaid_diagrams_block; } >> "$claude_md_p9"
+        notice CLAUDE.local.md "added the diagram instruction"
     fi
 }
 
@@ -10407,19 +10597,60 @@ _spawn_window() {  # name, token, engine
 # Open a window named <window> running <cmd> in the cs-owned tmux session, and
 # leave its id in _CS_TMUX_WID. A global rather than printed: the options call
 # below would print into a capture, and error would end only the capture.
+# Nobody sits at a window cs opens, so <cmd> runs with CS_UNATTENDED=1: the
+# launch there does not offer a pending update (offer_update_at_launch),
+# whose question would hold it at that window for good.
 _CS_TMUX_WID=""
 _cs_tmux_window() {  # window, cmd
+    local cmd="env CS_UNATTENDED=1 $2"
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if _CS_TMUX_WID=$(_spawn_tmux new-session -d -s "${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_spawn_tmux new-session -d -s "${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
         # exact 'cs' was just created by new-session, so this cannot misfire.
         _spawn_tmux set-option -t "${CS_TMUX_SESSION:-cs}" @cs_managed 1
         return 0
     fi
-    _CS_TMUX_WID=$(_spawn_tmux new-window -t "=${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$2") \
+    _CS_TMUX_WID=$(_spawn_tmux new-window -t "=${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$cmd") \
         || error "tmux new-window failed for $1"
+}
+
+# The sections a feature's brief carries, the feature skill's shape: the
+# session that reads it has nothing else of the conversation that wrote it.
+FEATURE_BRIEF_SECTIONS="Goal
+Done when
+Constraints
+Context
+Review
+Report back"
+
+# The section headings a brief carries, one per line, as Markdown reads
+# them: a heading is `## ` and the title on a line of its own, with a CR, a
+# byte-order mark on the first line, and trailing blanks ignored, and a
+# line inside a ``` or ~~~ fence is text, not a heading. Bytes, whatever the
+# locale: under a UTF-8 locale awk reads the mark as characters and the
+# byte comparison below misses it.
+_brief_sections() {  # file
+    LC_ALL=C awk '
+        NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+        { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
+        /^(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^## / { print substr($0, 4) }
+    ' "$1"
+}
+
+# Refuse a feature brief that lacks a section, naming the first missing one.
+_require_feature_brief() {  # file
+    local section present
+    present=$(_brief_sections "$1")
+    while IFS= read -r section; do
+        grep -q -x -F -- "$section" <<< "$present" \
+            || error "cs -spawn --brief: $1 has no '## $section' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line"
+    done <<EOF
+$FEATURE_BRIEF_SECTIONS
+EOF
 }
 
 run_spawn() {
@@ -10460,7 +10691,9 @@ run_spawn() {
         shift
     done
     [ -n "$name" ] || error "$usage"
-    if ! cs_split_worktree_name "$name"; then
+    if cs_split_worktree_name "$name"; then
+        [ -z "$brief" ] || _require_feature_brief "$brief"
+    else
         validate_session_name "$name"
     fi
     # The spawner is whatever the environment says. It becomes the worker's
@@ -12730,7 +12963,14 @@ _doctor_check_hook_drift() {
     _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png hooks/*.md
     local skill_sources=(skills/*/SKILL.md skills/*/scripts/*.sh skills/*/agents/*.yaml)
     _drift_scan "Skill" "$skills_dir" "${skill_sources[@]}"
-    _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*
+    local mod_srcs=() kept src
+    for src in mods/*/.claude-plugin/plugin.json mods/*/hooks/* mods/*/tips.json; do
+        for kept in ${CS_MODS_KEPT_OUT[@]+"${CS_MODS_KEPT_OUT[@]}"}; do
+            case "$src" in "mods/$kept/"*) continue 2 ;; esac
+        done
+        mod_srcs+=("$src")
+    done
+    _drift_scan "Mod" "$skills_dir" ${mod_srcs[@]+"${mod_srcs[@]}"}
 
     # Codex gets the same skills in its own home. A machine where Codex never
     # ran has no such home, and nothing there to compare.
@@ -12821,17 +13061,17 @@ _doctor_check_tui_build() {
     fi
 }
 
-# iTerm2 awareness, reported only when running inside iTerm2: tab color and
-# title ship via native escapes regardless; the attention dock bounce needs
-# the it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
+# iTerm2 awareness, reported only when running inside iTerm2: the tab title
+# ships via native escapes regardless; the attention dock bounce needs the
+# it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
 _doctor_check_iterm2() {
     [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || return 0
     if [ -n "${CS_NO_ITERM2:-}" ]; then
         _doctor_ok "iTerm2: integrations disabled (CS_NO_ITERM2)"
     elif [ -x "${CS_IT2_DIR:-$HOME/.iterm2}/it2attention" ]; then
-        _doctor_ok "iTerm2: tab color + attention bounce active (it2 utilities found)"
+        _doctor_ok "iTerm2: attention bounce active (it2 utilities found)"
     else
-        _doctor_ok "iTerm2: tab color active; attention bounce off (shell integration not installed)"
+        _doctor_ok "iTerm2: attention bounce off (shell integration not installed)"
     fi
 }
 
@@ -13156,6 +13396,28 @@ _doctor_check_claude_audit() {
     _doctor_ok "Audit: ${hooks_count} hooks, ${mcps_count} MCPs, ${perms_count} perm rules, ${env_count} env vars in settings.json"
 }
 
+# Twin: _statusline_chains_to_cs in install.sh.in.
+# Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
+_statusline_chains_to_cs() {
+    local file rest
+    read -r file rest <<< "$1"
+    file="${file/#\~/$HOME}"
+    [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+}
+
+_doctor_statusline_caps_row() {
+    # The rounded caps are drawn only once this machine has answered
+    # the font question; until then the bar shows square ends.
+    local caps_file caps=""
+    caps_file="$(_statusline_caps_file)"
+    [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
+    case "$caps" in
+        on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
+        off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
+        *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
+    esac
+}
+
 _doctor_check_statusline() {
     local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
     local settings="$claude_dir/settings.json"
@@ -13182,23 +13444,15 @@ _doctor_check_statusline() {
             else
                 _doctor_fail "Statusline: registered as $cmd but the binary is missing or not executable"
             fi
-            # The rounded caps are drawn only once this machine has answered
-            # the font question; until then the bar shows square ends.
-            local caps_file caps=""
-            caps_file="$(_statusline_caps_file)"
-            [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
-            case "$caps" in
-                on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
-                off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
-                *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
-            esac
+            _doctor_statusline_caps_row
             ;;
         *)
             # A foreign command can chain to cs-statusline (a bridge that runs
             # the original), so inside a session the file itself decides: a
             # context-pct inside the heartbeat window means the gates are fed.
             # An empty or non-numeric file feeds no gate, however fresh.
-            local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" now age reading=""
+            local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" now age reading="" chains=""
+            _statusline_chains_to_cs "$cmd" && chains=1
             now=$(date +%s)
             [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
             case "$reading" in ''|*[!0-9]*) reading="" ;; esac
@@ -13206,9 +13460,12 @@ _doctor_check_statusline() {
                 age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
                 [ "$age" -ge 0 ] || age=0
                 _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
+            elif [ -n "$chains" ]; then
+                _doctor_ok "Statusline: $cmd chains to cs-statusline"
             else
                 _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating, unless it chains to cs-statusline"
             fi
+            [ -z "$chains" ] || _doctor_statusline_caps_row
             ;;
     esac
 }
@@ -13216,11 +13473,14 @@ _doctor_check_statusline() {
 # The Ctrl+X bindings the installer offers: the answer this
 # machine gave, and whether keybindings.json still holds cs's keys. Not asked
 # and declined are healthy; a key the user binds to something else (or a bare
-# ctrl+x a chord would shadow), a yes whose keys are gone or are still an
-# earlier cs's Option+1 / Option+2, and a file Claude Code cannot read either
-# are warnings.
+# ctrl+x a chord would shadow), a yes whose keys are gone, sit outside the
+# context Claude Code wants them in, or are still an earlier cs's Option+1 /
+# Option+2, and a file Claude Code cannot read either are warnings. A file
+# that holds every cs key but has one outside its context is a warning
+# whatever the answer: the installer rewrites the file only on a recorded
+# yes, so under any other answer the advice is the move to make by hand.
 _doctor_check_rotate_wrap_keys() {
-    local file answer_file answer status state key action prefix retired bound=0 total=0 commands_bound=0
+    local file answer_file answer status state key action prefix retired bound=0 misplaced=0 total=0 commands_bound=0
     file="$(_cs_keybindings_file)"
     answer_file="$(_cs_rotate_wrap_keys_answer_file)"
     if ! command -v jq >/dev/null 2>&1; then
@@ -13239,18 +13499,29 @@ _doctor_check_rotate_wrap_keys() {
     while IFS=$'\t' read -r state key action prefix; do
         [ -n "$state" ] || continue
         total=$((total + 1))
-        if [ "$state" = bound ]; then bound=$((bound + 1)); fi
+        case "$state" in
+            bound) bound=$((bound + 1)) ;;
+            misplaced) misplaced=$((misplaced + 1)) ;;
+        esac
     done <<< "$status"
-    if [ "$total" -gt 0 ] && [ "$bound" = "$total" ]; then
+    answer=$(cat "$answer_file" 2>/dev/null) || answer=""
+    if [ "$total" -gt 0 ] && [ "$((bound + misplaced))" = "$total" ]; then
+        while IFS=$'\t' read -r state key action prefix; do
+            [ "$state" = misplaced ] || continue
+            if [ "$answer" = yes ]; then
+                _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (run cs -update to move it)"
+            else
+                _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (move it into a block with \"context\": \"$action\")"
+            fi
+        done <<< "$status"
         retired=$(_cs_keybindings_held "$CS_RETIRED_OPTION_KEYS" < "$file") || retired=""
         if [ -n "$retired" ]; then
             _doctor_warn "Rotate/wrap keys: $retired still hold cs's earlier bindings in $file (run cs -update to remove them)"
-        else
+        elif [ "$misplaced" = 0 ]; then
             _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)"
         fi
         return
     fi
-    answer=$(cat "$answer_file" 2>/dev/null) || answer=""
     case "$answer" in
         yes)
             while IFS=$'\t' read -r state key action prefix; do
@@ -13266,6 +13537,7 @@ _doctor_check_rotate_wrap_keys() {
                         fi
                         ;;
                     free) _doctor_warn "Rotate/wrap keys: $key not bound (run cs -update to bind it)" ;;
+                    misplaced) _doctor_warn "Rotate/wrap keys: $key is bound outside the $action context in $file (run cs -update to move it)" ;;
                 esac
             done <<< "$status"
             # With /rotate and /wrap on their chords, the next update takes
@@ -13367,14 +13639,14 @@ _doctor_check_narrative_size() {
 # resolved its own session ID. The recorded UUID is the source of truth for
 # cs and hooks; doctor surfaces the divergence so the user can decide whether
 # to relaunch via cs or accept the drift.
-# Every place a cs hook changes what the model sees, with the switch that turns
+# Every place cs changes what the model sees, with the switch that turns
 # it off. The consent rule covers what the user looks at — status line, titles —
 # but a hook that injects context installs silently, so this is where that
 # authority is made visible. State is read live, not from config: a switch that
 # is set shows the injection as off.
 _doctor_check_hook_authority() {
     echo ""
-    echo "  Authority — hooks that inject into the model's context:"
+    echo "  Authority — instructions cs adds to the model's context:"
     local disabled_all=""
     if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/disabled" ]; then
         disabled_all=1
@@ -13397,9 +13669,21 @@ _doctor_check_hook_authority() {
     _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
     _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
     _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
-    # CS_NO_FUNCTION_HOOKS withholds the mod at launch; the /config row is Claude Code's, not read here.
-    _doctor_authority_row "diagrams"      "cs-mermaid mod"     '/config cs-mermaid.drawDiagrams' "${CS_NO_FUNCTION_HOOKS:+1}"
-    echo "    .cs/local/disabled turns every row off for that session."
+    # Local instructions remain in the prompt even when session hooks are disabled.
+    disabled_all=""
+    local diagrams_off=1
+    local dir="${CLAUDE_SESSION_DIR:-$PWD}"
+    if [ -n "$dir" ] && [ -f "$dir/CLAUDE.local.md" ] && awk '
+        /^<!-- cs:mermaid-diagrams -->$/ { section=1; next }
+        section == 1 && /^## Diagrams$/ { section=2; next }
+        /^<!-- cs:/ || /^## / { section=0 }
+        section && /[^[:space:]]/ && !/^[[:space:]]*(#|<!--)/ { prose=1 }
+        END { exit !prose }
+    ' "$dir/CLAUDE.local.md"; then
+        diagrams_off=""
+    fi
+    _doctor_authority_row "diagrams" "CLAUDE.local.md" 'delete the prose under cs:mermaid-diagrams' "$diagrams_off"
+    echo "    .cs/local/disabled turns the hook rows off; CLAUDE.local.md still applies."
 }
 
 # setup_merge_attributes writes the per-clone merge driver with `|| true`, so a
@@ -15276,8 +15560,7 @@ _theme_from_colorfgbg() {
 # terminal instead of being answered by tmux itself: bracket with `\ePtmux;` …
 # `\e\\` and double every ESC in the payload. Requires `allow-passthrough on`
 # in the user's tmux; without it tmux drops the sequence and the query times out.
-# Handles arbitrary multi-ESC payloads (e.g. an ST-terminated OSC query);
-# _send_escape covers the single-ESC, BEL-terminated tab-color case separately.
+# Handles arbitrary multi-ESC payloads (e.g. an ST-terminated OSC query).
 _tmux_passthrough() {
     local seq="$1"
     local escaped=${seq//$'\033'/$'\033\033'}
@@ -15439,7 +15722,11 @@ _export_term_theme() {
     # hard override everywhere.
     export CS_TERM_THEME="$theme"
     export CS_TERM_THEME_AUTO=1
-    if [[ "$out" == *" "* ]] && [ -z "${CS_TERM_BG_RGB:-}" ]; then
+    # A background already set is the user's: CS_TERM_BG_RGB_PINNED tells the
+    # statusline so, which the theme's auto marker beside it would not.
+    if [ -n "${CS_TERM_BG_RGB:-}" ]; then
+        export CS_TERM_BG_RGB_PINNED=1
+    elif [[ "$out" == *" "* ]]; then
         export CS_TERM_BG_RGB="${out#* }"
     fi
     _write_term_cache "$theme" "${CS_TERM_BG_RGB:-}"
@@ -15623,7 +15910,7 @@ _rotate_force_notice() {
     [ -n "$pct" ] || return 0
     f="$(_rotate_force_notice_file)"
     [ -f "$f" ] && return 0
-    printf '%s\n' "cs now rotates a conversation on its own once it ends a turn past ${pct}% context: it writes a handoff, then counts down 20 seconds to the /clear (press 1 to go now, type anything to stop it)."
+    printf '%s\n' "cs now rotates a conversation on its own once it ends a turn past ${pct}% context: it writes a handoff, then counts down 20 seconds to the /clear (press Ctrl+X 1 to go now, type anything to stop it)."
     printf '%s\n' "To turn that off, export CS_ROTATE_FORCE_CTX=off; to move it, set a percentage. Said once per machine."
     mkdir -p "$(dirname "$f")" 2>/dev/null && { printf '%s\n' "notified" > "$f"; } 2>/dev/null || true
 }
@@ -16167,11 +16454,14 @@ _launch_claude_bound() {
     # the version check_update_notify found newer than this cs. Absent when
     # nothing is pending, so the mod is silent by absence rather than by a
     # value it has to read; cleared first, since a nested launch inherits its
-    # parent's verdict. The fork reports upstream releases before either adapter:
-    # the mod's install action is only for the original cs.
-    unset CS_UPDATE_AVAILABLE
+    # parent's verdict. A version declined at the launch's question is named
+    # beside it, so the mod says it is there instead of opening its pane. The
+    # fork reports upstream releases before either adapter: the mod's install
+    # action is only for the original cs.
+    unset CS_UPDATE_AVAILABLE CS_UPDATE_DECLINED
     if [ -n "$UPDATE_AVAILABLE" ] && [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
+        [ -z "$UPDATE_DECLINED_PENDING" ] || export CS_UPDATE_DECLINED="$UPDATE_AVAILABLE"
     fi
 
     # The session is open and every export above is in place: `--remote`
@@ -16334,12 +16624,9 @@ EOF
 
     echo ""
 
-    # Set terminal tab title and color. The tab color is the session's
-    # claude_session_color (same RGB as the statusline block); fall back to a
-    # name hash only if no color is recorded.
-    local _tab_color
-    _tab_color=$(_session_color_rgb "$claude_session_color")
-    set_tab_title "cs: $session_name" "${_tab_color:-auto:$session_name}" "$session_name"
+    # Title the terminal tab; the session colour stays inside the terminal
+    # (band rule, status line, pill), never on the tab.
+    set_tab_title "cs: $session_name" "$session_name"
 
     cd -- "$session_dir" || return 1
 
@@ -17580,7 +17867,7 @@ _serve_remote() {  # session_name, session_dir, permission_mode
     unset ANTHROPIC_API_KEY
     # Inside tmux the window keeps its remote:<name> name, which
     # _spawn_precheck reads to refuse a second window.
-    [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
+    [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)"
     cd -- "$dir" || error "could not enter $dir"
     printf '%s\n' "$$" > "$meta/local/remote.pid" || error "could not write $meta/local/remote.pid"
     # A remote server owns the session until it exits, including between its
@@ -19629,7 +19916,7 @@ adopt_worktrees() {  # [--dry-run]
 
 # Take back the Ctrl+X bindings the installer added, and the
 # Option+1 / Option+2 ones an earlier cs added, only where a key still holds
-# cs's value: a key bound to anything else is the user's. A Global block left
+# cs's value: a key bound to anything else is the user's. A block left
 # empty by that goes, and so does a file left as exactly {"bindings":[]},
 # unless it is a symlink, whose target is written through instead so a
 # dotfiles manager's copy does not keep cs's keys. The recorded answer goes
@@ -19697,6 +19984,28 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
             | if .hooks == {} then del(.hooks) else . end
         else . end
     '
+}
+
+# Removes spinnerTipsOverride.tipsFile from settings file $1 when it names
+# cs's tips file and that file is gone from skills directory $2: uninstall
+# removes only the files cs wrote, so a tips file still there was kept as the
+# user's, and its pointer is theirs too. The user's own tips, label and
+# excludeDefault stay; spinnerTipsOverride goes only when nothing else is in
+# it. Returns 0 stripped, 1 not cs's or absent, 2 write failure.
+_strip_cs_tips_file() {  # settings_file, skills_dir
+    local filter
+    [ -f "$1" ] || return 1
+    if [ -e "$2/cs/tips.json" ] || [ -L "$2/cs/tips.json" ]; then return 1; fi
+    # shellcheck disable=SC2016  # $tilde and $abs are jq variables
+    filter='(.spinnerTipsOverride | type) == "object"
+        and (.spinnerTipsOverride.tipsFile == $tilde or .spinnerTipsOverride.tipsFile == $abs)'
+    jq -e --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" \
+        "$filter" "$1" >/dev/null 2>&1 || return 1
+    cs_settings_update "$1" jq --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" "
+        if $filter then
+            del(.spinnerTipsOverride.tipsFile)
+            | if .spinnerTipsOverride == {} then del(.spinnerTipsOverride) else . end
+        else . end" || return 2
 }
 
 # Refuse the uninstall while a session under the sessions root is live (a
@@ -19818,7 +20127,7 @@ run_uninstall() {
         info "Removed cs-subagent-statusline registration from settings.json"
     fi
 
-    rm -f "$(_statusline_declined_marker)"
+    rm -f "$(_statusline_declined_marker)" "$(_cs_tips_record_file)"
 
     fi
 
@@ -19956,8 +20265,8 @@ run_uninstall() {
 
     if [[ ",$install_engines," == *,claude,* ]]; then
     # Clean up settings.json (remove cs hooks, preserve others). A file jq
-    # cannot parse, or one that is not a regular file (cs_settings_check never
-    # opens it), is left as it is with a warning: the binaries are already
+    # cannot parse, one that holds no JSON object, or one that is not a regular
+    # file (cs_settings_check never opens it), is left as it is with a warning: the binaries are already
     # gone, so the rest of the uninstall still runs.
     if [ -e "$settings_file" ] && command -v jq >/dev/null 2>&1; then
         if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
@@ -19965,6 +20274,12 @@ run_uninstall() {
         else
             warn "$CS_SETTINGS_ERROR"
         fi
+        local tips_rc=0
+        _strip_cs_tips_file "$settings_file" "$skills_dir" || tips_rc=$?
+        case "$tips_rc" in
+            0) info "Removed cs's tips file from spinnerTipsOverride in $settings_file" ;;
+            2) warn "$CS_SETTINGS_ERROR" ;;
+        esac
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"
@@ -20116,6 +20431,9 @@ cmd_vet_session() {  # session directory
 
 main() {
     cs_import_session_context
+    # This launch's arguments as given, for the relaunch an accepted update
+    # ends with: the arms below shift them away as they read them.
+    local -a launch_argv=("$@")
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
     # one). A teammate's shell carries CS_RESOLVED_FROM=walk deliberately, so
@@ -20710,8 +21028,13 @@ main() {
 
     check_dependencies "$engine"
 
-    # Check for updates (non-blocking)
+    # Check for updates (non-blocking), then offer one on a terminal before
+    # anything below opens or claims the session.
     check_update_notify
+    offer_update_at_launch ${launch_argv[@]+"${launch_argv[@]}"}
+    # The window mark _cs_tmux_window sets is the offer's alone: kept from
+    # everything this run starts.
+    unset CS_UNATTENDED
 
     if [ -n "$remote_flag" ]; then
         _remote_claude_bin "$remote_mode"

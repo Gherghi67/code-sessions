@@ -231,7 +231,7 @@ test_live_empty_root_message_and_exit0() {
 # every test built on it starts asserting against the fixture's own defaults --
 # green, and testing nothing.
 test_registry_fixture_sentinels_are_unique() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     jq -e . "$REGISTRY_FIXTURE" >/dev/null 2>&1 \
         || { echo "fixture is not valid JSON"; return 1; }
     local pat seen
@@ -243,7 +243,7 @@ test_registry_fixture_sentinels_are_unique() {
 }
 
 test_live_shows_agent_status_from_registry() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session working
     make_registry_record working waiting
     local out; out="$("$CS_BIN" -live 2>&1)"
@@ -251,7 +251,7 @@ test_live_shows_agent_status_from_registry() {
 }
 
 test_live_gives_each_session_its_own_agent_status() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session one-busy
     make_registry_record one-busy busy
     make_live_session two-waiting
@@ -264,7 +264,7 @@ test_live_gives_each_session_its_own_agent_status() {
 }
 
 test_live_survives_a_record_whose_pid_is_out_of_range() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session healthy
     make_registry_record healthy busy
     # A stale record naming a pid past the kernel's maximum: `ps -p` fails the
@@ -279,7 +279,7 @@ test_live_survives_a_record_whose_pid_is_out_of_range() {
 }
 
 test_live_survives_a_malformed_record_sorting_first() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session healthy
     make_registry_record healthy busy
     # One corrupt document must cost only itself. The whole glob goes to a single
@@ -316,21 +316,21 @@ states_for() {  # session-name, name-value, status-value
 }
 
 test_agent_states_refuses_an_empty_name() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session s1
     assert_eq "" "$(states_for s1 "" busy)" \
         "an empty name earns no state: it can match no session" || return 1
 }
 
 test_agent_states_refuses_an_empty_status() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session s2
     assert_eq "" "$(states_for s2 demo "")" \
         "an empty status says nothing a missing one does not" || return 1
 }
 
 test_agent_states_refuses_a_pid_that_is_not_a_number() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session s3
     local sdir="$CS_SESSIONS_ROOT/s3" pid start out
     pid="$(cat "$sdir/.cs/session.lock")"
@@ -350,7 +350,7 @@ test_agent_states_refuses_a_pid_that_is_not_a_number() {
 }
 
 test_agent_states_refuses_a_raw_control_byte() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session s4
     # A raw control byte is not legal JSON. jq refuses the whole document, so
     # the session shows no state at all rather than a cleaned one.
@@ -361,7 +361,7 @@ test_agent_states_refuses_a_raw_control_byte() {
 }
 
 test_agent_states_strips_an_escaped_control_character() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session s5
     # Six characters -- backslash u 0 0 0 1 -- which is legal JSON. jq decodes
     # it to a byte and _scrub_controls removes that byte, so the rendered text
@@ -372,7 +372,7 @@ test_agent_states_strips_an_escaped_control_character() {
 }
 
 test_agent_states_emits_one_row_when_a_later_record_is_malformed() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session healthy
     make_registry_record healthy busy
     # The mirror of the case above, and the one that catches the WRONG repair.
@@ -407,7 +407,7 @@ test_agent_states_emits_one_row_when_a_later_record_is_malformed() {
 }
 
 test_live_ignores_record_with_no_start_time() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session unverifiable
     # A record carrying no start time cannot be told apart from one left by a
     # session whose pid has been reused, so it earns no state. The TUI reader
@@ -421,7 +421,7 @@ test_live_ignores_record_with_no_start_time() {
 }
 
 test_live_ignores_record_whose_start_time_differs() {
-    command -v jq >/dev/null 2>&1 || return 0
+    require_tool jq || return $?
     make_live_session recycled
     make_registry_record recycled waiting "Mon Jan  1 00:00:00 2001"
     local out; out="$("$CS_BIN" -live 2>&1)"

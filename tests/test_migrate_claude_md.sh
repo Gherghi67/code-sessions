@@ -607,6 +607,46 @@ test_encrypted_protocol_is_idempotent() {
         "a second open leaves the file byte-identical" || return 1
 }
 
+test_migrate_adds_the_diagram_instruction_once() {
+    local dir out
+    dir=$(create_test_session "diagrams")
+    printf '%s\n' '<!-- cs:session-protocol -->' 'Keep these project rules.' > "$dir/CLAUDE.local.md"
+    out=$(CS_ACTOR=alice "$CS_BIN" diagrams < /dev/null 2>&1) \
+        || { echo "  FAIL: migrating the diagram session failed"; return 1; }
+    assert_eq "1" "$(grep -cFx '<!-- cs:mermaid-diagrams -->' "$dir/CLAUDE.local.md")" \
+        "migration adds the diagram sentinel once" || return 1
+    assert_file_contains "$dir/CLAUDE.local.md" '^Mermaid flowchart fences' \
+        "migration adds the diagram instruction" || return 1
+    assert_file_contains "$dir/CLAUDE.local.md" '^Keep these project rules\.$' \
+        "migration keeps the existing rules" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  added the diagram instruction' <<< "$out" \
+        || { echo "  FAIL: migration reports the added diagram instruction"; return 1; }
+    cp "$dir/CLAUDE.local.md" "$TEST_TMPDIR/first-local"
+    rm -f "$dir/.cs/local/migrated"
+    out=$(CS_ACTOR=alice "$CS_BIN" diagrams <<< "" 2>&1) \
+        || { echo "  FAIL: the second diagram migration failed: $out"; return 1; }
+    cmp -s "$TEST_TMPDIR/first-local" "$dir/CLAUDE.local.md" \
+        || { echo "  FAIL: the second diagram migration changed the file"; return 1; }
+    assert_output_not_contains "$out" 'added the diagram instruction' \
+        "the second migration reports no diagram addition" || return 1
+}
+
+test_migrate_preserves_the_diagram_tombstone() {
+    local dir out
+    dir=$(create_test_session "no-diagrams")
+    printf '%s\n' '<!-- cs:mermaid-diagrams -->' > "$dir/CLAUDE.local.md"
+    out=$(CS_ACTOR=alice "$CS_BIN" no-diagrams < /dev/null 2>&1) \
+        || { echo "  FAIL: migrating the opted-out diagram session failed"; return 1; }
+    assert_eq "1" "$(grep -cFx '<!-- cs:mermaid-diagrams -->' "$dir/CLAUDE.local.md")" \
+        "migration preserves one diagram tombstone" || return 1
+    assert_file_not_contains "$dir/CLAUDE.local.md" '^Mermaid flowchart fences' \
+        "migration keeps the diagram instruction opted out" || return 1
+    assert_output_not_contains "$out" 'added the diagram instruction' \
+        "migration reports no diagram addition for a tombstone" || return 1
+}
+
+run_test test_migrate_adds_the_diagram_instruction_once
+run_test test_migrate_preserves_the_diagram_tombstone
 run_test test_encrypted_session_gains_the_encrypted_protocol
 run_test test_plain_session_has_no_encrypted_protocol
 run_test test_encrypted_protocol_is_idempotent

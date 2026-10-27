@@ -1723,7 +1723,7 @@ test_session_start_reasserts_tab_title_through_tmux() {
 # session it runs; the window is named after all of them, in pane order. Real
 # tmux on a private socket, so the developer's server is never touched.
 _real_tmux_window() {
-    command -v tmux >/dev/null 2>&1 || return 77
+    require_tool tmux || return $?
     TT_SOCK="$TEST_TMPDIR/tt.sock"
     TT_PANE_A=$(tmux -S "$TT_SOCK" -f /dev/null new-session -d -P -F '#{pane_id}' -x 120 -y 30 'sleep 600') || return 1
     TT_PANE_B=$(tmux -S "$TT_SOCK" split-window -d -h -P -F '#{pane_id}' -t "$TT_PANE_A" 'sleep 600') || return 1
@@ -1838,7 +1838,7 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
 # FAKE_ITERM_LOG and renames the tmux window, as iTerm does (measured);
 # FAKE_ITERM_ON_SET runs once, after the first set, to land a claim mid-run.
 _fake_iterm_module() {
-    command -v python3 >/dev/null 2>&1 || return 77
+    require_tool python3 || return $?
     FAKE_ITERM_DIR="$TEST_TMPDIR/fake-iterm"
     FAKE_ITERM_LOG="$TEST_TMPDIR/iterm-titles"
     mkdir -p "$FAKE_ITERM_DIR/iterm2"
@@ -2076,7 +2076,7 @@ test_a_launch_cleanup_releases_its_pane_and_keeps_the_others_title() {
     _real_tmux_window || return $?
     _tt_hook session-start.sh "$TT_PANE_A" current-session startup
     local lib="$SCRIPT_DIR/../lib"
-    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
+    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
         || { _tt kill-server; return 1; }
     # The pane's shell starts later on a loaded machine; wait for its mark.
     wait_until test -e "$TEST_TMPDIR/cleaned"
@@ -2135,7 +2135,7 @@ test_a_launch_in_a_second_pane_joins_the_window_name() {
     _real_tmux_window || return $?
     _tt_hook session-start.sh "$TT_PANE_A" current-session startup
     local lib="$SCRIPT_DIR/../lib"
-    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
+    _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
         || { _tt kill-server; return 1; }
     # The pane's shell starts later on a loaded machine; wait for its mark.
     wait_until test -e "$TEST_TMPDIR/launched"
@@ -2339,7 +2339,7 @@ test_session_start_announces_worktree_task() {
         "worktree sessions must be told what they are (on every source)" || return 1
     assert_output_contains "$context" "/finish fix-auth in session myproj" \
         "the integration command must be spelled out" || return 1
-    assert_output_contains "$context" "the user closes this session themselves, and runs /finish fix-auth again in myproj" \
+    assert_output_contains "$context" "while this conversation is open /finish stages the retire in the base, and the base runs it by itself once the user closes this session" \
         "and the retirement rule: the user closes this session, then /finish again" || return 1
     assert_output_not_contains "$context" "cs myproj --merge" \
         "the retired verb is never named" || return 1

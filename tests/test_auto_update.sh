@@ -96,10 +96,9 @@ test_verify_checksum_catches_mismatch() {
     echo "hello world" > "$tmpdir/test.txt"
     echo "0000000000000000000000000000000000000000000000000000000000000000  test.txt" > "$tmpdir/test.txt.sha256"
 
-    local result
     # source from a temp file: bash 3.2 (macOS stock) does not reliably define a
     # function via `source <(...)` process substitution.
-    grep -A 15 '^verify_checksum()' "$CS_BIN" > "$tmpdir/_vc.sh"
+    cp "$SCRIPT_DIR/../lib/20-update.sh" "$tmpdir/_vc.sh"
     if ( source "$tmpdir/_vc.sh"; verify_checksum "$tmpdir/test.txt" "$tmpdir/test.txt.sha256" ); then
         rm -rf "$tmpdir"
         echo "  FAIL: verify_checksum should reject mismatched checksum"
@@ -124,7 +123,9 @@ test_verify_checksum_accepts_match() {
         return 77
     fi
 
-    grep -A 15 '^verify_checksum()' "$CS_BIN" > "$tmpdir/_vc.sh"
+    awk '{print $1 "  test.txt"}' "$tmpdir/test.txt.sha256" > "$tmpdir/manifest"
+    mv "$tmpdir/manifest" "$tmpdir/test.txt.sha256"
+    cp "$SCRIPT_DIR/../lib/20-update.sh" "$tmpdir/_vc.sh"
     if ! ( source "$tmpdir/_vc.sh"; verify_checksum "$tmpdir/test.txt" "$tmpdir/test.txt.sha256" ); then
         rm -rf "$tmpdir"
         echo "  FAIL: verify_checksum should accept matching checksum"
@@ -132,20 +133,6 @@ test_verify_checksum_accepts_match() {
     fi
 
     rm -rf "$tmpdir"
-}
-
-test_do_update_downloads_checksum() {
-    if ! grep -q 'install.sh.sha256' "$CS_BIN"; then
-        echo "  FAIL: do_update should download install.sh.sha256"
-        return 1
-    fi
-}
-
-test_signature_is_optional() {
-    if ! grep -A 1 'install.sh.minisig' "$CS_BIN" | grep -q '2>/dev/null'; then
-        echo "  FAIL: minisig download should be best-effort"
-        return 1
-    fi
 }
 
 # ============================================================================
@@ -393,33 +380,58 @@ test_check_falls_back_when_fetch_fails() {
     assert_output_contains "$out" "releases" "fallback names the releases page" || return 1
 }
 
-# cs -update against a release whose optional install.sh.minisig asset is
-# missing. The stub curl answers the version probe with v2026.99.3, serves the
-# fixture installer and its checksum, and 404s (exit 22) everything else: the
-# .minisig and the changelog. The fixture installer installs a cs carrying the
-# new VERSION, as the real one does, prints a marker and exits with $2, so a
-# run that reached it says so. It carries a token unique to the run, which
-# _update_leftovers looks for. Prints the combined output; the exit status is
-# left in $TEST_TMPDIR/update-rc.
-_update_with_missing_minisig() {  # label, installer-exit-status
+# The transport serves local release assets; all authentication uses real keys.
+# The served release is v2026.99.3 unless CS_TEST_REMOTE_VERSION names
+# another; its manifest is signed in that release's namespace.
+_update_with_manifest() {  # label, installer-exit-status, optional fault
     local stub="$TEST_TMPDIR/$1-stub" home="$TEST_TMPDIR/$1-home" tmp="$TEST_TMPDIR/$1-tmp"
-    local installer="$TEST_TMPDIR/$1-install.sh" digest
+    local installer="$TEST_TMPDIR/$1-install.sh" digest fault="${3:-}" revoked=''
+    local remote="${CS_TEST_REMOTE_VERSION:-2026.99.3}" ref="v${CS_TEST_REMOTE_VERSION:-2026.99.3}"
     mkdir -p "$stub" "$home" "$tmp"
+    ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$stub/key"
+    ssh-keygen -q -t ed25519 -N '' -C other@example.com -f "$stub/other"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$stub/key.pub")" > "$stub/signers"
+    : > "$stub/revoked"
+    case "$fault" in
+        revoked-kept|revoked-lost)
+            cat "$stub/other.pub" > "$stub/revoked"
+            [ "$fault" != revoked-kept ] || revoked=$(cat "$stub/other.pub")
+            ;;
+    esac
+    [ "$fault" != wrong-ref ] || ref=main
     cat > "$installer" << INSTALLER
 #!/usr/bin/env bash
 # cs-update-fixture-$1-$$-$RANDOM$RANDOM
+CS_DEFAULT_REF=$ref
+CS_RELEASE_REVOKED='$revoked'
 mkdir -p "\$HOME/.local/bin"
-printf 'VERSION="2026.99.3"\n' > "\$HOME/.local/bin/cs"
+printf 'VERSION="$remote"\n' > "\$HOME/.local/bin/cs"
 echo "fixture installer ran at \$CS_INSTALL_REF"
 exit $2
 INSTALLER
+    case "$fault" in
+        duplicate-revoked) printf "CS_RELEASE_REVOKED=''\n" >> "$installer" ;;
+        executable-revoked) printf 'CS_RELEASE_REVOKED=$(touch "%s/executed")\n' "$stub" >> "$installer" ;;
+    esac
     digest=$(shasum -a 256 "$installer" | awk '{print $1}')
     [ -z "${CS_TEST_BAD_DIGEST:-}" ] || digest="0000000000000000000000000000000000000000000000000000000000000000"
+    printf '%s  install.sh\n' "$digest" > "$stub/SHA256SUMS"
+    case "$fault" in
+        missing-entry) printf '%s  other.sh\n' "$digest" > "$stub/SHA256SUMS" ;;
+        duplicate-entry) printf '%s  install.sh\n' "$digest" >> "$stub/SHA256SUMS" ;;
+    esac
+    local key="$stub/key" namespace="cs-release-v$remote"
+    [ "$fault" != wrong-key ] || key="$stub/other"
+    [ "$fault" != other-tag ] || namespace=cs-release-v2026.99.2
+    ssh-keygen -Y sign -f "$key" -n "$namespace" "$stub/SHA256SUMS" > "$stub/sign.log" 2>&1
+    [ "$fault" != edited ] || printf '\n' >> "$stub/SHA256SUMS"
+    [ "$fault" != missing-sig ] || rm "$stub/SHA256SUMS.sig"
+    [ "$fault" != missing-manifest ] || rm "$stub/SHA256SUMS"
     cat > "$stub/curl" << STUB
 #!/usr/bin/env bash
 case "\$*" in
     *" -w "*)
-        printf '%s' "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3"
+        printf '%s' "https://example.com/releases/tag/v$remote"
         exit 0
         ;;
 esac
@@ -430,14 +442,21 @@ for a in "\$@"; do
     prev="\$a"
 done
 case "\$*" in
-    *"/v2026.99.3/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
-    *"/v2026.99.3/install.sh.sha256 -o "*) printf '%s  install.sh\n' "$digest" > "\$out"; exit 0 ;;
+    *"/v$remote/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
+    *"/v$remote/SHA256SUMS -o "*) cp "$stub/SHA256SUMS" "\$out"; exit \$? ;;
+    *"/v$remote/SHA256SUMS.sig -o "*) cp "$stub/SHA256SUMS.sig" "\$out"; exit \$? ;;
 esac
 exit 22
 STUB
     chmod +x "$stub/curl"
+    # The cs under test is a copy whose embedded trust lists name the
+    # throwaway key: the lists are literals, nothing else can replace them.
+    sed -e "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$stub/signers")'|" \
+        -e "s|^CS_RELEASE_REVOKED=.*|CS_RELEASE_REVOKED='$(cat "$stub/revoked")'|" "$CS_BIN" > "$stub/cs"
+    chmod +x "$stub/cs"
     local rc=0 out
-    out=$(HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$CS_BIN" -update 2>&1) || rc=$?
+    out=$(HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$stub/cs" -update 2>&1) || rc=$?
+    assert_not_exists "$stub/executed" 'revocation data never executes' || return 1
     printf '%s' "$rc" > "$TEST_TMPDIR/update-rc"
     printf '%s\n' "$out"
 }
@@ -457,21 +476,49 @@ _update_leftovers() {  # label
     done
 }
 
-# The .minisig asset is optional: a release without one is verified by its
-# checksum alone, and the update goes on to run the installer.
-test_update_runs_the_installer_when_the_minisig_asset_is_missing() {
+test_update_authenticates_the_installer() {
     local out
-    out=$(_update_with_missing_minisig nosig 0)
+    out=$(_update_with_manifest signed 0)
     assert_eq "0" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update exit status" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Verified" "the checksum gate passed" || return 1
     assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the verified installer ran, pinned to the tag" || return 1
+    local fault expected
+    for fault in missing-sig missing-manifest wrong-key other-tag edited missing-entry duplicate-entry wrong-ref revoked-lost duplicate-revoked executable-revoked; do
+        out=$(_update_with_manifest "$fault" 0 "$fault")
+        assert_eq 1 "$(cat "$TEST_TMPDIR/update-rc")" "$fault refuses the update" || { echo "$out"; return 1; }
+        assert_output_not_contains "$out" "fixture installer ran" "$fault never executes installer" || return 1
+        case "$fault" in
+            missing-sig) expected='Error: Failed to download release manifest signature.' ;;
+            missing-manifest) expected='Error: Failed to download release manifest.' ;;
+            wrong-key|other-tag|edited) expected='Error: Release manifest signature verification failed. Update aborted.' ;;
+            wrong-ref) expected='Error: Downloaded installer is not pinned to v2026.99.3. Update aborted.' ;;
+            missing-entry|duplicate-entry) expected='Error: Checksum verification failed. Update aborted.' ;;
+            revoked-lost) expected="Error: Release dropped revoked key: $(awk '{print $1, $2}' "$TEST_TMPDIR/$fault-stub/other.pub")" ;;
+            *) expected='Error: Malformed CS_RELEASE_REVOKED in downloaded installer.' ;;
+        esac
+        assert_eq "$expected" "$(printf '%s\n' "$out" | tail -n 1)" "$fault diagnostic" || return 1
+    done
+    out=$(_update_with_manifest revoked-kept 0 revoked-kept)
+    assert_eq 0 "$(cat "$TEST_TMPDIR/update-rc")" 'revocations carried forward permit update' || { echo "$out"; return 1; }
+}
+
+# A release older than the installed cs is refused before anything is run,
+# however well it is signed: "latest" pointing at an old tag is not an update.
+test_update_refuses_a_downgrade() {
+    local out installed
+    installed=$(grep -m1 '^VERSION=' "$CS_BIN" | cut -d'"' -f2)
+    out=$(CS_TEST_REMOTE_VERSION=2000.1.1 _update_with_manifest downgrade 0)
+    assert_eq 1 "$(cat "$TEST_TMPDIR/update-rc")" 'a downgrade refuses the update' || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "fixture installer ran" 'the older installer never runs' || return 1
+    assert_eq "Error: Release v2000.1.1 is older than the installed cs $installed. Update aborted." \
+        "$(printf '%s\n' "$out" | tail -n 1)" 'downgrade diagnostic' || return 1
 }
 
 # The update's temp dir (installer, checksum, signature) is removed however the
 # update ends: here the installer itself fails, after verification passed.
 test_update_removes_its_temp_dir_when_the_installer_fails() {
     local out
-    out=$(_update_with_missing_minisig failinst 3)
+    out=$(_update_with_manifest failinst 3)
     assert_eq "3" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update passes the installer's failure on" || { echo "$out"; return 1; }
     assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the installer was reached" || return 1
     assert_eq "" "$(_update_leftovers failinst)" "no temp copy of the installer left behind" || return 1
@@ -480,7 +527,7 @@ test_update_removes_its_temp_dir_when_the_installer_fails() {
 # And when it ends on a refused checksum.
 test_update_removes_its_temp_dir_when_the_checksum_is_refused() {
     local out
-    out=$(CS_TEST_BAD_DIGEST=1 _update_with_missing_minisig badsum 0)
+    out=$(CS_TEST_BAD_DIGEST=1 _update_with_manifest badsum 0)
     assert_eq "1" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update refuses the installer" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Checksum verification failed" "the refusal is reported" || return 1
     assert_output_not_contains "$out" "fixture installer ran" "the refused installer never runs" || return 1
@@ -858,6 +905,22 @@ SCRIPT
     assert_output_not_contains "$out" "cs -update"
 }
 
+# The launch's offer to update (offer_update_at_launch) would run cs -update,
+# which installs the original cs over the fork; the fork names the sync script
+# instead and asks nothing, on a terminal too.
+test_code_sessions_launch_never_offers_the_update_on_a_terminal() {
+    local home stub bin out
+    home=$(_launch_update_home fork-offer)
+    stub="$TEST_TMPDIR/fork-offer-claude"; _env_stub "$stub"
+    bin="$TEST_TMPDIR/fork-offer-bin"; _signed_curl "$bin" 2026.99.3
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$FORK_BIN" fork-offer-session <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'the fork never offers cs -update' || return 1
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" 'the release is still named' || return 1
+    assert_output_contains "$out" "scripts/sync-upstream.py catch-up" 'with the sync script' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=unset" 'the update mod gets no verdict' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'nothing is recorded as declined' || return 1
+}
+
 test_code_sessions_launcher_opens_when_upstream_is_unreachable() {
     _stage_upstream_check
     printf '#!/bin/sh\nprintf "attempt\\n" >> "$CS_TEST_CURL_LOG"\nexit 22\n' > "$TEST_TMPDIR/upstream-tools/curl"
@@ -904,8 +967,6 @@ run_test test_update_auto_is_unknown
 run_test test_verify_checksum_present_in_source
 run_test test_verify_checksum_catches_mismatch
 run_test test_verify_checksum_accepts_match
-run_test test_do_update_downloads_checksum
-run_test test_signature_is_optional
 run_test test_span_extracts_versions_above_installed
 run_test test_span_empty_when_up_to_date
 run_test test_summaries_cap_and_collapse
@@ -915,7 +976,8 @@ run_test test_render_flushes_headers_for_bullet_first_sections
 run_test test_render_width_floor_survives_tiny_terminals
 run_test test_check_shows_rendered_span
 run_test test_check_falls_back_when_fetch_fails
-run_test test_update_runs_the_installer_when_the_minisig_asset_is_missing
+run_test test_update_authenticates_the_installer
+run_test test_update_refuses_a_downgrade
 run_test test_update_removes_its_temp_dir_when_the_installer_fails
 run_test test_update_removes_its_temp_dir_when_the_checksum_is_refused
 run_test test_launch_with_a_fresh_cache_and_no_update_skips_the_network
@@ -925,6 +987,168 @@ run_test test_launch_with_a_time_only_cache_asks_again
 run_test test_launch_banner_shows_notes_card
 run_test test_launch_banner_quiet_on_empty_notes_cache
 run_test test_launch_banner_card_yields_to_the_mod
+
+# A pending release is offered once at launch, on a terminal, before the
+# session opens. An answered n is kept per version: that version is not asked
+# about again, and the session is told it was declined so the update mod
+# names the release in one line instead of opening its pane.
+_launch_update_home() {  # label -> HOME with a fresh cache naming 2026.99.3 pending
+    local home="$TEST_TMPDIR/$1-home"
+    mkdir -p "$home/.cache/cs"
+    printf '%s 2026.99.3\n' "$(date +%s)" > "$home/.cache/cs/update-check"
+    : > "$home/.cache/cs/update-notes-2026.99.3"
+    : > "$home/.cache/cs/update-notes-full-2026.99.3"
+    printf '%s' "$home"
+}
+_env_stub() {  # path -> a claude stub that prints the update verdict it was given
+    cat > "$1" << 'SCRIPT'
+#!/bin/bash
+echo "UPDATE_AVAILABLE=${CS_UPDATE_AVAILABLE-unset}"
+echo "UPDATE_DECLINED=${CS_UPDATE_DECLINED-unset}"
+exit 0
+SCRIPT
+    chmod +x "$1"
+}
+# A curl that serves the signature of each release named and refuses every
+# other request: the launch asks only about a release whose signature is up.
+_signed_curl() {  # dir, version...
+    local dir="$1" v arms=""
+    shift
+    for v in "$@"; do
+        arms="$arms    *\"/download/v$v/SHA256SUMS.sig -o \"*) exit 0 ;;
+"
+    done
+    mkdir -p "$dir"
+    printf '#!/bin/sh\ncase "$*" in\n%sesac\nexit 22\n' "$arms" > "$dir/curl"
+    chmod +x "$dir/curl"
+}
+test_launch_offers_the_update_once_per_version_on_a_terminal() {
+    local home stub bin out
+    home=$(_launch_update_home offer)
+    stub="$TEST_TMPDIR/offer-claude"; _env_stub "$stub"
+    bin="$TEST_TMPDIR/offer-bin"; _signed_curl "$bin" 2026.99.3 2026.99.4
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-session <<< "n" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" 'cs 2026.99.3 is available (you have [0-9.]*). Update now? \[y/N\]' 'the launch asks before the session opens' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the session still learns the release' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=2026.99.3" 'and that it was declined' || return 1
+    assert_eq "2026.99.3" "$(cat "$home/.cache/cs/update-declined")" 'the declined version is recorded' || return 1
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-again <<< "" 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'a declined version is not asked about again' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=2026.99.3" 'and the session is told it was declined' || return 1
+    assert_output_contains "$out" "2026.99.3.*available" "the banner still names the release" || return 1
+    # A newer release than the declined one is asked about afresh.
+    printf '%s 2026.99.4\n' "$(date +%s)" > "$home/.cache/cs/update-check"
+    : > "$home/.cache/cs/update-notes-2026.99.4"; : > "$home/.cache/cs/update-notes-full-2026.99.4"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" offer-newer <<< "n" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "cs 2026.99.4 is available" 'a newer release is offered again' || return 1
+}
+
+# No terminal, no question: the banner line and the in-session pane carry it.
+test_launch_does_not_ask_without_a_terminal() {
+    local home stub out
+    home=$(_launch_update_home notty)
+    stub="$TEST_TMPDIR/notty-claude"; _env_stub "$stub"
+    out=$(HOME="$home" CS_NO_UPDATE_CHECK='' CLAUDE_CODE_BIN="$stub" "$CS_BIN" notty-session < /dev/null 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'no question off a terminal' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the pane still gets the verdict' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=unset" 'and nothing is declined on the person'"'"'s behalf' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'no declined record off a terminal' || return 1
+}
+
+# y runs the update; one that does not finish is a warning and the launch
+# goes on with this cs, the pane still able to offer it.
+test_launch_update_that_fails_continues_with_this_cs() {
+    local home stub bin out
+    home=$(_launch_update_home fails)
+    bin="$TEST_TMPDIR/fails-bin"; _signed_curl "$bin" 2026.99.3
+    stub="$TEST_TMPDIR/fails-claude"; _env_stub "$stub"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" fails-session <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Failed to fetch update" 'the update'"'"'s own refusal is shown' || return 1
+    assert_output_contains "$out" "cs -update did not finish; continuing with cs [0-9.]*" 'the launch says it goes on' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the pane can still offer it' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'a failed yes is not a no' || return 1
+}
+
+# A release goes up a few minutes before its SHA256SUMS.sig, and cs -update
+# refuses it until the signature is there. Until then the launch asks
+# nothing, records no answer and caches nothing, so the first launch after
+# the signature lands asks. Its one request is the signature cs -update
+# downloads, bounded by the update check's timeouts.
+test_launch_offers_a_release_only_once_its_signature_is_up() {
+    local home stub bin out listing
+    home=$(_launch_update_home unsigned)
+    stub="$TEST_TMPDIR/unsigned-claude"; _env_stub "$stub"
+    bin="$TEST_TMPDIR/unsigned-bin"; mkdir -p "$bin"
+    cat > "$bin/curl" << STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$bin/calls"
+out=""; prev=""
+for a in "\$@"; do [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"; done
+case "\$*" in
+    *" -w "*) printf '%s' "https://example.com/releases/tag/v2026.99.3"; exit 0 ;;
+    *"/download/v2026.99.3/SHA256SUMS.sig -o "*) [ -f "$bin/signed" ] || exit 22; : > "\$out"; exit 0 ;;
+    *"/download/v2026.99.3/install.sh -o "*|*"/download/v2026.99.3/SHA256SUMS -o "*) : > "\$out"; exit 0 ;;
+esac
+exit 22
+STUB
+    chmod +x "$bin/curl"
+    listing=$(ls -A "$home/.cache/cs")
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" unsigned-session <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" 'no question before the signature is up' || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=2026.99.3" 'the session still learns the release' || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=unset" 'and nothing is declined on the person'"'"'s behalf' || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" 'no declined record' || return 1
+    assert_eq "$listing" "$(ls -A "$home/.cache/cs")" 'nothing is cached' || return 1
+    assert_eq "-fsSL --connect-timeout 2 --max-time 4 https://github.com/hex/claude-sessions/releases/download/v2026.99.3/SHA256SUMS.sig -o /dev/null" \
+        "$(cat "$bin/calls")" 'the one request is the signature, bounded' || return 1
+    touch "$bin/signed"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$CS_BIN" signed-session <<< "n" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" 'cs 2026.99.3 is available (you have [0-9.]*). Update now? \[y/N\]' 'once signed, the launch asks' || return 1
+}
+
+# y, and the update lands: the same launch runs again on the new cs, with
+# the arguments it was given, and the new cs is not asked in its turn.
+test_launch_update_relaunches_the_same_command_on_the_new_cs() {
+    local home stub out bin key digest
+    home=$(_launch_update_home relaunch)
+    bin="$TEST_TMPDIR/relaunch-bin"; mkdir -p "$bin"
+    stub="$TEST_TMPDIR/relaunch-claude"; _env_stub "$stub"
+    ssh-keygen -q -t ed25519 -N '' -C release@example.com -f "$bin/key"
+    printf 'release namespaces="cs-release-*" %s\n' "$(cat "$bin/key.pub")" > "$bin/signers"
+    # The release's installer replaces the cs under test (the path this
+    # launch runs as) with one that says how it was started, and installs
+    # the same at the place cs -update reads the new version from.
+    cat > "$bin/install.sh" << INSTALLER
+#!/usr/bin/env bash
+CS_DEFAULT_REF=v2026.99.3
+CS_RELEASE_REVOKED=''
+printf '#!/bin/bash\\nVERSION="2026.99.3"\\necho "relaunched as 2026.99.3 with: \$*"\\necho "asked about=\${CS_UPDATE_PROMPTED-nothing}"\\n' > "$bin/cs"
+mkdir -p "\$HOME/.local/bin" && cp "$bin/cs" "\$HOME/.local/bin/cs"
+INSTALLER
+    digest=$(shasum -a 256 "$bin/install.sh" | awk '{print $1}')
+    printf '%s  install.sh\n' "$digest" > "$bin/SHA256SUMS"
+    ssh-keygen -Y sign -f "$bin/key" -n cs-release-v2026.99.3 "$bin/SHA256SUMS" > "$bin/sign.log" 2>&1
+    cat > "$bin/curl" << STUB
+#!/usr/bin/env bash
+case "\$*" in *" -w "*) printf '%s' "https://example.com/releases/tag/v2026.99.3"; exit 0 ;; esac
+out=""; prev=""
+for a in "\$@"; do [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"; done
+case "\$*" in
+    *"/v2026.99.3/install.sh -o "*) cp "$bin/install.sh" "\$out"; exit 0 ;;
+    *"/v2026.99.3/SHA256SUMS -o "*) cp "$bin/SHA256SUMS" "\$out"; exit 0 ;;
+    *"/v2026.99.3/SHA256SUMS.sig -o "*) cp "$bin/SHA256SUMS.sig" "\$out"; exit 0 ;;
+esac
+exit 22
+STUB
+    chmod +x "$bin/curl"
+    sed -e "s|^CS_RELEASE_SIGNERS=.*|CS_RELEASE_SIGNERS='$(cat "$bin/signers")'|" "$CS_BIN" > "$bin/cs"
+    chmod +x "$bin/cs"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$stub" "$bin/cs" relaunch-session --force <<< "y" 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "relaunched as 2026.99.3 with: relaunch-session --force" 'the same command runs on the new cs' || return 1
+    assert_output_contains "$out" "asked about=2026.99.3" 'the relaunch tells the new cs which version was already offered' || return 1
+    assert_output_not_contains "$out" "UPDATE_AVAILABLE=" 'the old cs never started claude' || return 1
+}
+
 run_test test_launch_exports_update_verdict_to_the_mod
 run_test test_code_sessions_refuses_update_and_uninstall
 run_test test_without_code_sessions_home_update_is_not_refused
@@ -932,9 +1156,15 @@ run_test test_shared_config_fork_refuses_upstream_updates_without_a_profile_mark
 run_test test_code_sessions_launcher_checks_upstream_and_caches_the_result
 run_test test_code_sessions_launcher_honours_update_check_opt_out
 run_test test_code_sessions_codex_launch_shows_the_upstream_notice
+run_test test_code_sessions_launch_never_offers_the_update_on_a_terminal
 run_test test_code_sessions_launcher_opens_when_upstream_is_unreachable
 run_test test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache
 run_test test_code_sessions_launcher_opens_when_update_cache_directory_cannot_be_created
+run_test test_launch_offers_the_update_once_per_version_on_a_terminal
+run_test test_launch_does_not_ask_without_a_terminal
+run_test test_launch_update_that_fails_continues_with_this_cs
+run_test test_launch_offers_a_release_only_once_its_signature_is_up
+run_test test_launch_update_relaunches_the_same_command_on_the_new_cs
 run_test test_notify_writes_notes_cache
 run_test test_notify_writes_notes_cache_past_stale_tmp_files
 run_test test_notify_writes_empty_full_cache_when_fetch_fails

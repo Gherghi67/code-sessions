@@ -99,7 +99,7 @@ test_doctor_reports_iterm2_surface() {
     rm -f "$CS_IT2_DIR/it2attention"
     out=$(cd "$CLAUDE_SESSION_DIR" && "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$out" "shell integration not installed" \
-        "missing it2 reads as tab-color-only" || return 1
+        "missing it2 reads as bounce off" || return 1
 
     export TERM_PROGRAM="Apple_Terminal"
     out=$(cd "$CLAUDE_SESSION_DIR" && "$CS_BIN" -doctor 2>&1) || true

@@ -147,12 +147,24 @@ CS_SKILL_FILES=(
     sweep/scripts/cs-shared.sh  # build.sh's copy of hooks/cs-shared.sh, which the guard sources
 )
 
+# Mod directories under mods/ the installer keeps out: experimental, their
+# source and tests in the checkout only. cs-feed is one, so the cs band, which
+# draws its feed key only beside cs-feed's /feed, draws none. Every file under
+# mods/ outside these and their test/ is in CS_MOD_FILES below
+# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
+# scan skips them.
+# shellcheck disable=SC2034  # read by cs -doctor and tests/test_install.sh
+CS_MODS_KEPT_OUT=(
+    cs-feed
+)
+
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
 CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
     cs/hooks/register.tsx
+    cs/tips.json
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
@@ -164,6 +176,19 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
 )
+
+# The cs tips file as install.sh names it in settings.json's
+# spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
+# tips, and cs's says how to turn on the band's prompt bars. Deployed with the
+# cs mod as cs/tips.json under ~/.claude/skills.
+# shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
+CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
+
+# Whether cs named its tips file, as install.sh records it: "named", or
+# "declined" once the person took the pointer out, so cs -update leaves it out.
+_cs_tips_record_file() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/cs/tips-file"
+}
 
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install
@@ -563,10 +588,13 @@ _codex_status_line_remove() {  # codex_dir
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
 # "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear) key and its wrap key. KEEP IN SYNC with
-# ROTATE_ACTION and WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
-# asks once per machine and binds them. cs -uninstall takes back only the
-# keys that still hold these values, and cs -doctor reports them.
+# band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
+# WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
+# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
+# asks once per machine and binds each in the context block Claude Code wants
+# it in (home, below): the command keys in Chat, the chords in Global, where
+# the mod reads them. cs -uninstall takes back only the keys that still hold
+# these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -583,7 +611,10 @@ CS_RETIRED_OPTION_KEYS='{"alt+1":"command:rotate","alt+2":"command:wrap"}'
 # any order, and a chord's keys split on any run of spaces. It keeps meta
 # apart from alt and leaves space and arrow glyphs as typed, which no cs key
 # uses. cs's own keys are already in that form. ours: whether a to_entries pair from a context block is one of
-# the bindings in $cs, key and value both.
+# the bindings in $cs, key and value both. home: the context block an action
+# belongs in, as Claude Code rules it (2.1.310 warns of a "command:" binding
+# in any named context but "Chat"): Chat for a command, Global for anything
+# else.
 _CS_KEYBINDING_DEFS='
     def keynorm:
         ["alt", "cmd", "ctrl", "meta", "shift"] as $mods
@@ -596,6 +627,7 @@ _CS_KEYBINDING_DEFS='
             | join("+")]
         | join(" ");
     def ours: . as $e | ($e.key | keynorm) as $k | $cs | has($k) and .[$k] == $e.value;
+    def home: if type == "string" and startswith("command:") then "Chat" else "Global" end;
 '
 
 # Claude Code reads its keybindings from its config dir. Inside an encrypted
@@ -642,27 +674,31 @@ _cs_keybindings_shape_ok() {  # file
 }
 
 # Reads a keybindings document that passed the shape check on stdin and prints
-# one line per cs key: "bound<TAB>key" when every binding of it, in any
-# context, holds cs's value; "free<TAB>key" when nothing binds it; and
-# "conflict<TAB>key<TAB>action" when something else does. A chord also
-# conflicts when its first key is bound on its own to an action, which
-# Claude Code would stop reaching once it waits for the chord's second key:
-# "conflict<TAB>key<TAB>action<TAB>prefix". Keys compare as keynorm spells
-# them. An action that is not a non-empty string (a null that unbinds the
-# key, an empty "") prints as JSON, so no field is ever empty; a null on the
-# prefix is no conflict, as it binds nothing.
+# one line per cs key: "bound<TAB>key" when every binding of it holds cs's
+# value and sits in a block of the action's home context; "misplaced<TAB>key<TAB>home"
+# when every binding holds cs's value but one sits in a block of another
+# context (a block with no context counts as another); "free<TAB>key" when
+# nothing binds it; and "conflict<TAB>key<TAB>action" when something else
+# does, in any context. A chord also conflicts when its first key is bound on
+# its own to an action, which Claude Code would stop reaching once it waits
+# for the chord's second key: "conflict<TAB>key<TAB>action<TAB>prefix". Keys
+# compare as keynorm spells them. An action that is not a non-empty string (a
+# null that unbinds the key, an empty "") prints as JSON, so no field is ever
+# empty; a null on the prefix is no conflict, as it binds nothing.
 _cs_rotate_wrap_keys_status() {
     jq -r --argjson cs "$CS_ROTATE_WRAP_KEYS" "$_CS_KEYBINDING_DEFS"'
         def show: if type == "string" and length > 0 then . else tojson end;
-        [.bindings[] | (.bindings // {}) | to_entries[] | .key |= keynorm] as $all
+        [.bindings[] | .context as $ctx | (.bindings // {}) | to_entries[] | .key |= keynorm | .ctx = $ctx] as $all
         | $cs | to_entries[] | . as $c
-        | [$all[] | select(.key == $c.key) | .value] as $vals
+        | [$all[] | select(.key == $c.key)] as $hits
+        | [$hits[] | .value] as $vals
         | ($c.key | split(" ") | if length > 1 then .[0] else null end) as $prefix
         | [$all[] | select(.key == $prefix and .value != null) | .value] as $pvals
         | if any($vals[]; . != $c.value) then
             "conflict\t\($c.key)\t\([$vals[] | select(. != $c.value)][0] | show)"
           elif ($pvals | length) > 0 then "conflict\t\($c.key)\t\($pvals[0] | show)\t\($prefix)"
           elif ($vals | length) == 0 then "free\t\($c.key)"
+          elif any($hits[]; .ctx != ($c.value | home)) then "misplaced\t\($c.key)\t\($c.value | home)"
           else "bound\t\($c.key)"
           end'
 }
@@ -677,13 +713,14 @@ _cs_keybindings_held() {  # bindings-json
 
 # Prints a keybindings document on stdin, compact, without the bindings in the
 # JSON object $1 (key and value both; a key bound to anything else stays). A
-# Global block left empty goes; another context keeps its block.
+# block that held one of them and is left empty goes, whatever its context; a
+# block that held none is never touched, so a user's own empty block stays.
 _cs_keybindings_strip() {  # bindings-json
     jq -c --argjson cs "$1" "$_CS_KEYBINDING_DEFS"'
         .bindings |= map(
             if any((.bindings // {}) | to_entries[]; ours) then
                 .bindings |= with_entries(select(ours | not))
-                | select(.bindings != {} or .context != "Global")
+                | select(.bindings != {})
             else . end)'
 }
 
@@ -889,7 +926,9 @@ CS_KNOWN_SHA256=(
     1e4acc72345786a71a0b5a6ce90f548244461d58e62900f63107f23f14b07844
     1e7c8bad72a05236a0e6f5105ddda4c039cfb32968be3201632e87b3e60770bf
     1f549cd11c1de9844b5be3dd812915d980eb9dcced03e2ae3eb14ca079551b76
+    1fa475982564ec70f12bf5295b874989dd95f89224f27bb6be4854cc5b8674e3
     204b2d932f67a7466dfea7693788be0f3d58ff4da4e5c28aa7672320cf159290
+    21988bf58bb6fea15c6435445f4abc3a38f4c4a9a7db78c4ff4797650709ba3f
     21fb7eb420f27d31852065fadd4e5c95d5fd1a5f3eea492c36e90fc9b850571a
     22004c7b13bf5e590c5fa6ad503f4ecdb7f669716d3040f31ba2f1e44d98fc9d
     224d290a440af47aee9e4a9f5da3c3171d7ef552cefef4036b3f4c795cdd4941
@@ -929,6 +968,7 @@ CS_KNOWN_SHA256=(
     2ab644f66e9ef38772c7e8dd195f198f183f4b985fdad6b3ca0c7660208773d1
     2ae3d6cd2229f809fae6682aa6736afbf4ceae98b652c7f9949a3ea6554d5900
     2b00f626623f3da472b4c9616bd76e5a2a5299ec023b774c31cf361d48c2d228
+    2b0d7ce6873d4b62ca3ed52d5f6c7ffa98bdeda7e9bb5d393e70ab516b943cd7
     2b30c9ecc0cbc5299f6a30acc1ed7529eb9718599c63eb681496e47b519276f7
     2c31f90f9bc790547ea62c2e3053e04f0e0542d1ae2a0fe098ecd0e71e380b8d
     2d24e2758eb1b80a3173dfc87fe4c2b82ca01b028bf8c70791279a6ddc97c99d
@@ -1004,6 +1044,7 @@ CS_KNOWN_SHA256=(
     426b2cc21275aa4e1744dc6aec7637e28252376575888abb75a80f36fd4e1220
     42a14da239b23981c7d266ec0a263a26b1f718a753609c40cc0ebc3ede323f19
     42c11ba435180ff88af18b4a0b6cb873915e33d2bd730667b8e867b8f049f638
+    42e81979965715204eb41428c1a227f170a14ab3919f2a6122cddd688425377f
     434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a
     4365c08a58d5f8e516f616b2e6f50cbe74fd5e79c7b702a15cd2f16e94f88cf0
     437556e188d3eb18f1ea91b6d110ecc8ff9421e0ece220150cb7d5918fafdd5f
@@ -1061,6 +1102,7 @@ CS_KNOWN_SHA256=(
     560dda6b6a482b42ccbd4d49e9c8289bec99484ccc19fbd53776620f3422ff5c
     562178fcf7c507791833069cb453df8749267b563f0666fa369145e77873c289
     56eb3b809c4e772f901a63b4130ce022f0d40dc801e096fba0c53d9f0bd42a1f
+    57b11a23b9eaba0c4487db3e4e294f1b7e1c339fdec2551163c0a9b9f5e55dd5
     57de68f2ef5018795e838ff74e56e612e14ce9a36163b32460d972bd227018e2
     57dfa07fad29450b172ecbaa948b34bc7427e0ec6ec321039cd628df20c4cb0e
     5860bb2ea5ce7059f687cb70882510db5b7a0d05bc254fc82f1d761f0a40e2d2
@@ -1078,6 +1120,7 @@ CS_KNOWN_SHA256=(
     5c77b343097cf6e2593e8711fe2a44e2b851dc9a8bcdaff8dbb73f3d71e3a149
     5cf7063b197810dac48087880266e13830a6c049823012ed3ff2bfe8d83f0a87
     5d4ef723adff8fa8731f28c11d85564aa8ecdf289a9cba5b21e5e28941e8364b
+    5d5a289944d88a3b255095d9341172f893690a205fa77f486d3f812967b3133c
     5d68a36006f7de3b41197fff595ccadfbe03156b522fb957df54040cbea414db
     5d6fd0c8f276a375a81ef901169bf5089b44acd3b21effd6e6a8ad3f797df716
     5d931edefcafb3f8b878ed1329cfdd88a7b3629c9748e83c613e2e5e11c660dd
@@ -1158,6 +1201,7 @@ CS_KNOWN_SHA256=(
     77087584b6ea2557b4d10d834e7438ba9696667adcfc7ff65a72b838405b9bcc
     7710e311b213a88b6582d21a46257d7cd41b309e483b1122827085d59a7ee14e
     7727af041972b9eb7379b9a99e3c3741f5a5a259b84f7b71f99b46a6eb87290a
+    77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084
     77d28d2de360759d5c53e919e2ffbd3a4f280d5e16a24ca45b3cb601ee515ec6
     78923b486ec6e119b2690077c5270355a7b6609ff13be7507fdcb725040c396f
     7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922
@@ -1207,6 +1251,7 @@ CS_KNOWN_SHA256=(
     82f39a577629a00c02ff690ee1658932eec10600db8b946f2b2c91378d1b6341
     833807fa71c0b4d6acfd7530ab5c770fe03b433aedc4d6a6a1ca5885e8bfc526
     8374df476483cc2c2d08525d368880796c095505dc4ed57232fc8ff10fa43465
+    8377b722bd856d5ca918bb9ffea2cfb3e0a0077ee0b9441a1f52461fd7282739
     838b1be43a8cfaa0403c4124018d911d2f8ca1f94947df9e221ec3a3dd525e19
     83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085
     8453f115c8074712bfeb17db0b78103f8372bac8307a8e0a9d921676f17b5777
@@ -1214,6 +1259,7 @@ CS_KNOWN_SHA256=(
     84f1aa5ff1891164aa705a086b40b135c065fab27a1dc86b0d5517119cfb7189
     855718f4de58685684c57676168c473e4789d1ee1fb87adb53fbe916ba8176b6
     857f8f99f445977770250660a0970de8d27795998013700f86afc7f0b4170fa1
+    85a1e25d7953943ec6fbd53b65765a928b06a59595abaf71e2d86e7888c8dd8c
     85c0b95b6d2f26b307f1b5f02afd1d7be75deacbf8372013a5bd70c6ed22f5dd
     85eed2ed78ad31901e690f600aa10b13b5e600cd181c67cf30224c271ca06eb2
     862f4e1c5d4f98ddce0f443f65e3ffb95e0efd942e7bf1bf757729f1186d4e84
@@ -1244,6 +1290,7 @@ CS_KNOWN_SHA256=(
     8da12449f3607f9c942a8a9d40e23bfbac45da442eedc385a378ad1194460b72
     8de41999f6035d8ec0c1eb1c0e7871221379da9b9f33037f13bea39a8cd641b2
     8e2613a762baad5c0d336262f6127e6048997331112dbbd5560726cf78b0a06b
+    8e4c93e404bcc99dc8a2651ac1dd5d064779216e44a40c1250e88c7a52d9d81d
     8eae23e70f8beb9093d2d50ac2e38653b696b1a431a0456bffac36579ba0f6bb
     8f1d91ea88758660427516a7f21fa5a6f103e4d6fe0faa701f6b5bf3f6c5f286
     8f3a4ed524b5394135490ecfbe9dab188a6862be0bc5bb95123ef07072be9722
@@ -1252,6 +1299,7 @@ CS_KNOWN_SHA256=(
     8fa1e49f6495e929657b17d4d2e1363a6c6d76d02570b683e0835123a5124a81
     8faa6f4b66eca22b81120262f36ca96798cb043fb648f46f6885ce535812dc23
     8fb93e147c6a039e5e2f894cd8b47d6f97e5e3c22ede3e39b7bda8bc7dd6ad25
+    8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f
     901de4ef794f18d507eeb9ace66fdcde1916a0c91b30d936d89be70a1c7728eb
     9095b5959a41bfc59d99f31bef728913eed4d64aa117dcc0b27a4e8759591504
     919de3573a871a679c241f7f34ca32c35eff5650095d8aa9fe8f3fa9142ad744
@@ -1298,6 +1346,7 @@ CS_KNOWN_SHA256=(
     a023106422b7da72b416e657a69a14f11228c3d83ecbf5014c89de3de8830d1f
     a044d10d8318387cfd8bb32c139091441e4e212ac86de555a19e51243a8d261b
     a0dab6b308937978b9667d2a2e637147e4964f3bca13f8a88a3b019bd8d8a787
+    a0e341d4bdc60072b25354256e751b320733cdcc31b91ac3d4a4f661c73b611e
     a1c982069b82b0f7ddfcca4aaceecb816956b1d5cb24201b04b250fba21fdd42
     a1d2c2be60ba9898eda0d093883860c64b86286c90916d7aec2f36a5d0f79e9c
     a1d8b9b5021ba8071bebdb7e47d3da458629435c64603b7b0afd92dba94572bd
@@ -1314,6 +1363,7 @@ CS_KNOWN_SHA256=(
     a3c49a03923b0229fcb316cbef98e8028a6f3c5037ff0bcbace384d91cda3d0d
     a3e3d24f6ff2394336e5c54bb0755198b7f8af3e6f440c756aecf80e58131f86
     a3faacf9d06adcc0127b6dacbf9f360488f0d1695add299aaa94cdb7541649bd
+    a4486c60d3db91c0a466fb154602eec888ffeb5a9942d74d2c8aac92b8dd7c32
     a47433266497d2a7c77c58e626448cb3732b00101447864e47662a9e7730ca50
     a4fa7ea3be9dd335f8959abbd3adf71e18f7eea563b49305ceb715090b7a2bf7
     a4fef399d4c84c5b30e2a13c1f6b9a3a062c78136d3365b131aa0f041f455a98
@@ -1412,6 +1462,7 @@ CS_KNOWN_SHA256=(
     c256ccde30abcb1fa303c031107de458e3c93698127cf2ca7c5efee62ec6a80e
     c265f33ee7863e4d5ce2691c62f7eda90c6f7b6b315f7a864781ff9ceee40d3c
     c2af6154d1152c7ea99ae879bf09dc33f6fe05e4690675f2f54df73110eb77d1
+    c3abc90866d30594959e68f8259d5155bbf0b9ed3d27b69da63fe78a116c712d
     c44867e1f7f1fe6107d1d6d10232888d538402387da5ad0fbe29e9a8fa046978
     c4688a9bc8cfb8f906a73aebc4ecf8d81fb70db4e2f0bfb4a15ce7c1df1aa01e
     c48345ba1cb8d6b70c50dc7031fc66f4d180df819e8f735639e13780d0d51cc1
@@ -1445,6 +1496,7 @@ CS_KNOWN_SHA256=(
     cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112
     cf9a1df777a17e3357afa961119d4679e278d601eae1be9a9f669dffa804de6b
     cfa6e2a49680a2ceaad9b83680f4a237a5fe3e4ceb3d5e13c329e6676a334c69
+    cfe8c63090aeb6d585b47ef65cae403fa214d8e466036eebb2e1b8ef654ee764
     d02a72080f391a3c3a43abac5c2e6c970740f81d0ec2806f91a2e79edf7a23e6
     d08d59e89b945b670e0f8de873a6ee8d312df3c92cc9b4c5d27c91bde04ed04f
     d10f43e48dbd9f1f8237312a8b57a35f9c37643ec3fccc39718193c569fdc643
@@ -1496,6 +1548,7 @@ CS_KNOWN_SHA256=(
     e2af3787bbe2b388935eaf3fecf78cb1ffbe6f5f7378cd31ed591a1332342654
     e2b6c941d81d92e86aff4d52ff20ae67f684fa2768e7523894ea7e69f16de813
     e31756429720365401dd7382d2950624eb50785fa5289b522ae7e356d64a355e
+    e31c75e10bc0cc8490691c61862c7865e7cda831f1ac1ec841e5ebe831204ea2
     e37ee1992d0e21c0367aa4f343d4731336e85b6485b53c4f98800e0e188b6d9c
     e391cc894446ae6df04a74458858a48a28621939d1af6968bf1a785c3e88fc06
     e39739a76769350d67a4b7c54cf8ae86acdf18816e33a49c1a683e87a53f6f75
@@ -1553,6 +1606,7 @@ CS_KNOWN_SHA256=(
     f7f7f0a7d02bb3d33ef03a93bda2cbaf4bc1576e98619bd7b423af052c11927b
     f8070db302a21fcc3f76890379ad48a1b1c4b586aa60960e1755b2ec806923f6
     f8202c20e7f98a8b6b349098e2c506277eb4216334ee2b55f77a158ff7b2eb83
+    f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e
     f84b42e11a850d734890099ebef7a91f9851b016e24736c0f344e6149140f06c
     f89a953b96b7869fcf27973120976f7a97f2095980b4bee010b1bb83abea6104
     f8d03e72b9208f5ba2f3c696b4878602c8a15807b2bed6a39275f5f9cc81b5e8
@@ -1564,6 +1618,7 @@ CS_KNOWN_SHA256=(
     fb0e8187671a15daa8246d3f677adb948b09ea6ce39a2eaf4f21ead6148b307d
     fb33250d3abde8e902bcea4cf47e972b886dcbfe377e1a052b933017677b6432
     fb469f4c48f7f5349d37de997fc49db00f1fc34ecabdc7f9f3aa970d65966921
+    fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054
     fbb3ca4863c2032e0e2bbe9a409cb0a515f2b5d308519f2b5e2111423331764b
     fc0f047f5cec5ba2ff999c7c16275df474ea7c364ba5fee76306da11d8addbff
     fc2a73985eab32b26946f2501cfc6d124d280fcdc6097dca768f880adedcfaf3
