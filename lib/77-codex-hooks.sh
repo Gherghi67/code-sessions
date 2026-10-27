@@ -526,6 +526,10 @@ _codex_hook_user_prompt_submit() {
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
     bound=$(cs_binding_read "$CS_SESSION_DIR" codex 2>/dev/null) || return 0
     [ "$bound" = "$session_id" ] || return 0
+    # Mail git tracks came with a pull, a merge or a checkout, not from a
+    # sender on this machine, and a pull can bring it while the run goes on.
+    # Claude's resolver asks git on every prompt, and this hook asks too.
+    ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 0
     private=$(cs_private_dir "$CS_SESSION_DIR/.cs") || return 0
     cs_mail_digest "$private"
     [ -n "$MAIL_DIGEST" ] || return 0
