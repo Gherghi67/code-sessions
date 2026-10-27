@@ -33,7 +33,7 @@ exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `spawn_brief`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
-`startup_context`, `feature_finish`, `rotation`, `recovery_autosave`, `memory_index`. These
+`startup_context`, `feature_finish`, `rotation`, `recovery_autosave`, `memory_index`, `mail_delivery`. These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -46,7 +46,7 @@ The four session-manager capabilities name what the shipped skills rely on:
 | `rotation` | a fresh conversation consumes the armed handoff and the binding follows `/clear` (Claude and Codex) | the rotate skill |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |
-| `mail_delivery` | `cs -msg` mail surfaces inside the open conversation | the feature skill |
+| `mail_delivery` | `cs -msg` unread mail surfaces on the next prompt (idle wake is separate) | the feature skill |
 
 `cs -engine` gives skills and scripts the same answers without sourcing the
 library. It prints `engine:`, `conversation:` (the native ID the session has
@@ -269,7 +269,7 @@ its own inside the vault: main checks before the pre-open, and
 (`_codex_encrypted_refusal`).
 The shipped skills deploy to Claude and Codex alike. Each one reaches its
 helpers through its own directory and checks `cs -engine supports` before an
-adapter feature. Codex declares `rotation` and `memory_index`.
+adapter feature. Codex declares `rotation` and `memory_index`, `mail_delivery`.
 The feature skill still refuses until its spawn-brief integration is delivered.
 Codex ignores `disable-model-invocation`, so `finish` also ships
 `agents/openai.yaml` with `allow_implicit_invocation: false`, which keeps it out

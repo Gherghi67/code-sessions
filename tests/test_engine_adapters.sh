@@ -188,12 +188,11 @@ test_capabilities_are_exact_and_runtime_independent() {
     done
     cs_engine_supports codex rotation || { echo "  FAIL: Codex must declare rotation"; return 1; }
     cs_engine_supports codex memory_index || { echo "  FAIL: Codex must declare memory_index"; return 1; }
-    for capability in spawn_brief mail_delivery; do
-        if cs_engine_supports codex "$capability"; then
-            echo "  FAIL: Codex must not claim $capability before its adapter hosts it"
-            return 1
-        fi
-    done
+    cs_engine_supports codex mail_delivery || { echo "  FAIL: Codex must declare mail_delivery"; return 1; }
+    if cs_engine_supports codex spawn_brief; then
+        echo '  FAIL: Codex must not claim spawn_brief before its adapter hosts it'
+        return 1
+    fi
     cs_engine_supports fixture startup_context || { echo '  FAIL: fixture capability missing'; return 1; }
     if cs_engine_supports fixture startup; then
         echo '  FAIL: capability check must match a complete line'

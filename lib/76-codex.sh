@@ -67,7 +67,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index mail_delivery
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
