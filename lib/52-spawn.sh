@@ -144,8 +144,8 @@ _spawn_attach_hint() {
     fi
 }
 
-_spawn_window() {  # name, token
-    local name="$1" token="$2" cmd="env" assignments="" selector
+_spawn_window() {  # name, token, engine
+    local name="$1" token="$2" engine="$3" cmd="env" assignments="" selector
     # An existing tmux server retains the environment that started it. Carry
     # the caller's configuration, including unsets, without copying credentials.
     # env options must precede its assignments on both BSD and GNU env.
@@ -169,7 +169,7 @@ _spawn_window() {  # name, token
     # the seed can read it, and `ps` shows it for as long as the launch runs.
     # `env` rather than a VAR=value prefix, which tmux's default-shell need
     # not understand.
-    cmd="$cmd$assignments $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
+    cmd="$cmd$assignments $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name") --engine $(_sq "$engine")"
     _cs_tmux_window "$name" "$cmd"
     info "spawned $name in tmux session ${CS_TMUX_SESSION:-cs} (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
 }
@@ -193,12 +193,18 @@ _cs_tmux_window() {  # window, cmd
 }
 
 run_spawn() {
-    local name="" brief=""
-    local usage='Usage: cs -spawn <name> [--brief <file>] [--task "..."] ...'
+    local name="" brief="" engine=""
+    local usage='Usage: cs -spawn <name> [--engine claude|codex] [--brief <file>] [--task "..."] ...'
     local tasks
     tasks=()
     while [ $# -gt 0 ]; do
         case "$1" in
+            --engine)
+                [ $# -ge 2 ] || error "--engine needs a value"
+                [ -z "$engine" ] || error "cs -spawn takes one --engine"
+                shift
+                cs_engine_known "$1" || error "Unknown engine: $1. Choose claude or codex."
+                engine="$1";;
             --task)
                 [ $# -ge 2 ] || error "--task needs a value"
                 shift
@@ -247,6 +253,12 @@ run_spawn() {
         && [ "${spawner%%@*}" != "${name%%@*}" ]; then
         error "session $spawner cannot hand work to the existing session $name; send it as task mail for $name's user to accept: cs -msg $name --kind task \"<task>\""
     fi
+    # Explicit selection wins; otherwise inherit the spawning run, then the
+    # target preference/default. Do not rely on tmux's ambient environment.
+    engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
+    if [ "$engine" = codex ] && [ "${#tasks[@]}" -gt 0 ]; then
+        error "Codex does not host the walk-away task queue; use --brief without --task"
+    fi
     _spawn_precheck "$name"
     # One token per spawn, for the window command and the seed alike. The
     # launch consumes the seed unasked only when the two match.
@@ -290,5 +302,242 @@ $spawner
         fi
         rm -f "$staged" || warn "cs -spawn: could not remove the staging file $staged"
     fi
-    _spawn_window "$name" "$token"
+    _spawn_window "$name" "$token" "$engine"
+}
+
+# Shared seed consent, delivery and queue staging. The launch owns the lease
+# and supplies the captured _spawn_token; returns the native prompt in spawn_kick.
+_spawn_prepare_launch() {  # session_name, session_dir
+    local session_name="$1" session_dir="$2"
+    # Spawn seed: tasks and a brief staged by cs -spawn for this session.
+    # Consumed here, after the already-running guard and before any exec arm,
+    # so a window that died before launching self-heals on the session's next
+    # open. A stale seed (>1h) is set aside with its brief, never silently
+    # armed days later.
+    #
+    # Consent (audit H2): a seed is a file in .spawn/, and anything that can
+    # write there could arm the next open of this name with its own tasks and
+    # a kick that says "begin". Line 1 of the seed is a token the spawn's own
+    # tmux window carries in CS_SPAWN_TOKEN; only that window consumes unasked.
+    # Every other open (by hand, a script, a window that died and was reopened
+    # elsewhere) is shown the seed as data and asked. The token was taken out
+    # of the environment before the lock (above), so claude, a collision
+    # redirect and any nested launch never carry it.
+    spawn_kick=""
+    [ -n "${SESSIONS_ROOT:-}" ] || return 0
+    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed" _claim
+    if [ -f "$_seed" ]; then
+        local _now _age
+        _now=$(date +%s)
+        _age=$(( _now - $(_epoch_mtime "$_seed") ))
+        if [ "$_age" -gt 3600 ]; then
+            mv "$_seed" "$_seed.stale" 2>/dev/null || true
+            warn "Stale spawn seed set aside: $_seed.stale (re-run cs -spawn if still wanted)"
+        else
+            # Read the seed once: line 1 the token, line 2 the spawner, then
+            # one task per line up to the brief marker, if the seed has one;
+            # the brief is the rest of the file and is never read as tasks.
+            # Whitespace-only lines are skipped, not merely empty ones:
+            # _queue_add trims and then errors on an empty body, which under
+            # errexit would abort the whole session launch over a stray space
+            # in a hand-edited seed.
+            local _seed_token="" _spawner="" _line _lineno=0 _n=0 _mark
+            local _tasks
+            _tasks=()
+            # Everything below reads the seed under a name this open owns
+            # (_spawn_put_back_claim in lib/52-spawn.sh): a seed published in
+            # .spawn while the consent ask waits is not the one shown, and the
+            # tasks, the brief, a decline and the delete all belong to the
+            # seed that was shown. The traps put it back if the open stops.
+            _claim="$SESSIONS_ROOT/.spawn/.$session_name.seed.claim.$$"
+            mv "$_seed" "$_claim" \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
+            _CS_SPAWN_SEED="$_seed"
+            _CS_SPAWN_CLAIM="$_claim"
+            _mark=$(_spawn_brief_mark_line "$_claim") \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _lineno=$((_lineno + 1))
+                [ "$_lineno" != "$_mark" ] || break
+                case "$_lineno" in
+                    1) _seed_token="$_line"; continue ;;
+                    2) _spawner="$_line"; continue ;;
+                esac
+                case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
+                _tasks+=("$_line")
+                _n=$((_n + 1))
+            done < "$_claim"
+            # Never empty-equals-empty: a seed with no token line (older cs,
+            # or hand-written) is foreign to every open.
+            local _consume=1
+            if [ -n "$_spawn_token" ] && [ "$_spawn_token" = "$_seed_token" ]; then
+                :
+            else
+                _consume=0
+                # Shown as data: control characters stripped, so a crafted
+                # seed cannot draw over the question it is answering.
+                local _shown_spawner _shown
+                _shown_spawner=$(printf '%s' "$_spawner" | tr -d '[:cntrl:]')
+                echo
+                printf "${GOLD}A spawn seed is staged for this session:${NC} %s\n" "$_seed"
+                printf '    spawner: %s\n' "${_shown_spawner:-(none)}"
+                if [ -n "$_mark" ]; then
+                    printf '    brief:   inline, %s bytes (becomes .cs/brief.md)\n' \
+                        "$(tail -n +"$((_mark + 1))" "$_claim" | wc -c | tr -d ' ')"
+                fi
+                if [ "$_n" -gt 0 ]; then
+                    printf '    tasks (queued and armed; the walk-away drain runs them unattended):\n'
+                    local _i=0
+                    for _line in ${_tasks[@]+"${_tasks[@]}"}; do
+                        _i=$((_i + 1))
+                        _shown=$(printf '%s' "$_line" | tr -d '[:cntrl:]')
+                        printf '      %d. %s\n' "$_i" "$_shown"
+                    done
+                fi
+                # The answer is a keypress on a terminal, never redirected
+                # stdin: `cs name <<< ""` hands read a newline, which is the
+                # empty answer the default arm took (Codex round 1), and a
+                # script could type y as easily. With no terminal the seed
+                # stays staged for an attended open and this launch goes on
+                # without it. On a terminal: Enter or y takes the seed, n or
+                # Escape sets the seed and brief aside like a stale pair so
+                # the next open does not ask again, any other key asks
+                # again, and EOF leaves it staged.
+                if [ ! -t 0 ]; then
+                    _spawn_put_back_claim
+                    warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                else
+                    local _answer
+                    while :; do
+                        printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
+                        if ! IFS= read -rsn1 _answer; then
+                            echo
+                            _spawn_put_back_claim
+                            warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                            break
+                        fi
+                        echo
+                        case "$_answer" in
+                            ''|[yY]) _consume=1; break ;;
+                            $'\e'|[nN])
+                                _CS_SPAWN_CLAIM=""
+                                mv "$_claim" "$_seed.stale" 2>/dev/null || true
+                                warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
+                                break ;;
+                        esac
+                    done
+                fi
+            fi
+        fi
+        if [ "${_consume:-0}" = 1 ]; then
+            local _has_brief=0 _qdir
+            if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ "$_n" -gt 0 ]; then
+                error "Codex does not host the walk-away task queue; use --brief without --task (seed kept)"
+            fi
+            if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
+                error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
+            fi
+            # The spawner becomes the worker's report-back address, in
+            # spawned-by and in the kick's `cs -msg <spawner>`, so a seed
+            # being taken has it held to the session-name rules cs -spawn
+            # holds it to, in a subshell since both rules exit on a bad name.
+            # A seed that breaks them is refused before anything is written
+            # or queued, and the trap puts it back. A seed left staged or
+            # declined above is not taken, so nothing is asked of it.
+            if [ -n "$_spawner" ] \
+                && ! ( cs_split_worktree_name "$_spawner" || validate_session_name "$_spawner" ) >/dev/null 2>&1; then
+                error "Spawn seed $_seed names a spawner that is not a session name: $(_cs_plain_name "$_spawner" 80) (seed kept; remove it or re-run cs -spawn, then re-open the session)"
+            fi
+            # The brief is written in before any task is queued, and a write
+            # that fails stops the launch with the seed still staged, so the
+            # next open retries. Consuming the seed regardless would start the
+            # session without the brief it was opened for. errexit does not
+            # see a failed left operand, so the abort is explicit.
+            if [ -n "$_mark" ]; then
+                # A link in the brief's place would turn the write into one
+                # over whatever it names; a directory would take the file.
+                [ ! -L "$session_dir/.cs/brief.md" ] \
+                    || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a link (seed kept; remove it and re-open the session to retry)"
+                [ ! -d "$session_dir/.cs/brief.md" ] \
+                    || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a directory (seed kept; remove it and re-open the session to retry)"
+                cs_write_atomic "$session_dir/.cs/brief.md" tail -n +"$((_mark + 1))" "$_claim" \
+                    || error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"
+                _has_brief=1
+            fi
+            # The queue is a cs content file: behind .cs/private in an
+            # encrypted session, where the drain reads it. spawned-by is an
+            # id and stays in .cs/local (docs/session-layout.md).
+            _qdir=$(cs_private_dir "$session_dir/.cs") \
+                || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            # Every write that can fail runs before the first task is queued:
+            # a failure stops the open with the seed staged again, and that
+            # seed is then the only copy of its tasks, so the retry queues
+            # each one once.
+            if [ -n "$_spawner" ] && { [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; }; then
+                printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
+                    || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
+            fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
+            for _line in ${_tasks[@]+"${_tasks[@]}"}; do
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
+            done
+            if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
+                local _work=""
+                [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."
+                if [ "$_n" -gt 0 ]; then
+                    _work="${_work:+$_work }Your walk-away queue is armed with $_n task(s); begin."
+                else
+                    _work="$_work Then begin."
+                fi
+                if [ -n "$_spawner" ]; then
+                    spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg $_spawner -k result \"...\""
+                else
+                    spawn_kick="$_work"
+                fi
+            fi
+            if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -n "$spawn_kick" ]; then
+                cs_write_atomic "$session_dir/.cs/local/spawn-kick.json" jq -n \
+                    --arg prompt "$spawn_kick" '{prompt: $prompt, attempted: false}' \
+                    || error "Cannot save spawn kickoff (seed kept; reopen to retry)"
+            fi
+            # Once its tasks are queued the seed is spent: only the claimed
+            # seed is deleted (one published since stays staged for its own
+            # open), and a failure from here on cannot put it back to be
+            # queued a second time.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
+            if [ "$_n" -gt 0 ]; then
+                _queue_set_state "$_qdir" armed \
+                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+            fi
+
+        fi
+    fi
+}
+
+# Only an owned, fresh seed or an already accepted receipt bypasses native
+# resume questions. Foreign staged work still needs the seed consent flow.
+_spawn_launch_is_owned() {  # session_name, session_dir
+    [ ! -f "$2/.cs/local/spawn-kick.json" ] || return 0
+    [ -n "${SESSIONS_ROOT:-}" ] && [ -n "${_spawn_token:-}" ] || return 1
+    local seed="$SESSIONS_ROOT/.spawn/$1.seed" token age
+    [ -f "$seed" ] || return 1
+    IFS= read -r token < "$seed" || return 1
+    [ "$token" = "$_spawn_token" ] || return 1
+    age=$(( $(date +%s) - $(_epoch_mtime "$seed") ))
+    [ "$age" -le 3600 ]
 }

@@ -46,7 +46,7 @@ Commands:
   -msg                Read this session's unread mail
   -msg log            Show this session's full mail history
   -msg thread <id>    Show one thread as a conversation, oldest first
-  -spawn <name>       Open a session in the session manager’s tmux session (--brief <file> hands it a brief; --task "..." seeds and arms its queue)
+  -spawn <name> [--engine claude|codex]       Open a session in the session manager’s tmux session (--brief <file> hands it a brief; --task "..." seeds and arms its queue)
   -conversations      Show the session's conversation chain (rotations, lineage)
   -doctor, -diag      Run health checks (Keychain, hooks, memory, audit, tokens)
   -statusline <cmd>   enable|disable the cs status line; caps on|off|ask records whether your font has the rounded caps

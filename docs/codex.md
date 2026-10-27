@@ -304,12 +304,14 @@ native defaults. Model names and effort levels are validated by the native CLI.
 Codex launches use `--approve-for-me` in a workspace-write sandbox by default;
 `--native-approval` leaves approval policy to Codex configuration.
 
+
 ## Session memory
 
 Codex startup and resume refresh `.cs/memory/MEMORY.md` as reference context.
 The SessionStart hook refreshes it again after `/clear`, including a rotation.
 The shared reader includes at most 196 lines and 24,400 bytes, preserves UTF-8,
 labels truncation and skips missing or unreadable indexes.
+
 
 ## Unread mail
 
@@ -320,3 +322,22 @@ until `cs -msg` consumes it. This is next-prompt delivery; it does not wake an
 idle Codex session. Permission hooks only cancel rotation typing. As under
 Claude, the hook shows no mail while git tracks a file in the session's control
 directory, even one a pull brought after launch.
+
+
+## Feature briefs
+
+`cs -spawn <name> --brief <file>` inherits the spawning run's engine. An explicit
+`--engine claude|codex` wins; outside a run the target's preference/default applies.
+Both adapters use the same seed consent and brief delivery code. Codex starts
+its first turn with the prompt to read `.cs/brief.md` and begin. `--task` needs
+Claude's walk-away queue and is refused for Codex before a seed or window exists.
+
+Codex retains a durable kickoff receipt in `.cs/local/spawn-kick.json` until
+native thread history confirms a turn started. A launch that fails before a turn
+retries the kickoff on the next open. A started turn spends it, including when
+the CLI later fails or the launcher is interrupted. If history cannot be read,
+cs preserves the receipt and refuses automatic replay until history is available;
+the open stops before it binds a thread or spends a rotation handoff.
+Rotation and finish prompts take precedence and leave staged briefs pending. A
+receipt whose kickoff ran no turn returns to pending before such a prompt runs,
+so that prompt's turn does not spend the brief.

@@ -86,9 +86,9 @@ test_engine_verb_supports_answers_by_exit_status() {
         || { echo "  FAIL: Claude must support rotation: $output"; return 1; }
     assert_eq "" "$output" "a supported capability prints nothing" || return 1
     status=0
-    output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=codex "$CS_BIN" -engine supports spawn_brief 2>&1) || status=$?
+    output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=codex "$CS_BIN" -engine supports idle_mail_wake 2>&1) || status=$?
     assert_eq 1 "$status" "an unsupported capability exits 1" || return 1
-    assert_output_contains "$output" "spawn_brief is not supported under codex" "and names both" || return 1
+    assert_output_contains "$output" "idle_mail_wake is not supported under codex" "and names both" || return 1
     status=0
     output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=claude "$CS_BIN" -engine supports 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: a missing capability name must be refused"; return 1; }
@@ -113,9 +113,9 @@ test_engine_verb_supports_answers_without_temp_files() {
         || { echo "  FAIL: with temp files refused, Claude must still support rotation: $output"; return 1; }
     assert_eq "" "$output" "a supported capability prints nothing, warnings included" || return 1
     output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=codex \
-        sandbox-exec -p "$policy" /bin/bash "$CS_BIN" -engine supports spawn_brief 2>&1) || status=$?
+        sandbox-exec -p "$policy" /bin/bash "$CS_BIN" -engine supports idle_mail_wake 2>&1) || status=$?
     assert_eq 1 "$status" "an unsupported capability still exits 1" || return 1
-    assert_eq "spawn_brief is not supported under codex in cs" "$output" "with only its own line" || return 1
+    assert_eq "idle_mail_wake is not supported under codex in cs" "$output" "with only its own line" || return 1
 }
 
 test_engine_verb_refuses_outside_a_session() {
@@ -180,19 +180,13 @@ test_capabilities_are_exact_and_runtime_independent() {
     cs_engine_supports codex startup_context || { echo '  FAIL: Codex startup context capability missing'; return 1; }
     cs_engine_supports codex feature_finish || { echo '  FAIL: Codex feature finish capability missing'; return 1; }
     # The session-manager features skills check before relying on an adapter.
-    # Verify delivered capabilities and keep unfinished integrations unsupported.
-    local capability
-    for capability in rotation spawn_brief memory_index mail_delivery; do
-        cs_engine_supports claude "$capability" \
-            || { echo "  FAIL: Claude must declare $capability"; return 1; }
+    local engine capability
+    for engine in claude codex; do
+        for capability in rotation spawn_brief memory_index mail_delivery; do
+            cs_engine_supports "$engine" "$capability" \
+                || { echo "  FAIL: $engine must declare $capability"; return 1; }
+        done
     done
-    cs_engine_supports codex rotation || { echo "  FAIL: Codex must declare rotation"; return 1; }
-    cs_engine_supports codex memory_index || { echo "  FAIL: Codex must declare memory_index"; return 1; }
-    cs_engine_supports codex mail_delivery || { echo "  FAIL: Codex must declare mail_delivery"; return 1; }
-    if cs_engine_supports codex spawn_brief; then
-        echo '  FAIL: Codex must not claim spawn_brief before its adapter hosts it'
-        return 1
-    fi
     cs_engine_supports fixture startup_context || { echo '  FAIL: fixture capability missing'; return 1; }
     if cs_engine_supports fixture startup; then
         echo '  FAIL: capability check must match a complete line'

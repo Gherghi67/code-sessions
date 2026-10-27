@@ -16,7 +16,7 @@ If empty, tell the user starting a feature needs a cs session and stop.
 The new session reads its brief at its first turn only where the engine's
 adapter hands it over: run `cs -engine supports spawn_brief`. If it exits
 non-zero, print its line and stop; a spawned session there would open
-without the brief. Today only the Claude adapter declares `spawn_brief`.
+without the brief. Both Claude and Codex adapters declare `spawn_brief`.
 
 The base must be a git repository (`git rev-parse --git-dir` from the
 workspace succeeds). A session that is not a repo has no branch to fork; say
@@ -82,6 +82,9 @@ cs -spawn <base>@<feature> --brief "$brief"
 rm -f "$brief"
 ```
 
+The spawn inherits this run's engine; `--engine claude|codex` overrides it.
+Codex accepts briefs; its walk-away task queue remains unavailable.
+
 Add `--task "..."` lines only for work that is a checklist item on its own;
 the brief already carries the feature. Let the permission prompt on
 `cs -spawn` stand: that prompt is the user's confirmation that a worktree, a
@@ -101,6 +104,6 @@ tmux; the session is `cs` unless `CS_TMUX_SESSION` names another, and a
 user, in one or two lines, that the feature session reads its brief at
 `.cs/brief.md` and begins, that its result arrives here as mail from
 `cs -msg`, and that `/finish <feature>` lands it. The mail surfaces in this
-conversation by itself only where `cs -engine supports mail_delivery`
+conversation on its next prompt where `cs -engine supports mail_delivery`
 succeeds; elsewhere, say the user reads it with `cs -msg` themselves. This
 session continues with its own work.

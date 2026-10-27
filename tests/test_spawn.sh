@@ -433,7 +433,7 @@ PROBE
     _cs_self() { printf '%s' "$probe"; }
     _cs_tmux_window() { captured="$2"; _CS_TMUX_WID=@fixture; }
     info() { :; }
-    _spawn_window worker "$OWN_TOKEN"
+    _spawn_window worker "$OWN_TOKEN" claude
     env PATH="/old/profile/bin:$PATH" CLAUDE_CONFIG_DIR=/old/profile/.claude CODEX_HOME=/old/profile/.codex \
         CLAUDE_SECURESTORAGE_CONFIG_DIR=/old/profile/.claude \
         CODE_SESSIONS_HOME=/old/profile CODE_SESSIONS_ORIGINAL_ROOT=/old/original \
@@ -458,7 +458,7 @@ test_spawn_carries_normalized_environment_into_a_stale_server() (
         'CS_CLAUDE_DIR=:' 'CS_HOOKS_DIR=:' "CS_SESSIONS_ROOT=x:$TEST_TMPDIR/manager ' sessions" \
         "CS_SECRETS_DIR=x:$TEST_TMPDIR/manager ' secrets" 'CS_SECRETS_KEYCHAIN_PREFIX=x:code-sessions' \
         "CS_DATA_DIR=x:$TEST_TMPDIR/manager ' data" 'CS_TMUX_SOCKET=x:code-sessions' \
-        'CS_TMUX_SESSION=x:code-sessions' "CS_SPAWN_TOKEN=x:$OWN_TOKEN" 'argument=worker')
+        'CS_TMUX_SESSION=x:code-sessions' "CS_SPAWN_TOKEN=x:$OWN_TOKEN" 'argument=worker' 'argument=--engine' 'argument=claude')
     assert_eq "$expected" "$output" "the caller's values and unsets replace stale server selectors"
 )
 
@@ -1343,5 +1343,26 @@ test_drain_without_spawned_by_sends_nothing() {
 run_test test_drain_finished_notifies_spawner_once
 run_test test_breaker_trip_notifies_and_keeps_spawned_by
 run_test test_drain_without_spawned_by_sends_nothing
+
+
+test_spawn_propagates_the_selected_engine_and_inherits_the_current_run() {
+    CS_RUN_ENGINE=codex "$CS_BIN" -spawn worker >/dev/null || return 1
+    assert_output_contains "$(cat "$FAKE_TMUX_DIR/log")" "--engine 'codex'" || return 1
+    rm -f "$FAKE_TMUX_DIR/log" "$FAKE_TMUX_DIR/session-exists"
+    CS_RUN_ENGINE=codex "$CS_BIN" -spawn worker --engine claude >/dev/null || return 1
+    assert_output_contains "$(cat "$FAKE_TMUX_DIR/log")" "--engine 'claude'" || return 1
+}
+
+test_codex_task_queue_spawn_refuses_before_staging_anything() {
+    local out status=0
+    out=$("$CS_BIN" -spawn worker --engine codex --task 'do something' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || return 1
+    assert_output_contains "$out" 'use --brief without --task' || return 1
+    assert_not_exists "$(SEED)" || return 1
+    assert_not_exists "$FAKE_TMUX_DIR/session-exists" || return 1
+}
+
+run_test test_spawn_propagates_the_selected_engine_and_inherits_the_current_run
+run_test test_codex_task_queue_spawn_refuses_before_staging_anything
 
 report_results
