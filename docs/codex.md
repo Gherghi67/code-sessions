@@ -317,4 +317,6 @@ The owning thread's UserPromptSubmit hook shows the same bounded unread-mail
 preview as Claude: up to five messages with sender, kind and a 160-character
 body preview. Mail is labeled as text from other sessions. It remains unread
 until `cs -msg` consumes it. This is next-prompt delivery; it does not wake an
-idle Codex session. Permission hooks only cancel rotation typing.
+idle Codex session. Permission hooks only cancel rotation typing. As under
+Claude, the hook shows no mail while git tracks a file in the session's control
+directory, even one a pull brought after launch.
