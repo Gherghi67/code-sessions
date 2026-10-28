@@ -3927,6 +3927,31 @@ _cs_run_stop_helper() {
     fi
 }
 
+# A feature whose retire /finish staged in its base (lib/30-worktree.sh): the
+# base's Stop hook runs the stage once the feature's lock is gone, and a base
+# idle at its prompt has no Stop coming, so the end of the feature's run tells
+# it by mail, which wakes an idle lead (narrative-reminder.sh, the mail wake).
+# Upstream mails from SessionEnd after removing the lock there; here the lease
+# outlives that hook, so the mail goes once the lease is released, from
+# whichever engine ran the feature. A switch relaunch takes the lease again at
+# once and mails at its own end; a lock still live is a run that took over.
+# The send runs in a subshell: its refusals exit.
+_cs_run_mail_staged_base() {
+    local base task
+    [ -z "${_cs_switch_next:-}" ] || return 0
+    [ -z "$(live_lock_pid "$_cs_run_meta")" ] || return 0
+    base=$(_read_local_state "$_cs_run_meta/local/state" cs_base)
+    [ -n "$base" ] || return 0
+    case "${_cs_run_name:-}" in
+        "$base@"?*) task="${_cs_run_name#"$base@"}" ;;
+        *) return 0 ;;
+    esac
+    [ -f "$SESSIONS_ROOT/$base/.cs/local/retire-staged/$task" ] || return 0
+    ( CS_SESSION_NAME="$_cs_run_name" CLAUDE_SESSION_NAME="$_cs_run_name" _mail_send "$base" -k notify \
+        "Feature $task closed; the retire /finish staged for it runs when your current turn ends." ) \
+        </dev/null >/dev/null 2>&1
+}
+
 _cs_run_cleanup() {
     [ "${_cs_run_active:-0}" = 1 ] || return 0
     _cs_run_stop_helper
@@ -3944,6 +3969,7 @@ _cs_run_cleanup() {
     fi
     [ -z "${_cs_run_gate:-}" ] || rm -f "$_cs_run_gate" 2>/dev/null || true
     release_session_lock "$_cs_run_meta" || true
+    _cs_run_mail_staged_base || true
     # An encrypted session's vault, mounted by this open's pre-open hook, is
     # detached when the last process holding it ends: here too, so a signal
     # or an error mid-launch does not leave it mounted.
@@ -4040,7 +4066,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     unset CS_SPAWN_TOKEN
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
-    local _cs_run_helper_dir=""
+    local _cs_run_helper_dir="" _cs_run_name="$name"
     local saved_exit saved_int saved_term
     local CS_RUN_ID CS_RUN_ENGINE="$engine" CS_RUN_OWNER_PID="$$" CS_LEAD_PID="$$"
     CS_RUN_ID=$(_alloc_uuid) || return 1

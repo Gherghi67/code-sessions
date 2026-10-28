@@ -1349,27 +1349,30 @@ _feature_end() {  # base_dir reason
           bash "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1
 }
 
+# In the fork the launcher, not SessionEnd, releases the feature's lock (the
+# run lease), and the base's Stop hook skips a worktree whose lock is live, so
+# the launcher mails the base once that lease is gone: a mail sent while it is
+# still held wakes a Stop that leaves the stage for a later one.
 test_feature_end_mails_the_base_when_a_retire_is_staged() {
-    local base_dir stage mail
+    local base_dir stage mail wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     base_dir=$(create_test_session_with_git "myproj")
     stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
-    _feature_end "$base_dir" other
+    rm -f "$wt/.cs/session.lock"
+    cs_launch "myproj@fix-auth"
     mail=$(cat "$base_dir"/.cs/local/mail/new/*.json 2>/dev/null | jq -r '[.from, .kind, .body] | join("|")')
     assert_eq "myproj@fix-auth|notify|Feature fix-auth closed; the retire /finish staged for it runs when your current turn ends." \
         "$mail" "one notify mail from the feature to its base" || return 1
-    # Upstream's SessionEnd releases the lock before it mails; in the fork the
-    # launcher releases it once the native CLI exits (the run lease), so the
-    # lock is not this hook's to check.
+    assert_not_exists "$wt/.cs/session.lock" "the lease is released by then" || return 1
 }
 
-test_feature_end_sends_nothing_on_clear_or_without_a_stage() {
-    local base_dir stage
+test_feature_end_sends_nothing_from_session_end_or_without_a_stage() {
+    local base_dir stage wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     base_dir=$(create_test_session_with_git "myproj")
     stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
-    _feature_end "$base_dir" clear
-    assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "a /clear keeps the lock and sends nothing" || return 1
-    rm -f "$stage"
     _feature_end "$base_dir" other
+    assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "SessionEnd leaves the mail to the launcher" || return 1
+    rm -f "$stage" "$wt/.cs/session.lock"
+    cs_launch "myproj@fix-auth"
     assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "an end with nothing staged sends nothing" || return 1
 }
 
@@ -2113,7 +2116,7 @@ run_test test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry
 run_test test_retire_refuses_while_an_opener_holds_the_feature_mutex
 run_test test_retire_restages_when_the_feature_reopened_under_the_mutex
 run_test test_feature_end_mails_the_base_when_a_retire_is_staged
-run_test test_feature_end_sends_nothing_on_clear_or_without_a_stage
+run_test test_feature_end_sends_nothing_from_session_end_or_without_a_stage
 run_test test_retire_refuses_a_volume_mounted_inside_the_worktree
 run_test test_retire_refuses_when_the_mount_table_cannot_be_read
 run_test test_retire_from_live_base_session_succeeds

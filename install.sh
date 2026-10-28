@@ -1782,7 +1782,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "ce572a97140f8572dbdf32faa50332596de1f315c839b08bd4bb3e408def05e8  bin/cs"
+    "cc09c4286cd94c6f2eb0312ddddce4787b0bd0630f8b562156ab9437afab5bd7  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
@@ -1799,7 +1799,7 @@ CS_PAYLOAD_SHA256=(
     "aa2aec13df25c8a16e6da21b16f2d28a54ba3a813b6b49336bc90c79e1b36b29  hooks/session-start.sh"
     "d49a3173f59228775018bd9a60900771b33ab880ff81aa1b8895a2fc42ce4ee3  hooks/autosave-commits.sh"
     "d74609eee65764fb764d625c9a2f907cbf1c5ea93fb81fd252236d09f419f141  hooks/narrative-reminder.sh"
-    "2129507fd72757157a4846f44cb843aee96f3185e532fe278152b1f6324becae  hooks/session-end.sh"
+    "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"

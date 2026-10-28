@@ -745,6 +745,23 @@ test_worktree_session_relaunches_under_its_own_name() {
     [ "$(_state "$base" engine)" != codex ] || { echo "  FAIL: the base's preference must not change"; return 1; }
 }
 
+# A feature whose retire /finish staged in the base: the launcher mails the
+# base once the conversation's lease is gone, whichever engine ran it. A
+# switch relaunch takes the lease again at once, so its end mails nothing.
+test_staged_feature_mails_its_base_once_after_a_switch_relaunch() {
+    local out status=0 base mails
+    base=$(create_test_session_with_git wtb)
+    "$CS_BIN" wtb@feat --engine claude </dev/null >/dev/null 2>&1 || { echo "  FAIL: worktree open failed"; return 1; }
+    mkdir -p "$base/.cs/local/retire-staged"
+    printf 'sha: %s\nforce: 0\n' "$(git -C "$base" rev-parse HEAD)" > "$base/.cs/local/retire-staged/feat"
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH=codex"
+    out=$("$CS_BIN" wtb@feat </dev/null 2>&1) || status=$?
+    assert_eq 0 "$status" "switch run failed: $out" || return 1
+    assert_eq 1 "$(_calls codex)" "the Codex relaunch ran" || return 1
+    mails=$(cat "$base"/.cs/local/mail/new/*.json 2>/dev/null | jq -r '[.from, .kind] | join("|")')
+    assert_eq "wtb@feat|notify" "$mails" "one mail, at the Codex run's end, none at the switch" || return 1
+}
+
 # Codex does not open an encrypted session, so its vault handoff waits for
 # the Claude launch the refusal names, which reads it from .cs/private.
 test_encrypted_codex_session_leaves_the_vault_handoff_to_claude() {
@@ -1127,6 +1144,7 @@ run_test test_resume_mode_from_claude_resumes_codex_with_the_handoff
 run_test test_resume_mode_from_codex_resumes_claude_with_the_handoff
 run_test test_resume_mode_without_a_recorded_conversation_starts_fresh
 run_test test_worktree_session_relaunches_under_its_own_name
+run_test test_staged_feature_mails_its_base_once_after_a_switch_relaunch
 run_test test_encrypted_codex_session_leaves_the_vault_handoff_to_claude
 run_test test_relaunch_that_cannot_start_names_both_ways_back
 run_test test_relaunch_refused_by_an_open_step_names_both_ways_back
