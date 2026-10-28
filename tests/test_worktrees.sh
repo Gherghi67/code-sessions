@@ -1517,6 +1517,52 @@ test_stop_hook_drops_a_symlinked_legacy_run_directory_without_following_it() {
         "the hook reports the drop" || return 1
 }
 
+# Should the cache sit where an agent writes, a link could stand at a run
+# record's name before the Stop that starts the run: the hook writes neither
+# record through it. The .run link dangles, as -f would read a link to a file
+# as a record already there.
+test_stop_hook_never_writes_a_run_record_through_a_planted_link() {
+    local base_dir stage sha out run decoy="$TEST_TMPDIR/decoy"
+    base_dir=$(create_test_session_with_git "myproj")
+    { read -r stage; read -r sha; } < <(_staged_feature "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    run="$(_retire_dir retire-runs "$base_dir")/fix-auth"
+    mkdir -p "$decoy" "${run%/*}"
+    chmod 700 "${run%/*}"
+    echo "keep me" > "$decoy/notes.txt"
+    ln -s "$decoy/notes.txt" "$run.out"
+    ln -s "$decoy/new.run" "$run.run"
+    out=$(_base_stop "$base_dir")
+    assert_eq "keep me" "$(cat "$decoy/notes.txt")" "the output is not written through the link" || return 1
+    assert_not_exists "$decoy/new.run" "nor the pid" || return 1
+    assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged ran: retired fix-auth $sha" \
+        "the run still goes through, recorded under its own names" || return 1
+    assert_not_exists "$stage" "stage consumed" || return 1
+}
+
+# A link at a record's name, to files an agent wrote, is no record: the hook
+# neither waits on the pid nor reports the output it names, and starts the
+# run itself.
+test_stop_hook_never_reads_a_run_record_through_a_planted_link() {
+    local base_dir stage sha out run decoy="$TEST_TMPDIR/decoy"
+    base_dir=$(create_test_session_with_git "myproj")
+    { read -r stage; read -r sha; } < <(_staged_feature "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    run="$(_retire_dir retire-runs "$base_dir")/fix-auth"
+    mkdir -p "$decoy" "${run%/*}"
+    chmod 700 "${run%/*}"
+    printf '%s\n' 999999 > "$decoy/planted.run"
+    printf 'retired fix-auth %s PLANTED\n' "$sha" > "$decoy/planted.out"
+    ln -s "$decoy/planted.run" "$run.run"
+    ln -s "$decoy/planted.out" "$run.out"
+    out=$(_base_stop "$base_dir")
+    case "$out" in *PLANTED*) echo "  the hook reported output a link named: $out"; return 1 ;; esac
+    assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged ran: retired fix-auth $sha" \
+        "the hook ran the retire itself" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree removed by the real run" || return 1
+    assert_eq "999999" "$(cat "$decoy/planted.run")" "the decoys are untouched" || return 1
+}
+
 # A stage directory others may write is not read at all: its stages could be
 # anyone's.
 test_stop_hook_leaves_a_stage_directory_that_is_not_private() {
@@ -2423,6 +2469,8 @@ run_test test_stop_hook_drops_an_unreadable_stage_and_says_so
 run_test test_stop_hook_drops_a_stage_left_in_the_session_unread
 run_test test_stop_hook_drops_a_symlinked_legacy_stage_directory_without_following_it
 run_test test_stop_hook_drops_a_symlinked_legacy_run_directory_without_following_it
+run_test test_stop_hook_never_writes_a_run_record_through_a_planted_link
+run_test test_stop_hook_never_reads_a_run_record_through_a_planted_link
 run_test test_stop_hook_leaves_a_stage_directory_that_is_not_private
 run_test test_stop_hook_drops_a_stage_whose_worktree_is_already_gone
 run_test test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage

@@ -702,19 +702,52 @@ _retire_report() {  # reason
     jq -nc --arg r "$1" '{decision:"block", reason:$r}'
     exit 0
 }
+# A run record as _retire_start leaves one: a regular file of the user's, not
+# a link. Anything else at a record's name is no record and reads as absent.
+_retire_record_ok() {  # path
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
+}
+# Starts the retire detached and records it as <run>.out and <run>.run. Should
+# the cache sit in a root a Codex sandbox writes (docs/codex.md warns against
+# that), an agent could plant a link at either name, so neither is written
+# through: each record is opened under a fresh random name by an exclusive
+# create (noclobber, O_EXCL, which a link at that name fails instead of
+# following), the pid written through the descriptor already open, and then
+# renamed onto its name by rename(2), which replaces a link standing there
+# (mv would move the record into a directory such a link names). The output
+# goes first, so a Stop that finds <run>.run finds its output. Returns 1 when
+# nothing was started, 2 when the run started but a record could not be put
+# in place.
+_retire_start() {  # run, then the cs command line
+    local run="$1" out rec rc=0
+    shift
+    out=$(mktemp -u "${run%/*}/.out.XXXXXX") && rec=$(mktemp -u "${run%/*}/.run.XXXXXX") || return 1
+    set -C
+    {
+        { perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127' -- "$@" < /dev/null 4>&- & } > "$out" 2>&1 \
+            && printf '%s\n' "$!" >&4
+    } 2>/dev/null 4> "$rec" || rc=1
+    set +C
+    if [ "$rc" = 1 ]; then
+        rm -f "$out" "$rec"
+        return 1
+    fi
+    rm -rf -- "$run.out" "$run.run"
+    perl -e 'rename($ARGV[0], $ARGV[1]) && rename($ARGV[2], $ARGV[3]) or exit 2' -- "$out" "$run.out" "$rec" "$run.run" 2>/dev/null || return 2
+}
 # Wait up to six seconds for the run <run>.run names, then read its output:
 # a run still going returns 1 and keeps everything; a re-stage (the
 # conversation came back before the removal) keeps the stage and returns 1;
 # any other end drops the stage and reports it, taking the turn.
 _retire_settle() {  # stage task run
-    local pid out waited=0 wt_name="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}@$2"
-    pid=$(tr -d '[:space:]' < "$3.run" 2>/dev/null || true)
+    local pid="" out="" waited=0 wt_name="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}@$2"
+    ! _retire_record_ok "$3.run" || pid=$(tr -d '[:space:]' < "$3.run" 2>/dev/null || true)
     while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 12 ]; do
         sleep 0.5
         waited=$((waited + 1))
     done
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
-    out=$(cat "$3.out" 2>/dev/null || true)
+    ! _retire_record_ok "$3.out" || out=$(cat "$3.out" 2>/dev/null || true)
     rm -f "$3.run" "$3.out"
     if grep -q "^staged $2 " <<< "$out"; then return 1; fi
     rm -f "$1"
@@ -794,7 +827,7 @@ if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_pri
         _run="$_runs/$_task"
         _wt="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}@$_task"
         # A run started by an earlier Stop: wait a little for it, then read it.
-        if [ -f "$_run.run" ]; then
+        if _retire_record_ok "$_run.run"; then
             _retire_settle "$_stage" "$_task" "$_run" || continue
         fi
         _sha=$(awk 'index($0, "sha: ") == 1 { print substr($0, 6); exit }' "$_stage" 2>/dev/null || true)
@@ -828,9 +861,12 @@ if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_pri
         set -- "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" -retire-feature "$_task" "$_sha" --staged
         [ "$_force" = 0 ] || set -- "$@" --force
         cs_cache_dir_make_private "$_runs" || _retire_report "cs: could not create $_runs, private to you, to record the staged retire of $_task; run /finish $_task again. Tell the user in one line."
-        perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127' -- "$_cs" "$@" \
-            > "$_run.out" 2>&1 < /dev/null &
-        printf '%s\n' "$!" > "$_run.run"
+        _rc=0
+        _retire_start "$_run" "$_cs" "$@" || _rc=$?
+        case "$_rc" in
+            1) _retire_report "cs: could not create the run records of the staged retire of $_task in $_runs, so it did not start; run /finish $_task again. Tell the user in one line." ;;
+            2) _retire_report "cs: the staged retire of $_task started, but its run records could not be put in place in $_runs, so its outcome will not be reported; cs ${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}} -features shows whether the worktree is gone. Tell the user in one line." ;;
+        esac
         # Most retires end within the wait; the report then takes this Stop.
         _retire_settle "$_stage" "$_task" "$_run" || continue
     done
