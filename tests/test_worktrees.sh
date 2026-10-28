@@ -1060,6 +1060,41 @@ test_retire_refuses_to_stage_in_a_cache_an_agent_can_write() {
     rm -f "$wt/.cs/session.lock"
 }
 
+# python3 reads Codex's config, and only Codex needs it (README), so a host
+# with no Codex config has no root to look for and stages without python3.
+test_retire_stages_without_python3_when_no_codex_config_exists() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" cs bindir="$TEST_TMPDIR/nopython"
+    local sha output status=0 stage
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    cs="$(_stage_cs_dir)/cs"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    link_path_without "$bindir" 'python3*'
+    if PATH="$bindir" command -v python3 >/dev/null 2>&1; then
+        echo "  FAIL: python3 is still on the fixture's PATH"; return 1
+    fi
+    echo "$$" > "$wt/.cs/session.lock"
+    output=$(PATH="$bindir" "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "no Codex config, no python3 needed: $output" || return 1
+    assert_output_contains "$output" "staged fix-auth $sha" "the retire is staged" || return 1
+    assert_eq "sha: $sha
+force: 0" "$(cat "$stage")" "the stage records the decision" || return 1
+    assert_eq "600" "$(_mode_of "$stage")" "a file only the user reads" || return 1
+    assert_eq "700" "$(_mode_of "${stage%/*}")" "in a directory private to the user" || return 1
+    # A Codex directory cs cannot search may hold a config, so the roots are
+    # still read there, and with no python3 to read them the stage is refused.
+    mkdir -p "$HOME/.codex"
+    : > "$HOME/.codex/config.toml"
+    chmod 000 "$HOME/.codex"
+    status=0
+    output=$(PATH="$bindir" "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    chmod 700 "$HOME/.codex"
+    assert_eq "1" "$status" "a config cs cannot rule out is read, not skipped: $output" || return 1
+    rm -f "$wt/.cs/session.lock"
+}
+
 # A base and feature that last ran under Codex: the user leaves Codex with
 # /quit and asks for the finish skill as $finish.
 test_retire_refusal_names_codex_commands_for_codex_sessions() {
@@ -2213,6 +2248,7 @@ run_test test_retire_stages_itself_while_the_feature_conversation_is_open
 run_test test_retire_refusal_names_codex_commands_for_codex_sessions
 run_test test_retire_refuses_to_stage_when_the_stage_cannot_be_written
 run_test test_retire_refuses_to_stage_in_a_cache_an_agent_can_write
+run_test test_retire_stages_without_python3_when_no_codex_config_exists
 run_test test_retire_removes_its_stage_when_it_retires
 run_test test_features_reports_a_locked_worktree_with_a_stage_as_staged
 run_test test_stop_hook_leaves_a_staged_retire_while_the_feature_conversation_is_open
