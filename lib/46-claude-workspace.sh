@@ -193,7 +193,7 @@ _claude_migrate_session_documents() {  # session_dir
     # protocol, when it predates sentinels; the head above them, when the
     # first one is cs:memory-rules), and /summary is no longer a command.
     # The exact lines cs wrote get their /wrap wording, as in CLAUDE.local.md
-    # (_ensure_claude_local_sections). It runs after the .cs/ test above,
+    # (_claude_ensure_local_sections). It runs after the .cs/ test above,
     # which the /wrap sentence's ".cs/summary.md" would otherwise change.
     # Every CLAUDE.md Phase 5 leaves in place opens with "# Session
     # Documentation Protocol" (the July 2026 template, which opens with a
