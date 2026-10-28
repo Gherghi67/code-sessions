@@ -16,7 +16,11 @@ agents-sidebar works without the former profile-account patch.
 
 Missing Claude conversation files, file history, Codex rollouts, prompt history
 and Codex thread metadata are imported from the old engine profile. A
-divergent existing file is preserved and reported. The old profile stays
+divergent existing file is preserved and reported. Thread metadata needs the
+same database schema on both sides, except for columns a newer Codex appended
+to `~/.codex`'s tables, which imported threads leave empty or at their default
+as Codex's own upgrade leaves its existing threads. Any other schema difference
+stops setup before it installs cs. The old profile stays
 available; imported rollout files share their inode where possible so an
 already-running agent's appends remain visible after import.
 

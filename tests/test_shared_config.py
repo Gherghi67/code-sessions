@@ -869,9 +869,33 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
     def test_schema_mismatch_rolls_back(self):
         src = self.database(self.profile, [("new", "/rollout", "source")])
         dst = self.database(self.home, [])
-        with closing(sqlite3.connect(dst)) as db, db:
+        with closing(sqlite3.connect(src)) as db, db:
             db.execute("ALTER TABLE threads ADD COLUMN extra TEXT")
         with self.assertRaises(ValueError):
+            migration.merge_threads(src, dst, self.home, True, None)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+
+    def test_columns_a_newer_codex_appended_are_left_as_its_migration_leaves_them(self):
+        # Codex migration 62 appended threads.attached_thread_parent_id this way.
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.database(self.home, [("kept", "/normal/rollout", "normal")])
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT")
+            db.execute("ALTER TABLE threads ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT id, title, attached_thread_parent_id, pinned FROM threads ORDER BY id")
+                             .fetchall(), [("kept", "normal", None, 0), ("new", "source", None, 0)])
+
+    def test_appended_column_without_a_default_for_old_rows_is_refused(self):
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.home / ".codex/state_5.sqlite"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT, "
+                       "required TEXT NOT NULL)")
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
