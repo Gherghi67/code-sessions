@@ -1095,6 +1095,44 @@ force: 0" "$(cat "$stage")" "the stage records the decision" || return 1
     rm -f "$wt/.cs/session.lock"
 }
 
+# The agent a stage is kept from runs in the feature, so a root the feature's
+# own Codex config adds counts as much as one the base's adds: no stage is
+# written there, and none found there is run.
+test_retire_refuses_to_stage_under_a_root_the_feature_codex_config_adds() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" cs config
+    local sha output status=0 stage
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    cs="$(_stage_cs_dir)/cs"
+    config="$wt/.codex/config.toml"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$wt/.codex"
+    printf '[sandbox_workspace_write]\nwritable_roots = ["%s"]\n' "$HOME/.cache/cs" > "$config"
+    echo "$$" > "$wt/.cs/session.lock"
+    output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "a cache the feature's sandbox may write keeps no stage: $output" || return 1
+    assert_output_contains "$output" "cs could not stage its removal at $stage" "the refusal names the stage" || return 1
+    assert_not_exists "$stage" "nothing staged" || return 1
+    assert_dir "$wt" "worktree preserved" || return 1
+    # A stage written before the feature's config named the cache is not run.
+    rm -f "$config"
+    status=0
+    output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "with no such root the retire stages: $output" || return 1
+    assert_file_exists "$stage" "staged" || return 1
+    printf '[sandbox_workspace_write]\nwritable_roots = ["%s"]\n' "$HOME/.cache/cs" > "$config"
+    rm -f "$wt/.cs/session.lock"
+    status=0
+    output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
+    assert_eq "1" "$status" "a stage the feature's sandbox may write is refused" || return 1
+    assert_output_contains "$output" "No stage at $stage" "refused for its stage, not for later checks: $output" || return 1
+    assert_dir "$wt" "worktree preserved" || return 1
+    git -C "$base_dir" rev-parse -q --verify "refs/heads/cs/fix-auth" >/dev/null \
+        || { echo "  FAIL: branch cs/fix-auth was deleted"; return 1; }
+}
+
 # A base and feature that last ran under Codex: the user leaves Codex with
 # /quit and asks for the finish skill as $finish.
 test_retire_refusal_names_codex_commands_for_codex_sessions() {
@@ -2249,6 +2287,7 @@ run_test test_retire_refusal_names_codex_commands_for_codex_sessions
 run_test test_retire_refuses_to_stage_when_the_stage_cannot_be_written
 run_test test_retire_refuses_to_stage_in_a_cache_an_agent_can_write
 run_test test_retire_stages_without_python3_when_no_codex_config_exists
+run_test test_retire_refuses_to_stage_under_a_root_the_feature_codex_config_adds
 run_test test_retire_removes_its_stage_when_it_retires
 run_test test_features_reports_a_locked_worktree_with_a_stage_as_staged
 run_test test_stop_hook_leaves_a_staged_retire_while_the_feature_conversation_is_open

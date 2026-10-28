@@ -6118,7 +6118,7 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     if [ -n "$staged" ]; then
         local force_word=0
         [ -z "$force" ] || force_word=1
-        { _retire_stage_dir "$base_dir" >/dev/null && _retire_stage_file_ok "$stage" \
+        { _retire_stage_dir "$base_dir" "$wt_dir" >/dev/null && _retire_stage_file_ok "$stage" \
             && [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
 force: $force_word" ]; } || error "No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
     else
@@ -6139,7 +6139,7 @@ force: $force_word" ]; } || error "No stage at $stage records retiring $task at 
         # staged in the base, and the base's Stop hook runs this entry again
         # once that conversation's lock is gone. Every refusal below runs
         # then as it would now.
-        _write_retire_stage "$stage" "$sha" "$force" "$base_dir" \
+        _write_retire_stage "$stage" "$sha" "$force" "$base_dir" "$wt_dir" \
             || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
         printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
@@ -6286,7 +6286,7 @@ $missing"
     pid=$(live_lock_pid "$wt_dir/.cs")
     if [ -n "$pid" ]; then
         _cs_unlock "$wt_dir/.cs/session.mutex.lock"
-        _write_retire_stage "$stage" "$sha" "$force" "$base_dir" \
+        _write_retire_stage "$stage" "$sha" "$force" "$base_dir" "$wt_dir" \
             || error "The '$wt_name' conversation reopened its worktree (PID $pid) before the removal, and cs could not stage it again at $stage; nothing was removed. Run $fin $task here again once it closes."
         printf "staged %s %s: the '%s' conversation reopened its worktree (PID %s) before the removal; the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
@@ -6346,10 +6346,10 @@ $remove_err${trashed:+$nl$trashed}"
 # retire_feature_worktree writes while that conversation holds the worktree.
 # The stage goes into the base's stage directory, made private first, mode
 # 600 and by rename, so the Stop hook never reads half a stage.
-_write_retire_stage() {  # stage_path sha force base_dir
+_write_retire_stage() {  # stage_path sha force base_dir wt_dir
     local force=0 dir tmp
     [ -z "$3" ] || force=1
-    dir=$(_retire_stage_dir "$4" make) && [ "${1%/*}" = "$dir" ] || return 1
+    dir=$(_retire_stage_dir "$4" "$5" make) && [ "${1%/*}" = "$dir" ] || return 1
     tmp=$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null) || return 1
     if printf 'sha: %s\nforce: %s\n' "$2" "$force" > "$tmp" && mv -f "$tmp" "$1"; then
         return 0
@@ -6360,20 +6360,27 @@ _write_retire_stage() {  # stage_path sha force base_dir
 
 # The base's stage directory (cs_retire_cache_dir) when cs can trust what it
 # holds: private to the user, and outside every root an agent's sandbox may
-# write, the base itself, /tmp, $TMPDIR and the roots Codex's config adds, as
-# the Codex run directory is (lib/77-codex-hooks.sh). With make, a missing one
-# is made first. A cache the checks refuse keeps no stage, so a retire behind
-# an open conversation is refused as when the stage cannot be written.
-_retire_stage_dir() {  # base_dir [make]
-    local dir
+# write, the base, the feature, /tmp, $TMPDIR and the roots Codex's config
+# adds, as the Codex run directory is (lib/77-codex-hooks.sh). The feature
+# counts as much as the base: its agent is the one a stage is kept from. Root
+# detection reads only the configs the base's and the feature's Codex would
+# (the system's, $CODEX_HOME's, and a .codex/config.toml in either or above
+# them), not other sessions', a managed device profile's or a --add-dir's.
+# With make, a missing one is made first. A cache the checks refuse keeps no
+# stage, so a retire behind an open conversation is refused as when the stage
+# cannot be written.
+_retire_stage_dir() {  # base_dir wt_dir [make]
+    local dir session
     dir=$(cs_retire_cache_dir retire-staged "$1") || return 1
-    if [ -n "${2:-}" ]; then
+    if [ -n "${3:-}" ]; then
         cs_cache_dir_make_private "$dir" || return 1
     else
         cs_cache_dir_private "$dir" || return 1
     fi
-    ! _codex_run_dir_in_sandbox_root "$dir" "$1" || return 1
-    ! _codex_run_dir_in_config_root "$dir" "$1" || return 1
+    for session in "$1" "$2"; do
+        ! _codex_run_dir_in_sandbox_root "$dir" "$session" || return 1
+        ! _codex_run_dir_in_config_root "$dir" "$session" || return 1
+    done
     printf '%s\n' "$dir"
 }
 
