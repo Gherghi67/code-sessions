@@ -832,8 +832,8 @@ _stages=""
 _runs=""
 if [ "$HOOK_EVENT" = "Stop" ] && command -v cs_retire_cache_dir >/dev/null 2>&1 \
     && command -v live_lock_pid >/dev/null 2>&1; then
-    _stages=$(cs_retire_cache_dir retire-staged "${META_DIR%/*}") || _stages=""
-    _runs=$(cs_retire_cache_dir retire-runs "${META_DIR%/*}") || _runs=""
+    _stages=$(cs_retire_cache_dir retire-staged "$SESSION_DIR") || _stages=""
+    _runs=$(cs_retire_cache_dir retire-runs "$SESSION_DIR") || _runs=""
     if { [ -d "$LOCAL/retire-staged" ] || [ -L "$LOCAL/retire-staged" ] \
         || [ -d "$LOCAL/retire-runs" ] || [ -L "$LOCAL/retire-runs" ]; } && _mail_is_lead; then
         _retire_drop_legacy
