@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Guards /wrap's memory index and reports dead references in its entries.
-# ABOUTME: Run by that pass (wrap-sweep.md) from the session root; not a hook itself.
+# ABOUTME: Run by that pass (skills/sweep/SKILL.md) from the session root; not a hook itself.
 
 set -euo pipefail
 

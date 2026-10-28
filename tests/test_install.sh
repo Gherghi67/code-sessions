@@ -2230,6 +2230,26 @@ test_install_without_jq_keeps_a_registered_retired_hook() {
     assert_file_exists "$home/.claude/hooks/cs/bash-logger.sh" "the retired hook stays while it is registered" || return 1
 }
 
+# The fork's /wrap reads the sweep and summary skills, and with
+# hooks/wrap-*.md gone sync-upstream.py maps upstream's edits to those passes
+# onto the skills. An install over one that deployed the two passes beside
+# the hooks removes them.
+test_install_retires_the_wrap_passes() {
+    local home="$TEST_TMPDIR/home-wrap-passes" rc=0 out pass
+    mkdir -p "$home/.claude/hooks/cs"
+    : > "$home/.claude/hooks/cs/.installed"
+    for pass in wrap-sweep.md wrap-summary.md; do
+        printf '# an older cs build %s\n' "$RANDOM$RANDOM" > "$home/.claude/hooks/cs/$pass"
+        printf '%s  .claude/hooks/cs/%s\n' "$(_sha256_of "$home/.claude/hooks/cs/$pass")" "$pass" \
+            >> "$home/.claude/hooks/cs/.installed"
+    done
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    for pass in wrap-sweep.md wrap-summary.md; do
+        assert_file_not_exists "$home/.claude/hooks/cs/$pass" "the deployed $pass is removed" || return 1
+    done
+}
+
 # A retired hook whose only proof of being cs's is its install-record line
 # keeps that line while it waits on a registration: a run without jq leaves
 # it, and the next run with jq still knows it as cs's and removes it.
@@ -3401,7 +3421,7 @@ test_web_install_deploys_the_payload_from_the_stub() {
     assert_eq "755" "$(_file_mode "$home/.claude/hooks/cs/cs-iterm-tab.py")" "hook library mode" || return 1
     assert_eq "755" "$(_file_mode "$home/.claude/skills/finish/scripts/finish.sh")" "skill script mode" || return 1
     assert_eq "644" "$(_file_mode "$home/.claude/skills/wrap/SKILL.md")" "command mode" || return 1
-    assert_eq "644" "$(_file_mode "$home/.claude/hooks/cs/wrap-sweep.md")" "wrap pass mode" || return 1
+    assert_file_not_exists "$home/.claude/hooks/cs/wrap-sweep.md" "the wrap passes ship as skills only" || return 1
     [ -z "$(find "$home" -name '.cs-install.*')" ] || { echo "  FAIL: a staging temp file was left beside a destination"; return 1; }
 }
 
@@ -4898,6 +4918,7 @@ run_test test_statusline_disable_sets_and_enable_clears_declined_marker
 run_test test_uninstall_removes_declined_marker
 run_test test_install_removes_the_retired_hint_mod
 run_test test_install_retires_the_bash_logger
+run_test test_install_retires_the_wrap_passes
 run_test test_install_and_uninstall_keep_a_kept_retired_hook_and_its_registration
 run_test test_uninstall_removes_a_cs_written_retired_hook_and_its_registration
 run_test test_install_that_stops_early_keeps_a_registered_retired_hook

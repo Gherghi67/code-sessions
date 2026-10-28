@@ -136,6 +136,8 @@ RETIRED_HOOKS=(
     prose-lint.sh             # retired with the `cs -lint` verb it called; MUST stay listed, because a deployed copy calling the removed verb reads error()'s exit 1 as "violations found" and blocks every turn-end
     memory-index-guard.sh     # moved into the sweep skill (sweep/scripts/), so the guard travels with the skill to every engine
     bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
+    wrap-sweep.md             # the fork's /wrap reads skills/sweep/SKILL.md; with this copy gone, sync-upstream.py maps upstream's edits to the pass onto that skill
+    wrap-summary.md           # likewise for skills/summary/SKILL.md
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -164,8 +166,6 @@ CS_HOOK_LIBS=(
     prompt-rewriter.sh
     prompt-rewriter-model.sh
     prompt-rewriter-vendor.sh
-    wrap-sweep.md
-    wrap-summary.md
 )
 
 # Commands were migrated to engine-neutral skills.
@@ -1782,7 +1782,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "9ad24f5b8cc0ee4c03a95609d6300d6d573462ee72e080e726c8e5110ad60c75  bin/cs"
+    "37fcedeb8e4a4c4107d045f59f773aafd962f364b9299a3b3e40ab52cd632c19  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
@@ -1794,8 +1794,6 @@ CS_PAYLOAD_SHA256=(
     "6bb9641f3b64d0a79f427337781ddac03772ceb96a67e9f187716f54946cd3e1  hooks/prompt-rewriter.sh"
     "637d477d9e4aa44b1cce98636f212e2b44b51603ed21cdbf77e14e81a95da8c0  hooks/prompt-rewriter-model.sh"
     "6c2f1c6207b474fd98d54bb7454e43016e7b48cb59a6fafc05061893465753f5  hooks/prompt-rewriter-vendor.sh"
-    "1fa475982564ec70f12bf5295b874989dd95f89224f27bb6be4854cc5b8674e3  hooks/wrap-sweep.md"
-    "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
     "aa2aec13df25c8a16e6da21b16f2d28a54ba3a813b6b49336bc90c79e1b36b29  hooks/session-start.sh"
     "d49a3173f59228775018bd9a60900771b33ab880ff81aa1b8895a2fc42ce4ee3  hooks/autosave-commits.sh"
     "d74609eee65764fb764d625c9a2f907cbf1c5ea93fb81fd252236d09f419f141  hooks/narrative-reminder.sh"
@@ -1819,7 +1817,7 @@ CS_PAYLOAD_SHA256=(
     "225f2385a01a0a8dcee29ed8d797a3bb087a0822c9702f89350faa37693ebd8d  skills/finish/scripts/finish.sh"
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
-    "21988bf58bb6fea15c6435445f4abc3a38f4c4a9a7db78c4ff4797650709ba3f  skills/sweep/scripts/memory-index-guard.sh"
+    "667cd90617eb7e5ffda0af55e923573a51d986628ec566e5c3c54bdb355a6041  skills/sweep/scripts/memory-index-guard.sh"
     "fae3a2915fd480db7d3ed9dcffd5d9cffe1d02b70d8231777b08b29db7f2330b  skills/sweep/scripts/cs-shared.sh"
     "8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"

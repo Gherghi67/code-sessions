@@ -26,6 +26,8 @@ RETIRED_HOOKS=(
     prose-lint.sh             # retired with the `cs -lint` verb it called; MUST stay listed, because a deployed copy calling the removed verb reads error()'s exit 1 as "violations found" and blocks every turn-end
     memory-index-guard.sh     # moved into the sweep skill (sweep/scripts/), so the guard travels with the skill to every engine
     bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
+    wrap-sweep.md             # the fork's /wrap reads skills/sweep/SKILL.md; with this copy gone, sync-upstream.py maps upstream's edits to the pass onto that skill
+    wrap-summary.md           # likewise for skills/summary/SKILL.md
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -54,8 +56,6 @@ CS_HOOK_LIBS=(
     prompt-rewriter.sh
     prompt-rewriter-model.sh
     prompt-rewriter-vendor.sh
-    wrap-sweep.md
-    wrap-summary.md
 )
 
 # Commands were migrated to engine-neutral skills.
