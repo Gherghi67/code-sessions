@@ -814,7 +814,7 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         dst = self.database(self.home, [])
         with closing(sqlite3.connect(dst)) as db, db:
             db.execute("CREATE UNIQUE INDEX unique_title ON threads(title)")
-        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+        with self.assertRaisesRegex(ValueError, "^Codex database schema differs for threads; no thread metadata imported$"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
@@ -871,10 +871,24 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         dst = self.database(self.home, [("kept", "/normal/rollout", "normal")])
         with closing(sqlite3.connect(src)) as db, db:
             db.execute("ALTER TABLE threads ADD COLUMN extra TEXT")
-        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads; "
+                                                "the old profile's database is newer"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT * FROM threads").fetchall(), [("kept", "/normal/rollout", "normal")])
+
+    def test_redefined_source_columns_are_refused_without_calling_the_profile_newer(self):
+        # The source has an extra column, but the target's columns are not
+        # its first ones, so the target is not simply older.
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.home / ".codex/state_5.sqlite"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(src)) as db, db:
+            db.execute("ALTER TABLE threads ADD COLUMN extra TEXT")
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL)")
+        with self.assertRaisesRegex(ValueError, "^Codex database schema differs for threads; no thread metadata imported$"):
+            migration.merge_threads(src, dst, self.home, True, None)
 
     def test_columns_a_newer_codex_appended_are_left_as_its_migration_leaves_them(self):
         # Codex migration 62 appended threads.attached_thread_parent_id this way.
@@ -969,7 +983,8 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         with closing(sqlite3.connect(src)) as db, db:
             db.execute("CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unread_turn TEXT, "
                        "revision TEXT NOT NULL, last_published_turn TEXT)")
-        with self.assertRaisesRegex(ValueError, "Codex database schema differs for thread_read_receipts"):
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for thread_read_receipts; "
+                                                "the old profile's database is newer"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT id FROM threads").fetchall(), [("kept",)])

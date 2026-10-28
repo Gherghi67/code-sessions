@@ -26,7 +26,8 @@ get an appended column's default or NULL, or what Codex's insert triggers set,
 as when an older Codex writes to a database a newer one migrated; they do not
 get values a migration backfilled into the threads `~/.codex` already held. Any
 other difference in those columns, foreign keys or unique indexes stops setup
-before it installs cs. CHECK constraints, column collations, generated columns,
+before it installs cs; when the old profile's database is the newer one, setup
+says so. CHECK constraints, column collations, generated columns,
 the conditions of partial indexes, other indexes and triggers are not compared.
 The old profile stays available; imported rollout files share their inode where
 possible so an already-running agent's appends remain visible after import.

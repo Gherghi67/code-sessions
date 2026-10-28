@@ -473,7 +473,12 @@ def thread_schemas(source, target):
                 any(names - unset for names, _ in keys + indexes) or \
                 foreign_keys(source, table) != [key for names, key in keys if not names] or \
                 unique_indexes(source, table) != [index for names, index in indexes if not names]:
-            raise ValueError(f"Codex database schema differs for {table}; no thread metadata imported")
+            hint = ""
+            # The profile's Codex appended columns or created the table.
+            if len(incoming) > len(current) and incoming[:len(current)] == current:
+                hint = ("; the old profile's database is newer than ~/.codex's, "
+                        "so open ~/.codex once with that Codex and rerun setup")
+            raise ValueError(f"Codex database schema differs for {table}{hint}; no thread metadata imported")
         schemas[table] = ([row[1] for row in incoming],
                           [row[1] for row in sorted(incoming, key=lambda row: row[5]) if row[5]])
     return schemas
