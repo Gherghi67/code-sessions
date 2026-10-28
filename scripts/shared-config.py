@@ -474,9 +474,10 @@ def thread_schemas(source, target):
                 foreign_keys(source, table) != [key for names, key in keys if not names] or \
                 unique_indexes(source, table) != [index for names, index in indexes if not names]:
             hint = ""
-            # The profile's Codex appended columns or created the table.
+            # The profile's Codex probably appended these columns or created the
+            # table, though a ~/.codex that dropped them would look the same.
             if len(incoming) > len(current) and incoming[:len(current)] == current:
-                hint = ("; the old profile's database is newer than ~/.codex's, "
+                hint = ("; the old profile's database looks newer than ~/.codex's, "
                         "so open ~/.codex once with that Codex and rerun setup")
             raise ValueError(f"Codex database schema differs for {table}{hint}; no thread metadata imported")
         schemas[table] = ([row[1] for row in incoming],

@@ -872,7 +872,7 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         with closing(sqlite3.connect(src)) as db, db:
             db.execute("ALTER TABLE threads ADD COLUMN extra TEXT")
         with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads; "
-                                                "the old profile's database is newer"):
+                                                "the old profile's database looks newer"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT * FROM threads").fetchall(), [("kept", "/normal/rollout", "normal")])
@@ -984,7 +984,7 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
             db.execute("CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unread_turn TEXT, "
                        "revision TEXT NOT NULL, last_published_turn TEXT)")
         with self.assertRaisesRegex(ValueError, "Codex database schema differs for thread_read_receipts; "
-                                                "the old profile's database is newer"):
+                                                "the old profile's database looks newer"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT id FROM threads").fetchall(), [("kept",)])

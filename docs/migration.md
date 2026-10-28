@@ -18,19 +18,22 @@ Missing Claude conversation files, file history, Codex rollouts, prompt history
 and Codex thread metadata are imported from the old engine profile. A
 divergent existing file is preserved and reported. Thread metadata needs the
 same columns, foreign keys and unique indexes in Codex's thread tables on both
-sides, except for what a newer Codex added to `~/.codex`: tables, which stay
-empty for imported threads, and columns appended to a table that are nullable
-or have a default and are not in its primary key. Such a column may carry a
-foreign key or unique index if it is nullable with no default. Imported threads
-get an appended column's default or NULL, or what Codex's insert triggers set,
-as when an older Codex writes to a database a newer one migrated; they do not
-get values a migration backfilled into the threads `~/.codex` already held. Any
-other difference in those columns, foreign keys or unique indexes stops setup
-before it installs cs; when the old profile's database is the newer one, setup
-says so. CHECK constraints, column collations, generated columns,
-the conditions of partial indexes, other indexes and triggers are not compared.
-The old profile stays available; imported rollout files share their inode where
-possible so an already-running agent's appends remain visible after import.
+sides, except for what a newer Codex added to `~/.codex`: tables, into which
+nothing is imported, and columns appended to a table that are nullable or have
+a default and are not in its primary key. Such a column may carry a foreign key
+or unique index if it is nullable and defaults to NULL. Imported threads get an
+appended column's default or NULL, or what Codex's insert triggers set, as when
+an older Codex writes to a database a newer one migrated; they do not get values
+a migration backfilled into the threads `~/.codex` already held. Any other
+difference in those columns, foreign keys or unique indexes stops setup before
+it installs cs. When a profile table has columns appended past `~/.codex`'s, or
+`~/.codex` lacks the table, setup says the profile's database looks newer and
+to open `~/.codex` once with that Codex first. CHECK constraints, column
+collations, generated columns, whether a foreign key is deferred, the
+conditions of partial indexes, the expressions of expression indexes, other
+indexes and triggers are not compared. The old profile stays available;
+imported rollout files share their inode where possible so an already-running
+agent's appends remain visible after import.
 
 Project directories, worktree paths, session secrets and encrypted vaults stay
 in place. `ccs` continues using the old fork session store when it exists,
