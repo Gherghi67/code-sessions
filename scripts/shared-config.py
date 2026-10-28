@@ -439,6 +439,11 @@ def thread_schemas(source, target):
                          on_update, on_delete, match))
         return sorted(keys, key=repr)
 
+    def defaults_to_null(column):
+        # table_info reports DEFAULT NULL, null and (NULL) as that text; a
+        # string literal default keeps its quotes.
+        return column[4] is None or column[4].upper() == "NULL"
+
     for table in tables:
         incoming = list(source.execute(f'PRAGMA table_info("{table}")'))
         current = list(target.execute(f'PRAGMA table_info("{table}")'))
@@ -460,11 +465,11 @@ def thread_schemas(source, target):
         # with a NULL key column. A constraint naming appended columns is
         # tolerated when imported rows leave all of them NULL, and refused
         # otherwise; one naming none must match the source's.
-        unset = {row[1] for row in added if not row[3] and (row[4] is None or row[4].upper() == "NULL")}
+        unset = {row[1] for row in added if not row[3] and defaults_to_null(row)}
         keys = [(appended.intersection(key[1]), key) for key in foreign_keys(target, table)]
         indexes = [(appended.intersection(index_columns(index)), index) for index in unique_indexes(target, table)]
         if incoming != current[:len(incoming)] or \
-                any(row[5] or (row[3] and row[4] is None) for row in added) or \
+                any(row[5] or (row[3] and defaults_to_null(row)) for row in added) or \
                 any(names - unset for names, _ in keys + indexes) or \
                 foreign_keys(source, table) != [key for names, key in keys if not names] or \
                 unique_indexes(source, table) != [index for names, index in indexes if not names]:

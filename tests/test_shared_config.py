@@ -900,6 +900,31 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
 
+    def test_appended_not_null_column_defaulting_to_null_is_refused(self):
+        # PRAGMA table_info reports each of these defaults as the text NULL.
+        # Roots are numbered: macOS paths ignore case, so NULL and null collide.
+        for case, default in enumerate(("NULL", "null", "(NULL)")):
+            with self.subTest(default=default):
+                src = self.database(self.profile / str(case), [("new", "/rollout", "source")])
+                dst = self.home / str(case) / ".codex/state_5.sqlite"
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with closing(sqlite3.connect(dst)) as db, db:
+                    db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT, "
+                               f"required TEXT NOT NULL DEFAULT {default})")
+                with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+                    migration.merge_threads(src, dst, self.home, True, None)
+                with closing(sqlite3.connect(dst)) as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+
+    def test_appended_not_null_column_defaulting_to_the_string_null_is_imported(self):
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.database(self.home, [])
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("ALTER TABLE threads ADD COLUMN label TEXT NOT NULL DEFAULT 'NULL'")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT label FROM threads").fetchall(), [("NULL",)])
+
     def test_tables_only_a_newer_codex_created_are_left_empty(self):
         # Codex migration 61 created thread_read_receipts this way. This
         # thread_spawn_edges has no key, so only the skip keeps it out.
