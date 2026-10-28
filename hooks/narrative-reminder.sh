@@ -844,6 +844,13 @@ if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_pri
     for _stage in "$_stages"/*; do
         [ -f "$_stage" ] || continue
         _task="${_stage##*/}"
+        # cs names a stage after its feature, so a name no feature can have is
+        # no stage of cs's, and the name, which every report below would
+        # carry, is not repeated.
+        if ! _retire_task_ok "$_task"; then
+            rm -f "$_stage"
+            _retire_report "cs: a file in $_stages that is not a stage cs writes was removed. Tell the user in one line."
+        fi
         _run="$_runs/$_task"
         _wt="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}@$_task"
         # A run started by an earlier Stop: wait a little for it, then read it.
