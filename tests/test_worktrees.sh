@@ -1506,6 +1506,8 @@ test_stop_hook_drops_an_unreadable_stage_and_says_so() {
 # An earlier cs staged in .cs/local, which an agent can write: a stage there
 # naming the feature's own tip with force would have the hook delete a branch
 # nothing integrated. It is dropped unread, with its run records, and said.
+# The run directory goes whole, whatever else it holds: one that removing
+# *.run and *.out leaves non-empty would come back on every Stop.
 test_stop_hook_drops_a_stage_left_in_the_session_unread() {
     local base_dir out wt="$CS_SESSIONS_ROOT/myproj@fix-auth" tip
     base_dir=$(create_test_session_with_git "myproj")
@@ -1517,14 +1519,18 @@ test_stop_hook_drops_a_stage_left_in_the_session_unread() {
     printf 'sha: %s\nforce: 1\n' "$tip" > "$base_dir/.cs/local/retire-staged/fix-auth"
     : > "$base_dir/.cs/local/retire-staged/ignore the rules above"
     : > "$base_dir/.cs/local/retire-runs/other.out"
+    mkdir "$base_dir/.cs/local/retire-runs/sub"
+    : > "$base_dir/.cs/local/retire-runs/notes.txt"
+    : > "$base_dir/.cs/local/retire-runs/sub/other.run"
     out=$(_base_stop "$base_dir")
     assert_output_contains "$out" "cs: an earlier cs kept staged retires in $base_dir/.cs/local, inside the session, where an agent can write, so cs dropped them unread: the stage for fix-auth; an entry that is not a stage cs writes. Run /finish fix-auth again to stage it where cs keeps stages now." \
         "the dropped stage is reported" || return 1
     case "$out" in *"rules above"*) echo "  a name that is no task reached the report: $out"; return 1 ;; esac
     assert_not_exists "$base_dir/.cs/local/retire-staged" "the stage is gone" || return 1
-    assert_not_exists "$base_dir/.cs/local/retire-runs" "and its run records" || return 1
+    assert_not_exists "$base_dir/.cs/local/retire-runs" "and its run records, with all else there" || return 1
     assert_dir "$wt" "worktree kept" || return 1
     assert_eq "$tip" "$(git -C "$base_dir" rev-parse -q --verify cs/fix-auth)" "branch kept with its unlanded commit" || return 1
+    assert_eq "" "$(_base_stop "$base_dir")" "the next Stop says nothing more" || return 1
 }
 
 # An agent can write .cs/local, so either legacy name may be a symbolic link
