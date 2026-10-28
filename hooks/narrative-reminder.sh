@@ -802,13 +802,14 @@ _retire_task_ok() {  # name
 # without write permission), and under set -e a failed rm would end every
 # Stop here, before the queue and the mail: what is left goes to _rd_stuck
 # when this pass removed something, so it is said once, and a pass that
-# removed nothing says nothing, as the next Stop's does.
-_retire_drop_dir() {  # dir list
-    local name before after=""
+# removed nothing says nothing, as the next Stop's does. <shown> names the
+# directory in the report when <dir> is relative.
+_retire_drop_dir() {  # dir list [shown]
+    local name before after="" shown="${3:-$1}"
     if [ -L "$1" ]; then
         rm -f "$1" 2>/dev/null || true
         [ ! -L "$1" ] || return 0
-        _rd_parts="$_rd_parts; $1, a symbolic link, removed without following it"
+        _rd_parts="$_rd_parts; $shown, a symbolic link, removed without following it"
         return 0
     fi
     [ -d "$1" ] || return 0
@@ -817,7 +818,7 @@ _retire_drop_dir() {  # dir list
     if [ -e "$1" ] || [ -L "$1" ]; then
         after=$(ls -Aq "$1" 2>/dev/null) || after=""
         [ "$after" != "$before" ] || return 0
-        _rd_stuck="$_rd_stuck, $1"
+        _rd_stuck="$_rd_stuck, $shown"
     fi
     [ "$2" = 1 ] || return 0
     while IFS= read -r name; do
@@ -853,6 +854,22 @@ _retire_drop_report() {  # why again
     [ -z "$_rd_stuck" ] || _rd_stuck=" cs could not remove all of ${_rd_stuck#, }: remove what is left of it by hand."
     _retire_report "cs: $1, so cs dropped them unread: ${_rd_parts#; }.$_rd_stuck$next Tell the user in one line."
 }
+# Drops what an earlier cs left in this session's own .cs/local. An agent can
+# make .cs/local (or .cs) a link to a directory of the user's, cs's cache with
+# its real retire-staged among them, so the two names are removed only from
+# inside .cs/local, entered first and found to be the session's own: named
+# from there, a link swapped in after the check reaches nothing the removal
+# does. The hook's working directory is put back after.
+_retire_drop_legacy() {
+    local owd="$PWD" here
+    here=$(cd -P -- "$SESSION_DIR" 2>/dev/null && pwd -P) || return 0
+    cd -P -- "$LOCAL" 2>/dev/null || return 0
+    if [ "$PWD" = "$here/.cs/local" ]; then
+        _retire_drop_dir retire-staged 1 "$LOCAL/retire-staged"
+        _retire_drop_dir retire-runs 0 "$LOCAL/retire-runs"
+    fi
+    cd -- "$owd" 2>/dev/null || cd /
+}
 _rd_tasks=""
 _rd_n=0
 _rd_others=0
@@ -868,8 +885,7 @@ if [ "$HOOK_EVENT" = "Stop" ] && command -v cs_retire_cache_dir >/dev/null 2>&1 
     # in .cs/local/retire-runs, where an agent can write: both go whole.
     if { [ -d "$LOCAL/retire-staged" ] || [ -L "$LOCAL/retire-staged" ] \
         || [ -d "$LOCAL/retire-runs" ] || [ -L "$LOCAL/retire-runs" ]; } && _mail_is_lead; then
-        _retire_drop_dir "$LOCAL/retire-staged" 1
-        _retire_drop_dir "$LOCAL/retire-runs" 0
+        _retire_drop_legacy
         _retire_drop_report "an earlier cs kept staged retires in $LOCAL, inside the session, where an agent can write" \
             "where cs keeps stages now"
     fi

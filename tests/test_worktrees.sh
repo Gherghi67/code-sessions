@@ -1589,6 +1589,23 @@ test_stop_hook_drops_a_symlinked_legacy_run_directory_without_following_it() {
         "the hook reports the drop" || return 1
 }
 
+# .cs/local itself may be the link: the legacy names then lie in whatever
+# directory it names (cs's cache holds a real retire-staged and retire-runs),
+# and none of it is this session's to drop.
+test_stop_hook_removes_nothing_through_a_cs_local_that_links_out_of_the_session() {
+    local base_dir out decoy="$TEST_TMPDIR/decoy"
+    base_dir=$(create_test_session_with_git "myproj")
+    mkdir -p "$decoy/retire-staged" "$decoy/retire-runs"
+    echo "keep me" > "$decoy/retire-staged/fix-auth"
+    echo "keep me" > "$decoy/retire-runs/fix-auth.out"
+    rm -rf "$base_dir/.cs/local"
+    ln -s "$decoy" "$base_dir/.cs/local"
+    out=$(_base_stop "$base_dir")
+    assert_eq "keep me" "$(cat "$decoy/retire-staged/fix-auth" 2>/dev/null)" "nothing is deleted through .cs/local: $out" || return 1
+    assert_eq "keep me" "$(cat "$decoy/retire-runs/fix-auth.out" 2>/dev/null)" "nor in the run directory there" || return 1
+    case "$out" in *"dropped them unread"*) echo "  the hook reported a drop through .cs/local: $out"; return 1 ;; esac
+}
+
 # An agent can also leave in a legacy directory what rm -rf cannot remove (a
 # file in a subdirectory without write permission): the hook drops what it
 # can and says once what is left, neither failing, which would end every Stop
@@ -1699,6 +1716,27 @@ test_stop_hook_never_reads_a_run_record_through_a_planted_link() {
         "the hook ran the retire itself" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree removed by the real run" || return 1
     assert_eq "999999" "$(cat "$decoy/planted.run")" "the decoys are untouched" || return 1
+}
+
+# The output record is checked on its own: a regular .run of a run that has
+# ended, beside an .out that is a link, settles with no output read.
+test_stop_hook_never_reads_run_output_through_a_link_beside_a_regular_record() {
+    local base_dir stage sha out run decoy="$TEST_TMPDIR/decoy"
+    base_dir=$(create_test_session_with_git "myproj")
+    { read -r stage; read -r sha; } < <(_staged_feature "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    run="$(_retire_dir retire-runs "$base_dir")/fix-auth"
+    mkdir -p "$decoy" "${run%/*}"
+    chmod 700 "${run%/*}"
+    printf '%s\n' 999999 > "$run.run"
+    printf 'retired fix-auth %s PLANTED\n' "$sha" > "$decoy/planted.out"
+    ln -s "$decoy/planted.out" "$run.out"
+    out=$(_base_stop "$base_dir")
+    case "$out" in *PLANTED*) echo "  the hook reported output a link named: $out"; return 1 ;; esac
+    assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged did not go through:" \
+        "a run with no output it can read did not go through" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
+    assert_eq "retired fix-auth $sha PLANTED" "$(cat "$decoy/planted.out")" "the decoy is untouched" || return 1
 }
 
 # A stage directory others may write is not read: its stages could be
@@ -2740,11 +2778,13 @@ run_test test_stop_hook_drops_an_unreadable_stage_and_says_so
 run_test test_stop_hook_drops_a_stage_left_in_the_session_unread
 run_test test_stop_hook_drops_a_symlinked_legacy_stage_directory_without_following_it
 run_test test_stop_hook_drops_a_symlinked_legacy_run_directory_without_following_it
+run_test test_stop_hook_removes_nothing_through_a_cs_local_that_links_out_of_the_session
 run_test test_stop_hook_survives_a_legacy_stage_directory_it_cannot_remove_whole
 run_test test_stop_hook_fences_the_retire_output_it_reports
 run_test test_stop_hook_removes_a_stage_file_that_names_no_feature
 run_test test_stop_hook_never_writes_a_run_record_through_a_planted_link
 run_test test_stop_hook_never_reads_a_run_record_through_a_planted_link
+run_test test_stop_hook_never_reads_run_output_through_a_link_beside_a_regular_record
 run_test test_stop_hook_drops_a_stage_directory_that_is_not_private_and_says_so
 run_test test_stop_hook_survives_a_stage_directory_that_is_not_private_and_cannot_be_removed_whole
 run_test test_stop_hook_removes_a_symlinked_stage_directory_without_following_it
