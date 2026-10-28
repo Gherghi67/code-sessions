@@ -1054,7 +1054,8 @@ test_retire_refuses_to_stage_in_a_cache_an_agent_can_write() {
     echo "$$" > "$wt/.cs/session.lock"
     output=$(TMPDIR="$TEST_TMPDIR" "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "a cache under TMPDIR keeps no stage" || return 1
-    assert_output_contains "$output" "cs could not stage its removal at $stage" "the refusal names the stage" || return 1
+    assert_output_contains "$output" "cs could not stage its removal at $stage: ${stage%/*} lies in \$TMPDIR ($TEST_TMPDIR), where Codex's sandbox can write; set CS_CACHE_DIR to a cache outside it." \
+        "the refusal names the stage, the root it lies in and what to change" || return 1
     assert_not_exists "$stage" "nothing staged" || return 1
     assert_dir "$wt" "worktree preserved" || return 1
     rm -f "$wt/.cs/session.lock"
@@ -1092,6 +1093,8 @@ force: 0" "$(cat "$stage")" "the stage records the decision" || return 1
     output=$(PATH="$bindir" "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     chmod 700 "$HOME/.codex"
     assert_eq "1" "$status" "a config cs cannot rule out is read, not skipped: $output" || return 1
+    assert_output_contains "$output" "python3 is not on PATH, and cs needs it to read the Codex config $HOME/.codex/config.toml, so cs cannot tell whether Codex's sandbox can write ${stage%/*}." \
+        "the refusal names python3" || return 1
     rm -f "$wt/.cs/session.lock"
 }
 
@@ -1113,7 +1116,8 @@ test_retire_refuses_to_stage_under_a_root_the_feature_codex_config_adds() {
     echo "$$" > "$wt/.cs/session.lock"
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "a cache the feature's sandbox may write keeps no stage: $output" || return 1
-    assert_output_contains "$output" "cs could not stage its removal at $stage" "the refusal names the stage" || return 1
+    assert_output_contains "$output" "cs could not stage its removal at $stage: Codex's config makes $HOME/.cache/cs writable and ${stage%/*} lies under it; set CS_CACHE_DIR to a cache outside it." \
+        "the refusal names the stage and the root" || return 1
     assert_not_exists "$stage" "nothing staged" || return 1
     assert_dir "$wt" "worktree preserved" || return 1
     # A stage written before the feature's config named the cache is not run.
@@ -1127,10 +1131,34 @@ test_retire_refuses_to_stage_under_a_root_the_feature_codex_config_adds() {
     status=0
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
     assert_eq "1" "$status" "a stage the feature's sandbox may write is refused" || return 1
-    assert_output_contains "$output" "No stage at $stage" "refused for its stage, not for later checks: $output" || return 1
+    assert_output_contains "$output" "Error: The stage directory for fix-auth is refused: Codex's config makes $HOME/.cache/cs writable and ${stage%/*} lies under it" \
+        "refused for its stage directory, not for later checks: $output" || return 1
     assert_dir "$wt" "worktree preserved" || return 1
     git -C "$base_dir" rev-parse -q --verify "refs/heads/cs/fix-auth" >/dev/null \
         || { echo "  FAIL: branch cs/fix-auth was deleted"; return 1; }
+}
+
+# A stage the entry finds in a directory it refuses may be there and match:
+# the refusal says what is wrong with the directory, not that no stage exists.
+test_retire_staged_names_why_it_refuses_the_stage_directory() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    local sha output status=0 stage
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    echo "$$" > "$wt/.cs/session.lock"
+    output=$("$(_stage_cs_dir)/cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "staged: $output" || return 1
+    rm -f "$wt/.cs/session.lock"
+    output=$(TMPDIR="$TEST_TMPDIR" "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
+    assert_eq "1" "$status" "a stage directory under TMPDIR is refused" || return 1
+    assert_eq "Error: The stage directory for fix-auth is refused: ${stage%/*} lies in \$TMPDIR ($TEST_TMPDIR), where Codex's sandbox can write; set CS_CACHE_DIR to a cache outside it. Nothing was removed; run /finish fix-auth again once that is fixed." \
+        "$output" "the refusal names the cause and CS_CACHE_DIR" || return 1
+    case "$output" in *"No stage at"*) echo "  FAIL: a stage that is there was called missing"; return 1 ;; esac
+    assert_dir "$wt" "worktree preserved" || return 1
+    assert_file_exists "$stage" "the stage stays for the hook to report" || return 1
 }
 
 # A base and feature that last ran under Codex: the user leaves Codex with
@@ -2288,6 +2316,7 @@ run_test test_retire_refuses_to_stage_when_the_stage_cannot_be_written
 run_test test_retire_refuses_to_stage_in_a_cache_an_agent_can_write
 run_test test_retire_stages_without_python3_when_no_codex_config_exists
 run_test test_retire_refuses_to_stage_under_a_root_the_feature_codex_config_adds
+run_test test_retire_staged_names_why_it_refuses_the_stage_directory
 run_test test_retire_removes_its_stage_when_it_retires
 run_test test_features_reports_a_locked_worktree_with_a_stage_as_staged
 run_test test_stop_hook_leaves_a_staged_retire_while_the_feature_conversation_is_open

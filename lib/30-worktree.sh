@@ -1159,9 +1159,16 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     if [ -n "$staged" ]; then
         local force_word=0
         [ -z "$force" ] || force_word=1
-        { _retire_stage_dir "$base_dir" "$wt_dir" >/dev/null && _retire_stage_file_ok "$stage" \
-            && [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
-force: $force_word" ]; } || error "No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
+        local no_stage="No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
+        # A directory the checks refuse says why: the stage in it may well be
+        # there and match, and "No stage" would send the user looking for it.
+        if ! _retire_stage_dir "$base_dir" "$wt_dir"; then
+            [ -z "$_retire_stage_refusal" ] \
+                || error "The stage directory for $task is refused: $_retire_stage_refusal. Nothing was removed; run $fin $task again once that is fixed."
+            error "$no_stage"
+        fi
+        { _retire_stage_file_ok "$stage" && [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
+force: $force_word" ]; } || error "$no_stage"
     else
         pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
         if [ -n "$pid" ]; then
@@ -1181,7 +1188,7 @@ force: $force_word" ]; } || error "No stage at $stage records retiring $task at 
         # once that conversation's lock is gone. Every refusal below runs
         # then as it would now.
         _write_retire_stage "$stage" "$sha" "$force" "$base_dir" "$wt_dir" \
-            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage${_retire_stage_refusal:+: $_retire_stage_refusal}. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
         printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
         return 0
@@ -1328,7 +1335,7 @@ $missing"
     if [ -n "$pid" ]; then
         _cs_unlock "$wt_dir/.cs/session.mutex.lock"
         _write_retire_stage "$stage" "$sha" "$force" "$base_dir" "$wt_dir" \
-            || error "The '$wt_name' conversation reopened its worktree (PID $pid) before the removal, and cs could not stage it again at $stage; nothing was removed. Run $fin $task here again once it closes."
+            || error "The '$wt_name' conversation reopened its worktree (PID $pid) before the removal, and cs could not stage it again at $stage${_retire_stage_refusal:+: $_retire_stage_refusal}; nothing was removed. Run $fin $task here again once it closes."
         printf "staged %s %s: the '%s' conversation reopened its worktree (PID %s) before the removal; the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
         return 0
@@ -1390,7 +1397,8 @@ $remove_err${trashed:+$nl$trashed}"
 _write_retire_stage() {  # stage_path sha force base_dir wt_dir
     local force=0 dir tmp
     [ -z "$3" ] || force=1
-    dir=$(_retire_stage_dir "$4" "$5" make) && [ "${1%/*}" = "$dir" ] || return 1
+    _retire_stage_dir "$4" "$5" make && [ "${1%/*}" = "$_retire_stage_path" ] || return 1
+    dir=$_retire_stage_path
     tmp=$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null) || return 1
     if printf 'sha: %s\nforce: %s\n' "$2" "$force" > "$tmp" && mv -f "$tmp" "$1"; then
         return 0
@@ -1409,20 +1417,80 @@ _write_retire_stage() {  # stage_path sha force base_dir wt_dir
 # them), not other sessions', a managed device profile's or a --add-dir's.
 # With make, a missing one is made first. A cache the checks refuse keeps no
 # stage, so a retire behind an open conversation is refused as when the stage
-# cannot be written.
+# cannot be written. Sets _retire_stage_path to the directory, or, refused,
+# _retire_stage_refusal to why: which check, and what to change. Unmade, a
+# directory that is not there leaves _retire_stage_refusal empty: it holds no
+# stage, and nothing is refused.
 _retire_stage_dir() {  # base_dir wt_dir [make]
-    local dir session
-    dir=$(cs_retire_cache_dir retire-staged "$1") || return 1
-    if [ -n "${3:-}" ]; then
-        cs_cache_dir_make_private "$dir" || return 1
-    else
-        cs_cache_dir_private "$dir" || return 1
+    local dir session roots root
+    _retire_stage_path="" _retire_stage_refusal=""
+    if ! dir=$(cs_retire_cache_dir retire-staged "$1"); then
+        _retire_stage_refusal="cs could not read the identity of $1, which names its stage directory"
+        return 1
     fi
+    if [ -n "${3:-}" ]; then
+        cs_cache_dir_make_private "$dir"
+    else
+        cs_cache_dir_private "$dir"
+    fi || {
+        [ -n "${3:-}" ] || [ -e "$dir" ] || [ -L "$dir" ] || return 1
+        _retire_stage_refusal="$dir is not a directory private to you (yours, mode 700; it is $(_retire_dir_state "$dir")); make it one, or set CS_CACHE_DIR to a cache elsewhere"
+        return 1
+    }
     for session in "$1" "$2"; do
-        ! _codex_run_dir_in_sandbox_root "$dir" "$session" || return 1
-        ! _codex_run_dir_in_config_root "$dir" "$session" || return 1
+        if _codex_run_dir_in_sandbox_root "$dir" "$session"; then
+            _retire_stage_refusal="$dir lies in $(_retire_sandbox_root_name "$dir" "$1" "$2"), where Codex's sandbox can write; set CS_CACHE_DIR to a cache outside it"
+            return 1
+        fi
     done
-    printf '%s\n' "$dir"
+    # The roots are read here rather than through _codex_run_dir_in_config_root,
+    # which counts a config it cannot read as a root: the refusal says which.
+    for session in "$1" "$2"; do
+        if ! roots=$(_codex_config_writable_roots "$session"); then
+            _retire_stage_refusal="${roots:-cs could not read the Codex configs}, so cs cannot tell whether Codex's sandbox can write $dir"
+            return 1
+        fi
+        root=$(printf '%s\n' "$roots" | while IFS= read -r root; do
+            if [ -n "$root" ] && _codex_dir_under "$dir" "$root"; then
+                printf '%s\n' "$root"
+                break
+            fi
+        done)
+        if [ -n "$root" ]; then
+            _retire_stage_refusal="Codex's config makes $root writable and $dir lies under it; set CS_CACHE_DIR to a cache outside it"
+            return 1
+        fi
+    done
+    _retire_stage_path=$dir
+}
+
+# What stands where a stage directory should, in words, for its refusal.
+_retire_dir_state() {  # path
+    if [ -L "$1" ]; then
+        printf 'a symbolic link\n'
+    elif [ ! -e "$1" ]; then
+        printf 'missing\n'
+    elif [ ! -d "$1" ]; then
+        printf 'not a directory\n'
+    elif [ ! -O "$1" ]; then
+        printf "someone else's\n"
+    else
+        printf 'mode %s\n' "$(_cs_file_mode "$1" 2>/dev/null || echo unknown)"
+    fi
+}
+
+# Which root the workspace sandbox may always write holds a directory
+# (_codex_run_dir_in_sandbox_root), in words, for a stage's refusal.
+_retire_sandbox_root_name() {  # dir base_dir wt_dir
+    if _codex_dir_under "$1" "$2"; then
+        printf 'the base %s\n' "$2"
+    elif _codex_dir_under "$1" "$3"; then
+        printf 'the feature %s\n' "$3"
+    elif [ -n "${TMPDIR:-}" ] && _codex_dir_under "$1" "$TMPDIR"; then
+        printf '%s (%s)\n' "\$TMPDIR" "$TMPDIR"
+    else
+        printf '/tmp\n'
+    fi
 }
 
 # A stage as _write_retire_stage leaves it: a regular file, the user's, mode 600.

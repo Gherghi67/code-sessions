@@ -77,7 +77,10 @@ export CS_SESSIONS_ROOT="/path/to/sessions"
 
 # Where cs's own configuration and caches live (defaults: $XDG_CONFIG_HOME/cs or
 # ~/.config/cs, and $XDG_CACHE_HOME/cs or ~/.cache/cs). The code-sessions launcher
-# sets both so a session never touches the original install's files.
+# clears both, so the defaults apply. Staged retires live under this cache, so
+# start a base and its features with the same CS_CACHE_DIR (or XDG_CACHE_HOME):
+# otherwise the feature's close does not wake the base and -features does not
+# read "staged". The base's own Stop hook runs the stage either way.
 export CS_CONFIG_DIR="$HOME/.config/cs"
 export CS_CACHE_DIR="$HOME/.cache/cs"
 
