@@ -1161,6 +1161,67 @@ test_retire_staged_names_why_it_refuses_the_stage_directory() {
     assert_file_exists "$stage" "the stage stays for the hook to report" || return 1
 }
 
+# GNU stat's %a prints the special bits too, and on Linux a directory made
+# under a setgid parent inherits the bit whatever the umask, so a private
+# stage directory there reads 2700. On a Linux runner the cache's parent is
+# made setgid; on a Mac, whose mkdir passes no setgid on, a stat that answers
+# as GNU stat would for such a directory goes first on PATH.
+test_retire_stages_under_a_setgid_cache_parent() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" cs probe run_path="$PATH" mode
+    local sha output status=0 stage
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    cs="$(_stage_cs_dir)/cs"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$HOME/.cache"
+    probe="$HOME/.cache/setgid-probe"
+    chmod g+s "$HOME/.cache" 2>/dev/null || true
+    mkdir "$probe"
+    case "$(stat -L -c %a "$probe" 2>/dev/null)" in
+        2???) ;;
+        *)
+            mode=$(/usr/bin/stat -L -f %Lp "$probe" 2>/dev/null) || mode=""
+            case "$mode" in
+                '' | *[!0-7]*)
+                    echo "    SKIP: no setgid inheritance here, and no BSD stat to stand in for GNU stat"
+                    SKIP_REASON="no setgid inheritance and no BSD stat"
+                    return 77
+                    ;;
+            esac
+            # GNU stat on a setgid directory: %a is 2<mode>. Any other -c
+            # fails, as BSD stat does, so cs falls back to -f.
+            mkdir -p "$TEST_TMPDIR/setgid-stat"
+            cat > "$TEST_TMPDIR/setgid-stat/stat" <<'STAT'
+#!/bin/sh
+l=""
+if [ "$1" = -L ]; then l=-L; shift; fi
+if [ "$1" = -c ] && [ "$2" = %a ]; then
+    m=$(/usr/bin/stat $l -f %Lp "$3") || exit 1
+    if [ -d "$3" ]; then echo "2$m"; else echo "$m"; fi
+    exit 0
+fi
+[ "$1" != -c ] || exit 1
+exec /usr/bin/stat $l "$@"
+STAT
+            chmod +x "$TEST_TMPDIR/setgid-stat/stat"
+            run_path="$TEST_TMPDIR/setgid-stat:$PATH"
+            [ "$(PATH="$run_path" stat -L -c %a "$probe")" = "2$mode" ] \
+                || { echo "  FAIL: the stand-in stat does not answer as GNU stat"; return 1; }
+            ;;
+    esac
+    echo "$$" > "$wt/.cs/session.lock"
+    output=$(PATH="$run_path" "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "a setgid bit is no access for others: $output" || return 1
+    assert_eq "sha: $sha
+force: 0" "$(cat "$stage")" "the stage records the decision" || return 1
+    assert_eq "600" "$(_mode_of "$stage")" "a file only the user reads" || return 1
+    mode=$(_mode_of "${stage%/*}")
+    assert_eq "700" "${mode#"${mode%???}"}" "in a directory only the user may enter" || return 1
+    rm -f "$wt/.cs/session.lock"
+}
+
 # A base and feature that last ran under Codex: the user leaves Codex with
 # /quit and asks for the finish skill as $finish.
 test_retire_refusal_names_codex_commands_for_codex_sessions() {
@@ -2317,6 +2378,7 @@ run_test test_retire_refuses_to_stage_in_a_cache_an_agent_can_write
 run_test test_retire_stages_without_python3_when_no_codex_config_exists
 run_test test_retire_refuses_to_stage_under_a_root_the_feature_codex_config_adds
 run_test test_retire_staged_names_why_it_refuses_the_stage_directory
+run_test test_retire_stages_under_a_setgid_cache_parent
 run_test test_retire_removes_its_stage_when_it_retires
 run_test test_features_reports_a_locked_worktree_with_a_stage_as_staged
 run_test test_stop_hook_leaves_a_staged_retire_while_the_feature_conversation_is_open

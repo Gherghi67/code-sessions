@@ -2403,6 +2403,20 @@ _cs_file_mode() {  # path
     stat -L -c %a "$1" 2>/dev/null || stat -L -f %Lp "$1"
 }
 
+# The nine permission bits alone, in octal (700), for a check that a file or
+# directory is private. GNU stat's %a prints the setuid, setgid and sticky
+# bits too, and on Linux a directory made under a setgid parent inherits that
+# bit whatever the umask (chmod 700 keeps it), so a private directory there
+# reads 2700. The bit grants no access, so it is masked off here; the full
+# mode stays _cs_file_mode's, which cs_write_atomic carries over. Fails on an
+# answer that is no octal mode.
+_cs_perm_bits() {  # path
+    local m
+    m=$(_cs_file_mode "$1" 2>/dev/null) || return 1
+    case "$m" in '' | *[!0-7]*) return 1 ;; esac
+    printf '%o\n' $(( 8#$m & 8#777 ))
+}
+
 # Where a base keeps the retire /finish staged for a feature whose
 # conversation still holds its worktree (retire-staged), and the runs its Stop
 # hook starts from those stages (retire-runs): cs's cache, <kind>/<device>-<inode
@@ -2422,7 +2436,7 @@ cs_retire_cache_dir() {  # kind, base_dir
 # A directory under cs's cache as cs makes one for its own records: a real
 # directory, the user's, mode 700.
 cs_cache_dir_private() {  # dir
-    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ]
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 700 ]
 }
 
 # Makes such a directory, its missing parents 700 as well, and fails unless
@@ -6454,7 +6468,7 @@ _retire_sandbox_root_name() {  # dir base_dir wt_dir
 
 # A stage as _write_retire_stage leaves it: a regular file, the user's, mode 600.
 _retire_stage_file_ok() {  # stage_path
-    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 600 ]
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault
@@ -18317,14 +18331,14 @@ _codex_run_dir_in_config_root() {  # dir, session_dir
 # 700, and outside every root the sandbox may write.
 _codex_run_dir_ok() {  # run_dir, session_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ] || return 1
+    [ "$(_cs_perm_bits "$1")" = 700 ] || return 1
     ! _codex_run_dir_in_sandbox_root "$1" "$2"
 }
 
 # The deadline as the Stop hook writes it: a regular file, the user's, mode 600.
 _codex_stamp_ok() {  # file
     [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+    [ "$(_cs_perm_bits "$1")" = 600 ]
 }
 
 # Makes this run's directory, before Codex starts, and prints it. A directory

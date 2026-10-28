@@ -1495,7 +1495,7 @@ _retire_sandbox_root_name() {  # dir base_dir wt_dir
 
 # A stage as _write_retire_stage leaves it: a regular file, the user's, mode 600.
 _retire_stage_file_ok() {  # stage_path
-    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 600 ]
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault

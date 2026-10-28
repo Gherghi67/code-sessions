@@ -698,6 +698,20 @@ _cs_file_mode() {  # path
     stat -L -c %a "$1" 2>/dev/null || stat -L -f %Lp "$1"
 }
 
+# The nine permission bits alone, in octal (700), for a check that a file or
+# directory is private. GNU stat's %a prints the setuid, setgid and sticky
+# bits too, and on Linux a directory made under a setgid parent inherits that
+# bit whatever the umask (chmod 700 keeps it), so a private directory there
+# reads 2700. The bit grants no access, so it is masked off here; the full
+# mode stays _cs_file_mode's, which cs_write_atomic carries over. Fails on an
+# answer that is no octal mode.
+_cs_perm_bits() {  # path
+    local m
+    m=$(_cs_file_mode "$1" 2>/dev/null) || return 1
+    case "$m" in '' | *[!0-7]*) return 1 ;; esac
+    printf '%o\n' $(( 8#$m & 8#777 ))
+}
+
 # Where a base keeps the retire /finish staged for a feature whose
 # conversation still holds its worktree (retire-staged), and the runs its Stop
 # hook starts from those stages (retire-runs): cs's cache, <kind>/<device>-<inode
@@ -717,7 +731,7 @@ cs_retire_cache_dir() {  # kind, base_dir
 # A directory under cs's cache as cs makes one for its own records: a real
 # directory, the user's, mode 700.
 cs_cache_dir_private() {  # dir
-    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ]
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 700 ]
 }
 
 # Makes such a directory, its missing parents 700 as well, and fails unless

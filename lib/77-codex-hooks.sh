@@ -266,14 +266,14 @@ _codex_run_dir_in_config_root() {  # dir, session_dir
 # 700, and outside every root the sandbox may write.
 _codex_run_dir_ok() {  # run_dir, session_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ] || return 1
+    [ "$(_cs_perm_bits "$1")" = 700 ] || return 1
     ! _codex_run_dir_in_sandbox_root "$1" "$2"
 }
 
 # The deadline as the Stop hook writes it: a regular file, the user's, mode 600.
 _codex_stamp_ok() {  # file
     [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+    [ "$(_cs_perm_bits "$1")" = 600 ]
 }
 
 # Makes this run's directory, before Codex starts, and prints it. A directory
