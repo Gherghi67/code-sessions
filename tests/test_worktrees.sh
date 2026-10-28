@@ -1816,7 +1816,7 @@ test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry() {
 
 # A stage binds to the worktree /finish ran for, not to the task's name: a
 # feature removed and made again under the same name before the base's Stop
-# (the picker's removal leaves the stage) is a worktree no /finish ran for,
+# (git worktree remove leaves the stage) is a worktree no /finish ran for,
 # and --staged leaves it and its branch alone, even with the landed commit in
 # the base and the branch tip behind it.
 test_retire_staged_refuses_a_stage_written_for_an_earlier_worktree() {
