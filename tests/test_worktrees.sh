@@ -1301,12 +1301,16 @@ test_features_reads_no_stage_the_stop_hook_would_not_run() {
 
 # The base's Stop hook, driven as its lead conversation (cs's exec arm makes
 # claude carry cs's pid, so CS_LEAD_PID equals CLAUDE_PID), with the built cs
-# (_stage_cs_dir's copy) on PATH the way an installed one is.
-_base_stop() {  # base_dir
+# (_stage_cs_dir's copy) on PATH the way an installed one is. _base_stop_raw
+# prints the hook's JSON and returns its exit status.
+_base_stop_raw() {  # base_dir
     printf '{}\n' | CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$1" \
         CLAUDE_SESSION_META_DIR="$1/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
         PATH="$(_stage_cs_dir):$PATH" \
-        bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""'
+        bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null
+}
+_base_stop() {  # base_dir
+    _base_stop_raw "$1" | jq -r '.reason // .systemMessage // ""'
 }
 
 # A landed feature whose retire is staged behind an open conversation: the
@@ -1555,6 +1559,30 @@ test_stop_hook_drops_a_symlinked_legacy_run_directory_without_following_it() {
         "the hook reports the drop" || return 1
 }
 
+# An agent can also leave in a legacy directory what rm -rf cannot remove (a
+# file in a subdirectory without write permission): the hook drops what it
+# can and says once what is left, neither failing, which would end every Stop
+# before the queue and the mail, nor taking every later Stop over it.
+test_stop_hook_survives_a_legacy_stage_directory_it_cannot_remove_whole() {
+    local base_dir legacy json1 json2 rc1=0 rc2=0
+    base_dir=$(create_test_session_with_git "myproj")
+    legacy="$base_dir/.cs/local/retire-staged"
+    mkdir -p "$legacy/sub"
+    printf 'sha: %s\nforce: 0\n' "$(git -C "$base_dir" rev-parse HEAD)" > "$legacy/fix-auth"
+    : > "$legacy/sub/f"
+    chmod 555 "$legacy/sub"
+    json1=$(_base_stop_raw "$base_dir") || rc1=$?
+    json2=$(_base_stop_raw "$base_dir") || rc2=$?
+    chmod 755 "$legacy/sub"
+    assert_eq "0" "$rc1" "the first Stop does not fail" || return 1
+    assert_eq "block" "$(jq -r '.decision' <<< "$json1")" "the first Stop takes the turn: $json1" || return 1
+    assert_output_contains "$(jq -r '.reason' <<< "$json1")" "cs: an earlier cs kept staged retires in $base_dir/.cs/local, inside the session, where an agent can write, so cs dropped them unread: the stage for fix-auth. cs could not remove all of $legacy: remove what is left of it by hand. Run /finish fix-auth again to stage it where cs keeps stages now." \
+        "the drop is reported with what is left" || return 1
+    assert_not_exists "$legacy/fix-auth" "the stage is dropped" || return 1
+    assert_eq "0" "$rc2" "the second Stop does not fail" || return 1
+    assert_eq "" "$(jq -r 'select(.decision == "block") | .reason' <<< "$json2")" "nor take the turn again: $json2" || return 1
+}
+
 # A stage's file name is all the hook knows of its task, and the reason the
 # model reads would carry it: a name cs could not have given a feature is no
 # stage of cs's, so it is removed and never echoed.
@@ -1658,6 +1686,29 @@ test_stop_hook_drops_a_stage_directory_that_is_not_private_and_says_so() {
     assert_not_exists "${stage%/*}" "the directory is dropped, so it is said once" || return 1
     assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
     assert_eq "" "$(_base_stop "$base_dir")" "the next Stop says nothing more" || return 1
+}
+
+# Such a directory may hold what rm -rf cannot remove: the stage still goes
+# and is said once, with what is left, and no Stop fails over it.
+test_stop_hook_survives_a_stage_directory_that_is_not_private_and_cannot_be_removed_whole() {
+    local base_dir stage json1 json2 rc1=0 rc2=0
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    mkdir "${stage%/*}/sub"
+    : > "${stage%/*}/sub/f"
+    chmod 555 "${stage%/*}/sub"
+    chmod 755 "${stage%/*}"
+    json1=$(_base_stop_raw "$base_dir") || rc1=$?
+    json2=$(_base_stop_raw "$base_dir") || rc2=$?
+    chmod 755 "${stage%/*}/sub"
+    assert_eq "0" "$rc1" "the first Stop does not fail" || return 1
+    assert_output_contains "$(jq -r '.reason' <<< "$json1")" "cs: the stage directory ${stage%/*} was not private to you (a directory of yours, mode 700), and stages there could be anyone's, so cs dropped them unread: the stage for fix-auth. cs could not remove all of ${stage%/*}: remove what is left of it by hand. Run /finish fix-auth again to stage it afresh." \
+        "the drop is reported with what is left: $json1" || return 1
+    assert_not_exists "$stage" "the stage is dropped" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
+    assert_eq "0" "$rc2" "the second Stop does not fail" || return 1
+    assert_eq "" "$(jq -r 'select(.decision == "block") | .reason' <<< "$json2")" "nor take the turn again: $json2" || return 1
 }
 
 # A link at the stage directory's name is no directory of cs's: removed,
@@ -2582,11 +2633,13 @@ run_test test_stop_hook_drops_an_unreadable_stage_and_says_so
 run_test test_stop_hook_drops_a_stage_left_in_the_session_unread
 run_test test_stop_hook_drops_a_symlinked_legacy_stage_directory_without_following_it
 run_test test_stop_hook_drops_a_symlinked_legacy_run_directory_without_following_it
+run_test test_stop_hook_survives_a_legacy_stage_directory_it_cannot_remove_whole
 run_test test_stop_hook_fences_the_retire_output_it_reports
 run_test test_stop_hook_removes_a_stage_file_that_names_no_feature
 run_test test_stop_hook_never_writes_a_run_record_through_a_planted_link
 run_test test_stop_hook_never_reads_a_run_record_through_a_planted_link
 run_test test_stop_hook_drops_a_stage_directory_that_is_not_private_and_says_so
+run_test test_stop_hook_survives_a_stage_directory_that_is_not_private_and_cannot_be_removed_whole
 run_test test_stop_hook_removes_a_symlinked_stage_directory_without_following_it
 run_test test_stop_hook_drops_a_stage_whose_worktree_is_already_gone
 run_test test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage

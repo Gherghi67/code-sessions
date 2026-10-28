@@ -788,28 +788,41 @@ _retire_task_ok() {  # name
 # followed, and a real directory is listed for the report and removed with
 # rm -rf, which does not follow links either; nothing here globs through it.
 # ls -q prints a control character (a newline) in a name as ?, so each line
-# is one entry and such a name is no task. With <list> 1 the entries are read
-# as stages: those cs could have named go to _rd_tasks (_rd_n of them), the
-# rest are counted in _rd_others; what was done to a link goes to _rd_parts.
+# is one entry and such a name is no task. With <list> 1 the entries removed
+# are read as stages: those cs could have named go to _rd_tasks (_rd_n of
+# them), the rest are counted in _rd_others; what was done to a link goes to
+# _rd_parts. A removal can fail (an agent can leave a file in a subdirectory
+# without write permission), and under set -e a failed rm would end every
+# Stop here, before the queue and the mail: what is left goes to _rd_stuck
+# when this pass removed something, so it is said once, and a pass that
+# removed nothing says nothing, as the next Stop's does.
 _retire_drop_dir() {  # dir list
-    local name
+    local name before after=""
     if [ -L "$1" ]; then
-        rm -f "$1"
+        rm -f "$1" 2>/dev/null || true
+        [ ! -L "$1" ] || return 0
         _rd_parts="$_rd_parts; $1, a symbolic link, removed without following it"
         return 0
     fi
     [ -d "$1" ] || return 0
-    if [ "$2" = 1 ]; then
-        while IFS= read -r name; do
-            if _retire_task_ok "$name"; then
-                _rd_tasks="$_rd_tasks, $name"
-                _rd_n=$((_rd_n + 1))
-            else
-                _rd_others=$((_rd_others + 1))
-            fi
-        done < <(ls -Aq "$1" 2>/dev/null)
+    before=$(ls -Aq "$1" 2>/dev/null) || before=""
+    rm -rf -- "$1" 2>/dev/null || true
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        after=$(ls -Aq "$1" 2>/dev/null) || after=""
+        [ "$after" != "$before" ] || return 0
+        _rd_stuck="$_rd_stuck, $1"
     fi
-    rm -rf -- "$1"
+    [ "$2" = 1 ] || return 0
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        case $'\n'"$after"$'\n' in *$'\n'"$name"$'\n'*) continue ;; esac
+        if _retire_task_ok "$name"; then
+            _rd_tasks="$_rd_tasks, $name"
+            _rd_n=$((_rd_n + 1))
+        else
+            _rd_others=$((_rd_others + 1))
+        fi
+    done < <(printf '%s\n' "$before")
 }
 # Reports what _retire_drop_dir removed, once, after <why> and with the
 # /finish that stages each task <again>; says nothing when it removed nothing
@@ -829,13 +842,15 @@ _retire_drop_report() {  # why again
         1) _rd_parts="$_rd_parts; an entry that is not a stage cs writes" ;;
         *) _rd_parts="$_rd_parts; $_rd_others entries that are not stages cs writes" ;;
     esac
-    [ -n "$_rd_parts" ] || return 0
-    _retire_report "cs: $1, so cs dropped them unread: ${_rd_parts#; }.$next Tell the user in one line."
+    [ -n "$_rd_parts" ] || { _rd_stuck=""; return 0; }
+    [ -z "$_rd_stuck" ] || _rd_stuck=" cs could not remove all of ${_rd_stuck#, }: remove what is left of it by hand."
+    _retire_report "cs: $1, so cs dropped them unread: ${_rd_parts#; }.$_rd_stuck$next Tell the user in one line."
 }
 _rd_tasks=""
 _rd_n=0
 _rd_others=0
 _rd_parts=""
+_rd_stuck=""
 _stages=""
 _runs=""
 if [ "$HOOK_EVENT" = "Stop" ] && command -v cs_retire_cache_dir >/dev/null 2>&1 \
