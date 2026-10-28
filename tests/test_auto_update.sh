@@ -833,6 +833,7 @@ _stage_upstream_check() {
     cat > "$TEST_TMPDIR/upstream-tools/claude" <<'SCRIPT'
 #!/bin/sh
 printf 'MOD_UPDATE=%s\n' "${CS_UPDATE_AVAILABLE-unset}"
+printf 'MOD_FORK=%s\n' "${CS_FORK-unset}"
 SCRIPT
     chmod +x "$TEST_TMPDIR/upstream-tools/claude"
     _make_curl_stub "$TEST_TMPDIR/upstream-tools" ""
@@ -857,6 +858,7 @@ test_code_sessions_launcher_checks_upstream_and_caches_the_result() {
     assert_output_not_contains "$out" "cs -update" "the fork names its sync command" || return 1
     assert_output_contains "$out" "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3" "release notes stay accessible" || return 1
     assert_output_contains "$out" "MOD_UPDATE=unset" "the install mod gets no upstream verdict, including an inherited one" || return 1
+    assert_output_contains "$out" "MOD_FORK=code-sessions" "the mod learns it runs in the fork, so /cs-update names the sync workflow" || return 1
     assert_file_exists "$cache/update-check" || return 1
     assert_not_exists "$HOME/.local/share/code-sessions/home/.cache/cs/update-check" "engine migration uses the normal manager cache" || return 1
     calls=$(wc -l < "$TEST_TMPDIR/upstream-curl.log" | tr -d ' ')

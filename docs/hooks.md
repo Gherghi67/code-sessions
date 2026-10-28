@@ -941,7 +941,8 @@ person answered no to the launch's own question (`~/.cache/cs/update-declined`
 keeps that answer): the mod then toasts one line, `cs X.Y.Z is available · run
 cs -update to install it, or /cs-update for the notes`, and opens no pane
 until `/cs-update` asks for it. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
-nothing.
+nothing. In the fork, which never exports `CS_UPDATE_AVAILABLE`, the launch exports `CS_FORK=code-sessions`,
+and `/cs-update` answers with the fork's sync workflow instead.
 Present, the mod reads the changelog span the launch's check cached at
 `~/.cache/cs/update-notes-full-<version>` (KEEP IN SYNC with
 `check_update_notify` in `lib/20-update.sh`), strips its markdown the way

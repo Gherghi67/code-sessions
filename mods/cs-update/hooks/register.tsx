@@ -153,7 +153,7 @@ export function register(on: On, options: PluginOptions) {
   on('command.run', { command: 'cs-update' }, async ($, e) => {
     const cwd = await $.session.cwd()
     if (!(await isLead($, cwd))) return { text: REPLIES.notLead }
-    if (await $.env.get('CODE_SESSIONS_HOME')) return { text: REPLIES.codeSessions }
+    if ((await $.env.get('CS_FORK')) === 'code-sessions') return { text: REPLIES.codeSessions }
     const pending = await $.env.get('CS_UPDATE_AVAILABLE')
     if (!pending) return { text: REPLIES.nothingPending }
     // After a reload (which drops the module state, and fires no

@@ -705,6 +705,9 @@ _launch_claude_bound() {
     local self_bin
     self_bin="$(cd -- "$(dirname "$0")" && pwd -P)/$(basename "$0")"
     export CS_BIN="$self_bin"
+    # The fork never hands the cs-update mod a pending version (below), so
+    # the mod reads this to answer /cs-update with the fork's sync workflow.
+    export CS_FORK
 
     # The cs-update mod draws the pending release's notes and runs the update
     # from inside the session. It gets the launch's verdict, never its own:
