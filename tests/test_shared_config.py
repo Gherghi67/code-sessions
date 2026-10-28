@@ -925,6 +925,29 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT label FROM threads").fetchall(), [("NULL",)])
 
+    def test_appended_primary_key_column_is_refused(self):
+        # ALTER TABLE cannot add a primary key column; only a CREATE TABLE can.
+        with self.subTest(case="rowid alias"), closing(sqlite3.connect(":memory:")) as src, \
+                closing(sqlite3.connect(":memory:")) as dst:
+            # Contrived: every Codex thread table has a primary key. Without
+            # one, the target's rowid alias adds no index to compare.
+            src.execute("CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT, status TEXT)")
+            dst.execute("CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT, status TEXT, "
+                        "edge INTEGER PRIMARY KEY)")
+            with self.assertRaisesRegex(ValueError, "Codex database schema differs for thread_spawn_edges"):
+                migration.thread_schemas(src, dst)
+        with self.subTest(case="composite"):
+            src = self.database(self.profile, [("new", "/rollout", "source")])
+            dst = self.home / ".codex/state_5.sqlite"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(dst)) as db, db:
+                db.execute("CREATE TABLE threads (id TEXT, rollout_path TEXT NOT NULL, title TEXT, extra TEXT, "
+                           "PRIMARY KEY(id, extra))")
+            with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+                migration.merge_threads(src, dst, self.home, True, None)
+            with closing(sqlite3.connect(dst)) as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+
     def test_tables_only_a_newer_codex_created_are_left_empty(self):
         # Codex migration 61 created thread_read_receipts this way. This
         # thread_spawn_edges has no key, so only the skip keeps it out.
