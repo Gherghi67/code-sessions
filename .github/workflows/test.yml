@@ -74,10 +74,16 @@ jobs:
       # package ships age-keygen). tests/test_lib.sh's require_tool fails a
       # test whose listed tool is missing; any other missing tool skips, and
       # run_all.sh names every skip at the end of the log.
+      # CS_TEST_SUITE_TIMEOUT: the fork's test_install outgrew run_all.sh's
+      # 1200 s watchdog on the macOS runners. It took 738 s at 1c4b3af3 (187
+      # tests), 1128 s once v2026.10.11 merged (212), and the next run was cut
+      # at 181 of 213 with no failure; alone on a Mac it takes 1317 s.
+      # Upstream's own runs it in about 600 s.
       - name: Run bash test suites
         env:
           CS_TEST_SHARD: ${{ matrix.shard }}/2
           CS_TEST_REQUIRE_TOOLS: age age-keygen jq bun
+          CS_TEST_SUITE_TIMEOUT: 1800
         run: bash tests/run_all.sh
 
   build-sync:
