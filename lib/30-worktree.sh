@@ -1149,15 +1149,15 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     # --staged runs a stage this base wrote earlier, from its Stop hook, which
     # is no descendant of the base's claude once detached: the stage, written
     # only after the base-lock check below passed, stands in for that
-    # ancestry. It must exist and record this very decision, in a stage
-    # directory no agent can write (_retire_stage_dir): a stage one could have
-    # written is no decision of this base's.
+    # ancestry. It must exist and record this very decision, for this very
+    # worktree, in a stage directory no agent can write (_retire_stage_dir): a
+    # stage one could have written is no decision of this base's.
     local pid stage_dir stage
     stage_dir=$(cs_retire_cache_dir retire-staged "$base_dir") \
         || error "Could not read the identity of $base_dir, which names where its retires are staged; nothing was removed"
     stage="$stage_dir/$task"
     if [ -n "$staged" ]; then
-        local force_word=0
+        local force_word=0 decision recorded wt_id
         [ -z "$force" ] || force_word=1
         local no_stage="No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
         # A directory the checks refuse says why: the stage in it may well be
@@ -1167,8 +1167,20 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
                 || error "The stage directory for $task is refused: $_retire_stage_refusal. Nothing was removed; run $fin $task again once that is fixed."
             error "$no_stage"
         fi
-        { _retire_stage_file_ok "$stage" && [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
-force: $force_word" ]; } || error "$no_stage"
+        wt_id=$(cs_dir_identity "$wt_dir") \
+            || error "Could not read the identity of $wt_dir, which its stage records; nothing was removed"
+        decision="sha: $sha"$'\n'"force: $force_word"
+        _retire_stage_file_ok "$stage" && recorded=$(cat "$stage" 2>/dev/null) || error "$no_stage"
+        if [ "$recorded" != "$decision"$'\n'"worktree: $wt_id" ]; then
+            # The name alone does not make it the same worktree: one removed
+            # another way (the picker, git worktree remove) and made again
+            # since is no worktree /finish ran for, whatever its branch holds.
+            case "$recorded" in
+                "$decision"$'\n'"worktree: "*)
+                    error "The stage for $task at $stage was written for an earlier worktree at $wt_dir, removed and made again since /finish staged it, so it is no decision about this one. Nothing was removed; run $fin $task to retire this one once it is done." ;;
+            esac
+            error "$no_stage"
+        fi
     else
         pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
         if [ -n "$pid" ]; then
@@ -1390,17 +1402,23 @@ $remove_err${trashed:+$nl$trashed}"
 }
 
 # Record a retire the base's Stop hook finishes once the feature conversation
-# closes: the captured commit and whether --force applied. Backs the stage
+# closes: the captured commit, whether --force applied, and the worktree's
+# identity (cs_dir_identity), so a worktree removed and made again under the
+# same name inherits no stage. Backs the stage
 # retire_feature_worktree writes while that conversation holds the worktree.
 # The stage goes into the base's stage directory, made private first, mode
 # 600 and by rename, so the Stop hook never reads half a stage.
 _write_retire_stage() {  # stage_path sha force base_dir wt_dir
-    local force=0 dir tmp
+    local force=0 dir tmp wt_id
     [ -z "$3" ] || force=1
     _retire_stage_dir "$4" "$5" make && [ "${1%/*}" = "$_retire_stage_path" ] || return 1
+    if ! wt_id=$(cs_dir_identity "$5"); then
+        _retire_stage_refusal="cs could not read the identity of $5, which the stage records"
+        return 1
+    fi
     dir=$_retire_stage_path
     tmp=$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null) || return 1
-    if printf 'sha: %s\nforce: %s\n' "$2" "$force" > "$tmp" && mv -f "$tmp" "$1"; then
+    if printf 'sha: %s\nforce: %s\nworktree: %s\n' "$2" "$force" "$wt_id" > "$tmp" && mv -f "$tmp" "$1"; then
         return 0
     fi
     rm -f "$tmp"

@@ -720,12 +720,21 @@ _cs_perm_bits() {  # path
 # workspace sandbox writes anywhere in the session, /tmp and $TMPDIR, and a
 # stage forged in the session would have the base's Stop hook delete a branch
 # nothing integrated. The base is named by its identity, not its spelling, so
-# every path to it finds the same stages. GNU stat first, as _cs_file_mode.
+# every path to it finds the same stages (cs_dir_identity).
 cs_retire_cache_dir() {  # kind, base_dir
     local id
-    id=$(stat -L -c '%d-%i' "$2" 2>/dev/null || stat -L -f '%d-%i' "$2" 2>/dev/null) || return 1
-    case "$id" in ''|-*|*-|*[!0-9-]*) return 1 ;; esac
+    id=$(cs_dir_identity "$2") || return 1
     printf '%s/%s/%s\n' "${CS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/cs}" "$1" "$id"
+}
+
+# A directory's identity, <device>-<inode>, read through a link so every path
+# to it gives the same answer; fails on an answer that is not one. GNU stat
+# first, as _cs_file_mode.
+cs_dir_identity() {  # dir
+    local id
+    id=$(stat -L -c '%d-%i' "$1" 2>/dev/null || stat -L -f '%d-%i' "$1" 2>/dev/null) || return 1
+    case "$id" in ''|-*|*-|*[!0-9-]*) return 1 ;; esac
+    printf '%s\n' "$id"
 }
 
 # A directory under cs's cache as cs makes one for its own records: a real
