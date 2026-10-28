@@ -136,6 +136,8 @@ RETIRED_HOOKS=(
     prose-lint.sh             # retired with the `cs -lint` verb it called; MUST stay listed, because a deployed copy calling the removed verb reads error()'s exit 1 as "violations found" and blocks every turn-end
     memory-index-guard.sh     # moved into the sweep skill (sweep/scripts/), so the guard travels with the skill to every engine
     bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
+    wrap-sweep.md             # the fork's /wrap reads skills/sweep/SKILL.md; with this copy gone, sync-upstream.py maps upstream's edits to the pass onto that skill
+    wrap-summary.md           # likewise for skills/summary/SKILL.md
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -164,8 +166,6 @@ CS_HOOK_LIBS=(
     prompt-rewriter.sh
     prompt-rewriter-model.sh
     prompt-rewriter-vendor.sh
-    wrap-sweep.md
-    wrap-summary.md
 )
 
 # Commands were migrated to engine-neutral skills.
@@ -257,12 +257,24 @@ CS_SKILL_FILES=(
     sweep/scripts/cs-shared.sh  # build.sh's copy of hooks/cs-shared.sh, which the guard sources
 )
 
+# Mod directories under mods/ the installer keeps out: experimental, their
+# source and tests in the checkout only. cs-feed is one, so the cs band, which
+# draws its feed key only beside cs-feed's /feed, draws none. Every file under
+# mods/ outside these and their test/ is in CS_MOD_FILES below
+# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
+# scan skips them.
+# shellcheck disable=SC2034  # read by cs -doctor and tests/test_install.sh
+CS_MODS_KEPT_OUT=(
+    cs-feed
+)
+
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
 # ~/.claude/skills/<mod>/<path> (the mod's bun tests stay in the checkout).
 CS_MOD_FILES=(
     cs/.claude-plugin/plugin.json
     cs/hooks/hooks.json
     cs/hooks/register.tsx
+    cs/tips.json
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
@@ -274,6 +286,19 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
 )
+
+# The cs tips file as install.sh names it in settings.json's
+# spinnerTipsOverride.tipsFile: Claude Code reads that one file for its spinner
+# tips, and cs's says how to turn on the band's prompt bars. Deployed with the
+# cs mod as cs/tips.json under ~/.claude/skills.
+# shellcheck disable=SC2034,SC2088  # read by install.sh and run_uninstall; Claude Code expands the ~
+CS_TIPS_FILE="~/.claude/skills/cs/tips.json"
+
+# Whether cs named its tips file, as install.sh records it: "named", or
+# "declined" once the person took the pointer out, so cs -update leaves it out.
+_cs_tips_record_file() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/cs/tips-file"
+}
 
 # Every file install.sh deploys from the repo, one repo path per line: the
 # binaries, then the files deployed under ~/.claude. The web install
@@ -673,10 +698,13 @@ _codex_status_line_remove() {  # codex_dir
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
 # "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear) key and its wrap key. KEEP IN SYNC with
-# ROTATE_ACTION and WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
-# asks once per machine and binds them. cs -uninstall takes back only the
-# keys that still hold these values, and cs -doctor reports them.
+# band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
+# WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
+# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
+# asks once per machine and binds each in the context block Claude Code wants
+# it in (home, below): the command keys in Chat, the chords in Global, where
+# the mod reads them. cs -uninstall takes back only the keys that still hold
+# these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -693,7 +721,10 @@ CS_RETIRED_OPTION_KEYS='{"alt+1":"command:rotate","alt+2":"command:wrap"}'
 # any order, and a chord's keys split on any run of spaces. It keeps meta
 # apart from alt and leaves space and arrow glyphs as typed, which no cs key
 # uses. cs's own keys are already in that form. ours: whether a to_entries pair from a context block is one of
-# the bindings in $cs, key and value both.
+# the bindings in $cs, key and value both. home: the context block an action
+# belongs in, as Claude Code rules it (2.1.310 warns of a "command:" binding
+# in any named context but "Chat"): Chat for a command, Global for anything
+# else.
 _CS_KEYBINDING_DEFS='
     def keynorm:
         ["alt", "cmd", "ctrl", "meta", "shift"] as $mods
@@ -706,6 +737,7 @@ _CS_KEYBINDING_DEFS='
             | join("+")]
         | join(" ");
     def ours: . as $e | ($e.key | keynorm) as $k | $cs | has($k) and .[$k] == $e.value;
+    def home: if type == "string" and startswith("command:") then "Chat" else "Global" end;
 '
 
 # Claude Code reads its keybindings from its config dir. Inside an encrypted
@@ -752,27 +784,31 @@ _cs_keybindings_shape_ok() {  # file
 }
 
 # Reads a keybindings document that passed the shape check on stdin and prints
-# one line per cs key: "bound<TAB>key" when every binding of it, in any
-# context, holds cs's value; "free<TAB>key" when nothing binds it; and
-# "conflict<TAB>key<TAB>action" when something else does. A chord also
-# conflicts when its first key is bound on its own to an action, which
-# Claude Code would stop reaching once it waits for the chord's second key:
-# "conflict<TAB>key<TAB>action<TAB>prefix". Keys compare as keynorm spells
-# them. An action that is not a non-empty string (a null that unbinds the
-# key, an empty "") prints as JSON, so no field is ever empty; a null on the
-# prefix is no conflict, as it binds nothing.
+# one line per cs key: "bound<TAB>key" when every binding of it holds cs's
+# value and sits in a block of the action's home context; "misplaced<TAB>key<TAB>home"
+# when every binding holds cs's value but one sits in a block of another
+# context (a block with no context counts as another); "free<TAB>key" when
+# nothing binds it; and "conflict<TAB>key<TAB>action" when something else
+# does, in any context. A chord also conflicts when its first key is bound on
+# its own to an action, which Claude Code would stop reaching once it waits
+# for the chord's second key: "conflict<TAB>key<TAB>action<TAB>prefix". Keys
+# compare as keynorm spells them. An action that is not a non-empty string (a
+# null that unbinds the key, an empty "") prints as JSON, so no field is ever
+# empty; a null on the prefix is no conflict, as it binds nothing.
 _cs_rotate_wrap_keys_status() {
     jq -r --argjson cs "$CS_ROTATE_WRAP_KEYS" "$_CS_KEYBINDING_DEFS"'
         def show: if type == "string" and length > 0 then . else tojson end;
-        [.bindings[] | (.bindings // {}) | to_entries[] | .key |= keynorm] as $all
+        [.bindings[] | .context as $ctx | (.bindings // {}) | to_entries[] | .key |= keynorm | .ctx = $ctx] as $all
         | $cs | to_entries[] | . as $c
-        | [$all[] | select(.key == $c.key) | .value] as $vals
+        | [$all[] | select(.key == $c.key)] as $hits
+        | [$hits[] | .value] as $vals
         | ($c.key | split(" ") | if length > 1 then .[0] else null end) as $prefix
         | [$all[] | select(.key == $prefix and .value != null) | .value] as $pvals
         | if any($vals[]; . != $c.value) then
             "conflict\t\($c.key)\t\([$vals[] | select(. != $c.value)][0] | show)"
           elif ($pvals | length) > 0 then "conflict\t\($c.key)\t\($pvals[0] | show)\t\($prefix)"
           elif ($vals | length) == 0 then "free\t\($c.key)"
+          elif any($hits[]; .ctx != ($c.value | home)) then "misplaced\t\($c.key)\t\($c.value | home)"
           else "bound\t\($c.key)"
           end'
 }
@@ -787,13 +823,14 @@ _cs_keybindings_held() {  # bindings-json
 
 # Prints a keybindings document on stdin, compact, without the bindings in the
 # JSON object $1 (key and value both; a key bound to anything else stays). A
-# Global block left empty goes; another context keeps its block.
+# block that held one of them and is left empty goes, whatever its context; a
+# block that held none is never touched, so a user's own empty block stays.
 _cs_keybindings_strip() {  # bindings-json
     jq -c --argjson cs "$1" "$_CS_KEYBINDING_DEFS"'
         .bindings |= map(
             if any((.bindings // {}) | to_entries[]; ours) then
                 .bindings |= with_entries(select(ours | not))
-                | select(.bindings != {} or .context != "Global")
+                | select(.bindings != {})
             else . end)'
 }
 
@@ -999,7 +1036,9 @@ CS_KNOWN_SHA256=(
     1e4acc72345786a71a0b5a6ce90f548244461d58e62900f63107f23f14b07844
     1e7c8bad72a05236a0e6f5105ddda4c039cfb32968be3201632e87b3e60770bf
     1f549cd11c1de9844b5be3dd812915d980eb9dcced03e2ae3eb14ca079551b76
+    1fa475982564ec70f12bf5295b874989dd95f89224f27bb6be4854cc5b8674e3
     204b2d932f67a7466dfea7693788be0f3d58ff4da4e5c28aa7672320cf159290
+    21988bf58bb6fea15c6435445f4abc3a38f4c4a9a7db78c4ff4797650709ba3f
     21fb7eb420f27d31852065fadd4e5c95d5fd1a5f3eea492c36e90fc9b850571a
     22004c7b13bf5e590c5fa6ad503f4ecdb7f669716d3040f31ba2f1e44d98fc9d
     224d290a440af47aee9e4a9f5da3c3171d7ef552cefef4036b3f4c795cdd4941
@@ -1039,6 +1078,7 @@ CS_KNOWN_SHA256=(
     2ab644f66e9ef38772c7e8dd195f198f183f4b985fdad6b3ca0c7660208773d1
     2ae3d6cd2229f809fae6682aa6736afbf4ceae98b652c7f9949a3ea6554d5900
     2b00f626623f3da472b4c9616bd76e5a2a5299ec023b774c31cf361d48c2d228
+    2b0d7ce6873d4b62ca3ed52d5f6c7ffa98bdeda7e9bb5d393e70ab516b943cd7
     2b30c9ecc0cbc5299f6a30acc1ed7529eb9718599c63eb681496e47b519276f7
     2c31f90f9bc790547ea62c2e3053e04f0e0542d1ae2a0fe098ecd0e71e380b8d
     2d24e2758eb1b80a3173dfc87fe4c2b82ca01b028bf8c70791279a6ddc97c99d
@@ -1114,6 +1154,7 @@ CS_KNOWN_SHA256=(
     426b2cc21275aa4e1744dc6aec7637e28252376575888abb75a80f36fd4e1220
     42a14da239b23981c7d266ec0a263a26b1f718a753609c40cc0ebc3ede323f19
     42c11ba435180ff88af18b4a0b6cb873915e33d2bd730667b8e867b8f049f638
+    42e81979965715204eb41428c1a227f170a14ab3919f2a6122cddd688425377f
     434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a
     4365c08a58d5f8e516f616b2e6f50cbe74fd5e79c7b702a15cd2f16e94f88cf0
     437556e188d3eb18f1ea91b6d110ecc8ff9421e0ece220150cb7d5918fafdd5f
@@ -1171,6 +1212,7 @@ CS_KNOWN_SHA256=(
     560dda6b6a482b42ccbd4d49e9c8289bec99484ccc19fbd53776620f3422ff5c
     562178fcf7c507791833069cb453df8749267b563f0666fa369145e77873c289
     56eb3b809c4e772f901a63b4130ce022f0d40dc801e096fba0c53d9f0bd42a1f
+    57b11a23b9eaba0c4487db3e4e294f1b7e1c339fdec2551163c0a9b9f5e55dd5
     57de68f2ef5018795e838ff74e56e612e14ce9a36163b32460d972bd227018e2
     57dfa07fad29450b172ecbaa948b34bc7427e0ec6ec321039cd628df20c4cb0e
     5860bb2ea5ce7059f687cb70882510db5b7a0d05bc254fc82f1d761f0a40e2d2
@@ -1188,6 +1230,7 @@ CS_KNOWN_SHA256=(
     5c77b343097cf6e2593e8711fe2a44e2b851dc9a8bcdaff8dbb73f3d71e3a149
     5cf7063b197810dac48087880266e13830a6c049823012ed3ff2bfe8d83f0a87
     5d4ef723adff8fa8731f28c11d85564aa8ecdf289a9cba5b21e5e28941e8364b
+    5d5a289944d88a3b255095d9341172f893690a205fa77f486d3f812967b3133c
     5d68a36006f7de3b41197fff595ccadfbe03156b522fb957df54040cbea414db
     5d6fd0c8f276a375a81ef901169bf5089b44acd3b21effd6e6a8ad3f797df716
     5d931edefcafb3f8b878ed1329cfdd88a7b3629c9748e83c613e2e5e11c660dd
@@ -1268,6 +1311,7 @@ CS_KNOWN_SHA256=(
     77087584b6ea2557b4d10d834e7438ba9696667adcfc7ff65a72b838405b9bcc
     7710e311b213a88b6582d21a46257d7cd41b309e483b1122827085d59a7ee14e
     7727af041972b9eb7379b9a99e3c3741f5a5a259b84f7b71f99b46a6eb87290a
+    77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084
     77d28d2de360759d5c53e919e2ffbd3a4f280d5e16a24ca45b3cb601ee515ec6
     78923b486ec6e119b2690077c5270355a7b6609ff13be7507fdcb725040c396f
     7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922
@@ -1317,6 +1361,7 @@ CS_KNOWN_SHA256=(
     82f39a577629a00c02ff690ee1658932eec10600db8b946f2b2c91378d1b6341
     833807fa71c0b4d6acfd7530ab5c770fe03b433aedc4d6a6a1ca5885e8bfc526
     8374df476483cc2c2d08525d368880796c095505dc4ed57232fc8ff10fa43465
+    8377b722bd856d5ca918bb9ffea2cfb3e0a0077ee0b9441a1f52461fd7282739
     838b1be43a8cfaa0403c4124018d911d2f8ca1f94947df9e221ec3a3dd525e19
     83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085
     8453f115c8074712bfeb17db0b78103f8372bac8307a8e0a9d921676f17b5777
@@ -1324,6 +1369,7 @@ CS_KNOWN_SHA256=(
     84f1aa5ff1891164aa705a086b40b135c065fab27a1dc86b0d5517119cfb7189
     855718f4de58685684c57676168c473e4789d1ee1fb87adb53fbe916ba8176b6
     857f8f99f445977770250660a0970de8d27795998013700f86afc7f0b4170fa1
+    85a1e25d7953943ec6fbd53b65765a928b06a59595abaf71e2d86e7888c8dd8c
     85c0b95b6d2f26b307f1b5f02afd1d7be75deacbf8372013a5bd70c6ed22f5dd
     85eed2ed78ad31901e690f600aa10b13b5e600cd181c67cf30224c271ca06eb2
     862f4e1c5d4f98ddce0f443f65e3ffb95e0efd942e7bf1bf757729f1186d4e84
@@ -1354,6 +1400,7 @@ CS_KNOWN_SHA256=(
     8da12449f3607f9c942a8a9d40e23bfbac45da442eedc385a378ad1194460b72
     8de41999f6035d8ec0c1eb1c0e7871221379da9b9f33037f13bea39a8cd641b2
     8e2613a762baad5c0d336262f6127e6048997331112dbbd5560726cf78b0a06b
+    8e4c93e404bcc99dc8a2651ac1dd5d064779216e44a40c1250e88c7a52d9d81d
     8eae23e70f8beb9093d2d50ac2e38653b696b1a431a0456bffac36579ba0f6bb
     8f1d91ea88758660427516a7f21fa5a6f103e4d6fe0faa701f6b5bf3f6c5f286
     8f3a4ed524b5394135490ecfbe9dab188a6862be0bc5bb95123ef07072be9722
@@ -1362,6 +1409,7 @@ CS_KNOWN_SHA256=(
     8fa1e49f6495e929657b17d4d2e1363a6c6d76d02570b683e0835123a5124a81
     8faa6f4b66eca22b81120262f36ca96798cb043fb648f46f6885ce535812dc23
     8fb93e147c6a039e5e2f894cd8b47d6f97e5e3c22ede3e39b7bda8bc7dd6ad25
+    8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f
     901de4ef794f18d507eeb9ace66fdcde1916a0c91b30d936d89be70a1c7728eb
     9095b5959a41bfc59d99f31bef728913eed4d64aa117dcc0b27a4e8759591504
     919de3573a871a679c241f7f34ca32c35eff5650095d8aa9fe8f3fa9142ad744
@@ -1408,6 +1456,7 @@ CS_KNOWN_SHA256=(
     a023106422b7da72b416e657a69a14f11228c3d83ecbf5014c89de3de8830d1f
     a044d10d8318387cfd8bb32c139091441e4e212ac86de555a19e51243a8d261b
     a0dab6b308937978b9667d2a2e637147e4964f3bca13f8a88a3b019bd8d8a787
+    a0e341d4bdc60072b25354256e751b320733cdcc31b91ac3d4a4f661c73b611e
     a1c982069b82b0f7ddfcca4aaceecb816956b1d5cb24201b04b250fba21fdd42
     a1d2c2be60ba9898eda0d093883860c64b86286c90916d7aec2f36a5d0f79e9c
     a1d8b9b5021ba8071bebdb7e47d3da458629435c64603b7b0afd92dba94572bd
@@ -1424,6 +1473,7 @@ CS_KNOWN_SHA256=(
     a3c49a03923b0229fcb316cbef98e8028a6f3c5037ff0bcbace384d91cda3d0d
     a3e3d24f6ff2394336e5c54bb0755198b7f8af3e6f440c756aecf80e58131f86
     a3faacf9d06adcc0127b6dacbf9f360488f0d1695add299aaa94cdb7541649bd
+    a4486c60d3db91c0a466fb154602eec888ffeb5a9942d74d2c8aac92b8dd7c32
     a47433266497d2a7c77c58e626448cb3732b00101447864e47662a9e7730ca50
     a4fa7ea3be9dd335f8959abbd3adf71e18f7eea563b49305ceb715090b7a2bf7
     a4fef399d4c84c5b30e2a13c1f6b9a3a062c78136d3365b131aa0f041f455a98
@@ -1522,6 +1572,7 @@ CS_KNOWN_SHA256=(
     c256ccde30abcb1fa303c031107de458e3c93698127cf2ca7c5efee62ec6a80e
     c265f33ee7863e4d5ce2691c62f7eda90c6f7b6b315f7a864781ff9ceee40d3c
     c2af6154d1152c7ea99ae879bf09dc33f6fe05e4690675f2f54df73110eb77d1
+    c3abc90866d30594959e68f8259d5155bbf0b9ed3d27b69da63fe78a116c712d
     c44867e1f7f1fe6107d1d6d10232888d538402387da5ad0fbe29e9a8fa046978
     c4688a9bc8cfb8f906a73aebc4ecf8d81fb70db4e2f0bfb4a15ce7c1df1aa01e
     c48345ba1cb8d6b70c50dc7031fc66f4d180df819e8f735639e13780d0d51cc1
@@ -1555,6 +1606,7 @@ CS_KNOWN_SHA256=(
     cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112
     cf9a1df777a17e3357afa961119d4679e278d601eae1be9a9f669dffa804de6b
     cfa6e2a49680a2ceaad9b83680f4a237a5fe3e4ceb3d5e13c329e6676a334c69
+    cfe8c63090aeb6d585b47ef65cae403fa214d8e466036eebb2e1b8ef654ee764
     d02a72080f391a3c3a43abac5c2e6c970740f81d0ec2806f91a2e79edf7a23e6
     d08d59e89b945b670e0f8de873a6ee8d312df3c92cc9b4c5d27c91bde04ed04f
     d10f43e48dbd9f1f8237312a8b57a35f9c37643ec3fccc39718193c569fdc643
@@ -1606,6 +1658,7 @@ CS_KNOWN_SHA256=(
     e2af3787bbe2b388935eaf3fecf78cb1ffbe6f5f7378cd31ed591a1332342654
     e2b6c941d81d92e86aff4d52ff20ae67f684fa2768e7523894ea7e69f16de813
     e31756429720365401dd7382d2950624eb50785fa5289b522ae7e356d64a355e
+    e31c75e10bc0cc8490691c61862c7865e7cda831f1ac1ec841e5ebe831204ea2
     e37ee1992d0e21c0367aa4f343d4731336e85b6485b53c4f98800e0e188b6d9c
     e391cc894446ae6df04a74458858a48a28621939d1af6968bf1a785c3e88fc06
     e39739a76769350d67a4b7c54cf8ae86acdf18816e33a49c1a683e87a53f6f75
@@ -1663,6 +1716,7 @@ CS_KNOWN_SHA256=(
     f7f7f0a7d02bb3d33ef03a93bda2cbaf4bc1576e98619bd7b423af052c11927b
     f8070db302a21fcc3f76890379ad48a1b1c4b586aa60960e1755b2ec806923f6
     f8202c20e7f98a8b6b349098e2c506277eb4216334ee2b55f77a158ff7b2eb83
+    f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e
     f84b42e11a850d734890099ebef7a91f9851b016e24736c0f344e6149140f06c
     f89a953b96b7869fcf27973120976f7a97f2095980b4bee010b1bb83abea6104
     f8d03e72b9208f5ba2f3c696b4878602c8a15807b2bed6a39275f5f9cc81b5e8
@@ -1674,6 +1728,7 @@ CS_KNOWN_SHA256=(
     fb0e8187671a15daa8246d3f677adb948b09ea6ce39a2eaf4f21ead6148b307d
     fb33250d3abde8e902bcea4cf47e972b886dcbfe377e1a052b933017677b6432
     fb469f4c48f7f5349d37de997fc49db00f1fc34ecabdc7f9f3aa970d65966921
+    fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054
     fbb3ca4863c2032e0e2bbe9a409cb0a515f2b5d308519f2b5e2111423331764b
     fc0f047f5cec5ba2ff999c7c16275df474ea7c364ba5fee76306da11d8addbff
     fc2a73985eab32b26946f2501cfc6d124d280fcdc6097dca768f880adedcfaf3
@@ -1723,28 +1778,26 @@ CS_KNOWN_SHA256=(
 
 # The sha256 of every file a web install downloads, as "<sha256>  <repo
 # path>", written by build.sh from the files it was built with. This
-# installer is checksum-verified (and signature-verified when minisign is
-# installed) before `cs -update` runs it, so a payload file that does not
+# installer is authenticated by an SSH-signed manifest before `cs -update`
+# runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "73fb92ca21583a0fb8e78db0225eab23176b03c2c12d755c380d08e9675eb137  bin/cs"
-    "47ade9518130b8288b5cc7aaec98cb0a5418fd553e96e8d4b988a3985903d89a  bin/cs-secrets"
+    "85b21ecebd0cefe859f228c41f872803182d90d5d1182ea3578a463ea54e9885  bin/cs"
+    "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
-    "bc152de974021d7745798bfb84641f6039214c7426bb9cd4d6ec5d750f058a1f  bin/cs-statusline"
+    "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "c1087b6104f4528320ef45a8af0951c6b87425c9f26eab4f075f793c416e8050  hooks/cs-shared.sh"
+    "fae3a2915fd480db7d3ed9dcffd5d9cffe1d02b70d8231777b08b29db7f2330b  hooks/cs-shared.sh"
     "5c3dac024c052e6c50f2d6398f33b0bd47d958e8e0d2283e5997f62aef349299  hooks/cs-engine-events.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
-    "b17a39aab8096e74d6ab7b800fdc53fcb980ce35fe8dc0951f66d40133e77668  hooks/prompt-rewriter.sh"
-    "9940138f90d1726aa6daa749a2db012c54e31b7eb247bcf3f0411c3054ec07c2  hooks/prompt-rewriter-model.sh"
-    "4ef303d4deb9293147ed1e16be5f65ecc880df0ab490c88a7377d692b310f725  hooks/prompt-rewriter-vendor.sh"
-    "7f317dc632bd12ded4ea5e13dd5adfdd65b0614a2a7514cbdbeffc325e4c1da0  hooks/wrap-sweep.md"
-    "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
-    "841455171f4c60d8089cc8d0c925e9bfd427634020029942e4d1b826411538cd  hooks/session-start.sh"
+    "6bb9641f3b64d0a79f427337781ddac03772ceb96a67e9f187716f54946cd3e1  hooks/prompt-rewriter.sh"
+    "637d477d9e4aa44b1cce98636f212e2b44b51603ed21cdbf77e14e81a95da8c0  hooks/prompt-rewriter-model.sh"
+    "6c2f1c6207b474fd98d54bb7454e43016e7b48cb59a6fafc05061893465753f5  hooks/prompt-rewriter-vendor.sh"
+    "aa2aec13df25c8a16e6da21b16f2d28a54ba3a813b6b49336bc90c79e1b36b29  hooks/session-start.sh"
     "d49a3173f59228775018bd9a60900771b33ab880ff81aa1b8895a2fc42ce4ee3  hooks/autosave-commits.sh"
-    "ae8cf1da85d9dd3217df9ad5b6a23e4206128e72fcda7df258caf96910d3723a  hooks/narrative-reminder.sh"
-    "2bf9c94382c522795807024ef24fe67a227971dc4d0a3ebf21383f588542f96f  hooks/session-end.sh"
+    "d74609eee65764fb764d625c9a2f907cbf1c5ea93fb81fd252236d09f419f141  hooks/narrative-reminder.sh"
+    "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"
@@ -1752,31 +1805,32 @@ CS_PAYLOAD_SHA256=(
     "0254497096328ee6b7882ab2cb7177cad137544eb5332df3d1563bb70babb523  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "7e541f68e0f4b6bf0f604b3d03f865ea1764773dc4df451521813617b4023723  skills/rotate/SKILL.md"
-    "1783f8fbe02c388afe1099c654e8d0eb48c7cbfc01bf91b78c838a1ec515a415  skills/switch/SKILL.md"
-    "318f0ab6de3c55d84c10375af2ed3751783606679e34a12482d8c1a71e4bf8e7  skills/finish/SKILL.md"
-    "24dea50487cd3c6966812be431d682d22a37d3b4fe1558b59d25768083aa63bf  skills/feature/SKILL.md"
+    "2ce54db0becd2061d51e6e917705c108a10e711d600027c556f897a572438d90  skills/switch/SKILL.md"
+    "d1d5be605fd43ceecaca1d41603e506ccec7059424c3ca608a83e13934a546f9  skills/finish/SKILL.md"
+    "704c0eadbf22fe7338dff1b9cbcdea8f245f410f15a23513f7f1fb6084e75e7e  skills/feature/SKILL.md"
     "12ca76eadfbe0b75c735d8782cc6a8bc6123a97a293349b08c501c62e21cc7f3  skills/write-as-me/SKILL.md"
     "6c1aadb0da88a3621df9dac4b24f5ce23a8cda657dfe62b2034829d083d69da5  skills/checkpoint/SKILL.md"
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
-    "ad880bd8663ffa7e0399121fe4015e6d13c8b791157f8f4148d5bac9d7dd23a7  skills/sweep/SKILL.md"
-    "1f2125dfb5e01829425b1f3718ae843c2e467fc6d61eb7703139263235a65194  skills/wrap/SKILL.md"
+    "99e0ca83fc4eb8cdf8e6cf0a9438ffdf87a122bec45e4842003b2b4bdced4871  skills/sweep/SKILL.md"
+    "6bf8a1b82f6f22a1972d6748b91c7e161f064413da84063418044dcc830890be  skills/wrap/SKILL.md"
     "c4149c7e5e8295965b0f5b1e64683919294e6b6fd48900660065cba005fce126  skills/write-as-me/scripts/build-corpus.sh"
     "225f2385a01a0a8dcee29ed8d797a3bb087a0822c9702f89350faa37693ebd8d  skills/finish/scripts/finish.sh"
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
-    "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  skills/sweep/scripts/memory-index-guard.sh"
-    "c1087b6104f4528320ef45a8af0951c6b87425c9f26eab4f075f793c416e8050  skills/sweep/scripts/cs-shared.sh"
-    "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
+    "667cd90617eb7e5ffda0af55e923573a51d986628ec566e5c3c54bdb355a6041  skills/sweep/scripts/memory-index-guard.sh"
+    "fae3a2915fd480db7d3ed9dcffd5d9cffe1d02b70d8231777b08b29db7f2330b  skills/sweep/scripts/cs-shared.sh"
+    "8ffa3249cadb8017e5e0809326fc22f3ec0e2c1f9e3dd70c049782888190727f  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "72941217c011a9834213480078b49533d33dfea55f21cb66f2a7ddcdec411b77  mods/cs/hooks/register.tsx"
+    "8287d4daa80ab8579af2de5f52829b7776592ade20551528be10208fea880046  mods/cs/hooks/register.tsx"
+    "f841609ed354ab29bf0076a2c1e86c7179c9de47301f5732a7c690d6e809303e  mods/cs/tips.json"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
-    "e66594ac7da79aa138b7ff2363daa6f399324578203e0afdd5c9d8beaf868788  mods/cs-update/hooks/register.tsx"
-    "83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085  mods/cs-mermaid/.claude-plugin/plugin.json"
+    "85259ae873d4a1700a1639a3a41f6ac073b4baabc4e4c66ccadc8e5af8154c05  mods/cs-update/hooks/register.tsx"
+    "e31c75e10bc0cc8490691c61862c7865e7cda831f1ac1ec841e5ebe831204ea2  mods/cs-mermaid/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
     "7581d949b64b3eff85606df1b3e44c82354daf48533e68d10a3a006d3ecf69cc  mods/cs-mermaid/hooks/layout.ts"
     "4258a64c8eb8a2a172fb0680c578204f90ad97f344e82b25b4ff1ff9be701633  mods/cs-mermaid/hooks/parse.ts"
-    "5a61c589f8e2a1e7c38aba026244c2ab1864f36035648872595de40fe6fe4cbc  mods/cs-mermaid/hooks/register.tsx"
+    "fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
     "605fa5d43cfe4241a6403cdae4bce6faf0aff2a1e05f12d23aca1bb59c7fcb2a  completions/cs.bash"
@@ -1812,8 +1866,59 @@ _refuse_a_hook_event_that_is_not_a_list() {
 }
 _refuse_a_hook_event_that_is_not_a_list
 
-# Minisign public key for verifying signed releases
-CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
+CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+# Revoked release keys, one per line. cs -update reads this declaration out
+# of a downloaded installer as data: exactly one declaration, single-quoted.
+CS_RELEASE_REVOKED=''
+
+# Verifies a release manifest against its signature: manifest, signature,
+# release version. The signature is bound to the release through its
+# namespace, cs-release-v<version>, so a manifest signed for one tag never
+# verifies another.
+_verify_manifest() {  # manifest, signature, version
+    (
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
+            exit 1
+        fi
+        trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
+        trap 'rm -rf "$trust_dir"' EXIT
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
+        local revocation_args=()
+        [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
+            -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            # The verifier's own reason, then the fixed diagnostic last.
+            tail -n 5 "$trust_dir/verify.log" >&2
+            printf '%s\n' 'Release manifest signature verification failed.' >&2
+            exit 1
+        fi
+    )
+}
+
+verify_checksum() {
+    local file="$1" checksumfile="$2" asset="${3:-${1##*/}}"
+    local expected actual
+    expected=$(awk -v asset="$asset" '
+        $2 == asset {
+            count++
+            if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) bad=1
+            digest=$1
+        }
+        END { if (count != 1 || bad) exit 1; print digest }
+    ' "$checksumfile") || return 1
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$file" | awk '{print $1}') || return 1
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}') || return 1
+    else
+        # Fail closed: a verification gate that can't verify must not pass.
+        echo "Error: no sha256sum or shasum found — cannot verify download. Install one and retry." >&2
+        return 1
+    fi
+    [ "$expected" = "$actual" ]
+}
 
 # Detect if running from cloned repo or web install. An installer read from a
 # pipe (curl ... | bash) has no BASH_SOURCE: it is the web install, whatever
@@ -2096,69 +2201,22 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
     _tui_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}"
     if [ -n "$_cs_version" ] && curl -fsSL --head "$_tui_url" >/dev/null 2>&1 \
         && curl -fsSL "$_tui_url" -o "$_tui_dst"; then
-        installed "cs-tui" "$INSTALL_DIR/cs-tui"
-
-        # Verify cs-tui checksum (hard gate). The rule is the one stated in
-        # lib/20-update.sh's verify_checksum: a gate that cannot verify must not
-        # pass. An unfetchable .sha256 and a digest that cannot be computed both
-        # leave the binary unverified, so both remove it.
-        _checksum_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}.sha256"
-        _verified=0
-        _mismatch=0
-        if curl -fsSL "$_checksum_url" -o "$_tui_dst.sha256" 2>/dev/null; then
-            _expected=$(awk '{print $1}' "$_tui_dst.sha256")
-            _actual=""
-            # `|| _actual=""`: the script runs under `set -euo pipefail`, so a
-            # digest tool that exits non-zero would otherwise abort the whole
-            # install here — leaving both the unverified binary and its .sha256
-            # behind — rather than falling through to the removal below.
-            if command -v sha256sum >/dev/null 2>&1; then
-                _actual=$(sha256sum "$_tui_dst" 2>/dev/null | awk '{print $1}') || _actual=""
-            elif command -v shasum >/dev/null 2>&1; then
-                _actual=$(shasum -a 256 "$_tui_dst" 2>/dev/null | awk '{print $1}') || _actual=""
-            fi
-            if [ -n "$_expected" ] && [ -n "$_actual" ]; then
-                if [ "$_expected" = "$_actual" ]; then
-                    _verified=1
-                else
-                    _mismatch=1
-                fi
-            fi
-            rm -f "$_tui_dst.sha256"
-        fi
-        if [ "$_verified" != 1 ]; then
+        _manifest_url="${RELEASES_URL}/v${_cs_version}/SHA256SUMS"
+        if ! curl -fsSL "$_manifest_url" -o "$STAGE_DIR/SHA256SUMS" 2>/dev/null \
+            || ! curl -fsSL "$_manifest_url.sig" -o "$STAGE_DIR/SHA256SUMS.sig" 2>/dev/null; then
             rm -f "$_tui_dst"
-            if [ "$_mismatch" = 1 ]; then
-                warn "cs-tui checksum verification failed -- removed"
-            else
-                warn "cs-tui could not be verified (no checksum or no digest tool) -- removed"
-            fi
-        fi
-
-        # Verify cs-tui signature (best-effort: minisign may not be installed)
-        _sig_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}.minisig"
-        if curl -fsSL "$_sig_url" -o "$_tui_dst.minisig" 2>/dev/null; then
-            _ms_bin=""
-            if command -v minisign >/dev/null 2>&1; then
-                _ms_bin=$(command -v minisign)
-            elif [ -x "$HOME/.local/bin/minisign" ]; then
-                _ms_bin="$HOME/.local/bin/minisign"
-            fi
-            # Nothing to verify once the checksum gate above removed the binary:
-            # minisign fails on a path that is not there, which would report a
-            # signature failure for a removal the gate has already explained,
-            # and send the reader after release-key tampering that never was.
-            if [ -n "$_ms_bin" ] && [ -f "$_tui_dst" ]; then
-                if ! "$_ms_bin" -Vm "$_tui_dst" -P "$CS_SIGN_PUBKEY" -x "$_tui_dst.minisig" >/dev/null 2>&1; then
-                    rm -f "$_tui_dst" "$_tui_dst.minisig"
-                    warn "cs-tui signature verification failed -- removed"
-                fi
-            fi
-            rm -f "$_tui_dst.minisig"
+            warn "cs-tui could not be verified (manifest or signature unavailable) -- removed"
+        elif ! _verify_manifest "$STAGE_DIR/SHA256SUMS" "$STAGE_DIR/SHA256SUMS.sig" "$_cs_version"; then
+            rm -f "$_tui_dst"
+            warn "cs-tui signature verification failed -- removed"
+        elif ! verify_checksum "$_tui_dst" "$STAGE_DIR/SHA256SUMS" "$_tui_base"; then
+            rm -f "$_tui_dst"
+            warn "cs-tui could not be verified (manifest entry or digest unavailable) -- removed"
         fi
         if [ -f "$_tui_dst" ]; then
             _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
             _record_tui_origin release
+            installed "cs-tui" "$INSTALL_DIR/cs-tui"
         fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
@@ -2634,9 +2692,11 @@ else
     }
 
     # Register cs-statusline as the Claude Code status line. A status line the
-    # user already configured is never replaced silently: prompt when a
-    # terminal is attached, otherwise keep it and print how to switch. The
-    # file is only looked at here; the registration is written with the rest.
+    # user already configured is never replaced silently: a bridge that runs
+    # cs-statusline is kept without recording a decline, even with a decline
+    # marker present. Otherwise prompt when a terminal is attached or keep it
+    # and print how to switch. The file is only looked at here; the registration
+    # is written with the rest.
     _statusline_cmd="$INSTALL_DIR/cs-statusline"
     _current_statusline=""
     if [ -s "$CLAUDE_SETTINGS" ]; then
@@ -2728,6 +2788,15 @@ else
         echo ""
     }
 
+    # Twin: _statusline_chains_to_cs in lib/60-doctor.sh.
+    # Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
+    _statusline_chains_to_cs() {
+        local file rest
+        read -r file rest <<< "$1"
+        file="${file/#\~/$HOME}"
+        [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+    }
+
     # Each branch only decides consent; the registration itself happens once
     # below. "quiet" re-registers an existing cs-statusline entry (refreshing
     # the path) without announcing it.
@@ -2737,7 +2806,9 @@ else
             _register_statusline=quiet
             ;;
         *)
-            if [ -f "$_statusline_declined" ]; then
+            if _statusline_chains_to_cs "$_current_statusline"; then
+                info "Keeping current status line: $_current_statusline runs cs-statusline."
+            elif [ -f "$_statusline_declined" ]; then
                 info "Status line not registered (declined earlier). Enable any time with: cs -statusline enable"
             elif [ -z "$_current_statusline" ]; then
                 # The status bar is user-visible UI: claim it only with consent.
@@ -2793,7 +2864,8 @@ else
     # THE PATH IN SYNC with lib/70-statusline.sh and bin/cs-statusline).
     # Non-interactive installs write nothing and say how to answer later.
     _statusline_caps="${XDG_CONFIG_HOME:-$HOME/.config}/cs/statusline-caps"
-    if [ -n "$_register_statusline" ] && [ ! -f "$_statusline_caps" ]; then
+    if { [ -n "$_register_statusline" ] || _statusline_chains_to_cs "$_current_statusline"; } \
+        && [ ! -f "$_statusline_caps" ]; then
         if [ -t 0 ]; then
             printf '\n   %s\n' "$(printf '\xee\x82\xb6')cs-statusline$(printf '\xee\x82\xb4')"
             # An explicit y or n only: the registration question just above
@@ -2824,6 +2896,94 @@ else
             info "Capsule caps: square ends until you answer once with: cs -statusline caps ask"
         fi
     fi
+    # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
+    # on the band's prompt bars. It is named in settings.json only while no
+    # file is named there, the deployed tips file is a regular file (Claude
+    # Code refuses a link), and the record allows it: "named" once cs named
+    # it, "declined" once the person took it out, so cs -update never puts it
+    # back. A record cs cannot read as either counts as declined. A file the
+    # user named stays, and cs's tip is left out. The user's own tips, label
+    # and excludeDefault are never touched. Read here, as the filter prints
+    # nothing; the filter checks again under the lock.
+    _cs_tips_deployed=""
+    if [ -f "$SKILLS_DIR/cs/tips.json" ] && [ ! -L "$SKILLS_DIR/cs/tips.json" ]; then
+        _cs_tips_deployed=1
+    fi
+    _tips_state=unset _current_tips_file=""
+    if [ -s "$CLAUDE_SETTINGS" ]; then
+        _tips_state=$(jq -r --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" '.spinnerTipsOverride
+            | if . == null then "unset"
+              elif type != "object" then "not-object"
+              elif (.tipsFile // "") == "" then "unset"
+              elif .tipsFile == $tilde or .tipsFile == $abs then "cs"
+              else "foreign" end' "$CLAUDE_SETTINGS")
+        _current_tips_file=$(jq -r '.spinnerTipsOverride.tipsFile? // "" | tostring' "$CLAUDE_SETTINGS")
+    fi
+    _tips_record_file=$(_cs_tips_record_file)
+    _tips_record=none
+    if [ -e "$_tips_record_file" ] || [ -L "$_tips_record_file" ]; then
+        _tips_record=$(cat "$_tips_record_file" 2>/dev/null || true)
+        case "$_tips_record" in
+            named|declined) ;;
+            *)
+                warn "Spinner tips: $_tips_record_file holds neither named nor declined, so cs's tip is kept out as declined"
+                _tips_record=declined
+                ;;
+        esac
+    fi
+    # Like the status line's memo, a record write must never take the install
+    # down: report and continue.
+    _write_tips_record() {  # named | declined
+        mkdir -p "$(dirname "$_tips_record_file")" 2>/dev/null \
+            && { printf '%s\n' "$1" > "$_tips_record_file"; } 2>/dev/null
+    }
+    _tips_not_deployed="Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+    _tips_kept_out="Spinner tips: cs's tip stays out of Claude Code's tips, as recorded in $_tips_record_file; to have it back, delete that file and run cs -update"
+    _tips_name=""
+    case "$_tips_record:$_tips_state" in
+        *:foreign)
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
+            ;;
+        *:not-object)
+            warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
+            ;;
+        none:unset)
+            # No record of consent, no pointer: the record is written first.
+            if [ -z "$_cs_tips_deployed" ]; then
+                warn "$_tips_not_deployed"
+            elif _write_tips_record named; then
+                _tips_name=1
+                info "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)"
+            else
+                warn "Spinner tips: could not write $_tips_record_file, so cs's tips file is not named in ~/.claude/settings.json"
+            fi
+            ;;
+        none:cs)
+            # Named by an install from before the record.
+            _write_tips_record named \
+                || warn "Spinner tips: could not write $_tips_record_file, so if you take cs's tipsFile out, cs -update puts it back"
+            [ -n "$_cs_tips_deployed" ] || warn "$_tips_not_deployed"
+            ;;
+        named:cs)
+            [ -n "$_cs_tips_deployed" ] || warn "$_tips_not_deployed"
+            ;;
+        named:unset)
+            # cs named it and it is gone: the person took it out.
+            if _write_tips_record declined; then
+                info "$_tips_kept_out"
+            else
+                warn "Spinner tips: cs's tip stays out of Claude Code's tips, but could not write $_tips_record_file"
+            fi
+            ;;
+        declined:unset)
+            info "$_tips_kept_out"
+            ;;
+        declined:cs)
+            # Put back by hand after a decline: left as it is, and saying it
+            # stays out would be false.
+            ;;
+    esac
+
     # settings.json on stdin, with cs's hooks and the status line the answers
     # above chose, on stdout. cs_settings_update runs it under the lock, so it
     # prints nothing else and asks nothing.
@@ -2840,9 +3000,21 @@ else
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}')
         fi
+        if [ -n "$_tips_name" ]; then
+            SETTINGS=$(echo "$SETTINGS" | jq --arg tips "$CS_TIPS_FILE" '
+                if .spinnerTipsOverride == null then .spinnerTipsOverride = {tipsFile: $tips}
+                elif (.spinnerTipsOverride | type) == "object" and (.spinnerTipsOverride.tipsFile // "") == ""
+                then .spinnerTipsOverride.tipsFile = $tips
+                else . end')
+        fi
         printf '%s\n' "$SETTINGS"
     }
-    cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    if ! cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter; then
+        # The record says cs named its tips file, and it did not: a "named"
+        # record with no pointer would read as a decline on the next install.
+        [ -z "$_tips_name" ] || rm -f "$_tips_record_file"
+        error "$CS_SETTINGS_ERROR"
+    fi
     # settings.json no longer registers them, so the retired files can go,
     # each one that still holds what cs wrote; the filter kept the
     # registration of any other
@@ -2859,10 +3031,14 @@ else
         installed "status line" "cs-statusline + cs-subagent-statusline"
     fi
 
-    # Add cs's keys that nothing binds yet to keybindings.json: into its first
-    # Global block, or a Global block of their own, creating the file when
-    # there is none. A key bound to anything else, in any context, is the
-    # user's and is reported, never replaced; so is a bare key a chord would
+    # Add cs's keys that nothing binds yet to keybindings.json, each into the
+    # first block of the context Claude Code wants it in (Chat for the
+    # command keys, Global for the chords), or a block of that context of
+    # its own, creating the file when there is none. A cs key that sits in a
+    # block of another context is moved: its cs bindings leave that block
+    # (which goes if that empties it) and the key joins its own context. A
+    # key bound to anything else, in any context, is the user's and is
+    # reported, never replaced or moved; so is a bare key a chord would
     # shadow. cs's own Option+1 / Option+2 bindings stood for /rotate and
     # /wrap, so they make way unless Ctrl+X R or Ctrl+X W conflicts: then
     # both stay, so the command whose chord is taken keeps a key. A conflict
@@ -2874,6 +3050,7 @@ else
     # dotfiles manager's) rewritten through its link.
     _bind_rotate_wrap_keys() {
         local file doc status state key action prefix added="" command_conflicts=0 retired="" add
+        local moved="" moved_chat="" moved_global="" payload="" line=""
         local shadowed="" shadowed_prefix="" shadowed_action=""
         file="$(_cs_keybindings_file)"
         if [ -e "$file" ]; then
@@ -2903,6 +3080,16 @@ else
                     ;;
                 free)
                     added="${added:+$added, }$key"
+                    payload="${payload:+$payload, }$key"
+                    ;;
+                misplaced)
+                    moved="${moved:+$moved, }$key"
+                    payload="${payload:+$payload, }$key"
+                    case "$action" in
+                        Chat) moved_chat="${moved_chat:+$moved_chat, }$key" ;;
+                        Global) moved_global="${moved_global:+$moved_global, }$key" ;;
+                        *) warn "Rotate/wrap keys: no such context as \"$action\" for $key; $file left as it is."; return 1 ;;
+                    esac
                     ;;
             esac
         done <<< "$status"
@@ -2917,9 +3104,9 @@ else
                     || { warn "Rotate/wrap keys: could not read the bindings in $file"; return 1; }
             fi
         fi
-        [ -n "$added" ] || [ -n "$retired" ] || return 0
-        add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg added "$added" \
-            '$cs | with_entries(select(.key as $k | $added | split(", ") | any(.[]; . == $k)))') \
+        [ -n "$payload" ] || [ -n "$retired" ] || return 0
+        add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg keys "$payload" \
+            '$cs | with_entries(select(.key as $k | $keys | split(", ") | any(.[]; . == $k)))') \
             || { warn "Rotate/wrap keys: could not build the bindings for $file"; return 1; }
         # The payload's copy, as above: never the deployed one.
         # shellcheck source=hooks/cs-shared.sh
@@ -2928,21 +3115,39 @@ else
             return 1
         fi
         mkdir -p "$(dirname "$file")" 2>/dev/null || true
-        if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson add "$add" '
-            if $add == {} then .
-            else (first(.bindings | to_entries[] | select(.value.context == "Global") | .key) // null) as $i
-                | if $i == null then .bindings += [{context: "Global", bindings: $add}]
-                  else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + $add) end
-            end'; then
+        # A moved key's cs bindings leave every block of a context that is
+        # not the action's home, then the payload joins the first block of
+        # each home context, Chat before Global when both are created. A key
+        # some block of its home context already holds, under any spelling,
+        # is not added again.
+        if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson cs "$CS_ROTATE_WRAP_KEYS" \
+            --argjson add "$add" --arg moved "$moved" "$_CS_KEYBINDING_DEFS"'
+            def astray($ctx): ours and ((.key | keynorm) as $k | $moved | split(", ") | any(.[]; . == $k))
+                and (.value | home) != $ctx;
+            .bindings |= map(. as $b
+                | if any((.bindings // {}) | to_entries[]; astray($b.context)) then
+                    .bindings |= with_entries(select(astray($b.context) | not)) | select(.bindings != {})
+                  else . end)
+            | reduce ("Chat", "Global") as $ctx (.;
+                [.bindings[] | select(.context == $ctx) | (.bindings // {}) | to_entries[] | select(ours) | .key | keynorm] as $held
+                | ($add | with_entries(select((.value | home == $ctx) and (.key as $k | $held | any(.[]; . == $k) | not)))) as $part
+                | if $part == {} then .
+                  else (first(.bindings | to_entries[] | select(.value.context == $ctx) | .key) // null) as $i
+                    | if $i == null then .bindings += [{context: $ctx, bindings: $part}]
+                      else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + $part) end
+                  end)'; then
             warn "Rotate/wrap keys: could not write $file"
             return 1
         fi
-        if [ -z "$retired" ]; then
-            info "Rotate/wrap keys: bound $added in $file"
-        elif [ -z "$added" ]; then
+        [ -z "$added" ] || line="bound $added"
+        [ -z "$moved_chat" ] || line="${line:+$line and }moved $moved_chat to the Chat context"
+        [ -z "$moved_global" ] || line="${line:+$line and }moved $moved_global to the Global context"
+        if [ -z "$line" ]; then
             info "Rotate/wrap keys: removed cs's $retired from $file"
+        elif [ -z "$retired" ]; then
+            info "Rotate/wrap keys: $line in $file"
         else
-            info "Rotate/wrap keys: bound $added in $file (replacing cs's $retired)"
+            info "Rotate/wrap keys: $line in $file (replacing cs's $retired)"
         fi
     }
 

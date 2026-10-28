@@ -1,17 +1,50 @@
-# ABOUTME: Release verification (SHA-256 + minisign) and the self-update mechanism.
+# ABOUTME: SSH-signed release manifests and the self-update mechanism.
 # ABOUTME: Backs 'cs -update' and the non-blocking update-available notice.
 
 # --- Release verification ---
 
+# Verifies a release manifest against its signature: manifest, signature,
+# release version. The signature is bound to the release through its
+# namespace, cs-release-v<version>, so a manifest signed for one tag never
+# verifies another.
+_verify_manifest() {  # manifest, signature, version
+    (
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
+            exit 1
+        fi
+        trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
+        trap 'rm -rf "$trust_dir"' EXIT
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
+        local revocation_args=()
+        [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
+            -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            # The verifier's own reason, then the fixed diagnostic last.
+            tail -n 5 "$trust_dir/verify.log" >&2
+            printf '%s\n' 'Release manifest signature verification failed.' >&2
+            exit 1
+        fi
+    )
+}
+
 # Verify SHA-256 checksum (hard gate — always runs)
 verify_checksum() {
-    local file="$1" checksumfile="$2"
+    local file="$1" checksumfile="$2" asset="${3:-${1##*/}}"
     local expected actual
-    expected=$(awk '{print $1}' "$checksumfile")
+    expected=$(awk -v asset="$asset" '
+        $2 == asset {
+            count++
+            if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) bad=1
+            digest=$1
+        }
+        END { if (count != 1 || bad) exit 1; print digest }
+    ' "$checksumfile") || return 1
     if command -v sha256sum &>/dev/null; then
-        actual=$(sha256sum "$file" | awk '{print $1}')
+        actual=$(sha256sum "$file" | awk '{print $1}') || return 1
     elif command -v shasum &>/dev/null; then
-        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+        actual=$(shasum -a 256 "$file" | awk '{print $1}') || return 1
     else
         # Fail closed: a verification gate that can't verify must not pass.
         echo "Error: no sha256sum or shasum found — cannot verify download. Install one and retry." >&2
@@ -20,13 +53,105 @@ verify_checksum() {
     [ "$expected" = "$actual" ]
 }
 
-# Verify minisign signature (soft gate — only if minisign installed)
-verify_signature() {
-    local file="$1" sigfile="$2"
-    local ms_bin
-    ms_bin=$(command -v minisign 2>/dev/null) || ms_bin="${CS_INSTALL_DIR:-$HOME/.local/bin}/minisign"
-    [ -x "$ms_bin" ] || return 0
-    "$ms_bin" -Vm "$file" -P "$CS_SIGN_PUBKEY" -x "$sigfile" >/dev/null 2>&1
+_check_revocation_carry_forward() {
+    local installer="$1" key installed
+    # Parse the literal declaration as data, without executing the installer.
+    awk -v quote="'" '
+        function keyline(line, parts, n) {
+            if (line == "") return
+            n=split(line, parts, /[ \t]+/)
+            if (n < 2 || parts[1] != "ssh-ed25519" || parts[2] ~ /[^A-Za-z0-9+\/=]/) {
+                bad=1
+                return
+            }
+            print parts[1] " " parts[2]
+        }
+        /^[[:space:]]*(export[[:space:]]+)?CS_RELEASE_REVOKED[[:space:]]*=/ {
+            count++
+            if (active || index($0, "CS_RELEASE_REVOKED=" quote) != 1) { bad=1; next }
+            active=1
+            $0=substr($0, length("CS_RELEASE_REVOKED=" quote)+1)
+        }
+        active {
+            end=index($0, quote)
+            if (end) {
+                if (end != length($0)) bad=1
+                keyline(substr($0, 1, end-1))
+                active=0
+            } else keyline($0)
+        }
+        END { if (count != 1 || active || bad) exit 1 }
+    ' "$installer" > "$installer.revoked" || error "Malformed CS_RELEASE_REVOKED in downloaded installer."
+    installed=$(printf '%s\n' "$CS_RELEASE_REVOKED" | awk '
+        NF {
+            if (NF < 2 || $1 != "ssh-ed25519" || $2 ~ /[^A-Za-z0-9+\/=]/) exit 1
+            print $1 " " $2
+        }
+    ') || error "Malformed installed CS_RELEASE_REVOKED."
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        grep -qxF "$key" "$installer.revoked" || error "Release dropped revoked key: $key"
+    done <<< "$installed"
+}
+
+# Offers a pending release once, on a terminal, before the session opens:
+# y runs the update and starts this same launch again on the new cs; any
+# other key records the version as declined, so the launch does not ask
+# again and the cs-update mod says the release is there in one line instead
+# of opening its pane, until a newer one is pending. No terminal, or a
+# window cs opened itself (cs -spawn, cs --remote inside tmux), no question:
+# the banner's line and the pane carry the release. Nor is a release asked
+# about before its SHA256SUMS.sig downloads, which cs -update needs.
+# Takes the launch's own arguments, which the relaunch repeats; the relaunch
+# carries CS_UPDATE_PROMPTED so the new cs, should it still see the same
+# version pending (a checkout launch, which no update replaces), does not
+# ask in its turn. code-sessions never asks: cs -update would replace the fork
+# with the original cs (refuse_in_code_sessions), so check_update_notify's
+# notice, which names the sync script, is all it shows.
+offer_update_at_launch() {  # "$@": this launch's arguments
+    [ -n "$UPDATE_AVAILABLE" ] || return 0
+    [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ] || return 0
+    if [ "${CS_UPDATE_PROMPTED:-}" = "$UPDATE_AVAILABLE" ]; then
+        unset CS_UPDATE_PROMPTED
+        return 0
+    fi
+    unset CS_UPDATE_PROMPTED
+    local declined=""
+    if [ -f "$UPDATE_DECLINED" ]; then
+        IFS= read -r declined < "$UPDATE_DECLINED" || true
+    fi
+    if [ "$declined" = "$UPDATE_AVAILABLE" ]; then
+        UPDATE_DECLINED_PENDING=1
+        return 0
+    fi
+    # _cs_tmux_window sets CS_UNATTENDED on every window it opens: a pane
+    # nobody watches is still a terminal, and the read below would wait there
+    # for good.
+    cs_interactive && [ -z "${CS_UNATTENDED:-}" ] || return 0
+    # A release goes up a few minutes before its manifest signature, and
+    # cs -update refuses it until then. A signature that does not download
+    # (not up yet, offline, too slow) means no question this launch and
+    # nothing kept, so the first launch after it lands asks.
+    curl -fsSL --connect-timeout 2 --max-time 4 \
+        "${RELEASES_BASE}/download/v${UPDATE_AVAILABLE}/SHA256SUMS.sig" -o /dev/null 2>/dev/null \
+        || return 0
+    local answer=""
+    printf '\n  %bcs %s is available%b %b(you have %s)%b. Update now? %b[y/N]%b %b›%b ' \
+        "$BOLD$GREEN" "$UPDATE_AVAILABLE" "$NC" "$DIM" "$VERSION" "$NC" "$DIM" "$NC" "$GOLD" "$NC"
+    IFS= read -rsn1 answer || answer=""
+    echo
+    case "$answer" in
+        [yY])
+            if "$0" -update; then
+                CS_UPDATE_PROMPTED="$UPDATE_AVAILABLE" exec "$0" "$@"
+            fi
+            warn "cs -update did not finish; continuing with cs $VERSION (run cs -update later)"
+            ;;
+        *)
+            cs_write_atomic "$UPDATE_DECLINED" printf '%s\n' "$UPDATE_AVAILABLE" || true
+            UPDATE_DECLINED_PENDING=1
+            ;;
+    esac
 }
 
 # --- Update mechanism ---
@@ -295,6 +420,8 @@ do_update() {
     local is_upgrade=false
     if version_greater "$remote_version" "$VERSION"; then
         is_upgrade=true
+    elif version_greater "$VERSION" "$remote_version"; then
+        error "Release v${remote_version} is older than the installed cs ${VERSION}. Update aborted."
     fi
 
     echo ""
@@ -314,28 +441,28 @@ do_update() {
     trap 'rm -rf "$_CS_UPDATE_TMPDIR"' EXIT
     local tmpdir="$_CS_UPDATE_TMPDIR"
 
-    # Download install.sh + checksum + signature from release assets
     curl -fsSL "$releases_url/install.sh" -o "$tmpdir/install.sh" || {
         error "Failed to download installer."
     }
-    curl -fsSL "$releases_url/install.sh.sha256" -o "$tmpdir/install.sh.sha256" || {
-        error "Failed to download checksum."
+    curl -fsSL "$releases_url/SHA256SUMS" -o "$tmpdir/SHA256SUMS" || {
+        error "Failed to download release manifest."
     }
-    # Signature file is optional (best-effort): a release without one is
-    # checked by its checksum alone, so a failed fetch must not end the update.
-    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null || true
+    curl -fsSL "$releases_url/SHA256SUMS.sig" -o "$tmpdir/SHA256SUMS.sig" || {
+        error "Failed to download release manifest signature."
+    }
 
-    # Verify checksum (hard gate)
-    if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/install.sh.sha256"; then
+    if ! _verify_manifest "$tmpdir/SHA256SUMS" "$tmpdir/SHA256SUMS.sig" "$remote_version"; then
+        error "Release manifest signature verification failed. Update aborted."
+    fi
+    if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/SHA256SUMS"; then
         error "Checksum verification failed. Update aborted."
     fi
-
-    # Verify signature if minisign available (soft enhancement)
-    if [ -f "$tmpdir/install.sh.minisig" ]; then
-        if ! verify_signature "$tmpdir/install.sh" "$tmpdir/install.sh.minisig"; then
-            error "Signature verification failed. Update aborted."
-        fi
+    # The installer fetches its payload from the ref it names; a verified
+    # installer pinned to another tag would install another release.
+    if ! grep -qxF "CS_DEFAULT_REF=v${remote_version}" "$tmpdir/install.sh"; then
+        error "Downloaded installer is not pinned to v${remote_version}. Update aborted."
     fi
+    _check_revocation_carry_forward "$tmpdir/install.sh"
 
     info "Verified"
 
@@ -375,6 +502,14 @@ do_update() {
 UPDATE_CACHE="${CS_CACHE_DIR:-$HOME/.cache/cs}/update-check"
 UPDATE_CHECK_INTERVAL=3600  # 1 hour in seconds
 UPDATE_AVAILABLE=""  # Set by check_update_notify if update available
+# The one pending version the person answered "no" to at launch: that version
+# is not offered again, at launch or by the cs-update pane.
+UPDATE_DECLINED="${CS_CACHE_DIR:-$HOME/.cache/cs}/update-declined"
+# Set when the pending release is the one declined at launch: the cs-update
+# mod then says so in one line instead of opening its pane. Read by the
+# launch's exports in lib/75-launch.sh.
+# shellcheck disable=SC2034
+UPDATE_DECLINED_PENDING=""
 
 check_update_notify() {
     # Opt out of the network check + cache write (tests set this so a session

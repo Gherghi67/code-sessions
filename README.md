@@ -21,8 +21,10 @@ the optional picker when Cargo is available. It remembers your engine selection
 on reruns. Requires macOS or Linux, Bash 3.2+, Git, jq, Perl, and a UTF-8 locale;
 Codex also requires Python 3. Shared run ownership uses `lockf` on macOS or
 `flock` on Linux. Install and authenticate your chosen native CLI separately.
-Claude's Mermaid mod requires Claude Code 2.1.300+, and remote control requires
-2.1.299+.
+Claude's remote control requires Claude Code 2.1.299+. Setup installs from this
+checkout and verifies no download; the original cs's updates and web installs
+check its signed release manifest with `ssh-keygen -Y verify`
+([release verification](docs/configuration.md#release-verification-and-notes)).
 
 Follow [Getting started](docs/getting-started.md) for setup, adopting
 projects, engine switching, and worktrees. See [Codex sessions](docs/codex.md)
@@ -55,7 +57,7 @@ When you forget a name, a bare `ccs` opens a picker of your sessions, and `ccs .
 
 ![cs statusline cycling through quiet, context warning, critical context, queued tasks and unread mail, and quota reset countdowns](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/statusline.svg)
 
-The [statusline guide](docs/statusline.md) covers the capsules, colors, thresholds, font setup, and agent rows.
+The [statusline guide](docs/statusline.md) covers the quiet default layout, the band and the capsules, colors, thresholds, font setup, and agent rows.
 
 ## Features
 
@@ -72,12 +74,13 @@ The [statusline guide](docs/statusline.md) covers the capsules, colors, threshol
 | Secrets | Uses the macOS keychain or encrypted files, with signed age exports for sync. | [Secrets guide](docs/secrets.md) |
 | Encrypted sessions | Keeps notes, transcripts, plans, and private state in a vault on macOS. | [Encrypted sessions](docs/session-layout.md#encrypted-sessions) |
 | Statusline | Shows session, git, model, context, queue, mail, and rate limits. | [Statusline guide](docs/statusline.md) |
+| Prompt rail | With `cs.bandPrompts` on in `/config`, the band above the prompt draws a bar per prompt. A press on a bar, or `/cs next`, `prev`, `first`, `last` or a prompt number, scrolls the transcript to that prompt. | [cs mod band](docs/hooks.md#cs-not-a-hook-script--a-claude-code-mod) |
 | Prompt grounding | Adds matching files, recent commits, changes, and clarification guidance to code-work prompts. | [Scope hook](docs/hooks.md#scope-promptsh-userpromptsubmit) |
 | Prompt rewriting | Ctrl+G rewrites a draft in the composer for you to review before sending. | [Prompt rewriter](docs/hooks.md#prompt-rewritersh-not-a-hook--an-editor-shim) |
 | Writing skills | Judges prose or drafts from a writing profile. | [Skills](docs/hooks.md#skills) |
-| Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
-| Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. Requires Claude Code 2.1.300+. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
-| Release notes | Shows pending release notes in-session through `/cs-update`. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
+| Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. Its memory pass also finds references to paths, `cs` verbs and identifiers that no longer exist, and updates them or marks them gone. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
+| Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
+| Release notes | A launch from your terminal offers a pending release once. In the session, `/cs-update` shows its release notes. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
 | Other front ends | Session hooks also work in desktop and IDE conversations opened in a `.cs/` workspace. | [Session resolution](docs/hooks.md#how-a-hook-finds-its-session-cs-resolvesh) |
 
 ## Uninstall
@@ -96,7 +99,7 @@ ccs -uninstall
 | [Session layout](docs/session-layout.md) | Shared and local records, encryption, and merge policy. |
 | [Hooks](docs/hooks.md) | Hook behavior, prompt rewriting, and Claude Code mods. |
 | [Secrets](docs/secrets.md) | Storage backends, backups, and signed sync files. |
-| [Statusline](docs/statusline.md) | Segments, colors, thresholds, and agent rows. |
+| [Statusline](docs/statusline.md) | Segments, the quiet, band and capsule layouts, colors, thresholds, and agent rows. |
 
 ## License
 

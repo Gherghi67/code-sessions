@@ -1,5 +1,5 @@
 # ABOUTME: Runs the bash test suites (macOS + Linux) and the Rust TUI tests on push/PR
-# ABOUTME: The release workflow only builds binaries; this is the gate that runs tests
+# ABOUTME: The release workflow builds binaries only after a green run of this workflow on the tagged commit
 
 name: Test
 
@@ -45,18 +45,45 @@ jobs:
           git config --global user.email "ci@claude-sessions.test"
           git config --global user.name "cs CI"
 
-      # age backs cs-secrets sync; without it the age tests skip and judge nothing.
+      # age backs cs-secrets sync and jq is a cs requirement. Both are named
+      # in CS_TEST_REQUIRE_TOOLS below, so a test that needs one fails on a
+      # runner without it instead of skipping and judging nothing.
       - name: Install jq and age (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y jq age
 
-      - name: Install age (macOS)
+      - name: Install jq and age (macOS)
         if: runner.os == 'macOS'
-        run: brew install age
+        run: brew install jq age
 
+      # The mod suites (test_mod_rotate, test_mod_update, test_mods_layout) run
+      # their unit tests under bun, which CS_TEST_REQUIRE_TOOLS below declares,
+      # so a runner without it fails them rather than skipping them. The
+      # action is pinned by commit and bun by version; unlike shellcheck, no
+      # digest checks the bun binary, as setup-bun takes none. The mermaid mod's
+      # tests run under claude plugin test and still skip here.
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Show bun version
+        run: bun --version
+
+      # CS_TEST_REQUIRE_TOOLS lists what the steps above install (the age
+      # package ships age-keygen). tests/test_lib.sh's require_tool fails a
+      # test whose listed tool is missing; any other missing tool skips, and
+      # run_all.sh names every skip at the end of the log.
+      # CS_TEST_SUITE_TIMEOUT: the fork's test_install outgrew run_all.sh's
+      # 1200 s watchdog on the macOS runners. It took 738 s at 1c4b3af3 (187
+      # tests), 1128 s once v2026.10.11 merged (212), and the next run was cut
+      # at 181 of 213 with no failure; alone on a Mac it takes 1317 s.
+      # Upstream's own runs it in about 600 s.
       - name: Run bash test suites
         env:
           CS_TEST_SHARD: ${{ matrix.shard }}/2
+          CS_TEST_REQUIRE_TOOLS: age age-keygen jq bun
+          CS_TEST_SUITE_TIMEOUT: 1800
         run: bash tests/run_all.sh
 
   build-sync:
@@ -100,9 +127,11 @@ jobs:
       - name: Lint shell scripts
         run: bash tests/lint_shell.sh
 
-      # The lint's own tests skip wherever shellcheck is missing; this job has
-      # the pinned one, so they always run here.
+      # The lint's own tests skip wherever shellcheck is missing; this job
+      # installs the pinned one and declares it, so here they fail instead.
       - name: Test the shell lint
+        env:
+          CS_TEST_REQUIRE_TOOLS: shellcheck
         run: bash tests/test_lint_shell.sh
 
   rust:

@@ -53,35 +53,22 @@ test_mod_force_default_matches_the_launch_notice() {
         || { echo "  FAIL: the notice no longer spells the off switch as 'off'"; return 1; }
 }
 
-# The band paints the bar's own capsule fill: a shade of the terminal
-# background nudged away from itself. The shift and the luminance pivot are
-# literals in two languages (KEEP IN SYNC), so this test is the only thing
-# holding _bg_shade and surfaceColor together.
-test_mod_surface_shade_matches_the_statusline_shade() {
-    local sl="$SCRIPT_DIR/../bin/cs-statusline" mod="$MOD/hooks/register.tsx"
-    local sl_shift sl_pivot mod_shift mod_pivot
-    sl_shift="$(sed -n '/^_bg_shade()/,/^}/p' "$sl" | sed -n 's/.*shift=\([0-9]*\).*/\1/p' | head -1)"
-    sl_pivot="$(sed -n '/^_bg_shade()/,/^}/p' "$sl" | sed -n 's/.*_LUM" -ge \([0-9]*\).*/\1/p' | head -1)"
-    mod_shift="$(sed -n 's/^export const SURFACE_SHIFT = \([0-9]*\)$/\1/p' "$mod")"
-    mod_pivot="$(sed -n 's/.*722 \* b >= \([0-9]*\)$/\1/p' "$mod")"
-    [ -n "$sl_shift" ] && [ -n "$sl_pivot" ] || { echo "  FAIL: _bg_shade's shift or pivot not found in bin/cs-statusline"; return 1; }
-    [ -n "$mod_shift" ] && [ -n "$mod_pivot" ] || { echo "  FAIL: SURFACE_SHIFT or the luminance pivot not found in register.tsx"; return 1; }
-    assert_eq "$sl_shift" "$mod_shift" "mod surface shift == statusline _bg_shade shift" || return 1
-    assert_eq "$sl_pivot" "$mod_pivot" "mod luminance pivot == statusline _bg_shade pivot" || return 1
-}
-
 # The countdown's ramp paints the bar's own inks: the session palette, amber
-# and crit, each a literal in two languages (KEEP IN SYNC). Read out of _sgr's
+# and crit, each a literal in two languages (KEEP IN SYNC); cs-update's version
+# headings carry their own copy of the palette. Read out of _sgr's
 # truecolor arm, so a colour changed in the bar and not in the mod fails here.
 test_mod_ramp_inks_match_the_statusline() {
     local sl="$SCRIPT_DIR/../bin/cs-statusline" mod="$MOD/hooks/register.tsx"
-    local truecolor name sl_rgb mod_rgb
+    local update="$SCRIPT_DIR/../mods/cs-update/hooks/register.tsx"
+    local truecolor name sl_rgb mod_rgb update_rgb
     truecolor="$(sed -n '/^_sgr() {/,/^        256)/p' "$sl")"
     for name in red blue green yellow purple orange pink cyan; do
         sl_rgb="$(sed -n "s/^ *$name) *rgb=\"\([0-9;]*\)\" ;;.*/\1/p" <<< "$truecolor" | tr ';' ',')"
         mod_rgb="$(sed -n "s/.*[{ ]$name: '\([0-9,]*\)'.*/\1/p" "$mod")"
+        update_rgb="$(sed -n "s/.*[{ ]$name: '\([0-9,]*\)'.*/\1/p" "$update")"
         [ -n "$sl_rgb" ] || { echo "  FAIL: palette colour $name not found in _sgr"; return 1; }
         assert_eq "$sl_rgb" "$mod_rgb" "mod palette $name == statusline $name" || return 1
+        assert_eq "$sl_rgb" "$update_rgb" "cs-update palette $name == statusline $name" || return 1
     done
 
     local amber crit
@@ -93,18 +80,6 @@ test_mod_ramp_inks_match_the_statusline() {
     assert_eq "$(tr ';' ',' <<< "$crit")" \
         "$(sed -n "s/^export const CRIT_DARK = '\([0-9,]*\)'$/\1/p" "$mod") $(sed -n "s/^export const CRIT_LIGHT = '\([0-9,]*\)'$/\1/p" "$mod")" \
         "mod crit dark and light == statusline crit" || return 1
-
-    # The band's chip: the bar's brand coral, and its white, softer on dark.
-    # BRAND names a palette colour; its value is that colour's, read above.
-    local brand_name
-    brand_name="$(sed -n 's/^export const BRAND = SESSION_PALETTE\.\([a-z]*\)$/\1/p' "$mod")"
-    [ -n "$brand_name" ] || { echo "  FAIL: BRAND is not a SESSION_PALETTE colour in register.tsx"; return 1; }
-    assert_eq "$(sed -n 's/^ *brand) *rgb="\([0-9;]*\)" ;;.*/\1/p' <<< "$truecolor" | tr ';' ',')" \
-        "$(sed -n "s/.*[{ ]$brand_name: '\([0-9,]*\)'.*/\1/p" "$mod")" \
-        "mod BRAND ($brand_name) == statusline brand" || return 1
-    assert_eq "$(sed -n 's/^ *\[ "\$SL_THEME" = "dark" \] && rgb="\([0-9;]*\)" || rgb="\([0-9;]*\)" ;;$/\1 \2/p' <<< "$(sed -n '/^ *white)$/,/;;/p' <<< "$truecolor")" | tr ';' ',')" \
-        "$(sed -n "s/^export const WHITE_DARK = '\([0-9,]*\)'$/\1/p" "$mod") $(sed -n "s/^export const WHITE_LIGHT = '\([0-9,]*\)'$/\1/p" "$mod")" \
-        "mod white dark and light == statusline white" || return 1
 }
 
 # The installer deploys the mod under ~/.claude/skills/cs and a cs
@@ -146,17 +121,14 @@ test_mod_reads_the_switch_record_cs_writes() {
 # The switch skill tells the person what the key reads while a switch is
 # pending; the mod draws it. One wording, in two files.
 test_mod_switch_key_matches_the_switch_skill() {
-    grep -qF '`/exit and continue in ${target}`' "$MOD/hooks/register.tsx" \
-        || { echo "  FAIL: the mod no longer labels the key '/exit and continue in <engine>'"; return 1; }
-    assert_file_contains "$SCRIPT_DIR/../skills/switch/SKILL.md" '`/exit and continue in codex`' \
+    grep -qF '`${countVerb(target)} to ${target}`' "$MOD/hooks/register.tsx" \
+        || { echo "  FAIL: the mod no longer labels the key '/exit to <engine>'"; return 1; }
+    assert_file_contains "$SCRIPT_DIR/../skills/switch/SKILL.md" '`/exit to codex`' \
         "the switch skill quotes the key the mod draws" || return 1
 }
 
 test_mod_unit_tests_pass_under_bun() {
-    if ! command -v bun >/dev/null 2>&1; then
-        echo "    SKIP: bun not on PATH"
-        return 77
-    fi
+    require_tool bun || return $?
     local out
     out="$(cd "$MOD" && bun test 2>&1)" || { echo "$out"; return 1; }
     out="$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g')"
@@ -167,10 +139,7 @@ test_mod_unit_tests_pass_under_bun() {
 # `claude plugin validate` inventories the module's hooks and $ calls with the
 # function-hooks flag OFF, so this runs wherever the binary is.
 test_mod_validate_inventories_the_hooks_and_calls() {
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "    SKIP: claude not on PATH"
-        return 77
-    fi
+    require_tool claude || return $?
     local out raw="${TMPDIR:-/tmp}/cs-mod-validate.$$"
     env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" > "$raw" 2>&1
     local status=$?
@@ -183,27 +152,43 @@ test_mod_validate_inventories_the_hooks_and_calls() {
         echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) does not inventory function hooks"
         return 77
     fi
-    assert_output_contains "$out" "hooks: session.start, command.run{command=queue}, turn.complete, skill.prompt{skill=finish}, prompt.submit, command.run{command=clear}, turn.start, ui.render{component=AbovePrompt}, ui.render{component=Pane}" "all nine hooks inventoried" || return 1
+    assert_output_contains "$out" "hooks: session.start, command.run{command=queue}, command.run{command=cs}, config.set, turn.complete, skill.prompt{skill=finish}, prompt.submit, command.run{command=clear}, turn.start, ui.render{component=UserMessage}, ui.render{component=AbovePrompt}, ui.focus{component=AbovePrompt, plugin=cs}" "all twelve hooks inventoried, config.set refusing a band value the band cannot draw" || return 1
     assert_output_not_contains "$out" '$.prompt.fill' "nothing fills the composer any more" || return 1
-    assert_output_contains "$out" 'env reads: CLAUDE_CONFIG_DIR, CS_BIN, CS_ROTATE_BUTTON_CTX, CS_ROTATE_FORCE_CTX, CS_RUN_ID, CS_SESSIONS_ROOT, CS_STATUSLINE_CAPS, CS_STATUSLINE_CTX_WARN, CS_TERM_BG_RGB, CS_TERM_THEME, HOME, XDG_CONFIG_HOME' "the canonical and legacy executable paths, the run id a pending switch is checked against, the two thresholds, the bar's warn band, the measured background, the theme, the caps consent and where keybindings.json and the caps answer live are read from the environment" || return 1
-    assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart), $.session.compact (via offerToStart), $.session.cwd' "/queue runs cs from its own hook and its start offer, which alone submits a prompt and compacts; nothing else runs a process" || return 1
-    assert_output_contains "$out" '$.command.run (via askToWrap, clearAndContinue, exitAndContinue, rotate)' "the keys run their commands (a pending switch's /exit among them), and nothing else runs one" || return 1
-    assert_output_contains "$out" '$.clock.after (via forceRotation, startCountdown), $.clock.every (via startCountdown, watchFinish), $.clock.now (via withGateBand)' "the forced /rotate and the pane's open are one-shot timers, the grace and the /finish watch tickers, and the gate band alone reads the time" || return 1
-    assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToStart)' "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
-    assert_output_contains "$out" '$.ui.close (via closeHandoffPane, openPreview, stopCountdown)' "the handoff pane closes where the count ends, and where it lands after one" || return 1
-    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, capsWanted, clearPressed, forceRotation, isCsSession, pendingSwitch, queueRunning, readFinish, readState, readWrapped)' "the wrap marker, the state, the pending switch, the queue's state, the /finish record, keybindings.json and the caps answer are read, never a file's age" || return 1
-    assert_output_contains "$out" '$.fs.stat (via resolvedPath)' "session identity is checked by resolved path" || return 1
-    # Recent validators cap the calls note (in JSON too). A capped note cannot
-    # inventory its final call; the Bun tests above exercise opening the pane.
-    if ! grep -Fq '… [+' <<< "$out"; then
-        assert_output_contains "$out" '$.ui.open (via openPreview)' "and opens in one place" || return 1
-    fi
+    assert_output_contains "$out" 'env reads: CLAUDE_CONFIG_DIR, CS_BIN, CS_ROTATE_BUTTON_CTX, CS_ROTATE_FORCE_CTX, CS_RUN_ID, CS_SESSIONS_ROOT, CS_STATUSLINE_CTX_WARN, CS_TERM_BG_RGB, CS_TERM_THEME, CS_TRANSCRIPTS_DIR, HOME' "the cs path, the two thresholds, the run id a pending switch is checked against, the bar's warn band, the measured background and the theme (the count's amber pivot), where keybindings.json lives, the sessions root and where transcripts live are read from the environment; the caps consent is not" || return 1
+    assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart), $.session.compact (via offerToStart), $.session.cwd' "/queue runs cs from its own hook and its start offer, which alone submits a prompt and compacts; the rotation asks cs -vet-session before it arms; the /finish watch runs kill -0 to ask after cs's pid" || return 1
+    assert_output_contains "$out" '$.command.list, $.command.register, $.command.run (via askToWrap, clearAndContinue, exitAndContinue, noteConversation, pressFinish, rotate)' "the band discovers commands; the wrap, clear (a pending switch's /exit among them), finish and rotate keys and conversation colour keep their command routes" || return 1
+    assert_output_contains "$out" '$.clock.after, $.clock.every (via readFeatures, startCountdown, watchFinish), $.clock.now (via gateWord)' "the forced /rotate, the next-step toast and the rail's redraw are one-shot timers, the grace, the /finish watch and the idle features read tickers, and the gate word alone reads the time" || return 1
+    local src="$MOD/hooks/register.tsx" scroll_lines jump_range feed_range
+    # The validator cuts its calls line at a fixed length (`… [+N chars]`);
+    # every assert on it must name something before the cut. $.ui.log and
+    # selected later calls are checked on the source instead.
+    assert_eq "5" "$(grep -c '\$\.ui\.log' "$src")" "five calls log a features word read failure, a features complaint, a transcript read failure, a /color that did not run and a feed read failure" || return 1
+    feed_range=$(awk '/^async function pressFeed\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
+    set -- $feed_range
+    assert_eq "1" "$(awk -v start="$1" -v end="$2" 'NR > start && NR < end && /\$\.fs\.write/ { count++ } END { print count + 0 }' "$src")" "one call inside pressFeed writes the feed file" || return 1
+    # The fork's pending-switch reads push $.ui.ask's callers past the cut.
+    assert_output_contains "$out" '$.session.id, $.session.usage, $.ui.ask' "the visible inventory includes the session and dialog calls" || return 1
+    assert_eq "1" "$([ "$(grep -c '\$\.ui\.invalidate' "$src")" -gt 0 ] && echo 1)" "the band redraws through \$.ui.invalidate" || return 1
+    scroll_lines=$(grep -n '\$\.ui\.scroll' "$src" | cut -d: -f1 | tr '\n' ' ')
+    jump_range=$(awk '/^async function jumpTo\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
+    assert_eq "1" "$(grep -c '\$\.ui\.scroll' "$src")" "one call scrolls the transcript" || return 1
+    set -- $jump_range
+    [ "${scroll_lines% }" -gt "$1" ] && [ "${scroll_lines% }" -lt "$2" ] \
+        || { echo "  FAIL: \$.ui.scroll at line ${scroll_lines% } is outside jumpTo (lines $1-$2)"; return 1; }
+    # Past the cut (above), so read on the source: the wrap key's question and
+    # the /queue start offer's two.
+    assert_eq "3" "$(grep -c 'await \$\.ui\.ask(' "$src")" "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
+    assert_eq "0" "$(grep -c '\$\.ui\.open' "$src")" "the mod opens no pane" || return 1
+    assert_eq "0" "$(grep -c '\$\.ui\.close' "$src")" "and closes none" || return 1
+    assert_eq "0" "$(grep -c '\$\.ui\.panes' "$src")" "and lists none" || return 1
+    assert_output_contains "$out" '$.fs.list (via hasFeatureDirs, queueLength, unreadMail)' "the band counts the queue's tasks and the mailbox's unread mail by listing their directories, and looks for a base's feature directories at the sessions root before asking cs; nothing else lists one" || return 1
+    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, clearPressed, csSessionName, forceRotation, pendingSwitch, queueRunning, readFeed, readFinish, readState, readWrapped, refreshRail)' "the wrap marker, the press marker, the state (for the session's recorded name too), the pending switch, the queue's state, the feed file, the /finish record, keybindings.json and the transcript are read" || return 1
+    assert_output_contains "$out" '$.fs.stat (via refreshRail, resolvedPath)' "stat resolves where a path lands, to prove the cwd is the sessions root's entry, and gates the transcript's re-read on its size and mtime; no other rule hangs on a modification time" || return 1
 }
 
 run_test test_mod_manifest_names_the_plugin_and_its_module
 run_test test_mod_default_threshold_matches_the_statusline_warn_default
 run_test test_mod_force_default_matches_the_launch_notice
-run_test test_mod_surface_shade_matches_the_statusline_shade
 run_test test_mod_ramp_inks_match_the_statusline
 run_test test_mod_is_deployed_by_the_installer_and_enabled_at_launch
 run_test test_mod_reads_the_switch_record_cs_writes

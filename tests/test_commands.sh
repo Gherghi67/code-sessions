@@ -108,6 +108,8 @@ test_sweep_runs_the_memory_index_guard() {
         assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" "bash <skill-dir>/scripts/memory-index-guard.sh $sub" \
             "sweep must run its bundled guard's $sub" || return 1
     done
+    assert_file_contains "$SWEEP_PASS" 'bash <skill-dir>/scripts/memory-index-guard.sh refs' \
+        "the sweep pass must run its bundled guard's refs" || return 1
     assert_file_contains "$SCRIPT_DIR/../lib/01-manifests.sh" "^    sweep/scripts/memory-index-guard.sh$" \
         "the guard must ship as a sweep skill file for that path to exist" || return 1
     [ -f "$SKILLS_DIR/sweep/scripts/memory-index-guard.sh" ] \
@@ -443,6 +445,46 @@ test_sweep_supersedes_stale_entries() {
         "the sweep pass must give a supersede/update-in-place path, not only skip-or-duplicate" || return 1
 }
 
+test_sweep_stamps_measured_claims_with_their_provenance() {
+    # A fact that holds because something was run (a Claude Code build, a cs
+    # version) reads as timeless once written; nothing in the entry says when it
+    # stops being trustworthy. The sweep must make the body name what the claim
+    # was measured on, so a later session re-measures instead of trusting it.
+    assert_file_contains "$SWEEP_PASS" "A measured claim names what it was measured on" \
+        "the sweep pass must require provenance on measured claims" || return 1
+    assert_file_contains "$SWEEP_PASS" "measured on Claude Code <version>" \
+        "the sweep pass must show the provenance line's shape as a placeholder, not a copyable value" || return 1
+}
+
+test_sweep_names_the_entry_each_new_one_supersedes() {
+    # The supersede path exists (test above) but nothing makes the model look
+    # for the entry a new fact replaces; the dedup read catches paraphrases of
+    # the same fact, not an older fact the new one overturns. Each written entry
+    # must name what it supersedes, or state none, in the sweep's report.
+    assert_file_contains "$SWEEP_PASS" "the entry it supersedes" \
+        "the sweep pass must make each new entry name the one it supersedes" || return 1
+    assert_file_contains "$SWEEP_PASS" "supersedes: none" \
+        "the sweep pass must give the no-supersede form so the check is never skipped silently" || return 1
+    # /wrap tells the model to skip the sweep's own report and emit its combined
+    # one instead, so the answer is dead output unless that report carries it too.
+    assert_file_contains "$SKILLS_DIR/wrap/SKILL.md" "supersedes: none" \
+        "wrap's combined report must carry the supersedes answer the sweep decided" || return 1
+}
+
+test_sweep_bounds_the_dead_reference_pass() {
+    # The first sweep after the check ships meets a backlog; unbounded, it is a
+    # bulk edit of durable memory. A file in another repo or under ~/.claude is
+    # not gone, and a "gone" sentence about it would be a written falsehood.
+    assert_file_contains "$SWEEP_PASS" "at most five" \
+        "the sweep pass must bound the dead-reference work per sweep" || return 1
+    assert_file_contains "$SWEEP_PASS" "outside this checkout" \
+        "the sweep pass must distinguish a file elsewhere from a file that is gone" || return 1
+    assert_file_contains "$SWEEP_PASS" 'append ` [(]gone YYYY-MM-DD[)]` immediately after its backticked reference' \
+        "the sweep pass must mark a gone reference where refs can skip it" || return 1
+    assert_file_contains "$SWEEP_PASS" 'Delete a marker if its reference resolves again' \
+        "the sweep pass must remove a gone marker that is no longer true" || return 1
+}
+
 test_sweep_states_filename_convention() {
     # The <bucket>_<short_slug>.md convention was only implied by the glob; a first
     # entry in an empty bucket needs it stated explicitly.
@@ -632,12 +674,26 @@ test_release_guards_stray_files_before_add_all() {
 }
 
 test_release_verifies_ci_workflow() {
-    # 'gh release create' returning is not the finish line; the signing/upload workflow can
+    # 'gh release create' returning is not the finish line; the release workflow can
     # still fail. The runbook must verify the workflow and the signed assets landed.
     assert_file_contains "$RELEASE_MD" "Verify the Release Workflow Succeeded" \
         "release.md must add a step to confirm the CI release workflow succeeded" || return 1
     assert_file_contains "$RELEASE_MD" "release is not done until" \
-        "release.md must gate 'done' on the .minisig and install.sh assets appearing" || return 1
+        "release.md must gate completion on the signature asset" || return 1
+    assert_file_contains "$RELEASE_MD" 'ssh-keygen -Y sign' \
+        "release.md must sign the manifest locally after CI succeeds" || return 1
+    assert_file_contains "$RELEASE_MD" 'git show "\$tag:lib/00-header.sh".*VERSION=' \
+        "release.md must confirm the tag names the tagged commit's VERSION before signing" || return 1
+    assert_file_contains "$RELEASE_MD" 'gh release upload.*SHA256SUMS.sig' \
+        "release.md must upload the manifest signature" || return 1
+    assert_file_contains "$RELEASE_MD" 'git show.*:install.sh' \
+        "release.md must compare the installer with its committed tag" || return 1
+    assert_file_contains "$RELEASE_MD" 'diff -u.*install.sh' \
+        "release.md must refuse an installer changed by CI" || return 1
+    assert_file_contains "$RELEASE_MD" 'shasum -a 256 -c SHA256SUMS' \
+        "release.md must support the macOS digest tool" || return 1
+    assert_file_contains "$RELEASE_MD" 'RELEASE_SIGNING_KEY' \
+        "release.md must describe the signing key override" || return 1
 }
 
 # ============================================================================
@@ -717,6 +773,9 @@ run_test test_wrap_report_is_not_two_line
 run_test test_checkpoint_routes_reserved_subcommands
 run_test test_checkpoint_quotes_label_and_stops_on_failure
 run_test test_sweep_supersedes_stale_entries
+run_test test_sweep_stamps_measured_claims_with_their_provenance
+run_test test_sweep_names_the_entry_each_new_one_supersedes
+run_test test_sweep_bounds_the_dead_reference_pass
 run_test test_sweep_states_filename_convention
 run_test test_sweep_scopes_when_not_to_write
 run_test test_sweep_states_memory_pointer_format

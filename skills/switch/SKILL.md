@@ -142,7 +142,7 @@ vault is committed. `cs -switch` keeps its record there too,
      to type, not even `go`.
    - Under Claude (`engine: claude`), the `cs` mod counts twenty seconds
      down once this turn ends and runs `/exit` itself; its key on the capsule
-     reads `/exit and continue in codex` (Ctrl+X 1, if they bound it). A prompt they send stops the count
+     reads `/exit to codex` (Ctrl+X 1, if they bound it). A prompt they send stops the count
      (it starts again when that turn ends) and keeps this conversation; the
      switch stays pending for a later exit. Launched with
      `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no countdown: the key or a

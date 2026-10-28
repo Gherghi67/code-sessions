@@ -40,13 +40,13 @@ if [ -n "$CLAUDE_CODE_SESSION_ID" ] && cs -vet-session . >/dev/null; then
 fi
 ```
 
-It names the conversation this wrap finished in (its own id, so a teammate's wrap never marks the lead), so the cs mod's band stops offering `wrap up this session` until the next prompt. The band is Claude Code's; under another engine the variable is unset and the line writes nothing. Skip it if any pass failed: a wrap that did not finish should stay one key away. While git tracks the session control files, cs says so and the pass writes nothing; the wrap still finished.
+It names the conversation this wrap finished in (its own id, so a teammate's wrap never marks the lead), so the cs mod's band stops offering `wrap` until the next prompt. The band is Claude Code's; under another engine the variable is unset and the line writes nothing. Skip it if any pass failed: a wrap that did not finish should stay one key away. While git tracks the session control files, cs says so and the pass writes nothing; the wrap still finished.
 
 ## Report
 
 Output a brief report with the four labeled items below. No long prose; the summary IS the prose.
 
-1. **Memory:** list the file paths you wrote in Pass 1, one per line. Or write `nothing to add` if the session didn't warrant memory entries.
+1. **Memory:** list the file paths you wrote in Pass 1, one per line, each ending as the sweep's step 6 says: `supersedes: <file>`, `supersedes: none`, or `updated in place`. Or write `nothing to add` if the session didn't warrant memory entries.
 2. **Summary:** confirm `.cs/summary.md` was created.
 3. **Narrative:** the line `cs -narrative rotate` printed.
 4. **Tasks:** the line `cs -archive-tasks run` printed, or why the archive was skipped (the session answered no, nothing to archive, or the `Error:` line).

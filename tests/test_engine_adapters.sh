@@ -101,8 +101,7 @@ test_engine_verb_supports_answers_by_exit_status() {
 # without one: it once read no capabilities there and called all of them
 # unsupported.
 test_engine_verb_supports_answers_without_temp_files() {
-    command -v sandbox-exec >/dev/null 2>&1 \
-        || { echo "    SKIP (sandbox-exec is macOS-only)"; return 77; }
+    require_tool sandbox-exec || return $?  # macOS-only
     local dir output status=0
     dir=$(_engine_verb_session)
     # Every write refused, as in Codex's read-only sandbox. Denying only the

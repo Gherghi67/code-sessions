@@ -2,8 +2,8 @@
 /* @jsx h */
 /* @jsxFrag Fragment */
 // ABOUTME: cs-update mod: when a cs launch found a newer release, one pane per load with its release notes, `1` to install it in place, Esc for later.
-// ABOUTME: Reads the launch's verdict from CS_UPDATE_AVAILABLE, the cs path from CS_BIN, and the span cs cached (under CS_CACHE_DIR when the launch names one); /cs-update reopens the pane; session.start writes a heartbeat for doctor.
-import type { On, EngineInterface, PluginOptions } from 'claude-code'
+// ABOUTME: Reads the launch's verdict from CS_UPDATE_AVAILABLE (a toast, not the pane, when CS_UPDATE_DECLINED names it), the cs path from CS_BIN, and the span cs cached (under CS_CACHE_DIR when the launch names one); /cs-update reopens the pane; session.start writes a heartbeat for doctor.
+import type { On, EngineInterface, PluginOptions, RenderElement } from 'claude-code'
 
 declare const h: any
 declare const Fragment: any
@@ -30,6 +30,25 @@ export const NOTES = (cacheDir: string, version: string) => `${cacheDir}/update-
 // How long `cs -update` may take: the download, the checksum, the signature.
 export const UPDATE_TIMEOUT_MS = 600000
 const VET_TIMEOUT_MS = 10000
+
+// Every line the mod hands the engine to draw on a surface of the engine's
+// own: its toasts, /cs-update's replies and its slash menu row, so the design
+// lab draws each from these words.
+export const TOASTS = {
+  declined: (version: string) => `cs ${version} is available · run cs -update to install it, or /cs-update for the notes`,
+  notRecorded: (err: string) => `could not record the finished update: ${err}`,
+} as const
+
+export const REPLIES = {
+  notLead: 'The release-notes pane belongs to the conversation cs launched.',
+  nothingPending: 'This launch found no newer cs; the check runs again at the next launch.',
+  notesOpen: 'Release notes are in the side pane.',
+  codeSessions: 'To update the code-sessions fork, run `scripts/sync-upstream.py catch-up` in its checkout, then `sh setup.sh`. Upstream release notes: https://github.com/hex/claude-sessions/releases',
+} as const
+
+export const COMMANDS = {
+  'cs-update': { name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' },
+} as const
 
 export type Section = { version: string; lines: string[] }
 
@@ -72,7 +91,8 @@ let shown = false
 // then what happened. `failed` keeps the key, so a transient failure (a
 // download) gets another press; `done` retires it, since a second update
 // would install the same version again.
-let phase: 'idle' | 'running' | 'done' | 'failed' = 'idle'
+export type Phase = 'idle' | 'running' | 'done' | 'failed'
+let phase: Phase = 'idle'
 let outcome = ''
 let registered = false
 
@@ -85,7 +105,7 @@ export function register(on: On, options: PluginOptions) {
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
-      await $.command.register({ name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' })
+      await $.command.register(COMMANDS['cs-update'])
     }
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await mayWriteControlFiles($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
@@ -93,7 +113,13 @@ export function register(on: On, options: PluginOptions) {
     if (!shown && await isLead($, e.cwd)) {
       if (!(await restoreDone($, e.cwd)) && wanted) {
         const pending = await $.env.get('CS_UPDATE_AVAILABLE')
-        if (pending) { shown = true; await openPane($, e.cwd, pending) }
+        // The launch's own question was answered no for this version: one
+        // line says it is still there, and the pane waits for /cs-update.
+        const declined = await $.env.get('CS_UPDATE_DECLINED')
+        if (pending && declined === pending) {
+          shown = true
+          $.ui.toast(TOASTS.declined(pending))
+        } else if (pending) { shown = true; await openPane($, e.cwd, pending) }
       }
     }
     return next(e)
@@ -111,46 +137,10 @@ export function register(on: On, options: PluginOptions) {
       const cwd = await $.session.cwd()
       if (!(await isLead($, cwd)) || !(await restoreDone($, cwd))) return next(e)
     }
-    const { Box, Text, Button } = await $.ui.resolve(e)
-    // A lone pane draws no title of its own (the tab shows only with two or
-    // more), so the body opens with it. The pane does not scroll (measured
-    // live 2026-09-22 on Claude Code 2.1.278), and a long changelog span
-    // pushes anything below it off the bottom, so the keys sit right under
-    // the title, above the notes, where a long span can never hide them.
-    // Version headings take the session colour cs recorded, as the status
-    // bar's name does; a continuation line hangs under its bullet on the
-    // changelog's own indent, which parseSpan keeps in the line (as a bullet
-    // keeps its `- `), so the text is drawn verbatim and no margin doubles it.
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Text bold>{`cs ${version} is available`}</Text>
-        <Box marginTop={1} flexDirection="column">
-          {phase === 'running' && <Text dimColor>{`updating… running cs -update ${version}`}</Text>}
-          {(phase === 'done' || phase === 'failed') && <Text>{outcome}</Text>}
-          {(phase === 'idle' || phase === 'failed') && (
-            <Box>
-              {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured in the cs mod), so the keys stand in a Box */}
-              <Button key="cs-update-now" hotkey="1" plain label="update now" onPress={() => runUpdate($)} />
-              <Text dimColor>{'   Esc: later'}</Text>
-            </Box>
-          )}
-          {phase === 'idle' && <Text dimColor>{'Installs in place; the new files take effect on your next launch.'}</Text>}
-          {phase === 'done' && <Text dimColor>{'Esc: close'}</Text>}
-        </Box>
-        {sections === undefined || sections.length === 0
-          ? <Box marginTop={1}><Text>{`Release notes could not be fetched at launch; the update is ${version}.`}</Text></Box>
-          : sections.map(s => (
-              <Box key={`v-${s.version}`} flexDirection="column" marginTop={1}>
-                <Text bold color={accent}>{s.version}</Text>
-                {s.lines.map((line, j) => (
-                  <Box key={`l-${s.version}-${j}`}>
-                    <Text>{line}</Text>
-                  </Box>
-                ))}
-              </Box>
-            ))}
-      </Box>
-    )
+    const el = await $.ui.resolve(e)
+    // Every path here has set it: the launch's openPane, or restoreDone's.
+    if (version === undefined) throw new Error('cs-update: the pane drew with no pending version')
+    return drawPane({ version, sections, accent, phase, outcome }, el, () => runUpdate($))
   })
 
   // On demand: the same pane, whether or not the launch opened it (the
@@ -162,21 +152,67 @@ export function register(on: On, options: PluginOptions) {
   // refuses it.
   on('command.run', { command: 'cs-update' }, async ($, e) => {
     const cwd = await $.session.cwd()
-    if (!(await isLead($, cwd))) return { text: 'The release-notes pane belongs to the conversation cs launched.' }
-    if (await $.env.get('CODE_SESSIONS_HOME')) {
-      return { text: 'To update the code-sessions fork, run `scripts/sync-upstream.py catch-up` in its checkout, then `sh setup.sh`. Upstream release notes: https://github.com/hex/claude-sessions/releases' }
-    }
+    if (!(await isLead($, cwd))) return { text: REPLIES.notLead }
+    if ((await $.env.get('CS_FORK')) === 'code-sessions') return { text: REPLIES.codeSessions }
     const pending = await $.env.get('CS_UPDATE_AVAILABLE')
-    if (!pending) return { text: 'This launch found no newer cs; the check runs again at the next launch.' }
+    if (!pending) return { text: REPLIES.nothingPending }
     // After a reload (which drops the module state, and fires no
     // session.start) a pane dismissed before the update installed leaves
     // nothing open for the render path to restore, so the command asks the
     // marker itself before it offers an install that already finished.
-    if (version === undefined && (await restoreDone($, cwd))) return { text: 'Release notes are in the side pane.' }
+    if (version === undefined && (await restoreDone($, cwd))) return { text: REPLIES.notesOpen }
     shown = true
     await openPane($, cwd, pending)
-    return { text: 'Release notes are in the side pane.' }
+    return { text: REPLIES.notesOpen }
   })
+}
+
+// What the pane is drawn from: the pending version, its notes, the session
+// colour as rgb, and where the update key's life stands.
+export type PaneView = { version: string; sections: Section[] | undefined; accent: string | undefined; phase: Phase; outcome: string }
+
+export function drawPane(v: PaneView, el: ReturnType<EngineInterface['ui']['resolve']>, update: () => void | Promise<void>): RenderElement {
+  const { Box, Text, Button } = el
+  const { version, sections, accent, phase, outcome } = v
+  // A lone pane draws no title of its own (the tab shows only with two or
+  // more), so the body opens with it. The pane does not scroll (measured
+  // live 2026-09-22 on Claude Code 2.1.278), and a long changelog span
+  // pushes anything below it off the bottom, so the keys sit right under
+  // the title, above the notes, where a long span can never hide them.
+  // Version headings take the session colour cs recorded, as the status
+  // bar's name does; a continuation line hangs under its bullet on the
+  // changelog's own indent, which parseSpan keeps in the line (as a bullet
+  // keeps its `- `), so the text is drawn verbatim and no margin doubles it.
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Text bold>{`cs ${version} is available`}</Text>
+      <Box marginTop={1} flexDirection="column">
+        {phase === 'running' && <Text dimColor>{`updating… running cs -update ${version}`}</Text>}
+        {(phase === 'done' || phase === 'failed') && <Text>{outcome}</Text>}
+        {(phase === 'idle' || phase === 'failed') && (
+          <Box>
+            {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured in the cs mod), so the keys stand in a Box */}
+            <Button key="cs-update-now" hotkey="1" plain label="update now" onPress={update} />
+            <Text dimColor>{'   Esc: later'}</Text>
+          </Box>
+        )}
+        {phase === 'idle' && <Text dimColor>{'Installs in place; the new files take effect on your next launch.'}</Text>}
+        {phase === 'done' && <Text dimColor>{'Esc: close'}</Text>}
+      </Box>
+      {sections === undefined || sections.length === 0
+        ? <Box marginTop={1}><Text>{`Release notes could not be fetched at launch; the update is ${version}.`}</Text></Box>
+        : sections.map(s => (
+            <Box key={`v-${s.version}`} flexDirection="column" marginTop={1}>
+              <Text bold color={accent}>{s.version}</Text>
+              {s.lines.map((line, j) => (
+                <Box key={`l-${s.version}-${j}`}>
+                  <Text>{line}</Text>
+                </Box>
+              ))}
+            </Box>
+          ))}
+    </Box>
+  )
 }
 
 // The conversation cs launched is the one whose id cs recorded before the
@@ -193,11 +229,21 @@ async function isLead($: EngineInterface, cwd: string): Promise<boolean> {
   return lead !== undefined && lead === (await $.session.id())
 }
 
-// The session colour cs recorded, for the version headings; none is fine.
+// The /color palette as rgb, since the engine paints rgb(), #hex, ansi256(),
+// ansi: and theme keys but draws a bare name like `red` in the default ink. KEEP IN SYNC with _sgr in
+// bin/cs-statusline (tests/test_mod_rotate.sh pins every value here against it).
+const SESSION_PALETTE: Record<string, string> = {
+  red: '220,38,38', blue: '106,155,204', green: '22,163,74', yellow: '202,138,4',
+  purple: '130,125,189', orange: '217,119,87', pink: '196,102,134', cyan: '8,145,178',
+}
+
+// The session colour cs recorded, for the version headings; none, or a name
+// outside the palette, draws them in the default ink.
 async function sessionColor($: EngineInterface, cwd: string): Promise<string | undefined> {
   try {
     const state = await $.fs.read(`${cwd}/${STATE}`)
-    return state.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
+    const name = state.match(/^claude_session_color: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
+    return name !== undefined && Object.hasOwn(SESSION_PALETTE, name) ? `rgb(${SESSION_PALETTE[name]})` : undefined
   } catch { return undefined }
 }
 
@@ -332,7 +378,7 @@ async function runUpdate($: EngineInterface) {
         const cwd = await $.session.cwd()
         if (await mayWriteControlFiles($, cwd)) await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
       } catch (err) {
-        $.ui.toast(`cs-update: could not record the finished update: ${String(err instanceof Error ? err.message : err)}`)
+        $.ui.toast(TOASTS.notRecorded(String(err instanceof Error ? err.message : err)))
       }
     } else {
       const tail = stderr.split('\n').filter(l => l.trim() !== '').slice(-5).join('\n')

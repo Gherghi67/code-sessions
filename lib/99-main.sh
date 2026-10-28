@@ -36,6 +36,9 @@ cmd_vet_session() {  # session directory
 
 main() {
     cs_import_session_context
+    # This launch's arguments as given, for the relaunch an accepted update
+    # ends with: the arms below shift them away as they read them.
+    local -a launch_argv=("$@")
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
     # one). A teammate's shell carries CS_RESOLVED_FROM=walk deliberately, so
@@ -630,8 +633,13 @@ main() {
 
     check_dependencies "$engine"
 
-    # Check for updates (non-blocking)
+    # Check for updates (non-blocking), then offer one on a terminal before
+    # anything below opens or claims the session.
     check_update_notify
+    offer_update_at_launch ${launch_argv[@]+"${launch_argv[@]}"}
+    # The window mark _cs_tmux_window sets is the offer's alone: kept from
+    # everything this run starts.
+    unset CS_UNATTENDED
 
     if [ -n "$remote_flag" ]; then
         _remote_claude_bin "$remote_mode"

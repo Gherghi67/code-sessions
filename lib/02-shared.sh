@@ -1145,6 +1145,9 @@ cs_vault_holder_drop() {  # holders, pid
 # "<file> is not a regular file, so cs did not read it; left it unchanged".
 # That test comes first: -s is false for a FIFO or a device, as for a
 # missing file, so the size alone would pass one as a file cs creates.
+# Claude Code reads the file as one object, and every cs filter indexes it as
+# one, so valid JSON of another type returns 1 with "<file> holds a JSON
+# <type>, not an object; left it unchanged".
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 cs_settings_check() {  # file
     local reason
@@ -1154,7 +1157,15 @@ cs_settings_check() {  # file
         return 1
     fi
     [ -s "$1" ] || return 0
-    reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
+    if reason=$(jq -e . 2>&1 >/dev/null < "$1"); then
+        reason=$(jq -r 'type' < "$1")
+        case "$reason" in
+            object) return 0 ;;
+            *$'\n'*) CS_SETTINGS_ERROR="$1 holds more than one JSON value, not one object; left it unchanged" ;;
+            *) CS_SETTINGS_ERROR="$1 holds a JSON $reason, not an object; left it unchanged" ;;
+        esac
+        return 1
+    fi
     reason="${reason%%$'\n'*}"
     reason="${reason#jq: }"
     [ -n "$reason" ] || reason="jq found no JSON value in it, or only null or false"

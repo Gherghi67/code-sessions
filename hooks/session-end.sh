@@ -172,6 +172,11 @@ if command -v cs_run_guarded >/dev/null 2>&1; then
     fi
 fi
 
+# A feature whose retire /finish staged in the base: upstream mails the base
+# from here once it has removed the lock. In the fork the launcher releases
+# the lease after this hook, so the launcher sends that mail once the lease is
+# gone (_cs_run_mail_staged_base, lib/16-lifecycle.sh).
+
 # A session cs -encrypt built detaches its vault when the lead conversation
 # ends, so the next open asks for the password again. Claude Code still holds
 # the transcript under .cs/claude-config open while this hook runs, so a waiter

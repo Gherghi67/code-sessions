@@ -177,19 +177,60 @@ _spawn_window() {  # name, token, engine
 # Open a window named <window> running <cmd> in the cs-owned tmux session, and
 # leave its id in _CS_TMUX_WID. A global rather than printed: the options call
 # below would print into a capture, and error would end only the capture.
+# Nobody sits at a window cs opens, so <cmd> runs with CS_UNATTENDED=1: the
+# launch there does not offer a pending update (offer_update_at_launch),
+# whose question would hold it at that window for good.
 _CS_TMUX_WID=""
 _cs_tmux_window() {  # window, cmd
+    local cmd="env CS_UNATTENDED=1 $2"
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if _CS_TMUX_WID=$(_spawn_tmux new-session -d -s "${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_spawn_tmux new-session -d -s "${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
         # exact 'cs' was just created by new-session, so this cannot misfire.
         _spawn_tmux set-option -t "${CS_TMUX_SESSION:-cs}" @cs_managed 1
         return 0
     fi
-    _CS_TMUX_WID=$(_spawn_tmux new-window -t "=${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$2") \
+    _CS_TMUX_WID=$(_spawn_tmux new-window -t "=${CS_TMUX_SESSION:-cs}" -n "$1" -P -F '#{window_id}' "$cmd") \
         || error "tmux new-window failed for $1"
+}
+
+# The sections a feature's brief carries, the feature skill's shape: the
+# session that reads it has nothing else of the conversation that wrote it.
+FEATURE_BRIEF_SECTIONS="Goal
+Done when
+Constraints
+Context
+Review
+Report back"
+
+# The section headings a brief carries, one per line, as Markdown reads
+# them: a heading is `## ` and the title on a line of its own, with a CR, a
+# byte-order mark on the first line, and trailing blanks ignored, and a
+# line inside a ``` or ~~~ fence is text, not a heading. Bytes, whatever the
+# locale: under a UTF-8 locale awk reads the mark as characters and the
+# byte comparison below misses it.
+_brief_sections() {  # file
+    LC_ALL=C awk '
+        NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+        { sub(/\r$/, ""); sub(/[ \t]+$/, "") }
+        /^(```|~~~)/ { fence = !fence; next }
+        fence { next }
+        /^## / { print substr($0, 4) }
+    ' "$1"
+}
+
+# Refuse a feature brief that lacks a section, naming the first missing one.
+_require_feature_brief() {  # file
+    local section present
+    present=$(_brief_sections "$1")
+    while IFS= read -r section; do
+        grep -q -x -F -- "$section" <<< "$present" \
+            || error "cs -spawn --brief: $1 has no '## $section' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line"
+    done <<EOF
+$FEATURE_BRIEF_SECTIONS
+EOF
 }
 
 run_spawn() {
@@ -230,7 +271,9 @@ run_spawn() {
         shift
     done
     [ -n "$name" ] || error "$usage"
-    if ! cs_split_worktree_name "$name"; then
+    if cs_split_worktree_name "$name"; then
+        [ -z "$brief" ] || _require_feature_brief "$brief"
+    else
         validate_session_name "$name"
     fi
     # The spawner is whatever the environment says. It becomes the worker's

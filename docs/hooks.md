@@ -164,7 +164,9 @@ not start and gives way. Claude Code cancels a `SessionEnd` hook that runs past 
 timeout, and a claude that hook started may outlive it, so that claude may start, or
 stop, after the lead has exited. Under an ended claim every claude that is not the lead shows as
 a guest whether the lead still lives or not, so it neither rebinds the recorded
-conversation nor takes an armed rotation, the queue digest or the attention flag.
+conversation nor takes an armed rotation, the queue digest at its start or the
+attention flag. Its prompts do take the queue digest: `scope-prompt.sh` surfaces
+it on any claude's prompt.
 Once the lead has exited, a claude its hooks left running is no longer under the
 launch pid, so it cannot claim either. The fresh conversation the resume arm starts
 after a quick failure carries the launch pid and claims over the ended claim; behind a
@@ -198,10 +200,12 @@ claim, so the claude carrying the launch pid is its only lead until the next
 `cs <name>`, and every other claude under the launch shows as a guest. On the exec
 arm that is every `claude -p` the lead runs: it cannot rebind the recorded
 conversation or remove the lock, and it takes neither the armed rotation nor the
-queue digest nor the attention flag. On the resume arm, or behind a
+attention flag, nor the queue digest at its start (its prompts still take it
+through `scope-prompt.sh`). On the resume arm, or behind a
 `CLAUDE_CODE_BIN` that forks claude, the lead itself shows as a guest: no claude
 rebinds the recorded conversation or removes the lock at its end, a `/clear` loads
-no rotation, the digest stays unread, and its `Stop` raises no attention flag and
+no rotation, its start shows no queue digest (its prompts still do), and its
+`Stop` raises no attention flag and
 bounces no dock. An armed rotation stays armed and unconsumed, so the next
 `cs <name>` offers it. Its hooks do none of the lead's other work either: its `Stop`
 runs no queue drain, no mail wake and no rotation nudge and gives no narrative
@@ -265,7 +269,7 @@ attention flag. Its other two events do nothing: no mail wake, no rotation kick,
 watch re-armed. The check is one `git ls-files` per
 hook run, about 0.05 to 0.09 s. `prompt-rewriter.sh` asks once per run and writes no
 `rewrite.trace` while git tracks one; `memory-index-guard.sh` asks before each subcommand
-and refuses all three with exit 2, naming the file.
+and refuses all four with exit 2, naming the file.
 
 ## session-start.sh (SessionStart)
 
@@ -325,10 +329,11 @@ Registered for three events. On `CwdChanged` it only re-arms the maildir watch a
 On `Stop`, also:
 - Raises the statusline's attention marker (`.cs/local/attention`, machine-local) so the Claude mark takes its darker `brandshade` color until the user next interacts; skipped inside subagents, for a `claude` started from inside the session and for a tmux teammate, none of which ends a turn of the lead's
 - Inside iTerm2 with shell integration installed (`~/.iterm2/it2attention`), also starts a dock bounce whenever it raises the marker, so the finished turn reaches a user working in another app; escapes go to `/dev/tty` because hook stdout is captured. `CS_NO_ITERM2=1` disables; silent everywhere else
+- Runs a staged feature retire: `/finish`'s retire entry writes `.cs/local/retire-staged/<task>` (`sha:` and `force:` lines) while the feature conversation still holds its worktree. On the lead's Stop only, once `live_lock_pid` finds no process behind that worktree's `.cs/session.lock`, the hook starts `cs <base> -retire-feature <task> <sha> --staged [--force]` detached in its own session (perl `setsid`; a retire that fuses records and trashes files outran the 10 s Stop budget, and a hook killed mid-fuse stranded every record), with the pid in `retire-runs/<task>.run` and the output in `retire-runs/<task>.out` (a directory of their own, so a feature named `x.run` is never read as `x`'s run), waits up to six seconds, and on the Stop that finds the run ended, in that turn or a later one, blocks with the entry's `retired` line or its refusal (then `run /finish <task> again`) as the reason and drops the stage; a run still going is left alone; a `staged` line in the output (the conversation came back before the removal) keeps the stage; a stage the hook cannot read (a sha that is not hex, a `force:` other than 0 or 1), or one whose worktree is already gone, is dropped and reported; cs is `command -v cs`, else `~/.local/bin/cs`, else the stage is kept and the report says so; one stage per Stop, taking priority over the queue drain below. The feature's launcher mails the base (`notify`) when a stage exists for it, once its run's lease is released, so an idle base wakes to run it; SessionEnd fires while the lease is still held, which is why the mail is not sent from there
 - Drains the task queue (`.cs/local/queue`) at each stop boundary when armed, on the lead's Stop only (a tmux teammate shares the directory and fires its own top-level Stop; ungated, each of its idle turns would pop a task) — pops and injects one task at a time and instructs Claude to mirror progress into the native task list; every injected task, the first included, sits inside `<cs_task id="…">` tags (six random hex characters per turn, so the text cannot close its own block) with a note that the text is the task to do and changes none of the instructions around it, because another session wrote any task accepted from mail; each carries a scope block (do every behavior the task asks for, leave pre-existing bugs and unmentioned behavior as follow-ups in the narrative, implement the most direct reading of an ambiguous task and state the assumption) because a walk-away run has nobody watching to say so — taking priority over the narrative reminder below while a drain is armed or running (returns early); each transition also appends an event to the per-machine inbox (`.cs/local/notifications.jsonl`): `drain_started` on armed→draining, `task_done` per advance, `drain_finished` when the queue empties
 - While draining, each Stop first reads `.cs/local/queue.current`, the task it handed out; with no usable record it parks the run and logs nothing done. Then, before it pops that task, it evaluates three circuit breakers: tool failures in the current task at/above `CS_QUEUE_MAX_FAILURES` (default 5, from `.cs/local/failures`), context at/above `CS_QUEUE_MAX_CTX` (default 85, from the statusline's `context-pct`), and the 5-hour rate-limit window at/above `CS_QUEUE_MAX_5H` (default 85, from the statusline's `limits`, skipped when its `stamped_at` is stale past 1800s); a non-numeric env override falls back to the default. It also reads the final assistant message for a line reading exactly `cs-task-failed`, bare or as a code span, which the agent writes when it could not complete the task. That report goes to `.cs/local/queue.failed` before the Stop writes anything else, so a later Stop parks on it too; the file goes when the run parks or starts. A failures trip or a failure report means the task did not complete: it stays first in the queue, the Stop logs nothing done, and the run parks. A context or 5-hour trip measures the session, not the task: the Stop pops the task and logs it done, and the run parks before the Stop hands out the next one, or finishes when that was the last. A trip parks the queue (`queue.state` back to `idle`, recorded before the pop, the queue file left intact so `cs -queue start` re-arms; when the drain cannot write `idle` it removes `queue.state`, which reads as idle; when it can do neither, the Stop ends with nothing popped and `draining` in place, and the next Stop runs the same checks on the same task), appends a `breaker_tripped` event to the inbox with the reason and reading (`task_failed` for a failure report), and emits a `block` debrief naming what tripped and how many tasks remain. The drain reports any other state it cannot write as `cs task queue: could not write <path>`. The per-task failure count (`.cs/local/failures`) resets to zero on the armed→draining transition and again after every drain advance, so each task starts the breaker fresh
 - Spawned workers report back: when `.cs/local/spawned-by` exists, drain completion sends the spawner a mailbox notify and deletes the marker (one-shot); a breaker trip notifies but keeps the marker so the eventual drain still reports.
-- When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ queue N · start` key. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
+- When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ run N queued tasks` press. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
 - Rotation nudge: when context is at or above `CS_ROTATE_NUDGE_CTX` (default 65, non-numeric override falls back to the default) per the statusline's `context-pct`, and this conversation hasn't already been nudged (`.cs/local/rotate-nudged`, an append-only list of conversation UUIDs, so a tmux teammate sharing the directory cannot re-arm the lead's notice), emits a one-time `block` suggesting the `rotate` skill to write a handoff and arm it, after which the user runs `/clear` to continue in a fresh conversation. Only reached when the queue isn't gating or draining above — an armed/draining queue owns the turn loop
 - Both context tiers below read `.cs/local/context-pct`, which the status line writes for the launched conversation alone, so both stay silent in a tmux teammate: the reading is the lead's, and a teammate acting on it would announce the lead's context as its own.
 - Context warning: one tier below the nudge — when context is in the `[CS_CTX_WARN_CTX, CS_ROTATE_NUDGE_CTX)` band (defaults 40 to 65; a non-numeric override falls back to its default) and this conversation hasn't been warned (`.cs/local/ctx-warned`, an append-only list of conversation UUIDs, so a tmux teammate sharing the directory cannot re-arm the lead's notice), emits a one-time `block` telling Claude to let the user know context crossed into wind-down territory. At or above the nudge threshold only the rotation nudge fires — never both in one Stop
@@ -403,13 +408,13 @@ Ships in `hooks/` and deploys alongside the hooks, but Claude Code never invokes
 
 Claude Code binds `chat:externalEditor` to `ctrl+g` (also `ctrl+e` and `ctrl+x ctrl+e`). Pressing it writes the composer buffer to `<tmpdir>/claude-prompt-<uuid>.md`, runs `$EDITOR` on that file, reads it back, and replaces the composer with the result when it differs. cs points `EDITOR`/`VISUAL` at `prompt-rewriter.sh` when it launches a session, so the round-trip becomes a rewrite: type a rough prompt, press `ctrl+g`, and the composer holds a precise engineering request you can review, edit and send. Nothing is sent on your behalf.
 
-The shim hands every file that is **not** named `claude-prompt-*.md` to your real editor (captured as `CS_REAL_EDITOR` before cs overrides `EDITOR`), so `/memory` and opening a transcript still work normally. It passes the buffer through untouched when it is empty, starts with `/`, `!` or `#`, or carries a `[Pasted text …]` or `[Image …]` placeholder — the buffer holds those placeholders rather than the pasted bodies, so rewriting one would destroy the attachment. Every failure path leaves the buffer exactly as typed: a rewriter that errors, times out, or returns empty loses nothing.
+The shim hands every file that is **not** named `claude-prompt-*.md` to your real editor (captured as `CS_REAL_EDITOR` before cs overrides `EDITOR`), so `/memory` and opening a transcript still work normally. It passes the buffer through untouched when it is empty, starts with `/`, `!` or `#`, or carries a `[Pasted text …]` or `[Image …]` placeholder — the buffer holds those placeholders rather than the pasted bodies, so rewriting one would destroy the attachment. Every failure path leaves the buffer exactly as typed: a rewriter that errors, times out, or returns empty loses nothing. A rewriter that finds the prompt already precise replies `=` alone, and the buffer stays as typed without waiting for the model to repeat it. A rewrite that drops a string the agent must find or run exactly as written (a code span, URL, path, `--flag` or `-verb`, `snake_case` or `SCREAMING_CASE` name, `@mention`, file name or "quoted phrase") still lands, followed by one line, `Kept from the original: …`, naming each dropped string in the order the prompt gave them, so the review before sending sees what went missing. The check is literal and case-sensitive: a name whose case changed counts as dropped. A code span or quoted phrase counts as kept when the rewrite carries its text, with or without the backticks or quotes. The line names a file name or relative path whole, every dot and hyphen up to its extension, and never names part of a dotted name that ends in no extension, like `dtype.float16`.
 
-The default rewriter, `prompt-rewriter-model.sh`, calls a fast model with the prompt as untrusted data. It runs hermetically — its own config directory, a neutral working directory, and the session's context variables stripped from its environment — because a nested `claude` otherwise inherits the project's `CLAUDE.md` and cs's own memory, and those leak into the rewrite: a request to add a flag came back demanding TDD, bash 3.2 compatibility and a README update that the user never asked for. It authenticates as **you**, through your claude.ai login, and never through an ambient `ANTHROPIC_API_KEY`. Claude Code prefers such a key over the login, so a stale or rotated one takes every rewrite down — and not quickly, because a rejected key sends the call into retries until the timeout, which reads as `ctrl+g` silently doing nothing. So `ANTHROPIC_API_KEY` is dropped from the child's environment — and only it. `ANTHROPIC_AUTH_TOKEN` is checked identically in both modes, so a dead one breaks the parent's own session and the user already knows; stripping it would also strand proxy users, whose `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` remain and would receive a keychain bearer token. The rule is to scrub exactly the credentials whose precedence differs between the parent and the child. Isolating the config directory does not come with credentials: Claude Code derives the keychain service name from that directory (`` `Claude Code…-credentials${o}` `` where `` o = r ? "" : `-${sha256(configDir).digest("hex").substring(0,8)}` ``), so an isolated dir asks for an item that was never created and reports `Not logged in`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` overrides which directory that hash is taken from, so the shim mirrors whatever the parent resolved — empty when the parent has no config directory of its own, which is the value that drops the suffix, and the parent's own directory otherwise, since that user's login lives under its hash. Config stays isolated while the call reaches the real login.
+The default rewriter, `prompt-rewriter-model.sh`, calls a fast model with the prompt as untrusted data. It runs hermetically — its own config directory, a neutral working directory, and the session's context variables stripped from its environment — because a nested `claude` otherwise inherits the project's `CLAUDE.md` and cs's own memory, and those leak into the rewrite: a request to add a flag came back demanding TDD, bash 3.2 compatibility and a README update that the user never asked for. It authenticates as **you**, through your claude.ai login, and tries that first without an ambient `ANTHROPIC_API_KEY`. Claude Code prefers such a key over the login, so a stale or rotated one takes every rewrite down — and not quickly, because a rejected key sends the call into retries until the timeout, which reads as `ctrl+g` silently doing nothing. So the first attempt drops `ANTHROPIC_API_KEY` from the child's environment — and only it. With the key set, a first attempt that fails gets one retry with the key kept: on `Not logged in`, which is what a user whose only credential is a Console API key gets, or on any other failure that came back in under five seconds, since an attempt that spent the timeout leaves nothing for a second one. `ANTHROPIC_AUTH_TOKEN` is checked identically in both modes, so a dead one breaks the parent's own session and the user already knows; stripping it would also strand proxy users, whose `ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS` remain and would receive a keychain bearer token. The rule is to scrub exactly the credentials whose precedence differs between the parent and the child. Isolating the config directory does not come with credentials: Claude Code derives the keychain service name from that directory (`` `Claude Code…-credentials${o}` `` where `` o = r ? "" : `-${sha256(configDir).digest("hex").substring(0,8)}` ``), so an isolated dir asks for an item that was never created and reports `Not logged in`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` overrides which directory that hash is taken from, so the shim mirrors whatever the parent resolved — empty when the parent has no config directory of its own, which is the value that drops the suffix, and the parent's own directory otherwise, since that user's login lives under its hash. Config stays isolated while the call reaches the real login.
 
-**Forcing the API arm.** Appending `-api` to a provider name — `gemini-api`, `openai-api` — reaches that vendor's API even when its CLI is on PATH. It exists because agy's catalogue carries no lite models (eleven entries, and `gemini-3.5-flash-lite` and every variant of it are rejected as unrecognised), while the lite tier is the fastest option measured anywhere. On a machine with both CLIs installed: `gemini` 7.3s against `gemini-api` 0.9s, `openai` 12.8s against `openai-api` 2.0s. `claude-api` is the third: it posts to Anthropic's Messages endpoint rather than driving the Claude Code agent, which is what makes the bare `claude` default take roughly thirteen seconds — that call ships Claude Code's system prompt and tool schemas every time, measured at 35k tokens for a ten-token prompt. Each `-api` arm needs that vendor's key (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) and declines without one, leaving the prompt as typed. Bare `claude` has no suffix-free API form on purpose: it *is* the default rewriter, and it authenticates through your claude.ai login rather than a key.
+**Forcing the API arm.** Appending `-api` to a provider name — `gemini-api`, `openai-api` — reaches that vendor's API even when its CLI is on PATH. It exists because agy's catalogue carries no lite models (eleven entries, and `gemini-3.5-flash-lite` and every variant of it are rejected as unrecognised), while the lite tier is the fastest option measured anywhere. On a machine with both CLIs installed: `gemini` 7.3s against `gemini-api` 0.9s, `openai` 12.8s against `openai-api` 2.0s. `claude-api` is the third: it posts to Anthropic's Messages endpoint rather than driving the Claude Code agent, which is what makes the bare `claude` default take roughly thirteen seconds — that call ships Claude Code's system prompt and tool schemas every time, measured at 35k tokens for a ten-token prompt. Each `-api` arm needs that vendor's key (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) and declines without one, leaving the prompt as typed. Bare `claude` has no suffix-free API form on purpose: it *is* the default rewriter, and it authenticates through your claude.ai login, reaching for a key only on the retry above.
 
-**Rewriting with OpenAI or Gemini.** `CS_REWRITE_PROVIDER=openai` or `=gemini` routes the rewrite to `prompt-rewriter-vendor.sh` instead. Each provider prefers that vendor's CLI when its binary is on PATH — `codex` and `agy` respectively — and falls back to the vendor's API, reading `OPENAI_API_KEY` or `GEMINI_API_KEY` from the environment, when it is not. This mirrors the claude-council's `prefer_cli_over_api` policy and for the same reason: the CLI carries your subscription and spends no API credit. It costs about ten seconds against about one for the API arm, and the interface is frozen throughout, so the trade is real in both directions. With neither a CLI nor a key the rewrite declines and your prompt stays as typed, which is also what an unknown provider name does.
+**Rewriting with OpenAI or Gemini.** `CS_REWRITE_PROVIDER=openai` or `=gemini` routes the rewrite to `prompt-rewriter-vendor.sh` instead. Each provider prefers that vendor's CLI when its binary is on PATH — `codex` and `agy` respectively — and falls back to the vendor's API, reading `OPENAI_API_KEY` or `GEMINI_API_KEY` from the environment, when it is not. This mirrors the claude-council's `prefer_cli_over_api` policy and for the same reason: the CLI carries your subscription and spends no API credit. It costs about ten seconds against about one for the API arm, and the interface is frozen throughout, so the trade is real in both directions. With neither a CLI nor a key the rewrite declines and your prompt stays as typed. An unknown provider name runs the default rewriter instead, so a typo costs you the choice of model, never your prompt.
 
 **Rewriting with Grok.** `CS_REWRITE_PROVIDER=grok` (or `xai`) routes to xAI's OpenAI-compatible endpoint, reading `XAI_API_KEY` or `GROK_API_KEY`. There is no `grok-api` spelling because xAI ships no rewriter CLI: there is nothing to prefer and so nothing for a suffix to reach past. The default model is `grok-4.3`, chosen by measurement rather than by recency. Over 8 prompts run twice against every candidate, `grok-4.3` preserved every unspecified thing as an open item; the much faster `grok-4.20-0309-non-reasoning` resolved them by fiat in 7 of 10 vague prompts — answering `Use jq.` to "should i use jq or awk here?", picking a database unprompted, and once returning the input verbatim. A rewriter that decides for you is worse than no rewriter. Note that Grok is not faster than what already ships: `gemini-flash-lite-latest` was the quickest model measured and matched `grok-4.3` on fidelity.
 
@@ -421,15 +426,15 @@ Three failure modes here are not the ones the contract anticipates. `agy` prints
 
 The progress screen names the engine and the model — `agy · gemini-3.6-flash-low`, `api · gemini-flash-lite-latest`, or a bare `codex` when the CLI resolves its own model and cs cannot know it. Both come from the vendor rewriter's own `--label`, which the shim calls before painting: repeating the CLI-or-API test in the shim would be a second copy of it, free to drift into a header that says `api` while `agy` is answering. `--label` is answered before the prompt is read, because the shim calls it without writing anything and a script that read stdin first would hang the interface on a pipe nobody fills.
 
-Override the whole thing with `CS_REWRITE_CMD` (stdin to stdout, non-zero to decline). It outranks `CS_REWRITE_PROVIDER`: it is the older and wider contract, and a user who set it has already said exactly what they want run. Opt out per-session: `export CS_REWRITE_DISABLE=1`, which also leaves your `$EDITOR` untouched.
+Override the whole thing with `CS_REWRITE_CMD` (stdin to stdout, non-zero to decline, `=` alone to keep the prompt as typed). It outranks `CS_REWRITE_PROVIDER`: it is the older and wider contract, and a user who set it has already said exactly what they want run. Opt out per-session: `export CS_REWRITE_DISABLE=1`, which also leaves your `$EDITOR` untouched.
 
-Claude Code runs the editor with `spawnSync` and `stdio:"inherit"`. The shim's basename matches none of its known GUI editors, so it takes the `enterAlternateScreen()` branch and blanks the interface for the length of the rewrite, roughly ten to twenty seconds on the default model. The shim owns that screen and fills it, in one of four styles set by `CS_REWRITE_PROGRESS`: `screen`, `native`, `line` and `static`. `screen`, the default, shows a header with the model, a rule, and the prompt being rewritten (folded, capped at eight lines with a `… prompt clipped` marker) above a spinner and Claude Code's own `Working…` label, which gains the elapsed in parentheses after five seconds. It draws in the cs palette from `lib/05-term.sh`, inlined because a deployed hook cannot source that file and keyed on the `CS_TERM_THEME` cs exports: `cs` in the brand accent, the prompt in primary ink, chrome muted, and nothing at all under `NO_COLOR`. `native` is one line anchored where the composer was, written in Claude Code's own idiom — a sentence-case gerund with the elapsed in parentheses, and no elapsed at all under five seconds, matching `m = f >= 5 ? ${d} (${f}s) : d` in its CLI progress renderer. `line` is a single centred line with a spinner and a clock. Neither echoes the prompt, so a pasted secret never reaches the screen. `static` prints one line and never repaints, which costs the only liveness signal there is: a wedged rewrite then looks exactly like a working one. An unrecognized value falls back to `screen` rather than restoring the blank screen the feature exists to remove. Tearing down the alternate screen discards it, so nothing reaches the scrollback.
+Claude Code runs the editor with `spawnSync` and `stdio:"inherit"`. The shim's basename matches none of its known GUI editors, so it takes the `enterAlternateScreen()` branch and blanks the interface for the length of the rewrite, roughly ten to twenty seconds on the default model. The shim owns that screen and fills it, in one of four styles set by `CS_REWRITE_PROGRESS`: `screen`, `native`, `line` and `static`. `screen`, the default, leads with the prompt being rewritten (folded, capped at eight lines with a `… prompt clipped` marker) beside a margin rule that breathes slowly between the muted tone and the accent. Under it a muted `rewriting` line carries the engine and the model at its right, and under that a bar counts down the seconds left against `CS_REWRITE_TIMEOUT`, ending in `Ns left`. A rewriter that does not bound itself (a `CS_REWRITE_CMD`, the default rewriter without `timeout` or `gtimeout`, or a vendor one without `perl`) gets the elapsed seconds instead. It draws in the cs palette from `lib/05-term.sh`, inlined because a deployed hook cannot source that file and keyed on the `CS_TERM_THEME` cs exports: the prompt in primary ink, the bar's remaining part in the accent, chrome muted, and no colour at all under `NO_COLOR`. `native` is one line anchored where the composer was, written in Claude Code's own idiom — a sentence-case gerund with the elapsed in parentheses, and no elapsed at all under five seconds, matching `m = f >= 5 ? ${d} (${f}s) : d` in its CLI progress renderer. `line` is a single centred line with a spinner and a clock. Neither echoes the prompt, so a pasted secret never reaches the screen. `static` prints one line and never repaints, which costs the only liveness signal there is: a wedged rewrite then looks exactly like a working one. An unrecognized value falls back to `screen` rather than restoring the blank screen the feature exists to remove. Tearing down the alternate screen discards it, so nothing reaches the scrollback.
 
-You cannot interrupt a rewrite from the keyboard, and the screen does not pretend otherwise. The terminal delivers `ctrl+c` to the whole foreground process group, which contains Claude Code itself, so the keystroke ends the session rather than the rewrite. No handler in a spawned shim can intercept a signal the tty sends to its parent as well. `CS_REWRITE_TIMEOUT` is the only bound, which is why the screen shows elapsed time against it.
+You cannot interrupt a rewrite from the keyboard, and the screen does not pretend otherwise. The terminal delivers `ctrl+c` to the whole foreground process group, which contains Claude Code itself, so the keystroke ends the session rather than the rewrite. No handler in a spawned shim can intercept a signal the tty sends to its parent as well. `CS_REWRITE_TIMEOUT` is the only bound, which is why the screen shows the time against it.
 
 The shim still handles `INT` and `TERM`, for the case where it receives one anyway. The handler exists to reap, not to cancel: it signals the rewriter's whole process group, restores nothing because it has written nothing, and exits 0. Without it, a shim dying alongside its session would orphan the `claude -p` it started — detached, invisible, and still billed until it finished. That matters most in exactly the situation nothing can prevent.
 
-Every invocation appends one line to `.cs/local/rewrite.trace` naming the path it took — `exit passthrough-prefix`, `exit real-editor`, `rewriter-forked`, `exit rewritten`, and so on. This shim is driven by a keypress and draws onto a screen that is torn down, and each of its do-nothing paths leaves the buffer byte-identical, so without the trace a rewrite that declined, one that was disabled, and one that was never a composer buffer at all are indistinguishable after the fact. The trace is machine-local and written only when `CLAUDE_SESSION_META_DIR` resolves to a real session. It goes through `cs-shared.sh`'s writers, which refuse a link out of the session: the shim loads the library from beside itself at the first trace, after a `bash -n` check, and writes no trace when the library is missing or does not parse. An [encrypted session](session-layout.md#encrypted-sessions) keeps the trace in `.cs/private/`; with its vault locked, the shim writes none. While git tracks a file in `.cs/local` (or `.cs/private`), the shim writes no trace.
+Every invocation appends a `start` line to `.cs/local/rewrite.trace`, naming the provider and the file, then a line for each step it reaches, the last naming the path it took: `exit passthrough-prefix`, `exit real-editor`, or `rewriter-forked` and then `exit rewritten`, and so on. This shim is driven by a keypress and draws onto a screen that is torn down, and each of its do-nothing paths leaves the buffer byte-identical, so without the trace a rewrite that declined, one that was disabled, and one that was never a composer buffer at all are indistinguishable after the fact. The trace is machine-local and written only when `CLAUDE_SESSION_META_DIR` resolves to a real session. It goes through `cs-shared.sh`'s writers, which refuse a link out of the session: the shim loads the library from beside itself at the first trace, after a `bash -n` check, and writes no trace when the library is missing or does not parse. An [encrypted session](session-layout.md#encrypted-sessions) keeps the trace in `.cs/private/`; with its vault locked, the shim writes none. While git tracks a file in `.cs/local` (or `.cs/private`), the shim writes no trace.
 
 Every drawing path checks `[ -t 2 ]` first, so a piped or scripted run emits nothing.
 
@@ -465,7 +470,7 @@ Every drawing path checks `[ -t 2 ]` first, so a piped or scripted run emits not
 
 A run the deadline below stops early ends `budget=1500`, `skip`, `exit` instead of running the scan stages.
 
-**Own deadline.** The hook checks its own clock once, after the classifier and before the scan stages (`tokens`, `scan`, `gitlog`, `gitdiff`), through the same builtins the trace reads. Past `CS_SCOPE_BUDGET_MS` (1500 by default; a value that is not a number is the default, as is a value of one tick or less, 1000 ms, on a shell without `$EPOCHREALTIME`, whose clock ticks in whole seconds) it gives up the scope block, puts one line in its place (`Scope: skipped, slow machine (...)`, so the model knows to locate the files itself), writes a `skip` stage to the trace and exits through the digest path: the queue and mail digests, the date note and the clarify guideline still arrive. Measured: the front half takes under 300 ms idle and about 1.7 s at a load of 25 (a full test suite on the same box), and it was the scan running on from there that the 3 s registration killed, taking the digests with it. The registered timeout is 10 s and stays the backstop for a scan that is itself slow. It was 5 s until a run in a loaded session was killed before its clock had even started: its trace held no line at all, while the other UserPromptSubmit hooks on the same prompt took 2.3 s to answer.
+**Own deadline.** The hook checks its own clock once, after the classifier and before the scan stages (`tokens`, `scan`, `gitlog`, `gitdiff`), through the same builtins the trace reads. Past `CS_SCOPE_BUDGET_MS` (1500 by default; a value that is not a number, or runs past seven digits, is the default, as is a value from 1 to 1000, one tick or less, on a shell without `$EPOCHREALTIME`, whose clock ticks in whole seconds; 0 skips the scan on every prompt) it gives up the scope block, puts one line in its place (`Scope: skipped, slow machine (...)`, so the model knows to locate the files itself), writes a `skip` stage to the trace and exits through the digest path: the queue and mail digests, the date note and the clarify guideline still arrive. Measured: the front half takes under 300 ms idle and about 1.7 s at a load of 25 (a full test suite on the same box), and it was the scan running on from there that the 3 s registration killed, taking the digests with it. The registered timeout is 10 s and stays the backstop for a scan that is itself slow. It was 5 s until a run in a loaded session was killed before its clock had even started: its trace held no line at all, while the other UserPromptSubmit hooks on the same prompt took 2.3 s to answer.
 
 A run that overruns the hook's timeout leaves a trail that stops mid-run, which names the stage it hung on — the only evidence such a run ever produces, since it never reaches an exit where it could write a summary. A trail ending anywhere but `exit` or `emit` marks a killed run. Before anything that can stall (the library parse-check, its source, the session resolve), a run in a cs-launched session writes a `launch` line carrying absolute epoch milliseconds, so a run killed before the trace opens still leaves that one line: `launch` with no `start` after it means the process started and stalled in its first forks, and no `launch` at all means it never ran. The line needs an existing `.cs/local/` and creates nothing itself. It reads `$EPOCHREALTIME` without a fork; bash 3.2 has no builtin epoch clock, so there one `date` fork supplies whole seconds, and a `date` that stalls leaves no line. The rest of the trace reads the clock through shell builtins only (`$EPOCHREALTIME`, or `$SECONDS` on bash 3.2), so it adds no forks to a hook already under suspicion for running slow. The file is machine-local — which machine was slow is half the finding — and one run in 64 trims it to its last 2000 lines. Opt-out per-session: `export CS_SCOPE_TRACE_DISABLE=1`.
 
@@ -476,7 +481,14 @@ Ships inside the sweep skill (`skills/sweep/scripts/`) and deploys with it, so i
 - `snapshot` copies `MEMORY.md` to `.cs/local/memory-index.snapshot` and the memory archive to `.cs/local/memory-archive.snapshot` (both in `.cs/private/` in an encrypted session, exit 2 while its vault is locked), before the sweep edits anything. A file that does not exist yet (Claude Code writes `MEMORY.md` with the first memory entry; the first demotion writes the archive) gets an empty snapshot; outside a session root (no `.cs/memory`) it exits 2.
 - `check` exits 1 and names each problem: a pointer that was in `MEMORY.md` or the archive at the snapshot and is in neither now (`removed:`); a pointer whose entry file is not in `.cs/memory/` (`dangling:`); a pointer in both `MEMORY.md` and the archive (`duplicate:`); an entry in the four memory buckets (`user_`, `feedback_`, `project_`, `reference_`) with no pointer in either file, or the archive with no pointer in `MEMORY.md` (`unindexed:`); and a `MEMORY.md` over the 24400-byte or the 196-line budget (`over budget:`). It names a pointer that left `MEMORY.md` for the archive `demoted:` and passes it. A pointer is a line opening with `- [title](file)`; a link later on that line is supporting text. A pointer names an entry file only when its target is a bare file name ending in `.md` with no `/` and no `:`, so a URL or a `file.md#section` link is not checked for `dangling:`, in either file. It counts lines as Claude Code does before its 200-line cut, never fewer: every line, blank and heading lines too, a last line with no newline, and a lone CR, U+2028 or U+2029 each as a line break. It always prints the size and the line count against their budgets. With no snapshot of either file, an unreadable one, or no `MEMORY.md` it exits 2, so a skipped snapshot never passes as a clean rewrite. The bucket check covers entries written after the snapshot and a second sweep that snapshotted an index the first had already damaged; the snapshot itself is one per session, so two concurrent sweeps share it.
 - `restore` copies the `MEMORY.md` snapshot back byte for byte and leaves the archive alone: a pointer the sweep moved into the archive is then in both files, and `check` names it `duplicate:`.
-- While git tracks a file in `.cs/local` (or `.cs/private`), all three exit 2 and name the file, so the guard never restores a committed snapshot over `MEMORY.md` and writes none beside it.
+- `refs` scans entry bodies outside fenced code and closed frontmatter for backticked `_cs_`/`cs_` identifiers, `cs -verb` commands and relative paths matching `^[A-Za-z0-9._/:-]+$`, stripping one trailing `/` and one trailing `:<digits>` or `:<digits>-<digits>` for lookup. It accepts basenames ending in `.sh`, `.md`, `.rs`, `.mjs` or `.json` and paths containing `/`; paths need a lowercase letter and a letter or digit before the last dot, cannot start with `-`, and skip branch prefixes `feat fix perf chore docs ci test refactor release` and host first segments ending in `.com`, `.org`, `.net`, `.io`, `.dev` or `.ai`. It prints sorted `dead: <entry file>: <token>` lines with the original token or `ok: <N> references in <M> entries, none dead`, and exits 0 for either report or 2 when `.cs/memory/` is missing or a search fails without a hit.
+- While git tracks a file in `.cs/local` (or `.cs/private`), all four exit 2 and name the file, so the guard never restores a committed snapshot over `MEMORY.md` and writes none beside it.
+
+The scanner strips one leading `./` from exact paths, checks files and directories on disk, and requires each path to resolve inside the session root. Only basenames and identifiers use git's tracked and untracked, non-ignored regular files minus deleted files plus `.cs/` (without entering submodules), or the pruned walk outside git; basenames match the final component, and identifier searches exclude `.cs/`.
+
+Verb lookup uses the installed `cs` found on `PATH`, falls back to `bin/cs`, and skips verbs when neither exists. Each scan resolves and counts a token once, but reports a dead token once in every entry that contains it.
+
+`refs` skips and does not count a reference followed immediately on the same line by ` (gone YYYY-MM-DD)`, such as `` `hooks/old.sh` (gone 2026-10-22) ``.
 
 `check` never restores on its own. A sweep that pushes the file over budget by adding a pointer has to demote or compress other pointers, and an automatic restore would throw the new pointer away, leaving its entry unindexed.
 
@@ -486,30 +498,144 @@ Ships inside the sweep skill (`skills/sweep/scripts/`) and deploys with it, so i
 inside Claude Code's own process rather than a shell script it spawns. It adds
 one key to conversation rotation. Once the context window reaches 40% (the
 status bar's warn band, where the Stop hook gives its headroom notice), the band
-directly above the prompt draws `rotate this conversation`, pressed by
-Ctrl+X 1.
+directly above the prompt draws `rotate`, pressed by Ctrl+X 1.
 `CS_ROTATE_BUTTON_CTX=<percent>` in the shell that launches cs moves it; unset
 or not a number, the band follows the bar's own warn band
-(`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one capsule in the
-status bar's idiom, with a blank line above it: a `cs` chip on the session's
-own colour (Claude coral once a handoff is armed; on the surface, in the
-terminal's ink, for a session with no colour), then the keys on the bar's own
-capsule fill, a shade of the terminal background nudged a tenth away from
-itself, darker on a light terminal and lighter on a dark one, so the band reads
-as one more capsule of the bar rather than as the last row of the transcript.
-cs measures that background at launch and exports it (`CS_TERM_BG_RGB`);
-without the measurement the band keeps the spacing and paints no fill behind
-the keys, since a guessed surface can leave the engine's own text unreadable on
-it. The bar's rounded caps close the capsule where this machine agreed to
-them, by the bar's own rule (`CS_STATUSLINE_CAPS`, else the answer in
-`~/.config/cs/statusline-caps`), and only over a measured background. The
-percentage itself stays on the status bar: the band does not repeat it.
+(`CS_STATUSLINE_CTX_WARN`, 40 by default). The band is one thin line above
+the prompt, two columns in where Claude Code draws its own footer, with a
+blank line above it, in two zones. At the left stand the
+actions, what a key or a press does now, and the queue's count; at the line's right edge stand the
+words that say what the session is, then the prompt the rail names, then the
+rail of prompts, ending in the line's last cell. Items in a zone stand three cells apart; after the
+last key (a chord, or the armed handoff's count) a dim `·` stands in the middle of those three cells,
+parting the keys from the presses and words after it. The line's free
+cells fall between the zones, never fewer than three, so the right edge holds
+still while the actions come and go. Where the keys'
+chords share a prefix (`ctrl+x 1`, `ctrl+x 2`) the prefix is spelled once,
+bold in the theme's `subtle` gray, and each key's own last word stands beside
+its label in the session's
+colour: `ctrl+x 1 rotate   2 wrap   #4 say four   │││┃` on the narrowest line
+that holds it. Chords that differ are spelled whole. In order, and each
+only when it applies, the actions are `rotate` (or `/clear now` once a
+handoff is armed, then `in Ns`, the armed handoff's count, which leaves the
+line before `/clear now` would shrink to its bare key), `wrap`, `feed`
+and the queue's start press, `▤ run N queued tasks` (`▤ run 1 queued task`
+for one), or in its place the queue count below: `ctrl+x 1 rotate   2 wrap · ▤ run 2 queued tasks`.
+The queue's `▤` draws in the amber the status line gives its queue count. The right edge carries the features
+word, `finishing <task> · gate <elapsed>` while a `/finish` gate runs, and
+the mail count below. The band
+paints nothing else from the measured background (`CS_TERM_BG_RGB`) and reads no
+caps answer; only the amber of the count and of the queue's `▤` still read the
+measurement. The percentage itself stays on the status bar: the band does not
+repeat it.
+
+The rail draws only when the `/config` row `cs.bandPrompts` is on (it is
+off by default; see [configuration.md](configuration.md#band-settings)).
+It is one upright bar per prompt the person sent in this conversation: `│` dim, `┃` dim too for the prompt the band
+names (its heavier stroke marks it), `┆` dim for a prompt the engine refused to scroll to. The band names
+the newest prompt; with the `/config` row `cs.bandPrompt` set to `read` it
+names the prompt being read instead (the prompt whose row stands highest on
+screen, from the engine's own on-screen reports of the transcript's rows)
+and follows the scroll (see
+[configuration.md](configuration.md#band-settings)). A press on a bar scrolls the transcript so that
+prompt's row is at the top. The band's focus ring never lands on a bar:
+the keyboard route is `/cs next`, `/cs prev`, `/cs first`, `/cs last` and
+`/cs N`, which move the same way from the prompt being read, mid-turn too,
+for keybindings. A
+refusal is toasted once a session; a prompt no row has drawn since a resume
+toasts `cs: that prompt is not on screen yet` once. The prompts come from the
+session's transcript (`~/.claude/projects/<slug>/<id>.jsonl`, or
+`CS_TRANSCRIPTS_DIR`, or an encrypted session's own `.cs/claude-config/projects`),
+read again after each turn and at session start only when its size or
+modification time moved, and only its live branch is listed: a `/rewind`
+drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
+results, slash-command echoes, hook feedback, task notifications, a
+teammate's message and the interrupt the engine writes when you stop a turn
+are not prompts. The rail ends in the line's last cell, so the actions at
+the left never move it while the line has room for every bar. At
+most `cs.bandBars` bars draw (10 by default), in what the line leaves after
+the inset and the words, and the named bar always among them: the bars
+reach the newest prompt, or start at the named one when that prompt
+predates their reach. The older prompts collapse into one dim `…N` run at the rail's
+start, a cell before the first bar, and the newer into one dim `M…` run at
+its end, a cell after the last: `#7 step 7   …6 ┃││││ 3…` with the seventh
+of fourteen prompts named under `cs.bandPrompt` `read` and `cs.bandBars` at 5. The rail keeps its
+least: the named bar alone, the older prompts folded into `…N` before it
+and the newer into `M…` after it, and three cells before that. The words fit what that leaves, so the queue count and the right edge's
+words drop, a right-edge word shortens, and the keys lose their words before the rail goes:
+`1 rotate   2 wrap · ▤ run 2 queued tasks   3 features · fix-auth…   …13 ┃`
+on a 75-column line with fourteen prompts, every action, the features word
+and `mail 1`: the mail word drops, the shared prefix goes and the features
+word shortens. A right-edge word never shortens past its head, the words
+before its first `·`, and `…` (`3 features…`): a cut into the head, such as
+`1…`, says nothing, so the word leaves instead and the band fits the line
+again without it. The queue's start button keeps its count whole when it
+shortens: `▤ run 12…` fits, and a cut into the count, such as `▤ run 1…`,
+would name another number, so the button cuts to `▤…` instead. The
+actions outrank the rail: where one would leave the line whole beside that
+least, the words take the whole line, the rail draws in what they leave, and
+a line too narrow for any bar draws no rail. Three cells before the bars, and three cells after any
+word before it, the band names its prompt, `#N` and its first line (up to 80
+characters),
+italic in the theme's light `subtle` gray, cut with `…` when the line is narrower, counted in terminal cells
+so a wide character takes two; under ten cells left it names none, and the
+rail still ends in the line's last cell. The three cells keep a `…N` run from
+reading as the end of a cut name. The name
+is as wide as the widest prompt it can show, the named one or a drawn bar's,
+padded on its left so it ends three cells before the bars, so a swap never
+moves the bars or the words before it. On the
+terminal a bar under the pointer swaps its own prompt into that place,
+in the same light gray as the named one, until the pointer leaves; the swap follows the mouse, so it
+needs Claude Code to receive mouse events (`CLAUDE_CODE_DISABLE_MOUSE` turns
+them off). Other
+surfaces name the band's own prompt only, since the desktop app paints a card
+over a line without hiding what is under it. A conversation with
+one prompt draws no rail; a `/clear` empties it, and the rail, like the keys,
+draws only in the lead conversation of a cs session.
+
+Unless a `/finish` gate runs, the first word at the band's right edge is the
+state of the session's features,
+read from
+`cs <base> -features --porcelain` after each turn and at session start,
+without holding either up, and every 30 s while the band is idle once cs has
+been asked. Only the lead conversation asks cs, and a base asks only while
+the sessions root holds a `<base>@<task>` directory: a feature `/feature`
+makes shows when that turn ends. In a base, one feature ready reads
+`1 feature · fix-auth ready` (or `3 features · fix-auth ready`) and a press
+runs `/finish fix-auth`; two or more ready read `3 features · 2 ready` and a
+press runs `/finish`, which lists them and asks which; none ready reads
+`1 feature · fix-auth dirty` or `3 features · none ready`, dim, with no
+press. `ready` is `_feature_readiness`'s own word; ready with no commit ahead
+of the base reads `no commits`. A feature session (`base@task`) draws no
+features word and asks cs nothing: `/finish` lands a feature only from its
+base, whose word names it. A cs that fails, cannot start,
+or prints a record that is not ten fields with a whole `ahead` and a known
+state draws no word, and the mod logs it once.
+
+Two counts draw with no press, each only when it has something to count.
+`▤ queue N` stands at the left, where the queue's start press would, while
+the cs queue holds tasks but its start press is not offered (the queue is
+armed or draining, a turn runs, or an armed handoff's clear key stands
+alone). It reads `▤ queue N running` while the queue runs (armed or draining),
+its `▤` amber and the rest dim. `mail N`, dim, comes after the right edge's
+other words: the `.json` files in the session's mailbox `mail/new/` that
+`cs -msg` has not read yet. Both are read behind `.cs/private` in an
+encrypted session and in `.cs/local` otherwise, each time the band draws.
+Every word takes its terminal cells from what the prompt's name is left:
+`▤ queue 2 running` at the left, then the line's free cells, then
+`mail 1   #4 say four   │││┃` at the right edge.
+The task in progress is
+Claude Code's own task list's to show, above the band; the band does not
+repeat it.
+
+The mod queues `/color` when a conversation begins inside the running Claude Code, including after `/clear`, rotation, in-app `/resume`, or a context-limit fork; the command reapplies the session accent once the session is idle.
 
 The band's keys are chords, never a bare digit: a digit typed to answer a
 numbered question belongs to the prompt and to other mods. Each Button answers
-an engine action, `strip:jump1` for the rotate (or `/clear`) key and
-`strip:jump2` for the wrap key, and the installer binds Ctrl+X 1 and Ctrl+X 2
-to them in `keybindings.json` (see
+an engine action, `strip:jump1` for the rotate (or `/clear`) key,
+`strip:jump2` for the wrap key and `strip:jump3` for feed.
+The installer binds Ctrl+X 1 and Ctrl+X 2
+to the first two in `keybindings.json` (see
 [configuration.md](configuration.md#rotate-and-wrap-keys)). The band spells,
 bold in the session's colour, whatever chord that file binds to each action,
 as written there, and nothing where none does; the Buttons still answer a click
@@ -518,15 +644,58 @@ chord bound after launch works at once (measured on 2.1.292). An encrypted
 session launched before `keybindings.json` existed gets the file at its next
 launch.
 
+The feed key draws after wrap when cs-feed advertises `/feed`, while the lead
+session is idle, with no survey or armed handoff. The installer does not deploy
+cs-feed, which is experimental (see [cs-feed](#cs-feed-not-a-hook-script--a-claude-code-mod)),
+so an installed band draws no feed key; this paragraph and the ones after it
+describe the band beside cs-feed. The band reads the command list without
+running a status command. The installer binds no chord to `strip:jump3`, so
+the feed label draws bare and the other keys keep their shared prefix:
+`ctrl+x 1 rotate   2 wrap   feed`. With a chord you bind to `strip:jump3`
+yourself, the shared prefix draws once: `ctrl+x 1 rotate   2 wrap   3 feed`.
+
+The key reads `feed` while off and `feed ✓` while on, the check in the
+session's colour. A press asks `cs -vet-session` before it writes, as the
+other band writers do. A refusal leaves the file alone and draws feed as off.
+The key reads `feed ✓` only while the file holds `on\n` and the band's
+last `cs -vet-session` answer in this load was not a refusal. The band asks
+at session start in a cs session with `.cs/local`, and at every step that
+acts on the control files, such as a press of the clear, rotate or feed key.
+A prompt does not clear a refusal. A vet that passes, or a reload, does.
+Before the band's first vet in a load, it reads the file unvetted.
+An accepted press
+flips `.cs/local/feed` under the session's working
+directory, then invalidates the band. The file holds `on\n` or `off\n` and
+survives `/clear`, reload and resume. The existing writer is non-atomic, so
+only the whole value `on\n` means on. Absent, empty, torn and other content
+means off; readers must not trim it. Read errors also mean off; the band logs
+each distinct error except a missing file. Each failed write attempt toasts, and
+every completed press invalidates the band, including a failed write.
+Duplicate presses wait for the same write and redraw.
+The file is machine-local, under the gitignored `.cs/local`, never committed,
+and written only after `cs -vet-session` accepts the session.
+
+The Button's stable element key is `cs-feed`, its action `strip:jump3`.
+cs-feed must hook `ui.press` with `{ plugin: 'cs', element: 'cs-feed' }`, await
+`next(e)`, then read the file the band's handler wrote. The band sends no
+command. When cs-feed writes the file directly, the band reads the new value
+on its next redraw. Spike 3 measured immediate cross-plugin press hooks with
+no transcript rows, while command delivery queued until idle and host state
+reset on `/clear` and resume.
+
+The [feed design and alternatives](superpowers/specs/2026-10-24-band-feed-toggle-design.md)
+records those measurements and compares session activation options and layouts for more toggles.
+
 Ctrl+X 1 runs `/rotate`, as if typed: the `rotate` skill draws the purpose from
 the conversation. Before it runs, the press writes the conversation id to
 `.cs/local/cs.pressed`, so `cs -archive-tasks plan` reports `forced: yes` and
 the one-key rotation skips the task-archive question as a forced one does. The
 end of the main loop's next turn, whatever ended it, empties the file, and so
 does a run the engine refuses, so a `/rotate` typed later in the conversation
-asks as a manual one does. Beside it the band draws `wrap up this session`. That key
-runs `/wrap`, which distills memory, replaces `.cs/summary.md` and rotates the
-narrative: two Opus passes and a shell helper, minutes and real tokens, so the
+asks as a manual one does. Beside it the band draws `wrap`. That key
+runs `/wrap`, which distills memory, replaces `.cs/summary.md`, rotates the
+narrative and archives completed task rows: five Opus passes, two of them writing
+the memory entries and the summary, minutes and real tokens, so the
 press asks first. Ctrl+X 2 opens the engine's own AskUserQuestion dialog —
 `Run /wrap for this session?`, with `Yes, wrap up` and `Not now` — and only the
 yes runs it; a dismissed dialog, and a `-p` run with nobody to ask, run nothing
@@ -539,13 +708,15 @@ a new request, or a second `/wrap` (which, if it fails a pass, leaves no marker
 of its own). A continuation turn, one started with no prompt as a Stop hook's
 feedback starts one, leaves it in place. A summary written any other way
 hides nothing, and a wrap that fails a pass
-skips the marker. Below the band the mod draws nothing, and it draws nothing while a
-turn runs or while a survey holds the band; the `/finish` gate band below is the
-one exception. It never submits a prompt of its own.
+skips the marker. Below the band the mod draws nothing, and it draws none of
+these keys while a turn runs or while a survey holds the band. While a turn
+runs, the `/finish` gate word, the features word (with no press) and the
+queue and mail counts still draw; under a survey only the gate word
+does. It never submits a prompt of its own.
 
 The same button has a second state. Once the `rotate` skill has armed a
 handoff (`.cs/local/pending-handoff` names one), the band draws
-`/clear and continue from the handoff` whatever the context reads, alone
+`/clear now` whatever the context reads, alone
 (the wrap key hides: with a handoff armed the conversation has nothing left to
 do but the `/clear`), and
 Ctrl+X 1 runs `/clear` itself: the conversation ends, and cs's SessionStart
@@ -572,7 +743,7 @@ not quietly disable a rotation you are relying on. The first launch on a machine
 that has not been told prints one notice naming the threshold and the way out,
 and records it in `${XDG_CONFIG_HOME:-~/.config}/cs/rotate-force-notice`. The
 end of a turn whose context reads at or past that percentage
-runs `/rotate` as if you had pressed `1`, once per conversation: the mod
+runs `/rotate` as if you had pressed Ctrl+X 1, once per conversation: the mod
 records the conversation id in `.cs/local/cs.forced` before it schedules
 the run, so a `/rotate` that fails is not tried again at the end of every turn. A run
 the engine refuses shows as a toast; a run that starts but whose turn ends
@@ -584,7 +755,7 @@ handoff already armed: an interrupted or errored turn, or a subagent's, starts
 nothing. The run is scheduled from a timer rather than from the turn's own
 hook, which the plugin contract refuses a command from. Once the rotate skill
 has armed its handoff, the next turn's end starts a 20-second grace: the
-band reads `/clear and continue from the handoff  ·  /clear in 20s`,
+band reads `ctrl+x 1 /clear now   in 20s`,
 redrawn once a second. The count wears the session's own colour while there
 is time, the status bar's amber from ten seconds and its crit red under five
 (the bar's inks, pinned against `bin/cs-statusline` by `tests/test_mod_rotate.sh`).
@@ -602,19 +773,15 @@ timer, because a timer started before a `/clear` keeps firing after one
 own rule (frontmatter opened and closed by `---`, `status: unconsumed`
 inside), so a truncated handoff is never cleared into.
 
-The first grace of a session (a load of the mod) also opens a pane, titled
-`Handoff`, beside the band: a `Handoff` header in the session colour, the
-handoff's `Next Step` section whole, drawn as an assistant reply's markdown
-is (lists, emphasis, code, links; a section past the engine's 10000-character
-bound for a Markdown element keeps the lines that fit and ends on a dim note
-that the rest is in the handoff), and beneath it a twenty-block bar that empties one block a second beside the same
-count, both in the count's colour, so the twenty seconds are spent reading
-what the next conversation will do. The pane carries no keys; stopping the
-count stays on the band. It closes wherever the count ends: a press, a prompt,
-a `/clear`, or zero. Later graces in the same session keep to the band. A pane
-a mod opens on its own is not drawn below 144 terminal columns (110 once you
-have opened it yourself), so on a narrower terminal the band's count is all
-there is.
+When the count starts, the mod toasts the handoff's next step once:
+`cs: next step: <line>`, the first non-empty line of the handoff's `Next Step`
+section (a `#` line inside a fenced block is the step's text, not a heading;
+a line that opens or closes a fence is skipped), cut to 160 characters with an
+ellipsis. One toast per armed handoff: a count the next turn's end restarts for
+the same handoff, and the band's redraws, say nothing more; a handoff armed
+after the `/clear` in the same process is toasted in its turn. A handoff with
+no `Next Step` section toasts nothing, and a count a prompt stops before the
+toast's timer fires toasts nothing. The mod opens no pane.
 
 Pick the percentage above a fresh conversation's own footprint. The wake turn
 after the `/clear` is an ordinary turn, and the once-per-conversation record
@@ -646,13 +813,16 @@ prove the directory a session. The plugin's own id follows
 `/clear` (measured: after a `/clear` the band returned only once
 `.cs/local/state` named the new transcript), and cs's SessionStart hook rebinds
 `state` on every fresh conversation, so the lead keeps its button across
-rotations. Every render costs one `cwd` and one `exists` for the marker; with
-a marker there it reads it and the handoff it names; past the threshold or with
-a handoff armed it adds one `cwd`, two `exists`, one `read` and one `id` call.
-The band renders a handful of times per turn, not per keystroke.
+rotations. Every render asks the engine for the conversation's id and context
+usage, reads the handoff marker (and the handoff it names), and lists the queue
+and the mailbox; once it has something to draw it also checks that this is the
+lead (the sessions root and `.cs/local/state`) and reads `keybindings.json` and
+the session's colour. The band renders a handful of times per turn, not per keystroke.
 
 
-`install.sh` deploys the mod's three files under `~/.claude/skills/cs/`
+`install.sh` deploys the mod's four files (`.claude-plugin/plugin.json`,
+`hooks/hooks.json`, `hooks/register.tsx` and the spinner tips file `tips.json`)
+under `~/.claude/skills/cs/`
 beside the skills (the installer replaces a symlink an earlier opt-in left there
 with a real directory), and `cs -uninstall` removes the directory. Claude Code
 loads function-hooks plugins only behind `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`,
@@ -681,23 +851,26 @@ in the checkout the way it does hooks and skills.
 
 Two facts about the plugin runtime shape the code. A module reads the
 environment through `$.env.get` with a literal name, which `claude plugin
-validate` lists, so the threshold and the bands are three variable reads per
-render, the theme a fourth; the defaults and the five ink triplets are literals
-in `register.tsx` that `tests/test_mod_rotate.sh` pins to the status line's. The
+validate` lists, so a render reads each variable it needs by name: the
+threshold's `CS_ROTATE_BUTTON_CTX` and `CS_STATUSLINE_CTX_WARN`, the inks'
+`CS_TERM_BG_RGB` and `CS_TERM_THEME`, and `CLAUDE_CONFIG_DIR`, `HOME` and
+`CS_SESSIONS_ROOT` to find `keybindings.json` and the sessions root. The
+defaults and the twelve ink triplets (the eight session colours, and amber and
+crit for a light and a dark terminal) are literals in `register.tsx` that
+`tests/test_mod_rotate.sh` pins to the status line's. The
 module state the forced mode keeps (the countdown, the conversation it is
 judging) is reset by a hot reload, which drops a running countdown and adopts
 the conversation it meets next unjudged.
 
-Design lab: `docs/mods-design-lab.html` (open it in a browser) shows every element, prop, render site and rule a mod can use, and the
-rotate capsule's presets and knobs, each state printing the
-JSX it maps to, in the status line's inks; the shipped capsule is its "Inked" preset.
-
-The panel it opens on is a canvas: build a band out of nested Box, Text and
-Button, set each node's props, and copy the JSX underneath into a mod. The
-layout engine behind it lives in `docs/mods-layout.js`, which the page loads as
-a plain script and `tests/test_mods_layout.sh` drives through bun. It
-approximates the engine rather than porting it: a row that overruns the band is
-clipped and named, where the real one shrinks a Text to fit.
+The mods hand Claude Code every toast, `$.ui.ask` dialog, `$.ui.log` notice,
+slash-command reply and command registration from tables they export: cs and
+cs-update in `register.tsx` (`TOASTS`, `ASKS`, `LOGS`, `REPLIES`, `COMMANDS`),
+cs-feed in `words.ts`. `tests/test_mod_tables.sh` fails when a call site writes
+such a line inline. Claude Code leads a toast, a notice and a command reply with
+the plugin's name, so no line starts with it. Exported functions draw the
+band, the cs-update pane and the cs-mermaid fence (`drawBand`, `drawPane`,
+`Drawing`, `drawFence`) from a view, so a tool outside cs can draw them from a
+fixture.
 
 The mod also registers `/queue`, marked immediate so it runs while a turn is
 in flight instead of waiting for it to end. `/queue <task>` runs
@@ -706,12 +879,12 @@ exports in `CS_BIN` (no shell; the claude process's `PATH` is not the
 launching shell's), and `/queue` alone runs `cs -queue list` and prints it.
 When the list has a `Pending (N)` heading and `.cs/local/queue.state` is not
 `armed` or `draining`, the mod then asks through `$.ui.ask` whether to start
-them. Start and Compact first then ask how the tasks run (In this
+them. Start and Compact then ask how the tasks run (In this
 conversation, In subagents, As workflows; free text under "Other" is refused
 with a toast) before anything runs, and Start runs `cs -queue start` with
 `subagents` or `workflow` for those answers, and when the last band render saw no turn
 running it also sends one `$.prompt.submit`, since the Stop hook hands over
-each task only as a turn ends; Not yet runs nothing; Compact first
+each task only as a turn ends; Not yet runs nothing; Compact
 calls `$.session.compact()` and then does what Start does, and a compaction a
 hook vetoes or the engine refuses (it refuses while a turn runs) leaves the
 queue unarmed and says why in a toast; a dismissed dialog runs nothing. A
@@ -736,12 +909,12 @@ name past 60 characters, as `/queue`'s toast does. Each toasts once: the mod kee
 which steps of which run (the record's `id`) it has shown, and the record the
 watch finds when it starts belongs to an earlier run, so the mod never toasts it.
 While a real gate runs (not `-- true`, and not one `--ci-green` skipped), the
-band above the prompt draws `finishing <task> · gate <elapsed>`, redrawn each
-second, during the turn as well. The gate counts as running only while the
+band above the prompt carries `finishing <task> · gate <elapsed>` at its right
+edge, before the mail count and the rail, dim, redrawn each second, during the turn as well. The gate counts as running only while the
 record's `pid` is alive (`kill -0` through `$.process.run`, once a second while
 a step runs), so a cs process that a signal ended leaves no band behind. The watch
 ends at the first read after the turn that ran `/finish` is over with nothing
-running. The rotation keys draw beneath the gate band when both show. An
+running. The rotation keys draw before the gate word on the same line when both show. An
 integrate or retire run from a shell, outside `/finish`, starts no watch and
 toasts nothing. The mod does not hook `command.run` for this: the contract scopes
 it to slash commands and registered ones, and says nothing of skills.
@@ -763,8 +936,13 @@ The mod reads two variables the launch exports, and `HOME` and `CS_SESSIONS_ROOT
 the notes cache and the sessions root:
 `CS_UPDATE_AVAILABLE`, the pending version, exported only when a launch finds
 a newer cs, and `CS_BIN`, the path of the running cs, exported on every
-launch. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
-nothing.
+launch. A third, `CS_UPDATE_DECLINED`, names the pending version when the
+person answered no to the launch's own question (`~/.cache/cs/update-declined`
+keeps that answer): the mod then toasts one line, `cs X.Y.Z is available · run
+cs -update to install it, or /cs-update for the notes`, and opens no pane
+until `/cs-update` asks for it. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
+nothing. In the fork, which never exports `CS_UPDATE_AVAILABLE`, the launch exports `CS_FORK=code-sessions`,
+and `/cs-update` answers with the fork's sync workflow instead.
 Present, the mod reads the changelog span the launch's check cached at
 `~/.cache/cs/update-notes-full-<version>` (KEEP IN SYNC with
 `check_update_notify` in `lib/20-update.sh`), strips its markdown the way
@@ -813,15 +991,18 @@ pane from its own next render. That redraw asks the lead check first,
 so a directory the sessions root does not name gets no pane back. A pane dismissed before the install landed
 leaves nothing open to redraw, so `/cs-update` after the reload reads the
 marker too and shows the finished pane instead of offering the install a
-second time. The mod clears the marker (writes it empty) the next launch,
-render, or `/cs-update` that finds nothing pending for that version, since
-`$.fs` offers no delete. In a directory the sessions root does not name, or
+second time. The mod clears the marker (writes it empty, since `$.fs` offers no
+delete) once it names a version that is no longer pending: at the next launch,
+at the pane's redraw after a reload, or at a `/cs-update` run while another
+version is pending. A `/cs-update` with nothing pending says so before it reads
+the marker, and leaves it. In a directory the sessions root does not name, or
 while `cs -vet-session` refuses the session (git tracks its control files), the
 mod writes neither the marker nor its heartbeat and
 leaves a stale marker in place.
 
-The `/config` row `cs-update.showReleaseNotes` (on by default) turns off only
-the launch pane; `/cs-update` still opens it with the option off.
+The `/config` row `cs-update.showReleaseNotes` (on by default) turns off the
+launch pane and, for a version declined at the launch's question, the one-line
+toast that stands in for it; `/cs-update` still opens the pane with the option off.
 
 `install.sh` deploys the mod's three files (`.claude-plugin/plugin.json`,
 `hooks/hooks.json`, `hooks/register.tsx`) under `~/.claude/skills/cs-update/`,
@@ -847,14 +1028,12 @@ checks the manifest and its `/config` field, the cache-name pin against
 the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
 `cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
 environment, writes no file and runs no process. Unlike the `cs` mod it needs no
-cs session: with function hooks on it draws, and adds its prompt section, in any
-directory and for every prompt the engine composes, a subagent's included. It
-needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
-and refuses the whole module, so nothing draws there.
+cs session: with function hooks on it draws in any directory. The flowchart
+instruction lives in a cs session's `CLAUDE.local.md`.
 
 ![Reply prose, then the same prose with a drawn Mermaid chart](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg)
 
-It hooks two events:
+It hooks one event:
 
 - `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
   ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
@@ -865,8 +1044,9 @@ It hooks two events:
   blocks, three rows tall, taller or wider where more than one edge meets them,
   coloured by their role in the flow, in a light or dark palette from the
   `theme` row of `/config`: a decision (`{ }`, `{{ }}`, or any node with two
-  or more outgoing edges) amber, a start (`(( ))`, or a node nothing leads to)
-  green, an end (a node that leads nowhere) grey, every other step lavender.
+  or more outgoing edges) amber, an end (a node edges arrive at and none leave, a
+  `(( ))` circle included) grey, a start (a node edges leave and none arrive at,
+  or any other `(( ))` circle) green, every other step lavender.
   Mermaid itself fills every node the same; the roles are the terminal's
   reading of the chart, and `style`, `classDef`, `class` and `:::` fills win
   over them, as does a shape over the edge count. Edges are box-drawing glyphs
@@ -881,22 +1061,29 @@ It hooks two events:
   diagram types, more than 200 nodes, 400 edges or 60-cell
   labels) or one still too wide stays a code block with `mermaid: <reason>`
   under it.
-- `prompt.compose`. When the prompt is for a session that draws in a terminal
-  (`terminal` among `e.surfaces`), not `--bare`, and the session directory has
-  no `.cs/local/disabled`, the mod appends one `session`-scope section,
-  `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
-  only for a flow that branches, loops or has four or more stages, never for a
-  task list or numbered steps; one fence, short labels, no subgraphs, `{ }`
-  for a decision, `(( ))` for a start or end, `[ ]` for a step. It is
-  part of every request's system prompt, on the session side of the prompt
-  cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
-  organization lists in managed settings when it manages Claude Code; there
-  the drawing still works and the section is not sent. `cs -doctor` lists the
-  section among the authority rows, `off` when `CS_NO_FUNCTION_HOOKS` withholds
-  the mod (it cannot read the `/config` row).
 
-The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
-fences show as source and the model is not told they draw.
+cs adds a `cs:mermaid-diagrams` section headed `Diagrams` to `CLAUDE.local.md`
+when it creates a session, or on migration when the sentinel is absent. The
+instruction says flowchart fences draw here: add one only for a flow that
+branches, loops or has four or more stages, never for a task list or numbered
+steps; one fence, short labels, no subgraphs, `{ }` for a decision, `(( ))` for
+a start or end, `[ ]` for a step. Claude Code reads the file into each request's
+system prompt without adding it to the transcript each turn. This delivery
+does not depend on an organization allowing a user-tier `prompt.compose` hook.
+To opt out, delete the section's prose and keep `<!-- cs:mermaid-diagrams -->`;
+migration leaves that tombstone alone. Outside a cs session, the mod adds no
+diagram instruction; the show-me skill still covers an explicit ask.
+
+`cs -doctor` lists the instruction as `diagrams`, carried by `CLAUDE.local.md`.
+The row reads `on` when the managed section has prose, `off` for a tombstone
+or an absent section. Its off switch is to delete the prose under
+`cs:mermaid-diagrams`. `CS_NO_FUNCTION_HOOKS` does not affect this row.
+
+The `/config` row `cs-mermaid.drawDiagrams` (on by default) controls drawing
+only: off, fences show as source. It leaves the `CLAUDE.local.md` instruction
+in place, as does `.cs/local/disabled`. The instruction reaches every Claude run
+started in the session directory, including headless `claude -p` and subagents,
+because the engine loads `CLAUDE.local.md` itself.
 
 The mod also ships a skill, `skills/show-me/SKILL.md`, which the engine lists
 as `/cs-mermaid:show-me`. Its description names the asks that call for a
@@ -916,10 +1103,176 @@ and `cs -uninstall` removes the directory. The mod writes no heartbeat, so `cs -
 Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
 with `claude plugin test` (they use the engine's own `claude-code/testing` kit:
 the parser, exact picture fixtures for the layout, the inline drawing, the
-fallback to source, the option and each prompt-section gate) and
-`claude plugin validate` when `claude` is on PATH and knows `prompt.compose`
-(both skip on an older build), and always checks the manifest, its `/config`
-field and that the installer names the mod.
+fallback to source and the drawing option) and `claude plugin validate` when
+`claude` is on `PATH`. The engine tests skip when `plugin test` is unavailable;
+the hook inventory check skips when validation cannot list function hooks.
+The shell suite always checks the manifest, its `/config` field and that the
+installer names the mod. `tests/test_mermaid_section.sh` checks the session
+instruction and tombstone, and `tests/test_migrate_claude_md.sh` covers migration.
+
+## cs-feed (not a hook script — a Claude Code mod)
+
+`mods/cs-feed/` is a Claude Code function-hooks plugin. It is experimental:
+the installer does not deploy it (it is not in `CS_MOD_FILES`), and its source
+and tests stay in this repository. It is gated
+the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It restyles
+the chat: your messages, Claude's replies, and the tool calls between them
+folded into short lines. It stays off in every session until you turn it on
+there, and it draws only in a session that `cs -vet-session` accepts. While a
+session is off, every hook passes Claude Code's own drawing through.
+
+The switch is per session:
+
+- `feed`, the cs band's feed key (see the band above), pressed by a click,
+  Ctrl+X Tab, or a chord you bind to `strip:jump3`: this session
+  on or off. It shows while the lead session is idle and no handoff is armed.
+- `/feed on` and `/feed off` do the same, typed. `/feed` is an immediate
+  command, so it runs mid-turn too.
+- `/feed clean` turns the feed on with your messages, Claude's replies and one
+  line per turn for the work. `/feed normal` turns it on with each run of tool
+  calls as one line with counts. `/feed raw` turns it off and keeps the view
+  for the next on.
+- `/feed status` reads the file again and replies with the switch and the
+  mode, such as `on · clean` or `off · raw`. It writes nothing.
+- Bare `/feed` opens this session's settings in a pane above the prompt, and
+  `/feed close` shuts it.
+- One setting at a time: `/feed group on|off`, `clear on|off`, `keep on|off`,
+  `style expanded|subtle|line`, `commands grouped|each`, `after clear|keep`,
+  and `/feed hide <kind>` or `/feed show <kind>` for `you`, `said`, `tool`,
+  `search`, `agent`, `question`, `peer` and `helper`. A setting also turns the
+  feed on. Other words reply with the usage line.
+- `/helpers` opens the Helpers pane.
+
+While the feed is on, the mode line under the prompt adds
+`feed clean · /feed to switch` (`normal` or `custom` for other views). A
+switch or a view change redraws in place: no reload, no notice row, and no
+other session changes.
+
+The session's choice lives in two files under its working directory, both in
+the gitignored `.cs/local`, so it survives `/clear`, a rotation, `--resume`
+and a relaunch:
+
+- `.cs/local/feed` holds the switch, and cs's band writes it too (see the band
+  above). Only the whole value `on\n` means on. Absent, empty, torn, `off\n`
+  and any other text mean off, and neither mod trims it. cs-feed logs a read
+  error other than a missing file and reads it as off.
+- `.cs/local/feed-view` holds the view: one JSON object with `group`,
+  `clear`, `keep`, `style`, `commands`, `after` and `hide`, then a newline.
+  Only cs-feed writes it, before it writes `feed`, so no reader finds on
+  beside the old view. A missing file reads as `clean` with nothing hidden.
+  So does a torn file (no closing newline), bad JSON, a missing field or a
+  bad value: cs-feed logs the path and the reason once per load, and the
+  next `/feed` write rewrites the file. The view never decides on or off.
+
+Every write asks cs first. `/feed` runs `$CS_BIN -vet-session <cwd>` (10 s
+timeout), the same rule cs's band asks before its own writes:
+
+- In a directory with no `.cs/local`, `/feed` writes nothing, starts no
+  process and replies `cs-feed: this directory is not a cs session (no
+  .cs/local), so nothing changed.`
+- Where cs refuses the session, or the launch did not set `CS_BIN`, it writes
+  neither file and replies `cs-feed: no feed change in this session:` with
+  cs's refusal.
+- cs-feed vets the read that turns the feed on, too. At the first draw of each
+  load, a `feed` file that says `on\n` costs one `cs -vet-session` process
+  (0.15-0.44 s), and the hooked rows wait for its answer before they draw. A
+  session cs refuses reads as off: the feed draws nothing, and the log says
+  `cs-feed: the feed is off in this session:` with the refusal, once per
+  distinct refusal. A file that says off, or no file, starts no process.
+- `/feed status` picks up a hand edit or a second Claude process in the
+  directory, and vets a flip to on that neither writer made before it turns
+  the feed on. Bare `/feed`, `/feed close`, and `/feed status` on an unchanged
+  file start no process of their own.
+- A band press needs no second vet: cs-feed reads the file once cs's press
+  handler has finished, and cs vetted before it wrote.
+
+What it draws while on:
+
+- Folded turns. In `clean`, a turn's tool calls fold into one line under
+  Claude's reply, `3 steps this turn` (`1 step this turn`), with a chevron
+  that opens the run lines; while the turn runs, the working line names the
+  live call instead. In `normal`, each run of calls is one line with counts,
+  such as `Ran 2 shell commands · read 1 file`. A call reads in plain words
+  (`Reading app.py`, `Opening example.com`), never a raw command, path or id,
+  and a call a hook refused reads `1 step refused by a hook`. A tool's result
+  row, the progress hint and the turn's timing row draw nothing; the result
+  rides on its call as a `+N lines` chip. Chevrons are buttons only where a
+  click reaches a mod: the desktop app or a fullscreen terminal.
+- The working line. It stays Claude Code's own spinner row, with its clock,
+  token count and cs's tip, and the feed's words as its message: the live
+  call, `Working`, `Thinking` or `Writing`, then `· step N` and `· N helpers working`.
+  A message Claude Code sets itself, such as compacting, passes through.
+- Your messages and Claude's replies in a name column, `you` and `claude`
+  (terminal only; on desktop the rows keep Claude Code's drawing).
+  The reply's Markdown is Claude Code's drawing (or cs-mermaid's), so
+  diagrams draw whichever mod loads first.
+- Errors and safeguard stops. One line takes the reply's place, coloured by
+  who acts: violet for a safeguard stop, red when you must act, amber when
+  Claude Code handles it, such as
+  `Connection lost · check your internet · send again to retry`.
+- Helpers. A helper's row reads like `Read the notes · running ›`,
+  then `finished`, `failed` or `stopped`, with its elapsed time. Helpers
+  launched together share one line with counts per kind. Above the prompt a
+  helper line reads like `2 helpers · 1 done · 1 running`, and `/helpers`
+  opens a pane with the newest six helpers and their own calls.
+- Messages from others. A peer message is one `⇄ <sender> · <first line>`
+  line, messages that arrive together fold into one, a helper's report is a
+  header line over a verdict card or the report's first paragraph, and a task
+  notification is one line.
+- Background runs. After a turn, a line above the prompt reads
+  `Running in the background · <label>` (or `Test running`) with its elapsed
+  time. On the desktop app the band carries the 5-hour and weekly usage and a
+  pill per running helper, job or test. The feed's lines stack above cs's
+  band, never in its place.
+- An answered question reads `? <question> → <answer>`.
+- `/feed hide <kind>` hides one kind of row: `said` hides Claude's replies
+  (an error line still shows), `peer` the messages from others, and so on.
+
+Questions, info notices and the prompt hint stay Claude Code's. A row that
+reports itself expanded (ctrl+o, `--verbose`) draws Claude Code's own, so the
+detailed view still shows everything. The feed draws under both renderers:
+under `tui: "fullscreen"` a lone shell call arrives as a one-call tool group,
+under the default renderer as a tool row and a result row, and both go
+through the same call decision.
+
+Off costs a little, because every hook stays registered: there is no install
+switch. Measured on Claude Code 2.1.309 beside cs, cs-update and cs-mermaid,
+over a three-turn scenario: 32 worker hops that did not exist without the mod
+(24 renders, 8 stored rows), about 1.6 ms each at the median (6.7 ms p90), and
+probably 8-10 ms at each turn's end (consistent in direction, not significant
+over six runs). About 5-6 MB more memory in the main process, and no change
+in CPU time. While off its rows read no transcript, run no clock, write no state and start no
+`cs -vet-session` process; opening the `/helpers` pane reads the transcript and the agent list
+whatever the switch says. On Claude Code 2.1.310 the cost oracle (below)
+counted the same 32 new hops under the fullscreen renderer (72 against 40) and
+27 under the default renderer (60 against 33), which raises a tool row and a
+result row where fullscreen raises one tool group; with cs-feed alone, 62 and
+50. Its two Pane hooks ran zero times with cs-update's pane and another
+plugin's pane open. A helper spawn adds one hop, and so does a press of the
+band key.
+
+The mod has ten files (`.claude-plugin/plugin.json`, `hooks/hooks.json`,
+`hooks/register.tsx`, `hooks/session.ts`, `hooks/settings.ts`,
+`hooks/transcript.ts`, `hooks/verdict.ts`, `hooks/words.ts`, `hooks/draw.tsx`
+and the state types `hooks/state.d.ts`). `CS_MODS_KEPT_OUT` in
+`lib/01-manifests.sh` keeps it out of the installer, so `install.sh` deploys
+none of them and `cs -doctor`'s drift scan skips it. The mod writes no
+heartbeat, so `cs -doctor` has no "last ran" row for it.
+
+Tests: `tests/test_mod_feed.sh` pins the manifest, checks that the installer
+lists none of the mod's files, checks that the source never names the events
+and calls the mod must not
+use (`tool.call`, `turn.step`, `classic.*`, `prompt.compose`, `config.set`,
+`$.command.run`), runs `claude plugin
+validate` and pins its exact hook inventory, type-checks the mod against the
+engine's contract, and runs the tests under `mods/cs-feed/test/` with
+`claude plugin test` when `claude` is on `PATH`. `mods/cs-feed/test/dispatch-count.sh`
+is the cost oracle, never deployed and not in the suite: real sessions under a
+throwaway home directory, a local stand-in API and their own tmux servers count the
+feed's own callbacks with an instrumented copy and its worker hops on the
+shipped plugin, standalone and beside cs's three mods, under both renderers.
+It takes about half an hour and exits non-zero on any mismatch.
 
 ## Hook Configuration
 

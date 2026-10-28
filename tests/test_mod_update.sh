@@ -39,10 +39,7 @@ test_mod_is_deployed_by_the_installer_and_checked_by_doctor() {
 }
 
 test_mod_unit_tests_pass_under_bun() {
-    if ! command -v bun >/dev/null 2>&1; then
-        echo "    SKIP: bun not on PATH"
-        return 77
-    fi
+    require_tool bun || return $?
     local out
     out="$(cd "$MOD" && bun test 2>&1)" || { echo "$out"; return 1; }
     out="$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g')"
@@ -51,10 +48,7 @@ test_mod_unit_tests_pass_under_bun() {
 }
 
 test_mod_validate_inventories_the_hooks_and_calls() {
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "    SKIP: claude not on PATH"
-        return 77
-    fi
+    require_tool claude || return $?
     local out raw="${TMPDIR:-/tmp}/cs-mod-update-validate.$$"
     env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" > "$raw" 2>&1
     local status=$?
@@ -65,8 +59,8 @@ test_mod_validate_inventories_the_hooks_and_calls() {
         echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) does not inventory function hooks"
         return 77
     fi
-    assert_output_contains "$out" 'env reads: CODE_SESSIONS_HOME, CS_BIN, CS_CACHE_DIR, CS_SESSIONS_ROOT, CS_UPDATE_AVAILABLE, HOME' "the mod reads the launch verdict and the cache it names" || return 1
-    assert_output_contains "$out" '$.process.run (via runUpdate, sessionVetted)' "the update runs in one place" || return 1
+    assert_output_contains "$out" 'env reads: CS_BIN, CS_CACHE_DIR, CS_FORK, CS_SESSIONS_ROOT, CS_UPDATE_AVAILABLE, CS_UPDATE_DECLINED, HOME' "the mod reads the launch verdict and the cache it names" || return 1
+    assert_output_contains "$out" '$.process.run (via runUpdate, sessionVetted)' "the update runs in one place, and the heartbeat and DONE writes ask cs -vet-session first" || return 1
     assert_output_contains "$out" 'command.run{command=cs-update}' "the reopen command is hooked" || return 1
     assert_output_not_contains "$out" '$.http.fetch' "no network in the mod" || return 1
 }

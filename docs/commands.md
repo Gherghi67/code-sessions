@@ -16,7 +16,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -narrative rotate` | Archives the oldest narrative sections past the size budget. `cs <name> -narrative rotate` targets a named session. |
 | `cs -queue add "<task>"` | Adds a task. Other actions are `accept <id>`, `list`, `start [subagents\|workflow]`, `rm <n>`, `clear`, and `log`. |
 | `cs -msg <session> "note"` | Sends mail. Bare `cs -msg` reads unread mail. Use `log`, `thread <id>`, or `--reply <thread> "note"` for history and replies. |
-| `cs -spawn <name> [--engine claude|codex] [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. |
+| `cs -spawn <name> [--engine claude|codex] [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. A feature's brief (`<base>@<task>`) carries `## Goal`, `## Done when`, `## Constraints`, `## Context`, `## Review` and `## Report back`, each heading on its own line; one missing refuses the spawn and is named. |
 | `cs -conversations` | Shows the conversation chain. `cs <name> -conversations` targets another session. |
 | `cs -tag add\|rm <tag>` | Edits README frontmatter tags. Use `-tag list` or `cs <name> -tag ...` to inspect or target another session. |
 | `cs -archive <name>...`, `cs -unarchive <name>...` | Hides or restores sessions. Opening an archived session restores it. |
@@ -30,7 +30,22 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -statusline caps on\|off\|ask` | Records whether your font displays rounded capsule ends. |
 | `cs -detect-theme` | Reports terminal theme detection. |
 | `cs -rm <name>...` | Confirms each removal and names user files, including untracked worktree files. |
-| `cs -update [--check\|--force]` | Updates cs. `--check` checks without installing, and `--force` reinstalls the latest release. |
+| `cs -update [--check\|--force]` | Updates cs after SSH verification of `SHA256SUMS` and the installer's digest. `--check` checks without installing, and `--force` reinstalls the latest release with the same verification. |
+
+Updates require `ssh-keygen -Y verify` and refuse missing signatures, missing
+manifest entries, digest mismatches, and releases that drop revoked keys.
+See [release verification](configuration.md#release-verification-and-notes).
+
+A launch on a terminal that finds a newer release asks once, before the
+session opens: `cs X.Y.Z is available (you have A.B.C). Update now? [y/N]`.
+`y` runs `cs -update` and then starts the same launch again on the new cs; an
+update that does not finish is a warning and the launch goes on. Any other key
+records that version in `~/.cache/cs/update-declined`: the launch does not ask
+about it again, and in the session the
+[update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) says in
+one line that it is available and to run `cs -update`, instead of opening its
+pane (`/cs-update` still opens the notes). The launch banner still names it. A
+newer release is asked about afresh. Off a terminal nothing is asked.
 
 ## Sessions, locks, and safety
 
@@ -122,7 +137,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 
 | Command | Result |
 |---|---|
-| `cs myproj@fix-auth` | Creates a feature on branch `cs/fix-auth`. |
+| `cs myproj@fix-auth` | Creates a feature on branch `cs/fix-auth`, from the base's current commit. An existing `cs/fix-auth` is reused from its own tip, and the launch says how far behind the base that is. A detached base is refused: the feature would have no branch to land on. |
 | `cs myproj@perf` | Opens another independent feature. |
 | `cs <base> -features` | Lists feature readiness. |
 | `cs <base> -finish <feature>` | Opens the base with `/finish <feature>`. |
@@ -147,7 +162,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 
 ### Retirement
 
-- Finish can land work while the feature conversation runs, but retirement waits for it to close. Close it and rerun finish. No keystroke or signal closes the other session.
+- Finish can land work while the feature conversation runs. Retirement then waits for it to close: the retire entry writes `.cs/local/retire-staged/<task>` in the base (the captured commit and whether `--force` applied) and answers `staged <task> <sha>: ...`. When that conversation's run ends, its launcher mails the base once the run's lease is released (whichever engine ran the feature; an engine switch's relaunch mails at its own end), and the base's Stop hook starts the entry detached (`--staged`, the stage standing in for the base's own ancestry), waits up to six seconds for it, and reports `retired` or the refusal in the turn that finds it ended. The entry re-reads the feature's lock under its openers' mutex right before the removal, so a conversation reopened meanwhile stages the retire again instead of losing its directory. `cs <base> -features` reads `staged` for it. No keystroke or signal closes the other session; the user does, when they are done there.
 - Retirement commits nothing and refuses dirty or untracked work.
 - Recreated build directories such as `node_modules`, `target`, and `.venv` go with the checkout.
 - Other ignored files go to system trash, with each file or whole-directory count listed.
@@ -167,6 +182,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 
 - Adding from another session sends task mail requiring acceptance.
 - See [queue controls](hooks.md#cs-not-a-hook-script--a-claude-code-mod) for mid-turn `/queue`, Start/Not yet/Compact, and conversation/subagent/workflow execution. Choosing workflows authorizes that tool.
+- `/cs next|prev|first|last|<n>` scrolls the transcript along the band's rail of prompts (one tick per prompt the person sent), mid-turn too; see [the rail](hooks.md#cs-not-a-hook-script--a-claude-code-mod).
 - See [queue drain and breakers](hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) for listed-order turn boundaries, native-task mirroring, the default five-failure/85%-context/85%-quota limits, rearming, and the return digest.
 - Mail uses `--kind notify|task|text|result`. Task mail enters the queue only after acceptance.
 - Bodies are at most 65,536 bytes. A lone `-` reads stdin.

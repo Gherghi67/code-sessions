@@ -5,7 +5,7 @@ import { test, expect, beforeEach } from 'bun:test'
 ;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
 ;(globalThis as any).Fragment = 'Fragment'
 
-import { register, parseSpan, stripInline, PANE, OPTION, HEARTBEAT, DONE } from '../hooks/register.tsx'
+import { register, drawPane, parseSpan, stripInline, PANE, OPTION, HEARTBEAT, DONE, TOASTS, REPLIES, type PaneView } from '../hooks/register.tsx'
 
 type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
 const hooks: Record<string, Hook> = {}
@@ -264,10 +264,37 @@ test('no pending version, no pane, no toast', async () => {
   expect(toasts).toEqual([])
 })
 
+// A version declined at the launch's own question is not offered again:
+// no pane, one toast saying it is there and how to install it; /cs-update
+// still opens the notes on request.
+test('a version declined at launch toasts once instead of opening the pane', async () => {
+  envVars.CS_UPDATE_DECLINED = '2026.99.3'
+  await start()
+  expect(opens()).toHaveLength(0)
+  expect(toasts).toEqual(['cs 2026.99.3 is available · run cs -update to install it, or /cs-update for the notes'])
+  await start()
+  expect(toasts).toHaveLength(1)
+})
+
+test('a declined version older than the pending one does not hold the pane back', async () => {
+  envVars.CS_UPDATE_DECLINED = '2026.99.2'
+  await start()
+  expect(opens()).toHaveLength(1)
+  expect(toasts).toEqual([])
+})
+
 test('the option off skips the launch pane', async () => {
   load({ [OPTION]: false })
   await start()
   expect(opens()).toHaveLength(0)
+})
+
+test('a session colour outside the palette draws the headings in the default ink', async () => {
+  files['/work/.cs/local/state'] = 'claude_session_color: chartreuse\nclaude_session_id: uuid-lead\n'
+  await start()
+  const tree = await draw()
+  expect(headings(tree)).toEqual([])
+  expect(texts(tree)).toContain('2026.99.3')
 })
 
 test('a teammate (a session that is not the one cs launched) gets no pane', async () => {
@@ -294,7 +321,9 @@ test('the pane draws the title, every version in the session colour, its lines, 
   const words = texts(tree).join('\n')
   // A lone pane draws no title of its own, so the body carries it.
   expect(words).toContain('cs 2026.99.3 is available')
-  expect(headings(tree).map(t => [t.props.color, texts(t).join('')])).toEqual([['red', '2026.99.3'], ['red', '2026.99.2']])
+  // The engine paints rgb(), #hex, ansi256(), ansi: and theme keys; a bare `red` is
+  // none of them and draws in the default ink, so the name goes through the palette.
+  expect(headings(tree).map(t => [t.props.color, texts(t).join('')])).toEqual([['rgb(220,38,38)', '2026.99.3'], ['rgb(220,38,38)', '2026.99.2']])
   expect(words).toContain('One fix: the statusline is readable on light terminals.')
   expect(words).toContain('- Menu: keypress. Cancel stays the default.')
   // A continuation line hangs under its bullet: it is indented, not run on.
@@ -463,7 +492,7 @@ test('/cs-update with nothing pending says so as its output and opens nothing', 
 
 for (const pending of [undefined, '2026.99.3']) {
   test(`/cs-update in the fork gives the manual workflow with ${pending ? 'an inherited pending version' : 'no pending version'}`, async () => {
-    envVars.CODE_SESSIONS_HOME = '/profile/code-sessions'
+    envVars.CS_FORK = 'code-sessions'
     envVars.CS_UPDATE_AVAILABLE = pending
     const result = await runCommand()
     expect(result.text).toContain('scripts/sync-upstream.py catch-up')
@@ -477,7 +506,7 @@ for (const pending of [undefined, '2026.99.3']) {
 }
 
 test('/cs-update in a fork teammate still belongs to the lead conversation', async () => {
-  envVars.CODE_SESSIONS_HOME = '/profile/code-sessions'
+  envVars.CS_FORK = 'code-sessions'
   sessionId = 'uuid-teammate'
   expect(await runCommand()).toEqual({ text: 'The release-notes pane belongs to the conversation cs launched.' })
   expect(opens()).toHaveLength(0)
@@ -574,7 +603,7 @@ test('a failed write to the DONE marker toasts and the pane still shows done', a
     written[path] = text
   }
   await buttons(await draw())[0].props.onPress()
-  expect(toasts).toEqual(['cs-update: could not record the finished update: disk full'])
+  expect(toasts).toEqual(['could not record the finished update: disk full'])
   const words = texts(await draw()).join('\n')
   expect(words).toContain('Update finished. Takes effect on your next launch.')
 })
@@ -594,4 +623,45 @@ test('in a directory the sessions root does not name, session start never spawns
   realPaths = { '/clone': '/clone' }
   await hooks['session.start']($, { cwd: '/clone' }, async () => 'started')
   expect(runs).toHaveLength(0)
+})
+
+// A design tool outside cs draws the pane by calling drawPane with a view it spells out
+// by hand. Each view here is that fixture for one state, and must draw the
+// tree the handler draws from the same state's facts.
+const NOTES = [
+  { version: '2026.99.3', lines: ['One fix: the statusline is readable on light terminals.', '- Statusline: readable. The chiptext token was wrong in two places.', '  A continuation line.'] },
+  { version: '2026.99.2', lines: ['One change: the locked-session menu is single-keypress.', '- Menu: keypress. Cancel stays the default.'] },
+]
+const RED = 'rgb(220,38,38)'
+const pane = (over: Partial<PaneView>): PaneView => ({ version: '2026.99.3', sections: NOTES, accent: RED, phase: 'idle', outcome: '', ...over })
+const press = async () => { await buttons(await draw())[0].props.onPress() }
+const paneViews: [string, () => Promise<void>, PaneView][] = [
+  ['idle with notes', async () => { await start() }, pane({})],
+  ['no session colour', async () => { files['/work/.cs/local/state'] = 'claude_session_id: uuid-lead\n'; await start() }, pane({ accent: undefined })],
+  ['a colour outside the palette', async () => { files['/work/.cs/local/state'] = 'claude_session_color: chartreuse\nclaude_session_id: uuid-lead\n'; await start() }, pane({ accent: undefined })],
+  ['no notes', async () => { files['/home/u/.cache/cs/update-notes-full-2026.99.3'] = ''; await start() }, pane({ sections: [] })],
+  ['running', async () => {
+    await start()
+    ;($ as any).process.run = async (argv: string[]) => argv[1] === '-vet-session' ? { exitCode: 0, stdout: '', stderr: '' } : new Promise(() => {})
+    void buttons(await draw())[0].props.onPress()
+    await Promise.resolve()
+  }, pane({ phase: 'running' })],
+  ['failed with no cs path', async () => { delete envVars.CS_BIN; await start(); await press() }, pane({ phase: 'failed', outcome: 'The launch did not say where cs is; run `cs -update` from a shell.' })],
+  ['failed exit', async () => { await start(); runResult = { exitCode: 1, stdout: '', stderr: 'a\nb\nc\nd\ne\nf\nchecksum mismatch\n' }; await press() }, pane({ phase: 'failed', outcome: 'cs -update exited 1.\nc\nd\ne\nf\nchecksum mismatch' })],
+  ['done', async () => { await start(); await press() }, pane({ phase: 'done', outcome: 'Update finished. Takes effect on your next launch.' })],
+]
+
+for (const [name, arrange, fixture] of paneViews) {
+  test(`drawPane draws the handler's pane from a fixture view: ${name}`, async () => {
+    await arrange()
+    const drawn = JSON.stringify(await draw())
+    expect(JSON.stringify(drawPane(fixture, { Box: 'Box', Text: 'Text', Button: 'Button' } as any, async () => {}))).toBe(drawn)
+  })
+}
+
+// Claude Code leads every toast and command reply with the name of the plugin
+// that sent it, so a line that names cs-update itself reads `cs-update: cs-update: ...`.
+test('no toast or command reply the mod hands the engine starts with its own name', () => {
+  const lines = [...Object.values(TOASTS), ...Object.values(REPLIES)].map(entry => typeof entry === 'function' ? entry('x') : entry)
+  expect(lines.filter(line => line.startsWith('cs-update:'))).toEqual([])
 })

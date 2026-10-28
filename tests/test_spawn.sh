@@ -492,10 +492,63 @@ test_spawn_from_a_terminal_still_hands_an_existing_session_its_tasks() {
     assert_eq "solo" "$(sed -n 3p "$(SEED)")" "the task is staged" || return 1
 }
 
+# A feature brief with every section the feature skill's shape names.
+_feature_brief() {  # path
+    printf '# feature\n\n## Goal\nShip it.\n\n## Done when\n- green\n\n## Constraints\n- none\n\n## Context\n- base at abc123\n\n## Review\n- independent review before the result\n\n## Report back\ncs -msg base -k result "done"\n' > "$1"
+}
+
+# A feature's brief is the feature skill's shape, and the spawner holds the
+# writer to it: a feature-named spawn whose brief lacks a section is refused
+# naming the first missing one, and nothing is staged. A plain session's brief
+# has no shape (test_spawn_stages_the_brief_inside_the_seed stages one with a
+# bare "# Goal").
+test_spawn_refuses_a_feature_brief_missing_a_section() {
+    local brief="$TEST_TMPDIR/brief.md" err rc=0
+    _feature_brief "$brief"
+    grep -v '^## Context$' "$brief" > "$brief.cut" && mv "$brief.cut" "$brief"
+    err=$(CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" 2>&1 >/dev/null) && rc=1
+    [ "$rc" = 0 ] || { echo "  a feature brief without ## Context was accepted"; return 1; }
+    assert_eq "Error: cs -spawn --brief: $brief has no '## Context' section; a feature brief carries ## Goal, ## Done when, ## Constraints, ## Context, ## Review and ## Report back, each on its own line" \
+        "$err" "the refusal names the missing section and the shape" || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/.spawn" ] || [ -z "$(ls -A "$CS_SESSIONS_ROOT/.spawn")" ] \
+        || { echo "  something was staged for a refused brief"; return 1; }
+    # A heading with trailing words is not the section.
+    _feature_brief "$brief"
+    sed 's/^## Review$/## Review notes/' "$brief" > "$brief.cut" && mv "$brief.cut" "$brief"
+    err=$(CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" 2>&1 >/dev/null) && rc=1
+    [ "$rc" = 0 ] || { echo "  '## Review notes' passed for '## Review'"; return 1; }
+    assert_output_contains "$err" "has no '## Review' section" "a heading with extra words is not the section" || return 1
+}
+
+# The sections are read as Markdown reads them: CRLF, a byte-order mark and
+# trailing blanks do not hide a heading, and a heading inside a code fence is
+# not one.
+test_spawn_reads_feature_brief_sections_as_markdown() {
+    local brief="$TEST_TMPDIR/brief.md" err rc=0
+    _feature_brief "$brief"
+    { printf '\xef\xbb\xbf'; sed '1,2d; s/$/\r/; s/^## Review\r$/## Review  \r/' "$brief"; } > "$brief.alt" && mv "$brief.alt" "$brief"
+    CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
+        || { echo "  a CRLF brief with a BOM and a trailing blank was refused"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/.spawn" "$FAKE_TMUX_DIR"; mkdir -p "$FAKE_TMUX_DIR"
+    _feature_brief "$brief"
+    { printf '# feature\n\n```\n'; sed 1d "$brief"; printf '```\n'; } > "$brief.alt" && mv "$brief.alt" "$brief"
+    err=$(CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" 2>&1 >/dev/null) && rc=1
+    [ "$rc" = 0 ] || { echo "  six headings inside a code fence passed as sections"; return 1; }
+    assert_output_contains "$err" "has no '## Goal' section" "a fenced heading is not a section" || return 1
+}
+
+test_spawn_accepts_a_complete_feature_brief() {
+    local brief="$TEST_TMPDIR/brief.md"
+    _feature_brief "$brief"
+    CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
+        || { echo "  a complete feature brief was refused"; return 1; }
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/base@feature.seed" "the brief is staged" || return 1
+}
+
 test_spawn_from_the_base_still_briefs_its_existing_feature() {
     create_test_session base@feature >/dev/null
     local brief="$TEST_TMPDIR/brief.md"
-    printf '# feature\n' > "$brief"
+    _feature_brief "$brief"
     CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
         || { echo "  spawn failed"; return 1; }
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/base@feature.seed" "the brief is staged" || return 1
@@ -1154,6 +1207,47 @@ FAKE
     assert_output_contains "$out" "token=unset" "the token is dropped before claude starts" || return 1
 }
 
+# Nobody sits at the window cs -spawn opens, so its launch asks nothing about
+# a pending release and claude starts. The window's input stays open and
+# silent, as a tmux pane's does, where a question waits for good; the run is
+# cut at 10 s (status 142). curl answers the signature probe, so the window's
+# mark alone keeps the question away. The session still learns the release,
+# for its update pane.
+test_spawned_window_starts_claude_without_asking_about_an_update() {
+    local home="$TEST_TMPDIR/update-home" bin="$TEST_TMPDIR/update-bin" cmd out rc=0
+    mkdir -p "$home/.cache/cs" "$bin"
+    printf '%s 2026.99.3\n' "$(date +%s)" > "$home/.cache/cs/update-check"
+    : > "$home/.cache/cs/update-notes-2026.99.3"
+    : > "$home/.cache/cs/update-notes-full-2026.99.3"
+    printf '#!/bin/sh\ncase "$*" in *"/download/v2026.99.3/SHA256SUMS.sig -o "*) exit 0 ;; esac\nexit 22\n' > "$bin/curl"
+    cat > "$bin/claude" << 'FAKE'
+#!/bin/bash
+echo "UPDATE_AVAILABLE=${CS_UPDATE_AVAILABLE-unset}"
+echo "UPDATE_DECLINED=${CS_UPDATE_DECLINED-unset}"
+echo "CS_UNATTENDED=${CS_UNATTENDED-unset}"
+FAKE
+    chmod +x "$bin/curl" "$bin/claude"
+    # The fork's window carries the spawner's HOME, PATH and CLAUDE_CODE_BIN
+    # (_spawn_window), so they are set at the spawn, not where the window runs.
+    HOME="$home" PATH="$bin:$PATH" CLAUDE_CODE_BIN="$bin/claude" "$CS_BIN" -spawn worker >/dev/null 2>&1 || return 1
+    cmd=$(sed -n 's/^new-session -d -s cs -n worker -P -F #{window_id} //p' "$FAKE_TMUX_DIR/log")
+    [ -n "$cmd" ] || { echo "  FAIL: no window was opened"; cat "$FAKE_TMUX_DIR/log"; return 1; }
+    mkfifo "$TEST_TMPDIR/silent"
+    exec 5<>"$TEST_TMPDIR/silent"
+    out=$(HOME="$home" PATH="$bin:$PATH" CS_NO_UPDATE_CHECK='' CS_ASSUME_TTY=1 CLAUDE_CODE_BIN="$bin/claude" \
+        _run_bounded 10 sh -c "$cmd" <&5 2>&1) || rc=$?
+    exec 5<&-
+    assert_eq "0" "$rc" "the window's launch runs claude to its end" || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Update now?" "the window is not asked" || return 1
+    # code-sessions names an upstream release in its own launch notice and
+    # never hands it to the update mod, whose install would replace the fork.
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" "the window still names the release" || return 1
+    assert_output_contains "$out" "UPDATE_AVAILABLE=unset" "the update mod gets no verdict in the fork" || return 1
+    assert_output_contains "$out" "UPDATE_DECLINED=unset" "nothing is declined on the person's behalf" || return 1
+    assert_output_contains "$out" "CS_UNATTENDED=unset" "the window's mark never reaches claude" || return 1
+    assert_not_exists "$home/.cache/cs/update-declined" "no declined record" || return 1
+}
+
 # An encrypted session keeps its queue behind .cs/private; a seed consumed into
 # .cs/local was plaintext the drain never read.
 _make_worker_vaulted() {
@@ -1187,6 +1281,9 @@ run_test test_spawn_writes_seed_and_opens_window
 run_test test_spawn_without_task_writes_no_seed
 run_test test_spawn_rejects_an_invalid_spawner_name
 run_test test_spawn_stages_the_brief_inside_the_seed
+run_test test_spawn_refuses_a_feature_brief_missing_a_section
+run_test test_spawn_accepts_a_complete_feature_brief
+run_test test_spawn_reads_feature_brief_sections_as_markdown
 run_test test_spawn_brief_and_tasks_stage_together
 run_test test_spawn_refuses_a_task_equal_to_the_brief_marker
 run_test test_spawn_concurrent_same_name_publishes_one_whole_seed
@@ -1258,6 +1355,7 @@ run_test test_launch_foreign_seed_escape_declines
 run_test test_launch_foreign_seed_declined_is_set_aside
 run_test test_launch_seed_control_characters_are_shown_flat
 run_test test_launch_token_never_reaches_claude
+run_test test_spawned_window_starts_claude_without_asking_about_an_update
 run_test test_launch_seed_queues_into_the_vault
 
 # Drain harness (same recipe as tests/test_queue_supervision.sh): the Stop

@@ -114,8 +114,8 @@ RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 
 # The sha256 of every file a web install downloads, as "<sha256>  <repo
 # path>", written by build.sh from the files it was built with. This
-# installer is checksum-verified (and signature-verified when minisign is
-# installed) before `cs -update` runs it, so a payload file that does not
+# installer is authenticated by an SSH-signed manifest before `cs -update`
+# runs it, so a payload file that does not
 # match is not the file that was released.
 # @@CS_PAYLOAD_SHA256@@
 
@@ -148,8 +148,59 @@ _refuse_a_hook_event_that_is_not_a_list() {
 }
 _refuse_a_hook_event_that_is_not_a_list
 
-# Minisign public key for verifying signed releases
-CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
+CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
+# Revoked release keys, one per line. cs -update reads this declaration out
+# of a downloaded installer as data: exactly one declaration, single-quoted.
+CS_RELEASE_REVOKED=''
+
+# Verifies a release manifest against its signature: manifest, signature,
+# release version. The signature is bound to the release through its
+# namespace, cs-release-v<version>, so a manifest signed for one tag never
+# verifies another.
+_verify_manifest() {  # manifest, signature, version
+    (
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            printf '%s\n' 'ssh-keygen is required to verify release manifests.' >&2
+            exit 1
+        fi
+        trust_dir=$(mktemp -d "${TMPDIR:-/tmp}/cs-release.XXXXXX") || exit 1
+        trap 'rm -rf "$trust_dir"' EXIT
+        printf '%s\n' "$CS_RELEASE_SIGNERS" > "$trust_dir/signers" || exit 1
+        printf '%s' "$CS_RELEASE_REVOKED" > "$trust_dir/revoked" || exit 1
+        local revocation_args=()
+        [ ! -s "$trust_dir/revoked" ] || revocation_args=(-r "$trust_dir/revoked")
+        if ! ssh-keygen -Y verify -f "$trust_dir/signers" -I release -n "cs-release-v$3" \
+            -s "$2" ${revocation_args[@]+"${revocation_args[@]}"} < "$1" > "$trust_dir/verify.log" 2>&1; then
+            # The verifier's own reason, then the fixed diagnostic last.
+            tail -n 5 "$trust_dir/verify.log" >&2
+            printf '%s\n' 'Release manifest signature verification failed.' >&2
+            exit 1
+        fi
+    )
+}
+
+verify_checksum() {
+    local file="$1" checksumfile="$2" asset="${3:-${1##*/}}"
+    local expected actual
+    expected=$(awk -v asset="$asset" '
+        $2 == asset {
+            count++
+            if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/) bad=1
+            digest=$1
+        }
+        END { if (count != 1 || bad) exit 1; print digest }
+    ' "$checksumfile") || return 1
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$file" | awk '{print $1}') || return 1
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}') || return 1
+    else
+        # Fail closed: a verification gate that can't verify must not pass.
+        echo "Error: no sha256sum or shasum found — cannot verify download. Install one and retry." >&2
+        return 1
+    fi
+    [ "$expected" = "$actual" ]
+}
 
 # Detect if running from cloned repo or web install. An installer read from a
 # pipe (curl ... | bash) has no BASH_SOURCE: it is the web install, whatever
@@ -432,69 +483,22 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
     _tui_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}"
     if [ -n "$_cs_version" ] && curl -fsSL --head "$_tui_url" >/dev/null 2>&1 \
         && curl -fsSL "$_tui_url" -o "$_tui_dst"; then
-        installed "cs-tui" "$INSTALL_DIR/cs-tui"
-
-        # Verify cs-tui checksum (hard gate). The rule is the one stated in
-        # lib/20-update.sh's verify_checksum: a gate that cannot verify must not
-        # pass. An unfetchable .sha256 and a digest that cannot be computed both
-        # leave the binary unverified, so both remove it.
-        _checksum_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}.sha256"
-        _verified=0
-        _mismatch=0
-        if curl -fsSL "$_checksum_url" -o "$_tui_dst.sha256" 2>/dev/null; then
-            _expected=$(awk '{print $1}' "$_tui_dst.sha256")
-            _actual=""
-            # `|| _actual=""`: the script runs under `set -euo pipefail`, so a
-            # digest tool that exits non-zero would otherwise abort the whole
-            # install here — leaving both the unverified binary and its .sha256
-            # behind — rather than falling through to the removal below.
-            if command -v sha256sum >/dev/null 2>&1; then
-                _actual=$(sha256sum "$_tui_dst" 2>/dev/null | awk '{print $1}') || _actual=""
-            elif command -v shasum >/dev/null 2>&1; then
-                _actual=$(shasum -a 256 "$_tui_dst" 2>/dev/null | awk '{print $1}') || _actual=""
-            fi
-            if [ -n "$_expected" ] && [ -n "$_actual" ]; then
-                if [ "$_expected" = "$_actual" ]; then
-                    _verified=1
-                else
-                    _mismatch=1
-                fi
-            fi
-            rm -f "$_tui_dst.sha256"
-        fi
-        if [ "$_verified" != 1 ]; then
+        _manifest_url="${RELEASES_URL}/v${_cs_version}/SHA256SUMS"
+        if ! curl -fsSL "$_manifest_url" -o "$STAGE_DIR/SHA256SUMS" 2>/dev/null \
+            || ! curl -fsSL "$_manifest_url.sig" -o "$STAGE_DIR/SHA256SUMS.sig" 2>/dev/null; then
             rm -f "$_tui_dst"
-            if [ "$_mismatch" = 1 ]; then
-                warn "cs-tui checksum verification failed -- removed"
-            else
-                warn "cs-tui could not be verified (no checksum or no digest tool) -- removed"
-            fi
-        fi
-
-        # Verify cs-tui signature (best-effort: minisign may not be installed)
-        _sig_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}.minisig"
-        if curl -fsSL "$_sig_url" -o "$_tui_dst.minisig" 2>/dev/null; then
-            _ms_bin=""
-            if command -v minisign >/dev/null 2>&1; then
-                _ms_bin=$(command -v minisign)
-            elif [ -x "$HOME/.local/bin/minisign" ]; then
-                _ms_bin="$HOME/.local/bin/minisign"
-            fi
-            # Nothing to verify once the checksum gate above removed the binary:
-            # minisign fails on a path that is not there, which would report a
-            # signature failure for a removal the gate has already explained,
-            # and send the reader after release-key tampering that never was.
-            if [ -n "$_ms_bin" ] && [ -f "$_tui_dst" ]; then
-                if ! "$_ms_bin" -Vm "$_tui_dst" -P "$CS_SIGN_PUBKEY" -x "$_tui_dst.minisig" >/dev/null 2>&1; then
-                    rm -f "$_tui_dst" "$_tui_dst.minisig"
-                    warn "cs-tui signature verification failed -- removed"
-                fi
-            fi
-            rm -f "$_tui_dst.minisig"
+            warn "cs-tui could not be verified (manifest or signature unavailable) -- removed"
+        elif ! _verify_manifest "$STAGE_DIR/SHA256SUMS" "$STAGE_DIR/SHA256SUMS.sig" "$_cs_version"; then
+            rm -f "$_tui_dst"
+            warn "cs-tui signature verification failed -- removed"
+        elif ! verify_checksum "$_tui_dst" "$STAGE_DIR/SHA256SUMS" "$_tui_base"; then
+            rm -f "$_tui_dst"
+            warn "cs-tui could not be verified (manifest entry or digest unavailable) -- removed"
         fi
         if [ -f "$_tui_dst" ]; then
             _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
             _record_tui_origin release
+            installed "cs-tui" "$INSTALL_DIR/cs-tui"
         fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
@@ -970,9 +974,11 @@ else
     }
 
     # Register cs-statusline as the Claude Code status line. A status line the
-    # user already configured is never replaced silently: prompt when a
-    # terminal is attached, otherwise keep it and print how to switch. The
-    # file is only looked at here; the registration is written with the rest.
+    # user already configured is never replaced silently: a bridge that runs
+    # cs-statusline is kept without recording a decline, even with a decline
+    # marker present. Otherwise prompt when a terminal is attached or keep it
+    # and print how to switch. The file is only looked at here; the registration
+    # is written with the rest.
     _statusline_cmd="$INSTALL_DIR/cs-statusline"
     _current_statusline=""
     if [ -s "$CLAUDE_SETTINGS" ]; then
@@ -1064,6 +1070,15 @@ else
         echo ""
     }
 
+    # Twin: _statusline_chains_to_cs in lib/60-doctor.sh.
+    # Follows a bare path (~-prefixed or absolute) with optional arguments; interpreters, quoted paths and $HOME fall through to the doctor's hedged WARN.
+    _statusline_chains_to_cs() {
+        local file rest
+        read -r file rest <<< "$1"
+        file="${file/#\~/$HOME}"
+        [ -f "$file" ] && [ -r "$file" ] && grep -qF -- cs-statusline "$file" 2>/dev/null
+    }
+
     # Each branch only decides consent; the registration itself happens once
     # below. "quiet" re-registers an existing cs-statusline entry (refreshing
     # the path) without announcing it.
@@ -1073,7 +1088,9 @@ else
             _register_statusline=quiet
             ;;
         *)
-            if [ -f "$_statusline_declined" ]; then
+            if _statusline_chains_to_cs "$_current_statusline"; then
+                info "Keeping current status line: $_current_statusline runs cs-statusline."
+            elif [ -f "$_statusline_declined" ]; then
                 info "Status line not registered (declined earlier). Enable any time with: cs -statusline enable"
             elif [ -z "$_current_statusline" ]; then
                 # The status bar is user-visible UI: claim it only with consent.
@@ -1129,7 +1146,8 @@ else
     # THE PATH IN SYNC with lib/70-statusline.sh and bin/cs-statusline).
     # Non-interactive installs write nothing and say how to answer later.
     _statusline_caps="${XDG_CONFIG_HOME:-$HOME/.config}/cs/statusline-caps"
-    if [ -n "$_register_statusline" ] && [ ! -f "$_statusline_caps" ]; then
+    if { [ -n "$_register_statusline" ] || _statusline_chains_to_cs "$_current_statusline"; } \
+        && [ ! -f "$_statusline_caps" ]; then
         if [ -t 0 ]; then
             printf '\n   %s\n' "$(printf '\xee\x82\xb6')cs-statusline$(printf '\xee\x82\xb4')"
             # An explicit y or n only: the registration question just above
@@ -1160,6 +1178,94 @@ else
             info "Capsule caps: square ends until you answer once with: cs -statusline caps ask"
         fi
     fi
+    # Claude Code's spinner tips read one tipsFile, and cs's says how to turn
+    # on the band's prompt bars. It is named in settings.json only while no
+    # file is named there, the deployed tips file is a regular file (Claude
+    # Code refuses a link), and the record allows it: "named" once cs named
+    # it, "declined" once the person took it out, so cs -update never puts it
+    # back. A record cs cannot read as either counts as declined. A file the
+    # user named stays, and cs's tip is left out. The user's own tips, label
+    # and excludeDefault are never touched. Read here, as the filter prints
+    # nothing; the filter checks again under the lock.
+    _cs_tips_deployed=""
+    if [ -f "$SKILLS_DIR/cs/tips.json" ] && [ ! -L "$SKILLS_DIR/cs/tips.json" ]; then
+        _cs_tips_deployed=1
+    fi
+    _tips_state=unset _current_tips_file=""
+    if [ -s "$CLAUDE_SETTINGS" ]; then
+        _tips_state=$(jq -r --arg tilde "$CS_TIPS_FILE" --arg abs "$HOME/.claude/skills/cs/tips.json" '.spinnerTipsOverride
+            | if . == null then "unset"
+              elif type != "object" then "not-object"
+              elif (.tipsFile // "") == "" then "unset"
+              elif .tipsFile == $tilde or .tipsFile == $abs then "cs"
+              else "foreign" end' "$CLAUDE_SETTINGS")
+        _current_tips_file=$(jq -r '.spinnerTipsOverride.tipsFile? // "" | tostring' "$CLAUDE_SETTINGS")
+    fi
+    _tips_record_file=$(_cs_tips_record_file)
+    _tips_record=none
+    if [ -e "$_tips_record_file" ] || [ -L "$_tips_record_file" ]; then
+        _tips_record=$(cat "$_tips_record_file" 2>/dev/null || true)
+        case "$_tips_record" in
+            named|declined) ;;
+            *)
+                warn "Spinner tips: $_tips_record_file holds neither named nor declined, so cs's tip is kept out as declined"
+                _tips_record=declined
+                ;;
+        esac
+    fi
+    # Like the status line's memo, a record write must never take the install
+    # down: report and continue.
+    _write_tips_record() {  # named | declined
+        mkdir -p "$(dirname "$_tips_record_file")" 2>/dev/null \
+            && { printf '%s\n' "$1" > "$_tips_record_file"; } 2>/dev/null
+    }
+    _tips_not_deployed="Spinner tips: $SKILLS_DIR/cs/tips.json was not deployed as a file, so cs's tip is not in Claude Code's tips"
+    _tips_kept_out="Spinner tips: cs's tip stays out of Claude Code's tips, as recorded in $_tips_record_file; to have it back, delete that file and run cs -update"
+    _tips_name=""
+    case "$_tips_record:$_tips_state" in
+        *:foreign)
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
+            ;;
+        *:not-object)
+            warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
+            ;;
+        none:unset)
+            # No record of consent, no pointer: the record is written first.
+            if [ -z "$_cs_tips_deployed" ]; then
+                warn "$_tips_not_deployed"
+            elif _write_tips_record named; then
+                _tips_name=1
+                info "Spinner tips: named cs's tips file in ~/.claude/settings.json (spinnerTipsOverride.tipsFile)"
+            else
+                warn "Spinner tips: could not write $_tips_record_file, so cs's tips file is not named in ~/.claude/settings.json"
+            fi
+            ;;
+        none:cs)
+            # Named by an install from before the record.
+            _write_tips_record named \
+                || warn "Spinner tips: could not write $_tips_record_file, so if you take cs's tipsFile out, cs -update puts it back"
+            [ -n "$_cs_tips_deployed" ] || warn "$_tips_not_deployed"
+            ;;
+        named:cs)
+            [ -n "$_cs_tips_deployed" ] || warn "$_tips_not_deployed"
+            ;;
+        named:unset)
+            # cs named it and it is gone: the person took it out.
+            if _write_tips_record declined; then
+                info "$_tips_kept_out"
+            else
+                warn "Spinner tips: cs's tip stays out of Claude Code's tips, but could not write $_tips_record_file"
+            fi
+            ;;
+        declined:unset)
+            info "$_tips_kept_out"
+            ;;
+        declined:cs)
+            # Put back by hand after a decline: left as it is, and saying it
+            # stays out would be false.
+            ;;
+    esac
+
     # settings.json on stdin, with cs's hooks and the status line the answers
     # above chose, on stdout. cs_settings_update runs it under the lock, so it
     # prints nothing else and asks nothing.
@@ -1176,9 +1282,21 @@ else
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}')
         fi
+        if [ -n "$_tips_name" ]; then
+            SETTINGS=$(echo "$SETTINGS" | jq --arg tips "$CS_TIPS_FILE" '
+                if .spinnerTipsOverride == null then .spinnerTipsOverride = {tipsFile: $tips}
+                elif (.spinnerTipsOverride | type) == "object" and (.spinnerTipsOverride.tipsFile // "") == ""
+                then .spinnerTipsOverride.tipsFile = $tips
+                else . end')
+        fi
         printf '%s\n' "$SETTINGS"
     }
-    cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    if ! cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter; then
+        # The record says cs named its tips file, and it did not: a "named"
+        # record with no pointer would read as a decline on the next install.
+        [ -z "$_tips_name" ] || rm -f "$_tips_record_file"
+        error "$CS_SETTINGS_ERROR"
+    fi
     # settings.json no longer registers them, so the retired files can go,
     # each one that still holds what cs wrote; the filter kept the
     # registration of any other
@@ -1195,10 +1313,14 @@ else
         installed "status line" "cs-statusline + cs-subagent-statusline"
     fi
 
-    # Add cs's keys that nothing binds yet to keybindings.json: into its first
-    # Global block, or a Global block of their own, creating the file when
-    # there is none. A key bound to anything else, in any context, is the
-    # user's and is reported, never replaced; so is a bare key a chord would
+    # Add cs's keys that nothing binds yet to keybindings.json, each into the
+    # first block of the context Claude Code wants it in (Chat for the
+    # command keys, Global for the chords), or a block of that context of
+    # its own, creating the file when there is none. A cs key that sits in a
+    # block of another context is moved: its cs bindings leave that block
+    # (which goes if that empties it) and the key joins its own context. A
+    # key bound to anything else, in any context, is the user's and is
+    # reported, never replaced or moved; so is a bare key a chord would
     # shadow. cs's own Option+1 / Option+2 bindings stood for /rotate and
     # /wrap, so they make way unless Ctrl+X R or Ctrl+X W conflicts: then
     # both stay, so the command whose chord is taken keeps a key. A conflict
@@ -1210,6 +1332,7 @@ else
     # dotfiles manager's) rewritten through its link.
     _bind_rotate_wrap_keys() {
         local file doc status state key action prefix added="" command_conflicts=0 retired="" add
+        local moved="" moved_chat="" moved_global="" payload="" line=""
         local shadowed="" shadowed_prefix="" shadowed_action=""
         file="$(_cs_keybindings_file)"
         if [ -e "$file" ]; then
@@ -1239,6 +1362,16 @@ else
                     ;;
                 free)
                     added="${added:+$added, }$key"
+                    payload="${payload:+$payload, }$key"
+                    ;;
+                misplaced)
+                    moved="${moved:+$moved, }$key"
+                    payload="${payload:+$payload, }$key"
+                    case "$action" in
+                        Chat) moved_chat="${moved_chat:+$moved_chat, }$key" ;;
+                        Global) moved_global="${moved_global:+$moved_global, }$key" ;;
+                        *) warn "Rotate/wrap keys: no such context as \"$action\" for $key; $file left as it is."; return 1 ;;
+                    esac
                     ;;
             esac
         done <<< "$status"
@@ -1253,9 +1386,9 @@ else
                     || { warn "Rotate/wrap keys: could not read the bindings in $file"; return 1; }
             fi
         fi
-        [ -n "$added" ] || [ -n "$retired" ] || return 0
-        add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg added "$added" \
-            '$cs | with_entries(select(.key as $k | $added | split(", ") | any(.[]; . == $k)))') \
+        [ -n "$payload" ] || [ -n "$retired" ] || return 0
+        add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg keys "$payload" \
+            '$cs | with_entries(select(.key as $k | $keys | split(", ") | any(.[]; . == $k)))') \
             || { warn "Rotate/wrap keys: could not build the bindings for $file"; return 1; }
         # The payload's copy, as above: never the deployed one.
         # shellcheck source=hooks/cs-shared.sh
@@ -1264,21 +1397,39 @@ else
             return 1
         fi
         mkdir -p "$(dirname "$file")" 2>/dev/null || true
-        if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson add "$add" '
-            if $add == {} then .
-            else (first(.bindings | to_entries[] | select(.value.context == "Global") | .key) // null) as $i
-                | if $i == null then .bindings += [{context: "Global", bindings: $add}]
-                  else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + $add) end
-            end'; then
+        # A moved key's cs bindings leave every block of a context that is
+        # not the action's home, then the payload joins the first block of
+        # each home context, Chat before Global when both are created. A key
+        # some block of its home context already holds, under any spelling,
+        # is not added again.
+        if ! printf '%s\n' "$doc" | cs_write_atomic "$file" jq --argjson cs "$CS_ROTATE_WRAP_KEYS" \
+            --argjson add "$add" --arg moved "$moved" "$_CS_KEYBINDING_DEFS"'
+            def astray($ctx): ours and ((.key | keynorm) as $k | $moved | split(", ") | any(.[]; . == $k))
+                and (.value | home) != $ctx;
+            .bindings |= map(. as $b
+                | if any((.bindings // {}) | to_entries[]; astray($b.context)) then
+                    .bindings |= with_entries(select(astray($b.context) | not)) | select(.bindings != {})
+                  else . end)
+            | reduce ("Chat", "Global") as $ctx (.;
+                [.bindings[] | select(.context == $ctx) | (.bindings // {}) | to_entries[] | select(ours) | .key | keynorm] as $held
+                | ($add | with_entries(select((.value | home == $ctx) and (.key as $k | $held | any(.[]; . == $k) | not)))) as $part
+                | if $part == {} then .
+                  else (first(.bindings | to_entries[] | select(.value.context == $ctx) | .key) // null) as $i
+                    | if $i == null then .bindings += [{context: $ctx, bindings: $part}]
+                      else .bindings[$i].bindings = ((.bindings[$i].bindings // {}) + $part) end
+                  end)'; then
             warn "Rotate/wrap keys: could not write $file"
             return 1
         fi
-        if [ -z "$retired" ]; then
-            info "Rotate/wrap keys: bound $added in $file"
-        elif [ -z "$added" ]; then
+        [ -z "$added" ] || line="bound $added"
+        [ -z "$moved_chat" ] || line="${line:+$line and }moved $moved_chat to the Chat context"
+        [ -z "$moved_global" ] || line="${line:+$line and }moved $moved_global to the Global context"
+        if [ -z "$line" ]; then
             info "Rotate/wrap keys: removed cs's $retired from $file"
+        elif [ -z "$retired" ]; then
+            info "Rotate/wrap keys: $line in $file"
         else
-            info "Rotate/wrap keys: bound $added in $file (replacing cs's $retired)"
+            info "Rotate/wrap keys: $line in $file (replacing cs's $retired)"
         fi
     }
 

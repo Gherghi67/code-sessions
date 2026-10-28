@@ -167,7 +167,7 @@ _rotate_force_notice() {
     [ -n "$pct" ] || return 0
     f="$(_rotate_force_notice_file)"
     [ -f "$f" ] && return 0
-    printf '%s\n' "cs now rotates a conversation on its own once it ends a turn past ${pct}% context: it writes a handoff, then counts down 20 seconds to the /clear (press 1 to go now, type anything to stop it)."
+    printf '%s\n' "cs now rotates a conversation on its own once it ends a turn past ${pct}% context: it writes a handoff, then counts down 20 seconds to the /clear (press Ctrl+X 1 to go now, type anything to stop it)."
     printf '%s\n' "To turn that off, export CS_ROTATE_FORCE_CTX=off; to move it, set a percentage. Said once per machine."
     mkdir -p "$(dirname "$f")" 2>/dev/null && { printf '%s\n' "notified" > "$f"; } 2>/dev/null || true
 }
@@ -705,17 +705,23 @@ _launch_claude_bound() {
     local self_bin
     self_bin="$(cd -- "$(dirname "$0")" && pwd -P)/$(basename "$0")"
     export CS_BIN="$self_bin"
+    # The fork never hands the cs-update mod a pending version (below), so
+    # the mod reads this to answer /cs-update with the fork's sync workflow.
+    export CS_FORK
 
     # The cs-update mod draws the pending release's notes and runs the update
     # from inside the session. It gets the launch's verdict, never its own:
     # the version check_update_notify found newer than this cs. Absent when
     # nothing is pending, so the mod is silent by absence rather than by a
     # value it has to read; cleared first, since a nested launch inherits its
-    # parent's verdict. The fork reports upstream releases before either adapter:
-    # the mod's install action is only for the original cs.
-    unset CS_UPDATE_AVAILABLE
+    # parent's verdict. A version declined at the launch's question is named
+    # beside it, so the mod says it is there instead of opening its pane. The
+    # fork reports upstream releases before either adapter: the mod's install
+    # action is only for the original cs.
+    unset CS_UPDATE_AVAILABLE CS_UPDATE_DECLINED
     if [ -n "$UPDATE_AVAILABLE" ] && [ "${CS_FORK:-}" != code-sessions ] && [ -z "${CODE_SESSIONS_HOME:-}" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
+        [ -z "$UPDATE_DECLINED_PENDING" ] || export CS_UPDATE_DECLINED="$UPDATE_AVAILABLE"
     fi
 
     # The session is open and every export above is in place: `--remote`
@@ -878,12 +884,9 @@ EOF
 
     echo ""
 
-    # Set terminal tab title and color. The tab color is the session's
-    # claude_session_color (same RGB as the statusline block); fall back to a
-    # name hash only if no color is recorded.
-    local _tab_color
-    _tab_color=$(_session_color_rgb "$claude_session_color")
-    set_tab_title "cs: $session_name" "${_tab_color:-auto:$session_name}" "$session_name"
+    # Title the terminal tab; the session colour stays inside the terminal
+    # (band rule, status line, pill), never on the tab.
+    set_tab_title "cs: $session_name" "$session_name"
 
     cd -- "$session_dir" || return 1
 
