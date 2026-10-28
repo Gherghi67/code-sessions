@@ -723,21 +723,57 @@ _retire_settle() {  # stage task run
     fi
     _retire_report "cs: the '$wt_name' conversation closed, and the retire /finish staged did not go through: $out Tell the user, and run /finish $2 again once that is resolved."
 }
+# A name cs could have given a feature, by _feature_name_ok's rule (which
+# lives in cs, not in the hooks): a stage's file name is all the hook knows of
+# its task, and it goes into a report the model reads.
+_retire_task_ok() {  # name
+    case "$1" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+}
 # Earlier builds staged in .cs/local/retire-staged/<task>, with the runs in
-# .cs/local/retire-runs. Such a stage could be an agent's, so it is dropped
-# unread and reported, one per Stop, and its run records go with it.
+# .cs/local/retire-runs. Such a stage could be an agent's, so both directories
+# are dropped whole and unread, and reported once. An agent can write
+# .cs/local, so either name may be a symbolic link to a directory of the
+# user's: a link is removed and never followed, and a real directory is listed
+# for the report and removed with rm -rf, which does not follow links either;
+# nothing here globs through either name. ls -q prints a control character
+# (a newline) in a name as ?, so each line is one entry and such a name is no
+# task.
 _retire_drop_legacy() {
-    local stage task
-    rm -f "$LOCAL"/retire-runs/*.run "$LOCAL"/retire-runs/*.out 2>/dev/null || true
-    rmdir "$LOCAL/retire-runs" 2>/dev/null || true
-    for stage in "$LOCAL"/retire-staged/*; do
-        [ -f "$stage" ] || [ -L "$stage" ] || continue
-        task="${stage##*/}"
-        rm -f "$stage"
-        rmdir "$LOCAL/retire-staged" 2>/dev/null || true
-        _retire_report "cs: the retire /finish staged for $task was kept by an earlier cs at $stage, inside the session, where an agent can write, so it was dropped unread. Run /finish $task again to stage it where cs keeps stages now. Tell the user in one line."
+    local dir name tasks="" n=0 others=0 parts="" next=""
+    for dir in "$LOCAL/retire-staged" "$LOCAL/retire-runs"; do
+        if [ -L "$dir" ]; then
+            rm -f "$dir"
+            parts="$parts; $dir, a symbolic link, removed without following it"
+            continue
+        fi
+        [ -d "$dir" ] || continue
+        if [ "$dir" = "$LOCAL/retire-staged" ]; then
+            while IFS= read -r name; do
+                if _retire_task_ok "$name"; then
+                    tasks="$tasks, $name"
+                    n=$((n + 1))
+                else
+                    others=$((others + 1))
+                fi
+            done < <(ls -Aq "$dir" 2>/dev/null)
+        fi
+        rm -rf -- "$dir"
     done
-    rmdir "$LOCAL/retire-staged" 2>/dev/null || true
+    tasks="${tasks#, }"
+    if [ "$n" = 1 ]; then
+        parts="; the stage for $tasks$parts"
+        next=" Run /finish $tasks again to stage it where cs keeps stages now."
+    elif [ "$n" -gt 1 ]; then
+        parts="; the stages for $tasks$parts"
+        next=" Run /finish <task> again for each of $tasks to stage it where cs keeps stages now."
+    fi
+    case "$others" in
+        0) ;;
+        1) parts="$parts; an entry in retire-staged that is not a stage cs writes" ;;
+        *) parts="$parts; $others entries in retire-staged that are not stages cs writes" ;;
+    esac
+    [ -n "$parts" ] || return 0
+    _retire_report "cs: an earlier cs kept staged retires in $LOCAL, inside the session, where an agent can write, so cs dropped them unread: ${parts#; }.$next Tell the user in one line."
 }
 _stages=""
 _runs=""
@@ -745,7 +781,8 @@ if [ "$HOOK_EVENT" = "Stop" ] && command -v cs_retire_cache_dir >/dev/null 2>&1 
     && command -v live_lock_pid >/dev/null 2>&1; then
     _stages=$(cs_retire_cache_dir retire-staged "${META_DIR%/*}") || _stages=""
     _runs=$(cs_retire_cache_dir retire-runs "${META_DIR%/*}") || _runs=""
-    if { [ -d "$LOCAL/retire-staged" ] || [ -d "$LOCAL/retire-runs" ]; } && _mail_is_lead; then
+    if { [ -d "$LOCAL/retire-staged" ] || [ -L "$LOCAL/retire-staged" ] \
+        || [ -d "$LOCAL/retire-runs" ] || [ -L "$LOCAL/retire-runs" ]; } && _mail_is_lead; then
         _retire_drop_legacy
     fi
 fi
