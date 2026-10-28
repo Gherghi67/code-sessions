@@ -419,7 +419,25 @@ def thread_schemas(source, target):
                 columns = tuple(row[2:5] for row in database.execute(
                     f"PRAGMA index_xinfo({quoted_identifier(index[1])})") if row[5])
                 indexes.append((columns, index[4]))
-        return sorted(indexes)
+        # An expression column has no name, and None does not sort with text.
+        return sorted(indexes, key=repr)
+
+    def index_columns(index):
+        return [column[0] for column in index[0]]
+
+    def foreign_keys(database, table):
+        # Adding a foreign key renumbers the others, so they are compared by
+        # content. A composite key spans the rows that share an id.
+        rows_by_id = {}
+        for row in database.execute(f'PRAGMA foreign_key_list("{table}")'):
+            rows_by_id.setdefault(row[0], []).append(row)
+        keys = []
+        for rows in rows_by_id.values():
+            rows.sort(key=lambda row: row[1])
+            _, _, parent, _, _, on_update, on_delete, match = rows[0]
+            keys.append((parent, tuple(row[3] for row in rows), tuple(row[4] for row in rows),
+                         on_update, on_delete, match))
+        return sorted(keys, key=repr)
 
     for table in tables:
         incoming = list(source.execute(f'PRAGMA table_info("{table}")'))
@@ -429,16 +447,27 @@ def thread_schemas(source, target):
             # its migration left it empty for the threads it already held. A
             # table only the profile has is refused below.
             continue
-        # A newer Codex appends columns with ALTER TABLE ADD COLUMN, which
-        # leaves every row it already holds NULL or at the column's default.
-        # An imported row that omits them is a row that migration would have
-        # found, so such columns are tolerated; any other difference is not.
+        # A newer Codex appends columns with ALTER TABLE ADD COLUMN and expects
+        # an older Codex to keep inserting threads without them (migration 39
+        # says so). The import names only the source's columns, so an imported
+        # row is such an insert: appended columns get their default or NULL,
+        # or what Codex's insert triggers set. Values a migration backfilled
+        # into the threads it already held are not replayed. Only columns,
+        # foreign keys and unique indexes are compared.
         added = current[len(incoming):]
+        appended = {row[1] for row in added}
+        # SQLite enforces neither a foreign key nor a unique index on a row
+        # with a NULL key column. A constraint naming appended columns is
+        # tolerated when imported rows leave all of them NULL, and refused
+        # otherwise; one naming none must match the source's.
+        unset = {row[1] for row in added if not row[3] and (row[4] is None or row[4].upper() == "NULL")}
+        keys = [(appended.intersection(key[1]), key) for key in foreign_keys(target, table)]
+        indexes = [(appended.intersection(index_columns(index)), index) for index in unique_indexes(target, table)]
         if incoming != current[:len(incoming)] or \
                 any(row[5] or (row[3] and row[4] is None) for row in added) or \
-                list(source.execute(f'PRAGMA foreign_key_list("{table}")')) != \
-                list(target.execute(f'PRAGMA foreign_key_list("{table}")')) or \
-                unique_indexes(source, table) != unique_indexes(target, table):
+                any(names - unset for names, _ in keys + indexes) or \
+                foreign_keys(source, table) != [key for names, key in keys if not names] or \
+                unique_indexes(source, table) != [index for names, index in indexes if not names]:
             raise ValueError(f"Codex database schema differs for {table}; no thread metadata imported")
         schemas[table] = ([row[1] for row in incoming],
                           [row[1] for row in sorted(incoming, key=lambda row: row[5]) if row[5]])

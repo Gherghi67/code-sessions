@@ -926,6 +926,111 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT id FROM threads").fetchall(), [("kept",)])
 
+    def test_appended_column_with_a_foreign_key_is_imported_as_null(self):
+        # Codex migrations 45 and 49 appended thread_section_id and project_id
+        # this way, which renumbers the foreign keys the table already had.
+        src, dst = self.relational_database(self.profile), self.relational_database(self.home)
+        with closing(sqlite3.connect(src)) as db, db:
+            db.execute("INSERT INTO projects VALUES('shared','old','{}',0,1,1)")
+            self.relational_thread(db, "incoming", "shared")
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("INSERT INTO projects VALUES('shared','normal','{}',0,1,1)")
+            db.execute("ALTER TABLE threads ADD COLUMN parent_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT project_id, parent_project_id FROM threads").fetchall(), [("shared", None)])
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_composite_foreign_key_over_an_appended_column_is_imported_as_null(self):
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.home / ".codex/state_5.sqlite"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("CREATE TABLE revisions(title TEXT, revision TEXT, PRIMARY KEY(title, revision))")
+            db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT, "
+                       "revision TEXT, FOREIGN KEY(title, revision) REFERENCES revisions(title, revision))")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT title, revision FROM threads").fetchall(), [("source", None)])
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_section_table_and_column_a_newer_codex_added_together_are_left_empty(self):
+        # Codex migration 45 created thread_sections and appended
+        # threads.thread_section_id referencing it.
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.database(self.home, [("kept", "/normal/rollout", "normal")])
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("CREATE TABLE thread_sections(id TEXT PRIMARY KEY, name TEXT NOT NULL, appearance TEXT)")
+            db.execute("ALTER TABLE threads ADD COLUMN thread_section_id TEXT "
+                       "REFERENCES thread_sections(id) ON DELETE SET NULL")
+            db.execute("INSERT INTO thread_sections VALUES('section','normal',NULL)")
+            db.execute("UPDATE threads SET thread_section_id='section'")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT id, thread_section_id FROM threads ORDER BY id").fetchall(),
+                             [("kept", "section"), ("new", None)])
+            self.assertEqual(db.execute("SELECT * FROM thread_sections").fetchall(), [("section", "normal", None)])
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_unique_indexes_over_appended_nullable_columns_are_tolerated(self):
+        # Imported rows leave both appended columns NULL, so neither index can
+        # reject the incoming threads that share a title with each other.
+        src = self.database(self.profile, [("a", "/a", "same"), ("b", "/b", "same")])
+        dst = self.database(self.home, [("kept", "/normal/rollout", "same")])
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("ALTER TABLE threads ADD COLUMN external_id TEXT")
+            db.execute("ALTER TABLE threads ADD COLUMN slot INTEGER DEFAULT NULL")
+            db.execute("CREATE UNIQUE INDEX threads_external_id ON threads(external_id)")
+            db.execute("CREATE UNIQUE INDEX threads_title_slot ON threads(title, slot)")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 2)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT id, external_id, slot FROM threads ORDER BY id").fetchall(),
+                             [("a", None, None), ("b", None, None), ("kept", None, None)])
+
+    def assert_threads_schema_refused(self, cases):
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        for number, (case, statements) in enumerate(cases.items()):
+            with self.subTest(case=case):
+                dst = self.database(self.home / str(number), [])
+                with closing(sqlite3.connect(dst)) as db, db:
+                    for statement in statements:
+                        db.execute(statement)
+                with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+                    migration.merge_threads(src, dst, self.home, True, None)
+                with closing(sqlite3.connect(dst)) as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+
+    def test_appended_constraint_columns_with_a_default_are_refused(self):
+        cases = {
+            "foreign key": ["CREATE TABLE sections(id TEXT PRIMARY KEY)", "INSERT INTO sections VALUES('one')",
+                            "ALTER TABLE threads ADD COLUMN section TEXT DEFAULT 'one' REFERENCES sections(id)"],
+            "unique index": ["ALTER TABLE threads ADD COLUMN slot INTEGER NOT NULL DEFAULT 0",
+                             "CREATE UNIQUE INDEX threads_slot ON threads(slot)"],
+        }
+        self.assert_threads_schema_refused(cases)
+
+    def test_new_unique_indexes_over_source_columns_are_refused(self):
+        cases = {
+            "expression": ["CREATE UNIQUE INDEX threads_title ON threads(lower(title))"],
+            "partial on an appended column": ["ALTER TABLE threads ADD COLUMN hidden INTEGER",
+                                              "CREATE UNIQUE INDEX threads_title ON threads(title) WHERE hidden IS NULL"],
+        }
+        self.assert_threads_schema_refused(cases)
+
+    def test_changed_foreign_key_on_a_shared_column_is_refused(self):
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.database(self.home, [])
+        for database, action in ((src, "SET NULL"), (dst, "CASCADE")):
+            with closing(sqlite3.connect(database)) as db, db:
+                db.execute("CREATE TABLE projects(id TEXT PRIMARY KEY)")
+                db.execute(f"ALTER TABLE threads ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE {action}")
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("ALTER TABLE threads ADD COLUMN pinned INTEGER")
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+            migration.merge_threads(src, dst, self.home, True, None)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+
     def test_config_and_credentials_are_untouched(self):
         for name in ("auth.json", "config.toml", "hooks.json"):
             self.put(self.profile, ".codex/" + name, "profile")
