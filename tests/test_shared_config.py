@@ -900,6 +900,32 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         with closing(sqlite3.connect(dst)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
 
+    def test_tables_only_a_newer_codex_created_are_left_empty(self):
+        # Codex migration 61 created thread_read_receipts this way. This
+        # thread_spawn_edges has no key, so only the skip keeps it out.
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.database(self.home, [("kept", "/normal/rollout", "normal")])
+        with closing(sqlite3.connect(dst)) as db, db:
+            db.execute("CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT, status TEXT)")
+            db.execute("CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unread_turn TEXT, "
+                       "revision TEXT NOT NULL, last_published_turn TEXT)")
+            db.execute("INSERT INTO thread_read_receipts VALUES('kept', NULL, 'r1', NULL)")
+        self.assertEqual(migration.merge_threads(src, dst, self.home, True, None), 1)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT id FROM threads ORDER BY id").fetchall(), [("kept",), ("new",)])
+            self.assertEqual(db.execute("SELECT * FROM thread_read_receipts").fetchall(), [("kept", None, "r1", None)])
+
+    def test_tables_only_the_old_profile_has_are_refused(self):
+        src = self.database(self.profile, [("new", "/rollout", "source")])
+        dst = self.database(self.home, [("kept", "/normal/rollout", "normal")])
+        with closing(sqlite3.connect(src)) as db, db:
+            db.execute("CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unread_turn TEXT, "
+                       "revision TEXT NOT NULL, last_published_turn TEXT)")
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for thread_read_receipts"):
+            migration.merge_threads(src, dst, self.home, True, None)
+        with closing(sqlite3.connect(dst)) as db:
+            self.assertEqual(db.execute("SELECT id FROM threads").fetchall(), [("kept",)])
+
     def test_config_and_credentials_are_untouched(self):
         for name in ("auth.json", "config.toml", "hooks.json"):
             self.put(self.profile, ".codex/" + name, "profile")

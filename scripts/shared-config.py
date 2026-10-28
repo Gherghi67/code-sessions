@@ -424,14 +424,17 @@ def thread_schemas(source, target):
     for table in tables:
         incoming = list(source.execute(f'PRAGMA table_info("{table}")'))
         current = list(target.execute(f'PRAGMA table_info("{table}")'))
-        if not incoming and not current:
+        if not incoming:
+            # A table only the newer Codex created has nothing to import, and
+            # its migration left it empty for the threads it already held. A
+            # table only the profile has is refused below.
             continue
         # A newer Codex appends columns with ALTER TABLE ADD COLUMN, which
         # leaves every row it already holds NULL or at the column's default.
         # An imported row that omits them is a row that migration would have
         # found, so such columns are tolerated; any other difference is not.
         added = current[len(incoming):]
-        if not incoming or incoming != current[:len(incoming)] or \
+        if incoming != current[:len(incoming)] or \
                 any(row[5] or (row[3] and row[4] is None) for row in added) or \
                 list(source.execute(f'PRAGMA foreign_key_list("{table}")')) != \
                 list(target.execute(f'PRAGMA foreign_key_list("{table}")')) or \
