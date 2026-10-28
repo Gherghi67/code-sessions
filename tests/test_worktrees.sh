@@ -969,6 +969,21 @@ _dir_id() {  # dir
     stat -L -c '%d-%i' "$1" 2>/dev/null || stat -L -f '%d-%i' "$1"
 }
 
+# A directory's birth time in seconds, as _retire_worktree_identity reads it;
+# fails where the filesystem keeps none (GNU stat's %W reads 0).
+_dir_birth() {  # dir
+    local born
+    born=$(stat -L -c %W "$1" 2>/dev/null || stat -L -f %B "$1" 2>/dev/null) || return 1
+    case "$born" in ''|0|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$born"
+}
+
+# The worktree a stage is for, as _retire_worktree_identity reads it: the
+# directory's <device>-<inode> and its birth time, 0 where none is kept.
+_wt_id() {  # dir
+    printf '%s-%s\n' "$(_dir_id "$1")" "$(_dir_birth "$1" || echo 0)"
+}
+
 # Where cs keeps a base's retire stages or runs (cs_retire_cache_dir): the
 # test's cache, under its HOME, then the kind and the base's <device>-<inode>.
 _retire_dir() {  # kind base_dir
@@ -1012,7 +1027,7 @@ test_retire_stages_itself_while_the_feature_conversation_is_open() {
     assert_dir "$wt" "worktree preserved" || return 1
     assert_eq "sha: $sha
 force: 0
-worktree: $(_dir_id "$wt")" "$(cat "$stage")" "the stage records the captured commit and the force decision" || return 1
+worktree: $(_wt_id "$wt")" "$(cat "$stage")" "the stage records the captured commit and the force decision" || return 1
     assert_eq "700" "$(_mode_of "${stage%/*}")" "in a directory private to the user" || return 1
     assert_eq "600" "$(_mode_of "$stage")" "and a file only the user reads" || return 1
     assert_not_exists "$base_dir/.cs/local/retire-staged" "nothing staged inside the session" || return 1
@@ -1021,7 +1036,7 @@ worktree: $(_dir_id "$wt")" "$(cat "$stage")" "the stage records the captured co
     assert_eq "0" "$status" "a repeat stage is not an error: $output" || return 1
     assert_eq "sha: $sha
 force: 1
-worktree: $(_dir_id "$wt")" "$(cat "$stage")" "the repeat rewrites the stage with its own force decision" || return 1
+worktree: $(_wt_id "$wt")" "$(cat "$stage")" "the repeat rewrites the stage with its own force decision" || return 1
     rm -f "$wt/.cs/session.lock"
 }
 
@@ -1087,7 +1102,7 @@ test_retire_stages_without_python3_when_no_codex_config_exists() {
     assert_output_contains "$output" "staged fix-auth $sha" "the retire is staged" || return 1
     assert_eq "sha: $sha
 force: 0
-worktree: $(_dir_id "$wt")" "$(cat "$stage")" "the stage records the decision" || return 1
+worktree: $(_wt_id "$wt")" "$(cat "$stage")" "the stage records the decision" || return 1
     assert_eq "600" "$(_mode_of "$stage")" "a file only the user reads" || return 1
     assert_eq "700" "$(_mode_of "${stage%/*}")" "in a directory private to the user" || return 1
     # A Codex directory cs cannot search may hold a config, so the roots are
@@ -1222,7 +1237,7 @@ STAT
     assert_eq "0" "$status" "a setgid bit is no access for others: $output" || return 1
     assert_eq "sha: $sha
 force: 0
-worktree: $(_dir_id "$wt")" "$(cat "$stage")" "the stage records the decision" || return 1
+worktree: $(_wt_id "$wt")" "$(cat "$stage")" "the stage records the decision" || return 1
     assert_eq "600" "$(_mode_of "$stage")" "a file only the user reads" || return 1
     mode=$(_mode_of "${stage%/*}")
     assert_eq "700" "${mode#"${mode%???}"}" "in a directory only the user may enter" || return 1
@@ -1783,11 +1798,11 @@ test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry() {
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
     assert_eq "1" "$status" "--staged without a stage is refused" || return 1
     assert_eq "Error: No stage at $stage records retiring fix-auth at $sha with force=0; run /finish fix-auth to stage it" "$output" "and says what is missing" || return 1
-    (umask 077 && mkdir -p "${stage%/*}" && printf 'sha: %s\nforce: 1\nworktree: %s\n' "$sha" "$(_dir_id "$wt")" > "$stage")   # a stage for a different decision
+    (umask 077 && mkdir -p "${stage%/*}" && printf 'sha: %s\nforce: 1\nworktree: %s\n' "$sha" "$(_wt_id "$wt")" > "$stage")   # a stage for a different decision
     status=0
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
     assert_eq "1" "$status" "a stage recording another force decision is not this one" || return 1
-    printf 'sha: %s\nforce: 0\nworktree: %s\n' "$sha" "$(_dir_id "$wt")" > "$stage"
+    printf 'sha: %s\nforce: 0\nworktree: %s\n' "$sha" "$(_wt_id "$wt")" > "$stage"
     # Only a stage cs could have written counts: a file or a directory others
     # may write is no decision of this base's.
     chmod 644 "$stage"
@@ -1838,6 +1853,52 @@ test_retire_staged_refuses_a_stage_written_for_an_earlier_worktree() {
     assert_dir "$wt/.cs" "the feature made again under the same name" || return 1
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
     assert_eq "1" "$status" "a stage written for an earlier worktree is refused: $output" || return 1
+    assert_eq "Error: The stage for fix-auth at $stage was written for an earlier worktree at $wt, removed and made again since /finish staged it, so it is no decision about this one. Nothing was removed; run /finish fix-auth to retire this one once it is done." \
+        "$output" "and says which worktree it was for" || return 1
+    assert_dir "$wt" "the new worktree kept" || return 1
+    git -C "$base_dir" rev-parse -q --verify refs/heads/cs/fix-auth >/dev/null \
+        || { echo "  FAIL: the branch was deleted"; return 1; }
+}
+
+# ext4 and XFS hand a freed inode to the next directory made, so a feature
+# removed and made again under the same name can get its predecessor's
+# <device>-<inode> back; it is born later all the same, and --staged refuses
+# the stage. A stat that answers for the remade worktree with the removed
+# one's identity stands in for ext4: APFS never gives an inode back.
+test_retire_staged_refuses_a_stage_for_a_worktree_remade_on_its_inode() {
+    local base_dir wt="$CS_SESSIONS_ROOT/myproj@fix-auth" stage sha cs output status=0 old_id shim real_stat
+    base_dir=$(create_test_session_with_git "myproj")
+    _dir_birth "$base_dir" >/dev/null || { echo "    SKIP (this filesystem keeps no birth time)"; return 77; }
+    cs="$(_stage_cs_dir)/cs"
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    cs_launch "myproj@fix-auth"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    echo "$$" > "$wt/.cs/session.lock"
+    "$cs" "myproj" -retire-feature "fix-auth" "$sha" >/dev/null 2>&1 || { echo "  FAIL: stage fixture"; return 1; }
+    assert_file_exists "$stage" "staged while open" || return 1
+    rm -f "$wt/.cs/session.lock"
+    old_id=$(_dir_id "$wt")
+    git -C "$base_dir" worktree remove --force "$wt" || { echo "  FAIL: worktree remove"; return 1; }
+    sleep 1   # birth times count seconds; the remade worktree is born in a later one
+    cs_launch "myproj@fix-auth"
+    assert_dir "$wt/.cs" "the feature made again under the same name" || return 1
+    shim="$TEST_TMPDIR/inode-reuse"
+    real_stat=$(command -v stat)
+    mkdir -p "$shim"
+    cat > "$shim/stat" <<EOF
+#!/bin/bash
+# The remade worktree's <device>-<inode> is the removed one's, as ext4 can
+# make it; every other question goes to the real stat.
+for last in "\$@"; do :; done
+case "\$*|\$last" in
+    *%d-%i*\|*/myproj@fix-auth) echo "$old_id"; exit 0 ;;
+esac
+exec "$real_stat" "\$@"
+EOF
+    chmod +x "$shim/stat"
+    assert_eq "$old_id" "$(PATH="$shim:$PATH" stat -L -c '%d-%i' "$wt")" "the shim gives the inode back" || return 1
+    output=$(PATH="$shim:$PATH" "$cs" "myproj" -retire-feature "fix-auth" "$sha" --staged 2>&1) || status=$?
+    assert_eq "1" "$status" "a stage written for the worktree born earlier is refused: $output" || return 1
     assert_eq "Error: The stage for fix-auth at $stage was written for an earlier worktree at $wt, removed and made again since /finish staged it, so it is no decision about this one. Nothing was removed; run /finish fix-auth to retire this one once it is done." \
         "$output" "and says which worktree it was for" || return 1
     assert_dir "$wt" "the new worktree kept" || return 1
@@ -2695,6 +2756,7 @@ run_test test_stop_hook_reports_a_staged_success_that_outran_the_settle
 run_test test_retire_refuses_a_foreign_caller_before_it_stages
 run_test test_retire_staged_runs_a_recorded_stage_without_the_base_ancestry
 run_test test_retire_staged_refuses_a_stage_written_for_an_earlier_worktree
+run_test test_retire_staged_refuses_a_stage_for_a_worktree_remade_on_its_inode
 run_test test_retire_refuses_while_an_opener_holds_the_feature_mutex
 run_test test_retire_restages_when_the_feature_reopened_under_the_mutex
 run_test test_feature_end_mails_the_base_when_a_retire_is_staged

@@ -6149,14 +6149,15 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
                 || error "The stage directory for $task is refused: $_retire_stage_refusal. Nothing was removed; run $fin $task again once that is fixed."
             error "$no_stage"
         fi
-        wt_id=$(cs_dir_identity "$wt_dir") \
+        wt_id=$(_retire_worktree_identity "$wt_dir") \
             || error "Could not read the identity of $wt_dir, which its stage records; nothing was removed"
         decision="sha: $sha"$'\n'"force: $force_word"
         _retire_stage_file_ok "$stage" && recorded=$(cat "$stage" 2>/dev/null) || error "$no_stage"
         if [ "$recorded" != "$decision"$'\n'"worktree: $wt_id" ]; then
             # The name alone does not make it the same worktree: one removed
-            # another way (the picker, git worktree remove) and made again
-            # since is no worktree /finish ran for, whatever its branch holds.
+            # another way (git worktree remove, rm -rf) and made again since,
+            # on its old inode or not, is no worktree /finish ran for,
+            # whatever its branch holds.
             case "$recorded" in
                 "$decision"$'\n'"worktree: "*)
                     error "The stage for $task at $stage was written for an earlier worktree at $wt_dir, removed and made again since /finish staged it, so it is no decision about this one. Nothing was removed; run $fin $task to retire this one once it is done." ;;
@@ -6385,8 +6386,8 @@ $remove_err${trashed:+$nl$trashed}"
 
 # Record a retire the base's Stop hook finishes once the feature conversation
 # closes: the captured commit, whether --force applied, and the worktree's
-# identity (cs_dir_identity), so a worktree removed and made again under the
-# same name inherits no stage. Backs the stage
+# identity and birth (_retire_worktree_identity), so a worktree removed and
+# made again under the same name inherits no stage. Backs the stage
 # retire_feature_worktree writes while that conversation holds the worktree.
 # The stage goes into the base's stage directory, made private first, mode
 # 600 and by rename, so the Stop hook never reads half a stage.
@@ -6394,7 +6395,7 @@ _write_retire_stage() {  # stage_path sha force base_dir wt_dir
     local force=0 dir tmp wt_id
     [ -z "$3" ] || force=1
     _retire_stage_dir "$4" "$5" make && [ "${1%/*}" = "$_retire_stage_path" ] || return 1
-    if ! wt_id=$(cs_dir_identity "$5"); then
+    if ! wt_id=$(_retire_worktree_identity "$5"); then
         _retire_stage_refusal="cs could not read the identity of $5, which the stage records"
         return 1
     fi
@@ -6405,6 +6406,20 @@ _write_retire_stage() {  # stage_path sha force base_dir wt_dir
     fi
     rm -f "$tmp"
     return 1
+}
+
+# The feature worktree a stage is for: its identity (cs_dir_identity) and its
+# birth time, <device>-<inode>-<seconds>. ext4 and XFS hand a freed inode to
+# the next directory made, so a worktree removed and made again under the
+# same name can get its predecessor's identity back; it is born later all the
+# same. Where the filesystem keeps no birth time (GNU stat's %W reads 0) the
+# identity stands alone. GNU stat first, as _cs_file_mode.
+_retire_worktree_identity() {  # wt_dir
+    local id born
+    id=$(cs_dir_identity "$1") || return 1
+    born=$(stat -L -c '%W' "$1" 2>/dev/null || stat -L -f '%B' "$1" 2>/dev/null) || born=0
+    case "$born" in ''|*[!0-9]*) born=0 ;; esac
+    printf '%s-%s\n' "$id" "$born"
 }
 
 # Forget the retire a base staged for a feature that cs removes another way
