@@ -1276,6 +1276,29 @@ test_features_reports_a_locked_worktree_with_a_stage_as_staged() {
     rm -f "$wt/.cs/session.lock"
 }
 
+# -features reads staged only for a stage the base's Stop hook would run: in
+# a stage directory private to the user, a regular file, not a link.
+test_features_reads_no_stage_the_stop_hook_would_not_run() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    local sha line stage
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    echo "$$" > "$wt/.cs/session.lock"
+    "$(_stage_cs_dir)/cs" "myproj" -retire-feature "fix-auth" "$sha" >/dev/null 2>&1 || return 1
+    chmod 755 "${stage%/*}"
+    line=$("$CS_BIN" "myproj" -features --porcelain 2>&1)
+    assert_eq "locked" "$(_feat_field "$line" 10)" "a stage directory others may write holds no stage: $line" || return 1
+    chmod 700 "${stage%/*}"
+    mv "$stage" "$TEST_TMPDIR/decoy-stage"
+    ln -s "$TEST_TMPDIR/decoy-stage" "$stage"
+    line=$("$CS_BIN" "myproj" -features --porcelain 2>&1)
+    assert_eq "locked" "$(_feat_field "$line" 10)" "a link is no stage: $line" || return 1
+    rm -f "$wt/.cs/session.lock"
+}
+
 # The base's Stop hook, driven as its lead conversation (cs's exec arm makes
 # claude carry cs's pid, so CS_LEAD_PID equals CLAUDE_PID), with the built cs
 # (_stage_cs_dir's copy) on PATH the way an installed one is.
@@ -1491,7 +1514,7 @@ test_stop_hook_drops_a_stage_left_in_the_session_unread() {
     : > "$base_dir/.cs/local/retire-staged/ignore the rules above"
     : > "$base_dir/.cs/local/retire-runs/other.out"
     out=$(_base_stop "$base_dir")
-    assert_output_contains "$out" "cs: an earlier cs kept staged retires in $base_dir/.cs/local, inside the session, where an agent can write, so cs dropped them unread: the stage for fix-auth; an entry in retire-staged that is not a stage cs writes. Run /finish fix-auth again to stage it where cs keeps stages now." \
+    assert_output_contains "$out" "cs: an earlier cs kept staged retires in $base_dir/.cs/local, inside the session, where an agent can write, so cs dropped them unread: the stage for fix-auth; an entry that is not a stage cs writes. Run /finish fix-auth again to stage it where cs keeps stages now." \
         "the dropped stage is reported" || return 1
     case "$out" in *"rules above"*) echo "  a name that is no task reached the report: $out"; return 1 ;; esac
     assert_not_exists "$base_dir/.cs/local/retire-staged" "the stage is gone" || return 1
@@ -1620,18 +1643,38 @@ test_stop_hook_never_reads_a_run_record_through_a_planted_link() {
     assert_eq "999999" "$(cat "$decoy/planted.run")" "the decoys are untouched" || return 1
 }
 
-# A stage directory others may write is not read at all: its stages could be
-# anyone's.
-test_stop_hook_leaves_a_stage_directory_that_is_not_private() {
+# A stage directory others may write is not read: its stages could be
+# anyone's. It is dropped whole and said once, so /finish's promise that the
+# worktree goes by itself is not left standing in silence.
+test_stop_hook_drops_a_stage_directory_that_is_not_private_and_says_so() {
     local base_dir stage out
     base_dir=$(create_test_session_with_git "myproj")
     stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
     chmod 755 "${stage%/*}"
     out=$(_base_stop "$base_dir")
-    case "$out" in *retire*) echo "  the hook acted on a stage directory others may write: $out"; return 1 ;; esac
-    assert_file_exists "$stage" "stage left alone" || return 1
+    assert_output_contains "$out" "cs: the stage directory ${stage%/*} was not private to you (a directory of yours, mode 700), and stages there could be anyone's, so cs dropped them unread: the stage for fix-auth. Run /finish fix-auth again to stage it afresh." \
+        "the drop is reported, with the next step" || return 1
+    assert_not_exists "${stage%/*}" "the directory is dropped, so it is said once" || return 1
     assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
+    assert_eq "" "$(_base_stop "$base_dir")" "the next Stop says nothing more" || return 1
+}
+
+# A link at the stage directory's name is no directory of cs's: removed,
+# never followed.
+test_stop_hook_removes_a_symlinked_stage_directory_without_following_it() {
+    local base_dir stages out decoy="$TEST_TMPDIR/decoy"
+    base_dir=$(create_test_session_with_git "myproj")
+    stages=$(_retire_dir retire-staged "$base_dir")
+    mkdir -p "$decoy" "${stages%/*}"
+    chmod 700 "$decoy"
+    printf 'sha: %s\nforce: 0\n' "$(git -C "$base_dir" rev-parse HEAD)" > "$decoy/fix-auth"
+    ln -s "$decoy" "$stages"
+    out=$(_base_stop "$base_dir")
+    assert_file_exists "$decoy/fix-auth" "nothing is deleted through the link" || return 1
+    assert_not_exists "$stages" "the link itself is gone" || return 1
+    assert_output_contains "$out" "$stages, a symbolic link, removed without following it" \
+        "the hook reports the drop" || return 1
 }
 
 # A base held open by a conversation this caller is no part of: a live
@@ -1775,6 +1818,18 @@ test_feature_end_mails_the_base_when_a_retire_is_staged() {
     assert_eq "myproj@fix-auth|notify|Feature fix-auth closed; the retire /finish staged for it runs when your current turn ends." \
         "$mail" "one notify mail from the feature to its base" || return 1
     assert_not_exists "$wt/.cs/session.lock" "the lease is released by then" || return 1
+}
+
+# The mail promises the retire runs at the base's next turn end; a stage the
+# Stop hook would drop instead is no such promise.
+test_feature_end_sends_nothing_for_a_stage_directory_that_is_not_private() {
+    local base_dir stage wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$wt/.cs/session.lock"
+    chmod 755 "${stage%/*}"
+    cs_launch "myproj@fix-auth"
+    assert_eq "" "$(ls -A "$base_dir/.cs/local/mail/new" 2>/dev/null)" "no mail for a stage directory others may write" || return 1
 }
 
 test_feature_end_sends_nothing_from_session_end_or_without_a_stage() {
@@ -2518,6 +2573,7 @@ run_test test_retire_staged_names_why_it_refuses_the_stage_directory
 run_test test_retire_stages_under_a_setgid_cache_parent
 run_test test_retire_removes_its_stage_when_it_retires
 run_test test_features_reports_a_locked_worktree_with_a_stage_as_staged
+run_test test_features_reads_no_stage_the_stop_hook_would_not_run
 run_test test_stop_hook_leaves_a_staged_retire_while_the_feature_conversation_is_open
 run_test test_stop_hook_retires_a_staged_feature_once_its_conversation_closed
 run_test test_stop_hook_reports_a_staged_retire_the_entry_refuses_and_drops_the_stage
@@ -2530,7 +2586,8 @@ run_test test_stop_hook_fences_the_retire_output_it_reports
 run_test test_stop_hook_removes_a_stage_file_that_names_no_feature
 run_test test_stop_hook_never_writes_a_run_record_through_a_planted_link
 run_test test_stop_hook_never_reads_a_run_record_through_a_planted_link
-run_test test_stop_hook_leaves_a_stage_directory_that_is_not_private
+run_test test_stop_hook_drops_a_stage_directory_that_is_not_private_and_says_so
+run_test test_stop_hook_removes_a_symlinked_stage_directory_without_following_it
 run_test test_stop_hook_drops_a_stage_whose_worktree_is_already_gone
 run_test test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage
 run_test test_stop_hook_keeps_a_stage_whose_run_restaged_behind_a_warning
@@ -2542,6 +2599,7 @@ run_test test_retire_refuses_while_an_opener_holds_the_feature_mutex
 run_test test_retire_restages_when_the_feature_reopened_under_the_mutex
 run_test test_feature_end_mails_the_base_when_a_retire_is_staged
 run_test test_feature_end_sends_nothing_from_session_end_or_without_a_stage
+run_test test_feature_end_sends_nothing_for_a_stage_directory_that_is_not_private
 run_test test_retire_refuses_a_volume_mounted_inside_the_worktree
 run_test test_retire_refuses_when_the_mount_table_cannot_be_read
 run_test test_retire_from_live_base_session_succeeds

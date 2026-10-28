@@ -714,7 +714,7 @@ _feature_readiness() {  # base_name task
     # State is the first blocker retire_feature_worktree would hit, in its order.
     local state="ready" stage_dir
     if [ "$lock" = "worktree" ] && stage_dir=$(cs_retire_cache_dir retire-staged "$base_dir") \
-        && [ -f "$stage_dir/$task" ]; then
+        && _retire_stage_pending "$stage_dir" "$task"; then
         state="staged"
     elif [ "$lock" != "none" ]; then
         state="locked"
@@ -1496,6 +1496,15 @@ _retire_sandbox_root_name() {  # dir base_dir wt_dir
 # A stage as _write_retire_stage leaves it: a regular file, the user's, mode 600.
 _retire_stage_file_ok() {  # stage_path
     [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 600 ]
+}
+
+# A retire staged for <task> that the base's Stop hook reads and the entry
+# takes under --staged: such a stage file in a stage directory private to the
+# user. The hook drops a directory that is not private, so -features and the
+# feature-end mail, which tell the user the worktree goes by itself, say so
+# only of this.
+_retire_stage_pending() {  # stage_dir task
+    cs_cache_dir_private "$1" && _retire_stage_file_ok "$1/$2"
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault

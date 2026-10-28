@@ -704,7 +704,7 @@ _qpark() {  # kind reading limit remaining note
 # outcome, drops the stage and both records, and takes the turn. One stage per
 # Stop. A stage the lead cannot read is dropped and reported, never guessed
 # at, and a stage directory that is not private to the user is not read at
-# all; the entry checks the rest. Lead only, for the reason the queue drain
+# all: it is dropped whole and reported once. The entry checks the rest. Lead only, for the reason the queue drain
 # is: a teammate's Stop would race the lead to the same removal.
 _retire_report() {  # reason
     jq -nc --arg r "$1" '{decision:"block", reason:$r}'
@@ -782,61 +782,85 @@ _retire_frame() {  # output
 _retire_task_ok() {  # name
     case "$1" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
 }
-# Earlier builds staged in .cs/local/retire-staged/<task>, with the runs in
-# .cs/local/retire-runs. Such a stage could be an agent's, so both directories
-# are dropped whole and unread, and reported once. An agent can write
-# .cs/local, so either name may be a symbolic link to a directory of the
-# user's: a link is removed and never followed, and a real directory is listed
-# for the report and removed with rm -rf, which does not follow links either;
-# nothing here globs through either name. ls -q prints a control character
-# (a newline) in a name as ?, so each line is one entry and such a name is no
-# task.
-_retire_drop_legacy() {
-    local dir name tasks="" n=0 others=0 parts="" next=""
-    for dir in "$LOCAL/retire-staged" "$LOCAL/retire-runs"; do
-        if [ -L "$dir" ]; then
-            rm -f "$dir"
-            parts="$parts; $dir, a symbolic link, removed without following it"
-            continue
-        fi
-        [ -d "$dir" ] || continue
-        if [ "$dir" = "$LOCAL/retire-staged" ]; then
-            while IFS= read -r name; do
-                if _retire_task_ok "$name"; then
-                    tasks="$tasks, $name"
-                    n=$((n + 1))
-                else
-                    others=$((others + 1))
-                fi
-            done < <(ls -Aq "$dir" 2>/dev/null)
-        fi
-        rm -rf -- "$dir"
-    done
-    tasks="${tasks#, }"
-    if [ "$n" = 1 ]; then
-        parts="; the stage for $tasks$parts"
-        next=" Run /finish $tasks again to stage it where cs keeps stages now."
-    elif [ "$n" -gt 1 ]; then
-        parts="; the stages for $tasks$parts"
-        next=" Run /finish <task> again for each of $tasks to stage it where cs keeps stages now."
+# Removes a stage or run directory whose stages cannot be trusted, unread.
+# Any name in it, the directory's own included, may be a symbolic link an
+# agent planted to a directory of the user's: a link is removed and never
+# followed, and a real directory is listed for the report and removed with
+# rm -rf, which does not follow links either; nothing here globs through it.
+# ls -q prints a control character (a newline) in a name as ?, so each line
+# is one entry and such a name is no task. With <list> 1 the entries are read
+# as stages: those cs could have named go to _rd_tasks (_rd_n of them), the
+# rest are counted in _rd_others; what was done to a link goes to _rd_parts.
+_retire_drop_dir() {  # dir list
+    local name
+    if [ -L "$1" ]; then
+        rm -f "$1"
+        _rd_parts="$_rd_parts; $1, a symbolic link, removed without following it"
+        return 0
     fi
-    case "$others" in
-        0) ;;
-        1) parts="$parts; an entry in retire-staged that is not a stage cs writes" ;;
-        *) parts="$parts; $others entries in retire-staged that are not stages cs writes" ;;
-    esac
-    [ -n "$parts" ] || return 0
-    _retire_report "cs: an earlier cs kept staged retires in $LOCAL, inside the session, where an agent can write, so cs dropped them unread: ${parts#; }.$next Tell the user in one line."
+    [ -d "$1" ] || return 0
+    if [ "$2" = 1 ]; then
+        while IFS= read -r name; do
+            if _retire_task_ok "$name"; then
+                _rd_tasks="$_rd_tasks, $name"
+                _rd_n=$((_rd_n + 1))
+            else
+                _rd_others=$((_rd_others + 1))
+            fi
+        done < <(ls -Aq "$1" 2>/dev/null)
+    fi
+    rm -rf -- "$1"
 }
+# Reports what _retire_drop_dir removed, once, after <why> and with the
+# /finish that stages each task <again>; says nothing when it removed nothing
+# worth a word (an empty directory, nothing at all).
+_retire_drop_report() {  # why again
+    local next=""
+    _rd_tasks="${_rd_tasks#, }"
+    if [ "$_rd_n" = 1 ]; then
+        _rd_parts="; the stage for $_rd_tasks$_rd_parts"
+        next=" Run /finish $_rd_tasks again to stage it $2."
+    elif [ "$_rd_n" -gt 1 ]; then
+        _rd_parts="; the stages for $_rd_tasks$_rd_parts"
+        next=" Run /finish <task> again for each of $_rd_tasks to stage it $2."
+    fi
+    case "$_rd_others" in
+        0) ;;
+        1) _rd_parts="$_rd_parts; an entry that is not a stage cs writes" ;;
+        *) _rd_parts="$_rd_parts; $_rd_others entries that are not stages cs writes" ;;
+    esac
+    [ -n "$_rd_parts" ] || return 0
+    _retire_report "cs: $1, so cs dropped them unread: ${_rd_parts#; }.$next Tell the user in one line."
+}
+_rd_tasks=""
+_rd_n=0
+_rd_others=0
+_rd_parts=""
 _stages=""
 _runs=""
 if [ "$HOOK_EVENT" = "Stop" ] && command -v cs_retire_cache_dir >/dev/null 2>&1 \
     && command -v live_lock_pid >/dev/null 2>&1; then
     _stages=$(cs_retire_cache_dir retire-staged "$SESSION_DIR") || _stages=""
     _runs=$(cs_retire_cache_dir retire-runs "$SESSION_DIR") || _runs=""
+    # Earlier builds staged in .cs/local/retire-staged/<task>, with the runs
+    # in .cs/local/retire-runs, where an agent can write: both go whole.
     if { [ -d "$LOCAL/retire-staged" ] || [ -L "$LOCAL/retire-staged" ] \
         || [ -d "$LOCAL/retire-runs" ] || [ -L "$LOCAL/retire-runs" ]; } && _mail_is_lead; then
-        _retire_drop_legacy
+        _retire_drop_dir "$LOCAL/retire-staged" 1
+        _retire_drop_dir "$LOCAL/retire-runs" 0
+        _retire_drop_report "an earlier cs kept staged retires in $LOCAL, inside the session, where an agent can write" \
+            "where cs keeps stages now"
+    fi
+    # A stage directory others may write (or a link at its name) is never
+    # read, its stages could be anyone's; it goes whole and is said once, so
+    # the user who heard from /finish that the worktree goes by itself, as
+    # -features and the feature-end mail say only of a private one, hears
+    # that it will not.
+    if [ -n "$_stages" ] && { [ -d "$_stages" ] || [ -L "$_stages" ]; } \
+        && ! cs_cache_dir_private "$_stages" && _mail_is_lead; then
+        _retire_drop_dir "$_stages" 1
+        _retire_drop_report "the stage directory $_stages was not private to you (a directory of yours, mode 700), and stages there could be anyone's" \
+            "afresh"
     fi
 fi
 if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_private "$_stages" \
