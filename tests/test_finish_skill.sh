@@ -69,7 +69,8 @@ test_finish_skill_teaches_the_ritual() {
     assert_file_contains "$SKILL" "[-]-force" "and takes force on the content or the PR evidence" || return 1
     assert_file_contains "$SKILL" "no merge base" "a not-landed capture with no shared history has no path lines" || return 1
     assert_file_contains "$SKILL" "equals the captured" "force needs the PR head to be the captured commit" || return 1
-    assert_file_contains "$SKILL" 'retire-staged/<task>' "an open conversation stages the retire in the base" || return 1
+    assert_file_contains "$SKILL" 'retire-staged/<base id>/<task>' "an open conversation stages the retire for the base" || return 1
+    assert_file_not_contains "$SKILL" '.cs/local/retire-staged' "never inside the session, where an agent can write" || return 1
     assert_file_contains "$SKILL" "go by themselves after" "and the skill says the removal needs nothing more from the user" || return 1
     assert_file_not_contains "$SKILL" "run \`/finish <task>\` here again" "no second /finish is asked for the open-conversation case" || return 1
     assert_file_not_contains "$SKILL" "[-]-merge" "the retired verb is never named" || return 1

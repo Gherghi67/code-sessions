@@ -682,19 +682,22 @@ _qpark() {  # kind reading limit remaining note
 # eight reviewer turns with nothing done. A teammate falls through to the
 # narrative reminder like any other Stop.
 # --- Staged feature retire ----------------------------------------------------
-# /finish's retire entry stages itself in .cs/local/retire-staged/<task> while
-# the feature conversation still holds its worktree (a directory cannot go from
-# under a running Claude). Once that conversation's lock is gone, the lead's
-# Stop starts the entry the stage records, detached from this hook: a retire
-# that fuses records and trashes ignored files outran the Stop budget (12.6 s
-# measured against 10 s), and a hook killed mid-fuse stranded every record.
-# The run's pid lands in retire-runs/<task>.run and its output in
-# retire-runs/<task>.out, a directory of their own so a feature named x.run
-# can never be read as x's run; the Stop that finds the run ended reports the
+# /finish's retire entry stages itself in the base's stage directory under
+# cs's cache (cs_retire_cache_dir retire-staged, never the session, where an
+# agent could forge one) while the feature conversation still holds its
+# worktree (a directory cannot go from under a running Claude). Once that
+# conversation's lock is gone, the lead's Stop starts the entry the stage
+# records, detached from this hook: a retire that fuses records and trashes
+# ignored files outran the Stop budget (12.6 s measured against 10 s), and a
+# hook killed mid-fuse stranded every record. The run's pid lands in
+# <task>.run and its output in <task>.out, in the base's retire-runs directory
+# beside the stages, a directory of their own so a feature named x.run can
+# never be read as x's run; the Stop that finds the run ended reports the
 # outcome, drops the stage and both records, and takes the turn. One stage per
 # Stop. A stage the lead cannot read is dropped and reported, never guessed
-# at. Lead only, for the reason the queue drain is: a teammate's Stop would
-# race the lead to the same removal.
+# at, and a stage directory that is not private to the user is not read at
+# all; the entry checks the rest. Lead only, for the reason the queue drain
+# is: a teammate's Stop would race the lead to the same removal.
 _retire_report() {  # reason
     jq -nc --arg r "$1" '{decision:"block", reason:$r}'
     exit 0
@@ -720,12 +723,38 @@ _retire_settle() {  # stage task run
     fi
     _retire_report "cs: the '$wt_name' conversation closed, and the retire /finish staged did not go through: $out Tell the user, and run /finish $2 again once that is resolved."
 }
-if [ "$HOOK_EVENT" = "Stop" ] && [ -d "$LOCAL/retire-staged" ] && _mail_is_lead \
+# Earlier builds staged in .cs/local/retire-staged/<task>, with the runs in
+# .cs/local/retire-runs. Such a stage could be an agent's, so it is dropped
+# unread and reported, one per Stop, and its run records go with it.
+_retire_drop_legacy() {
+    local stage task
+    rm -f "$LOCAL"/retire-runs/*.run "$LOCAL"/retire-runs/*.out 2>/dev/null || true
+    rmdir "$LOCAL/retire-runs" 2>/dev/null || true
+    for stage in "$LOCAL"/retire-staged/*; do
+        [ -f "$stage" ] || [ -L "$stage" ] || continue
+        task="${stage##*/}"
+        rm -f "$stage"
+        rmdir "$LOCAL/retire-staged" 2>/dev/null || true
+        _retire_report "cs: the retire /finish staged for $task was kept by an earlier cs at $stage, inside the session, where an agent can write, so it was dropped unread. Run /finish $task again to stage it where cs keeps stages now. Tell the user in one line."
+    done
+    rmdir "$LOCAL/retire-staged" 2>/dev/null || true
+}
+_stages=""
+_runs=""
+if [ "$HOOK_EVENT" = "Stop" ] && command -v cs_retire_cache_dir >/dev/null 2>&1 \
     && command -v live_lock_pid >/dev/null 2>&1; then
-    for _stage in "$LOCAL"/retire-staged/*; do
+    _stages=$(cs_retire_cache_dir retire-staged "${META_DIR%/*}") || _stages=""
+    _runs=$(cs_retire_cache_dir retire-runs "${META_DIR%/*}") || _runs=""
+    if { [ -d "$LOCAL/retire-staged" ] || [ -d "$LOCAL/retire-runs" ]; } && _mail_is_lead; then
+        _retire_drop_legacy
+    fi
+fi
+if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_private "$_stages" \
+    && _mail_is_lead; then
+    for _stage in "$_stages"/*; do
         [ -f "$_stage" ] || continue
         _task="${_stage##*/}"
-        _run="$LOCAL/retire-runs/$_task"
+        _run="$_runs/$_task"
         _wt="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}@$_task"
         # A run started by an earlier Stop: wait a little for it, then read it.
         if [ -f "$_run.run" ]; then
@@ -761,7 +790,7 @@ if [ "$HOOK_EVENT" = "Stop" ] && [ -d "$LOCAL/retire-staged" ] && _mail_is_lead 
         # cs locks with, so it is present wherever cs runs.
         set -- "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" -retire-feature "$_task" "$_sha" --staged
         [ "$_force" = 0 ] || set -- "$@" --force
-        cs_mkdir_inside "$LOCAL/retire-runs" || _retire_report "cs: could not create $LOCAL/retire-runs to record the staged retire of $_task; run /finish $_task again. Tell the user in one line."
+        cs_cache_dir_make_private "$_runs" || _retire_report "cs: could not create $_runs, private to you, to record the staged retire of $_task; run /finish $_task again. Tell the user in one line."
         perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127' -- "$_cs" "$@" \
             > "$_run.out" 2>&1 < /dev/null &
         printf '%s\n' "$!" > "$_run.run"

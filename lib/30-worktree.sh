@@ -712,8 +712,9 @@ _feature_readiness() {  # base_name task
     done
 
     # State is the first blocker retire_feature_worktree would hit, in its order.
-    local state="ready"
-    if [ "$lock" = "worktree" ] && [ -f "$base_dir/.cs/local/retire-staged/$task" ]; then
+    local state="ready" stage_dir
+    if [ "$lock" = "worktree" ] && stage_dir=$(cs_retire_cache_dir retire-staged "$base_dir") \
+        && [ -f "$stage_dir/$task" ]; then
         state="staged"
     elif [ "$lock" != "none" ]; then
         state="locked"
@@ -1148,13 +1149,19 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     # --staged runs a stage this base wrote earlier, from its Stop hook, which
     # is no descendant of the base's claude once detached: the stage, written
     # only after the base-lock check below passed, stands in for that
-    # ancestry. It must exist and record this very decision.
-    local pid stage="$base_dir/.cs/local/retire-staged/$task"
+    # ancestry. It must exist and record this very decision, in a stage
+    # directory no agent can write (_retire_stage_dir): a stage one could have
+    # written is no decision of this base's.
+    local pid stage_dir stage
+    stage_dir=$(cs_retire_cache_dir retire-staged "$base_dir") \
+        || error "Could not read the identity of $base_dir, which names where its retires are staged; nothing was removed"
+    stage="$stage_dir/$task"
     if [ -n "$staged" ]; then
         local force_word=0
         [ -z "$force" ] || force_word=1
-        [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
-force: $force_word" ] || error "No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
+        { _retire_stage_dir "$base_dir" >/dev/null && _retire_stage_file_ok "$stage" \
+            && [ "$(cat "$stage" 2>/dev/null)" = "sha: $sha
+force: $force_word" ]; } || error "No stage at $stage records retiring $task at $sha with force=$force_word; run $fin $task to stage it"
     else
         pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
         if [ -n "$pid" ]; then
@@ -1173,7 +1180,7 @@ force: $force_word" ] || error "No stage at $stage records retiring $task at $sh
         # staged in the base, and the base's Stop hook runs this entry again
         # once that conversation's lock is gone. Every refusal below runs
         # then as it would now.
-        _write_retire_stage "$stage" "$sha" "$force" \
+        _write_retire_stage "$stage" "$sha" "$force" "$base_dir" \
             || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
         printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
@@ -1320,7 +1327,7 @@ $missing"
     pid=$(live_lock_pid "$wt_dir/.cs")
     if [ -n "$pid" ]; then
         _cs_unlock "$wt_dir/.cs/session.mutex.lock"
-        _write_retire_stage "$stage" "$sha" "$force" \
+        _write_retire_stage "$stage" "$sha" "$force" "$base_dir" \
             || error "The '$wt_name' conversation reopened its worktree (PID $pid) before the removal, and cs could not stage it again at $stage; nothing was removed. Run $fin $task here again once it closes."
         printf "staged %s %s: the '%s' conversation reopened its worktree (PID %s) before the removal; the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
@@ -1378,11 +1385,42 @@ $remove_err${trashed:+$nl$trashed}"
 # Record a retire the base's Stop hook finishes once the feature conversation
 # closes: the captured commit and whether --force applied. Backs the stage
 # retire_feature_worktree writes while that conversation holds the worktree.
-_write_retire_stage() {  # stage_path sha force
-    local force=0
+# The stage goes into the base's stage directory, made private first, mode
+# 600 and by rename, so the Stop hook never reads half a stage.
+_write_retire_stage() {  # stage_path sha force base_dir
+    local force=0 dir tmp
     [ -z "$3" ] || force=1
-    cs_mkdir_inside "${1%/*}" || return 1
-    cs_write_atomic "$1" printf 'sha: %s\nforce: %s\n' "$2" "$force"
+    dir=$(_retire_stage_dir "$4" make) && [ "${1%/*}" = "$dir" ] || return 1
+    tmp=$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null) || return 1
+    if printf 'sha: %s\nforce: %s\n' "$2" "$force" > "$tmp" && mv -f "$tmp" "$1"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# The base's stage directory (cs_retire_cache_dir) when cs can trust what it
+# holds: private to the user, and outside every root an agent's sandbox may
+# write, the base itself, /tmp, $TMPDIR and the roots Codex's config adds, as
+# the Codex run directory is (lib/77-codex-hooks.sh). With make, a missing one
+# is made first. A cache the checks refuse keeps no stage, so a retire behind
+# an open conversation is refused as when the stage cannot be written.
+_retire_stage_dir() {  # base_dir [make]
+    local dir
+    dir=$(cs_retire_cache_dir retire-staged "$1") || return 1
+    if [ -n "${2:-}" ]; then
+        cs_cache_dir_make_private "$dir" || return 1
+    else
+        cs_cache_dir_private "$dir" || return 1
+    fi
+    ! _codex_run_dir_in_sandbox_root "$dir" "$1" || return 1
+    ! _codex_run_dir_in_config_root "$dir" "$1" || return 1
+    printf '%s\n' "$dir"
+}
+
+# A stage as _write_retire_stage leaves it: a regular file, the user's, mode 600.
+_retire_stage_file_ok() {  # stage_path
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
 }
 
 # The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault

@@ -752,8 +752,9 @@ test_staged_feature_mails_its_base_once_after_a_switch_relaunch() {
     local out status=0 base mails
     base=$(create_test_session_with_git wtb)
     "$CS_BIN" wtb@feat --engine claude </dev/null >/dev/null 2>&1 || { echo "  FAIL: worktree open failed"; return 1; }
-    mkdir -p "$base/.cs/local/retire-staged"
-    printf 'sha: %s\nforce: 0\n' "$(git -C "$base" rev-parse HEAD)" > "$base/.cs/local/retire-staged/feat"
+    local stages
+    stages="$HOME/.cache/cs/retire-staged/$(stat -L -c '%d-%i' "$base" 2>/dev/null || stat -L -f '%d-%i' "$base")"
+    (umask 077 && mkdir -p "$stages" && printf 'sha: %s\nforce: 0\n' "$(git -C "$base" rev-parse HEAD)" > "$stages/feat")
     _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH=codex"
     out=$("$CS_BIN" wtb@feat </dev/null 2>&1) || status=$?
     assert_eq 0 "$status" "switch run failed: $out" || return 1

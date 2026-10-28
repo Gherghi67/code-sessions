@@ -698,6 +698,35 @@ _cs_file_mode() {  # path
     stat -L -c %a "$1" 2>/dev/null || stat -L -f %Lp "$1"
 }
 
+# Where a base keeps the retire /finish staged for a feature whose
+# conversation still holds its worktree (retire-staged), and the runs its Stop
+# hook starts from those stages (retire-runs): cs's cache, <kind>/<device>-<inode
+# of the base directory>. A stage is a licence to remove a worktree and delete
+# its branch, --force included, so it lives where no agent writes: Codex's
+# workspace sandbox writes anywhere in the session, /tmp and $TMPDIR, and a
+# stage forged in the session would have the base's Stop hook delete a branch
+# nothing integrated. The base is named by its identity, not its spelling, so
+# every path to it finds the same stages. GNU stat first, as _cs_file_mode.
+cs_retire_cache_dir() {  # kind, base_dir
+    local id
+    id=$(stat -L -c '%d-%i' "$2" 2>/dev/null || stat -L -f '%d-%i' "$2" 2>/dev/null) || return 1
+    case "$id" in ''|-*|*-|*[!0-9-]*) return 1 ;; esac
+    printf '%s/%s/%s\n' "${CS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/cs}" "$1" "$id"
+}
+
+# A directory under cs's cache as cs makes one for its own records: a real
+# directory, the user's, mode 700.
+cs_cache_dir_private() {  # dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ]
+}
+
+# Makes such a directory, its missing parents 700 as well, and fails unless
+# what stands there afterwards is one.
+cs_cache_dir_make_private() {  # dir
+    ( umask 077 && mkdir -p "$1" ) 2>/dev/null || return 1
+    cs_cache_dir_private "$1"
+}
+
 # Replace a file with a command's stdout, atomically: the output goes to a
 # uniquely named temp file in the same directory, which is renamed over the
 # destination only once the command has succeeded. The temp file's name starts
