@@ -866,15 +866,15 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
                              str(self.home / ".codex/sessions/old.jsonl"))
         self.assertEqual(list(dst.parent.iterdir()), [dst])
 
-    def test_schema_mismatch_rolls_back(self):
+    def test_source_columns_the_target_lacks_are_refused(self):
         src = self.database(self.profile, [("new", "/rollout", "source")])
-        dst = self.database(self.home, [])
+        dst = self.database(self.home, [("kept", "/normal/rollout", "normal")])
         with closing(sqlite3.connect(src)) as db, db:
             db.execute("ALTER TABLE threads ADD COLUMN extra TEXT")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
             migration.merge_threads(src, dst, self.home, True, None)
         with closing(sqlite3.connect(dst)) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT * FROM threads").fetchall(), [("kept", "/normal/rollout", "normal")])
 
     def test_columns_a_newer_codex_appended_are_left_as_its_migration_leaves_them(self):
         # Codex migration 62 appended threads.attached_thread_parent_id this way.
