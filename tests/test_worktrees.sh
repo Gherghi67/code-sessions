@@ -1209,13 +1209,13 @@ test_stop_hook_drops_a_stage_whose_worktree_is_already_gone() {
 }
 
 test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage() {
-    local base_dir stage out
+    local base_dir stage out cache="$HOME/.cache/cs"
     base_dir=$(create_test_session_with_git "myproj")
     stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
     rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
     out=$(printf '{}\n' | CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$base_dir" \
         CLAUDE_SESSION_META_DIR="$base_dir/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
-        CS_CACHE_DIR="$HOME/.cache/cs" HOME="$TEST_TMPDIR/nohome" PATH="/usr/bin:/bin" \
+        CS_CACHE_DIR="$cache" HOME="$TEST_TMPDIR/nohome" PATH="/usr/bin:/bin" \
         bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""')
     assert_output_contains "$out" "no cs binary was found on PATH or at ~/.local/bin/cs, so its staged retire could not run; run /finish fix-auth again" \
         "the hook says what it could not find" || return 1
