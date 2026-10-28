@@ -1018,18 +1018,27 @@ CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY NOT NULL, first_unr
         self.assert_threads_schema_refused(cases)
 
     def test_changed_foreign_key_on_a_shared_column_is_refused(self):
-        src = self.database(self.profile, [("new", "/rollout", "source")])
-        dst = self.database(self.home, [])
-        for database, action in ((src, "SET NULL"), (dst, "CASCADE")):
-            with closing(sqlite3.connect(database)) as db, db:
-                db.execute("CREATE TABLE projects(id TEXT PRIMARY KEY)")
-                db.execute(f"ALTER TABLE threads ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE {action}")
-        with closing(sqlite3.connect(dst)) as db, db:
-            db.execute("ALTER TABLE threads ADD COLUMN pinned INTEGER")
-        with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
-            migration.merge_threads(src, dst, self.home, True, None)
-        with closing(sqlite3.connect(dst)) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
+        # Both sides have project_id; each case changes one part of its key.
+        cases = {
+            "on delete": ("projects(id) ON DELETE SET NULL", "projects(id) ON DELETE CASCADE"),
+            "parent table": ("projects(id)", "other_projects(id)"),
+            "parent column": ("projects(id)", "projects(name)"),
+        }
+        for number, (case, references) in enumerate(cases.items()):
+            with self.subTest(case=case):
+                src = self.database(self.profile / str(number), [("new", "/rollout", "source")])
+                dst = self.database(self.home / str(number), [])
+                for database, reference in zip((src, dst), references):
+                    with closing(sqlite3.connect(database)) as db, db:
+                        db.execute("CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT UNIQUE)")
+                        db.execute("CREATE TABLE other_projects(id TEXT PRIMARY KEY)")
+                        db.execute(f"ALTER TABLE threads ADD COLUMN project_id TEXT REFERENCES {reference}")
+                with closing(sqlite3.connect(dst)) as db, db:
+                    db.execute("ALTER TABLE threads ADD COLUMN pinned INTEGER")
+                with self.assertRaisesRegex(ValueError, "Codex database schema differs for threads"):
+                    migration.merge_threads(src, dst, self.home, True, None)
+                with closing(sqlite3.connect(dst)) as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM threads").fetchone()[0], 0)
 
     def test_config_and_credentials_are_untouched(self):
         for name in ("auth.json", "config.toml", "hooks.json"):
