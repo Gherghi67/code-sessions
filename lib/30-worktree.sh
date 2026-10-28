@@ -1425,6 +1425,37 @@ _write_retire_stage() {  # stage_path sha force base_dir wt_dir
     return 1
 }
 
+# Forget the retire a base staged for a feature that cs removes another way
+# (cs -rm), and the records of its runs: a feature made again under the name
+# would otherwise meet them at the base's next Stop. Only the stage and the
+# two records of that task go, each from a directory cs made private (a link
+# at a directory's name is never followed), and a directory left empty goes
+# with them (rmdir, which removes nothing else).
+_retire_forget_task() {  # base_dir task
+    local stages runs
+    stages=$(cs_retire_cache_dir retire-staged "$1") || return 0
+    runs=$(cs_retire_cache_dir retire-runs "$1") || return 0
+    if cs_cache_dir_private "$stages"; then
+        rm -f -- "$stages/$2" 2>/dev/null || warn "Could not remove $stages/$2, the retire staged for $2; remove it by hand"
+        rmdir -- "$stages" 2>/dev/null || true
+    fi
+    if cs_cache_dir_private "$runs"; then
+        rm -f -- "$runs/$2.run" "$runs/$2.out" 2>/dev/null || warn "Could not remove the run records of $2 in $runs; remove them by hand"
+        rmdir -- "$runs" 2>/dev/null || true
+    fi
+}
+
+# Remove a removed base's stage and run directories (cs_retire_cache_dir,
+# read while the base was there, since its identity names them): whole, with
+# rm -rf, which removes a link at either name and follows none inside.
+_retire_forget_base() {  # stage_dir run_dir
+    local dir
+    for dir in "$1" "$2"; do
+        [ -n "$dir" ] || continue
+        rm -rf -- "$dir" 2>/dev/null || warn "Could not remove $dir, where the removed base kept its staged retires; remove it by hand"
+    done
+}
+
 # The base's stage directory (cs_retire_cache_dir) when cs can trust what it
 # holds: private to the user, and outside every root an agent's sandbox may
 # write, the base, the feature, /tmp, $TMPDIR and the roots Codex's config

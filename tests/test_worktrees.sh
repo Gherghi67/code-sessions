@@ -1374,6 +1374,8 @@ test_stop_hook_retires_a_staged_feature_once_its_conversation_closed() {
     assert_output_contains "$out" "cs: the 'myproj@fix-auth' conversation closed, and the retire /finish staged ran:" \
         "the lead's next Stop reports the retire" || return 1
     assert_not_exists "$stage" "stage consumed" || return 1
+    assert_not_exists "${stage%/*}" "the base's last stage settled, its stage directory goes" || return 1
+    assert_not_exists "$(_retire_dir retire-runs "$base_dir")" "and its run directory" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree removed" || return 1
     assert_eq "" "$(git -C "$base_dir" branch --list cs/fix-auth)" "branch deleted" || return 1
 }
@@ -5959,8 +5961,67 @@ test_rm_worktree_force_noninteractive_keeps_branch() {
         "branch kept under --force with no tty" || return 1
 }
 
+# cs -rm of a feature with a retire staged for it drops that stage and the
+# records of its runs: a feature made again under the name would otherwise
+# meet them at the base's next Stop. The base's directories, left empty, go.
+test_rm_of_a_feature_drops_its_staged_retire() {
+    local base_dir stage runs
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    runs=$(_retire_dir retire-runs "$base_dir")
+    (umask 077 && mkdir -p "$runs" && : > "$runs/fix-auth.run" && : > "$runs/fix-auth.out")
+    "$CS_BIN" -rm "myproj@fix-auth" --force </dev/null >/dev/null 2>&1 || { echo "  FAIL: cs -rm"; return 1; }
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "the feature removed" || return 1
+    assert_not_exists "$stage" "its stage goes with it" || return 1
+    assert_not_exists "$runs/fix-auth.run" "and its run records" || return 1
+    assert_not_exists "${stage%/*}" "the base's stage directory, empty, goes" || return 1
+    assert_not_exists "$runs" "and its run directory" || return 1
+    assert_dir "$base_dir" "the base kept" || return 1
+}
+
+# Only that feature's three names go: another task's stage and records stay.
+test_rm_of_a_feature_keeps_other_tasks_staged_retires() {
+    local base_dir stage stages runs
+    base_dir=$(create_test_session_with_git "myproj")
+    stage=$(_staged_path "$base_dir") || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    stages=${stage%/*}
+    runs=$(_retire_dir retire-runs "$base_dir")
+    (umask 077 && mkdir -p "$runs" && : > "$runs/fix-auth.out" && : > "$runs/other.out" \
+        && : > "$runs/fix-auth-2.run" && cp "$stage" "$stages/other" && cp "$stage" "$stages/fix-auth-2")
+    "$CS_BIN" -rm "myproj@fix-auth" --force </dev/null >/dev/null 2>&1 || { echo "  FAIL: cs -rm"; return 1; }
+    assert_not_exists "$stage" "its stage goes" || return 1
+    assert_not_exists "$runs/fix-auth.out" "and its run output" || return 1
+    assert_file_exists "$stages/other" "another task's stage stays" || return 1
+    assert_file_exists "$stages/fix-auth-2" "even one whose name starts with this one's" || return 1
+    assert_file_exists "$runs/other.out" "another task's records stay" || return 1
+    assert_file_exists "$runs/fix-auth-2.run" "whatever their names" || return 1
+}
+
+# A base removed with a retire still staged takes its stages and run records
+# with it: they are named by the base directory's <device>-<inode>, which a
+# base made later can get back (ext4 reuses inodes), and would inherit them.
+test_rm_of_a_base_drops_its_staged_retires() {
+    local base_dir stages runs
+    base_dir=$(create_test_session_with_git "myproj")
+    _staged_path "$base_dir" >/dev/null || { echo "  FAIL: stage fixture"; return 1; }
+    rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
+    stages=$(_retire_dir retire-staged "$base_dir")
+    runs=$(_retire_dir retire-runs "$base_dir")
+    (umask 077 && mkdir -p "$runs" && : > "$runs/fix-auth.out")
+    "$CS_BIN" -rm "myproj" --force --delete-files </dev/null >/dev/null 2>&1 || { echo "  FAIL: cs -rm"; return 1; }
+    assert_not_exists "$base_dir" "the base removed" || return 1
+    assert_not_exists "$stages" "its stage directory goes with it" || return 1
+    assert_not_exists "$runs" "and its run directory" || return 1
+    assert_dir "$HOME/.cache/cs/retire-staged" "nothing above it" || return 1
+}
+
 run_test test_rm_worktree_unregisters_and_prompts_branch
 run_test test_rm_worktree_force_noninteractive_keeps_branch
+run_test test_rm_of_a_feature_drops_its_staged_retire
+run_test test_rm_of_a_feature_keeps_other_tasks_staged_retires
+run_test test_rm_of_a_base_drops_its_staged_retires
 
 test_doctor_flags_dangling_and_merged_worktrees() {
     local base_dir

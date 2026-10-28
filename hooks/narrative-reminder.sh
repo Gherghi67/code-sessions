@@ -715,6 +715,13 @@ _retire_report() {  # reason
 _retire_record_ok() {  # path
     [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
 }
+# Drops a stage the hook is done with, and with the base's last one its stage
+# and run directories, named by the base's identity, which a base made later
+# can get back: rmdir, which removes only an empty directory and no link.
+_retire_drop_stage() {  # stage
+    rm -f "$1"
+    rmdir "$_stages" "$_runs" 2>/dev/null || true
+}
 # Starts the retire detached and records it as <run>.out and <run>.run. Should
 # the cache sit in a root a Codex sandbox writes (docs/codex.md warns against
 # that), an agent could plant a link at either name, so neither is written
@@ -758,7 +765,7 @@ _retire_settle() {  # stage task run
     ! _retire_record_ok "$3.out" || out=$(cat "$3.out" 2>/dev/null || true)
     rm -f "$3.run" "$3.out"
     if grep -q "^staged $2 " <<< "$out"; then return 1; fi
-    rm -f "$1"
+    _retire_drop_stage "$1"
     if grep -q "^retired $2 " <<< "$out"; then
         _retire_report "cs: the '$wt_name' conversation closed, and the retire /finish staged ran:
 $(_retire_frame "$out")
@@ -887,7 +894,7 @@ if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_pri
         # no stage of cs's, and the name, which every report below would
         # carry, is not repeated.
         if ! _retire_task_ok "$_task"; then
-            rm -f "$_stage"
+            _retire_drop_stage "$_stage"
             _retire_report "cs: a file in $_stages that is not a stage cs writes was removed. Tell the user in one line."
         fi
         _run="$_runs/$_task"
@@ -902,12 +909,12 @@ if [ -n "$_stages" ] && [ -n "$_runs" ] && [ -d "$_stages" ] && cs_cache_dir_pri
         case "$_sha" in ''|*[!0-9a-f]*) _stage_ok=0 ;; esac
         case "$_force" in 0|1) ;; *) _stage_ok=0 ;; esac
         if [ "$_stage_ok" = 0 ]; then
-            rm -f "$_stage"
+            _retire_drop_stage "$_stage"
             _retire_report "cs: the staged retire of $_task at $_stage was unreadable and was removed; run /finish $_task again. Tell the user in one line."
         fi
         # The worktree went another way (cs -rm, the picker): nothing to retire.
         if [ ! -d "$_wt" ]; then
-            rm -f "$_stage"
+            _retire_drop_stage "$_stage"
             _retire_report "cs: the feature worktree $_wt is already gone, so the retire /finish staged for $_task has nothing to do; its stage was dropped. Tell the user in one line."
         fi
         # Still open: the stage waits for the next Stop.
