@@ -355,14 +355,14 @@ main() {
                 shift
                 ;;
             --engine)
-                [ $# -ge 2 ] && [ -n "$2" ] || error "--engine needs claude or codex"
-                cs_engine_known "$2" || error "Unknown engine: $2. Choose claude or codex."
+                [ $# -ge 2 ] && [ -n "$2" ] || error "--engine needs $(cs_engine_choices)"
+                cs_engine_known "$2" || error "Unknown engine: $2. Choose $(cs_engine_choices)."
                 explicit_engine="$2"
                 shift 2
                 ;;
             --engine=*)
                 explicit_engine="${1#--engine=}"
-                cs_engine_known "$explicit_engine" || error "--engine needs claude or codex"
+                cs_engine_known "$explicit_engine" || error "--engine needs $(cs_engine_choices)"
                 shift
                 ;;
             -secrets)
@@ -541,7 +541,7 @@ main() {
                 shift
                 ;;
             --switched-from) # hidden: the relaunch cs -switch execs (lib/78-switch.sh), not typed by a user
-                [ $# -ge 2 ] && cs_engine_known "$2" || error "--switched-from needs claude or codex"
+                [ $# -ge 2 ] && cs_engine_known "$2" || error "--switched-from needs $(cs_engine_choices)"
                 _cs_switched_from="$2"
                 shift 2
                 ;;
@@ -602,18 +602,27 @@ main() {
     local session_dir="$SESSIONS_ROOT/$session_name"
     local engine
     engine=$(_session_engine "$session_dir" "$explicit_engine")
-    # A stopgap until Codex keeps its home inside the vault (_codex_encrypted_refusal).
-    # Claude refuses a worktree of an encrypted base too, so that one is not pointed at it.
-    if [ "$engine" = codex ]; then
+    # A stopgap until Codex and Antigravity keep their homes inside the vault
+    # (_codex_encrypted_refusal, _antigravity_encrypted_refusal). Claude
+    # refuses a worktree of an encrypted base too, so that one is not pointed at it.
+    if [ "$engine" != claude ]; then
         if [ -n "$wt_base" ] && _switch_session_encrypted "$(_resolve_session_dir "$wt_base")"; then
             error "$wt_base is encrypted, and feature worktrees of an encrypted session are not supported yet."
         fi
         if _switch_session_encrypted "$session_dir"; then
-            error "$(_codex_encrypted_refusal "$session_name" "$launch_intent")"
+            if [ "$engine" = codex ]; then
+                error "$(_codex_encrypted_refusal "$session_name" "$launch_intent")"
+            fi
+            error "$(_antigravity_encrypted_refusal "$session_name")"
         fi
     fi
     if [ -n "$merge_feature" ] && ! cs_engine_supports "$engine" feature_finish; then
         error "-finish is not supported under $engine. Use: cs $session_name --engine claude -finish $merge_feature"
+    fi
+    # Refused before the open migrates or unarchives anything; the adapter
+    # refuses again for any other caller.
+    if [ "$launch_intent" = handoff ] && ! cs_engine_supports "$engine" rotation; then
+        error "--from-handoff is not supported under $engine: it cannot start from a rotation handoff yet. Use: cs $session_name --engine claude --from-handoff"
     fi
     # The handoff lives in the session; a session that does not exist yet has
     # none, and creating one here would only refuse later.

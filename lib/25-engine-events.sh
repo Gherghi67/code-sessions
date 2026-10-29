@@ -44,3 +44,10 @@ _cs_codex_adapter_files_changed() {
            cwd: ($input.cwd // ""), files: $files}
     ' 2>/dev/null || true
 }
+
+# Antigravity runs no cs hook yet, so no native edit payload reaches this
+# translator. Its input is drained and it emits nothing, as for an edit the
+# other translators do not recognize.
+_cs_antigravity_adapter_files_changed() {
+    cat >/dev/null 2>&1 || true
+}

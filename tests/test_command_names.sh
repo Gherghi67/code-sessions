@@ -2,6 +2,8 @@
 # ABOUTME: Helper lookup beside the running cs, and statusline cleanup that keeps a foreign status line.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
+# The helper lookup resolves the running cs through cs_running_binary.
+source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
 # The statusline cleanup rewrites settings through cs_write_atomic.
 source "$SCRIPT_DIR/../lib/02-shared.sh"

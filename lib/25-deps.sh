@@ -36,7 +36,7 @@ _session_engine() {  # session_dir explicit_engine
         [ "$installed_engines" != codex ] || engine=codex
     fi
     engine="${engine:-${CS_DEFAULT_ENGINE:-claude}}"
-    cs_engine_known "$engine" || error "Unknown engine: $engine. Choose claude or codex with --engine."
+    cs_engine_known "$engine" || error "Unknown engine: $engine. Choose $(cs_engine_choices) with --engine."
     printf '%s\n' "$engine"
 }
 

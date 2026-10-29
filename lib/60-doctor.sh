@@ -1153,32 +1153,34 @@ run_doctor() {
 
     else
         _doctor_check_keychain
-        local missing dependency capabilities binding
+        local missing dependency capabilities binding label=Codex
+        [ "$engine" != antigravity ] || label=Antigravity
         if missing=$(cs_engine_call "$engine" dependencies); then
             if [ -n "$missing" ]; then
                 while IFS= read -r dependency; do
-                    _doctor_fail "Codex dependency missing: $dependency"
+                    _doctor_fail "$label dependency missing: $dependency"
                 done <<< "$missing"
             else
-                _doctor_ok "Codex dependencies available"
+                _doctor_ok "$label dependencies available"
             fi
         else
-            _doctor_fail "Codex dependency probe failed"
+            _doctor_fail "$label dependency probe failed"
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
-        _doctor_ok "Codex integration capabilities: ${capabilities//$'\n'/, }"
+        _doctor_ok "$label integration capabilities: ${capabilities//$'\n'/, }"
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
-            if binding=$(cs_binding_read "$session_dir" codex); then
+            if binding=$(cs_binding_read "$session_dir" "$engine"); then
                 if [ -z "$binding" ]; then
-                    _doctor_ok "Codex binding: not created yet"
-                elif _codex_thread_id_valid "$binding"; then
-                    _doctor_ok "Codex binding: $binding"
+                    _doctor_ok "$label binding: not created yet"
+                elif { [ "$engine" = codex ] && _codex_thread_id_valid "$binding"; } \
+                    || { [ "$engine" = antigravity ] && [ "$binding" = "$CS_ANTIGRAVITY_LATEST" ]; }; then
+                    _doctor_ok "$label binding: $binding"
                 else
-                    _doctor_fail "Codex binding is invalid; repair before launching"
+                    _doctor_fail "$label binding is invalid; repair before launching"
                 fi
             else
-                _doctor_fail "Codex binding cannot be read"
+                _doctor_fail "$label binding cannot be read"
             fi
             _doctor_check_merge_driver
             _doctor_check_integrate_lock

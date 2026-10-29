@@ -1133,11 +1133,15 @@ fn render_launch_options(app: &App, frame: &mut Frame) {
     let values = [
         format!(
             "Engine:    {}",
-            match app.launch_engine.as_str() {
-                "claude" => "[Claude]   Codex",
-                "codex" => "Claude   [Codex]",
-                _ => "Claude   Codex",
-            }
+            crate::app::LAUNCH_ENGINES
+                .iter()
+                .map(|(engine, label)| if app.launch_engine == *engine {
+                    format!("[{label}]")
+                } else {
+                    (*label).to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("   ")
         ),
         format!("Model:     {model}"),
         format!("Effort:    {effort}"),
@@ -1161,7 +1165,9 @@ fn render_launch_options(app: &App, frame: &mut Frame) {
         })
         .collect();
     lines.push(Line::from(""));
-    lines.push(Line::from("Left/Right or Space: choose Claude / Codex."));
+    lines.push(Line::from(
+        "Left/Right or Space: choose Claude / Codex / Antigravity.",
+    ));
     lines.push(Line::from(
         "Type a model or effort; clear to use native defaults.",
     ));
@@ -4583,7 +4589,7 @@ mod tests {
             "code-sessions@tui-engine-selector",
             "開発セッション@エンジンセレクター",
         ] {
-            for engine in ["codex", "claude"] {
+            for engine in ["codex", "claude", "antigravity"] {
                 let mut sessions = one_session();
                 sessions[0].name = name.into();
                 let mut app = App::new(sessions);
@@ -4606,6 +4612,24 @@ mod tests {
                 );
                 assert!(rows.iter().any(|row| row.contains("Open")));
             }
+        }
+    }
+
+    #[test]
+    fn launch_options_bracket_the_chosen_engine_of_three() {
+        for (engine, row) in [
+            ("claude", "[Claude]   Codex   Antigravity"),
+            ("codex", "Claude   [Codex]   Antigravity"),
+            ("antigravity", "Claude   Codex   [Antigravity]"),
+        ] {
+            let mut app = App::new(one_session());
+            app.mode = Mode::LaunchOptions;
+            app.launch_engine = engine.into();
+            let rows = rows_at(&mut app, 100, 30);
+            assert!(
+                rows.iter().any(|line| line.contains(row)),
+                "the engine row must read {row:?} for {engine}: {rows:#?}"
+            );
         }
     }
 

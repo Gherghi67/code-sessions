@@ -83,13 +83,13 @@ test_invalid_engine_values_fail_before_session_creation() {
     local output status=0
     output=$("$CS_BIN" invalid-engine --engine 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo '  FAIL: missing engine value should fail'; return 1; }
-    assert_output_contains "$output" '--engine needs claude or codex' "missing-value diagnostic" || return 1
+    assert_output_contains "$output" '--engine needs claude, codex or antigravity' "missing-value diagnostic" || return 1
     assert_not_exists "$(_engine_session_dir invalid-engine)" "missing value must not create a session" || return 1
 
     status=0
     output=$("$CS_BIN" invalid-engine --engine=wat 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo '  FAIL: unknown engine should fail'; return 1; }
-    assert_output_contains "$output" '--engine needs claude or codex' "unknown-value diagnostic" || return 1
+    assert_output_contains "$output" '--engine needs claude, codex or antigravity' "unknown-value diagnostic" || return 1
     assert_not_exists "$(_engine_session_dir invalid-engine)" "invalid value must not create a session" || return 1
 }
 

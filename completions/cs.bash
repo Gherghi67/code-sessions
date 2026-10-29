@@ -34,7 +34,7 @@ _cs_completions() {
 
     # Session-level options
     local session_opts="-secrets -queue -msg -narrative -conversations -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --from-handoff --force --remote --permission-mode"
-    local engine_values="claude codex"
+    local engine_values="claude codex antigravity"
 
     # Get list of session names. cs owns the definition of a session, including
     # which symlinks and marker directories count; asking it keeps this script

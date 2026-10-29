@@ -215,16 +215,16 @@ adopt_session() {  # name, [--yes|-y], in any order
         case "$1" in
             --yes|-y) assume_yes=true; shift ;;
             --engine)
-                [ -n "${2:-}" ] || error "--engine needs claude or codex"
+                [ -n "${2:-}" ] || error "--engine needs $(cs_engine_choices)"
                 explicit_engine="$2"; shift 2 ;;
             --engine=*) explicit_engine="${1#*=}"; shift ;;
-            -*) error "cs -adopt: unknown option '$1'. Usage: cs -adopt <name> [--yes] [--engine claude|codex]" ;;
+            -*) error "cs -adopt: unknown option '$1'. Usage: cs -adopt <name> [--yes] [--engine claude|codex|antigravity]" ;;
             *)
                 [ -z "$session_name" ] || error "cs -adopt: takes one session name, got '$session_name' and '$1'. Usage: cs -adopt <name> [--yes]"
                 session_name="$1"; shift ;;
         esac
     done
-    [ -z "$explicit_engine" ] || cs_engine_known "$explicit_engine" || error "--engine needs claude or codex"
+    [ -z "$explicit_engine" ] || cs_engine_known "$explicit_engine" || error "--engine needs $(cs_engine_choices)"
     local target_dir
     target_dir="$(pwd -P)"
 

@@ -239,6 +239,31 @@ test_remove_force_refusal_names_every_foreign_entry_of_a_large_root() {
         "$out" "the refusal names all 4,500 entries" || return 1
 }
 
+# An agy launch writes .agents/rules/cs-session.md with cs's mark. A .agents
+# holding nothing else is cs's; any other file there, or the rule without the
+# mark, is the user's.
+test_remove_force_counts_dot_agents_as_cs_only_with_just_the_marked_rule() {
+    local dir out rc=0
+    dir=$(create_test_session ag1)
+    mkdir -p "$dir/.agents/rules"
+    printf -- '---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\n' > "$dir/.agents/rules/cs-session.md"
+    echo mine > "$dir/.agents/rules/team.md"
+    out=$("$CS_BIN" -rm ag1 --force </dev/null 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: --force removed a .agents holding the user's rule"; return 1; }
+    assert_eq "Error: Session 'ag1' holds files cs did not create: .agents. Add --delete-files to remove them with --force" \
+        "$out" "the user's rule makes .agents theirs" || return 1
+    rm "$dir/.agents/rules/team.md"
+    "$CS_BIN" -rm ag1 --force </dev/null >/dev/null 2>&1 \
+        || { echo "  FAIL: cs's own rule alone must not stop --force"; return 1; }
+    assert_not_exists "$dir" "the session is removed" || return 1
+    dir=$(create_test_session ag2)
+    mkdir -p "$dir/.agents/rules"
+    echo "the user's own" > "$dir/.agents/rules/cs-session.md"
+    rc=0
+    "$CS_BIN" -rm ag2 --force </dev/null >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: a rule without cs's mark is the user's"; return 1; }
+}
+
 test_remove_force_with_delete_files_removes_foreign_files() {
     local dir
     dir=$(create_test_session f2)
@@ -1337,6 +1362,7 @@ run_test test_remove_noninteractive_without_force_errors_loudly
 run_test test_remove_force_skips_the_prompt
 run_test test_remove_force_refuses_when_session_holds_files_cs_did_not_create
 run_test test_remove_force_refusal_names_every_foreign_entry_of_a_large_root
+run_test test_remove_force_counts_dot_agents_as_cs_only_with_just_the_marked_rule
 run_test test_remove_force_with_delete_files_removes_foreign_files
 run_test test_remove_force_ignores_cs_owned_entries_and_ds_store
 run_test test_remove_confirm_lists_foreign_entries

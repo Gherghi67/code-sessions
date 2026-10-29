@@ -165,21 +165,26 @@ cmd_switch() {
 
     local current
     current=$(_cs_current_engine) || exit 1
+    # A switch leaves from a handoff the rotate skill wrote in this
+    # conversation, so the engine it leaves needs rotation too.
+    cs_engine_supports "$current" rotation \
+        || error "cs -switch is not supported under $current yet: its adapter has no rotation support to write the handoff. Exit, then reopen with: cs $name --engine <engine>"
     if [ -z "$target" ]; then
         target=$(_switch_other_engine "$current") \
             || error "No other engine to switch to from $current"
     fi
-    cs_engine_known "$target" || error "Unknown engine: $target. Choose claude or codex."
+    cs_engine_known "$target" || error "Unknown engine: $target. Choose $(cs_engine_choices)."
     [ "$target" != "$current" ] \
         || error "This conversation already runs under $current; use the rotate skill to start fresh in the same engine"
+    # Asked first: no reinstall or install makes a target without rotation one.
+    cs_engine_supports "$target" rotation \
+        || error "Cannot switch to $target: its adapter has no rotation support to start from the handoff; use the rotate skill instead"
     _switch_engine_installed "$target" \
         || error "$target is not set up by this cs install; reinstall with CS_INSTALL_ENGINES=claude,codex, then switch"
     local missing
     missing=$(cs_engine_call "$target" dependencies) || exit 1
     [ -z "$missing" ] \
         || error "Cannot switch to $target: ${missing//$'\n'/ } not found; install it, then run cs -switch again"
-    cs_engine_supports "$target" rotation \
-        || error "Cannot switch to $target: its adapter has no rotation support to start from the handoff; use the rotate skill instead"
     if _switch_session_encrypted "$session_dir" && ! _switch_engine_reads_vault "$target"; then
         error "Cannot switch to $target: this session is encrypted, and $target does not read handoffs from .cs/private yet; use the rotate skill to continue in $current"
     fi

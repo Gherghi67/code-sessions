@@ -1,6 +1,15 @@
 # ABOUTME: Reads and writes engine-qualified native conversation bindings.
 # ABOUTME: Keeps each engine's machine-local storage format and writes atomically.
 
+# The engines that keep their binding in a dedicated one-line file.
+_cs_binding_file() {  # engine
+    case "$1" in
+        codex) printf '%s\n' codex-thread-id ;;
+        antigravity) printf '%s\n' antigravity-conversation ;;
+        *) return 2 ;;
+    esac
+}
+
 # A missing binding is an ordinary empty result. A present but unusable binding
 # is an error: callers must not mistake damaged local storage for a fresh run.
 # Native ID shapes belong to the adapters, not this storage layer.
@@ -13,8 +22,8 @@ cs_binding_read() {  # session_dir, engine
             [ -f "$path" ] && [ -r "$path" ] || return 1
             value=$(_read_local_state "$path" claude_session_id) || return 1
             ;;
-        codex)
-            path="$session_dir/.cs/local/codex-thread-id"
+        codex|antigravity)
+            path="$session_dir/.cs/local/$(_cs_binding_file "$engine")"
             [ -e "$path" ] || [ -L "$path" ] || return 0
             [ -f "$path" ] && [ -r "$path" ] || return 1
             # A single terminal newline is allowed. An additional line is
@@ -28,8 +37,8 @@ cs_binding_read() {  # session_dir, engine
         *$'\n'*|*$'\r'*) return 1 ;;
     esac
     # Claude's older state reader treats an absent key as an empty binding.
-    # Codex's dedicated file has no other fields, so an empty file is corrupt.
-    [ "$engine" != codex ] || [ -n "$value" ] || return 1
+    # A dedicated file has no other fields, so an empty one is corrupt.
+    [ "$engine" = claude ] || [ -n "$value" ] || return 1
     printf '%s\n' "$value"
 }
 
@@ -51,7 +60,7 @@ cs_binding_write() (  # session_dir, engine, native_id
                 *'"'*|[[:space:]]*) return 1 ;;
             esac
             ;;
-        codex) path="$local_dir/codex-thread-id" ;;
+        codex|antigravity) path="$local_dir/$(_cs_binding_file "$engine")" ;;
         *) return 2 ;;
     esac
     mkdir -p "$local_dir" || return 1

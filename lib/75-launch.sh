@@ -413,6 +413,12 @@ _cs_native_launch_options() {  # engine; sets CS_NATIVE_LAUNCH_ARGS
             fi
             [ "${CS_LAUNCH_APPROVAL:-auto}" = native ] || CS_NATIVE_LAUNCH_ARGS+=(--approve-for-me)
             ;;
+        antigravity)
+            [ -z "${CS_LAUNCH_EFFORT:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--effort "$CS_LAUNCH_EFFORT")
+            # Auto mode approves edits and safe commands and still asks before
+            # irreversible actions, as Claude's auto permission mode does.
+            [ "${CS_LAUNCH_APPROVAL:-}" != auto ] || CS_NATIVE_LAUNCH_ARGS+=(--mode auto)
+            ;;
     esac
 }
 

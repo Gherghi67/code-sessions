@@ -396,6 +396,21 @@ remove_session() {
     [ -z "$age_state_left" ] || return 1
 }
 
+# Whether a session's .agents holds nothing but the Antigravity session rule
+# cs writes (lib/79-antigravity.sh), carrying cs's mark: then the folder is
+# cs's to remove with the session. Any other entry there is the user's.
+_session_agents_only_cs() {  # session_dir
+    local agents="$1/.agents" rule="$1/.agents/rules/cs-session.md" entry
+    [ -d "$agents" ] && [ ! -L "$agents" ] && [ -d "$agents/rules" ] && [ ! -L "$agents/rules" ] \
+        && [ -f "$rule" ] && [ ! -L "$rule" ] \
+        && grep -qF '<!-- cs:antigravity-session-context -->' "$rule" 2>/dev/null || return 1
+    for entry in "$agents"/* "$agents"/.[!.]* "$agents"/..?* \
+        "$agents/rules"/* "$agents/rules"/.[!.]* "$agents/rules"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        [ "$entry" = "$agents/rules" ] || [ "$entry" = "$rule" ] || return 1
+    done
+}
+
 # Top-level entries of a session root that cs did not put there, one name
 # per line as _names_as_lines writes them (nothing when there are none). cs
 # owns .cs/, .claude/, the session git files and the two CLAUDE files;
@@ -411,6 +426,7 @@ _session_foreign_entries() {  # session_dir
         case "$name" in
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
             notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
+            .agents) if _session_agents_only_cs "$dir"; then continue; fi ;;
         esac
         printf '%s\0' "$name"
     done | _names_as_lines
