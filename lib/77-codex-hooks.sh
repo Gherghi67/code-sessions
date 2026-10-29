@@ -189,39 +189,63 @@ _codex_run_dir_in_sandbox_root() {  # dir, session_dir
 # whichever the launch ends up using: a root named anywhere is a root. ~ is
 # the home directory, and a relative root is read against both the session
 # and the file's own directory. Roots a managed device profile adds are not in
-# any file cs can read. Fails when a config there cannot be read.
+# any file cs can read. Fails when a config there cannot be read, and then
+# prints why instead of any root, for a caller that names the cause.
 _codex_config_writable_roots() {  # session_dir
-    local dir
+    local dir f any=""
     local -a files
     files=(/etc/codex/config.toml /etc/codex/managed_config.toml "${CODEX_HOME:-$HOME/.codex}/config.toml")
-    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || {
+        printf 'cs could not resolve %s to find the Codex configs above it\n' "$1"
+        return 1
+    }
     while :; do
         files+=("$dir/.codex/config.toml")
         [ -n "$dir" ] && [ "$dir" != / ] || break
         dir=${dir%/*}
     done
+    # No config file, no root: python3, which only Codex needs, is not asked
+    # for, so a host without Codex stages a retire without it. A directory cs
+    # cannot search may hold one, and a config there is read below, where one
+    # that cannot be read fails rather than reading as no roots.
+    for f in "${files[@]}"; do
+        if [ -e "$f" ] || [ -L "$f" ] || { [ -d "${f%/*}" ] && [ ! -x "${f%/*}" ]; }; then
+            any=1
+            break
+        fi
+    done
+    [ -n "$any" ] || return 0
+    if ! command -v python3 >/dev/null 2>&1; then
+        printf 'python3 is not on PATH, and cs needs it to read the Codex config %s\n' "$f"
+        return 1
+    fi
+    # The roots print once every file is read, so a failure prints only why.
     python3 -I -c '
 import os, re, sys
 session = sys.argv[1]
 array = re.compile(r"writable_roots\s*=\s*\[(.*?)\]", re.S)
 item = re.compile(r"\"((?:[^\"\\]|\\.)*)\"|\x27([^\x27]*)\x27")
+roots = []
 for name in sys.argv[2:]:
     try:
         with open(name, encoding="utf-8", errors="replace") as f:
             text = f.read()
     except (FileNotFoundError, NotADirectoryError):
         continue
-    except OSError:
+    except OSError as e:
+        print("cs could not read the Codex config %s (%s)" % (name, e.strerror or e))
         sys.exit(1)
     for found in array.finditer(text):
         for basic, literal in item.findall(found.group(1)):
             root = re.sub(r"\\(.)", r"\1", basic) if basic else literal
             root = os.path.expanduser(root)
             if os.path.isabs(root):
-                print(root)
+                roots.append(root)
             elif root:
-                print(os.path.join(session, root))
-                print(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(name))), root))
+                roots.append(os.path.join(session, root))
+                roots.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(name))), root))
+for root in roots:
+    print(root)
 ' "$1" "${files[@]}"
 }
 
@@ -242,14 +266,14 @@ _codex_run_dir_in_config_root() {  # dir, session_dir
 # 700, and outside every root the sandbox may write.
 _codex_run_dir_ok() {  # run_dir, session_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ] || return 1
+    [ "$(_cs_perm_bits "$1")" = 700 ] || return 1
     ! _codex_run_dir_in_sandbox_root "$1" "$2"
 }
 
 # The deadline as the Stop hook writes it: a regular file, the user's, mode 600.
 _codex_stamp_ok() {  # file
     [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+    [ "$(_cs_perm_bits "$1")" = 600 ]
 }
 
 # Makes this run's directory, before Codex starts, and prints it. A directory

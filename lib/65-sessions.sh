@@ -596,6 +596,7 @@ Add --delete-files to remove $them with --force"
                 fi
                 git -C "$wt_base_dir" worktree remove --force "$session_dir" \
                     || error "git worktree remove failed for $session_dir"
+                _retire_forget_task "$wt_base_dir" "${session_name#*@}"
                 if [ -n "$wt_branch" ] \
                     && git -C "$wt_base_dir" rev-parse -q --verify "refs/heads/$wt_branch" >/dev/null 2>&1; then
                     if [ -n "$force" ]; then
@@ -653,6 +654,19 @@ Add --delete-files to remove $them with --force"
         return 0
     fi
 
+    # The retires a base staged for its features live in cs's cache, named by
+    # the base directory's identity, which a base made later can get back
+    # (ext4 reuses inodes): read now, while the base is there, and removed
+    # with it. A base@task whose base is gone stages nothing of its own.
+    local retire_staged="" retire_runs=""
+    case "$session_name" in
+        *@*) ;;
+        *)
+            retire_staged=$(cs_retire_cache_dir retire-staged "$session_dir") || retire_staged=""
+            retire_runs=$(cs_retire_cache_dir retire-runs "$session_dir") || retire_runs=""
+            ;;
+    esac
+
     local drop_age_state=""
     if [ -L "$session_dir" ]; then
         rm "$session_dir"
@@ -670,6 +684,7 @@ Add --delete-files to remove $them with --force"
             *) drop_age_state="true" ;;
         esac
     fi
+    _retire_forget_base "$retire_staged" "$retire_runs"
     _spawn_discard_seeds "$session_name"
     if [ -n "$drop_age_state" ]; then
         _drop_session_age_state "$session_name" || age_state_left="true"

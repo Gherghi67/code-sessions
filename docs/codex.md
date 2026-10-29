@@ -259,6 +259,15 @@ is off for that run and the `/clear` stays yours. A probe
 that declines is logged in `session.log` with its cause, and so are keys the
 terminal refuses later all the same, with the error it gave; the `/clear` then
 stays yours.
+A retire `/finish` stages while a feature's conversation still holds its
+worktree lives in the same cache for the same reason
+(`retire-staged/<base id>/<task>`): the base's Stop hook runs it, and a stage
+an agent could write would let it have that hook delete a branch nothing
+integrated. For a stage the roots are read for both the base and the
+feature, whose agent is the one the stage is kept from: the same files, and
+every `.codex/config.toml` from either session upward. A cache under any of
+these roots keeps no stage, so `/finish` asks you to close the feature
+conversation and run it again.
 The watcher cannot see the screen: text you have typed into the composer and
 not sent when the count ends is sent, with `/clear` appended, to the
 conversation you are in, so send or clear a draft first; the line at the end of

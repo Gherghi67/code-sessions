@@ -698,6 +698,58 @@ _cs_file_mode() {  # path
     stat -L -c %a "$1" 2>/dev/null || stat -L -f %Lp "$1"
 }
 
+# The nine permission bits alone, in octal (700), for a check that a file or
+# directory is private. GNU stat's %a prints the setuid, setgid and sticky
+# bits too, and on Linux a directory made under a setgid parent inherits that
+# bit whatever the umask (chmod 700 keeps it), so a private directory there
+# reads 2700. The bit grants no access, so it is masked off here; the full
+# mode stays _cs_file_mode's, which cs_write_atomic carries over. Fails on an
+# answer that is no octal mode.
+_cs_perm_bits() {  # path
+    local m
+    m=$(_cs_file_mode "$1" 2>/dev/null) || return 1
+    case "$m" in '' | *[!0-7]*) return 1 ;; esac
+    printf '%o\n' $(( 8#$m & 8#777 ))
+}
+
+# Where a base keeps the retire /finish staged for a feature whose
+# conversation still holds its worktree (retire-staged), and the runs its Stop
+# hook starts from those stages (retire-runs): cs's cache, <kind>/<device>-<inode
+# of the base directory>. A stage is a licence to remove a worktree and delete
+# its branch, --force included, so it lives where no agent writes: Codex's
+# workspace sandbox writes anywhere in the session, /tmp and $TMPDIR, and a
+# stage forged in the session would have the base's Stop hook delete a branch
+# nothing integrated. The base is named by its identity, not its spelling, so
+# every path to it finds the same stages (cs_dir_identity).
+cs_retire_cache_dir() {  # kind, base_dir
+    local id
+    id=$(cs_dir_identity "$2") || return 1
+    printf '%s/%s/%s\n' "${CS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/cs}" "$1" "$id"
+}
+
+# A directory's identity, <device>-<inode>, read through a link so every path
+# to it gives the same answer; fails on an answer that is not one. GNU stat
+# first, as _cs_file_mode.
+cs_dir_identity() {  # dir
+    local id
+    id=$(stat -L -c '%d-%i' "$1" 2>/dev/null || stat -L -f '%d-%i' "$1" 2>/dev/null) || return 1
+    case "$id" in ''|-*|*-|*[!0-9-]*) return 1 ;; esac
+    printf '%s\n' "$id"
+}
+
+# A directory under cs's cache as cs makes one for its own records: a real
+# directory, the user's, mode 700.
+cs_cache_dir_private() {  # dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 700 ]
+}
+
+# Makes such a directory, its missing parents 700 as well, and fails unless
+# what stands there afterwards is one.
+cs_cache_dir_make_private() {  # dir
+    ( umask 077 && mkdir -p "$1" ) 2>/dev/null || return 1
+    cs_cache_dir_private "$1"
+}
+
 # Replace a file with a command's stdout, atomically: the output goes to a
 # uniquely named temp file in the same directory, which is renamed over the
 # destination only once the command has succeeded. The temp file's name starts

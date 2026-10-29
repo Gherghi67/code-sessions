@@ -550,6 +550,56 @@ pub mod test_root {
     }
 }
 
+/// cs's cache directory, as lib/00-header.sh sets it: `$CS_CACHE_DIR`, else
+/// `$XDG_CACHE_HOME/cs`, else `~/.cache/cs`, an empty value read as unset.
+/// Under test it is only ever the [`test_cache`] override; with none scoped it
+/// is [`test_cache::UNSCOPED`], a path that cannot exist, so no test run can
+/// remove anything from the cache of whoever runs the suite.
+fn cs_cache_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    return Some(test_cache::current().unwrap_or_else(|| PathBuf::from(test_cache::UNSCOPED)));
+    #[cfg(not(test))]
+    {
+        let xdg = std::env::var("XDG_CACHE_HOME")
+            .ok()
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|home| PathBuf::from(home).join(".cache")));
+        cs_dir_or(std::env::var("CS_CACHE_DIR").ok(), xdg.map(|dir| dir.join("cs")))
+    }
+}
+
+/// Test-only cs cache override, scoped per test thread as [`test_root`] is.
+#[cfg(test)]
+pub mod test_cache {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    /// The cache a test sees when it scoped none, under `/nonexistent`.
+    pub const UNSCOPED: &str = "/nonexistent/cs-tui-test-cache";
+
+    thread_local! {
+        static CACHE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<PathBuf> {
+        CACHE.with(|c| c.borrow().clone())
+    }
+
+    #[must_use]
+    pub fn scoped(cache: PathBuf) -> Guard {
+        CACHE.with(|c| *c.borrow_mut() = Some(cache));
+        Guard
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CACHE.with(|c| *c.borrow_mut() = None);
+        }
+    }
+}
+
 /// Test-only stand-in for `CLAUDE_SESSION_NAME`, the session the picker runs
 /// inside. A test build never reads the variable (the suite may itself run
 /// inside a session), and setting it would race the parallel tests, so each
@@ -1566,6 +1616,14 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveG
             return Err(std::io::Error::other(refusal));
         }
     }
+    // The retires a base staged for its features live in cs's cache, named by
+    // the base directory's identity, which a base made later can get back
+    // (ext4 reuses inodes): read now, while the base is there, and removed
+    // with it, as `cs -rm` does.
+    let base_retires = match worktree_parts(name) {
+        Some(_) => [None, None],
+        None => ["retire-staged", "retire-runs"].map(|kind| retire_cache_dir(kind, path)),
+    };
     if is_link {
         fs::remove_file(path)?;
     } else if worktree_parts(name).is_some() && path.join(".git").is_file() {
@@ -1573,8 +1631,75 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveG
     } else {
         fs::remove_dir_all(path)?;
     }
+    forget_base_retires(&base_retires);
     discard_spawn_seeds(root, name);
     Ok(())
+}
+
+/// Where cs keeps the retires a base staged for its features
+/// (`retire-staged`) and the records of the runs its Stop hook starts from
+/// them (`retire-runs`): cs's cache, `<kind>/<device>-<inode of the base
+/// directory>`, read through a link. Twin of cs_retire_cache_dir in
+/// lib/02-shared.sh.
+fn retire_cache_dir(kind: &str, base_dir: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(base_dir).ok()?;
+    Some(cs_cache_dir()?.join(kind).join(format!("{}-{}", meta.dev(), meta.ino())))
+}
+
+/// A directory under cs's cache as cs makes one for its own records: a real
+/// directory, the user's, mode 700. Twin of cs_cache_dir_private.
+fn retire_dir_private(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid takes nothing, cannot fail and touches no memory.
+    let euid = unsafe { geteuid() };
+    dir.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_dir() && m.uid() == euid && m.mode() & 0o777 == 0o700)
+}
+
+/// Remove a removed base's stage and run directories ([`retire_cache_dir`],
+/// read while the base was there): whole, a link at either name removed and
+/// never followed. Twin of _retire_forget_base in lib/30-worktree.sh.
+/// Best-effort, as `cs -rm`'s is.
+fn forget_base_retires(dirs: &[Option<PathBuf>]) {
+    for dir in dirs.iter().flatten() {
+        let _ = match dir.symlink_metadata() {
+            Ok(m) if m.file_type().is_dir() => fs::remove_dir_all(dir),
+            Ok(_) => fs::remove_file(dir),
+            Err(_) => continue,
+        };
+    }
+}
+
+/// Forget the retire base `base_dir` staged for feature `task`, which the
+/// picker removed, and the records of its runs: a feature made again under
+/// the name would otherwise meet them at the base's next Stop. Only the stage
+/// and the two records of that task go, each from a directory cs made
+/// private ([`retire_dir_private`]), and a directory left empty goes with
+/// them. Twin of _retire_forget_task in lib/30-worktree.sh. Best-effort.
+fn forget_task_retires(base_dir: &Path, task: &str) {
+    // A name from the sessions root holds no '/'; one that did is no task.
+    if task.is_empty() || task.contains('/') {
+        return;
+    }
+    let records = [
+        ("retire-staged", vec![task.to_string()]),
+        ("retire-runs", vec![format!("{task}.run"), format!("{task}.out")]),
+    ];
+    for (kind, files) in records {
+        let Some(dir) = retire_cache_dir(kind, base_dir) else { return };
+        if !retire_dir_private(&dir) {
+            continue;
+        }
+        for file in files {
+            let _ = fs::remove_file(dir.join(file));
+        }
+        // remove_dir is rmdir: it removes only an empty directory.
+        let _ = fs::remove_dir(&dir);
+    }
 }
 
 /// What `cs -spawn` stages under `$SESSIONS_ROOT/.spawn/` for a session name,
@@ -1667,11 +1792,12 @@ pub fn undo_spawn_moves(moved: &[(PathBuf, PathBuf)]) -> Result<(), String> {
 
 /// Remove a worktree session (`base@task`) through git so the base repo's
 /// worktree registration goes with it; the task branch is left alone,
-/// matching `cs -rm` when its branch prompt is declined. Falls back to
+/// matching `cs -rm` when its branch prompt is declined; the retire the base
+/// staged for it goes, as there ([`forget_task_retires`]). Falls back to
 /// plain directory removal when the base session is gone. When git refuses,
 /// its error is returned and nothing is deleted, as `cs -rm` stops there.
 fn remove_worktree_session(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
-    let base = worktree_parts(name).map(|(b, _)| b).unwrap_or(name);
+    let (base, task) = worktree_parts(name).unwrap_or((name, ""));
     let base_dir = root.join(base);
     if !base_dir.is_dir() {
         return fs::remove_dir_all(path);
@@ -1689,6 +1815,7 @@ fn remove_worktree_session(root: &Path, name: &str, path: &Path) -> std::io::Res
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
+    forget_task_retires(&base_dir, task);
     Ok(())
 }
 
@@ -2914,6 +3041,110 @@ mod tests {
             "base repo must not keep a stale worktree registration"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base's retire directory as cs makes one (cs_retire_cache_dir): under
+    // the test's cache, <kind>/<device>-<inode of the base>, mode 700,
+    // holding `files`.
+    fn retire_dir_with(cache: &Path, kind: &str, base: &Path, files: &[&str]) -> PathBuf {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let meta = fs::metadata(base).unwrap();
+        let dir = cache.join(kind).join(format!("{}-{}", meta.dev(), meta.ino()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        for file in files {
+            fs::write(dir.join(file), "x").unwrap();
+        }
+        dir
+    }
+
+    // The picker's delete of a feature drops the retire its base staged for
+    // it and the records of its runs, as `cs -rm` does: a feature made again
+    // under the name would meet them at the base's next Stop. Another task's
+    // stay, and a directory left empty goes.
+    #[test]
+    fn remove_session_path_drops_a_features_staged_retire() {
+        let tmp = std::env::temp_dir().join(format!("cs-rm-feature-retire-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        let wt = worktree_beside_base(&root);
+        let cache = tmp.join("cache");
+        let _cache = test_cache::scoped(cache.clone());
+        let stages = retire_dir_with(&cache, "retire-staged", &root.join("proj"), &["task", "other", "task.run"]);
+        let runs = retire_dir_with(&cache, "retire-runs", &root.join("proj"), &["task.run", "task.out"]);
+
+        remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap();
+
+        assert!(!wt.exists(), "the feature removed");
+        assert!(!stages.join("task").exists(), "its stage goes with it");
+        assert!(stages.join("other").exists(), "another task's stage stays");
+        assert!(stages.join("task.run").exists(), "even one named like its run record");
+        assert!(!runs.exists(), "its run records go, and the directory they left empty");
+        assert!(cache.join("retire-runs").is_dir(), "nothing above it goes");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // Only from directories cs made private: a link at the stage directory's
+    // name is never followed, and a run directory open to others is left as
+    // it is.
+    #[test]
+    fn remove_session_path_leaves_retire_directories_cs_did_not_make() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("cs-rm-feature-retire-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        let wt = worktree_beside_base(&root);
+        let cache = tmp.join("cache");
+        let _cache = test_cache::scoped(cache.clone());
+        let decoy = tmp.join("decoy");
+        fs::create_dir_all(&decoy).unwrap();
+        fs::set_permissions(&decoy, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(decoy.join("task"), "x").unwrap();
+        let stages = retire_dir_with(&cache, "retire-staged", &root.join("proj"), &[]);
+        fs::remove_dir(&stages).unwrap();
+        std::os::unix::fs::symlink(&decoy, &stages).unwrap();
+        let runs = retire_dir_with(&cache, "retire-runs", &root.join("proj"), &["task.out"]);
+        fs::set_permissions(&runs, fs::Permissions::from_mode(0o755)).unwrap();
+
+        remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap();
+
+        assert!(!wt.exists(), "the feature removed");
+        assert!(decoy.join("task").exists(), "nothing through a link at the stage directory's name");
+        assert!(stages.symlink_metadata().unwrap().file_type().is_symlink(), "the link itself kept");
+        assert!(runs.join("task.out").exists(), "nothing from a directory open to others");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // The picker's delete of a base takes the stage and run directories cs
+    // keeps for it, as `cs -rm` does: they are named by the base's
+    // <device>-<inode>, which a base made later can get back (ext4 reuses
+    // inodes), and would inherit them. A link at either name is removed, and
+    // what it points at is left alone.
+    #[test]
+    fn remove_session_path_drops_a_bases_staged_retires() {
+        let tmp = std::env::temp_dir().join(format!("cs-rm-base-retire-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        let base = root.join("proj");
+        fs::create_dir_all(base.join(".cs/local")).unwrap();
+        let cache = tmp.join("cache");
+        let _cache = test_cache::scoped(cache.clone());
+        let stages = retire_dir_with(&cache, "retire-staged", &base, &["task"]);
+        let runs = retire_dir_with(&cache, "retire-runs", &base, &[]);
+        fs::remove_dir(&runs).unwrap();
+        let decoy = tmp.join("decoy");
+        fs::create_dir_all(&decoy).unwrap();
+        fs::write(decoy.join("task.out"), "x").unwrap();
+        std::os::unix::fs::symlink(&decoy, &runs).unwrap();
+
+        remove_session_path(&root, "proj", &base, RemoveGrants::default()).unwrap();
+
+        assert!(!base.exists(), "the base removed");
+        assert!(!stages.exists(), "its stage directory goes with it");
+        assert!(runs.symlink_metadata().is_err(), "a link at its run directory's name goes");
+        assert!(decoy.join("task.out").exists(), "and what it points at stays");
+        assert!(cache.join("retire-staged").is_dir(), "nothing above it goes");
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     // `cs -rm` stops when git refuses to remove a worktree; deleting the

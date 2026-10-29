@@ -47,7 +47,7 @@ _cs_run_stop_helper() {
 # once and mails at its own end; a lock still live is a run that took over.
 # The send runs in a subshell: its refusals exit.
 _cs_run_mail_staged_base() {
-    local base task
+    local base task stage_dir
     [ -z "${_cs_switch_next:-}" ] || return 0
     [ -z "$(live_lock_pid "$_cs_run_meta")" ] || return 0
     base=$(_read_local_state "$_cs_run_meta/local/state" cs_base)
@@ -56,7 +56,8 @@ _cs_run_mail_staged_base() {
         "$base@"?*) task="${_cs_run_name#"$base@"}" ;;
         *) return 0 ;;
     esac
-    [ -f "$SESSIONS_ROOT/$base/.cs/local/retire-staged/$task" ] || return 0
+    stage_dir=$(cs_retire_cache_dir retire-staged "$SESSIONS_ROOT/$base") || return 0
+    _retire_stage_pending "$stage_dir" "$task" || return 0
     ( CS_SESSION_NAME="$_cs_run_name" CLAUDE_SESSION_NAME="$_cs_run_name" _mail_send "$base" -k notify \
         "Feature $task closed; the retire /finish staged for it runs when your current turn ends." ) \
         </dev/null >/dev/null 2>&1

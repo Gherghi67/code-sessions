@@ -178,8 +178,9 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
 
    The entry answers `retired <task> <sha>`, `staged <task> <sha>: ...`, or
    refuses. `staged` means the feature conversation is still open in the
-   worktree: the entry recorded the retire in the base
-   (`.cs/local/retire-staged/<task>`), and the base's Stop hook runs it once
+   worktree: the entry recorded the retire for the base
+   (`retire-staged/<base id>/<task>` under cs's cache, out of an agent's
+   reach), and the base's Stop hook runs it once
    that conversation's lock is gone, with every refusal intact. Relay the
    line and tell the user the worktree and branch go by themselves after
    they close that conversation; nothing else is needed, and a later turn
