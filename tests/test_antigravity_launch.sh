@@ -126,7 +126,10 @@ test_the_reopen_question_takes_n_as_fresh_and_enter_as_continue() {
     assert_output_contains "$output" 'Continue previous Antigravity conversation' "asks on a terminal" || return 1
     assert_eq "" "$(_agy_argv)" "n starts fresh" || return 1
     output=$(printf 'y' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
-    assert_eq --continue "$(_agy_argv)" "y continues"
+    assert_eq --continue "$(_agy_argv)" "y continues" || return 1
+    output=$(printf 'n' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
+    output=$(printf '\n' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
+    assert_eq --continue "$(_agy_argv)" "Enter continues"
 }
 
 # The first launch binds before agy starts. When that agy fails (a sign-in
