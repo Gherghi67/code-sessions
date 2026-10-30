@@ -186,7 +186,65 @@ test_an_install_killed_before_a_rename_leaves_a_folder_the_next_takes() {
     _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: the folder is cs's after the install"; return 1; }
     : > "$PLUGIN/.plugin.json.XyZ789"
     _antigravity_plugin_unregister || return 1
-    assert_not_exists "$PLUGIN" "a removal takes cs's temps with the rest"
+    assert_not_exists "$PLUGIN" "a removal takes cs's temps with the rest" || return 1
+    # Killed after the write, a temp holds what cs writes there.
+    mkdir -p "$PLUGIN"
+    _antigravity_hooks_document /opt/cs > "$PLUGIN/.hooks.json.AbC123" || return 1
+    _antigravity_plugin_manifest > "$PLUGIN/.plugin.json.XyZ789" || return 1
+    _antigravity_plugin_register /opt/cs || { echo "  FAIL: a folder holding cs's written temps must be taken"; return 1; }
+    _antigravity_plugin_unregister || return 1
+    assert_not_exists "$PLUGIN" "a removal takes those too"
+}
+
+# A file of the user's named like cs's temps is judged by its content, as
+# hooks.json and plugin.json are: it is never taken for cs's, or removed.
+test_a_file_of_the_users_named_like_a_temp_is_kept() {
+    local status before
+    mkdir -p "$PLUGIN"
+    printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$PLUGIN/.hooks.json.backup"
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a folder holding a .hooks.json.backup of the user's is not cs's" || return 1
+    status=0; _antigravity_plugin_unregister || status=$?
+    assert_eq 3 "$status" "nor cs's to remove" || return 1
+    assert_file_contains "$PLUGIN/.hooks.json.backup" lint "the user's file stays" || return 1
+    rm "$PLUGIN/.hooks.json.backup"
+    printf '{"name": "cs", "description": "mine"}\n' > "$PLUGIN/.plugin.json.backup"
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "nor is one holding a .plugin.json.backup of the user's" || return 1
+    rm -rf "$PLUGIN"
+    _antigravity_plugin_register /opt/cs || return 1
+    printf '{"lint": {}}\n' > "$PLUGIN/.hooks.json.backup"
+    printf '{"name": "mine"}\n' > "$PLUGIN/.plugin.json.backup"
+    before=$(cat "$PLUGIN/.hooks.json.backup" "$PLUGIN/.plugin.json.backup")
+    _antigravity_plugin_unregister || return 1
+    assert_not_exists "$PLUGIN/hooks.json" "cs's plugin goes" || return 1
+    assert_eq "$before" "$(cat "$PLUGIN/.hooks.json.backup" "$PLUGIN/.plugin.json.backup")" \
+        "the user's files beside it stay"
+}
+
+# jq tells cs's files from the user's: without it nothing in the folder is
+# cs's, and a plugin.json of the user's is never taken or removed. A function
+# stands for the missing jq, which may sit in /usr/bin beside tools the test
+# still needs.
+test_without_jq_nothing_in_the_folder_is_taken_for_cs() {
+    local status before
+    mkdir -p "$PLUGIN/scripts"
+    printf '{"name": "cs", "mcpServers": {"mine": {"command": "./scripts/server.sh"}}}\n' > "$PLUGIN/plugin.json"
+    printf 'mine\n' > "$PLUGIN/scripts/server.sh"
+    before=$(cat "$PLUGIN/plugin.json" "$PLUGIN/scripts/server.sh")
+    status=0; ( jq() { return 127; }; _antigravity_plugin_register /opt/cs ) || status=$?
+    assert_eq 3 "$status" "register refuses a folder it cannot judge" || return 1
+    status=0; ( jq() { return 127; }; _antigravity_plugin_unregister ) || status=$?
+    assert_eq 3 "$status" "unregister refuses it too" || return 1
+    assert_eq "$before" "$(cat "$PLUGIN/plugin.json" "$PLUGIN/scripts/server.sh")" "the user's files stay" || return 1
+    assert_not_exists "$PLUGIN/hooks.json" "and nothing is written" || return 1
+    _antigravity_plugin_manifest > "$PLUGIN/plugin.json" || return 1
+    ( jq() { return 127; }; ! _antigravity_plugin_manifest_is_cs "$PLUGIN/plugin.json" ) \
+        || { echo "  FAIL: without jq not even cs's own plugin.json is known as cs's"; return 1; }
+    rm "$PLUGIN/plugin.json" "$PLUGIN/scripts/server.sh"
+    status=0; ( jq() { return 127; }; _antigravity_plugin_unregister ) || status=$?
+    assert_eq 3 "$status" "nor a folder holding only a scripts/ folder" || return 1
+    assert_dir "$PLUGIN/scripts" "which stays"
 }
 
 # A removal keeps a script the user changed, or is cut short after hooks.json:
@@ -209,7 +267,7 @@ test_a_folder_a_removal_left_is_taken_by_the_next_install() {
 
 # Without hooks.json, anything beyond what cs leaves keeps the folder the user's.
 test_a_folder_holding_more_than_cs_leaves_is_still_the_users() {
-    local status
+    local status target="$TEST_TMPDIR/elsewhere" script before
     mkdir -p "$PLUGIN/skills/mine"
     status=0; _antigravity_plugin_register /opt/cs || status=$?
     assert_eq 3 "$status" "a folder with a skills/ of the user's is refused" || return 1
@@ -220,7 +278,28 @@ test_a_folder_holding_more_than_cs_leaves_is_still_the_users() {
     assert_eq 3 "$status" "a plugin.json of the user's is refused" || return 1
     status=0; _antigravity_plugin_unregister || status=$?
     assert_eq 3 "$status" "and not removed" || return 1
-    assert_file_contains "$PLUGIN/plugin.json" mine "the user's plugin.json stays"
+    assert_file_contains "$PLUGIN/plugin.json" mine "the user's plugin.json stays" || return 1
+    # scripts/ counts only as a folder of its own: a deploy into a link would
+    # write behind it, and a file of that name is the user's.
+    rm "$PLUGIN/plugin.json"
+    mkdir -p "$target"
+    for script in "${CS_RECOVERY_SCRIPTS[@]}"; do printf 'theirs\n' > "$target/$script"; done
+    before=$(ls -A "$target")
+    ln -s "$target" "$PLUGIN/scripts"
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a folder whose scripts/ is a link is refused" || return 1
+    assert_not_exists "$PLUGIN/hooks.json" "and nothing is written" || return 1
+    status=0; _antigravity_plugin_unregister || status=$?
+    assert_eq 3 "$status" "nor removed" || return 1
+    assert_eq "$before" "$(ls -A "$target")" "nothing lands behind the link, and nothing goes" || return 1
+    for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
+        assert_eq theirs "$(cat "$target/$script")" "$script behind the link stays" || return 1
+    done
+    rm "$PLUGIN/scripts"
+    printf 'mine\n' > "$PLUGIN/scripts"
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a file named scripts is refused" || return 1
+    assert_eq mine "$(cat "$PLUGIN/scripts")" "and left as it was"
 }
 
 test_unregister_without_a_plugin_is_a_no_op() {
@@ -241,4 +320,6 @@ run_test test_a_linked_scripts_folder_is_never_written_or_emptied_through
 run_test test_an_install_killed_before_a_rename_leaves_a_folder_the_next_takes
 run_test test_a_folder_a_removal_left_is_taken_by_the_next_install
 run_test test_a_folder_holding_more_than_cs_leaves_is_still_the_users
+run_test test_a_file_of_the_users_named_like_a_temp_is_kept
+run_test test_without_jq_nothing_in_the_folder_is_taken_for_cs
 report_results

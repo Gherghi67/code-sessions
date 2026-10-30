@@ -102,12 +102,14 @@ them. A folder of that name is cs's when its `hooks.json` is cs's, or, with no
 `hooks.json`, when it holds only what an install or removal of cs leaves
 there: cs's own `plugin.json`, a `scripts/` folder, and the
 `.hooks.json.XXXXXX` and `.plugin.json.XXXXXX` temporary files of an install
-cut short. Any other folder of that name (a `hooks.json` or `plugin.json` that
-is not cs's, or anything else at its top level), or one where the folder,
-`hooks.json` or `scripts/` is a symbolic link, is kept as it is with a
-warning, and nothing is registered. `cs -uninstall` removes only the files cs
-wrote: a script you changed stays, and is named, and the next install takes
-the folder back. `cs -doctor` under Antigravity reports whether the hook is
+cut short, each empty or holding what cs writes. Any other folder of that name
+(a `hooks.json` or `plugin.json` that is not cs's, or anything else at its top
+level), or one where the folder, `hooks.json` or `scripts/` is a symbolic
+link, is kept as it is with a warning, and nothing is registered. Without
+`jq`, which tells cs's files from yours, every folder of that name is kept.
+`cs -uninstall` removes only the files cs wrote: a script you changed stays,
+and is named, and the next install takes the folder back. `cs -doctor` under
+Antigravity reports whether the hook is
 installed, names a cs that is there, has its recovery consumer
 (`scripts/autosave-commits.sh`), and is not switched off in
 `~/.gemini/config/config.json` (`agy plugin enable cs` turns it back on); for

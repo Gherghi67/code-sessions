@@ -554,11 +554,17 @@ _antigravity_hook_command() {  # cs_path, verb
 _antigravity_plugin_is_cs() {  # plugin_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
     [ ! -L "$1/scripts" ] || return 1
+    _antigravity_hooks_file_is_cs "$1/hooks.json"
+}
+
+# Whether a hooks file names only cs's hook, every command there a cs
+# -antigravity-hook call. False without jq.
+_antigravity_hooks_file_is_cs() {  # hooks.json
     jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
         type == "object" and keys == [$name]
         and ([.[$name] | .. | objects | select(has("command")) | .command]
              | length > 0 and all(type == "string" and test(" -antigravity-hook [a-z-]+$")))
-    ' "$1/hooks.json" >/dev/null 2>&1
+    ' "$1" >/dev/null 2>&1
 }
 
 # PreInvocation binds the session to the conversation its run works in, and
@@ -602,9 +608,27 @@ _antigravity_plugin_manifest() {
     jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
 }
 
+# Whether a file holds cs's plugin.json. False when either side cannot be
+# read or worked out: without jq both would be empty, and alike.
 _antigravity_plugin_manifest_is_cs() {  # plugin.json
-    [ -f "$1" ] && [ ! -L "$1" ] \
-        && [ "$(jq -cS . "$1" 2>/dev/null)" = "$(_antigravity_plugin_manifest | jq -cS .)" ]
+    local want have
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    want=$(_antigravity_plugin_manifest 2>/dev/null | jq -cS . 2>/dev/null) && [ -n "$want" ] || return 1
+    have=$(jq -cS . "$1" 2>/dev/null) && [ -n "$have" ] || return 1
+    [ "$have" = "$want" ]
+}
+
+# Whether a write temp of register's is cs's: a plain file, empty (the write
+# was cut short) or holding what cs writes there. A file of the user's that
+# only shares the name is not.
+_antigravity_plugin_temp_is_cs() {  # temp
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    [ -s "$1" ] || return 0
+    case "${1##*/}" in
+        .hooks.json.??????) _antigravity_hooks_file_is_cs "$1" ;;
+        .plugin.json.??????) _antigravity_plugin_manifest_is_cs "$1" ;;
+        *) false ;;
+    esac
 }
 
 # Whether a folder without hooks.json holds only what cs itself leaves there
@@ -612,8 +636,10 @@ _antigravity_plugin_manifest_is_cs() {  # plugin.json
 # user changed: cs's plugin.json, a scripts/ folder (each file in it is still
 # judged by its content when deployed or removed) and cs's write temps. The
 # next install takes such a folder; a removal clears what of it is cs's.
+# jq tells cs's files from the user's, so without it no folder is taken.
 _antigravity_plugin_is_cs_leftover() {  # plugin_dir
     local entry
+    jq -ne true >/dev/null 2>&1 || return 1
     [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] \
         && [ ! -L "$1/scripts" ] || return 1
     for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
@@ -621,7 +647,7 @@ _antigravity_plugin_is_cs_leftover() {  # plugin_dir
         case "${entry##*/}" in
             scripts) [ -d "$entry" ] ;;
             plugin.json) _antigravity_plugin_manifest_is_cs "$entry" ;;
-            .hooks.json.??????|.plugin.json.??????) [ -f "$entry" ] && [ ! -L "$entry" ] ;;
+            .hooks.json.??????|.plugin.json.??????) _antigravity_plugin_temp_is_cs "$entry" ;;
             *) false ;;
         esac || return 1
     done
@@ -632,7 +658,7 @@ _antigravity_plugin_is_cs_leftover() {  # plugin_dir
 # named) and cs's write temps, then the folders if empty. Returns 3, removing
 # nothing, when the folder is neither cs's nor only what cs left there.
 _antigravity_plugin_unregister() {
-    local dir script
+    local dir script temp
     dir=$(_antigravity_plugin_dir)
     [ -e "$dir" ] || [ -L "$dir" ] || return 0
     _antigravity_plugin_is_cs "$dir" || _antigravity_plugin_is_cs_leftover "$dir" || return 3
@@ -643,7 +669,9 @@ _antigravity_plugin_unregister() {
     for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
-    rm -f "$dir"/.hooks.json.?????? "$dir"/.plugin.json.?????? 2>/dev/null || true
+    for temp in "$dir"/.hooks.json.?????? "$dir"/.plugin.json.??????; do
+        if _antigravity_plugin_temp_is_cs "$temp"; then rm -f "$temp" || true; fi
+    done
     rmdir "$dir/scripts" "$dir" 2>/dev/null || true
 }
 
@@ -1909,7 +1937,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "283466f290137446769ca64817200e7c78da9e5ff95a6dd71b655504be14400c  bin/cs"
+    "5e593648c2fe73922ea37dc298a270550caf6f2b139ca07b489839e4ecdfc162  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
