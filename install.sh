@@ -564,7 +564,8 @@ _antigravity_plugin_is_cs() {  # plugin_dir
 # PreInvocation binds the session to the conversation its run works in, and
 # PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
 # tool reaches the hook, whose translator keeps the edits: "*" is the matcher
-# agy was measured with.
+# agy was measured with. The shapes and the timeout in seconds follow the
+# hooks guide agy 1.4.11 embeds.
 _antigravity_hooks_document() {  # cs_path
     jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
         --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
@@ -1908,7 +1909,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4a913aca31a1c9b4053bd34dea9871c2c693722e8a03baf95f3d0cb5cae62a11  bin/cs"
+    "283466f290137446769ca64817200e7c78da9e5ff95a6dd71b655504be14400c  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"

@@ -214,6 +214,13 @@ confirmed that an always-on rule in `.agents/rules/` reaches the model and that
   and no SessionStart.
 - The edits arrived as `write_file` and `edit_file` with an absolute `Path`.
 
+The `hooks.json` shapes come from the hooks guide built into `agy` 1.4.11
+(`strings` on the binary, section "Lifecycle Hooks"), not from a live run:
+PreInvocation takes a flat list of handlers, PostToolUse groups them under a
+`matcher`, and `timeout` is in seconds, 30 by default (cs sets 10).
+`agy plugin validate --strict` accepts the file cs writes, and the test suite
+runs that check whenever `agy` is on `PATH`.
+
 Not checked live: whether `agy` asks to trust a plugin's hooks in an
 interactive run (the headless runs did not ask), and what a subagent's hooks
 carry. The test suite uses a fake `agy` that fires the plugin's hooks with

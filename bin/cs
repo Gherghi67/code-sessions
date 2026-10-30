@@ -496,7 +496,8 @@ _antigravity_plugin_is_cs() {  # plugin_dir
 # PreInvocation binds the session to the conversation its run works in, and
 # PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
 # tool reaches the hook, whose translator keeps the edits: "*" is the matcher
-# agy was measured with.
+# agy was measured with. The shapes and the timeout in seconds follow the
+# hooks guide agy 1.4.11 embeds.
 _antigravity_hooks_document() {  # cs_path
     jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
         --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \

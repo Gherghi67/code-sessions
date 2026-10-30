@@ -30,7 +30,23 @@ test_register_writes_one_named_hook_for_the_installed_cs() {
         "$(jq -r '."cs-session".PostToolUse[0].hooks[0].command' "$PLUGIN/hooks.json")" || return 1
     assert_eq '["PostToolUse","PreInvocation"]' "$(jq -c '."cs-session" | keys' "$PLUGIN/hooks.json")" \
         "only the two events cs uses" || return 1
+    # agy skips the whole file when a handler's type is not "command" or its
+    # timeout (seconds) is not an integer. Pinned here as well as validated
+    # below, since CI has no agy.
+    assert_eq '[{"type":"command","timeout":10}]' \
+        "$(jq -c '[."cs-session" | .. | objects | select(has("command")) | {type, timeout}] | unique' "$PLUGIN/hooks.json")" \
+        "every handler is a command with a timeout in whole seconds" || return 1
     _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: cs must know its own plugin"; return 1; }
+}
+
+# agy's own validator reads hooks.json as its loader does, and --strict fails
+# on a warning too. HOME is the test's, so the real ~/.gemini is never read.
+test_agy_validates_the_plugin_register_writes() {
+    local output
+    require_tool agy || return $?
+    _antigravity_plugin_register /opt/cs/bin/cs || return 1
+    output=$(agy plugin validate "$PLUGIN" --strict --json 2>&1) \
+        || { echo "  FAIL: agy plugin validate --strict refuses cs's plugin:"; printf '    %s\n' "$output"; return 1; }
 }
 
 test_register_quotes_a_path_the_shell_would_split() {
@@ -213,6 +229,7 @@ test_unregister_without_a_plugin_is_a_no_op() {
 }
 
 run_test test_register_writes_one_named_hook_for_the_installed_cs
+run_test test_agy_validates_the_plugin_register_writes
 run_test test_register_quotes_a_path_the_shell_would_split
 run_test test_reregister_replaces_cs_files_in_place_and_is_idempotent
 run_test test_a_folder_of_the_users_is_never_written_or_removed
