@@ -112,6 +112,23 @@ _antigravity_write_rule() {  # session_name, session_dir, actor, cs_bin
     fi
 }
 
+# agy stops with its usage on a flag it does not know, by then after cs has
+# written the rule and recorded the engine, so each flag this launch passes
+# must be one its --help lists.
+_antigravity_flags_listed() {  # agy_bin, args...
+    local agy_bin="$1" help arg
+    shift
+    [ "$#" -gt 0 ] || return 0
+    help=$("$agy_bin" --help 2>/dev/null) || help=""
+    for arg in "$@"; do
+        case "$arg" in --*) ;; *) continue ;; esac
+        printf '%s\n' "$help" | grep -E -- "^[[:space:]]*$arg([[:space:]]|$)" >/dev/null || {
+            _antigravity_launch_error "The Antigravity CLI at $agy_bin does not list $arg in its --help, and this launch passes it. Update it (agy update), or launch without the option that adds $arg."
+            return 1
+        }
+    done
+}
+
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
     local session_name="$1" session_dir="$2" intent="${6:-auto}"
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
@@ -181,6 +198,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
             fi
             ;;
     esac
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options antigravity || return 1
+    _antigravity_flags_listed "$agy_bin" ${continue_arg:+"$continue_arg"} \
+        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || return 1
 
     cd -- "$session_dir" || return 1
     unset CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_PID
@@ -206,8 +227,6 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
 
     printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), and a reopen continues agy's latest conversation in this folder. Rotation, mail, the task queue and automatic recovery are not available under Antigravity yet."
     local status=0
-    local -a CS_NATIVE_LAUNCH_ARGS
-    _cs_native_launch_options antigravity || return 1
     cs_run_child "$agy_bin" ${continue_arg:+"$continue_arg"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || status=$?
     return "$status"
 }

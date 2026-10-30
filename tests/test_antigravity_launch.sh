@@ -22,6 +22,14 @@ setup() {
     # The fake records how cs started it and touches nothing under HOME.
     cat > "$TEST_TMPDIR/bin/agy" <<'AGY'
 #!/usr/bin/env bash
+# --help lists the flags cs passes, less any named in AGY_HELP_OMIT.
+if [ "${1:-}" = --help ]; then
+    for flag in --continue --model --effort --mode; do
+        case " ${AGY_HELP_OMIT:-} " in *" $flag "*) continue ;; esac
+        printf '  %-30s %s\n' "$flag" "what $flag does"
+    done
+    exit 0
+fi
 printf '%s\n' "$*" >> "$AGY_LOG"
 printf '%s\n' "$@" > "$AGY_ARGV"
 pwd -P > "$AGY_PWD"
@@ -42,7 +50,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
 }
@@ -52,7 +60,7 @@ teardown() {
     rm -rf "$TEST_TMPDIR"
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
-    unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT CS_DEFAULT_ENGINE
+    unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
 }
 
 _session_dir() {
@@ -153,6 +161,28 @@ test_launch_options_map_to_agy_flags() {
         "model, effort and automatic approval reach agy" || return 1
     output=$("$CS_BIN" options --native-approval --model gemini-3-flash 2>&1) || { echo "$output"; return 1; }
     assert_eq '--continue --model gemini-3-flash' "$(_agy_argv)" "native approval adds no mode"
+}
+
+# An agy whose --help lacks a flag cs would pass is refused before the rule,
+# the binding or the engine is written, and the refusal names the flag.
+test_an_agy_without_a_flag_cs_passes_is_refused_before_anything_is_written() {
+    local output status=0 dir
+    : > "$AGY_LOG"
+    output=$(AGY_HELP_OMIT=--effort "$CS_BIN" older --engine antigravity --effort high 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a flag agy lacks must stop the launch: $output"; return 1; }
+    assert_output_contains "$output" 'does not list --effort' "names the flag" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    dir=$(_session_dir older)
+    assert_not_exists "$(_rule older)" "no rule is written" || return 1
+    assert_not_exists "$dir/.cs/local/antigravity-conversation" "no binding is written" || return 1
+    printf 'engine: claude\n' > "$dir/.cs/local/state"
+    status=0
+    output=$(AGY_HELP_OMIT=--mode "$CS_BIN" older --engine antigravity --approve-for-me 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a flag agy lacks must stop the launch: $output"; return 1; }
+    assert_output_contains "$output" 'does not list --mode' "names the flag" || return 1
+    assert_eq 'engine: claude' "$(cat "$dir/.cs/local/state")" "the engine stays the one it last ran under" || return 1
+    output=$(AGY_HELP_OMIT=--effort "$CS_BIN" older --engine antigravity 2>&1) \
+        || { echo "  FAIL: a flag cs does not pass is no reason to refuse: $output"; return 1; }
 }
 
 test_the_rule_stays_out_of_git_status() {
@@ -407,6 +437,7 @@ run_test test_the_reopen_question_takes_n_as_fresh_and_enter_as_continue
 run_test test_resume_without_a_binding_refuses
 run_test test_an_invalid_binding_refuses_before_agy_starts
 run_test test_launch_options_map_to_agy_flags
+run_test test_an_agy_without_a_flag_cs_passes_is_refused_before_anything_is_written
 run_test test_the_rule_stays_out_of_git_status
 run_test test_the_exclude_entry_is_never_appended_through_a_link
 run_test test_a_rule_cs_did_not_write_is_never_replaced
