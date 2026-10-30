@@ -88,7 +88,10 @@ This is not an exact resume, and the engine does not claim `exact_resume`:
 - `--continue` reopens whichever conversation `agy` used last in that folder,
   including one started there outside cs or picked with `/resume`.
 - According to `agy`'s release notes, `--continue` falls back to a conversation
-  in a parent or child folder when the session folder has none.
+  in a parent or child folder when the session folder has none. A first launch
+  whose `agy` exits with an error (a sign-in that never finished, a crash at
+  start) therefore leaves no binding, and the next open starts a new
+  conversation. A first launch left with `/exit` before any turn still binds.
 - For a session folder below a checkout's root (an adopted subfolder), `agy`
   still finds the rule, because it walks from the working folder up to the
   repository root. Which conversation `--continue` picks there was not checked

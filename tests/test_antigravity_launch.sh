@@ -129,6 +129,24 @@ test_the_reopen_question_takes_n_as_fresh_and_enter_as_continue() {
     assert_eq --continue "$(_agy_argv)" "y continues"
 }
 
+# The first launch binds before agy starts. When that agy fails (a sign-in
+# never finished, a crash at start), the folder may hold no conversation, and
+# --continue would fall back to a parent or child folder's: the binding goes.
+test_a_failed_first_run_leaves_no_binding() {
+    local output status=0 binding
+    output=$(AGY_EXIT=1 "$CS_BIN" stumble --engine antigravity 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: agy's failure must reach the caller: $output"; return 1; }
+    binding="$(_session_dir stumble)/.cs/local/antigravity-conversation"
+    assert_not_exists "$binding" "the failed first run's binding goes" || return 1
+    output=$("$CS_BIN" stumble 2>&1) || { echo "  FAIL: the next open must launch: $output"; return 1; }
+    assert_eq "" "$(_agy_argv)" "the next open starts a new conversation" || return 1
+    assert_eq latest "$(cat "$binding")" "a run that ends cleanly binds" || return 1
+    status=0
+    output=$(AGY_EXIT=1 "$CS_BIN" stumble 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: agy's failure must reach the caller: $output"; return 1; }
+    assert_eq latest "$(cat "$binding")" "a later failed run keeps the binding an earlier run made"
+}
+
 test_resume_without_a_binding_refuses() {
     local output status=0 dir
     output=$("$CS_BIN" unbound --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -434,6 +452,7 @@ run_test test_missing_agy_names_the_install_line_before_creating_anything
 run_test test_fresh_launch_starts_agy_in_the_session_with_its_context_rule
 run_test test_reopen_continues_and_fresh_and_resume_choose_explicitly
 run_test test_the_reopen_question_takes_n_as_fresh_and_enter_as_continue
+run_test test_a_failed_first_run_leaves_no_binding
 run_test test_resume_without_a_binding_refuses
 run_test test_an_invalid_binding_refuses_before_agy_starts
 run_test test_launch_options_map_to_agy_flags

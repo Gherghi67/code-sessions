@@ -19900,6 +19900,13 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), and a reopen continues agy's latest conversation in this folder. Rotation, mail, the task queue and automatic recovery are not available under Antigravity yet."
     local status=0
     cs_run_child "$agy_bin" ${continue_arg:+"$continue_arg"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || status=$?
+    # A first run that fails (a sign-in never finished, a crash at start) may
+    # leave the folder no conversation, and --continue then falls back to a
+    # parent or child folder's: the binding that run made goes with it.
+    if [ "$status" -ne 0 ] && [ -z "$recorded" ]; then
+        cs_run_with_lease "$meta_dir" rm -f -- "$binding_file" \
+            || warn "could not remove $binding_file after agy failed; remove it, or reopen with --fresh"
+    fi
     return "$status"
 }
 run_secrets() {
