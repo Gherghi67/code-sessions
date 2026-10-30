@@ -12,14 +12,16 @@ CS_ANTIGRAVITY_RULE_MARK="<!-- cs:antigravity-session-context -->"
 
 # The binding is the id of the conversation a reopen resumes with
 # --conversation, which cs's hook records once the conversation reaches the
-# model (cs -antigravity-hook, below). Before the hook, cs bound the folder's
-# latest conversation and reopened it with --continue, which falls back to a
-# parent or child folder's conversation when this folder has none; a binding
-# that still says latest reopens that way until the hook replaces it.
+# model (cs -antigravity-hook, below). Before the hook, cs wrote the word
+# latest before agy started and reopened with --continue, which falls back to
+# a parent or child folder's conversation when this folder has none. The word
+# names no conversation, so an open of a binding that still says latest starts
+# a new one, and the hook replaces the word with its id.
 CS_ANTIGRAVITY_LATEST=latest
 
-# A binding cs may pass to agy: the legacy word, or a UUID. The binding lies in
-# the session folder, which the agent can write, so it is checked every time.
+# A binding cs accepts: a UUID, or the legacy word, which names none. The
+# binding lies in the session folder, which the agent can write, so it is
+# checked every time.
 _antigravity_binding_valid() {  # binding
     [ "$1" = "$CS_ANTIGRAVITY_LATEST" ] || _is_uuid "$1"
 }
@@ -203,6 +205,9 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         _antigravity_launch_error "Invalid Antigravity binding in $binding_file: expected a conversation id (a UUID). Repair or remove it, then reopen."
         return 1
     fi
+    # The legacy word may stand in a folder with no conversation of its own,
+    # where --continue would open another folder's for the hook to bind by id.
+    [ "$recorded" != "$CS_ANTIGRAVITY_LATEST" ] || recorded=""
     reopen="$recorded"
 
     # A pending rotation handoff stays armed for the next Claude or Codex
@@ -233,7 +238,6 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     esac
     case "$reopen" in
         '') ;;
-        "$CS_ANTIGRAVITY_LATEST") reopen_args=(--continue) ;;
         *) reopen_args=(--conversation "$reopen") ;;
     esac
     local -a CS_NATIVE_LAUNCH_ARGS

@@ -144,9 +144,13 @@ records nothing.
 - The binding lies in the session folder, which the agent can write, so cs
   checks it before every launch: anything but a UUID (or the legacy word below)
   stops the launch before `agy` starts.
-- Sessions bound by an earlier cs hold the word `latest`. Their next open adds
-  `--continue` once, and the hook replaces the word with the ID of the
-  conversation that opens. From then on they resume by ID.
+- Sessions bound by an earlier cs hold the word `latest`, which names no
+  conversation: that cs wrote it before `agy` started, so the folder may have
+  none, and `--continue` would open a parent or child folder's. Their next open
+  asks nothing and starts a new conversation, and `--resume` refuses. The hook
+  replaces the word with the new conversation's ID, and from then on they
+  resume by ID. To go back to an older conversation of the folder, pick it with
+  `/resume` before the first turn.
 - `cs -conversations` lists Antigravity conversations (`antigravity:<id>`) as
   it lists Claude's and Codex's, with the bound one marked `[current]`.
 - Without the hook installed, a launch says so: nothing is bound, and every

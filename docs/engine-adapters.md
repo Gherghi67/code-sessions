@@ -105,7 +105,8 @@ in `.cs/local/codex-thread-id`. Antigravity's binding,
 writes under the run lease at the run's first model call (`cs -antigravity-hook
 pre-invocation`), when it also records the `started` event; the adapter stages
 no candidates. A binding an older cs wrote holds the word `latest`, which the
-launch still reopens with `--continue` until the hook replaces it. The storage formats remain compatible. A staged replacement lives in
+launch treats as no binding: it starts a new conversation, and the hook
+replaces the word with that conversation's ID. The storage formats remain compatible. A staged replacement lives in
 `local/pending-binding-<engine>.json` until the adapter acknowledges its ID.
 A failed preparation preserves the previous binding; an abandoned candidate is
 retained locally when another attempt supersedes it. A repeated acknowledgement

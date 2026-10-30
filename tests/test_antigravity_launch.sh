@@ -18,7 +18,7 @@ setup() {
     export AGY_LOG="$TEST_TMPDIR/agy.log" AGY_ARGV="$TEST_TMPDIR/agy-argv"
     export AGY_PWD="$TEST_TMPDIR/agy-pwd" AGY_ENV="$TEST_TMPDIR/agy-env" AGY_STATE="$TEST_TMPDIR/agy-state"
     export AGY_HOOK_OUT="$TEST_TMPDIR/agy-hook-out"
-    export AGY_NEW_ID=11111111-1111-4111-8111-111111111111 AGY_LATEST_ID=22222222-2222-4222-8222-222222222222
+    export AGY_NEW_ID=11111111-1111-4111-8111-111111111111
     mkdir -p "$HOME" "$CS_SESSIONS_ROOT" "$CS_TRANSCRIPTS_DIR" "$TEST_TMPDIR/bin"
     use_fake_keychain
     # The fake records how cs started it, then runs the hooks a real turn
@@ -31,7 +31,7 @@ setup() {
 #!/usr/bin/env bash
 # --help lists the flags cs passes, less any named in AGY_HELP_OMIT.
 if [ "${1:-}" = --help ]; then
-    for flag in --continue --conversation --model --effort --mode; do
+    for flag in --conversation --model --effort --mode; do
         case " ${AGY_HELP_OMIT:-} " in *" $flag "*) continue ;; esac
         printf '  %-30s %s\n' "$flag" "what $flag does"
     done
@@ -46,7 +46,6 @@ conversation="" new=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --conversation) conversation="$2"; shift ;;
-        --continue) conversation="$AGY_LATEST_ID" ;;
     esac
     shift
 done
@@ -113,7 +112,7 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
-    unset AGY_HOOK_OUT AGY_NEW_ID AGY_LATEST_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG
+    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG
 }
 
 # cs's plugin as the installer writes it, in the test's HOME.
@@ -559,20 +558,30 @@ test_doctor_names_antigravity_and_its_binding() {
     fi
 }
 
-# A binding an older cs wrote names no conversation: the open continues the
-# folder's latest once, the hook records that conversation's id, and every
-# later open resumes it by id.
-test_a_legacy_latest_binding_continues_once_then_resumes_by_id() {
-    local output
+# A binding an older cs wrote says latest and names no conversation: it was
+# written before agy started and kept by a run left before its first turn, so
+# the folder may hold none, and --continue would open a parent or child
+# folder's for the hook to bind by id (review R4). The open starts a new
+# conversation instead, offers nothing to continue, and --resume has nothing
+# to resume; the hook binds the new conversation, and later opens resume it.
+test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id() {
+    local output dir status=0
     output=$(AGY_NO_TURN=1 "$CS_BIN" legacy --engine antigravity 2>&1) || { echo "$output"; return 1; }
-    printf 'latest\n' > "$(_session_dir legacy)/.cs/local/antigravity-conversation"
+    dir=$(_session_dir legacy)
+    printf 'latest\n' > "$dir/.cs/local/antigravity-conversation"
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" legacy --resume 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --resume on the legacy word must fail: $output"; return 1; }
+    assert_output_contains "$output" 'no recorded Antigravity conversation' "nothing to resume" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    output=$(printf 'y' | CS_ASSUME_TTY=1 "$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Continue previous Antigravity conversation' "nothing to continue is offered" || return 1
+    assert_eq "" "$(_agy_argv)" "the legacy binding starts a new conversation, never --continue" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding legacy)" "the hook binds the new conversation" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"engine\":\"antigravity\",\"session_id\":\"$AGY_NEW_ID\",\"source\":\"startup\"" "recorded as a new start" || return 1
     output=$("$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
-    assert_eq --continue "$(_agy_argv)" "the legacy binding continues the latest conversation" || return 1
-    assert_eq "$AGY_LATEST_ID" "$(_binding legacy)" "the hook records the continued conversation's id" || return 1
-    assert_file_contains "$(_session_dir legacy)/.cs/timeline.jsonl" \
-        "\"engine\":\"antigravity\",\"session_id\":\"$AGY_LATEST_ID\",\"source\":\"resume\"" "recorded as resumed" || return 1
-    output=$("$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
-    assert_eq "--conversation $AGY_LATEST_ID" "$(_agy_argv)" "the next open resumes it by id"
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "the next open resumes it by id"
 }
 
 # A fresh start keeps the old binding until the new conversation reaches the
@@ -765,7 +774,7 @@ run_test test_the_engine_is_recorded_before_agy_starts
 run_test test_relative_agy_and_cs_paths_resolve_before_the_launch_changes_folder
 run_test test_from_handoff_is_refused_before_the_open_changes_the_session
 run_test test_doctor_names_antigravity_and_its_binding
-run_test test_a_legacy_latest_binding_continues_once_then_resumes_by_id
+run_test test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id
 run_test test_a_fresh_start_rebinds_once_it_reaches_the_model
 run_test test_a_later_conversation_in_the_run_never_takes_the_binding
 run_test test_the_hook_acts_only_in_the_run_cs_launched
