@@ -33,6 +33,14 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 credentials or read its conversations under `~/.gemini/`. The one thing cs
 writes there is its own hook plugin (see below).
 
+The first interactive open of each new session folder or feature worktree
+shows `agy`'s folder-trust dialog, which asks
+"Do you trust the contents of this project?" and keeps the answer in
+`~/.gemini/antigravity-cli/settings.json` (`trustedWorkspaces`). Whether cs's
+hook waits for that answer has not been checked live (see
+[Recovery copies](#recovery-copies)). If the hook does not run, nothing is
+bound and the next open starts a new conversation.
+
 ## What cs hands over
 
 Claude gets the session protocol from `CLAUDE.local.md`, and Codex gets it as
@@ -185,6 +193,7 @@ Skills that check before relying on a capability refuse cleanly.
 | `-finish` (`feature_finish`) | Refused before the session opens. Run it under Claude or Codex. A retire refusal for a feature of an Antigravity base names `cs <base> --engine claude -finish`. |
 | Mail delivery (`mail_delivery`) | `cs -msg` still works from the shell. Nothing surfaces mail inside `agy`. |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
+| Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
 
 A feature worktree (`cs <base>@<feature> --engine antigravity`) launches like
@@ -200,6 +209,21 @@ The recovery consumer then snapshots it to
 `refs/worktree/cs/session/<conversation id>`, as it does for Claude and Codex.
 An edit a shell command makes through `run_command` names no file, so it is
 not snapshotted. The same is true of shell edits under the other engines.
+
+Nothing offers these copies back under Antigravity. Claude's crash-recovery
+prompt reads only the ref of the Claude conversation it starts, a clean `agy`
+exit leaves the ref in place, and only a later Claude start or resume of the
+session prunes conversation refs whose last snapshot is older than 14 days.
+Each snapshot holds the whole working tree, so the newest ref has every edit
+up to that moment, whichever conversation made it. `cs -engine` prints the
+bound conversation as `conversation:`. To list the refs, newest first, then
+compare and restore a file by hand:
+
+```bash
+git -C <session> for-each-ref --sort=-committerdate refs/worktree/cs/session/
+git -C <session> diff HEAD refs/worktree/cs/session/<conversation id> -- <file>
+git -C <session> checkout refs/worktree/cs/session/<conversation id> -- <file>
+```
 
 The design was checked against `agy` 1.4.10 on 2026-10-30: two headless turns
 confirmed that an always-on rule in `.agents/rules/` reaches the model and that
@@ -221,10 +245,10 @@ PreInvocation takes a flat list of handlers, PostToolUse groups them under a
 `agy plugin validate --strict` accepts the file cs writes, and the test suite
 runs that check whenever `agy` is on `PATH`.
 
-Not checked live: whether `agy` asks to trust a plugin's hooks in an
-interactive run (the headless runs did not ask), and what a subagent's hooks
-carry. The test suite uses a fake `agy` that fires the plugin's hooks with
-payloads of the measured shape.
+Not checked live: whether cs's plugin hook runs in a folder `agy` does not
+trust yet, or one whose trust the user declined (the headless runs were not
+asked), and what a subagent's hooks carry. The test suite uses a fake `agy`
+that fires the plugin's hooks with payloads of the measured shape.
 
 ## Follow-ups
 

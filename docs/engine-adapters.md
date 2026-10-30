@@ -348,5 +348,5 @@ uninstall. Where `agy` is installed it deploys the same files to the
 `scripts/` folder of cs's Antigravity plugin, whose PostToolUse hook
 (`cs -antigravity-hook post-tool-use`) feeds them. Build generates `hooks/cs-engine-events.sh` from the adapter registry
 and translators so standalone hooks and the assembled command use one contract.
-Claude's SessionStart recovery prompt remains available; Codex snapshots can
-be inspected through their shadow ref.
+Claude's SessionStart recovery prompt remains available.
+Codex and Antigravity snapshots can be inspected through their shadow ref.
