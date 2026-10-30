@@ -209,9 +209,11 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     unset CLAUDE_CODE_ENABLE_FUNCTION_HOOKS CLAUDE_CODE_AUTO_MEMORY_PATH
     unset CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
     actor=$(cs_actor_slug "$session_dir") || return 1
+    # The rule first: a launch refused over a rule of the user's adds no
+    # exclude entry, which would have git ignore their file on cs's say-so.
+    _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || return 1
     _antigravity_exclude_rule "$session_dir" \
         || warn "could not add $CS_ANTIGRAVITY_RULE to the checkout's info/exclude; git status will list it"
-    _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || return 1
     if [ -z "$recorded" ]; then
         cs_run_with_lease "$meta_dir" cs_binding_write "$session_dir" antigravity "$CS_ANTIGRAVITY_LATEST" || {
             _antigravity_launch_error "Could not save the Antigravity binding: $binding_file"

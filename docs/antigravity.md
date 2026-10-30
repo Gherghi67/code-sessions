@@ -50,14 +50,19 @@ context Codex receives.
   launch stops. cs never writes through a link out of the session.
 - In a git checkout, cs adds `/.agents/rules/cs-session.md` (anchored at the
   session folder, glob characters escaped) to the checkout's `info/exclude`, so
-  the file never shows in `git status`. cs leaves your own `.agents/` files and
-  `.gitignore` alone. The file is built in `.cs/local/` and renamed into place.
+  the file never shows in `git status`. The entry is added once the rule is
+  written, so a launch refused over a rule of yours adds none. cs leaves your
+  own `.agents/` files and `.gitignore` alone. The file is built beside the
+  rule under a name `agy` does not load and renamed into place from inside the
+  rules folder, entered by its physical path, so a folder swapped for a link
+  while the rule is written gets nothing.
 - While it carries the mark, the rule counts as cs's own, like a
   `CLAUDE.local.md` with cs's sentinel. Retiring a feature takes it with the
   worktree instead of moving it to the trash. `cs -rm --force` and the picker's
   delete count a session's `.agents` as cs's when it holds nothing but this
   rule. Any other file there, or the rule without the mark, is yours and is
-  listed.
+  listed. A retire refuses over the rule without the mark, as it does over a
+  `CLAUDE.local.md` of yours, because cs's exclude is what hides it from git.
 
 Rules have a size budget in `agy`, so a very long memory index can be cut at a
 line boundary. The full index stays in `.cs/memory/MEMORY.md`.

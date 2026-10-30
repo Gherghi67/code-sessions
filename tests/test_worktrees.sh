@@ -387,7 +387,8 @@ $wt/build.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each entry once
 
 # An agy launch's session rule is cs's while it carries cs's mark: it goes
 # with the worktree, as CLAUDE.local.md does. Without the mark it is the
-# user's, and retire moves it to the trash like any ignored work.
+# user's, and since cs's exclude is what ignores that name, the retire refuses
+# and names it, as it does for a CLAUDE.local.md of the user's own.
 test_retire_takes_the_marked_antigravity_rule_with_the_worktree() {
     local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 exclude
     sha=$(_landed_feature_ignoring '*.log') || { echo "  FAIL: integrate fixture"; return 1; }
@@ -405,7 +406,7 @@ retired task1 $sha" "$output" "cs's rule is not moved to the trash" || return 1
     assert_not_exists "$wt" "the worktree is retired"
 }
 
-test_retire_moves_an_unmarked_antigravity_rule_to_the_trash() {
+test_retire_refuses_over_an_unmarked_antigravity_rule() {
     local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 exclude
     sha=$(_landed_feature_ignoring '*.log') || { echo "  FAIL: integrate fixture"; return 1; }
     bin=$(fake_trash_bin moves trash)
@@ -415,9 +416,11 @@ test_retire_moves_an_unmarked_antigravity_rule_to_the_trash() {
     mkdir -p "$wt/.agents/rules"
     echo "the user's own rule" > "$wt/.agents/rules/cs-session.md"
     output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
-    assert_eq "0" "$status" "retire proceeds: $output" || return 1
-    assert_output_contains "$output" 'Moved 1 ignored file to the system trash' "the user's rule is moved" || return 1
-    assert_eq "$wt/.agents" "$(cat "$TEST_TMPDIR/trash.log")" "the folder holding the user's rule goes to the trash" || return 1
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    .agents/  (1 file)" "$output" "the refusal names the folder holding the rule" || return 1
+    assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
+    assert_eq "the user's own rule" "$(cat "$wt/.agents/rules/cs-session.md")" "the rule is still there"
 }
 
 # Ignored trees a build or an install regenerates go with the worktree, a
@@ -2735,7 +2738,7 @@ run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
 run_test test_retire_moves_ignored_work_to_the_system_trash
 run_test test_retire_takes_the_marked_antigravity_rule_with_the_worktree
-run_test test_retire_moves_an_unmarked_antigravity_rule_to_the_trash
+run_test test_retire_refuses_over_an_unmarked_antigravity_rule
 run_test test_retire_deletes_regenerable_trees_with_the_worktree
 run_test test_retire_refuses_when_the_trash_command_fails
 run_test test_retire_refuses_without_a_trash_command

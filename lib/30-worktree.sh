@@ -352,9 +352,10 @@ _submodule_dirs() {  # checkout_dir prefix
 # inside a submodule directory the worktree never populated. The ignored
 # files of the worktree's own checkout are not among them: the retire trashes
 # those or deletes them with the worktree (_retire_trash_ignored_work). The
-# one exception is a root CLAUDE.local.md of the user's own: cs's exclude is
-# what ignores that name, not a choice of theirs, so it is at risk whether
-# git ignores it or not.
+# exceptions are a root CLAUDE.local.md and an Antigravity session rule
+# (.agents/rules/cs-session.md) of the user's own: cs's exclude is what
+# ignores those names, not a choice of theirs, so they are at risk whether git
+# ignores them or not.
 # The merge gate and the readiness screen MUST read from this one definition;
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
@@ -362,7 +363,8 @@ _worktree_untracked_at_risk() {  # wt_dir
     local listing more
     listing=$(git -C "$1" ls-files -z --others --exclude-standard 2>/dev/null \
               | _names_as_lines) || return 1
-    more=$(git -C "$1" ls-files -z --others --ignored --exclude-standard -- CLAUDE.local.md 2>/dev/null \
+    more=$(git -C "$1" ls-files -z --others --ignored --exclude-standard -- CLAUDE.local.md \
+               .agents/rules/cs-session.md 2>/dev/null \
            | _names_as_lines) || return 1
     [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
     more=$(_submodule_others "$1" "") || return 1

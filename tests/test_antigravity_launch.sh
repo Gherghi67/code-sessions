@@ -234,16 +234,21 @@ test_the_exclude_entry_is_never_appended_through_a_link() {
 }
 
 test_a_rule_cs_did_not_write_is_never_replaced() {
-    local output status=0 rule
+    local output status=0 rule exclude
     output=$("$CS_BIN" owned --engine antigravity 2>&1) || { echo "$output"; return 1; }
     rule=$(_rule owned)
+    exclude="$(_session_dir owned)/.git/info/exclude"
+    grep -vxF '/.agents/rules/cs-session.md' "$exclude" > "$exclude.new" || true
+    mv "$exclude.new" "$exclude"
     printf 'the user wrote this\n' > "$rule"
     : > "$AGY_LOG"
     output=$("$CS_BIN" owned 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: a user's rule must stop the launch"; return 1; }
     assert_output_contains "$output" 'was not written by cs' "names the conflict" || return 1
     assert_eq 'the user wrote this' "$(cat "$rule")" "the user's file is unchanged" || return 1
-    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    assert_file_not_contains "$exclude" 'cs-session.md' \
+        "a refused launch adds no exclude entry that would ignore the user's rule"
 }
 
 test_a_linked_rules_folder_is_never_written_through() {
