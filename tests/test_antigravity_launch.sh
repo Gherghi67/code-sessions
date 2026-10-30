@@ -572,7 +572,7 @@ test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id() {
     : > "$AGY_LOG"
     output=$("$CS_BIN" legacy --resume 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: --resume on the legacy word must fail: $output"; return 1; }
-    assert_output_contains "$output" 'no recorded Antigravity conversation' "nothing to resume" || return 1
+    assert_output_contains "$output" 'no recorded antigravity conversation' "nothing to resume" || return 1
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
     output=$(printf 'y' | CS_ASSUME_TTY=1 "$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
     assert_output_not_contains "$output" 'Continue previous Antigravity conversation' "nothing to continue is offered" || return 1
@@ -582,6 +582,23 @@ test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id() {
         "\"engine\":\"antigravity\",\"session_id\":\"$AGY_NEW_ID\",\"source\":\"startup\"" "recorded as a new start" || return 1
     output=$("$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
     assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "the next open resumes it by id"
+}
+
+# The legacy word names no conversation, so --resume is refused before the
+# open unarchives or migrates anything, as with no binding at all.
+test_a_resume_of_a_legacy_latest_binding_leaves_the_session_untouched() {
+    local output dir status=0
+    output=$(AGY_NO_TURN=1 "$CS_BIN" relic --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir relic)
+    printf 'latest\n' > "$dir/.cs/local/antigravity-conversation"
+    : > "$dir/.cs/archived"
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" relic --resume 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --resume on the legacy word must fail: $output"; return 1; }
+    assert_output_contains "$output" 'Cannot resume: no recorded antigravity conversation for relic' \
+        "refused before the open" || return 1
+    assert_file_exists "$dir/.cs/archived" "the refused open leaves the session archived" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
 }
 
 # A fresh start keeps the old binding until the new conversation reaches the
@@ -775,6 +792,7 @@ run_test test_relative_agy_and_cs_paths_resolve_before_the_launch_changes_folder
 run_test test_from_handoff_is_refused_before_the_open_changes_the_session
 run_test test_doctor_names_antigravity_and_its_binding
 run_test test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id
+run_test test_a_resume_of_a_legacy_latest_binding_leaves_the_session_untouched
 run_test test_a_fresh_start_rebinds_once_it_reaches_the_model
 run_test test_a_later_conversation_in_the_run_never_takes_the_binding
 run_test test_the_hook_acts_only_in_the_run_cs_launched

@@ -22117,6 +22117,9 @@ main() {
         local resume_binding
         resume_binding=$(cs_binding_read "$session_dir" "$engine") \
             || error "Cannot read the recorded $engine conversation; repair the binding before resuming"
+        # Antigravity's legacy word names no conversation, and its adapter
+        # resumes none for it (lib/79-antigravity.sh).
+        [ "$engine" != antigravity ] || [ "$resume_binding" != "$CS_ANTIGRAVITY_LATEST" ] || resume_binding=""
         [ -n "$resume_binding" ] || error "Cannot resume: no recorded $engine conversation for $session_name. Use --fresh."
     fi
 
