@@ -788,11 +788,11 @@ fi
 if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
     if command -v jq >/dev/null 2>&1; then
         AGY_PLUGIN_DIR=$(_antigravity_plugin_dir)
-        installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
         _agy_rc=0
         _antigravity_plugin_register "$INSTALL_DIR/cs" || _agy_rc=$?
         case $_agy_rc in
             0)
+                installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
                 mkdir -p "$AGY_PLUGIN_DIR/scripts"
                 for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
                     _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"

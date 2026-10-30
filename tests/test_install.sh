@@ -5016,11 +5016,12 @@ test_install_writes_no_antigravity_hook_for_gemini_cli_alone() {
 }
 
 test_install_registers_the_antigravity_hook_where_agy_has_its_folder() {
-    local fake_home="$TEST_TMPDIR/agy-folder"
+    local fake_home="$TEST_TMPDIR/agy-folder" out
     mkdir -p "$fake_home/.gemini/antigravity-cli"
-    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
-        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    assert_file_exists "$fake_home/.gemini/config/plugins/cs/hooks.json" "agy's folder gets the hook with agy off PATH"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: install.sh exited non-zero: $out"; return 1; }
+    assert_file_exists "$fake_home/.gemini/config/plugins/cs/hooks.json" "agy's folder gets the hook with agy off PATH" || return 1
+    assert_output_contains "$out" "Installed Antigravity hook" "the install reports the hook it wrote"
 }
 
 test_install_keeps_a_plugin_folder_that_is_not_cs_s() {
@@ -5031,6 +5032,7 @@ test_install_keeps_a_plugin_folder_that_is_not_cs_s() {
     out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
         || { echo "  FAIL: install.sh exited non-zero: $out"; return 1; }
     assert_output_contains "$out" "Kept $plugin: cs did not write it" "the install names the folder it kept" || return 1
+    assert_output_not_contains "$out" "Installed Antigravity hook" "a kept folder is not reported as installed" || return 1
     assert_eq '{"lint": {"Stop": [{"command": "./lint.sh"}]}}' "$(cat "$plugin/hooks.json")" "the user's hooks stay" || return 1
     assert_not_exists "$plugin/scripts" "nothing is deployed into it"
 }
