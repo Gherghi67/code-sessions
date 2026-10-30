@@ -169,6 +169,7 @@ _cs() {
         _describe 'engine' '(
             claude:"Claude Code"
             codex:"Codex CLI"
+            antigravity:"Antigravity CLI (agy)"
         )'
         return
     fi

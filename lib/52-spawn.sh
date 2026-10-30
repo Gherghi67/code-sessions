@@ -156,7 +156,7 @@ _spawn_window() {  # name, token, engine
         CS_COMMANDS_DIR CS_SKILLS_DIR CS_TRANSCRIPTS_DIR CS_SESSIONS_ROOT \
         CS_SECRETS_DIR CS_SECRETS_KEYCHAIN_PREFIX CS_SECRETS_BACKEND \
         CS_TMUX_SOCKET CS_TMUX_SESSION CS_TMUX_BIN CLAUDE_CODE_BIN CODEX_BIN \
-        CS_CODEX_THREAD_BIN CS_DEFAULT_ENGINE; do
+        CS_CODEX_THREAD_BIN AGY_BIN CS_DEFAULT_ENGINE; do
         if [ "${!selector+x}" = x ]; then
             assignments="$assignments $(_sq "$selector=${!selector}")"
         else
@@ -235,7 +235,7 @@ EOF
 
 run_spawn() {
     local name="" brief="" engine=""
-    local usage='Usage: cs -spawn <name> [--engine claude|codex] [--brief <file>] [--task "..."] ...'
+    local usage='Usage: cs -spawn <name> [--engine claude|codex|antigravity] [--brief <file>] [--task "..."] ...'
     local tasks
     tasks=()
     while [ $# -gt 0 ]; do
@@ -244,7 +244,7 @@ run_spawn() {
                 [ $# -ge 2 ] || error "--engine needs a value"
                 [ -z "$engine" ] || error "cs -spawn takes one --engine"
                 shift
-                cs_engine_known "$1" || error "Unknown engine: $1. Choose claude or codex."
+                cs_engine_known "$1" || error "Unknown engine: $1. Choose $(cs_engine_choices)."
                 engine="$1";;
             --task)
                 [ $# -ge 2 ] || error "--task needs a value"
@@ -301,6 +301,11 @@ run_spawn() {
     engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
     if [ "$engine" = codex ] && [ "${#tasks[@]}" -gt 0 ]; then
         error "Codex does not host the walk-away task queue; use --brief without --task"
+    fi
+    # A seed waits for a launch that consumes it, and an adapter without
+    # spawn_brief never does: refused here, before anything is staged.
+    if { [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; } && ! cs_engine_supports "$engine" spawn_brief; then
+        error "cs -spawn --engine $engine only opens the session: $engine takes no brief or task from cs yet. Drop --brief and --task, or spawn under claude or codex"
     fi
     _spawn_precheck "$name"
     # One token per spawn, for the window command and the seed alike. The

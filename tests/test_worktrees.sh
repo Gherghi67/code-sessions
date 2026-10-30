@@ -385,6 +385,44 @@ $wt/build.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each entry once
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
 
+# An agy launch's session rule is cs's while it carries cs's mark: it goes
+# with the worktree, as CLAUDE.local.md does. Without the mark it is the
+# user's, and since cs's exclude is what ignores that name, the retire refuses
+# and names it, as it does for a CLAUDE.local.md of the user's own.
+test_retire_takes_the_marked_antigravity_rule_with_the_worktree() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 exclude
+    sha=$(_landed_feature_ignoring '*.log') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    exclude=$(cd "$wt" && git rev-parse --git-path info/exclude)
+    case "$exclude" in /*) ;; *) exclude="$wt/$exclude" ;; esac
+    printf '/.agents/rules/cs-session.md\n' >> "$exclude"
+    mkdir -p "$wt/.agents/rules"
+    printf -- '---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\n' > "$wt/.agents/rules/cs-session.md"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+retired task1 $sha" "$output" "cs's rule is not moved to the trash" || return 1
+    assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
+    assert_not_exists "$wt" "the worktree is retired"
+}
+
+test_retire_refuses_over_an_unmarked_antigravity_rule() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 exclude
+    sha=$(_landed_feature_ignoring '*.log') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    exclude=$(cd "$wt" && git rev-parse --git-path info/exclude)
+    case "$exclude" in /*) ;; *) exclude="$wt/$exclude" ;; esac
+    printf '/.agents/rules/cs-session.md\n' >> "$exclude"
+    mkdir -p "$wt/.agents/rules"
+    echo "the user's own rule" > "$wt/.agents/rules/cs-session.md"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    .agents/  (1 file)" "$output" "the refusal names the folder holding the rule" || return 1
+    assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
+    assert_eq "the user's own rule" "$(cat "$wt/.agents/rules/cs-session.md")" "the rule is still there"
+}
+
 # Ignored trees a build or an install regenerates go with the worktree, a
 # file inside one included however precious its name: no refusal, no trash.
 test_retire_deletes_regenerable_trees_with_the_worktree() {
@@ -1261,6 +1299,33 @@ test_retire_refusal_names_codex_commands_for_codex_sessions() {
     assert_output_contains "$output" "can't be removed from under a running Codex. Close that session yourself (/quit there), then run \$finish fix-auth here again" \
         "Codex's own commands" || return 1
     assert_dir "$wt" "worktree preserved" || return 1
+    rm -f "$wt/.cs/session.lock"
+}
+
+# A base that last ran under Antigravity is pointed at Claude for its finish.
+# Claude records its engine only once its run ends, so inside that run the
+# state still names Antigravity: the run's own engine decides, and the retire
+# stages for the base's Stop hook as any Claude base's does.
+test_retire_under_a_claude_run_of_an_antigravity_base_stages() {
+    local base_dir state
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" cs stage sha output status=0
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    cs="$(_stage_cs_dir)/cs"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    state="$base_dir/.cs/local/state"
+    { grep -v '^engine:' "$state" 2>/dev/null || true; echo 'engine: antigravity'; } > "$state.new" && mv "$state.new" "$state"
+    echo "$$" > "$wt/.cs/session.lock"   # this test process is alive
+    output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "outside a run the base is Antigravity's: $output" || return 1
+    assert_output_contains "$output" "then run cs myproj --engine claude -finish fix-auth here again" \
+        "the refusal points at Claude's finish" || return 1
+    status=0
+    output=$(CS_RUN_ENGINE=claude CS_SESSION_NAME=myproj "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the Claude run stages the retire: $output" || return 1
+    assert_output_contains "$output" "staged fix-auth $sha" "the line says the removal is automatic" || return 1
+    assert_file_exists "$stage" "the stage is written" || return 1
     rm -f "$wt/.cs/session.lock"
 }
 
@@ -2672,6 +2737,8 @@ run_test test_integrate_and_retire_refuse_a_base_with_no_commit
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
 run_test test_retire_moves_ignored_work_to_the_system_trash
+run_test test_retire_takes_the_marked_antigravity_rule_with_the_worktree
+run_test test_retire_refuses_over_an_unmarked_antigravity_rule
 run_test test_retire_deletes_regenerable_trees_with_the_worktree
 run_test test_retire_refuses_when_the_trash_command_fails
 run_test test_retire_refuses_without_a_trash_command
@@ -2761,6 +2828,7 @@ run_test test_retire_after_integrate_removes_worktree_and_branch
 run_test test_retire_refuses_dirty_worktree
 run_test test_retire_stages_itself_while_the_feature_conversation_is_open
 run_test test_retire_refusal_names_codex_commands_for_codex_sessions
+run_test test_retire_under_a_claude_run_of_an_antigravity_base_stages
 run_test test_retire_refuses_to_stage_when_the_stage_cannot_be_written
 run_test test_retire_refuses_to_stage_in_a_cache_an_agent_can_write
 run_test test_retire_stages_without_python3_when_no_codex_config_exists

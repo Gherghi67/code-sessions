@@ -131,11 +131,16 @@ export CLAUDE_CODE_BIN="claude"
 # Legacy/dual installs default to Claude; a sole Codex install defaults to Codex.
 # A session's saved engine choice takes precedence; `--engine` on the `cs` command
 # takes precedence over both. Codex launches require CODEX_BIN and Python 3.
-export CS_DEFAULT_ENGINE="codex"   # claude | codex
+export CS_DEFAULT_ENGINE="codex"   # claude | codex | antigravity
 
 # Override the Codex CLI executable used by `cs <name> --engine codex`
 # (default: codex). This is one executable path, without extra arguments.
 export CODEX_BIN="/path/to/codex"
+
+# Override the Antigravity CLI executable used by
+# `cs <name> --engine antigravity` (default: agy, found on PATH). One
+# executable path, without extra arguments. See antigravity.md.
+export AGY_BIN="/path/to/agy"
 
 # Nerd Font icons in cs banners and session listings (lock, host);
 # the status line uses standard Unicode and is unaffected by this

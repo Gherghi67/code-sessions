@@ -1782,14 +1782,14 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "5437a88fb3ab5ff9f7505200d5f53d647f607c87ba22e57d07ac68e2749de25a  bin/cs"
+    "5a8fbe3712dfc795bc8f4160aa3bc04c82767c605fe9db6155fe103bcfcc20fe  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
     "204e5f83b57393bbfcf2489fff4ced633e64ab443290a2e7a70d06987731a246  hooks/cs-shared.sh"
-    "5c3dac024c052e6c50f2d6398f33b0bd47d958e8e0d2283e5997f62aef349299  hooks/cs-engine-events.sh"
+    "a86153f7cc9e26905f9d2da565283b9344c7002e1888d98ea6271cfa9c2b38d2  hooks/cs-engine-events.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "6bb9641f3b64d0a79f427337781ddac03772ceb96a67e9f187716f54946cd3e1  hooks/prompt-rewriter.sh"
     "637d477d9e4aa44b1cce98636f212e2b44b51603ed21cdbf77e14e81a95da8c0  hooks/prompt-rewriter-model.sh"
@@ -1833,8 +1833,8 @@ CS_PAYLOAD_SHA256=(
     "fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
-    "605fa5d43cfe4241a6403cdae4bce6faf0aff2a1e05f12d23aca1bb59c7fcb2a  completions/cs.bash"
-    "182b1e2d61caeb5b7569769f6fdcfd3b2209962d042fd779798e02740e20a51b  completions/_cs"
+    "7816e359291fa8b10015a7ae06fd06ecede7a7be37c4737cfbe0ad209b3f6ff7  completions/cs.bash"
+    "b94a82d9f57dac05d425daf06e70489ee2024e4a0da7e347cdb3c59532e852a3  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The

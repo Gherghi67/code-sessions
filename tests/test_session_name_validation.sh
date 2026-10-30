@@ -84,7 +84,7 @@ test_a_leading_hyphen_is_rejected() {
     local out rc=0
     out=$(CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions" "$CS_BIN" -adopt -uninstall 2>&1 </dev/null) || rc=$?
     assert_eq 1 "$rc" "a leading-hyphen name is refused" || return 1
-    assert_eq "Error: cs -adopt: unknown option '-uninstall'. Usage: cs -adopt <name> [--yes] [--engine claude|codex]" "$out" \
+    assert_eq "Error: cs -adopt: unknown option '-uninstall'. Usage: cs -adopt <name> [--yes] [--engine claude|codex|antigravity]" "$out" \
         "adopt reads it as an option it does not know" || return 1
     if [ -e "$TEST_TMPDIR/sessions/-uninstall" ] || [ -L "$TEST_TMPDIR/sessions/-uninstall" ]; then
         echo "  FAIL: a session named -uninstall was made"; return 1

@@ -2,8 +2,20 @@
 # ABOUTME: Routes known operations without loading plugins or interpreting shell commands.
 
 # Keep registration explicit. Tests may add a fake adapter to exercise the
-# contract without either native runtime; installed cs only ships these two.
-CS_ENGINE_IDS=(claude codex)
+# contract without any native runtime; installed cs only ships these three.
+CS_ENGINE_IDS=(claude codex antigravity)
+
+# The registered engines as a choice in prose: "claude, codex or antigravity".
+cs_engine_choices() {
+    local engine out=""
+    for engine in "${CS_ENGINE_IDS[@]}"; do
+        out="${out:+$out, }$engine"
+    done
+    case "$out" in
+        *', '*) printf '%s or %s\n' "${out%, *}" "${out##*, }" ;;
+        *) printf '%s\n' "$out" ;;
+    esac
+}
 
 cs_engine_known() {  # engine
     local engine="${1:-}" registered
@@ -19,7 +31,7 @@ cs_engine_known() {  # engine
 cs_engine_call() {  # engine operation [arguments...]
     local engine="${1:-}" operation="${2:-}" handler
     if ! cs_engine_known "$engine"; then
-        printf 'Error: Unknown engine: %s. Choose claude or codex.\n' "$engine" >&2
+        printf 'Error: Unknown engine: %s. Choose %s.\n' "$engine" "$(cs_engine_choices)" >&2
         return 2
     fi
     case "$operation" in

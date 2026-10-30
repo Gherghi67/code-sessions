@@ -557,7 +557,7 @@ test_adopt_refuses_an_unknown_flag() {
     mkdir -p "$project_dir"
     output=$(cd "$project_dir" && "$CS_BIN" -adopt my-session --yse </dev/null 2>&1) || rc=$?
     assert_eq 1 "$rc" "an unknown flag is refused" || return 1
-    assert_eq "Error: cs -adopt: unknown option '--yse'. Usage: cs -adopt <name> [--yes] [--engine claude|codex]" \
+    assert_eq "Error: cs -adopt: unknown option '--yse'. Usage: cs -adopt <name> [--yes] [--engine claude|codex|antigravity]" \
         "$output" "the refusal names the flag" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/my-session" "nothing is adopted" || return 1
 }

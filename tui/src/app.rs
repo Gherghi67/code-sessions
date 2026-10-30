@@ -441,6 +441,14 @@ pub struct StatusMessage {
     pub set_at: std::time::Instant,
 }
 
+/// The engines the launch options offer, in selector order, with the
+/// label each shows.
+pub const LAUNCH_ENGINES: [(&str, &str); 3] = [
+    ("claude", "Claude"),
+    ("codex", "Codex"),
+    ("antigravity", "Antigravity"),
+];
+
 #[derive(Clone, Debug)]
 pub struct LaunchChoice {
     pub engine: String,
@@ -1781,9 +1789,12 @@ impl App {
             KeyCode::BackTab | KeyCode::Up => self.launch_row = (self.launch_row + 3) % 4,
             KeyCode::Enter => {
                 if let Some(name) = self.selected_session_name() {
-                    if !matches!(self.launch_engine.as_str(), "claude" | "codex") {
+                    if !LAUNCH_ENGINES
+                        .iter()
+                        .any(|(engine, _)| *engine == self.launch_engine)
+                    {
                         self.set_status(
-                            "Choose Claude or Codex with left/right",
+                            "Choose Claude, Codex or Antigravity with left/right",
                             StatusLevel::Error,
                         );
                         return Action::None;
@@ -1802,12 +1813,15 @@ impl App {
                 self.mode = Mode::SessionMenu;
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.launch_row == 0 => {
-                self.launch_engine = if self.launch_engine == "claude" {
-                    "codex"
-                } else {
-                    "claude"
-                }
-                .into();
+                // Right and Space step forward, Left back; an engine the
+                // selector does not offer starts again at Claude.
+                let count = LAUNCH_ENGINES.len();
+                let step = if key.code == KeyCode::Left { count - 1 } else { 1 };
+                let next = LAUNCH_ENGINES
+                    .iter()
+                    .position(|(engine, _)| *engine == self.launch_engine)
+                    .map_or(0, |at| (at + step) % count);
+                self.launch_engine = LAUNCH_ENGINES[next].0.into();
                 self.launch_model.clear();
                 self.launch_effort.clear();
                 self.launch_automatic = self.launch_engine == "codex";
@@ -8035,7 +8049,7 @@ mod tests {
     }
     #[test]
     fn middle_click_uses_launch_options_saved_through_the_menu() {
-        for (engine, automatic) in [("codex", true), ("claude", false)] {
+        for (engine, automatic) in [("codex", true), ("claude", false), ("antigravity", false)] {
             let mut app = App::new(sample_sessions());
             save_launch_options_through_menu(&mut app, engine, automatic);
 
@@ -8048,6 +8062,30 @@ mod tests {
             }
             assert_eq!(app.mode, Mode::Normal);
         }
+    }
+
+    #[test]
+    fn engine_selector_cycles_through_all_three_engines_both_ways() {
+        let mut app = App::new(sample_sessions());
+        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        assert_eq!(app.mode, Mode::LaunchOptions);
+        app.launch_engine = "claude".into();
+        let mut forward = Vec::new();
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::from(KeyCode::Right));
+            forward.push(app.launch_engine.clone());
+        }
+        assert_eq!(forward, ["codex", "antigravity", "claude"]);
+        let mut back = Vec::new();
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::from(KeyCode::Left));
+            back.push(app.launch_engine.clone());
+        }
+        assert_eq!(back, ["antigravity", "codex", "claude"]);
+        app.launch_engine = "codex".into();
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.launch_engine, "antigravity", "Space steps forward like Right");
+        assert!(!app.launch_automatic, "Antigravity keeps its native approvals by default");
     }
 
     #[test]
@@ -8086,9 +8124,13 @@ mod tests {
     fn save_launch_options_through_menu(app: &mut App, engine: &str, automatic: bool) {
         app.handle_key(KeyEvent::from(KeyCode::Char('e')));
         assert_eq!(app.mode, Mode::LaunchOptions);
-        if app.launch_engine != engine {
+        for _ in 0..LAUNCH_ENGINES.len() {
+            if app.launch_engine == engine {
+                break;
+            }
             app.handle_key(KeyEvent::from(KeyCode::Right));
         }
+        assert_eq!(app.launch_engine, engine, "the selector must offer {engine}");
         app.handle_key(KeyEvent::from(KeyCode::Down));
         for c in "model with spaces $(literal)".chars() {
             app.handle_key(KeyEvent::from(KeyCode::Char(c)));

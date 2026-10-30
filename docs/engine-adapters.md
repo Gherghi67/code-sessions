@@ -1,8 +1,8 @@
 # Engine adapters
 
 cs uses a small shell interface to route engine-specific work while keeping
-session storage and launch policy in the shared command. The initial registry
-contains the built-in `claude` and `codex` adapters. It is an internal
+session storage and launch policy in the shared command. The registry
+contains the built-in `claude`, `codex`, and `antigravity` adapters. It is an internal
 first-party boundary; adapters are not discovered from user files or third
 party plugins.
 
@@ -17,7 +17,7 @@ letters, digits, or underscores, and appears in that registry.
 | --- | --- |
 | `dependencies` | Print missing dependency names, one per line. A completed probe returns success even when names are missing; a nonzero status means the probe or dispatch failed. |
 | `capabilities` | Print supported capability names, one per line. |
-| `prepare_workspace` | Prepare native integration for a session directory and mode (`create`, `migrate_storage`, `migrate`, or `worktree`). Return failure to abort the shared operation. Codex is a no-op; shared storage is already prepared. |
+| `prepare_workspace` | Prepare native integration for a session directory and mode (`create`, `migrate_storage`, `migrate`, or `worktree`). Return failure to abort the shared operation. Codex and Antigravity are no-ops; shared storage is already prepared, and their context is written at launch. |
 | `launch` | Start the selected engine with the positional launch arguments supplied by the shared command. |
 | `files_changed` | Read a native successful tool-completion JSON object on stdin; print a `files_changed` JSON event, or nothing for failed, unrelated, or malformed input. |
 
@@ -34,7 +34,8 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `spawn_brief`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `spawn_brief`, `memory_index`,
-`mail_delivery`, and `recovery_autosave`. These
+`mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
+`startup_context`, and `memory_index` ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -60,8 +61,10 @@ child); outside a run it is the session's saved preference.
 `check_dependencies` calls the selected adapter's probe and turns any reported
 names into the established user-facing missing-dependency error. Claude keeps
 its binary-plus-arguments `CLAUDE_CODE_BIN` setting, checking its first word;
-Codex checks the `CODEX_BIN` executable path and `python3`. Each engine can be
-selected without requiring the other engine's executable.
+Codex checks the `CODEX_BIN` executable path and `python3`; Antigravity checks
+`AGY_BIN` (default `agy`) and names its install line. Each engine can be
+selected without requiring another engine's executable. `cs_engine_choices`
+spells the registry as a choice ("claude, codex or antigravity") for errors.
 
 ## Shared session context and bindings
 
@@ -83,18 +86,23 @@ the remaining arguments and can read the dynamically scoped `CS_CONTEXT_*`
 fields while it renders engine-specific transport. The builder does not read
 workspace prose or turn it into policy, and it returns renderer failures to
 the caller. Claude's existing instruction template is kept byte-for-byte;
-Codex renders the same inventory as startup context.
+Codex and Antigravity render the same inventory through
+`cs_emit_engine_context`: Codex as startup context, Antigravity as the
+always-on workspace rule `.agents/rules/cs-session.md`.
 
 `cs_binding_read <session-directory> <engine>` and
 `cs_binding_write <session-directory> <engine> <id>` provide shared access to
 the existing machine-local formats. A missing file or absent Claude binding key
 reads as an empty value. An unreadable or non-file binding fails; an empty or
-multiline Codex binding file also fails. Writes use a
+multiline Codex or Antigravity binding file also fails. Writes use a
 temporary file and rename, preserve the other engine's binding and existing
 local-state fields, and reject values that the selected storage format cannot
 round-trip. Native ID shape validation remains in the engine launch code.
 Claude's `claude_session_id` key stays in `.cs/local/state`; Codex's ID stays
-in `.cs/local/codex-thread-id`. The storage formats remain compatible. A staged replacement lives in
+in `.cs/local/codex-thread-id`. Antigravity's binding,
+`.cs/local/antigravity-conversation`, holds the word `latest`: `agy` reopens a
+folder's latest conversation with `--continue` and does not report an ID cs can
+record, so the adapter neither stages candidates nor records `started` events. The storage formats remain compatible. A staged replacement lives in
 `local/pending-binding-<engine>.json` until the adapter acknowledges its ID.
 A failed preparation preserves the previous binding; an abandoned candidate is
 retained locally when another attempt supersedes it. A repeated acknowledgement
@@ -144,7 +152,7 @@ iteration does not move the entire source tree or migrate storage formats.
 | `40-state.sh`, `41-bindings.sh`: local state and engine-qualified bindings | `46-claude-workspace.sh`: Claude workspace preparation and native migrations |
 | `30-worktree.sh`, `45-migrate.sh`: shared worktree/scaffold/migration operations | `75-launch.sh`: existing Claude launch adapter and its orchestration |
 | CLI commands consume `CS_SESSION_*`, falling back to legacy aliases | `76-codex.sh`, `bin/cs-codex-thread`: Codex launch, context renderer, and protocol |
-| `78-switch.sh`: `cs -switch`, `pending-switch`, and the relaunch under the other engine | |
+| `78-switch.sh`: `cs -switch`, `pending-switch`, and the relaunch under the other engine | `79-antigravity.sh`: Antigravity launch, its always-on context rule, and its `latest` binding |
 
 Create/adopt/migrate/worktree paths dispatch `prepare_workspace` after preparing
 portable storage. They allocate no native conversation IDs themselves. Claude adoption appends its
@@ -267,7 +275,19 @@ mail wake remain separate work.
 Codex refuses encrypted sessions, a stopgap until it keeps a `CODEX_HOME` of
 its own inside the vault: main checks before the pre-open, and
 `_launch_codex_bound` checks again for any other caller
-(`_codex_encrypted_refusal`).
+(`_codex_encrypted_refusal`). Antigravity refuses them the same way
+(`_antigravity_encrypted_refusal`).
+Antigravity is integrated at launch level only: no hooks, skills, status line,
+switch, mail, or rotation. `cs -switch` refuses to leave an engine without
+`rotation`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
+for an engine without `spawn_brief` before staging a seed. Its
+`files_changed` drains its input and emits nothing until a hook delivers
+`agy`'s edits. Its rule `.agents/rules/cs-session.md` counts as cs's own
+bookkeeping while it carries cs's mark (`_antigravity_rule_is_cs`,
+`_session_agents_only_cs`, and the picker's twin in `tui/src/session.rs`), so
+retire and `cs -rm` treat it as they treat a marked `CLAUDE.local.md`. A main
+open refuses `--from-handoff` for an engine without `rotation` before it
+migrates or unarchives anything.
 The shipped skills deploy to Claude and Codex alike. Each one reaches its
 helpers through its own directory and checks `cs -engine supports` before an
 adapter feature. Both adapters declare `rotation`, `spawn_brief`, `memory_index`

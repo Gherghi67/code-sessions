@@ -215,16 +215,16 @@ adopt_session() {  # name, [--yes|-y], in any order
         case "$1" in
             --yes|-y) assume_yes=true; shift ;;
             --engine)
-                [ -n "${2:-}" ] || error "--engine needs claude or codex"
+                [ -n "${2:-}" ] || error "--engine needs $(cs_engine_choices)"
                 explicit_engine="$2"; shift 2 ;;
             --engine=*) explicit_engine="${1#*=}"; shift ;;
-            -*) error "cs -adopt: unknown option '$1'. Usage: cs -adopt <name> [--yes] [--engine claude|codex]" ;;
+            -*) error "cs -adopt: unknown option '$1'. Usage: cs -adopt <name> [--yes] [--engine claude|codex|antigravity]" ;;
             *)
                 [ -z "$session_name" ] || error "cs -adopt: takes one session name, got '$session_name' and '$1'. Usage: cs -adopt <name> [--yes]"
                 session_name="$1"; shift ;;
         esac
     done
-    [ -z "$explicit_engine" ] || cs_engine_known "$explicit_engine" || error "--engine needs claude or codex"
+    [ -z "$explicit_engine" ] || cs_engine_known "$explicit_engine" || error "--engine needs $(cs_engine_choices)"
     local target_dir
     target_dir="$(pwd -P)"
 
@@ -415,18 +415,21 @@ adopt_session() {  # name, [--yes|-y], in any order
 }
 
 # Append each entry to a git exclude file once. Append only: the file may hold
-# the user's own rules, and a linked worktree reads only the common one.
+# the user's own rules, and a linked worktree reads only the common one. Each
+# write goes through cs_append_inside: an Antigravity launch runs this in a
+# folder an agent could write to, and a link taking the file out of the
+# session, a dangling one included, gets nothing.
 _append_exclude_once() {  # exclude_file, entry...
     local file="$1"; shift
     mkdir -p "$(dirname "$file")"
-    [ -f "$file" ] || : > "$file"
     # A last line with no newline would swallow the first entry appended to it.
     if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
-        printf '\n' >> "$file"
+        cs_append_inside "$file" printf '\n' || return 1
     fi
     local entry
     for entry in "$@"; do
-        grep -qxF -- "$entry" "$file" || printf '%s\n' "$entry" >> "$file"
+        grep -qxF -- "$entry" "$file" 2>/dev/null \
+            || cs_append_inside "$file" printf '%s\n' "$entry" || return 1
     done
 }
 

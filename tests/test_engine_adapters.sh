@@ -41,7 +41,7 @@ setup() {
 teardown() {
     rm -rf "$TEST_TMPDIR"
     unset CS_ADAPTER_ARGS CS_ADAPTER_STATUS
-    CS_ENGINE_IDS=(claude codex)
+    CS_ENGINE_IDS=(claude codex antigravity)
 }
 
 # A session directory with both engines bound, as a launch leaves it.

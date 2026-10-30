@@ -232,6 +232,15 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
     return 0
 }
 
+# Whether the Antigravity session rule a launch writes (lib/79-antigravity.sh)
+# is cs's: a file, not a link, that carries cs's mark. One without the mark
+# is the user's, as with CLAUDE.local.md's sentinel.
+_antigravity_rule_is_cs() {  # session_dir
+    local rule="$1/.agents/rules/cs-session.md"
+    [ -f "$rule" ] && [ ! -L "$rule" ] \
+        && grep -qF '<!-- cs:antigravity-session-context -->' "$rule" 2>/dev/null
+}
+
 # The paths of a worktree given one per line on stdin, without cs's own
 # bookkeeping. cs writes it into every worktree — .cs/local, the session
 # locks, the settings and protocol files — and none of it is the user's to
@@ -250,6 +259,10 @@ _without_cs_bookkeeping() {  # wt_dir
     # without it is the user's own (ensure_session_claude_md draws the same line).
     if grep -qF '<!-- cs:session-protocol -->' "$1/CLAUDE.local.md" 2>/dev/null; then
         cs_own+=(-e '^CLAUDE\.local\.md$')
+    fi
+    # The Antigravity session rule likewise, while it carries cs's mark.
+    if _antigravity_rule_is_cs "$1"; then
+        cs_own+=(-e '^\.agents/rules/cs-session\.md$')
     fi
     env LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' \
         -e '^\.DS_Store$' -e '/\.DS_Store$' \
@@ -339,9 +352,10 @@ _submodule_dirs() {  # checkout_dir prefix
 # inside a submodule directory the worktree never populated. The ignored
 # files of the worktree's own checkout are not among them: the retire trashes
 # those or deletes them with the worktree (_retire_trash_ignored_work). The
-# one exception is a root CLAUDE.local.md of the user's own: cs's exclude is
-# what ignores that name, not a choice of theirs, so it is at risk whether
-# git ignores it or not.
+# exceptions are a root CLAUDE.local.md and an Antigravity session rule
+# (.agents/rules/cs-session.md) of the user's own: cs's exclude is what
+# ignores those names, not a choice of theirs, so they are at risk whether git
+# ignores them or not.
 # The merge gate and the readiness screen MUST read from this one definition;
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
@@ -349,7 +363,8 @@ _worktree_untracked_at_risk() {  # wt_dir
     local listing more
     listing=$(git -C "$1" ls-files -z --others --exclude-standard 2>/dev/null \
               | _names_as_lines) || return 1
-    more=$(git -C "$1" ls-files -z --others --ignored --exclude-standard -- CLAUDE.local.md 2>/dev/null \
+    more=$(git -C "$1" ls-files -z --others --ignored --exclude-standard -- CLAUDE.local.md \
+               .agents/rules/cs-session.md 2>/dev/null \
            | _names_as_lines) || return 1
     [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
     more=$(_submodule_others "$1" "") || return 1
@@ -974,12 +989,26 @@ _finish_progress_exit() {  # exit status
     return 0
 }
 
-# How the user asks for finish, in the engine a session last ran under (its
-# .cs/local/state; Claude when none is recorded): Codex names a skill with $,
-# Claude Code with /. The refusals below are printed to the user verbatim.
-_finish_command() {  # session_dir
-    case "$(_read_local_state "$1/.cs/local/state" engine)" in
+# The engine a session runs under: this run's own when the conversation is
+# that session's, since Claude records its engine only once its run ends;
+# otherwise the one it last ran under (its .cs/local/state).
+_session_run_engine() {  # session_dir, [session_name]
+    if [ -n "${CS_RUN_ENGINE:-}" ] && [ -n "${2:-}" ] \
+        && [ "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" = "$2" ]; then
+        printf '%s\n' "$CS_RUN_ENGINE"
+        return 0
+    fi
+    _read_local_state "$1/.cs/local/state" engine
+}
+
+# How the user asks for finish, in the engine the session runs under (Claude
+# when none is recorded): Codex names a skill with $, Claude Code with /.
+# Antigravity has no finish yet, so its base is pointed at Claude's. The
+# refusals below are printed to the user verbatim.
+_finish_command() {  # session_dir, [session_name]
+    case "$(_session_run_engine "$1" "${2:-}")" in
         codex) printf '%s' '$finish' ;;
+        antigravity) printf 'cs %s --engine claude -finish' "${2:-$(basename "$1")}" ;;
         *) printf '%s' /finish ;;
     esac
 }
@@ -1111,11 +1140,11 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     [ -d "$wt_dir" ] || error "No worktree for feature '$task' (expected $wt_dir)"
     _finish_progress_begin "$base_dir" "$task"
     local fin wt_engine=Claude wt_quit=/exit
-    fin=$(_finish_command "$base_dir")
-    if [ "$(_read_local_state "$wt_dir/.cs/local/state" engine)" = codex ]; then
-        wt_engine=Codex
-        wt_quit=/quit
-    fi
+    fin=$(_finish_command "$base_dir" "${base_name:-}")
+    case "$(_read_local_state "$wt_dir/.cs/local/state" engine)" in
+        codex) wt_engine=Codex; wt_quit=/quit ;;
+        antigravity) wt_engine=Antigravity ;;
+    esac
     _require_base_commit "$base_dir" "$base_name"
 
     local wt_name="$base_name@$task"
@@ -1190,11 +1219,13 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     fi
     pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
     if [ -n "$pid" ]; then
-        # A Codex base has no Stop hook that runs a stage, so it keeps the
-        # refusal: the person closes the feature and runs $finish again.
-        if [ "$(_read_local_state "$base_dir/.cs/local/state" engine)" = codex ]; then
-            error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
-        fi
+        # A Codex or Antigravity base has no Stop hook that runs a stage, so it
+        # keeps the refusal: the person closes the feature and runs $finish again.
+        case "$(_session_run_engine "$base_dir" "$base_name")" in
+            codex|antigravity)
+                error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+                ;;
+        esac
         # A directory can't be removed from under a running engine, so the
         # decision this retire already made (the commit, --force or not) is
         # staged in the base, and the base's Stop hook runs this entry again
@@ -1801,7 +1832,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     [ -d "$wt_dir" ] || error "No worktree for feature '$task' (expected $wt_dir)"
     _finish_progress_begin "$base_dir" "$task"
     local fin
-    fin=$(_finish_command "$base_dir")
+    fin=$(_finish_command "$base_dir" "${base_name:-}")
     _require_base_commit "$base_dir" "$base_name"
     # Herestring, not a pipe: grep -q's early exit would SIGPIPE the writer
     # and pipefail would read that as "not registered".
@@ -1906,7 +1937,7 @@ _integrate_in_temp() {  # base_dir wt_dir task sha common from_remote ci_green g
     local base_dir="$1" wt_dir="$2" task="$3" sha="$4" common="$5" from_remote="$6" ci_green="$7"
     shift 7
     local fin
-    fin=$(_finish_command "$base_dir")
+    fin=$(_finish_command "$base_dir" "${base_name:-}")
 
     local B
     B=$(git -C "$base_dir" rev-parse HEAD)

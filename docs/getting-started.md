@@ -27,6 +27,8 @@ for all three commands.
 
 Choose integrations with `CS_INSTALL_ENGINES=claude,codex` (the default).
 Setup requires Bash, Git, jq and Python 3. Install the native CLIs separately.
+Antigravity (`agy`) needs no install-time integration: install `agy` and pass
+`--engine antigravity` ([Antigravity sessions](antigravity.md)).
 The ordinary upstream Agents sidebar works with this configuration.
 
 ## Adopt a project or create a workspace
@@ -83,16 +85,17 @@ other engine:
 ```bash
 ccs research-notes --engine claude
 ccs research-notes --engine codex
+ccs research-notes --engine antigravity
 ```
 
 In the session picker (`ccs -tui`), select a session and press `e` to open
 **Engine / model / effort**. On the Engine row, press Left, Right, or Space to
-choose Claude or Codex, then Enter to save. The session menu shows the selected
+choose Claude, Codex, or Antigravity, then Enter to save. The session menu shows the selected
 engine; press Enter again to open it. The engine becomes the session's saved
 preference when it launches. Esc cancels unsaved changes. Changing engines
 clears the model and effort fields so the other engine uses its native defaults.
 
-The workspace files and `.cs/` notes are shared. Claude and Codex keep separate
+The workspace files and `.cs/` notes are shared. Each engine keeps separate
 native conversation histories, so `--engine` alone opens the other engine's
 own conversation, which has not seen the work done since it last ran. Keep
 one interactive owner open for a workspace at a time.
@@ -185,6 +188,10 @@ Claude's hooks and mods do not run inside Codex. Codex does not yet provide
 cs's autosave and crash recovery, automatic queue or mailbox
 delivery, runtime usage reporting, encrypted sessions, or native terminal
 controls. Manual status and workspace management are available.
+
+Antigravity is launch-level for now: cs starts and reopens `agy` with the
+session context, and nothing else. [Antigravity sessions](antigravity.md)
+lists what it does not do yet.
 
 This fork updates from its checkout. `cs -update` refuses to replace it with
 an upstream release; rerun `setup.sh` to install checkout changes.

@@ -1186,6 +1186,41 @@ const TRACKED_MODE_CS_OWNED: [&str; 3] = [".cs/session.lock", ".cs/session.mutex
 /// The line cs writes into the root CLAUDE.local.md it owns.
 const SESSION_PROTOCOL_SENTINEL: &[u8] = b"<!-- cs:session-protocol -->";
 
+/// The Antigravity session rule an `agy` launch writes
+/// (lib/79-antigravity.sh), and the mark that makes it cs's.
+const ANTIGRAVITY_RULE: &str = ".agents/rules/cs-session.md";
+const ANTIGRAVITY_RULE_MARK: &[u8] = b"<!-- cs:antigravity-session-context -->";
+
+/// Whether the Antigravity rule in `root` is cs's: a file, not a link, that
+/// carries cs's mark (lib/30-worktree.sh `_antigravity_rule_is_cs`).
+fn antigravity_rule_is_cs(root: &Path) -> bool {
+    let rule = root.join(ANTIGRAVITY_RULE);
+    rule.symlink_metadata().map(|m| m.file_type().is_file()).unwrap_or(false)
+        && fs::read(&rule)
+            .map(|text| text.windows(ANTIGRAVITY_RULE_MARK.len()).any(|w| w == ANTIGRAVITY_RULE_MARK))
+            .unwrap_or(false)
+}
+
+/// The names in `dir`, or none when it cannot be listed.
+fn entry_names(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .map(|entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default()
+}
+
+/// Whether the session root's `.agents` holds nothing but cs's marked rule,
+/// so removing the session deletes nothing of the user's there
+/// (lib/65-sessions.sh `_session_agents_only_cs`).
+fn agents_only_cs(root: &Path) -> bool {
+    let agents = root.join(".agents");
+    let is_dir = |p: &Path| p.symlink_metadata().map(|m| m.file_type().is_dir()).unwrap_or(false);
+    is_dir(&agents)
+        && is_dir(&agents.join("rules"))
+        && antigravity_rule_is_cs(root)
+        && entry_names(&agents) == ["rules"]
+        && entry_names(&agents.join("rules")) == ["cs-session.md"]
+}
+
 /// What removing the session at `path` would delete that cs did not put
 /// there. An adopted session (a symlink) loses only its link, so nothing.
 /// Errors when the listing itself fails: a delete must not proceed on a
@@ -1209,7 +1244,9 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot list {}: {e}", path.display()))?;
         let entry_name = entry.file_name().to_string_lossy().into_owned();
-        if !SESSION_ROOT_OWNED.contains(&entry_name.as_str()) {
+        if !SESSION_ROOT_OWNED.contains(&entry_name.as_str())
+            && !(entry_name == ".agents" && agents_only_cs(path))
+        {
             names.push(entry_name);
         }
     }
@@ -1273,13 +1310,15 @@ fn worktree_cs_mode(path: &Path) -> Option<String> {
 /// bookkeeping, as lib/30-worktree.sh `_without_cs_bookkeeping` draws the
 /// line, the mode and the protocol file read once: all of `.cs/`
 /// in ignored mode, only its machine-local files otherwise (git carries the
-/// rest); the root CLAUDE.local.md only while it carries cs's sentinel; the
-/// settings file; and Finder's .DS_Store at any depth.
+/// rest); the root CLAUDE.local.md only while it carries cs's sentinel, and
+/// the Antigravity rule only while it carries cs's mark; the settings file;
+/// and Finder's .DS_Store at any depth.
 fn cs_bookkeeping_in(path: &Path) -> impl Fn(&str) -> bool {
     let ignored_mode = worktree_cs_mode(path).as_deref() == Some("ignored");
     let protocol_file_is_cs = fs::read(path.join("CLAUDE.local.md"))
         .map(|text| text.windows(SESSION_PROTOCOL_SENTINEL.len()).any(|w| w == SESSION_PROTOCOL_SENTINEL))
         .unwrap_or(false);
+    let rule_is_cs = antigravity_rule_is_cs(path);
     move |p: &str| {
         let cs_own = if ignored_mode {
             p.starts_with(".cs/")
@@ -1288,6 +1327,7 @@ fn cs_bookkeeping_in(path: &Path) -> impl Fn(&str) -> bool {
         };
         cs_own
             || (protocol_file_is_cs && p == "CLAUDE.local.md")
+            || (rule_is_cs && p == ANTIGRAVITY_RULE)
             || p == WORKTREE_OWNED_SETTINGS
             || p.rsplit('/').next() == Some(".DS_Store")
     }
@@ -2319,6 +2359,45 @@ mod tests {
         assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "CLAUDE.local.md".into(), files: 1 }]));
         fs::write(wt.join("CLAUDE.local.md"), "<!-- cs:session-protocol -->\n# Session protocol\n").unwrap();
         assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // An agy launch writes .agents/rules/cs-session.md with cs's mark; one
+    // without it is the user's own, as with CLAUDE.local.md.
+    #[test]
+    fn unowned_entries_lists_only_an_unmarked_antigravity_rule_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-agy-rule-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::create_dir_all(wt.join(".agents/rules")).unwrap();
+        fs::write(wt.join(ANTIGRAVITY_RULE), "my own rule\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".agents/".into(), files: 1 }])
+        );
+        fs::write(wt.join(ANTIGRAVITY_RULE), "---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A plain session's .agents is cs's to delete only while it holds nothing
+    // but cs's marked rule; any other file there is the user's.
+    #[test]
+    fn unowned_entries_counts_dot_agents_as_cs_only_when_it_holds_just_the_marked_rule() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-agy-root-{}", std::process::id()));
+        let dir = root.join("rel");
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        fs::create_dir_all(dir.join(".agents/rules")).unwrap();
+        fs::write(dir.join(ANTIGRAVITY_RULE), "<!-- cs:antigravity-session-context -->\n").unwrap();
+
+        assert_eq!(unowned_entries("rel", &dir).unwrap(), UnownedEntries::NotCreatedByCs(Vec::new()));
+        fs::write(dir.join(".agents/rules/mine.md"), "x").unwrap();
+        assert_eq!(unowned_entries("rel", &dir).unwrap(), UnownedEntries::NotCreatedByCs(vec![".agents".into()]));
+        fs::remove_file(dir.join(".agents/rules/mine.md")).unwrap();
+        fs::write(dir.join(ANTIGRAVITY_RULE), "the user's rule\n").unwrap();
+        assert_eq!(unowned_entries("rel", &dir).unwrap(), UnownedEntries::NotCreatedByCs(vec![".agents".into()]));
         let _ = fs::remove_dir_all(&root);
     }
 

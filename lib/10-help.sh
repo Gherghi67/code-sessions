@@ -18,7 +18,7 @@ Commands:
   <name> --resume     Resume the exact recorded conversation without prompting
   <name> --from-handoff  Start a fresh conversation from the pending rotation handoff without prompting
   <name> --force      Override active session lock
-  <name> --engine <claude|codex>  Select and remember this session's runtime
+  <name> --engine <claude|codex|antigravity>  Select and remember this session's runtime
   <name> --model MODEL --effort LEVEL  Choose native model and reasoning effort
   <name> --approve-for-me  Use the engine's automatic approval review
   <name> --native-approval  Use native approval defaults (Codex otherwise reviews automatically)
@@ -46,14 +46,14 @@ Commands:
   -msg                Read this session's unread mail
   -msg log            Show this session's full mail history
   -msg thread <id>    Show one thread as a conversation, oldest first
-  -spawn <name> [--engine claude|codex]       Open a session in the session manager’s tmux session (--brief <file> hands it a brief; --task "..." seeds and arms its queue)
+  -spawn <name> [--engine claude|codex|antigravity]  Open a session in the session manager’s tmux session (--brief <file> hands it a brief; --task "..." seeds and arms its queue)
   -conversations      Show the session's conversation chain (rotations, lineage)
   -doctor, -diag      Run health checks (Keychain, hooks, memory, audit, tokens)
   -statusline <cmd>   enable|disable the cs status line; caps on|off|ask records whether your font has the rounded caps
   -detect-theme       Show the detected terminal theme (light|dark)
   -tui                Open the interactive session manager (bare 'cs' does too)
   -list, -ls          List sessions (--tag <tag> filters; --archived shows only archived)
-  -adopt <name> [--engine claude|codex]  Adopt current directory as a session (--yes re-adopts orphaned records without asking)
+  -adopt <name> [--engine claude|codex|antigravity]  Adopt current directory as a session (--yes re-adopts orphaned records without asking)
   -adopt --worktrees  Register Claude Code's .claude/worktrees/* here as <repo>.<worktree> sessions (--dry-run previews)
   -whoami             Show the current actor (for shared, multi-person sessions)
   -who                Show who contributed to shared memory/narrative (git history)
@@ -92,6 +92,7 @@ Environment:
   CS_SESSIONS_ROOT    Override sessions directory (default: ~/.claude-sessions)
   CLAUDE_CODE_BIN     Override claude binary name (default: claude)
   CODEX_BIN           Override Codex executable path (default: codex)
+  AGY_BIN             Override Antigravity executable path (default: agy)
   CS_DEFAULT_ENGINE   Runtime for sessions without a preference (legacy default: claude)
   CS_SESSION_NAME    Current session name (legacy CLAUDE_SESSION_NAME accepted)
   CS_SECRETS_PASSWORD Master password for encrypted secrets backend
