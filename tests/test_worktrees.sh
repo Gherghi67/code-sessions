@@ -1299,6 +1299,33 @@ test_retire_refusal_names_codex_commands_for_codex_sessions() {
     rm -f "$wt/.cs/session.lock"
 }
 
+# A base that last ran under Antigravity is pointed at Claude for its finish.
+# Claude records its engine only once its run ends, so inside that run the
+# state still names Antigravity: the run's own engine decides, and the retire
+# stages for the base's Stop hook as any Claude base's does.
+test_retire_under_a_claude_run_of_an_antigravity_base_stages() {
+    local base_dir state
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" cs stage sha output status=0
+    stage="$(_retire_dir retire-staged "$base_dir")/fix-auth"
+    cs="$(_stage_cs_dir)/cs"
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    state="$base_dir/.cs/local/state"
+    { grep -v '^engine:' "$state" 2>/dev/null || true; echo 'engine: antigravity'; } > "$state.new" && mv "$state.new" "$state"
+    echo "$$" > "$wt/.cs/session.lock"   # this test process is alive
+    output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "outside a run the base is Antigravity's: $output" || return 1
+    assert_output_contains "$output" "then run cs myproj --engine claude -finish fix-auth here again" \
+        "the refusal points at Claude's finish" || return 1
+    status=0
+    output=$(CS_RUN_ENGINE=claude CS_SESSION_NAME=myproj "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the Claude run stages the retire: $output" || return 1
+    assert_output_contains "$output" "staged fix-auth $sha" "the line says the removal is automatic" || return 1
+    assert_file_exists "$stage" "the stage is written" || return 1
+    rm -f "$wt/.cs/session.lock"
+}
+
 test_retire_removes_its_stage_when_it_retires() {
     local base_dir
     base_dir=$(create_test_session_with_git "myproj")
@@ -2798,6 +2825,7 @@ run_test test_retire_after_integrate_removes_worktree_and_branch
 run_test test_retire_refuses_dirty_worktree
 run_test test_retire_stages_itself_while_the_feature_conversation_is_open
 run_test test_retire_refusal_names_codex_commands_for_codex_sessions
+run_test test_retire_under_a_claude_run_of_an_antigravity_base_stages
 run_test test_retire_refuses_to_stage_when_the_stage_cannot_be_written
 run_test test_retire_refuses_to_stage_in_a_cache_an_agent_can_write
 run_test test_retire_stages_without_python3_when_no_codex_config_exists

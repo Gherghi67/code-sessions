@@ -987,12 +987,24 @@ _finish_progress_exit() {  # exit status
     return 0
 }
 
-# How the user asks for finish, in the engine a session last ran under (its
-# .cs/local/state; Claude when none is recorded): Codex names a skill with $,
-# Claude Code with /. Antigravity has no finish yet, so its base is pointed at
-# Claude's. The refusals below are printed to the user verbatim.
+# The engine a session runs under: this run's own when the conversation is
+# that session's, since Claude records its engine only once its run ends;
+# otherwise the one it last ran under (its .cs/local/state).
+_session_run_engine() {  # session_dir, [session_name]
+    if [ -n "${CS_RUN_ENGINE:-}" ] && [ -n "${2:-}" ] \
+        && [ "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" = "$2" ]; then
+        printf '%s\n' "$CS_RUN_ENGINE"
+        return 0
+    fi
+    _read_local_state "$1/.cs/local/state" engine
+}
+
+# How the user asks for finish, in the engine the session runs under (Claude
+# when none is recorded): Codex names a skill with $, Claude Code with /.
+# Antigravity has no finish yet, so its base is pointed at Claude's. The
+# refusals below are printed to the user verbatim.
 _finish_command() {  # session_dir, [session_name]
-    case "$(_read_local_state "$1/.cs/local/state" engine)" in
+    case "$(_session_run_engine "$1" "${2:-}")" in
         codex) printf '%s' '$finish' ;;
         antigravity) printf 'cs %s --engine claude -finish' "${2:-$(basename "$1")}" ;;
         *) printf '%s' /finish ;;
@@ -1207,7 +1219,7 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     if [ -n "$pid" ]; then
         # A Codex or Antigravity base has no Stop hook that runs a stage, so it
         # keeps the refusal: the person closes the feature and runs $finish again.
-        case "$(_read_local_state "$base_dir/.cs/local/state" engine)" in
+        case "$(_session_run_engine "$base_dir" "$base_name")" in
             codex|antigravity)
                 error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
                 ;;
