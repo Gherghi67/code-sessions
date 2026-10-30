@@ -1153,8 +1153,11 @@ run_doctor() {
 
     else
         _doctor_check_keychain
-        local missing dependency capabilities binding label=Codex
-        [ "$engine" != antigravity ] || label=Antigravity
+        local missing dependency capabilities binding label="$engine"
+        case "$engine" in
+            codex) label=Codex ;;
+            antigravity) label=Antigravity ;;
+        esac
         if missing=$(cs_engine_call "$engine" dependencies); then
             if [ -n "$missing" ]; then
                 while IFS= read -r dependency; do
