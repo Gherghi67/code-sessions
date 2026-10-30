@@ -167,6 +167,24 @@ test_the_rule_stays_out_of_git_status() {
     assert_eq 1 "$(grep -c 'cs-session.md' "$dir/.git/info/exclude")" "a reopen adds no second entry"
 }
 
+# An exclude file swapped for a link out of the session gets no entry, and a
+# dangling one creates nothing where it leads; the launch goes on and says so.
+test_the_exclude_entry_is_never_appended_through_a_link() {
+    local output dir outside="$TEST_TMPDIR/outside-config" missing="$TEST_TMPDIR/not-there"
+    output=$("$CS_BIN" fenced --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir fenced)
+    printf 'Host example\n' > "$outside"
+    rm -f "$dir/.git/info/exclude"
+    ln -s "$outside" "$dir/.git/info/exclude"
+    output=$("$CS_BIN" fenced 2>&1) || { echo "  FAIL: the launch goes on without the entry: $output"; return 1; }
+    assert_eq 'Host example' "$(cat "$outside")" "nothing is appended through the link" || return 1
+    assert_output_contains "$output" ".agents/rules/cs-session.md to the checkout's info/exclude" "the launch says the entry is missing" || return 1
+    rm -f "$dir/.git/info/exclude"
+    ln -s "$missing" "$dir/.git/info/exclude"
+    output=$("$CS_BIN" fenced 2>&1) || { echo "  FAIL: the launch goes on without the entry: $output"; return 1; }
+    assert_not_exists "$missing" "a dangling link creates nothing where it leads"
+}
+
 test_a_rule_cs_did_not_write_is_never_replaced() {
     local output status=0 rule
     output=$("$CS_BIN" owned --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -353,6 +371,7 @@ run_test test_resume_without_a_binding_refuses
 run_test test_an_invalid_binding_refuses_before_agy_starts
 run_test test_launch_options_map_to_agy_flags
 run_test test_the_rule_stays_out_of_git_status
+run_test test_the_exclude_entry_is_never_appended_through_a_link
 run_test test_a_rule_cs_did_not_write_is_never_replaced
 run_test test_a_linked_rules_folder_is_never_written_through
 run_test test_capabilities_claim_only_launch_context_and_memory

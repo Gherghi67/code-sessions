@@ -415,18 +415,21 @@ adopt_session() {  # name, [--yes|-y], in any order
 }
 
 # Append each entry to a git exclude file once. Append only: the file may hold
-# the user's own rules, and a linked worktree reads only the common one.
+# the user's own rules, and a linked worktree reads only the common one. Each
+# write goes through cs_append_inside: an Antigravity launch runs this in a
+# folder an agent could write to, and a link taking the file out of the
+# session, a dangling one included, gets nothing.
 _append_exclude_once() {  # exclude_file, entry...
     local file="$1"; shift
     mkdir -p "$(dirname "$file")"
-    [ -f "$file" ] || : > "$file"
     # A last line with no newline would swallow the first entry appended to it.
     if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
-        printf '\n' >> "$file"
+        cs_append_inside "$file" printf '\n' || return 1
     fi
     local entry
     for entry in "$@"; do
-        grep -qxF -- "$entry" "$file" || printf '%s\n' "$entry" >> "$file"
+        grep -qxF -- "$entry" "$file" 2>/dev/null \
+            || cs_append_inside "$file" printf '%s\n' "$entry" || return 1
     done
 }
 
