@@ -21683,10 +21683,11 @@ main() {
             error "$wt_base is encrypted, and feature worktrees of an encrypted session are not supported yet."
         fi
         if _switch_session_encrypted "$session_dir"; then
-            if [ "$engine" = codex ]; then
-                error "$(_codex_encrypted_refusal "$session_name" "$launch_intent")"
-            fi
-            error "$(_antigravity_encrypted_refusal "$session_name")"
+            case "$engine" in
+                codex) error "$(_codex_encrypted_refusal "$session_name" "$launch_intent")" ;;
+                antigravity) error "$(_antigravity_encrypted_refusal "$session_name")" ;;
+                *) error "$session_name is encrypted, and $engine keeps its state outside the vault. Open it under Claude: cs $session_name --engine claude" ;;
+            esac
         fi
     fi
     if [ -n "$merge_feature" ] && ! cs_engine_supports "$engine" feature_finish; then
