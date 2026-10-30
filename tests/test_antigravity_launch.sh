@@ -211,6 +211,43 @@ test_a_linked_rules_folder_is_never_written_through() {
     assert_eq "" "$(ls -A "$outside")" "nothing is written through the link"
 }
 
+# A rules folder swapped for a link after the launch checked it, while the
+# rule's text is being built, still gets nothing written through it. The
+# memory index is read with python3 between the checks and the write, so a
+# python3 ahead on PATH holds the launch there while the test swaps.
+test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing() {
+    local output dir outside="$TEST_TMPDIR/outside-rules" status=0 pid tries=0 real_python
+    output=$("$CS_BIN" racing --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir racing)
+    printf -- '- [Entry](entry.md) - a pointer\n' > "$dir/.cs/memory/MEMORY.md"
+    mkdir -p "$outside"
+    real_python=$(command -v python3) || { echo "  FAIL: python3 is required"; return 1; }
+    cat > "$TEST_TMPDIR/bin/python3" <<PY
+#!/usr/bin/env bash
+case "\$*" in
+    *MEMORY.md*)
+        : > "$TEST_TMPDIR/building"
+        while [ ! -e "$TEST_TMPDIR/swapped" ]; do sleep 0.05; done ;;
+esac
+exec "$real_python" "\$@"
+PY
+    chmod +x "$TEST_TMPDIR/bin/python3"
+    "$CS_BIN" racing > "$TEST_TMPDIR/racing.out" 2>&1 &
+    pid=$!
+    while [ ! -e "$TEST_TMPDIR/building" ] && [ "$tries" -lt 400 ]; do
+        sleep 0.05
+        tries=$((tries + 1))
+    done
+    rm -rf "$dir/.agents/rules"
+    ln -s "$outside" "$dir/.agents/rules"
+    : > "$TEST_TMPDIR/swapped"
+    wait "$pid" || status=$?
+    rm -f "$TEST_TMPDIR/bin/python3"
+    assert_file_exists "$TEST_TMPDIR/building" "the launch reached the rule's text" || return 1
+    assert_eq "" "$(ls -A "$outside")" "nothing lands through the link" || return 1
+    [ "$status" -ne 0 ] || { echo "  FAIL: the launch must refuse: $(cat "$TEST_TMPDIR/racing.out")"; return 1; }
+}
+
 test_capabilities_claim_only_launch_context_and_memory() {
     local output dir capability status
     output=$("$CS_BIN" caps --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -374,6 +411,7 @@ run_test test_the_rule_stays_out_of_git_status
 run_test test_the_exclude_entry_is_never_appended_through_a_link
 run_test test_a_rule_cs_did_not_write_is_never_replaced
 run_test test_a_linked_rules_folder_is_never_written_through
+run_test test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing
 run_test test_capabilities_claim_only_launch_context_and_memory
 run_test test_unknown_engine_errors_list_all_three
 run_test test_spawn_refuses_a_brief_or_task_it_cannot_deliver

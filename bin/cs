@@ -19753,7 +19753,7 @@ _antigravity_emit_rule() {  # cs_bin; shared CS_CONTEXT_* fields are dynamically
 # A link anywhere on the rule's path could carry the write out of the session,
 # and a rule without cs's mark is the user's: both refuse, naming the fix.
 _antigravity_write_rule() {  # session_name, session_dir, actor, cs_bin
-    local session_dir="$2" rule="$2/$CS_ANTIGRAVITY_RULE" link tmp
+    local session_dir="$2" rule="$2/$CS_ANTIGRAVITY_RULE" link session_p tmp
     for link in "$session_dir/.agents" "$session_dir/.agents/rules" "$rule"; do
         if [ -L "$link" ]; then
             _antigravity_launch_error "$link is a link; cs writes the Antigravity session rule only into a folder of the session's own. Replace the link with a folder, then reopen."
@@ -19764,13 +19764,21 @@ _antigravity_write_rule() {  # session_name, session_dir, actor, cs_bin
         _antigravity_launch_error "$rule was not written by cs, which keeps its Antigravity session context there. Move it aside, then reopen."
         return 1
     fi
-    # Built in .cs/local, which is never the user's, so a write cut short
-    # leaves nothing in .agents; the rename brings it into place whole.
-    mkdir -p "${rule%/*}" "$session_dir/.cs/local" || return 1
-    tmp=$(mktemp "$session_dir/.cs/local/.antigravity-rule.XXXXXX") || return 1
-    if ! cs_session_context "$1" "$session_dir" "$3" _antigravity_emit_rule "$4" > "$tmp" \
-        || ! mv -f "$tmp" "$rule"; then
-        rm -f "$tmp" 2>/dev/null || true
+    mkdir -p "${rule%/*}" || return 1
+    # The checks above name paths, and a folder on the path swapped for a link
+    # after them would carry the write out. The write runs from inside the
+    # rules folder instead, entered by its physical path and checked to lie in
+    # the session: the shell's working folder stays the one checked, whatever
+    # the path names by then. The temporary file is built there under a name
+    # agy does not load (no .md), and the rename brings the rule in whole.
+    if ! (
+        session_p=$(cd -P -- "$session_dir" && pwd) || exit 1
+        cd -P -- "${rule%/*}" && [ "$(pwd)" = "$session_p/${CS_ANTIGRAVITY_RULE%/*}" ] || exit 1
+        tmp=$(mktemp .cs-session.XXXXXX) || exit 1
+        trap 'rm -f -- "$tmp"' EXIT
+        cs_session_context "$1" "$session_dir" "$3" _antigravity_emit_rule "$4" > "$tmp" \
+            && mv -f -- "$tmp" "${rule##*/}"
+    ); then
         _antigravity_launch_error "Could not write the Antigravity session rule: $rule"
         return 1
     fi
