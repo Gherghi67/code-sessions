@@ -406,10 +406,7 @@ _launch_codex_bound() {
     [ "$intent" != fresh ] || recorded_id=""
 
     cs_export_session_context "$session_name" "$session_dir"
-    unset CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_PID
-    unset CLAUDE_PROJECT_DIR CLAUDE_CODE_TASK_LIST_ID CLAUDE_CODE_ENABLE_TODO_TOOLS
-    unset CLAUDE_CODE_ENABLE_FUNCTION_HOOKS CLAUDE_CODE_AUTO_MEMORY_PATH
-    unset CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    cs_unset_claude_env
     CS_BIN=$(_codex_cs_binary) || {
         _codex_launch_error "Cannot resolve the cs executable for this session."
         return 1

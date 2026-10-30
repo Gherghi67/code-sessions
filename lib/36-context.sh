@@ -50,6 +50,15 @@ cs_running_binary() {
     printf '%s/%s\n' "$bin_dir" "$(basename "$cs_binary")"
 }
 
+# The Claude conversation's variables, which a launch under another engine
+# must not pass on: a cs command run inside it would take them for its own.
+cs_unset_claude_env() {
+    unset CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_PID
+    unset CLAUDE_PROJECT_DIR CLAUDE_CODE_TASK_LIST_ID CLAUDE_CODE_ENABLE_TODO_TOOLS
+    unset CLAUDE_CODE_ENABLE_FUNCTION_HOOKS CLAUDE_CODE_AUTO_MEMORY_PATH
+    unset CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+}
+
 # Engine-neutral facts as startup context, without Claude's protocol, for an
 # engine that reads no CLAUDE.local.md: Codex takes it as its instructions,
 # Antigravity as an always-on workspace rule.

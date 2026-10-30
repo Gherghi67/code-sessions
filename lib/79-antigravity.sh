@@ -226,10 +226,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || return 1
 
     cd -- "$session_dir" || return 1
-    unset CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_PID
-    unset CLAUDE_PROJECT_DIR CLAUDE_CODE_TASK_LIST_ID CLAUDE_CODE_ENABLE_TODO_TOOLS
-    unset CLAUDE_CODE_ENABLE_FUNCTION_HOOKS CLAUDE_CODE_AUTO_MEMORY_PATH
-    unset CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    cs_unset_claude_env
     actor=$(cs_actor_slug "$session_dir") || return 1
     # The rule first: a launch refused over a rule of the user's adds no
     # exclude entry, which would have git ignore their file on cs's say-so.
