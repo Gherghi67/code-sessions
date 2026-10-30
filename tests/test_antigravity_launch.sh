@@ -673,6 +673,21 @@ test_a_missing_hook_is_named_at_launch_and_by_doctor() {
     assert_output_contains "$output" 'agy plugin enable cs' "a plugin switched off is named with the fix"
 }
 
+# A hook whose recovery consumer is gone (an install cut short before its
+# scripts, or scripts/ deleted) still binds, but promises no autosave.
+test_a_hook_without_its_recovery_consumer_is_named_at_launch_and_by_doctor() {
+    local output dir
+    rm -rf "$HOME/.gemini/config/plugins/cs/scripts"
+    output=$("$CS_BIN" unsaved --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'edits are not autosaved' "the launch says so" || return 1
+    assert_output_not_contains "$output" 'edits are autosaved for recovery' "and promises no autosave" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding unsaved)" "the hook still binds the conversation" || return 1
+    dir=$(_session_dir unsaved)
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'has no recovery consumer' "doctor says so" || return 1
+    assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed"
+}
+
 # What an install or a removal of cs left is cs's to finish: doctor sends the
 # user to setup.sh, not to rename the folder.
 test_doctor_sends_a_folder_cs_left_to_setup() {
@@ -756,6 +771,7 @@ run_test test_a_later_conversation_in_the_run_never_takes_the_binding
 run_test test_the_hook_acts_only_in_the_run_cs_launched
 run_test test_conversations_lists_the_antigravity_conversations
 run_test test_a_missing_hook_is_named_at_launch_and_by_doctor
+run_test test_a_hook_without_its_recovery_consumer_is_named_at_launch_and_by_doctor
 run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link

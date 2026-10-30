@@ -267,6 +267,9 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     if ! _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)"; then
         warn "The cs hook for Antigravity is missing from $(_antigravity_plugin_dir): this run's conversation is not recorded for a reopen, and its edits are not autosaved. Run setup.sh again, with agy installed, to add it."
         reopens="the cs hook is missing"
+    elif [ ! -r "$(_antigravity_plugin_dir)/scripts/autosave-commits.sh" ]; then
+        warn "The cs hook for Antigravity has no recovery consumer in $(_antigravity_plugin_dir)/scripts: this run's edits are not autosaved. Run setup.sh again to add it."
+        reopens="a reopen resumes this conversation; edits are not autosaved"
     fi
     # The hook remembers in this run's own directory, out of the session the
     # agent can write, which conversation the run works in; the run's cleanup

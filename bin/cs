@@ -13309,8 +13309,9 @@ _doctor_check_settings_valid() {
 }
 
 # cs's Antigravity plugin carries the hook exact_resume and recovery_autosave
-# stand on: it must be cs's, name a cs that runs, and not be switched off in
-# agy's config.json, which beats the plugin wherever it has an entry.
+# stand on: it must be cs's, name a cs that runs, carry the recovery consumer
+# post-tool-use hands edits to, and not be switched off in agy's config.json,
+# which beats the plugin wherever it has an entry.
 _doctor_check_antigravity_hook() {
     local dir cs_path
     dir=$(_antigravity_plugin_dir)
@@ -13340,6 +13341,8 @@ _doctor_check_antigravity_hook() {
     esac
     if [ -z "$cs_path" ] || [ ! -x "$cs_path" ]; then
         _doctor_warn "Antigravity hook in $dir names a cs that is not there (${cs_path:-none}); run setup.sh again"
+    elif [ ! -r "$dir/scripts/autosave-commits.sh" ]; then
+        _doctor_warn "Antigravity hook in $dir has no recovery consumer (scripts/autosave-commits.sh): edits are not autosaved; run setup.sh again"
     elif [ "$(jq -r --arg p "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$p].enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" = false ]; then
         _doctor_warn "Antigravity hook is switched off in $HOME/.gemini/config/config.json; turn it on with: agy plugin enable $CS_ANTIGRAVITY_PLUGIN"
     else
@@ -20130,6 +20133,9 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     if ! _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)"; then
         warn "The cs hook for Antigravity is missing from $(_antigravity_plugin_dir): this run's conversation is not recorded for a reopen, and its edits are not autosaved. Run setup.sh again, with agy installed, to add it."
         reopens="the cs hook is missing"
+    elif [ ! -r "$(_antigravity_plugin_dir)/scripts/autosave-commits.sh" ]; then
+        warn "The cs hook for Antigravity has no recovery consumer in $(_antigravity_plugin_dir)/scripts: this run's edits are not autosaved. Run setup.sh again to add it."
+        reopens="a reopen resumes this conversation; edits are not autosaved"
     fi
     # The hook remembers in this run's own directory, out of the session the
     # agent can write, which conversation the run works in; the run's cleanup

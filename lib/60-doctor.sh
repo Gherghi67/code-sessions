@@ -50,8 +50,9 @@ _doctor_check_settings_valid() {
 }
 
 # cs's Antigravity plugin carries the hook exact_resume and recovery_autosave
-# stand on: it must be cs's, name a cs that runs, and not be switched off in
-# agy's config.json, which beats the plugin wherever it has an entry.
+# stand on: it must be cs's, name a cs that runs, carry the recovery consumer
+# post-tool-use hands edits to, and not be switched off in agy's config.json,
+# which beats the plugin wherever it has an entry.
 _doctor_check_antigravity_hook() {
     local dir cs_path
     dir=$(_antigravity_plugin_dir)
@@ -81,6 +82,8 @@ _doctor_check_antigravity_hook() {
     esac
     if [ -z "$cs_path" ] || [ ! -x "$cs_path" ]; then
         _doctor_warn "Antigravity hook in $dir names a cs that is not there (${cs_path:-none}); run setup.sh again"
+    elif [ ! -r "$dir/scripts/autosave-commits.sh" ]; then
+        _doctor_warn "Antigravity hook in $dir has no recovery consumer (scripts/autosave-commits.sh): edits are not autosaved; run setup.sh again"
     elif [ "$(jq -r --arg p "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$p].enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" = false ]; then
         _doctor_warn "Antigravity hook is switched off in $HOME/.gemini/config/config.json; turn it on with: agy plugin enable $CS_ANTIGRAVITY_PLUGIN"
     else

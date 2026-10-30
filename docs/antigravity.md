@@ -99,9 +99,12 @@ is not cs's, or anything else at its top level), or one where the folder,
 warning, and nothing is registered. `cs -uninstall` removes only the files cs
 wrote: a script you changed stays, and is named, and the next install takes
 the folder back. `cs -doctor` under Antigravity reports whether the hook is
-installed, names a cs that is there, and is not switched off in
+installed, names a cs that is there, has its recovery consumer
+(`scripts/autosave-commits.sh`), and is not switched off in
 `~/.gemini/config/config.json` (`agy plugin enable cs` turns it back on); for
-a folder holding only what cs left, it says to run `setup.sh` again.
+a folder holding only what cs left, or a hook without its recovery consumer,
+it says to run `setup.sh` again. A launch whose hook lacks the recovery
+consumer says that edits are not autosaved.
 
 A plugin was picked over a workspace `<session>/.agents/hooks.json` because it
 is written once at install, outside the folder the agent writes. It needs no
