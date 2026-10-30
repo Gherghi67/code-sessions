@@ -262,14 +262,18 @@ _strip_hook_registration() {
     '
 }
 
-# The SessionStart hook cs registers for Codex: Codex runs the command through
-# a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path, [verb]
+# A path as one shell word: Codex and Antigravity both run a hook's command
+# through a shell, so a path outside the plain-word alphabet is single-quoted.
+_cs_hook_shell_word() {  # path
     case "$1" in
-        *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
-        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
+        *[!A-Za-z0-9_./+-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+        *) printf '%s' "$1" ;;
     esac
+}
+
+# The SessionStart hook cs registers for Codex.
+_codex_hook_command() {  # cs_path, [verb]
+    printf '%s -codex-hook %s' "$(_cs_hook_shell_word "$1")" "${2:-session-start}"
 }
 
 # Codex skips a hook, silently, until config.toml trusts it: a table
@@ -408,6 +412,157 @@ _codex_hooks_unregister() {  # codex_dir
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
     _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
+}
+
+# The recovery consumer and what it sources, deployed beside each engine's
+# hook registration (Codex's home, cs's Antigravity plugin).
+CS_RECOVERY_SCRIPTS=(autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh)
+
+# Antigravity (agy) reads its global customizations from ~/.gemini/config,
+# which no variable moves, and loads each folder under plugins/ that holds a
+# plugin.json, on by default: agy's config.json records only a choice made
+# with `agy plugin enable|disable`. cs's hook is such a folder, cs's whole:
+# plugin.json, hooks.json with the one named hook cs-session, and scripts/
+# with the recovery consumer. Nothing of the user's is merged or rewritten.
+CS_ANTIGRAVITY_PLUGIN=cs
+CS_ANTIGRAVITY_HOOK_NAME=cs-session
+
+_antigravity_plugin_dir() {
+    printf '%s/.gemini/config/plugins/%s\n' "$HOME" "$CS_ANTIGRAVITY_PLUGIN"
+}
+
+_antigravity_hook_command() {  # cs_path, verb
+    printf '%s -antigravity-hook %s' "$(_cs_hook_shell_word "$1")" "$2"
+}
+
+# Whether a folder is cs's plugin: its hooks.json, a plain file, names only
+# cs's hook, and every command there is a cs -antigravity-hook call. A folder
+# of that name without it is the user's, and cs leaves it alone, unless it
+# holds only what cs leaves there (_antigravity_plugin_is_cs_leftover); one
+# whose scripts/ is a link, which a deploy or a removal would go through, is
+# the user's too.
+_antigravity_plugin_is_cs() {  # plugin_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
+    [ ! -L "$1/scripts" ] || return 1
+    _antigravity_hooks_file_is_cs "$1/hooks.json"
+}
+
+# Whether a hooks file names only cs's hook, every command there a cs
+# -antigravity-hook call. False without jq.
+_antigravity_hooks_file_is_cs() {  # hooks.json
+    jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
+        type == "object" and keys == [$name]
+        and ([.[$name] | .. | objects | select(has("command")) | .command]
+             | length > 0 and all(type == "string" and test(" -antigravity-hook [a-z-]+$")))
+    ' "$1" >/dev/null 2>&1
+}
+
+# PreInvocation binds the session to the conversation its run works in, and
+# PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
+# tool reaches the hook, whose translator keeps the edits: "*" is the matcher
+# agy was measured with. The shapes and the timeout in seconds follow the
+# hooks guide agy 1.4.11 embeds.
+_antigravity_hooks_document() {  # cs_path
+    jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
+        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" '
+        {($name): {
+            PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
+            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
+}
+
+# Write cs's hooks.json, then plugin.json, each to a temp renamed into place.
+# hooks.json is what marks the folder cs's. An install cut short before it is
+# in place leaves the folder empty or holding cs's temp, which
+# _antigravity_plugin_is_cs_leftover still knows, so the next install takes
+# the folder either way. Returns 3, writing nothing, when a folder of that
+# name is not cs's; the recovery scripts are the installer's to deploy into
+# scripts/.
+_antigravity_plugin_register() {  # cs_path
+    local dir doc tmp
+    dir=$(_antigravity_plugin_dir)
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        _antigravity_plugin_is_cs "$dir" || _antigravity_plugin_is_cs_leftover "$dir" || return 3
+    fi
+    doc=$(_antigravity_hooks_document "$1") || return 1
+    mkdir -p "$dir" || return 1
+    tmp=$(mktemp "$dir/.hooks.json.XXXXXX") || return 1
+    printf '%s\n' "$doc" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/hooks.json" \
+        || { rm -f "$tmp"; return 1; }
+    tmp=$(mktemp "$dir/.plugin.json.XXXXXX") || return 1
+    _antigravity_plugin_manifest > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/plugin.json" \
+        || { rm -f "$tmp"; return 1; }
+}
+
+_antigravity_plugin_manifest() {
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+}
+
+# Whether a file holds cs's plugin.json. False when either side cannot be
+# read or worked out: without jq both would be empty, and alike.
+_antigravity_plugin_manifest_is_cs() {  # plugin.json
+    local want have
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    want=$(_antigravity_plugin_manifest 2>/dev/null | jq -cS . 2>/dev/null) && [ -n "$want" ] || return 1
+    have=$(jq -cS . "$1" 2>/dev/null) && [ -n "$have" ] || return 1
+    [ "$have" = "$want" ]
+}
+
+# Whether a write temp of register's is cs's: a plain file, empty (the write
+# was cut short) or holding what cs writes there. A file of the user's that
+# only shares the name is not.
+_antigravity_plugin_temp_is_cs() {  # temp
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    [ -s "$1" ] || return 0
+    case "${1##*/}" in
+        .hooks.json.??????) _antigravity_hooks_file_is_cs "$1" ;;
+        .plugin.json.??????) _antigravity_plugin_manifest_is_cs "$1" ;;
+        *) false ;;
+    esac
+}
+
+# Whether a folder without hooks.json holds only what cs itself leaves there
+# when an install or a removal is cut short, or a removal keeps a script the
+# user changed: cs's plugin.json, a scripts/ folder (each file in it is still
+# judged by its content when deployed or removed) and cs's write temps. The
+# next install takes such a folder; a removal clears what of it is cs's.
+# jq tells cs's files from the user's, so without it no folder is taken.
+_antigravity_plugin_is_cs_leftover() {  # plugin_dir
+    local entry
+    jq -ne true >/dev/null 2>&1 || return 1
+    [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] \
+        && [ ! -L "$1/scripts" ] || return 1
+    for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "${entry##*/}" in
+            scripts) [ -d "$entry" ] ;;
+            plugin.json) _antigravity_plugin_manifest_is_cs "$entry" ;;
+            .hooks.json.??????|.plugin.json.??????) _antigravity_plugin_temp_is_cs "$entry" ;;
+            *) false ;;
+        esac || return 1
+    done
+}
+
+# Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, the
+# recovery scripts the install record says cs wrote (others are kept and
+# named) and cs's write temps, then the folders if empty. Returns 3, removing
+# nothing, when the folder is neither cs's nor only what cs left there.
+_antigravity_plugin_unregister() {
+    local dir script temp
+    dir=$(_antigravity_plugin_dir)
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    _antigravity_plugin_is_cs "$dir" || _antigravity_plugin_is_cs_leftover "$dir" || return 3
+    rm -f "$dir/hooks.json" || return 1
+    if _antigravity_plugin_manifest_is_cs "$dir/plugin.json"; then
+        rm -f "$dir/plugin.json" || return 1
+    fi
+    for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
+        [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
+    done
+    for temp in "$dir"/.hooks.json.?????? "$dir"/.plugin.json.??????; do
+        if _antigravity_plugin_temp_is_cs "$temp"; then rm -f "$temp" || true; fi
+    done
+    rmdir "$dir/scripts" "$dir" 2>/dev/null || true
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,

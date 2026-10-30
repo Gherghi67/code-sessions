@@ -135,6 +135,11 @@ main() {
             cmd_codex_hook "$@"
             return $?
             ;;
+        -antigravity-hook) # hidden: the command agy runs from cs's plugin hooks.json, not typed by a user
+            shift
+            cmd_antigravity_hook "$@"
+            return $?
+            ;;
         -vet-session) # asked by the cs mod, /rotate and /wrap before they write into a session
             shift
             cmd_vet_session "$@"
@@ -638,6 +643,9 @@ main() {
         local resume_binding
         resume_binding=$(cs_binding_read "$session_dir" "$engine") \
             || error "Cannot read the recorded $engine conversation; repair the binding before resuming"
+        # Antigravity's legacy word names no conversation, and its adapter
+        # resumes none for it (lib/79-antigravity.sh).
+        [ "$engine" != antigravity ] || [ "$resume_binding" != "$CS_ANTIGRAVITY_LATEST" ] || resume_binding=""
         [ -n "$resume_binding" ] || error "Cannot resume: no recorded $engine conversation for $session_name. Use --fresh."
     fi
 

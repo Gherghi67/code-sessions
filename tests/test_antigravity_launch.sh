@@ -17,14 +17,21 @@ setup() {
     export CODEX_BIN="$TEST_TMPDIR/bin/no-codex"
     export AGY_LOG="$TEST_TMPDIR/agy.log" AGY_ARGV="$TEST_TMPDIR/agy-argv"
     export AGY_PWD="$TEST_TMPDIR/agy-pwd" AGY_ENV="$TEST_TMPDIR/agy-env" AGY_STATE="$TEST_TMPDIR/agy-state"
+    export AGY_HOOK_OUT="$TEST_TMPDIR/agy-hook-out"
+    export AGY_NEW_ID=11111111-1111-4111-8111-111111111111
     mkdir -p "$HOME" "$CS_SESSIONS_ROOT" "$CS_TRANSCRIPTS_DIR" "$TEST_TMPDIR/bin"
     use_fake_keychain
-    # The fake records how cs started it and touches nothing under HOME.
+    # The fake records how cs started it, then runs the hooks a real turn
+    # would from cs's plugin, the way agy 1.4.11 was measured to: a new
+    # conversation's SessionStart, a PreInvocation per model call, a
+    # PostToolUse write_file for each path in AGY_EDITS, and a PreInvocation
+    # for each subagent id in AGY_SUBAGENTS. A run left before any turn
+    # (AGY_NO_TURN) fires none. Hook stdout goes to AGY_HOOK_OUT.
     cat > "$TEST_TMPDIR/bin/agy" <<'AGY'
 #!/usr/bin/env bash
 # --help lists the flags cs passes, less any named in AGY_HELP_OMIT.
 if [ "${1:-}" = --help ]; then
-    for flag in --continue --model --effort --mode; do
+    for flag in --conversation --model --effort --mode; do
         case " ${AGY_HELP_OMIT:-} " in *" $flag "*) continue ;; esac
         printf '  %-30s %s\n' "$flag" "what $flag does"
     done
@@ -35,6 +42,49 @@ printf '%s\n' "$@" > "$AGY_ARGV"
 pwd -P > "$AGY_PWD"
 env | grep -E '^(CS_|CLAUDE_)' | sort > "$AGY_ENV"
 grep '^engine:' "$CS_SESSION_META_DIR/local/state" > "$AGY_STATE" 2>/dev/null || : > "$AGY_STATE"
+conversation="" new=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --conversation) conversation="$2"; shift ;;
+    esac
+    shift
+done
+[ -n "$conversation" ] || { conversation="$AGY_NEW_ID"; new=1; }
+# A link planted in the run's directory, as a process with the user's rights
+# could: cs's marks must never write through it.
+[ -z "${AGY_PLANT_LINK:-}" ] \
+    || ln -s "$AGY_PLANT_LINK" "$HOME/.cache/cs/antigravity-runs/$CS_RUN_ID/seen-$conversation"
+[ -z "${AGY_PLANT_LOG:-}" ] \
+    || { rm -f "$CS_SESSION_META_DIR/local/session.log"; ln -s "$AGY_PLANT_LOG" "$CS_SESSION_META_DIR/local/session.log"; }
+hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+fire() {  # event, payload
+    local cmd
+    [ -f "$hooks" ] || return 0
+    jq -r --arg e "$1" '.[] | (.[$e] // [])[] | (.hooks // [.])[] | .command' "$hooks" \
+        | while IFS= read -r cmd; do
+            printf '%s' "$2" | (cd "${hooks%/*}" && sh -c "$cmd") >> "$AGY_HOOK_OUT" 2>&1
+        done
+}
+payload() {  # id, [extra JSON]
+    local extra="${2:-}"
+    [ -n "$extra" ] || extra='{}'
+    jq -nc --arg id "$1" --arg ws "$(pwd -P)" --argjson extra "$extra" \
+        '{conversationId: $id, workspacePaths: [$ws], modelName: "fake"} + $extra'
+}
+if [ -z "${AGY_NO_TURN:-}" ]; then
+    [ -z "$new" ] || fire SessionStart "$(payload "$conversation")"
+    fire PreInvocation "$(payload "$conversation" '{"invocationNum": 0}')"
+    for edit in ${AGY_EDITS:-}; do
+        printf 'edited\n' > "$edit"
+        fire PostToolUse "$(payload "$conversation" "$(jq -nc --arg p "$edit" \
+            '{stepIdx: 2, error: "", toolCall: {name: "write_file", args: {Path: $p, Content: "edited\n"}}}')")"
+    done
+    fire PreInvocation "$(payload "$conversation" '{"invocationNum": 1}')"
+    for sub in ${AGY_SUBAGENTS:-}; do
+        fire SessionStart "$(payload "$sub")"
+        fire PreInvocation "$(payload "$sub" '{"invocationNum": 0}')"
+    done
+fi
 exit "${AGY_EXIT:-0}"
 AGY
     chmod +x "$TEST_TMPDIR/bin/agy"
@@ -50,7 +100,8 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG
+    _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
 }
@@ -61,6 +112,21 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
+    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG
+}
+
+# cs's plugin as the installer writes it, in the test's HOME.
+_install_agy_hook() {
+    local script plugin="$HOME/.gemini/config/plugins/cs"
+    ( source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$CS_BIN" ) || return 1
+    mkdir -p "$plugin/scripts"
+    for script in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+        cp "$SCRIPT_DIR/../hooks/$script" "$plugin/scripts/$script" || return 1
+    done
+}
+
+_binding() {
+    cat "$(_session_dir "$1")/.cs/local/antigravity-conversation" 2>/dev/null
 }
 
 _session_dir() {
@@ -98,7 +164,8 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_file_contains "$rule" 'cs:antigravity-session-context' "the rule carries cs's mark" || return 1
     assert_file_contains "$rule" '^Session: fresh$' "the rule names the session" || return 1
     assert_file_contains "$rule" '# Session memory index' "the rule carries the memory index" || return 1
-    assert_eq latest "$(cat "$dir/.cs/local/antigravity-conversation")" "binds the folder's latest conversation" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding fresh)" "the hook binds the conversation by its id" || return 1
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT")" "every hook answers {} and nothing else" || return 1
     assert_file_contains "$dir/.cs/local/state" '^engine: antigravity$' "the engine is remembered" || return 1
     assert_file_contains "$AGY_ENV" '^CS_RUN_ENGINE=antigravity$' "the run names its engine" || return 1
     assert_file_contains "$AGY_ENV" '^CS_SESSION_NAME=fresh$' "agy receives the session identity" || return 1
@@ -108,46 +175,51 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_output_contains "$output" 'Antigravity via cs' "the launch says what it supports"
 }
 
-test_reopen_continues_and_fresh_and_resume_choose_explicitly() {
+test_reopen_resumes_by_id_and_fresh_and_resume_choose_explicitly() {
     local output
     output=$("$CS_BIN" reopen --engine antigravity 2>&1) || { echo "$output"; return 1; }
     output=$("$CS_BIN" reopen 2>&1) || { echo "$output"; return 1; }
-    assert_eq --continue "$(_agy_argv)" "an unattended reopen continues the latest conversation" || return 1
-    output=$("$CS_BIN" reopen --fresh 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "an unattended reopen resumes the bound conversation" || return 1
+    output=$(AGY_NO_TURN=1 "$CS_BIN" reopen --fresh 2>&1) || { echo "$output"; return 1; }
     assert_eq "" "$(_agy_argv)" "--fresh starts a new conversation" || return 1
     output=$("$CS_BIN" reopen --resume 2>&1) || { echo "$output"; return 1; }
-    assert_eq --continue "$(_agy_argv)" "--resume continues without asking"
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "--resume resumes without asking"
 }
 
 test_the_reopen_question_takes_n_as_fresh_and_enter_as_continue() {
     local output
     output=$("$CS_BIN" asked --engine antigravity 2>&1) || { echo "$output"; return 1; }
-    output=$(printf 'n' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
+    output=$(printf 'n' | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
     assert_output_contains "$output" 'Continue previous Antigravity conversation' "asks on a terminal" || return 1
     assert_eq "" "$(_agy_argv)" "n starts fresh" || return 1
     output=$(printf 'y' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
-    assert_eq --continue "$(_agy_argv)" "y continues" || return 1
-    output=$(printf 'n' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "y continues" || return 1
+    output=$(printf 'n' | AGY_NO_TURN=1 CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
     output=$(printf '\n' | CS_ASSUME_TTY=1 "$CS_BIN" asked 2>&1) || { echo "$output"; return 1; }
-    assert_eq --continue "$(_agy_argv)" "Enter continues"
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "Enter continues"
 }
 
-# The first launch binds before agy starts. When that agy fails (a sign-in
-# never finished, a crash at start), the folder may hold no conversation, and
-# --continue would fall back to a parent or child folder's: the binding goes.
-test_a_failed_first_run_leaves_no_binding() {
+# A first run that never reached the model (left with /exit before a turn, a
+# sign-in never finished, a crash at start) has no conversation to resume,
+# and --continue would fall back to a parent or child folder's (review R2).
+# Nothing is bound, so the next open starts a new conversation.
+test_a_first_run_left_before_any_turn_binds_nothing() {
     local output status=0 binding
-    output=$(AGY_EXIT=1 "$CS_BIN" stumble --engine antigravity 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: agy's failure must reach the caller: $output"; return 1; }
+    output=$(AGY_NO_TURN=1 "$CS_BIN" stumble --engine antigravity 2>&1) \
+        || { echo "  FAIL: a clean exit must succeed: $output"; return 1; }
     binding="$(_session_dir stumble)/.cs/local/antigravity-conversation"
-    assert_not_exists "$binding" "the failed first run's binding goes" || return 1
-    output=$("$CS_BIN" stumble 2>&1) || { echo "  FAIL: the next open must launch: $output"; return 1; }
-    assert_eq "" "$(_agy_argv)" "the next open starts a new conversation" || return 1
-    assert_eq latest "$(cat "$binding")" "a run that ends cleanly binds" || return 1
-    status=0
-    output=$(AGY_EXIT=1 "$CS_BIN" stumble 2>&1) || status=$?
+    assert_not_exists "$binding" "a run left before any turn binds nothing" || return 1
+    output=$(AGY_NO_TURN=1 AGY_EXIT=1 "$CS_BIN" stumble 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: agy's failure must reach the caller: $output"; return 1; }
-    assert_eq latest "$(cat "$binding")" "a later failed run keeps the binding an earlier run made"
+    assert_not_exists "$binding" "a failed first run binds nothing" || return 1
+    output=$("$CS_BIN" stumble 2>&1) || { echo "  FAIL: the next open must launch: $output"; return 1; }
+    assert_eq "" "$(_agy_argv)" "the next open starts a new conversation, never --continue" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding stumble)" "a run that reaches the model binds its conversation" || return 1
+    status=0
+    output=$(AGY_NO_TURN=1 AGY_EXIT=1 "$CS_BIN" stumble 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: agy's failure must reach the caller: $output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "the failed run resumed by id" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding stumble)" "a later failed run keeps the binding an earlier run made"
 }
 
 test_resume_without_a_binding_refuses() {
@@ -166,12 +238,18 @@ test_an_invalid_binding_refuses_before_agy_starts() {
     local output status=0 dir
     output=$("$CS_BIN" damaged --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir damaged)
-    printf 'not-the-word\n' > "$dir/.cs/local/antigravity-conversation"
-    : > "$AGY_LOG"
-    output=$("$CS_BIN" damaged 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: an invalid binding must fail"; return 1; }
-    assert_output_contains "$output" 'Invalid Antigravity binding' "names the damage" || return 1
-    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+    local bad
+    # The binding lies where the agent can write, and goes onto agy's command
+    # line: only a UUID (or the legacy word) passes.
+    for bad in not-the-word --dangerously-skip-permissions "$AGY_NEW_ID-x" "../$AGY_NEW_ID"; do
+        printf '%s\n' "$bad" > "$dir/.cs/local/antigravity-conversation"
+        : > "$AGY_LOG"
+        status=0
+        output=$("$CS_BIN" damaged 2>&1) || status=$?
+        [ "$status" -ne 0 ] || { echo "  FAIL: the binding '$bad' must fail"; return 1; }
+        assert_output_contains "$output" 'Invalid Antigravity binding' "names the damage" || return 1
+        assert_eq "" "$(cat "$AGY_LOG")" "agy is not started for '$bad'" || return 1
+    done
 }
 
 test_launch_options_map_to_agy_flags() {
@@ -181,7 +259,7 @@ test_launch_options_map_to_agy_flags() {
     assert_eq '--model gemini-3-pro --effort high --mode auto' "$(_agy_argv)" \
         "model, effort and automatic approval reach agy" || return 1
     output=$("$CS_BIN" options --native-approval --model gemini-3-flash 2>&1) || { echo "$output"; return 1; }
-    assert_eq '--continue --model gemini-3-flash' "$(_agy_argv)" "native approval adds no mode"
+    assert_eq "--conversation $AGY_NEW_ID --model gemini-3-flash" "$(_agy_argv)" "native approval adds no mode"
 }
 
 # An agy whose --help lacks a flag cs would pass is refused before the rule,
@@ -323,20 +401,20 @@ PY
     [ "$status" -ne 0 ] || { echo "  FAIL: the launch must refuse: $(cat "$TEST_TMPDIR/racing.out")"; return 1; }
 }
 
-test_capabilities_claim_only_launch_context_and_memory() {
+test_capabilities_claim_exact_resume_and_recovery_only() {
     local output dir capability status
     output=$("$CS_BIN" caps --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir caps)
     output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine 2>&1) \
         || { echo "  FAIL: cs -engine failed: $output"; return 1; }
     assert_output_contains "$output" 'engine: antigravity' || return 1
-    assert_output_contains "$output" 'conversation: latest' || return 1
-    assert_output_contains "$output" 'capabilities: launch startup_context memory_index' || return 1
-    for capability in launch startup_context memory_index; do
+    assert_output_contains "$output" "conversation: $AGY_NEW_ID" || return 1
+    assert_output_contains "$output" 'capabilities: launch exact_resume startup_context recovery_autosave memory_index' || return 1
+    for capability in launch exact_resume startup_context recovery_autosave memory_index; do
         CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" \
             || { echo "  FAIL: $capability should be supported"; return 1; }
     done
-    for capability in exact_resume rotation spawn_brief mail_delivery feature_finish recovery_autosave; do
+    for capability in rotation spawn_brief mail_delivery feature_finish; do
         status=0
         output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" 2>&1) \
             || status=$?
@@ -472,26 +550,225 @@ test_doctor_names_antigravity_and_its_binding() {
     dir=$(_session_dir checked)
     output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" 'Antigravity dependencies available' || return 1
-    assert_output_contains "$output" 'Antigravity integration capabilities: launch, startup_context, memory_index' || return 1
-    assert_output_contains "$output" 'Antigravity binding: latest' || return 1
+    assert_output_contains "$output" 'Antigravity integration capabilities: launch, exact_resume, startup_context, recovery_autosave, memory_index' || return 1
+    assert_output_contains "$output" "Antigravity binding: $AGY_NEW_ID" || return 1
+    assert_output_contains "$output" "Antigravity hook installed: $HOME/.gemini/config/plugins/cs" || return 1
     if [[ "$output" == *Codex* ]]; then
         echo "  FAIL: an Antigravity doctor run must not name Codex: $output"; return 1
     fi
 }
 
-test_files_changed_drains_input_and_emits_nothing() {
-    local output
-    output=$(printf '%s\n' '{"hook_event_name":"PostToolUse","tool_name":"Write"}' \
-        | bash -c 'source "$1"; cs_engine_call antigravity files_changed' _ "$SCRIPT_DIR/../hooks/cs-engine-events.sh") \
-        || { echo "  FAIL: files_changed failed"; return 1; }
-    assert_eq "" "$output" "no event is invented"
+# A binding an older cs wrote says latest and names no conversation: it was
+# written before agy started and kept by a run left before its first turn, so
+# the folder may hold none, and --continue would open a parent or child
+# folder's for the hook to bind by id (review R4). The open starts a new
+# conversation instead, offers nothing to continue, and --resume has nothing
+# to resume; the hook binds the new conversation, and later opens resume it.
+test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id() {
+    local output dir status=0
+    output=$(AGY_NO_TURN=1 "$CS_BIN" legacy --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir legacy)
+    printf 'latest\n' > "$dir/.cs/local/antigravity-conversation"
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" legacy --resume 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --resume on the legacy word must fail: $output"; return 1; }
+    assert_output_contains "$output" 'no recorded antigravity conversation' "nothing to resume" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    output=$(printf 'y' | CS_ASSUME_TTY=1 "$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" 'Continue previous Antigravity conversation' "nothing to continue is offered" || return 1
+    assert_eq "" "$(_agy_argv)" "the legacy binding starts a new conversation, never --continue" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding legacy)" "the hook binds the new conversation" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"engine\":\"antigravity\",\"session_id\":\"$AGY_NEW_ID\",\"source\":\"startup\"" "recorded as a new start" || return 1
+    output=$("$CS_BIN" legacy 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "the next open resumes it by id"
+}
+
+# The legacy word names no conversation, so --resume is refused before the
+# open unarchives or migrates anything, as with no binding at all.
+test_a_resume_of_a_legacy_latest_binding_leaves_the_session_untouched() {
+    local output dir status=0
+    output=$(AGY_NO_TURN=1 "$CS_BIN" relic --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir relic)
+    printf 'latest\n' > "$dir/.cs/local/antigravity-conversation"
+    : > "$dir/.cs/archived"
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" relic --resume 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --resume on the legacy word must fail: $output"; return 1; }
+    assert_output_contains "$output" 'Cannot resume: no recorded antigravity conversation for relic' \
+        "refused before the open" || return 1
+    assert_file_exists "$dir/.cs/archived" "the refused open leaves the session archived" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+}
+
+# A fresh start keeps the old binding until the new conversation reaches the
+# model, then rebinds and records the rotation.
+test_a_fresh_start_rebinds_once_it_reaches_the_model() {
+    local output dir second=44444444-4444-4444-8444-444444444444
+    output=$("$CS_BIN" renew --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir renew)
+    output=$(AGY_NO_TURN=1 AGY_NEW_ID=$second "$CS_BIN" renew --fresh 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding renew)" "a fresh run left before any turn keeps the binding" || return 1
+    output=$(AGY_NEW_ID=$second "$CS_BIN" renew --fresh 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$second" "$(_binding renew)" "a fresh run that reaches the model rebinds" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$AGY_NEW_ID\",\"to\":\"$second\",\"reason\":\"fresh\"" "the rotation is recorded" || return 1
+    assert_file_contains "$dir/.cs/local/session.log" "Rebound antigravity conversation: $AGY_NEW_ID -> $second" || return 1
+    output=$("$CS_BIN" renew 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $second" "$(_agy_argv)" "the next open resumes the new conversation"
+}
+
+# The run's first conversation to reach the model is the session's. One the
+# run meets later, a subagent's, has its own id and never takes the binding.
+test_a_later_conversation_in_the_run_never_takes_the_binding() {
+    local output dir sub=55555555-5555-4555-8555-555555555555
+    output=$(AGY_SUBAGENTS=$sub "$CS_BIN" nested --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir nested)
+    assert_eq "$AGY_NEW_ID" "$(_binding nested)" "a subagent's conversation leaves the binding" || return 1
+    assert_file_not_contains "$dir/.cs/timeline.jsonl" "$sub" "nor reaches the timeline" || return 1
+    assert_eq 1 "$(grep -c "\"session_id\":\"$AGY_NEW_ID\"" "$dir/.cs/timeline.jsonl")" \
+        "a run records its conversation once, however many model calls it makes" || return 1
+    output=$(AGY_SUBAGENTS=$sub "$CS_BIN" nested 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding nested)" "nor in a resumed run" || return 1
+    assert_eq "" "$(ls -A "$HOME/.cache/cs/antigravity-runs" 2>/dev/null)" "each run's directory goes with it"
+}
+
+# The hook acts only in the run cs launched, for a conversation id that is a
+# UUID; everything else answers {} and changes nothing.
+test_the_hook_acts_only_in_the_run_cs_launched() {
+    local output dir payload status
+    output=$(AGY_NO_TURN=1 "$CS_BIN" guarded --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir guarded)
+    payload=$(jq -nc --arg id "$AGY_NEW_ID" '{conversationId: $id}')
+    output=$(printf '%s' "$payload" | "$CS_BIN" -antigravity-hook pre-invocation) || return 1
+    assert_eq '{}' "$output" "a plain agy run gets {}" || return 1
+    output=$(printf '%s' "$payload" | CS_RUN_ENGINE=antigravity CS_SESSION_DIR="$dir" \
+        CS_RUN_ID=66666666-6666-4666-8666-666666666666 "$CS_BIN" -antigravity-hook pre-invocation) || return 1
+    assert_eq '{}' "$output" "a run that does not hold the session's lease gets {}" || return 1
+    assert_not_exists "$dir/.cs/local/antigravity-conversation" "and binds nothing" || return 1
+    for payload in 'not json' '{"conversationId": "../../x"}' '{"conversationId": 7}' '[]'; do
+        output=$(printf '%s' "$payload" | CS_RUN_ENGINE=antigravity CS_SESSION_DIR="$dir" \
+            "$CS_BIN" -antigravity-hook pre-invocation) || return 1
+        assert_eq '{}' "$output" "a malformed payload gets {}: $payload" || return 1
+    done
+    status=0
+    output=$(printf '{}' | "$CS_BIN" -antigravity-hook from-a-newer-cs) || status=$?
+    assert_eq 0 "$status" "an unknown verb from another cs's plugin never fails a turn" || return 1
+    assert_eq '{}' "$output" || return 1
+    assert_not_exists "$dir/.cs/local/antigravity-conversation" "nothing was bound" || return 1
+    # Inside the run that holds the lease, an id that is not a UUID is not
+    # bound either, and every hook still answers {}.
+    for bad in "../../$AGY_NEW_ID" "$AGY_NEW_ID-x" '--help'; do
+        : > "$AGY_HOOK_OUT"
+        output=$(AGY_NEW_ID="$bad" "$CS_BIN" guarded 2>&1) || { echo "$output"; return 1; }
+        assert_not_exists "$dir/.cs/local/antigravity-conversation" "the id '$bad' is not bound" || return 1
+        assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT")" "every hook answers {} for '$bad'" || return 1
+    done
+}
+
+test_conversations_lists_the_antigravity_conversations() {
+    local output dir second=44444444-4444-4444-8444-444444444444
+    output=$("$CS_BIN" listed --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_NEW_ID=$second "$CS_BIN" listed --fresh 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir listed)
+    output=$(CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -conversations 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "antigravity:${AGY_NEW_ID:0:8}  started (startup)" || return 1
+    assert_output_contains "$output" "antigravity:${AGY_NEW_ID:0:8} > ${second:0:8}  rotated (fresh)" || return 1
+    assert_output_contains "$output" "antigravity:${second:0:8}  started (startup)  \\[current\\]"
+}
+
+test_a_missing_hook_is_named_at_launch_and_by_doctor() {
+    local output dir
+    rm -rf "$HOME/.gemini/config/plugins/cs"
+    output=$("$CS_BIN" hookless --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'The cs hook for Antigravity is missing' "the launch says so" || return 1
+    assert_output_not_contains "$output" 'a reopen resumes this conversation' "and promises no exact reopen" || return 1
+    dir=$(_session_dir hookless)
+    assert_not_exists "$dir/.cs/local/antigravity-conversation" "no hook, no binding" || return 1
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'Antigravity hook not installed' "doctor says so" || return 1
+    mkdir -p "$HOME/.gemini/config/plugins/cs"
+    printf '{"mine": {}}\n' > "$HOME/.gemini/config/plugins/cs/hooks.json"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "is not cs's, so cs left it alone" "a folder of the user's is named" || return 1
+    rm -rf "$HOME/.gemini/config/plugins/cs"
+    _install_agy_hook || return 1
+    mkdir -p "$HOME/.gemini/config"
+    printf '{"plugins": {"cs": {"enabled": false}}}\n' > "$HOME/.gemini/config/config.json"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'agy plugin enable cs' "a plugin switched off is named with the fix"
+}
+
+# A hook whose recovery consumer is gone (an install cut short before its
+# scripts, or scripts/ deleted) still binds, but promises no autosave.
+test_a_hook_without_its_recovery_consumer_is_named_at_launch_and_by_doctor() {
+    local output dir
+    rm -rf "$HOME/.gemini/config/plugins/cs/scripts"
+    output=$("$CS_BIN" unsaved --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" 'edits are not autosaved' "the launch says so" || return 1
+    assert_output_not_contains "$output" 'edits are autosaved for recovery' "and promises no autosave" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding unsaved)" "the hook still binds the conversation" || return 1
+    dir=$(_session_dir unsaved)
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'has no recovery consumer' "doctor says so" || return 1
+    assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed"
+}
+
+# What an install or a removal of cs left is cs's to finish: doctor sends the
+# user to setup.sh, not to rename the folder.
+test_doctor_sends_a_folder_cs_left_to_setup() {
+    local output dir plugin="$HOME/.gemini/config/plugins/cs"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" leftover --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir leftover)
+    rm "$plugin/hooks.json"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'holds only what an install or removal of cs left there' || return 1
+    assert_output_not_contains "$output" "is not cs's" "a folder cs left is not called the user's"
+}
+
+# The hook's writes never follow a link: not a mark planted in the run's
+# directory, not the session's log turned into a link out of the session.
+test_the_hook_never_writes_through_a_link() {
+    local output dir victim="$TEST_TMPDIR/victim" log_victim="$TEST_TMPDIR/log-victim"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" linked --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir linked)
+    output=$(AGY_PLANT_LINK="$victim" "$CS_BIN" linked 2>&1) || { echo "$output"; return 1; }
+    assert_not_exists "$victim" "a mark planted as a link is not written through" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding linked)" "the run still binds its conversation" || return 1
+    printf 'theirs\n' > "$log_victim"
+    output=$(AGY_PLANT_LOG="$log_victim" AGY_NEW_ID=44444444-4444-4444-8444-444444444444 \
+        "$CS_BIN" linked --fresh 2>&1) || true
+    assert_eq theirs "$(cat "$log_victim")" "the log line is not appended through a link planted mid-run" || return 1
+    assert_eq 44444444-4444-4444-8444-444444444444 "$(_binding linked)" "the binding is still made"
+}
+
+# The installer quotes a cs path the shell would split; doctor reads it back.
+test_doctor_reads_back_a_quoted_cs_path() {
+    local output dir odd="$TEST_TMPDIR/it's here"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" quoted --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir quoted)
+    mkdir -p "$odd"
+    ln -s "$CS_BIN" "$odd/cs"
+    ( source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$odd/cs" ) || return 1
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity hook installed" "a quote in the path is read back"
+}
+
+test_edits_in_a_run_are_autosaved_for_recovery() {
+    local output dir
+    output=$(AGY_NO_TURN=1 "$CS_BIN" saved --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir saved)
+    git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || git -C "$dir" init -q || return 1
+    output=$(AGY_EDITS="$dir/notes.txt" CS_TEST_SYNC=1 "$CS_BIN" saved 2>&1) || { echo "$output"; return 1; }
+    assert_eq edited "$(git -C "$dir" show "refs/worktree/cs/session/$AGY_NEW_ID:notes.txt" 2>&1)" \
+        "agy's write reaches the conversation's recovery ref"
 }
 
 run_test test_missing_agy_names_the_install_line_before_creating_anything
 run_test test_fresh_launch_starts_agy_in_the_session_with_its_context_rule
-run_test test_reopen_continues_and_fresh_and_resume_choose_explicitly
+run_test test_reopen_resumes_by_id_and_fresh_and_resume_choose_explicitly
 run_test test_the_reopen_question_takes_n_as_fresh_and_enter_as_continue
-run_test test_a_failed_first_run_leaves_no_binding
+run_test test_a_first_run_left_before_any_turn_binds_nothing
 run_test test_resume_without_a_binding_refuses
 run_test test_an_invalid_binding_refuses_before_agy_starts
 run_test test_launch_options_map_to_agy_flags
@@ -502,7 +779,7 @@ run_test test_the_exclude_entry_is_anchored_below_the_checkout_root
 run_test test_a_rule_cs_did_not_write_is_never_replaced
 run_test test_a_linked_rules_folder_is_never_written_through
 run_test test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing
-run_test test_capabilities_claim_only_launch_context_and_memory
+run_test test_capabilities_claim_exact_resume_and_recovery_only
 run_test test_unknown_engine_errors_list_all_three
 run_test test_spawn_refuses_a_brief_or_task_it_cannot_deliver
 run_test test_a_staged_spawn_seed_is_named_and_left_for_another_engine
@@ -514,5 +791,16 @@ run_test test_the_engine_is_recorded_before_agy_starts
 run_test test_relative_agy_and_cs_paths_resolve_before_the_launch_changes_folder
 run_test test_from_handoff_is_refused_before_the_open_changes_the_session
 run_test test_doctor_names_antigravity_and_its_binding
-run_test test_files_changed_drains_input_and_emits_nothing
+run_test test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id
+run_test test_a_resume_of_a_legacy_latest_binding_leaves_the_session_untouched
+run_test test_a_fresh_start_rebinds_once_it_reaches_the_model
+run_test test_a_later_conversation_in_the_run_never_takes_the_binding
+run_test test_the_hook_acts_only_in_the_run_cs_launched
+run_test test_conversations_lists_the_antigravity_conversations
+run_test test_a_missing_hook_is_named_at_launch_and_by_doctor
+run_test test_a_hook_without_its_recovery_consumer_is_named_at_launch_and_by_doctor
+run_test test_edits_in_a_run_are_autosaved_for_recovery
+run_test test_doctor_reads_back_a_quoted_cs_path
+run_test test_the_hook_never_writes_through_a_link
+run_test test_doctor_sends_a_folder_cs_left_to_setup
 report_results

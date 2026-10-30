@@ -23,6 +23,7 @@ The installer deploys these components:
 | Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
 | Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
 | Spinner tip | `~/.claude/skills/cs/tips.json`, named in `settings.json` as `spinnerTipsOverride.tipsFile`. See [band settings](#band-settings). |
+| Antigravity hook | `~/.gemini/config/plugins/cs/`, only where `agy` is installed or `~/.gemini/antigravity-cli`, `agy`'s own folder, exists. See [Antigravity sessions](antigravity.md#the-cs-hook). |
 
 See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
 
