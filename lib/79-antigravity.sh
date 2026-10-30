@@ -54,20 +54,42 @@ _antigravity_encrypted_refusal() {  # session_name
         "$1" "$HOME/.gemini/antigravity" "$1"
 }
 
+# An absolute path with its . and .. levels folded by spelling alone. The
+# links on it stay, so cs_append_inside still sees where a write would land.
+_antigravity_fold_path() {  # absolute path
+    local rest="${1#/}" part out=""
+    while [ -n "$rest" ]; do
+        part="${rest%%/*}"
+        case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
+        case "$part" in
+            ''|.) ;;
+            ..) out="${out%/*}" ;;
+            *) out="$out/$part" ;;
+        esac
+    done
+    printf '%s\n' "${out:-/}"
+}
+
 # The clone-local exclude keeps the rule out of git status, so it never
 # dirties the project or blocks a feature's retirement. The entry is anchored
 # at the session folder, which can sit below the checkout's root. A folder
 # outside any checkout needs none.
 _antigravity_exclude_rule() {  # session_dir
-    local exclude prefix
+    local exclude prefix session_p
     exclude=$(cd -- "$1" && git rev-parse --git-path info/exclude 2>/dev/null) || return 0
     prefix=$(cd -- "$1" && git rev-parse --show-prefix 2>/dev/null) || return 0
     [ -n "$exclude" ] || return 0
     # A folder name holding a glob character must match only itself.
     prefix=$(printf '%s' "$prefix" | sed 's/[][*?\\]/\\&/g')
+    # Below the checkout's root git answers ../../.git/info/exclude, relative
+    # to the physical folder it ran in. Spelled under the session, that path
+    # would read as leaving it; folded, it names the checkout's own file.
     case "$exclude" in
         /*) ;;
-        *) exclude="$1/$exclude" ;;
+        *)
+            session_p=$(cd -P -- "$1" && pwd) || return 1
+            exclude=$(_antigravity_fold_path "$session_p/$exclude")
+            ;;
     esac
     _append_exclude_once "$exclude" "/$prefix$CS_ANTIGRAVITY_RULE"
 }

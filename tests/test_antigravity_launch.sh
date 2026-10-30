@@ -233,6 +233,25 @@ test_the_exclude_entry_is_never_appended_through_a_link() {
     assert_not_exists "$missing" "a dangling link creates nothing where it leads"
 }
 
+# A session folder below a checkout's root (one with no .git of its own,
+# inside a repo) gets its entry in that repo's exclude, anchored at the
+# session folder, with the glob characters of its path escaped.
+test_the_exclude_entry_is_anchored_below_the_checkout_root() {
+    local output repo="$TEST_TMPDIR/repo" dir
+    export CS_SESSIONS_ROOT="$repo/[x] sessions"
+    mkdir -p "$CS_SESSIONS_ROOT"
+    git init -q "$repo"
+    output=$("$CS_BIN" deep --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir deep)
+    rm -rf "$dir/.git"
+    output=$("$CS_BIN" deep 2>&1) || { echo "$output"; return 1; }
+    [ ! -e "$dir/.git" ] || { echo "  FAIL: the session must stay below the checkout root"; return 1; }
+    assert_file_contains "$repo/.git/info/exclude" \
+        '^/\\\[x\\\] sessions/deep/\.agents/rules/cs-session\.md$' "anchored, glob characters escaped" || return 1
+    assert_eq "" "$(git -C "$repo" status --porcelain --untracked-files=all -- "$dir/.agents")" \
+        "the rule is not listed as untracked"
+}
+
 test_a_rule_cs_did_not_write_is_never_replaced() {
     local output status=0 rule exclude
     output=$("$CS_BIN" owned --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -464,6 +483,7 @@ run_test test_launch_options_map_to_agy_flags
 run_test test_an_agy_without_a_flag_cs_passes_is_refused_before_anything_is_written
 run_test test_the_rule_stays_out_of_git_status
 run_test test_the_exclude_entry_is_never_appended_through_a_link
+run_test test_the_exclude_entry_is_anchored_below_the_checkout_root
 run_test test_a_rule_cs_did_not_write_is_never_replaced
 run_test test_a_linked_rules_folder_is_never_written_through
 run_test test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing

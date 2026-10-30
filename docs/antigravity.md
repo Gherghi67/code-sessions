@@ -97,7 +97,7 @@ This is not an exact resume, and the engine does not claim `exact_resume`:
   whose `agy` exits with an error (a sign-in that never finished, a crash at
   start) therefore leaves no binding, and the next open starts a new
   conversation. A first launch left with `/exit` before any turn still binds.
-- For a session folder below a checkout's root (an adopted subfolder), `agy`
+- For a session folder below a checkout's root (one with no `.git` of its own, inside another checkout), `agy`
   still finds the rule, because it walks from the working folder up to the
   repository root. Which conversation `--continue` picks there was not checked
   against a live `agy`.
