@@ -361,6 +361,18 @@ test_spawn_refuses_a_brief_or_task_it_cannot_deliver() {
     assert_not_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "no seed is staged"
 }
 
+# A seed cs -spawn staged under another engine (its window died before it
+# launched) stays for the next Claude or Codex open, and the open says so.
+test_a_staged_spawn_seed_is_named_and_left_for_another_engine() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/seeded.seed"
+    output=$("$CS_BIN" seeded --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    mkdir -p "${seed%/*}"
+    printf 'token\ntask: do it\n' > "$seed"
+    output=$("$CS_BIN" seeded 2>&1) || { echo "  FAIL: the open must go on: $output"; return 1; }
+    assert_output_contains "$output" 'A spawn seed is staged for seeded' "the open names the seed" || return 1
+    assert_file_exists "$seed" "the seed stays staged"
+}
+
 test_finish_and_handoff_launches_are_refused() {
     local output status=0
     output=$("$CS_BIN" lander --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -490,6 +502,7 @@ run_test test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing
 run_test test_capabilities_claim_only_launch_context_and_memory
 run_test test_unknown_engine_errors_list_all_three
 run_test test_spawn_refuses_a_brief_or_task_it_cannot_deliver
+run_test test_a_staged_spawn_seed_is_named_and_left_for_another_engine
 run_test test_finish_and_handoff_launches_are_refused
 run_test test_switch_is_refused_from_an_antigravity_run
 run_test test_an_encrypted_session_is_refused_before_its_vault_opens

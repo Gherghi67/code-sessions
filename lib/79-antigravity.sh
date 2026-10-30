@@ -246,6 +246,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         return 1
     }
 
+    # A seed cs -spawn staged under Claude or Codex, whose window died before
+    # it launched, stays staged: agy takes no prompt to start it with.
+    [ ! -f "${SESSIONS_ROOT:-}/.spawn/$session_name.seed" ] \
+        || warn "A spawn seed is staged for $session_name; it stays staged for the next Claude or Codex open (cs $session_name --engine claude), since Antigravity takes no brief yet."
     printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), and a reopen continues agy's latest conversation in this folder. Rotation, mail, the task queue and automatic recovery are not available under Antigravity yet."
     local status=0
     cs_run_child "$agy_bin" ${continue_arg:+"$continue_arg"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || status=$?
