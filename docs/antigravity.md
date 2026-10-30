@@ -80,7 +80,8 @@ them.
 `plugin.json`, and runs the hooks its `hooks.json` names; a plugin is on unless
 `agy plugin disable` turned it off. The installer writes cs's own plugin,
 `~/.gemini/config/plugins/cs/`, wherever `agy` is on `PATH` (or `AGY_BIN`
-names it) or `~/.gemini` exists, whatever engines the install chose:
+names it) or `~/.gemini/antigravity-cli`, `agy`'s own folder, exists, whatever
+engines the install chose:
 
 - `plugin.json` and `hooks.json`, with one named hook, `cs-session`:
   `cs -antigravity-hook pre-invocation` before each model call, and

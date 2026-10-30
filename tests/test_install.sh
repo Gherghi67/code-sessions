@@ -5004,10 +5004,29 @@ test_install_writes_no_gemini_folder_without_agy() {
     assert_not_exists "$fake_home/.gemini" "a host without agy gets no ~/.gemini"
 }
 
+# gemini-cli keeps its own files in ~/.gemini; agy's folder is
+# ~/.gemini/antigravity-cli, and only that one stands for agy off PATH.
+test_install_writes_no_antigravity_hook_for_gemini_cli_alone() {
+    local fake_home="$TEST_TMPDIR/gemini-cli"
+    mkdir -p "$fake_home/.gemini"
+    printf '{}\n' > "$fake_home/.gemini/settings.json"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_not_exists "$fake_home/.gemini/config" "gemini-cli's ~/.gemini gets no Antigravity hook"
+}
+
+test_install_registers_the_antigravity_hook_where_agy_has_its_folder() {
+    local fake_home="$TEST_TMPDIR/agy-folder"
+    mkdir -p "$fake_home/.gemini/antigravity-cli"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_file_exists "$fake_home/.gemini/config/plugins/cs/hooks.json" "agy's folder gets the hook with agy off PATH"
+}
+
 test_install_keeps_a_plugin_folder_that_is_not_cs_s() {
     local fake_home="$TEST_TMPDIR/agy-user" plugin out
     plugin="$fake_home/.gemini/config/plugins/cs"
-    mkdir -p "$plugin"
+    mkdir -p "$plugin" "$fake_home/.gemini/antigravity-cli"
     printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$plugin/hooks.json"
     out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
         || { echo "  FAIL: install.sh exited non-zero: $out"; return 1; }
@@ -5018,5 +5037,7 @@ test_install_keeps_a_plugin_folder_that_is_not_cs_s() {
 
 run_test test_install_registers_the_antigravity_hook_where_agy_is
 run_test test_install_writes_no_gemini_folder_without_agy
+run_test test_install_writes_no_antigravity_hook_for_gemini_cli_alone
+run_test test_install_registers_the_antigravity_hook_where_agy_has_its_folder
 run_test test_install_keeps_a_plugin_folder_that_is_not_cs_s
 report_results

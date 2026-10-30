@@ -2627,9 +2627,9 @@ fi
 # Antigravity runs on any install: its adapter is in cs itself. Its hook, a
 # plugin cs owns under ~/.gemini/config/plugins, records the conversation a
 # reopen resumes and hands agy's edits to recovery (lib/79-antigravity.sh).
-# Written where agy is installed or has its folder, so a host without agy
-# gets no ~/.gemini.
-if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini" ]; then
+# Written where agy is installed or has its own folder, ~/.gemini/antigravity-cli:
+# gemini-cli keeps ~/.gemini too, and a host without agy gets nothing there.
+if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
     if command -v jq >/dev/null 2>&1; then
         AGY_PLUGIN_DIR=$(_antigravity_plugin_dir)
         installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
