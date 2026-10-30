@@ -59,6 +59,10 @@ _doctor_check_antigravity_hook() {
         _doctor_warn "Antigravity hook not installed at $dir: reopens start a new conversation and edits are not autosaved. Run setup.sh again with agy installed."
         return 0
     fi
+    if _antigravity_plugin_is_cs_leftover "$dir"; then
+        _doctor_warn "Antigravity hook not installed: $dir holds only what an install or removal of cs left there. Run setup.sh again."
+        return 0
+    fi
     if ! _antigravity_plugin_is_cs "$dir"; then
         _doctor_warn "Antigravity hook: $dir is not cs's, so cs left it alone; rename it and run setup.sh again"
         return 0

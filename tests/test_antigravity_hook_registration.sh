@@ -161,6 +161,52 @@ test_a_linked_scripts_folder_is_never_written_or_emptied_through() {
     done
 }
 
+# An install killed between a temp's write and its rename leaves the temp,
+# which the next install and a removal still know as cs's.
+test_an_install_killed_before_a_rename_leaves_a_folder_the_next_takes() {
+    mkdir -p "$PLUGIN"
+    : > "$PLUGIN/.hooks.json.AbC123"
+    _antigravity_plugin_register /opt/cs || { echo "  FAIL: a folder holding only cs's temp must be taken"; return 1; }
+    _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: the folder is cs's after the install"; return 1; }
+    : > "$PLUGIN/.plugin.json.XyZ789"
+    _antigravity_plugin_unregister || return 1
+    assert_not_exists "$PLUGIN" "a removal takes cs's temps with the rest"
+}
+
+# A removal keeps a script the user changed, or is cut short after hooks.json:
+# either leaves a folder of cs's the next install takes and a removal clears.
+test_a_folder_a_removal_left_is_taken_by_the_next_install() {
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_scripts || return 1
+    printf '# my change\n' >> "$PLUGIN/scripts/cs-resolve.sh"
+    _antigravity_plugin_unregister 2>/dev/null || return 1
+    _antigravity_plugin_register /opt/cs || { echo "  FAIL: a folder holding a kept script must be taken"; return 1; }
+    _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: the folder is cs's again"; return 1; }
+    assert_file_contains "$PLUGIN/scripts/cs-resolve.sh" '# my change' "the kept script is left as it was" || return 1
+    rm -rf "$PLUGIN"
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_scripts || return 1
+    rm "$PLUGIN/hooks.json"
+    _antigravity_plugin_unregister || { echo "  FAIL: a removal cut short after hooks.json must be finished by the next"; return 1; }
+    assert_not_exists "$PLUGIN" "the next removal clears it"
+}
+
+# Without hooks.json, anything beyond what cs leaves keeps the folder the user's.
+test_a_folder_holding_more_than_cs_leaves_is_still_the_users() {
+    local status
+    mkdir -p "$PLUGIN/skills/mine"
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a folder with a skills/ of the user's is refused" || return 1
+    assert_not_exists "$PLUGIN/hooks.json" "and nothing is written" || return 1
+    rm -rf "$PLUGIN/skills"
+    printf '{"name": "cs", "description": "mine"}\n' > "$PLUGIN/plugin.json"
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a plugin.json of the user's is refused" || return 1
+    status=0; _antigravity_plugin_unregister || status=$?
+    assert_eq 3 "$status" "and not removed" || return 1
+    assert_file_contains "$PLUGIN/plugin.json" mine "the user's plugin.json stays"
+}
+
 test_unregister_without_a_plugin_is_a_no_op() {
     _antigravity_plugin_unregister || return 1
     assert_not_exists "$HOME/.gemini" "nothing is created"
@@ -175,4 +221,7 @@ run_test test_unregister_removes_only_what_cs_wrote
 run_test test_unregister_without_a_plugin_is_a_no_op
 run_test test_an_install_cut_short_is_repaired_by_the_next
 run_test test_a_linked_scripts_folder_is_never_written_or_emptied_through
+run_test test_an_install_killed_before_a_rename_leaves_a_folder_the_next_takes
+run_test test_a_folder_a_removal_left_is_taken_by_the_next_install
+run_test test_a_folder_holding_more_than_cs_leaves_is_still_the_users
 report_results

@@ -673,6 +673,18 @@ test_a_missing_hook_is_named_at_launch_and_by_doctor() {
     assert_output_contains "$output" 'agy plugin enable cs' "a plugin switched off is named with the fix"
 }
 
+# What an install or a removal of cs left is cs's to finish: doctor sends the
+# user to setup.sh, not to rename the folder.
+test_doctor_sends_a_folder_cs_left_to_setup() {
+    local output dir plugin="$HOME/.gemini/config/plugins/cs"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" leftover --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir leftover)
+    rm "$plugin/hooks.json"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'holds only what an install or removal of cs left there' || return 1
+    assert_output_not_contains "$output" "is not cs's" "a folder cs left is not called the user's"
+}
+
 # The hook's writes never follow a link: not a mark planted in the run's
 # directory, not the session's log turned into a link out of the session.
 test_the_hook_never_writes_through_a_link() {
@@ -747,4 +759,5 @@ run_test test_a_missing_hook_is_named_at_launch_and_by_doctor
 run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
+run_test test_doctor_sends_a_folder_cs_left_to_setup
 report_results

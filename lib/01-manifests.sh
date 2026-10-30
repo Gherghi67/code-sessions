@@ -437,8 +437,10 @@ _antigravity_hook_command() {  # cs_path, verb
 
 # Whether a folder is cs's plugin: its hooks.json, a plain file, names only
 # cs's hook, and every command there is a cs -antigravity-hook call. A folder
-# of that name without it is the user's, and cs leaves it alone; so is one
-# whose scripts/ is a link, which a deploy or a removal would go through.
+# of that name without it is the user's, and cs leaves it alone, unless it
+# holds only what cs leaves there (_antigravity_plugin_is_cs_leftover); one
+# whose scripts/ is a link, which a deploy or a removal would go through, is
+# the user's too.
 _antigravity_plugin_is_cs() {  # plugin_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
     [ ! -L "$1/scripts" ] || return 1
@@ -462,18 +464,18 @@ _antigravity_hooks_document() {  # cs_path
             PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
 }
 
-# Write cs's hooks.json, then plugin.json, each whole and renamed into place:
-# hooks.json is what marks the folder cs's, so an install cut short after it
-# leaves a folder the next one still knows, and one cut short before it
-# leaves the folder empty, which the next one takes too. Returns 3, writing
-# nothing, when a folder of that name is not cs's; the recovery scripts are
-# the installer's to deploy into scripts/.
+# Write cs's hooks.json, then plugin.json, each to a temp renamed into place.
+# hooks.json is what marks the folder cs's. An install cut short before it is
+# in place leaves the folder empty or holding cs's temp, which
+# _antigravity_plugin_is_cs_leftover still knows, so the next install takes
+# the folder either way. Returns 3, writing nothing, when a folder of that
+# name is not cs's; the recovery scripts are the installer's to deploy into
+# scripts/.
 _antigravity_plugin_register() {  # cs_path
     local dir doc tmp
     dir=$(_antigravity_plugin_dir)
     if [ -e "$dir" ] || [ -L "$dir" ]; then
-        _antigravity_plugin_is_cs "$dir" \
-            || { [ -d "$dir" ] && [ ! -L "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; } || return 3
+        _antigravity_plugin_is_cs "$dir" || _antigravity_plugin_is_cs_leftover "$dir" || return 3
     fi
     doc=$(_antigravity_hooks_document "$1") || return 1
     mkdir -p "$dir" || return 1
@@ -489,23 +491,48 @@ _antigravity_plugin_manifest() {
     jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
 }
 
-# Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, and
-# the recovery scripts the install record says cs wrote (others are kept and
-# named), then the folders if empty. Returns 3, removing nothing, when the
-# folder is not cs's.
+_antigravity_plugin_manifest_is_cs() {  # plugin.json
+    [ -f "$1" ] && [ ! -L "$1" ] \
+        && [ "$(jq -cS . "$1" 2>/dev/null)" = "$(_antigravity_plugin_manifest | jq -cS .)" ]
+}
+
+# Whether a folder without hooks.json holds only what cs itself leaves there
+# when an install or a removal is cut short, or a removal keeps a script the
+# user changed: cs's plugin.json, a scripts/ folder (each file in it is still
+# judged by its content when deployed or removed) and cs's write temps. The
+# next install takes such a folder; a removal clears what of it is cs's.
+_antigravity_plugin_is_cs_leftover() {  # plugin_dir
+    local entry
+    [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] \
+        && [ ! -L "$1/scripts" ] || return 1
+    for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        case "${entry##*/}" in
+            scripts) [ -d "$entry" ] ;;
+            plugin.json) _antigravity_plugin_manifest_is_cs "$entry" ;;
+            .hooks.json.??????|.plugin.json.??????) [ -f "$entry" ] && [ ! -L "$entry" ] ;;
+            *) false ;;
+        esac || return 1
+    done
+}
+
+# Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, the
+# recovery scripts the install record says cs wrote (others are kept and
+# named) and cs's write temps, then the folders if empty. Returns 3, removing
+# nothing, when the folder is neither cs's nor only what cs left there.
 _antigravity_plugin_unregister() {
     local dir script
     dir=$(_antigravity_plugin_dir)
     [ -e "$dir" ] || [ -L "$dir" ] || return 0
-    _antigravity_plugin_is_cs "$dir" || return 3
+    _antigravity_plugin_is_cs "$dir" || _antigravity_plugin_is_cs_leftover "$dir" || return 3
     rm -f "$dir/hooks.json" || return 1
-    if [ -f "$dir/plugin.json" ] && [ ! -L "$dir/plugin.json" ] \
-        && [ "$(jq -cS . "$dir/plugin.json" 2>/dev/null)" = "$(_antigravity_plugin_manifest | jq -cS .)" ]; then
+    if _antigravity_plugin_manifest_is_cs "$dir/plugin.json"; then
         rm -f "$dir/plugin.json" || return 1
     fi
     for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
+    rm -f "$dir"/.hooks.json.?????? "$dir"/.plugin.json.?????? 2>/dev/null || true
     rmdir "$dir/scripts" "$dir" 2>/dev/null || true
 }
 

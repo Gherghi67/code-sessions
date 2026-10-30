@@ -89,13 +89,19 @@ names it) or `~/.gemini` exists, whatever engines the install chose:
   three files it sources), as Codex gets under `$CODEX_HOME/hooks/cs/`.
 
 The folder is cs's whole. An install rewrites both files; it never merges into
-them. A folder of that name whose `hooks.json` is not cs's, or where the
-folder, `hooks.json` or `scripts/` is a symbolic link, is kept as it is with a
+them. A folder of that name is cs's when its `hooks.json` is cs's, or, with no
+`hooks.json`, when it holds only what an install or removal of cs leaves
+there: cs's own `plugin.json`, a `scripts/` folder, and the
+`.hooks.json.XXXXXX` and `.plugin.json.XXXXXX` temporary files of an install
+cut short. Any other folder of that name (a `hooks.json` or `plugin.json` that
+is not cs's, or anything else at its top level), or one where the folder,
+`hooks.json` or `scripts/` is a symbolic link, is kept as it is with a
 warning, and nothing is registered. `cs -uninstall` removes only the files cs
-wrote: a script you changed stays, and is named. `cs -doctor` under
-Antigravity reports whether the hook is installed, names a cs that is there,
-and is not switched off in `~/.gemini/config/config.json` (`agy plugin enable
-cs` turns it back on).
+wrote: a script you changed stays, and is named, and the next install takes
+the folder back. `cs -doctor` under Antigravity reports whether the hook is
+installed, names a cs that is there, and is not switched off in
+`~/.gemini/config/config.json` (`agy plugin enable cs` turns it back on); for
+a folder holding only what cs left, it says to run `setup.sh` again.
 
 A plugin was picked over a workspace `<session>/.agents/hooks.json` because it
 is written once at install, outside the folder the agent writes. It needs no
