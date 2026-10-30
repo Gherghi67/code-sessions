@@ -2,10 +2,10 @@
 
 cs can launch a named session with Google's Antigravity CLI (`agy`) while
 keeping the session's files, notes, and workspace under the same `.cs/`
-directory that Claude Code and Codex use. This first version is
-launch-level: cs starts and reopens `agy` in the session with the session's
-context handed over. cs's hooks, skills, status line, `cs -switch`, mail, and
-rotation do not reach Antigravity yet.
+directory that Claude Code and Codex use. cs starts `agy` in the session with
+the session's context handed over, and a hook records the conversation so a
+reopen resumes exactly that one and `agy`'s edits reach recovery. cs's skills,
+status line, `cs -switch`, mail, and rotation do not reach Antigravity yet.
 
 ## Launching
 
@@ -30,7 +30,8 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 ```
 
 `agy` must be signed in for the current user. cs does not configure its
-credentials or read its state under `~/.gemini/`.
+credentials or read its conversations under `~/.gemini/`. The one thing cs
+writes there is its own hook plugin (see below).
 
 ## What cs hands over
 
@@ -73,36 +74,74 @@ The launch also exports the session identity (`CS_SESSION_NAME`,
 conversation variables are cleared so a launch from inside Claude does not leak
 them.
 
+## The cs hook
+
+`agy` loads every folder under `~/.gemini/config/plugins/` that holds a
+`plugin.json`, and runs the hooks its `hooks.json` names; a plugin is on unless
+`agy plugin disable` turned it off. The installer writes cs's own plugin,
+`~/.gemini/config/plugins/cs/`, wherever `agy` is on `PATH` (or `AGY_BIN`
+names it) or `~/.gemini` exists, whatever engines the install chose:
+
+- `plugin.json` and `hooks.json`, with one named hook, `cs-session`:
+  `cs -antigravity-hook pre-invocation` before each model call, and
+  `cs -antigravity-hook post-tool-use` after each tool (matcher `*`).
+- `scripts/`, holding the recovery consumer (`autosave-commits.sh` and the
+  three files it sources), as Codex gets under `$CODEX_HOME/hooks/cs/`.
+
+The folder is cs's whole. An install rewrites both files; it never merges into
+them. A folder of that name whose `hooks.json` is not cs's, or where the
+folder, `hooks.json` or `scripts/` is a symbolic link, is kept as it is with a
+warning, and nothing is registered. `cs -uninstall` removes only the files cs
+wrote: a script you changed stays, and is named. `cs -doctor` under
+Antigravity reports whether the hook is installed, names a cs that is there,
+and is not switched off in `~/.gemini/config/config.json` (`agy plugin enable
+cs` turns it back on).
+
+A plugin was picked over a workspace `<session>/.agents/hooks.json` because it
+is written once at install, outside the folder the agent writes. It needs no
+git exclude, never meets a `.agents/hooks.json` of the project's, and serves
+every session and feature worktree. `agy` runs it for every `agy` run on the
+machine. Outside a cs launch of an Antigravity session (no
+`CS_RUN_ENGINE=antigravity`), the hook prints `{}` and exits. That costs about
+50 ms per model call and tool call.
+
+Every hook prints `{}`, which decides nothing, and exits 0, so it never blocks
+or fails a turn. It acts only for the run that holds the session's lease.
+
 ## Reopening
 
-`agy --continue` reopens the most recent conversation in the folder `agy` runs
-in. `agy` names a conversation's ID only on the terminal as it exits, so cs
-cannot record it. cs binds the folder's latest conversation instead: after the
-first launch, `.cs/local/antigravity-conversation` holds the word `latest`, and
-`cs -engine` shows `conversation: latest`.
+The hook binds the session to the conversation its run works in:
+`.cs/local/antigravity-conversation` holds that conversation's ID, and
+`cs -engine` shows it. `agy` hands every hook the ID as `conversationId`. The
+binding is written at the first model call of the run, so a run left before
+any turn (with `/exit`, a sign-in that never finished, a crash at start)
+records nothing.
 
 | Open | What `agy` gets |
 | --- | --- |
-| `cs <name>` on a terminal, after a first launch | asks `Continue previous Antigravity conversation? [Y/n]`; `y` or Enter adds `--continue`, `n` starts a new conversation |
-| `cs <name>` unattended (no terminal) | `--continue` |
-| `cs <name> --resume` | `--continue`; refused if no Antigravity launch has happened yet |
+| `cs <name>` on a terminal, once a conversation is bound | asks `Continue previous Antigravity conversation? [Y/n]`; `y` or Enter adds `--conversation <id>`, `n` starts a new conversation |
+| `cs <name>` unattended (no terminal) | `--conversation <id>` |
+| `cs <name> --resume` | `--conversation <id>`; refused if no conversation is bound yet |
 | `cs <name> --fresh` | a new conversation |
 
-This is not an exact resume, and the engine does not claim `exact_resume`:
-
-- `--continue` reopens whichever conversation `agy` used last in that folder,
-  including one started there outside cs or picked with `/resume`.
-- According to `agy`'s release notes, `--continue` falls back to a conversation
-  in a parent or child folder when the session folder has none. A first launch
-  whose `agy` exits with an error (a sign-in that never finished, a crash at
-  start) therefore leaves no binding, and the next open starts a new
-  conversation. A first launch left with `/exit` before any turn still binds.
-- For a session folder below a checkout's root (one with no `.git` of its own, inside another checkout), `agy`
-  still finds the rule, because it walks from the working folder up to the
-  repository root. Which conversation `--continue` picks there was not checked
-  against a live `agy`.
-- `cs -conversations` lists no Antigravity conversations, because cs never
-  learns their IDs.
+- The run's first conversation to reach the model is the session's: the one a
+  reopen named, a new one, or one picked with `/resume` before the first turn.
+  A conversation the run meets later (a subagent's, or one opened with
+  `/resume` mid-run) has its own ID and leaves the binding alone. The hook
+  keeps track of this in a private directory of the run, under
+  `~/.cache/cs/antigravity-runs/`, outside the session folder.
+- A fresh start keeps the old binding until the new conversation reaches the
+  model. Then cs rebinds and records the rotation on the session's timeline.
+- The binding lies in the session folder, which the agent can write, so cs
+  checks it before every launch: anything but a UUID (or the legacy word below)
+  stops the launch before `agy` starts.
+- Sessions bound by an earlier cs hold the word `latest`. Their next open adds
+  `--continue` once, and the hook replaces the word with the ID of the
+  conversation that opens. From then on they resume by ID.
+- `cs -conversations` lists Antigravity conversations (`antigravity:<id>`) as
+  it lists Claude's and Codex's, with the bound one marked `[current]`.
+- Without the hook installed, a launch says so: nothing is bound, and every
+  open starts a new conversation.
 
 ## Launch options
 
@@ -119,8 +158,9 @@ row cycles Claude, Codex, and Antigravity with Left, Right, or Space.
 
 ## Capabilities and limits
 
-`cs -engine` under Antigravity reports `launch`, `startup_context`, and
-`memory_index`. `cs -engine supports <capability>` exits 1 for everything else.
+`cs -engine` under Antigravity reports `launch`, `exact_resume`,
+`startup_context`, `recovery_autosave`, and `memory_index`.
+`cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly.
 
 | Not available under Antigravity yet | What cs does instead |
@@ -130,21 +170,43 @@ Skills that check before relying on a capability refuse cleanly.
 | Spawn briefs and task queues (`spawn_brief`) | `cs -spawn --engine antigravity` opens the session only; with `--brief` or `--task` it is refused before anything is staged. |
 | `-finish` (`feature_finish`) | Refused before the session opens. Run it under Claude or Codex. A retire refusal for a feature of an Antigravity base names `cs <base> --engine claude -finish`. |
 | Mail delivery (`mail_delivery`) | `cs -msg` still works from the shell. Nothing surfaces mail inside `agy`. |
-| Recovery copies (`recovery_autosave`) | No hook reports `agy`'s edits, so no shadow-ref snapshots are made. |
-| Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity`, outside the vault. |
+| Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
 | `--remote` | Claude only. |
 
 A feature worktree (`cs <base>@<feature> --engine antigravity`) launches like
 any other session, with its own rule and the shared exclude entry.
 
+## Recovery copies
+
+`agy`'s PostToolUse payload carries the call it ran. `write_file` and
+`edit_file` name the file in `args.Path`, and a call that succeeded has an
+empty `error`. The hook turns each such edit into the shared `files_changed`
+event (`_cs_antigravity_adapter_files_changed` in `lib/25-engine-events.sh`).
+The recovery consumer then snapshots it to
+`refs/worktree/cs/session/<conversation id>`, as it does for Claude and Codex.
+An edit a shell command makes through `run_command` names no file, so it is
+not snapshotted. The same is true of shell edits under the other engines.
+
 The design was checked against `agy` 1.4.10 on 2026-10-30: two headless turns
 confirmed that an always-on rule in `.agents/rules/` reaches the model and that
-`--continue` reopens the folder's conversation. The test suite uses a fake
-`agy` only.
+`--continue` reopens the folder's conversation. The hook was checked against
+`agy` 1.4.11 the same day, with a temporary plugin under
+`~/.gemini/config/plugins/` and two headless turns:
+
+- The plugin loaded with no entry in `config.json`.
+- Hook commands got the run's environment and ran in the plugin's folder.
+- A new conversation fired SessionStart, then PreInvocation before each model
+  call. A `--conversation <id>` resume fired PreInvocation with the same ID
+  and no SessionStart.
+- The edits arrived as `write_file` and `edit_file` with an absolute `Path`.
+
+Not checked live: whether `agy` asks to trust a plugin's hooks in an
+interactive run (the headless runs did not ask), and what a subagent's hooks
+carry. The test suite uses a fake `agy` that fires the plugin's hooks with
+payloads of the measured shape.
 
 ## Follow-ups
 
-These come later as separate changes: hooks (which would give cs the
-conversation ID for an exact resume, and file-change events for recovery
-copies), the shipped skills, the status line, `cs -switch`, mail delivery, and
-rotation.
+These come later as separate changes: the shipped skills, the status line,
+`cs -switch`, mail delivery, rotation, spawn briefs, `-finish`, and encrypted
+sessions.

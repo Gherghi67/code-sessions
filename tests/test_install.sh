@@ -12,6 +12,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 
 INSTALL_SH="$SCRIPT_DIR/../install.sh"
+# The installer writes cs's Antigravity hook where agy is installed. A real
+# agy on the developer's PATH must not decide what an install writes, so agy
+# is absent unless a test names a fake one.
+export AGY_BIN="${TMPDIR:-/tmp}/cs-test-install-no-agy"
 # The installer's rotate/wrap keys question, as an expect -re pattern.
 _ROTATE_WRAP_ASK_RE='Ctrl\+X R.*\[y/n\]'
 
@@ -4967,4 +4971,52 @@ run_test test_rotate_wrap_keys_move_is_idempotent
 run_test test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflict
 run_test test_rotate_wrap_keys_move_never_doubles_a_key_its_context_holds
 run_test test_rotate_wrap_keys_move_never_doubles_a_key_a_later_block_holds
+# Antigravity's hook goes where agy is, whatever engines the install chose,
+# and an uninstall takes it back.
+test_install_registers_the_antigravity_hook_where_agy_is() {
+    local fake_home="$TEST_TMPDIR/agy-hook" fake_agy="$TEST_TMPDIR/bin/agy" plugin script before rc=0
+    mkdir -p "$fake_home" "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$fake_agy"
+    chmod +x "$fake_agy"
+    HOME="$fake_home" AGY_BIN="$fake_agy" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    plugin="$fake_home/.gemini/config/plugins/cs"
+    assert_eq "$fake_home/.local/bin/cs -antigravity-hook pre-invocation" \
+        "$(jq -r '."cs-session".PreInvocation[0].command' "$plugin/hooks.json")" "the hook names the installed cs" || return 1
+    for script in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+        cmp -s "$SCRIPT_DIR/../hooks/$script" "$plugin/scripts/$script" \
+            || { echo "  FAIL: $script is not deployed beside the hook"; return 1; }
+    done
+    before=$(cat "$plugin/hooks.json" "$plugin/plugin.json")
+    HOME="$fake_home" AGY_BIN="$fake_agy" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq "$before" "$(cat "$plugin/hooks.json" "$plugin/plugin.json")" "a reinstall changes nothing" || return 1
+    printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/agy-uninstall.out" 2>&1 || rc=$?
+    assert_eq 0 "$rc" "the uninstall finishes" || { cat "$TEST_TMPDIR/agy-uninstall.out"; return 1; }
+    assert_not_exists "$plugin" "an uninstall removes cs's plugin" || return 1
+    assert_file_contains "$TEST_TMPDIR/agy-uninstall.out" "Removed the cs hook for Antigravity"
+}
+
+test_install_writes_no_gemini_folder_without_agy() {
+    local fake_home="$TEST_TMPDIR/no-agy"
+    mkdir -p "$fake_home"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_not_exists "$fake_home/.gemini" "a host without agy gets no ~/.gemini"
+}
+
+test_install_keeps_a_plugin_folder_that_is_not_cs_s() {
+    local fake_home="$TEST_TMPDIR/agy-user" plugin out
+    plugin="$fake_home/.gemini/config/plugins/cs"
+    mkdir -p "$plugin"
+    printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$plugin/hooks.json"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: install.sh exited non-zero: $out"; return 1; }
+    assert_output_contains "$out" "Kept $plugin: cs did not write it" "the install names the folder it kept" || return 1
+    assert_eq '{"lint": {"Stop": [{"command": "./lint.sh"}]}}' "$(cat "$plugin/hooks.json")" "the user's hooks stay" || return 1
+    assert_not_exists "$plugin/scripts" "nothing is deployed into it"
+}
+
+run_test test_install_registers_the_antigravity_hook_where_agy_is
+run_test test_install_writes_no_gemini_folder_without_agy
+run_test test_install_keeps_a_plugin_folder_that_is_not_cs_s
 report_results

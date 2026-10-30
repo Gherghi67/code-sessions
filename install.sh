@@ -372,14 +372,18 @@ _strip_hook_registration() {
     '
 }
 
-# The SessionStart hook cs registers for Codex: Codex runs the command through
-# a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path, [verb]
+# A path as one shell word: Codex and Antigravity both run a hook's command
+# through a shell, so a path outside the plain-word alphabet is single-quoted.
+_cs_hook_shell_word() {  # path
     case "$1" in
-        *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
-        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
+        *[!A-Za-z0-9_./+-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+        *) printf '%s' "$1" ;;
     esac
+}
+
+# The SessionStart hook cs registers for Codex.
+_codex_hook_command() {  # cs_path, [verb]
+    printf '%s -codex-hook %s' "$(_cs_hook_shell_word "$1")" "${2:-session-start}"
 }
 
 # Codex skips a hook, silently, until config.toml trusts it: a table
@@ -518,6 +522,101 @@ _codex_hooks_unregister() {  # codex_dir
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
     _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
+}
+
+# The recovery consumer and what it sources, deployed beside each engine's
+# hook registration (Codex's home, cs's Antigravity plugin).
+CS_RECOVERY_SCRIPTS=(autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh)
+
+# Antigravity (agy) reads its global customizations from ~/.gemini/config,
+# which no variable moves, and loads each folder under plugins/ that holds a
+# plugin.json, on by default: agy's config.json records only a choice made
+# with `agy plugin enable|disable`. cs's hook is such a folder, cs's whole:
+# plugin.json, hooks.json with the one named hook cs-session, and scripts/
+# with the recovery consumer. Nothing of the user's is merged or rewritten.
+CS_ANTIGRAVITY_PLUGIN=cs
+CS_ANTIGRAVITY_HOOK_NAME=cs-session
+
+_antigravity_plugin_dir() {
+    printf '%s/.gemini/config/plugins/%s\n' "$HOME" "$CS_ANTIGRAVITY_PLUGIN"
+}
+
+_antigravity_hook_command() {  # cs_path, verb
+    printf '%s -antigravity-hook %s' "$(_cs_hook_shell_word "$1")" "$2"
+}
+
+# Whether a folder is cs's plugin: its hooks.json, a plain file, names only
+# cs's hook, and every command there is a cs -antigravity-hook call. A folder
+# of that name without it is the user's, and cs leaves it alone; so is one
+# whose scripts/ is a link, which a deploy or a removal would go through.
+_antigravity_plugin_is_cs() {  # plugin_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
+    [ ! -L "$1/scripts" ] || return 1
+    jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
+        type == "object" and keys == [$name]
+        and ([.[$name] | .. | objects | select(has("command")) | .command]
+             | length > 0 and all(type == "string" and test(" -antigravity-hook [a-z-]+$")))
+    ' "$1/hooks.json" >/dev/null 2>&1
+}
+
+# PreInvocation binds the session to the conversation its run works in, and
+# PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
+# tool reaches the hook, whose translator keeps the edits: "*" is the matcher
+# agy was measured with.
+_antigravity_hooks_document() {  # cs_path
+    jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
+        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" '
+        {($name): {
+            PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
+            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
+}
+
+# Write cs's hooks.json, then plugin.json, each whole and renamed into place:
+# hooks.json is what marks the folder cs's, so an install cut short after it
+# leaves a folder the next one still knows, and one cut short before it
+# leaves the folder empty, which the next one takes too. Returns 3, writing
+# nothing, when a folder of that name is not cs's; the recovery scripts are
+# the installer's to deploy into scripts/.
+_antigravity_plugin_register() {  # cs_path
+    local dir doc tmp
+    dir=$(_antigravity_plugin_dir)
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        _antigravity_plugin_is_cs "$dir" \
+            || { [ -d "$dir" ] && [ ! -L "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; } || return 3
+    fi
+    doc=$(_antigravity_hooks_document "$1") || return 1
+    mkdir -p "$dir" || return 1
+    tmp=$(mktemp "$dir/.hooks.json.XXXXXX") || return 1
+    printf '%s\n' "$doc" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/hooks.json" \
+        || { rm -f "$tmp"; return 1; }
+    tmp=$(mktemp "$dir/.plugin.json.XXXXXX") || return 1
+    _antigravity_plugin_manifest > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/plugin.json" \
+        || { rm -f "$tmp"; return 1; }
+}
+
+_antigravity_plugin_manifest() {
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+}
+
+# Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, and
+# the recovery scripts the install record says cs wrote (others are kept and
+# named), then the folders if empty. Returns 3, removing nothing, when the
+# folder is not cs's.
+_antigravity_plugin_unregister() {
+    local dir script
+    dir=$(_antigravity_plugin_dir)
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    _antigravity_plugin_is_cs "$dir" || return 3
+    rm -f "$dir/hooks.json" || return 1
+    if [ -f "$dir/plugin.json" ] && [ ! -L "$dir/plugin.json" ] \
+        && [ "$(jq -cS . "$dir/plugin.json" 2>/dev/null)" = "$(_antigravity_plugin_manifest | jq -cS .)" ]; then
+        rm -f "$dir/plugin.json" || return 1
+    fi
+    for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
+        [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
+    done
+    rmdir "$dir/scripts" "$dir" 2>/dev/null || true
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,
@@ -1782,20 +1881,20 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "5a8fbe3712dfc795bc8f4160aa3bc04c82767c605fe9db6155fe103bcfcc20fe  bin/cs"
+    "ef1e99616fa17ea088619a0904b5d10ff27d05e0535902fcc3015b976ab6bb24  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
     "204e5f83b57393bbfcf2489fff4ced633e64ab443290a2e7a70d06987731a246  hooks/cs-shared.sh"
-    "a86153f7cc9e26905f9d2da565283b9344c7002e1888d98ea6271cfa9c2b38d2  hooks/cs-engine-events.sh"
+    "d4190dfe1bba3312145072c543d66a6fbbdb82748db0a859cabf9872f4c1ff33  hooks/cs-engine-events.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "6bb9641f3b64d0a79f427337781ddac03772ceb96a67e9f187716f54946cd3e1  hooks/prompt-rewriter.sh"
     "637d477d9e4aa44b1cce98636f212e2b44b51603ed21cdbf77e14e81a95da8c0  hooks/prompt-rewriter-model.sh"
     "6c2f1c6207b474fd98d54bb7454e43016e7b48cb59a6fafc05061893465753f5  hooks/prompt-rewriter-vendor.sh"
     "aa2aec13df25c8a16e6da21b16f2d28a54ba3a813b6b49336bc90c79e1b36b29  hooks/session-start.sh"
-    "d49a3173f59228775018bd9a60900771b33ab880ff81aa1b8895a2fc42ce4ee3  hooks/autosave-commits.sh"
+    "0cf4039ec06dce9403b13fbaa4c1739ac33a7d33fd250e76e4e4d8fb68e78ca2  hooks/autosave-commits.sh"
     "78830161de99331ae92efec6df6015f33169558d259008a94bc1bda2b3228354  hooks/narrative-reminder.sh"
     "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
@@ -2466,7 +2565,7 @@ _deploy_skills "$CODEX_SKILLS_DIR"
 # A Codex-only install carries these files in its own runtime home.
 CODEX_RECOVERY_DIR="$CODEX_DIR/hooks/cs"
 mkdir -p "$CODEX_RECOVERY_DIR"
-for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
     _deploy "hooks/$hook" "$CODEX_RECOVERY_DIR/$hook"
 done
 
@@ -2496,6 +2595,32 @@ else
 fi
 
 
+fi
+
+# Antigravity runs on any install: its adapter is in cs itself. Its hook, a
+# plugin cs owns under ~/.gemini/config/plugins, records the conversation a
+# reopen resumes and hands agy's edits to recovery (lib/79-antigravity.sh).
+# Written where agy is installed or has its folder, so a host without agy
+# gets no ~/.gemini.
+if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini" ]; then
+    if command -v jq >/dev/null 2>&1; then
+        AGY_PLUGIN_DIR=$(_antigravity_plugin_dir)
+        installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
+        _agy_rc=0
+        _antigravity_plugin_register "$INSTALL_DIR/cs" || _agy_rc=$?
+        case $_agy_rc in
+            0)
+                mkdir -p "$AGY_PLUGIN_DIR/scripts"
+                for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
+                    _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
+                done
+                ;;
+            3) warn "Kept $AGY_PLUGIN_DIR: cs did not write it, so the Antigravity hook was not registered. Rename that folder and install again for exact reopens under Antigravity." ;;
+            *) warn "Could not register the Antigravity hook in $AGY_PLUGIN_DIR; reopens under Antigravity start a new conversation until it is" ;;
+        esac
+    else
+        warn "jq not found - the Antigravity hook (exact reopen, recovery) was not registered."
+    fi
 fi
 
 # Record what this install wrote under ~/.claude, so the next install, update

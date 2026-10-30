@@ -49,6 +49,41 @@ _doctor_check_settings_valid() {
     fi
 }
 
+# cs's Antigravity plugin carries the hook exact_resume and recovery_autosave
+# stand on: it must be cs's, name a cs that runs, and not be switched off in
+# agy's config.json, which beats the plugin wherever it has an entry.
+_doctor_check_antigravity_hook() {
+    local dir cs_path
+    dir=$(_antigravity_plugin_dir)
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        _doctor_warn "Antigravity hook not installed at $dir: reopens start a new conversation and edits are not autosaved. Run setup.sh again with agy installed."
+        return 0
+    fi
+    if ! _antigravity_plugin_is_cs "$dir"; then
+        _doctor_warn "Antigravity hook: $dir is not cs's, so cs left it alone; rename it and run setup.sh again"
+        return 0
+    fi
+    cs_path=$(jq -r --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        '.[$name].PreInvocation[0].command // "" | sub(" -antigravity-hook [a-z-]+$"; "")' \
+        "$dir/hooks.json" 2>/dev/null) || cs_path=""
+    # The installer single-quotes a path the shell would split, writing each
+    # quote in it as '\''.
+    case "$cs_path" in
+        \'*\')
+            cs_path=${cs_path#\'}
+            cs_path=${cs_path%\'}
+            cs_path=${cs_path//"'\\''"/\'}
+            ;;
+    esac
+    if [ -z "$cs_path" ] || [ ! -x "$cs_path" ]; then
+        _doctor_warn "Antigravity hook in $dir names a cs that is not there (${cs_path:-none}); run setup.sh again"
+    elif [ "$(jq -r --arg p "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$p].enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" = false ]; then
+        _doctor_warn "Antigravity hook is switched off in $HOME/.gemini/config/config.json; turn it on with: agy plugin enable $CS_ANTIGRAVITY_PLUGIN"
+    else
+        _doctor_ok "Antigravity hook installed: $dir"
+    fi
+}
+
 _doctor_check_keychain() {
     local script
     if ! script=$(find_secrets_script); then
@@ -1171,13 +1206,14 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "$label integration capabilities: ${capabilities//$'\n'/, }"
+        [ "$engine" != antigravity ] || _doctor_check_antigravity_hook
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" "$engine"); then
                 if [ -z "$binding" ]; then
                     _doctor_ok "$label binding: not created yet"
                 elif { [ "$engine" = codex ] && _codex_thread_id_valid "$binding"; } \
-                    || { [ "$engine" = antigravity ] && [ "$binding" = "$CS_ANTIGRAVITY_LATEST" ]; }; then
+                    || { [ "$engine" = antigravity ] && _antigravity_binding_valid "$binding"; }; then
                     _doctor_ok "$label binding: $binding"
                 else
                     _doctor_fail "$label binding is invalid; repair before launching"

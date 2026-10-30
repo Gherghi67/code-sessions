@@ -304,14 +304,18 @@ _strip_hook_registration() {
     '
 }
 
-# The SessionStart hook cs registers for Codex: Codex runs the command through
-# a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path, [verb]
+# A path as one shell word: Codex and Antigravity both run a hook's command
+# through a shell, so a path outside the plain-word alphabet is single-quoted.
+_cs_hook_shell_word() {  # path
     case "$1" in
-        *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
-        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
+        *[!A-Za-z0-9_./+-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+        *) printf '%s' "$1" ;;
     esac
+}
+
+# The SessionStart hook cs registers for Codex.
+_codex_hook_command() {  # cs_path, [verb]
+    printf '%s -codex-hook %s' "$(_cs_hook_shell_word "$1")" "${2:-session-start}"
 }
 
 # Codex skips a hook, silently, until config.toml trusts it: a table
@@ -450,6 +454,101 @@ _codex_hooks_unregister() {  # codex_dir
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
     _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
+}
+
+# The recovery consumer and what it sources, deployed beside each engine's
+# hook registration (Codex's home, cs's Antigravity plugin).
+CS_RECOVERY_SCRIPTS=(autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh)
+
+# Antigravity (agy) reads its global customizations from ~/.gemini/config,
+# which no variable moves, and loads each folder under plugins/ that holds a
+# plugin.json, on by default: agy's config.json records only a choice made
+# with `agy plugin enable|disable`. cs's hook is such a folder, cs's whole:
+# plugin.json, hooks.json with the one named hook cs-session, and scripts/
+# with the recovery consumer. Nothing of the user's is merged or rewritten.
+CS_ANTIGRAVITY_PLUGIN=cs
+CS_ANTIGRAVITY_HOOK_NAME=cs-session
+
+_antigravity_plugin_dir() {
+    printf '%s/.gemini/config/plugins/%s\n' "$HOME" "$CS_ANTIGRAVITY_PLUGIN"
+}
+
+_antigravity_hook_command() {  # cs_path, verb
+    printf '%s -antigravity-hook %s' "$(_cs_hook_shell_word "$1")" "$2"
+}
+
+# Whether a folder is cs's plugin: its hooks.json, a plain file, names only
+# cs's hook, and every command there is a cs -antigravity-hook call. A folder
+# of that name without it is the user's, and cs leaves it alone; so is one
+# whose scripts/ is a link, which a deploy or a removal would go through.
+_antigravity_plugin_is_cs() {  # plugin_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
+    [ ! -L "$1/scripts" ] || return 1
+    jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
+        type == "object" and keys == [$name]
+        and ([.[$name] | .. | objects | select(has("command")) | .command]
+             | length > 0 and all(type == "string" and test(" -antigravity-hook [a-z-]+$")))
+    ' "$1/hooks.json" >/dev/null 2>&1
+}
+
+# PreInvocation binds the session to the conversation its run works in, and
+# PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
+# tool reaches the hook, whose translator keeps the edits: "*" is the matcher
+# agy was measured with.
+_antigravity_hooks_document() {  # cs_path
+    jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
+        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" '
+        {($name): {
+            PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
+            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
+}
+
+# Write cs's hooks.json, then plugin.json, each whole and renamed into place:
+# hooks.json is what marks the folder cs's, so an install cut short after it
+# leaves a folder the next one still knows, and one cut short before it
+# leaves the folder empty, which the next one takes too. Returns 3, writing
+# nothing, when a folder of that name is not cs's; the recovery scripts are
+# the installer's to deploy into scripts/.
+_antigravity_plugin_register() {  # cs_path
+    local dir doc tmp
+    dir=$(_antigravity_plugin_dir)
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        _antigravity_plugin_is_cs "$dir" \
+            || { [ -d "$dir" ] && [ ! -L "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; } || return 3
+    fi
+    doc=$(_antigravity_hooks_document "$1") || return 1
+    mkdir -p "$dir" || return 1
+    tmp=$(mktemp "$dir/.hooks.json.XXXXXX") || return 1
+    printf '%s\n' "$doc" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/hooks.json" \
+        || { rm -f "$tmp"; return 1; }
+    tmp=$(mktemp "$dir/.plugin.json.XXXXXX") || return 1
+    _antigravity_plugin_manifest > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/plugin.json" \
+        || { rm -f "$tmp"; return 1; }
+}
+
+_antigravity_plugin_manifest() {
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+}
+
+# Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, and
+# the recovery scripts the install record says cs wrote (others are kept and
+# named), then the folders if empty. Returns 3, removing nothing, when the
+# folder is not cs's.
+_antigravity_plugin_unregister() {
+    local dir script
+    dir=$(_antigravity_plugin_dir)
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    _antigravity_plugin_is_cs "$dir" || return 3
+    rm -f "$dir/hooks.json" || return 1
+    if [ -f "$dir/plugin.json" ] && [ ! -L "$dir/plugin.json" ] \
+        && [ "$(jq -cS . "$dir/plugin.json" 2>/dev/null)" = "$(_antigravity_plugin_manifest | jq -cS .)" ]; then
+        rm -f "$dir/plugin.json" || return 1
+    fi
+    for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
+        [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
+    done
+    rmdir "$dir/scripts" "$dir" 2>/dev/null || true
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,
@@ -4997,11 +5096,22 @@ _cs_codex_adapter_files_changed() {
     ' 2>/dev/null || true
 }
 
-# Antigravity runs no cs hook yet, so no native edit payload reaches this
-# translator. Its input is drained and it emits nothing, as for an edit the
-# other translators do not recognize.
 _cs_antigravity_adapter_files_changed() {
-    cat >/dev/null 2>&1 || true
+    # agy's PostToolUse payload carries the call it ran, not its result, and
+    # no event name: the hook verb says it is PostToolUse. Measured on agy
+    # 1.4.11, write_file and edit_file name an absolute file in args.Path, and
+    # a call that succeeded carries an empty error. Paths an edit through
+    # run_command touches are not named anywhere, as under the other engines.
+    jq -c '
+        select(type == "object")
+        | select(.toolCall.name == "write_file" or .toolCall.name == "edit_file")
+        | select((.error // "") == "")
+        | select(.toolCall.args.Path | type == "string" and length > 0)
+        | {type: "files_changed", engine: "antigravity", session_id: .conversationId,
+           cwd: (if (.workspacePaths | type) == "array" and (.workspacePaths[0] | type) == "string"
+                 then .workspacePaths[0] else "" end),
+           files: [.toolCall.args.Path]}
+    ' 2>/dev/null || true
 }
 cs_split_worktree_name() {
     local name="$1"
@@ -11848,13 +11958,15 @@ run_conversations() {
         echo "No conversation history recorded."
         return 0
     fi
-    local current_claude current_codex session_dir
+    local current_claude current_codex current_antigravity session_dir
     session_dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.."
     current_claude=$(cs_binding_read "$session_dir" claude) || current_claude=""
     current_codex=$(cs_binding_read "$session_dir" codex) || current_codex=""
+    current_antigravity=$(cs_binding_read "$session_dir" antigravity) || current_antigravity=""
     # Old records have no engine and belong to Claude. Key by engine AND ID:
     # equal opaque native IDs from different engines are separate conversations.
-    jq -rRs --arg claude "$current_claude" --arg codex "$current_codex" '
+    jq -rRs --arg claude "$current_claude" --arg codex "$current_codex" \
+        --arg antigravity "$current_antigravity" '
         def key: [.engine, .session_id] | tojson;
         def conversation_label($engine; $id): $engine + ":" + $id[0:8];
         def str_or_null: type == "string" or . == null;
@@ -11885,6 +11997,7 @@ run_conversations() {
                             + ")"
                             + (if ($e.engine == "claude" and $claude != "" and $e.session_id == $claude)
                                    or ($e.engine == "codex" and $codex != "" and $e.session_id == $codex)
+                                   or ($e.engine == "antigravity" and $antigravity != "" and $e.session_id == $antigravity)
                                then "  [current]" else "" end))}]
                 end
             else
@@ -13168,6 +13281,41 @@ _doctor_check_settings_valid() {
     fi
 }
 
+# cs's Antigravity plugin carries the hook exact_resume and recovery_autosave
+# stand on: it must be cs's, name a cs that runs, and not be switched off in
+# agy's config.json, which beats the plugin wherever it has an entry.
+_doctor_check_antigravity_hook() {
+    local dir cs_path
+    dir=$(_antigravity_plugin_dir)
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        _doctor_warn "Antigravity hook not installed at $dir: reopens start a new conversation and edits are not autosaved. Run setup.sh again with agy installed."
+        return 0
+    fi
+    if ! _antigravity_plugin_is_cs "$dir"; then
+        _doctor_warn "Antigravity hook: $dir is not cs's, so cs left it alone; rename it and run setup.sh again"
+        return 0
+    fi
+    cs_path=$(jq -r --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        '.[$name].PreInvocation[0].command // "" | sub(" -antigravity-hook [a-z-]+$"; "")' \
+        "$dir/hooks.json" 2>/dev/null) || cs_path=""
+    # The installer single-quotes a path the shell would split, writing each
+    # quote in it as '\''.
+    case "$cs_path" in
+        \'*\')
+            cs_path=${cs_path#\'}
+            cs_path=${cs_path%\'}
+            cs_path=${cs_path//"'\\''"/\'}
+            ;;
+    esac
+    if [ -z "$cs_path" ] || [ ! -x "$cs_path" ]; then
+        _doctor_warn "Antigravity hook in $dir names a cs that is not there (${cs_path:-none}); run setup.sh again"
+    elif [ "$(jq -r --arg p "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$p].enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" = false ]; then
+        _doctor_warn "Antigravity hook is switched off in $HOME/.gemini/config/config.json; turn it on with: agy plugin enable $CS_ANTIGRAVITY_PLUGIN"
+    else
+        _doctor_ok "Antigravity hook installed: $dir"
+    fi
+}
+
 _doctor_check_keychain() {
     local script
     if ! script=$(find_secrets_script); then
@@ -14290,13 +14438,14 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "$label integration capabilities: ${capabilities//$'\n'/, }"
+        [ "$engine" != antigravity ] || _doctor_check_antigravity_hook
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" "$engine"); then
                 if [ -z "$binding" ]; then
                     _doctor_ok "$label binding: not created yet"
                 elif { [ "$engine" = codex ] && _codex_thread_id_valid "$binding"; } \
-                    || { [ "$engine" = antigravity ] && [ "$binding" = "$CS_ANTIGRAVITY_LATEST" ]; }; then
+                    || { [ "$engine" = antigravity ] && _antigravity_binding_valid "$binding"; }; then
                     _doctor_ok "$label binding: $binding"
                 else
                     _doctor_fail "$label binding is invalid; repair before launching"
@@ -19693,10 +19842,19 @@ _switch_resume_handoff() {  # session_dir, consumer_id, variable
 CS_ANTIGRAVITY_RULE=".agents/rules/cs-session.md"
 CS_ANTIGRAVITY_RULE_MARK="<!-- cs:antigravity-session-context -->"
 
-# agy reopens a folder's latest conversation with --continue and names a
-# conversation's id only on the terminal as it exits, so cs binds the folder's
-# latest conversation rather than an id. The binding is the word that says so.
+# The binding is the id of the conversation a reopen resumes with
+# --conversation, which cs's hook records once the conversation reaches the
+# model (cs -antigravity-hook, below). Before the hook, cs bound the folder's
+# latest conversation and reopened it with --continue, which falls back to a
+# parent or child folder's conversation when this folder has none; a binding
+# that still says latest reopens that way until the hook replaces it.
 CS_ANTIGRAVITY_LATEST=latest
+
+# A binding cs may pass to agy: the legacy word, or a UUID. The binding lies in
+# the session folder, which the agent can write, so it is checked every time.
+_antigravity_binding_valid() {  # binding
+    [ "$1" = "$CS_ANTIGRAVITY_LATEST" ] || _is_uuid "$1"
+}
 
 _antigravity_launch_error() {  # message
     printf 'Error: %s\n' "$1" >&2
@@ -19712,11 +19870,12 @@ _cs_antigravity_adapter_dependencies() {
 }
 
 _cs_antigravity_adapter_capabilities() {
-    # launch: agy starts in the session folder, and a reopen continues its
-    # latest conversation there (--continue), which is not an exact resume.
+    # launch: agy starts in the session folder. exact_resume: the hook binds
+    # the conversation by id and a reopen passes --conversation <id>.
     # startup_context, memory_index: the always-on rule carries the session's
     # facts and its memory index, rewritten at each launch.
-    printf '%s\n' launch startup_context memory_index
+    # recovery_autosave: the hook hands write_file and edit_file to recovery.
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index
 }
 
 _cs_antigravity_adapter_prepare_workspace() {  # session_dir, mode
@@ -19728,13 +19887,13 @@ _cs_antigravity_adapter_launch() {
     _launch_antigravity_bound "$@"
 }
 
-# agy keeps its conversations under ~/.gemini/antigravity, outside an
+# agy keeps its conversations under ~/.gemini/antigravity-cli, outside an
 # encrypted session's vault, so it opens none. main refuses before the
 # pre-open asks for the vault's password; _launch_antigravity_bound, for any
 # other caller.
 _antigravity_encrypted_refusal() {  # session_name
     printf '%s is encrypted, and Antigravity keeps its conversations in %s, outside the vault. Open it under Claude: cs %s --engine claude\n' \
-        "$1" "$HOME/.gemini/antigravity" "$1"
+        "$1" "$HOME/.gemini/antigravity-cli" "$1"
 }
 
 # An absolute path with its . and .. levels folded by spelling alone. The
@@ -19837,7 +19996,8 @@ _antigravity_flags_listed() {  # agy_bin, args...
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
     local session_name="$1" session_dir="$2" intent="${6:-auto}"
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
-    local binding_file recorded response="" continue_arg="" actor
+    local binding_file recorded reopen response="" actor run_dir
+    local -a reopen_args=()
 
     [ -d "$session_dir" ] || {
         _antigravity_launch_error "Session directory does not exist: $session_dir"
@@ -19871,13 +20031,14 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         _antigravity_launch_error "Cannot read the Antigravity binding: $binding_file. Repair or remove it, then reopen."
         return 1
     }
-    if [ -n "$recorded" ] && [ "$recorded" != "$CS_ANTIGRAVITY_LATEST" ]; then
-        _antigravity_launch_error "Invalid Antigravity binding in $binding_file: expected '$CS_ANTIGRAVITY_LATEST'. Repair or remove it, then reopen."
+    if [ -n "$recorded" ] && ! _antigravity_binding_valid "$recorded"; then
+        _antigravity_launch_error "Invalid Antigravity binding in $binding_file: expected a conversation id (a UUID). Repair or remove it, then reopen."
         return 1
     fi
+    reopen="$recorded"
 
     # A pending rotation handoff stays armed for the next Claude or Codex
-    # launch: agy runs no cs hook that would take it.
+    # launch: no cs hook takes one under agy yet.
     case "$intent" in
         handoff)
             _antigravity_launch_error "Antigravity cannot start from a rotation handoff yet. Continue from it under Claude: cs $session_name --engine claude --from-handoff"
@@ -19888,24 +20049,28 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
                 _antigravity_launch_error "Cannot resume: no recorded Antigravity conversation. Use --fresh."
                 return 1
             }
-            continue_arg=--continue
             ;;
         auto)
-            [ -z "$recorded" ] || continue_arg=--continue
-            if [ -n "$continue_arg" ] && cs_interactive; then
+            if [ -n "$recorded" ] && cs_interactive; then
                 printf 'Continue previous Antigravity conversation? [Y/n] '
                 IFS= read -rsn1 response || { printf '\n'; return 130; }
                 printf '\n'
                 case "$response" in
                     $'\e') return 130 ;;
-                    [nN]) continue_arg="" ;;
+                    [nN]) reopen="" ;;
                 esac
             fi
             ;;
+        fresh) reopen="" ;;
+    esac
+    case "$reopen" in
+        '') ;;
+        "$CS_ANTIGRAVITY_LATEST") reopen_args=(--continue) ;;
+        *) reopen_args=(--conversation "$reopen") ;;
     esac
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options antigravity || return 1
-    _antigravity_flags_listed "$agy_bin" ${continue_arg:+"$continue_arg"} \
+    _antigravity_flags_listed "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} \
         ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || return 1
 
     cd -- "$session_dir" || return 1
@@ -19916,12 +20081,6 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || return 1
     _antigravity_exclude_rule "$session_dir" \
         || warn "could not add $CS_ANTIGRAVITY_RULE to the checkout's info/exclude; git status will list it"
-    if [ -z "$recorded" ]; then
-        cs_run_with_lease "$meta_dir" cs_binding_write "$session_dir" antigravity "$CS_ANTIGRAVITY_LATEST" || {
-            _antigravity_launch_error "Could not save the Antigravity binding: $binding_file"
-            return 1
-        }
-    fi
     # Recorded before agy starts, as Codex does, so cs commands run inside it
     # (cs -doctor, the picker) see the engine the session now runs under.
     cs_run_with_lease "$meta_dir" _cs_set_local_state_unlocked "$meta_dir/local/state" engine antigravity || {
@@ -19933,17 +20092,166 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     # it launched, stays staged: agy takes no prompt to start it with.
     [ ! -f "${SESSIONS_ROOT:-}/.spawn/$session_name.seed" ] \
         || warn "A spawn seed is staged for $session_name; it stays staged for the next Claude or Codex open (cs $session_name --engine claude), since Antigravity takes no brief yet."
-    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), and a reopen continues agy's latest conversation in this folder. Rotation, mail, the task queue and automatic recovery are not available under Antigravity yet."
-    local status=0
-    cs_run_child "$agy_bin" ${continue_arg:+"$continue_arg"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || status=$?
-    # A first run that fails (a sign-in never finished, a crash at start) may
-    # leave the folder no conversation, and --continue then falls back to a
-    # parent or child folder's: the binding that run made goes with it.
-    if [ "$status" -ne 0 ] && [ -z "$recorded" ]; then
-        cs_run_with_lease "$meta_dir" rm -f -- "$binding_file" \
-            || warn "could not remove $binding_file after agy failed; remove it, or reopen with --fresh"
+    # The binding comes from cs's hook, not from here: a run that ends before
+    # its conversation reaches the model leaves the binding as it was, so the
+    # next open never continues a conversation of another folder.
+    local reopens="a reopen resumes this conversation, and edits are autosaved for recovery"
+    if ! _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)"; then
+        warn "The cs hook for Antigravity is missing from $(_antigravity_plugin_dir): this run's conversation is not recorded for a reopen, and its edits are not autosaved. Run setup.sh again, with agy installed, to add it."
+        reopens="the cs hook is missing"
     fi
+    # The hook remembers in this run's own directory, out of the session the
+    # agent can write, which conversation the run works in; the run's cleanup
+    # removes it.
+    if run_dir=$(_antigravity_run_dir_prepare); then
+        _cs_run_helper_dir=$run_dir
+        if [ -n "$reopen" ]; then
+            printf 'resume\n' > "$run_dir/opened" || true
+        else
+            printf 'fresh\n' > "$run_dir/opened" || true
+        fi
+    else
+        warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
+    fi
+    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotation, mail and the task queue are not available under Antigravity yet."
+    local status=0
+    cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || status=$?
     return "$status"
+}
+
+# The run's own directory: in cs's cache, not in the session the agent can
+# write. The launch makes it 0700 before agy starts and says there whether the
+# run opened a conversation or started one; the hook marks there the
+# conversation the run works in and each one it has weighed.
+_antigravity_run_dir() {
+    _is_uuid "${CS_RUN_ID:-}" || return 1
+    printf '%s/antigravity-runs/%s\n' "${CS_CACHE_DIR:-$HOME/.cache/cs}" "$CS_RUN_ID"
+}
+
+_antigravity_run_dir_ok() {  # run_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 700 ]
+}
+
+# A mark is made only where nothing stands yet, a link included (noclobber
+# opens with O_EXCL), so a mark planted as a link never sends a write
+# elsewhere.
+_antigravity_run_mark() {  # file
+    ( set -C; : > "$1" ) 2>/dev/null || true
+}
+
+# A directory already there is not this run's, and one the check refuses is
+# taken back.
+_antigravity_run_dir_prepare() {
+    local dir
+    dir=$(_antigravity_run_dir) || return 1
+    ( umask 077 && mkdir -p "${dir%/*}" && mkdir -m 700 "$dir" ) 2>/dev/null || return 1
+    _antigravity_run_dir_ok "$dir" || { rmdir "$dir" 2>/dev/null || true; return 1; }
+    printf '%s\n' "$dir"
+}
+
+# The hook agy runs from cs's plugin (lib/01-manifests.sh), measured on agy
+# 1.4.11: every hook gets the run's environment and a JSON payload on stdin
+# whose conversationId names the conversation it ran in. PreInvocation fires
+# before each model call, a resumed conversation's too, and PostToolUse after
+# each tool; a run left before the model is called fires neither. agy reads
+# the hook's stdout as JSON, so every path prints `{}`, which decides nothing,
+# and exits 0: the hook never blocks or fails a turn. It acts only in the run
+# cs launched; any other agy run passes through.
+cmd_antigravity_hook() {  # event
+    local handler input
+    case "${1:-}" in
+        pre-invocation) handler=_antigravity_hook_pre_invocation ;;
+        post-tool-use) handler=_antigravity_hook_post_tool_use ;;
+        *)
+            if [ -t 0 ]; then
+                printf 'Usage: cs -antigravity-hook pre-invocation|post-tool-use\n' >&2
+                return 2
+            fi
+            handler=""
+            ;;
+    esac
+    # Read whole first: agy writes the payload into a pipe, and a hook that
+    # left before reading it could fail agy's write.
+    input=$(cat 2>/dev/null) || input=""
+    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ] \
+        && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
+        "$handler" "$input" </dev/null >/dev/null 2>&1 || true
+    fi
+    printf '{}\n'
+    return 0
+}
+
+# The payload's conversation id, a UUID or nothing: it names a native file and
+# goes onto agy's command line at the next reopen.
+_antigravity_payload_id() {  # payload
+    local id
+    id=$(printf '%s' "$1" | jq -r 'if type == "object" then .conversationId // "" else "" end' 2>/dev/null) || return 1
+    _is_uuid "$id" || return 1
+    printf '%s\n' "$id"
+}
+
+# The first conversation to reach the model in a run is the one the run works
+# in: the main conversation's model call comes before anything it starts, and
+# a subagent's conversation has its own id. Each id is weighed once a run, so
+# later model calls stop at a file test.
+_antigravity_hook_pre_invocation() {  # payload
+    local id run_dir meta="$CS_SESSION_DIR/.cs"
+    id=$(_antigravity_payload_id "$1") || return 0
+    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
+    [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$id" ] || return 0
+    cs_run_lease_owned "$meta" || return 0
+    cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$id" "$run_dir" || return 0
+}
+
+# Under the run lease. The session is bound to its run's first conversation,
+# whichever it is: the one a reopen named, a new one, or one opened with
+# /resume before the first turn. Later conversations of the run leave the
+# binding alone. A run without its directory cannot tell first from later,
+# and binds only a session that has no conversation yet (or the legacy word).
+_antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
+    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir
+    previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+    if [ -n "$run_dir" ]; then
+        if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
+            _antigravity_run_mark "$run_dir/seen-$id"
+            return 0
+        fi
+        IFS= read -r opened < "$run_dir/opened" 2>/dev/null || opened=""
+    elif [ "$previous" = "$id" ] || { [ -n "$previous" ] && [ "$previous" != "$CS_ANTIGRAVITY_LATEST" ]; }; then
+        return 0
+    fi
+    [ "$opened" != resume ] || { source=resume; reason=rebind; }
+    if [ "$previous" != "$id" ]; then
+        cs_binding_write "$session_dir" antigravity "$id" || return 1
+        _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+        if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+            CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
+                "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
+        fi
+        if _is_uuid "$previous"; then
+            _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "" antigravity || true
+        fi
+    fi
+    # The rotate skill reads which conversations this checkout ran from this
+    # line, as hooks/session-start.sh writes it for Claude.
+    if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: %s, ID: %s)\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "$source" "$id" || true
+    fi
+    _timeline_started "$session_dir" antigravity "$id" "$source" || true
+    [ -z "$run_dir" ] || { _antigravity_run_mark "$run_dir/bound"; _antigravity_run_mark "$run_dir/seen-$id"; }
+}
+
+# A finished edit in the run that holds the session's lease, translated by
+# the adapter, goes to the recovery consumer the installer put beside the hook.
+_antigravity_hook_post_tool_use() {  # payload
+    local event script
+    cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
+    event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0
+    [ -n "$event" ] || return 0
+    script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
+    [ -r "$script" ] || return 0
+    printf '%s' "$event" | bash "$script" --event || true
 }
 run_secrets() {
     local secrets_script
@@ -20910,7 +21218,7 @@ run_uninstall() {
         fi
     fi
     local recovery_file
-    for recovery_file in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+    for recovery_file in "${CS_RECOVERY_SCRIPTS[@]}"; do
         rm -f "${codex_skills_dir%/skills}/hooks/cs/$recovery_file"
     done
     local codex_sl_rc=0
@@ -20920,6 +21228,19 @@ run_uninstall() {
         1) ;;
         *) warn "Could not remove cs's status line from ${codex_skills_dir%/skills}/config.toml; remove its [tui] status_line by hand" ;;
     esac
+    fi
+
+    # The Antigravity hook is written on any install where agy is, so it goes
+    # whatever engines this install chose. A folder there that is not cs's stays.
+    local agy_plugin agy_rc=0
+    agy_plugin=$(_antigravity_plugin_dir)
+    if [ -e "$agy_plugin" ] || [ -L "$agy_plugin" ]; then
+        _antigravity_plugin_unregister || agy_rc=$?
+        case $agy_rc in
+            0) info "Removed the cs hook for Antigravity: $agy_plugin/" ;;
+            3) warn "Kept $agy_plugin: it is not cs's plugin (or jq, which tells, is missing), so it was not removed" ;;
+            *) warn "Could not remove the cs hook for Antigravity from $agy_plugin; remove that folder by hand" ;;
+        esac
     fi
 
     rm -f "$hooks_dir/.version" "$hooks_dir/.tui-origin" "$(_cs_install_record)"
@@ -21216,6 +21537,11 @@ main() {
         -codex-hook) # hidden: the command Codex runs from $CODEX_HOME/hooks.json, not typed by a user
             shift
             cmd_codex_hook "$@"
+            return $?
+            ;;
+        -antigravity-hook) # hidden: the command agy runs from cs's plugin hooks.json, not typed by a user
+            shift
+            cmd_antigravity_hook "$@"
             return $?
             ;;
         -vet-session) # asked by the cs mod, /rotate and /wrap before they write into a session

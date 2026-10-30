@@ -28,8 +28,9 @@ setup() {
 }
 
 teardown() {
-    rm -rf "$TEST_TMPDIR"
+    rm -rf "$TEST_TMPDIR" "$HOME/.gemini"
     unset CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR CS_TEST_SYNC CODEX_HOME CS_RUN_ENGINE
+    unset CS_RUN_ID CS_RUN_OWNER_PID
 }
 
 _codex_payload() {  # raw patch, [response]
@@ -211,6 +212,80 @@ test_recovery_copy_supports_a_repository_without_an_index() {
     assert_eq '' "$(git -C "$CS_SESSION_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)"
 }
 
+# agy's PostToolUse payload, as measured on agy 1.4.11: the call it ran, an
+# empty error on success, no event name.
+_agy_payload() {  # path, [tool], [error]
+    jq -nc --arg id "$UUID" --arg ws "$CS_SESSION_DIR" --arg path "$1" \
+        --arg tool "${2:-edit_file}" --arg error "${3-}" \
+        '{conversationId: $id, workspacePaths: [$ws], modelName: "fake", stepIdx: 4, error: $error,
+          toolCall: {name: $tool, args: {Path: $path, Target: "initial", Replacement: "changed"}}}'
+}
+
+# The hook's own run: cs's plugin with its recovery scripts in test_lib's
+# temporary HOME; teardown removes it.
+_agy_hook_home() {
+    local script
+    mkdir -p "$HOME/.gemini/config/plugins/cs/scripts"
+    for script in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+        cp "$SCRIPT_DIR/../hooks/$script" "$HOME/.gemini/config/plugins/cs/scripts/$script"
+    done
+}
+
+# The session's run lease as a live Antigravity launch holds it, owned by
+# this test's own shell.
+_agy_lease() {
+    export CS_RUN_ID=77777777-7777-4777-8777-777777777777 CS_RUN_OWNER_PID=$$
+    printf '%s\n' "$$" > "$CS_SESSION_DIR/.cs/session.lock"
+    jq -nc --arg id "$CS_RUN_ID" --argjson pid "$$" '{run_id: $id, engine: "antigravity", owner_pid: $pid}' \
+        > "$CS_SESSION_DIR/.cs/local/run-lease.json"
+}
+
+test_antigravity_write_and_edit_become_common_events() {
+    local event tool
+    for tool in write_file edit_file; do
+        event=$(_agy_payload "$CS_SESSION_DIR/login.ts" "$tool" | cs_engine_call antigravity files_changed)
+        assert_eq "[\"$CS_SESSION_DIR/login.ts\"]" "$(printf '%s' "$event" | jq -c .files)" "$tool names its file" || return 1
+        assert_eq antigravity "$(printf '%s' "$event" | jq -r .engine)" || return 1
+        assert_eq "$UUID" "$(printf '%s' "$event" | jq -r .session_id)" "keyed by the conversation" || return 1
+        assert_eq "$CS_SESSION_DIR" "$(printf '%s' "$event" | jq -r .cwd)" "the workspace is the cwd" || return 1
+    done
+    event=$(_agy_payload login.ts | jq 'del(.workspacePaths)' | cs_engine_call antigravity files_changed)
+    assert_eq '' "$(printf '%s' "$event" | jq -r .cwd)" "no workspace leaves the session's to the consumer"
+}
+
+test_antigravity_failed_and_other_calls_emit_nothing() {
+    local payload change
+    payload=$(_agy_payload "$CS_SESSION_DIR/login.ts")
+    assert_eq '' "$(_agy_payload "$CS_SESSION_DIR/login.ts" edit_file 'target not found' \
+        | cs_engine_call antigravity files_changed)" "a failed edit" || return 1
+    for change in '.toolCall.name = "run_command"' '.toolCall.name = "view_file"' \
+        'del(.toolCall.args.Path)' '.toolCall.args.Path = ""' '.toolCall.args.Path = ["x"]' \
+        'del(.toolCall)' '[.]'; do
+        assert_eq '' "$(printf '%s' "$payload" | jq "$change" | cs_engine_call antigravity files_changed)" "$change" || return 1
+    done
+    assert_eq '' "$(printf '%s' invalid | cs_engine_call antigravity files_changed)" "malformed input"
+}
+
+test_antigravity_hook_snapshots_an_edit_only_in_its_run() {
+    local output
+    _agy_hook_home
+    printf 'changed\n' > "$CS_SESSION_DIR/login.ts"
+    output=$(_agy_payload "$CS_SESSION_DIR/login.ts" | CS_RUN_ENGINE=codex "$CS_BIN" -antigravity-hook post-tool-use) || return 1
+    assert_eq '{}' "$output" "a hook outside an Antigravity run answers {}" || return 1
+    assert_eq '' "$(_ref)" "and saves nothing" || return 1
+    output=$(_agy_payload "$CS_SESSION_DIR/login.ts" | CS_RUN_ENGINE=antigravity "$CS_BIN" -antigravity-hook post-tool-use) || return 1
+    assert_eq '{}' "$output" || return 1
+    assert_eq '' "$(_ref)" "a run that does not hold the session's lease saves nothing" || return 1
+    _agy_lease
+    output=$(_agy_payload "$CS_SESSION_DIR/login.ts" | CS_RUN_ENGINE=antigravity "$CS_BIN" -antigravity-hook post-tool-use) || return 1
+    assert_eq '{}' "$output" "the hook's stdout is {} alone" || return 1
+    assert_eq changed "$(git -C "$CS_SESSION_DIR" show "$REF:login.ts")" "the edit is snapshotted" || return 1
+    output=$(_agy_payload "$CS_SESSION_DIR/users.ts" edit_file denied \
+        | CS_RUN_ENGINE=antigravity "$CS_BIN" -antigravity-hook post-tool-use) || return 1
+    assert_eq '{}' "$output" || return 1
+    assert_eq initial "$(git -C "$CS_SESSION_DIR" show "$REF:users.ts")" "a failed edit adds nothing"
+}
+
 run_test test_adapters_translate_native_edits_to_common_events
 run_test test_native_patch_with_leading_whitespace_is_saved
 run_test test_native_patch_with_extra_trailing_newlines_is_saved
@@ -223,4 +298,7 @@ run_test test_codex_deletion_and_rename_are_saved
 run_test test_failed_and_duplicate_events_do_not_advance_snapshot
 run_test test_outside_traversal_and_malformed_events_do_not_snapshot
 run_test test_recovery_copy_supports_a_repository_without_an_index
+run_test test_antigravity_write_and_edit_become_common_events
+run_test test_antigravity_failed_and_other_calls_emit_nothing
+run_test test_antigravity_hook_snapshots_an_edit_only_in_its_run
 report_results

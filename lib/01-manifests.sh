@@ -262,14 +262,18 @@ _strip_hook_registration() {
     '
 }
 
-# The SessionStart hook cs registers for Codex: Codex runs the command through
-# a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path, [verb]
+# A path as one shell word: Codex and Antigravity both run a hook's command
+# through a shell, so a path outside the plain-word alphabet is single-quoted.
+_cs_hook_shell_word() {  # path
     case "$1" in
-        *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
-        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
+        *[!A-Za-z0-9_./+-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+        *) printf '%s' "$1" ;;
     esac
+}
+
+# The SessionStart hook cs registers for Codex.
+_codex_hook_command() {  # cs_path, [verb]
+    printf '%s -codex-hook %s' "$(_cs_hook_shell_word "$1")" "${2:-session-start}"
 }
 
 # Codex skips a hook, silently, until config.toml trusts it: a table
@@ -408,6 +412,101 @@ _codex_hooks_unregister() {  # codex_dir
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
     _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
+}
+
+# The recovery consumer and what it sources, deployed beside each engine's
+# hook registration (Codex's home, cs's Antigravity plugin).
+CS_RECOVERY_SCRIPTS=(autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh)
+
+# Antigravity (agy) reads its global customizations from ~/.gemini/config,
+# which no variable moves, and loads each folder under plugins/ that holds a
+# plugin.json, on by default: agy's config.json records only a choice made
+# with `agy plugin enable|disable`. cs's hook is such a folder, cs's whole:
+# plugin.json, hooks.json with the one named hook cs-session, and scripts/
+# with the recovery consumer. Nothing of the user's is merged or rewritten.
+CS_ANTIGRAVITY_PLUGIN=cs
+CS_ANTIGRAVITY_HOOK_NAME=cs-session
+
+_antigravity_plugin_dir() {
+    printf '%s/.gemini/config/plugins/%s\n' "$HOME" "$CS_ANTIGRAVITY_PLUGIN"
+}
+
+_antigravity_hook_command() {  # cs_path, verb
+    printf '%s -antigravity-hook %s' "$(_cs_hook_shell_word "$1")" "$2"
+}
+
+# Whether a folder is cs's plugin: its hooks.json, a plain file, names only
+# cs's hook, and every command there is a cs -antigravity-hook call. A folder
+# of that name without it is the user's, and cs leaves it alone; so is one
+# whose scripts/ is a link, which a deploy or a removal would go through.
+_antigravity_plugin_is_cs() {  # plugin_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
+    [ ! -L "$1/scripts" ] || return 1
+    jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
+        type == "object" and keys == [$name]
+        and ([.[$name] | .. | objects | select(has("command")) | .command]
+             | length > 0 and all(type == "string" and test(" -antigravity-hook [a-z-]+$")))
+    ' "$1/hooks.json" >/dev/null 2>&1
+}
+
+# PreInvocation binds the session to the conversation its run works in, and
+# PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
+# tool reaches the hook, whose translator keeps the edits: "*" is the matcher
+# agy was measured with.
+_antigravity_hooks_document() {  # cs_path
+    jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
+        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" '
+        {($name): {
+            PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
+            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
+}
+
+# Write cs's hooks.json, then plugin.json, each whole and renamed into place:
+# hooks.json is what marks the folder cs's, so an install cut short after it
+# leaves a folder the next one still knows, and one cut short before it
+# leaves the folder empty, which the next one takes too. Returns 3, writing
+# nothing, when a folder of that name is not cs's; the recovery scripts are
+# the installer's to deploy into scripts/.
+_antigravity_plugin_register() {  # cs_path
+    local dir doc tmp
+    dir=$(_antigravity_plugin_dir)
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        _antigravity_plugin_is_cs "$dir" \
+            || { [ -d "$dir" ] && [ ! -L "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; } || return 3
+    fi
+    doc=$(_antigravity_hooks_document "$1") || return 1
+    mkdir -p "$dir" || return 1
+    tmp=$(mktemp "$dir/.hooks.json.XXXXXX") || return 1
+    printf '%s\n' "$doc" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/hooks.json" \
+        || { rm -f "$tmp"; return 1; }
+    tmp=$(mktemp "$dir/.plugin.json.XXXXXX") || return 1
+    _antigravity_plugin_manifest > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$dir/plugin.json" \
+        || { rm -f "$tmp"; return 1; }
+}
+
+_antigravity_plugin_manifest() {
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+}
+
+# Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, and
+# the recovery scripts the install record says cs wrote (others are kept and
+# named), then the folders if empty. Returns 3, removing nothing, when the
+# folder is not cs's.
+_antigravity_plugin_unregister() {
+    local dir script
+    dir=$(_antigravity_plugin_dir)
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    _antigravity_plugin_is_cs "$dir" || return 3
+    rm -f "$dir/hooks.json" || return 1
+    if [ -f "$dir/plugin.json" ] && [ ! -L "$dir/plugin.json" ] \
+        && [ "$(jq -cS . "$dir/plugin.json" 2>/dev/null)" = "$(_antigravity_plugin_manifest | jq -cS .)" ]; then
+        rm -f "$dir/plugin.json" || return 1
+    fi
+    for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
+        [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
+    done
+    rmdir "$dir/scripts" "$dir" 2>/dev/null || true
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,

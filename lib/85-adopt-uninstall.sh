@@ -941,7 +941,7 @@ run_uninstall() {
         fi
     fi
     local recovery_file
-    for recovery_file in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+    for recovery_file in "${CS_RECOVERY_SCRIPTS[@]}"; do
         rm -f "${codex_skills_dir%/skills}/hooks/cs/$recovery_file"
     done
     local codex_sl_rc=0
@@ -951,6 +951,19 @@ run_uninstall() {
         1) ;;
         *) warn "Could not remove cs's status line from ${codex_skills_dir%/skills}/config.toml; remove its [tui] status_line by hand" ;;
     esac
+    fi
+
+    # The Antigravity hook is written on any install where agy is, so it goes
+    # whatever engines this install chose. A folder there that is not cs's stays.
+    local agy_plugin agy_rc=0
+    agy_plugin=$(_antigravity_plugin_dir)
+    if [ -e "$agy_plugin" ] || [ -L "$agy_plugin" ]; then
+        _antigravity_plugin_unregister || agy_rc=$?
+        case $agy_rc in
+            0) info "Removed the cs hook for Antigravity: $agy_plugin/" ;;
+            3) warn "Kept $agy_plugin: it is not cs's plugin (or jq, which tells, is missing), so it was not removed" ;;
+            *) warn "Could not remove the cs hook for Antigravity from $agy_plugin; remove that folder by hand" ;;
+        esac
     fi
 
     rm -f "$hooks_dir/.version" "$hooks_dir/.tui-origin" "$(_cs_install_record)"
