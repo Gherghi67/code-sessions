@@ -206,40 +206,54 @@ test_a_folder_a_removal_left_with_a_changed_skill_is_taken_by_the_next_install()
     _deploy_scripts || return 1
     _deploy_skills || return 1
     printf '\nmy note\n' >> "$PLUGIN/skills/wrap/SKILL.md"
+    mkdir -p "$PLUGIN/skills/mine"
+    printf 'mine\n' > "$PLUGIN/skills/mine/SKILL.md"
     _antigravity_plugin_unregister 2>/dev/null || return 1
     assert_not_exists "$PLUGIN/hooks.json" "the removal ran" || return 1
-    _antigravity_plugin_register /opt/cs || { echo "  FAIL: a folder holding a kept skill file must be taken"; return 1; }
+    _antigravity_plugin_register /opt/cs \
+        || { echo "  FAIL: a folder holding a kept skill file and a skill of the user's must be taken"; return 1; }
     _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: the folder is cs's again"; return 1; }
-    assert_file_contains "$PLUGIN/skills/wrap/SKILL.md" 'my note' "the kept skill file is left as it was"
+    assert_file_contains "$PLUGIN/skills/wrap/SKILL.md" 'my note' "the kept skill file is left as it was" || return 1
+    assert_eq mine "$(cat "$PLUGIN/skills/mine/SKILL.md")" "and so is the user's skill"
 }
 
-# A link at skills/ would carry a deploy or a removal out of the plugin, and a
-# file of that name is the user's: either keeps the whole folder the user's.
+# skills/ decides nothing about the hook: with a link or a file there the
+# folder stays cs's, a removal takes the hook, and nothing goes through the
+# link or into the file. A skill folder that is a link is never gone through.
 test_a_linked_or_file_skills_entry_is_never_written_or_emptied_through() {
-    local status target="$TEST_TMPDIR/elsewhere"
+    local status target="$TEST_TMPDIR/elsewhere" output
     mkdir -p "$target/rotate"
     printf 'theirs\n' > "$target/rotate/SKILL.md"
     _antigravity_plugin_register /opt/cs || return 1
-    ln -s "$target" "$PLUGIN/skills"
-    status=0; _antigravity_plugin_register /new/cs || status=$?
-    assert_eq 3 "$status" "a plugin whose skills/ is a link is not cs's to write" || return 1
-    status=0; _antigravity_plugin_unregister || status=$?
-    assert_eq 3 "$status" "nor to remove" || return 1
-    assert_eq theirs "$(cat "$target/rotate/SKILL.md")" "the skill behind the link stays" || return 1
-    rm "$PLUGIN/skills"
+    # The files behind the link are ones the install record names as cs's:
+    # only the link keeps a removal from taking them.
+    _deploy_skills || return 1
+    mv "$PLUGIN/skills" "$TEST_TMPDIR/moved-skills"
+    ln -s "$TEST_TMPDIR/moved-skills" "$PLUGIN/skills"
+    _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: a linked skills/ leaves the hook cs's"; return 1; }
+    _antigravity_plugin_skills_dir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed through the link"; return 1; }
+    _antigravity_plugin_unregister || { echo "  FAIL: the hook must still be removable"; return 1; }
+    assert_not_exists "$PLUGIN/hooks.json" "the hook goes" || return 1
+    cmp -s "$SCRIPT_DIR/../skills/rotate/SKILL.md" "$TEST_TMPDIR/moved-skills/rotate/SKILL.md" \
+        || { echo "  FAIL: nothing behind the link is removed"; return 1; }
+    [ -L "$PLUGIN/skills" ] || { echo "  FAIL: the user's link stays"; return 1; }
+    # Only the user's link is left, so the folder is theirs, as with scripts/.
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a folder holding only the user's link is refused" || return 1
+    rm -rf "$PLUGIN"
+    _antigravity_plugin_register /opt/cs || return 1
     printf 'mine\n' > "$PLUGIN/skills"
-    status=0; _antigravity_plugin_register /new/cs || status=$?
-    assert_eq 3 "$status" "a file named skills is refused, not written into" || return 1
-    assert_eq mine "$(cat "$PLUGIN/skills")" "and left as it was" || return 1
-    # Without hooks.json, a skill folder that is a link is not one cs left.
-    rm "$PLUGIN/skills" "$PLUGIN/hooks.json"
+    _antigravity_plugin_skills_dir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed into a file"; return 1; }
+    _antigravity_plugin_unregister || { echo "  FAIL: a file named skills must not stop the hook's removal"; return 1; }
+    assert_eq mine "$(cat "$PLUGIN/skills")" "the file is left as it was" || return 1
+    # Inside a skills/ of cs's, a skill folder that is a link is kept with what it points at.
+    rm -rf "$PLUGIN"
     mkdir -p "$PLUGIN/skills"
     ln -s "$target/rotate" "$PLUGIN/skills/rotate"
-    status=0; _antigravity_plugin_register /opt/cs || status=$?
-    assert_eq 3 "$status" "a leftover whose skill folder is a link is refused" || return 1
-    status=0; _antigravity_plugin_unregister || status=$?
-    assert_eq 3 "$status" "and not removed" || return 1
-    assert_eq theirs "$(cat "$target/rotate/SKILL.md")" "the skill behind the link stays"
+    _antigravity_plugin_register /opt/cs || { echo "  FAIL: a leftover skills/ of cs's is taken"; return 1; }
+    output=$(_antigravity_plugin_unregister 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq theirs "$(cat "$target/rotate/SKILL.md")" "the skill behind the link stays" || return 1
+    [ -L "$PLUGIN/skills/rotate" ] || { echo "  FAIL: the link stays"; return 1; }
 }
 
 # hooks.json marks the folder cs's, so it is written first: an install cut
@@ -368,11 +382,13 @@ test_a_folder_a_removal_left_is_taken_by_the_next_install() {
 # Without hooks.json, anything beyond what cs leaves keeps the folder the user's.
 test_a_folder_holding_more_than_cs_leaves_is_still_the_users() {
     local status target="$TEST_TMPDIR/elsewhere" script before
-    mkdir -p "$PLUGIN/skills/mine"
+    # skills/ is cs's own folder now; rules/ is a part of a plugin cs never writes.
+    mkdir -p "$PLUGIN/rules"
+    printf 'mine\n' > "$PLUGIN/rules/AGENTS.md"
     status=0; _antigravity_plugin_register /opt/cs || status=$?
-    assert_eq 3 "$status" "a folder with a skills/ of the user's is refused" || return 1
+    assert_eq 3 "$status" "a folder with a rules/ of the user's is refused" || return 1
     assert_not_exists "$PLUGIN/hooks.json" "and nothing is written" || return 1
-    rm -rf "$PLUGIN/skills"
+    rm -rf "$PLUGIN/rules"
     printf '{"name": "cs", "description": "mine"}\n' > "$PLUGIN/plugin.json"
     status=0; _antigravity_plugin_register /opt/cs || status=$?
     assert_eq 3 "$status" "a plugin.json of the user's is refused" || return 1

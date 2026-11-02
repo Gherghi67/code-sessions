@@ -103,18 +103,22 @@ engines the install chose:
 The folder is cs's whole. An install rewrites both files; it never merges into
 them. A folder of that name is cs's when its `hooks.json` is cs's, or, with no
 `hooks.json`, when it holds only what an install or removal of cs leaves
-there: cs's own `plugin.json`, a `scripts/` folder, a `skills/` folder holding
-only folders named for cs's skills, and the
+there: cs's own `plugin.json`, a `scripts/` and a `skills/` folder, and the
 `.hooks.json.XXXXXX` and `.plugin.json.XXXXXX` temporary files of an install
 cut short, each empty or holding what cs writes. Any other folder of that name
-(a `hooks.json` or `plugin.json` that is not cs's, a skill of another name
-in `skills/`, or anything else at its top level), or one where the folder,
-`hooks.json`, `scripts/`, `skills/` or a skill's folder is a symbolic link, or
-`scripts/` or `skills/` is not a folder, is kept as it is with a warning, and
-neither the hook nor the skills are installed. Without
+(a `hooks.json` or `plugin.json` that is not cs's, or anything else at its top
+level), or one where the folder, `hooks.json` or `scripts/` is a symbolic
+link, is kept as it is with a warning, and neither the hook nor the skills are
+installed. Without
 `jq`, which tells cs's files from yours, every folder of that name is kept.
+`skills/` never decides whose the folder is. cs deploys its skills only into
+a `skills/` that is a folder of the plugin's own: a link or a file of that
+name is kept and named, and the hook is still installed and removed. Inside
+it, a skill of yours, a skill folder that is a link, and a file where a skill
+folder belongs are kept and named, and cs deploys the rest.
 `cs -uninstall` removes only the files cs wrote: a script or skill file you
-changed stays, and is named, and the next install takes the folder back. `cs -doctor` under
+changed stays, and is named, as does a skill of yours, and the next install
+takes the folder back. `cs -doctor` under
 Antigravity reports whether the hook is
 installed, names a cs that is there, has its recovery consumer
 (`scripts/autosave-commits.sh`), and is not switched off in
