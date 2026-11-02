@@ -1988,7 +1988,7 @@ CS_PAYLOAD_SHA256=(
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"
     "bb4bc9cbb54d84207347a8cf654bdd32cdea9bb5dd72ddf6cbf182f5e3ff361f  hooks/scope-prompt.sh"
     "0254497096328ee6b7882ab2cb7177cad137544eb5332df3d1563bb70babb523  skills/store-secret/SKILL.md"
-    "c4839659b2da07687f68ca8af41a541b132db210f3ab5d4a7cc44298a22e425a  skills/prose-hygiene/SKILL.md"
+    "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
     "7e541f68e0f4b6bf0f604b3d03f865ea1764773dc4df451521813617b4023723  skills/rotate/SKILL.md"
     "433a1002a4236cd67f973415c06dd48004364807d525b016003328706601197b  skills/switch/SKILL.md"
     "f4adb68f2666b68b79cfbb80fc8ec77a8cf710298e8126e84dffb73d7f822a2b  skills/finish/SKILL.md"

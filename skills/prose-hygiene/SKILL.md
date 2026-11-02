@@ -26,7 +26,7 @@ starter ban targets rhetorical questions, not "When X, do Y").
 
 **Scope:** in a cs session this covers what the wrap skill writes (`.cs/summary.md` and the
 memory entries; the narrative notebooks are exempt). Every rule below needs a model
-judging meaning, and the wrap runs no critic, which makes these rules something to
+judging meaning, and the wrap skill runs no critic, which makes these rules something to
 follow while drafting rather than a pass to run afterward.
 
 ## Core principles
