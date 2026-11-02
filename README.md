@@ -29,7 +29,7 @@ check its signed release manifest with `ssh-keygen -Y verify`
 Follow [Getting started](docs/getting-started.md) for setup, adopting
 projects, engine switching, and worktrees. See [Codex sessions](docs/codex.md)
 for runtime compatibility, [Antigravity sessions](docs/antigravity.md) for the
-launch-level `agy` engine and its limits, and [Migration](docs/migration.md) for copying sessions
+`agy` engine, its hook and its limits, and [Migration](docs/migration.md) for copying sessions
 between the original cs and this fork.
 
 The launch-time release check reports new upstream releases. To incorporate

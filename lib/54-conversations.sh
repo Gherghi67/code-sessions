@@ -11,13 +11,15 @@ run_conversations() {
         echo "No conversation history recorded."
         return 0
     fi
-    local current_claude current_codex session_dir
+    local current_claude current_codex current_antigravity session_dir
     session_dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/.."
     current_claude=$(cs_binding_read "$session_dir" claude) || current_claude=""
     current_codex=$(cs_binding_read "$session_dir" codex) || current_codex=""
+    current_antigravity=$(cs_binding_read "$session_dir" antigravity) || current_antigravity=""
     # Old records have no engine and belong to Claude. Key by engine AND ID:
     # equal opaque native IDs from different engines are separate conversations.
-    jq -rRs --arg claude "$current_claude" --arg codex "$current_codex" '
+    jq -rRs --arg claude "$current_claude" --arg codex "$current_codex" \
+        --arg antigravity "$current_antigravity" '
         def key: [.engine, .session_id] | tojson;
         def conversation_label($engine; $id): $engine + ":" + $id[0:8];
         def str_or_null: type == "string" or . == null;
@@ -48,6 +50,7 @@ run_conversations() {
                             + ")"
                             + (if ($e.engine == "claude" and $claude != "" and $e.session_id == $claude)
                                    or ($e.engine == "codex" and $codex != "" and $e.session_id == $codex)
+                                   or ($e.engine == "antigravity" and $antigravity != "" and $e.session_id == $antigravity)
                                then "  [current]" else "" end))}]
                 end
             else

@@ -83,7 +83,7 @@ if [ "${1:-}" != --event ]; then
     INPUT=$(printf '%s' "$INPUT" | cs_engine_call claude files_changed) || exit 0
 fi
 printf '%s' "$INPUT" | jq -e '
-    .type == "files_changed" and (.engine == "claude" or .engine == "codex")
+    .type == "files_changed" and (.engine == "claude" or .engine == "codex" or .engine == "antigravity")
     and (.files | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
     and (.session_id | type == "string") and (.cwd | type == "string")
 ' >/dev/null 2>&1 || exit 0

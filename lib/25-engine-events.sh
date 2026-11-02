@@ -45,9 +45,20 @@ _cs_codex_adapter_files_changed() {
     ' 2>/dev/null || true
 }
 
-# Antigravity runs no cs hook yet, so no native edit payload reaches this
-# translator. Its input is drained and it emits nothing, as for an edit the
-# other translators do not recognize.
 _cs_antigravity_adapter_files_changed() {
-    cat >/dev/null 2>&1 || true
+    # agy's PostToolUse payload carries the call it ran, not its result, and
+    # no event name: the hook verb says it is PostToolUse. Measured on agy
+    # 1.4.11, write_file and edit_file name an absolute file in args.Path, and
+    # a call that succeeded carries an empty error. Paths an edit through
+    # run_command touches are not named anywhere, as under the other engines.
+    jq -c '
+        select(type == "object")
+        | select(.toolCall.name == "write_file" or .toolCall.name == "edit_file")
+        | select((.error // "") == "")
+        | select(.toolCall.args.Path | type == "string" and length > 0)
+        | {type: "files_changed", engine: "antigravity", session_id: .conversationId,
+           cwd: (if (.workspacePaths | type) == "array" and (.workspacePaths[0] | type) == "string"
+                 then .workspacePaths[0] else "" end),
+           files: [.toolCall.args.Path]}
+    ' 2>/dev/null || true
 }

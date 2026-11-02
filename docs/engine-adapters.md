@@ -35,7 +35,8 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `spawn_brief`, `memory_index`,
 `mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
-`startup_context`, and `memory_index` ([Antigravity sessions](antigravity.md)). These
+`exact_resume`, `startup_context`, `recovery_autosave`, and `memory_index`
+([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -100,9 +101,12 @@ local-state fields, and reject values that the selected storage format cannot
 round-trip. Native ID shape validation remains in the engine launch code.
 Claude's `claude_session_id` key stays in `.cs/local/state`; Codex's ID stays
 in `.cs/local/codex-thread-id`. Antigravity's binding,
-`.cs/local/antigravity-conversation`, holds the word `latest`: `agy` reopens a
-folder's latest conversation with `--continue` and does not report an ID cs can
-record, so the adapter neither stages candidates nor records `started` events. The storage formats remain compatible. A staged replacement lives in
+`.cs/local/antigravity-conversation`, holds a conversation ID that cs's hook
+writes under the run lease at the run's first model call (`cs -antigravity-hook
+pre-invocation`), when it also records the `started` event; the adapter stages
+no candidates. A binding an older cs wrote holds the word `latest`, which the
+launch treats as no binding: it starts a new conversation, and the hook
+replaces the word with that conversation's ID. The storage formats remain compatible. A staged replacement lives in
 `local/pending-binding-<engine>.json` until the adapter acknowledges its ID.
 A failed preparation preserves the previous binding; an abandoned candidate is
 retained locally when another attempt supersedes it. A repeated acknowledgement
@@ -152,7 +156,7 @@ iteration does not move the entire source tree or migrate storage formats.
 | `40-state.sh`, `41-bindings.sh`: local state and engine-qualified bindings | `46-claude-workspace.sh`: Claude workspace preparation and native migrations |
 | `30-worktree.sh`, `45-migrate.sh`: shared worktree/scaffold/migration operations | `75-launch.sh`: existing Claude launch adapter and its orchestration |
 | CLI commands consume `CS_SESSION_*`, falling back to legacy aliases | `76-codex.sh`, `bin/cs-codex-thread`: Codex launch, context renderer, and protocol |
-| `78-switch.sh`: `cs -switch`, `pending-switch`, and the relaunch under the other engine | `79-antigravity.sh`: Antigravity launch, its always-on context rule, and its `latest` binding |
+| `78-switch.sh`: `cs -switch`, `pending-switch`, and the relaunch under the other engine | `79-antigravity.sh`: Antigravity launch, its always-on context rule, and the hook that binds its conversation |
 
 Create/adopt/migrate/worktree paths dispatch `prepare_workspace` after preparing
 portable storage. They allocate no native conversation IDs themselves. Claude adoption appends its
@@ -277,12 +281,13 @@ its own inside the vault: main checks before the pre-open, and
 `_launch_codex_bound` checks again for any other caller
 (`_codex_encrypted_refusal`). Antigravity refuses them the same way
 (`_antigravity_encrypted_refusal`).
-Antigravity is integrated at launch level only: no hooks, skills, status line,
-switch, mail, or rotation. `cs -switch` refuses to leave an engine without
+Antigravity has a launch and one hook, cs's plugin under
+`~/.gemini/config/plugins/cs/`, and no skills, status line, switch, mail, or
+rotation. `cs -switch` refuses to leave an engine without
 `rotation`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Its
-`files_changed` drains its input and emits nothing until a hook delivers
-`agy`'s edits. Its rule `.agents/rules/cs-session.md` counts as cs's own
+`files_changed` reads the payload of `agy`'s PostToolUse hook and keeps
+`write_file` and `edit_file` calls that succeeded. Its rule `.agents/rules/cs-session.md` counts as cs's own
 bookkeeping while it carries cs's mark (`_antigravity_rule_is_cs`,
 `_session_agents_only_cs`, and the picker's twin in `tui/src/session.rs`), so
 retire and `cs -rm` treat it as they treat a marked `CLAUDE.local.md`. A main
@@ -339,7 +344,9 @@ snapshots. Failed tools and non-file operations create no recovery copy.
 The installer deploys the consumer and its libraries to
 `$CODEX_HOME/hooks/cs/` even in a Codex-only installation, registers and trusts
 the PostToolUse handler, and removes only its own handler and files on
-uninstall. Build generates `hooks/cs-engine-events.sh` from the adapter registry
+uninstall. Where `agy` is installed it deploys the same files to the
+`scripts/` folder of cs's Antigravity plugin, whose PostToolUse hook
+(`cs -antigravity-hook post-tool-use`) feeds them. Build generates `hooks/cs-engine-events.sh` from the adapter registry
 and translators so standalone hooks and the assembled command use one contract.
-Claude's SessionStart recovery prompt remains available; Codex snapshots can
-be inspected through their shadow ref.
+Claude's SessionStart recovery prompt remains available.
+Codex and Antigravity snapshots can be inspected through their shadow ref.

@@ -189,9 +189,10 @@ cs's autosave and crash recovery, automatic queue or mailbox
 delivery, runtime usage reporting, encrypted sessions, or native terminal
 controls. Manual status and workspace management are available.
 
-Antigravity is launch-level for now: cs starts and reopens `agy` with the
-session context, and nothing else. [Antigravity sessions](antigravity.md)
-lists what it does not do yet.
+Under Antigravity, cs starts `agy` with the session context, and a hook cs
+installs records the conversation, so a reopen resumes it by ID and `agy`'s
+edits are autosaved for recovery. [Antigravity sessions](antigravity.md) lists
+what it does not do yet.
 
 This fork updates from its checkout. `cs -update` refuses to replace it with
 an upstream release; rerun `setup.sh` to install checkout changes.

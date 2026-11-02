@@ -748,7 +748,7 @@ _deploy_skills "$CODEX_SKILLS_DIR"
 # A Codex-only install carries these files in its own runtime home.
 CODEX_RECOVERY_DIR="$CODEX_DIR/hooks/cs"
 mkdir -p "$CODEX_RECOVERY_DIR"
-for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
     _deploy "hooks/$hook" "$CODEX_RECOVERY_DIR/$hook"
 done
 
@@ -778,6 +778,32 @@ else
 fi
 
 
+fi
+
+# Antigravity runs on any install: its adapter is in cs itself. Its hook, a
+# plugin cs owns under ~/.gemini/config/plugins, records the conversation a
+# reopen resumes and hands agy's edits to recovery (lib/79-antigravity.sh).
+# Written where agy is installed or has its own folder, ~/.gemini/antigravity-cli:
+# gemini-cli keeps ~/.gemini too, and a host without agy gets nothing there.
+if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+    if command -v jq >/dev/null 2>&1; then
+        AGY_PLUGIN_DIR=$(_antigravity_plugin_dir)
+        _agy_rc=0
+        _antigravity_plugin_register "$INSTALL_DIR/cs" || _agy_rc=$?
+        case $_agy_rc in
+            0)
+                installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
+                mkdir -p "$AGY_PLUGIN_DIR/scripts"
+                for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
+                    _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
+                done
+                ;;
+            3) warn "Kept $AGY_PLUGIN_DIR: cs did not write it, so the Antigravity hook was not registered. Rename that folder and install again for exact reopens under Antigravity." ;;
+            *) warn "Could not register the Antigravity hook in $AGY_PLUGIN_DIR; reopens under Antigravity start a new conversation until it is" ;;
+        esac
+    else
+        warn "jq not found - the Antigravity hook (exact reopen, recovery) was not registered."
+    fi
 fi
 
 # Record what this install wrote under ~/.claude, so the next install, update
