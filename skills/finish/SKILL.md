@@ -32,7 +32,11 @@ Outside a cs session there is nothing to ask; go on.
 
 Run `scripts/finish.sh prepare [feature]` from the workspace and read its
 `key: value` lines. The script ships with this skill: `scripts/` is relative
-to this skill's directory, the folder this SKILL.md was loaded from.
+to this skill's directory, the folder this SKILL.md was loaded from. If you
+cannot tell which folder that is (an engine can hand over a skill the user
+typed without naming its folder), say so and stop: never guess a path or
+search the disk for another `finish.sh`, which may belong to another cs
+install.
 
 1. **`role: feature`** — this workspace is a cs feature worktree. Print the
    `handoff:` line verbatim (`run /finish <task> in session <base>`) and stop.

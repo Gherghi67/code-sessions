@@ -141,6 +141,8 @@ test_skills_check_adapter_capabilities_before_use() {
         "finish must check the feature_finish capability" || return 1
     assert_file_contains "$SKILLS_DIR/switch/SKILL.md" 'cs -engine supports rotation' \
         "switch leaves from a rotation handoff, so it must check rotation" || return 1
+    assert_file_contains "$SKILLS_DIR/finish/SKILL.md" 'never guess a path or' \
+        "finish outside a cs session must stop when it cannot find its own folder" || return 1
     local hits
     hits=$(grep -l 'CLAUDE_SESSION_NAME' "$SKILLS_DIR"/*/SKILL.md 2>/dev/null || true)
     assert_eq "" "$hits" "skills read the neutral CS_SESSION_NAME, not the Claude alias" || return 1

@@ -153,7 +153,7 @@ the `/` menu and in the list the model reads.
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
 | `rotate`, `feature` | Check `cs -engine supports rotation` and `spawn_brief`, print the line it gives, and stop before writing anything. |
-| `finish`, `switch` | Run only when you type them, then check `feature_finish` and `rotation` the same way and stop. |
+| `finish`, `switch` | Run only when you type them. In a cs session they check `feature_finish` and `rotation` the same way and stop. Outside one, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from (see [Follow-ups](#follow-ups)). |
 
 - **Explicit-only skills.** `finish` and `switch` carry
   `disable-model-invocation: true`, the key Claude Code reads. `agy` reads it
