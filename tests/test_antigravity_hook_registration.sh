@@ -254,6 +254,19 @@ test_a_linked_or_file_skills_entry_is_never_written_or_emptied_through() {
     output=$(_antigravity_plugin_unregister 2>&1) || { echo "  FAIL: $output"; return 1; }
     assert_eq theirs "$(cat "$target/rotate/SKILL.md")" "the skill behind the link stays" || return 1
     [ -L "$PLUGIN/skills/rotate" ] || { echo "  FAIL: the link stays"; return 1; }
+    # Even when what it points at is what cs wrote: the removal never goes
+    # through the link, and says why it kept it.
+    rm -rf "$PLUGIN" "$target/rotate"
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_skills || return 1
+    mv "$PLUGIN/skills/rotate" "$target/rotate"
+    ln -s "$target/rotate" "$PLUGIN/skills/rotate"
+    output=$(_antigravity_plugin_unregister 2>&1) || { echo "  FAIL: $output"; return 1; }
+    cmp -s "$SCRIPT_DIR/../skills/rotate/SKILL.md" "$target/rotate/SKILL.md" \
+        || { echo "  FAIL: cs's file behind the link stays"; return 1; }
+    [ -L "$PLUGIN/skills/rotate" ] || { echo "  FAIL: the link stays"; return 1; }
+    assert_output_contains "$output" "Kept $PLUGIN/skills/rotate: a symlink, so cs removed nothing through it" \
+        "the link is named for what it is" || { echo "$output"; return 1; }
 }
 
 # hooks.json marks the folder cs's, so it is written first: an install cut

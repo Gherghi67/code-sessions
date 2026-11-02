@@ -687,10 +687,16 @@ _antigravity_plugin_unregister() {
     for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
-    # Only the names cs ships: a skill of the user's beside them stays.
+    # Only the names cs ships: a skill of the user's beside them stays, and
+    # nothing is removed through a skill folder that is a link.
     if _antigravity_plugin_subdir_ok "$dir/skills"; then
         for skill in "${CS_SKILLS[@]}"; do
-            [ ! -d "$dir/skills/$skill" ] || _cs_remove_tree_if_owned "$dir/skills/$skill" || true
+            if [ -L "$dir/skills/$skill" ]; then
+                warn "Kept $dir/skills/$skill: a symlink, so cs removed nothing through it"
+                CS_KEPT_PATHS+=("$dir/skills/$skill")
+            elif [ -d "$dir/skills/$skill" ]; then
+                _cs_remove_tree_if_owned "$dir/skills/$skill" || true
+            fi
         done
     fi
     for temp in "$dir"/.hooks.json.?????? "$dir"/.plugin.json.??????; do
@@ -1961,7 +1967,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "1597f08b852e411dcb6c3a5a69651af5691c1d352a0ebc5a8c5b92bbcfccbfdb  bin/cs"
+    "4b12420dfecf498dfeaf5d0b8857d559f59b0ce3eca4ff851e00e85ccf91288c  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"

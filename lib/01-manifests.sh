@@ -577,10 +577,16 @@ _antigravity_plugin_unregister() {
     for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
-    # Only the names cs ships: a skill of the user's beside them stays.
+    # Only the names cs ships: a skill of the user's beside them stays, and
+    # nothing is removed through a skill folder that is a link.
     if _antigravity_plugin_subdir_ok "$dir/skills"; then
         for skill in "${CS_SKILLS[@]}"; do
-            [ ! -d "$dir/skills/$skill" ] || _cs_remove_tree_if_owned "$dir/skills/$skill" || true
+            if [ -L "$dir/skills/$skill" ]; then
+                warn "Kept $dir/skills/$skill: a symlink, so cs removed nothing through it"
+                CS_KEPT_PATHS+=("$dir/skills/$skill")
+            elif [ -d "$dir/skills/$skill" ]; then
+                _cs_remove_tree_if_owned "$dir/skills/$skill" || true
+            fi
         done
     fi
     for temp in "$dir"/.hooks.json.?????? "$dir"/.plugin.json.??????; do
