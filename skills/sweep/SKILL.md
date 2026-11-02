@@ -12,7 +12,7 @@ You are working in a cs session. Your task is to review the conversation in your
 
 Two write surfaces, deliberately DIFFERENT bars:
 
-- **The strict buckets (`.cs/memory/{user,feedback,project,reference}_*.md`) are forever** — they sit in Claude's persistent memory and inform every future session. **Bar: very strict. Default: write nothing.**
+- **The strict buckets (`.cs/memory/{user,feedback,project,reference}_*.md`) are forever** — they sit in the session's persistent memory and inform every future session. **Bar: very strict. Default: write nothing.**
 - **`.cs/memory/narrative.<actor>.md` is your session-local lab notebook** (per-actor — run `cs -whoami` for your actor) — a native memory topic file, looser bar. Substantive observations welcome. Default: write if the session surfaced a non-obvious finding worth keeping.
 
 Both are written in parallel from the conversation — narrative is not the upstream of the strict buckets.
@@ -25,6 +25,9 @@ can check this sweep's rewrites against them:
 ```sh
 bash <skill-dir>/scripts/memory-index-guard.sh snapshot
 ```
+
+`<skill-dir>` is this skill's directory: the folder this SKILL.md was loaded
+from, as your engine names it when it lists or loads the skill.
 
 1. **Review the conversation in your context.** Look at what the user has said and what was decided or learned across this whole session — not just the most recent turn.
 

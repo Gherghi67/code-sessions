@@ -20,6 +20,12 @@ cs's.
 Only works in a cs session: check that `$CS_SESSION_NAME` is set. If
 empty, tell the user switching engines needs a cs session and stop.
 
+A switch leaves from a rotation handoff, so this engine's adapter has to
+carry one: run `cs -engine supports rotation`. If it exits non-zero, print
+the line it printed, tell the user to exit and reopen the session with
+`cs <session-name> --engine <engine>` instead, and stop before writing
+anything.
+
 Run `cs -engine` and note its `engine:` line: the engine this conversation
 runs under. The steps below differ between Claude and Codex, and rotate's
 step 1 reads the `conversation:` line of the same output.
