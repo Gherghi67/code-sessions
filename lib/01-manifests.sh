@@ -550,7 +550,7 @@ _antigravity_plugin_is_cs_leftover() {  # plugin_dir
     for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         case "${entry##*/}" in
-            scripts) [ -d "$entry" ] ;;
+            scripts) [ -d "$entry" ] && [ ! -L "$entry" ] ;;
             skills) [ -d "$entry" ] && [ ! -L "$entry" ] ;;
             plugin.json) _antigravity_plugin_manifest_is_cs "$entry" ;;
             .hooks.json.??????|.plugin.json.??????) _antigravity_plugin_temp_is_cs "$entry" ;;

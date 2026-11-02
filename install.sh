@@ -660,7 +660,7 @@ _antigravity_plugin_is_cs_leftover() {  # plugin_dir
     for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         case "${entry##*/}" in
-            scripts) [ -d "$entry" ] ;;
+            scripts) [ -d "$entry" ] && [ ! -L "$entry" ] ;;
             skills) [ -d "$entry" ] && [ ! -L "$entry" ] ;;
             plugin.json) _antigravity_plugin_manifest_is_cs "$entry" ;;
             .hooks.json.??????|.plugin.json.??????) _antigravity_plugin_temp_is_cs "$entry" ;;
@@ -1967,7 +1967,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "32c692123385840b1d6c857947f61364653add6f979c72fdbd1801419cff806d  bin/cs"
+    "a74424328abc95be5c68d5b2576c8bc9a4bc2e18289c53461cb035a09a88d94e  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
