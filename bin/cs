@@ -13520,6 +13520,34 @@ _doctor_in_installed_checkout() {
     [ -n "$src_version" ] && [ "$src_version" = "$deployed_version" ]
 }
 
+# Whether ./install.sh keeps what stands where it would deploy $1/$2 ($3 its
+# source), so that no install clears a drift row naming it. _deploy keeps a
+# path that is a link to nothing or something that is not a plain file, and
+# no folder below $1 can be made where something else stands. A skill's
+# folders are its own: install.sh writes nothing through a link there
+# (_skill_path_real), even when the file it finds behind the link is cs's. A
+# mod's linked folder is replaced when it holds only cs's files
+# (_mod_path_real), so there a link is in the way only when the file behind
+# it is missing.
+_drift_in_the_way() {  # deploy_root, path below it, source
+    local deployed="$1/$2" p="$1" rest="$2"
+    if { [ -L "$deployed" ] || [ -e "$deployed" ]; } && [ ! -f "$deployed" ]; then
+        return 0
+    fi
+    while [[ "$rest" == */* ]]; do
+        p="$p/${rest%%/*}"
+        rest="${rest#*/}"
+        if [ -L "$p" ] && { [[ "$3" == skills/* ]] || [ ! -f "$deployed" ]; }; then
+            return 0
+        fi
+        if [ -e "$p" ] && [ ! -d "$p" ]; then
+            return 0
+        fi
+        [ -e "$p" ] || return 1
+    done
+    return 1
+}
+
 # Compares deployable artifacts in the current directory's cs source checkout
 # (hooks/*.sh, hooks/*.md, commands/*.md, skills/*/SKILL.md) against their deployed
 # copies. A source edit only takes effect once install.sh deploys it, so
@@ -13538,13 +13566,12 @@ _doctor_check_hook_drift() {
     # on the source path shape so the label stays purely cosmetic. A deployed
     # copy cs did not write (_cs_owns_file, as install.sh decides) is one
     # ./install.sh keeps as the user's, so it is named apart, with advice
-    # that can clear it. So is a copy missing because a link, or something
-    # that is not a folder, stands where one of its folders belongs below the
-    # deploy root: ./install.sh keeps those too.
+    # that can clear it. So is what stands in a copy's way
+    # (_drift_in_the_way), which ./install.sh keeps too.
     _drift_scan() {
         local label="$1" deploy_root="$2"
         shift 2
-        local drifted=() users_copies=() missing=() src name deployed parent
+        local drifted=() users_copies=() in_the_way=() missing=() src name deployed
         for src in "$@"; do
             [ -e "$src" ] || continue
             if [[ "$src" == */SKILL.md ]]; then
@@ -13560,22 +13587,17 @@ _doctor_check_hook_drift() {
                 name=$(basename "$src")
                 deployed="$deploy_root/$name"
             fi
-            if [ ! -f "$deployed" ]; then
-                parent=$(dirname "$deployed")
-                while [ "${#parent}" -gt "${#deploy_root}" ] && [ ! -e "$parent" ] && [ ! -L "$parent" ]; do
-                    parent=$(dirname "$parent")
-                done
-                if [ "${#parent}" -gt "${#deploy_root}" ] && { [ -L "$parent" ] || [ ! -d "$parent" ]; }; then
-                    users_copies+=("$name")
-                else
-                    missing+=("$name")
-                fi
-            elif ! cmp -s "$src" "$deployed"; then
-                if _cs_owns_file "$deployed"; then
-                    drifted+=("$name")
-                else
-                    users_copies+=("$name")
-                fi
+            if [ -f "$deployed" ] && cmp -s "$src" "$deployed"; then
+                continue
+            fi
+            if _drift_in_the_way "$deploy_root" "${deployed#"$deploy_root"/}" "$src"; then
+                in_the_way+=("$name")
+            elif [ ! -f "$deployed" ]; then
+                missing+=("$name")
+            elif _cs_owns_file "$deployed"; then
+                drifted+=("$name")
+            else
+                users_copies+=("$name")
             fi
         done
         if [ ${#drifted[@]} -gt 0 ]; then
@@ -13584,6 +13606,10 @@ _doctor_check_hook_drift() {
         fi
         if [ ${#users_copies[@]} -gt 0 ]; then
             _doctor_warn "$label drift: deployed copy differs from source: ${users_copies[*]} (kept as yours, so ./install.sh does not replace it; move it aside, then run ./install.sh to get cs's copy)"
+            clean=0
+        fi
+        if [ ${#in_the_way[@]} -gt 0 ]; then
+            _doctor_warn "$label drift: in the way, kept as yours: ${in_the_way[*]} (a link, or something that is not a folder or a plain file, stands where cs deploys it, and ./install.sh writes nothing through it or over it; move it aside, then run ./install.sh to get cs's copy)"
             clean=0
         fi
         if [ ${#missing[@]} -gt 0 ]; then
