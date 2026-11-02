@@ -429,6 +429,44 @@ test_doctor_warns_on_codex_skill_drift() {
     assert_output_not_contains "$output" "Codex skill drift" "Codex is not installed here" || return 1
 }
 
+# Antigravity gets the same skill files in cs's plugin, so an edit the
+# installer has not copied there is drift too. A plugin folder that is not
+# cs's got no skills from cs, and is not compared.
+test_doctor_warns_on_antigravity_skill_drift() {
+    require_tool jq || return $?
+    local checkout="$TEST_TMPDIR/agyco" home="$TEST_TMPDIR/agy-home" claude_skills="$TEST_TMPDIR/claude-skills" plugin output
+    plugin="$home/.gemini/config/plugins/cs"
+    make_fake_checkout "$checkout" "$TEST_TMPDIR/deployed-hooks"
+    mkdir -p "$checkout/skills/finish/agents" "$claude_skills/finish" "$plugin/skills/finish"
+    echo 'skill' > "$checkout/skills/finish/SKILL.md"
+    echo 'policy: source' > "$checkout/skills/finish/agents/openai.yaml"
+    cp -R "$checkout/skills/finish/." "$claude_skills/finish/"
+    cp -R "$checkout/skills/finish/." "$plugin/skills/finish/"
+    echo 'policy: deployed' > "$plugin/skills/finish/agents/openai.yaml"
+    printf '{"cs-session": {"PreInvocation": [{"type": "command", "command": "/opt/cs -antigravity-hook pre-invocation", "timeout": 10}]}}\n' \
+        > "$plugin/hooks.json"
+
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity skill drift: deployed copy differs from source: finish/agents/openai.yaml" \
+        "an undeployed edit to Antigravity's copy is drift" || return 1
+    assert_output_not_contains "$output" "Skill drift: deployed copy differs" \
+        "Claude's copy is in sync" || return 1
+
+    cp "$checkout/skills/finish/agents/openai.yaml" "$plugin/skills/finish/agents/openai.yaml"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Deploy drift" "the scan ran to its verdict" || return 1
+    assert_output_not_contains "$output" "Antigravity skill drift" "in sync: silent" || return 1
+
+    # A folder of that name that is not cs's holds no copies of cs's.
+    printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$plugin/hooks.json"
+    rm "$plugin/skills/finish/SKILL.md"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Antigravity skill drift" "a plugin that is not cs's is not compared" || return 1
+}
+
 # Helper: a cs checkout with a TUI source tree whose files carry mtime $2
 # (touch -t form), and an empty install dir under a HOME of the test's own.
 # install.sh copies a picker it never builds, so the freshness of cs-tui is
@@ -1684,6 +1722,7 @@ run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_skill_script_drift
 run_test test_doctor_warns_on_skill_drift
 run_test test_doctor_warns_on_codex_skill_drift
+run_test test_doctor_warns_on_antigravity_skill_drift
 run_test test_doctor_tui_warns_when_a_rust_source_changed_after_the_build
 run_test test_doctor_tui_warns_when_cargo_toml_changed_after_the_build
 run_test test_doctor_tui_warns_when_cargo_lock_changed_after_the_build

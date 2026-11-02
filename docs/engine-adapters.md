@@ -172,7 +172,10 @@ The installer selects first-party adapter payloads with `CS_INSTALL_ENGINES`.
 Codex-only installations omit Claude hooks, mods, statuslines,
 and settings. Skills deploy to every selected engine: the same files go to
 `~/.claude/skills/` and to `$CODEX_HOME/skills/` (default `~/.codex/skills/`),
-and uninstall removes only the names cs ships from either. Shared CLI identity resolution and cs-secrets prefer neutral
+and uninstall removes only the names cs ships from either. Wherever `agy` is,
+whatever engines were selected, they also go to `skills/` in cs's Antigravity
+plugin, `~/.gemini/config/plugins/cs/`, which uninstall removes file by file
+with the rest of the plugin. Shared CLI identity resolution and cs-secrets prefer neutral
 variables and accept older callers. Exported Claude aliases remain during the
 migration for shipped native hooks and commands.
 
@@ -281,8 +284,8 @@ its own inside the vault: main checks before the pre-open, and
 `_launch_codex_bound` checks again for any other caller
 (`_codex_encrypted_refusal`). Antigravity refuses them the same way
 (`_antigravity_encrypted_refusal`).
-Antigravity has a launch and one hook, cs's plugin under
-`~/.gemini/config/plugins/cs/`, and no skills, status line, switch, mail, or
+Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
+`~/.gemini/config/plugins/cs/`, and no status line, switch, mail, or
 rotation. `cs -switch` refuses to leave an engine without
 `rotation`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Its
@@ -293,14 +296,15 @@ bookkeeping while it carries cs's mark (`_antigravity_rule_is_cs`,
 retire and `cs -rm` treat it as they treat a marked `CLAUDE.local.md`. A main
 open refuses `--from-handoff` for an engine without `rotation` before it
 migrates or unarchives anything.
-The shipped skills deploy to Claude and Codex alike. Each one reaches its
-helpers through its own directory and checks `cs -engine supports` before an
-adapter feature. Both adapters declare `rotation`, `spawn_brief`, `memory_index`
+The shipped skills deploy to Claude, Codex and Antigravity alike. Each one
+reaches its helpers through its own directory and checks `cs -engine supports`
+before an adapter feature. Both adapters declare `rotation`, `spawn_brief`, `memory_index`
 and `mail_delivery`; Codex uses shared index/mail readers and seed delivery, with
 native thread history acknowledging its brief kickoff.
 Codex ignores `disable-model-invocation`, so `finish` also ships
 `agents/openai.yaml` with `allow_implicit_invocation: false`, which keeps it out
-of the skill list Codex gives the model.
+of the skill list Codex gives the model. Antigravity reads the key itself
+(`agy` 1.4.11 lists such a skill with `model_invocable: false`).
 
 Codex rotation runs through one hook. The installer registers
 `cs -codex-hook session-start` in `$CODEX_HOME/hooks.json`, after any groups

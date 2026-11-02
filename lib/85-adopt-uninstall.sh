@@ -797,6 +797,9 @@ run_uninstall() {
     if [[ ",$install_engines," == *,codex,* ]]; then
         echo "  - Codex skills in $codex_skills_dir/ and the cs hook in ${codex_skills_dir%/skills}/hooks.json"
     fi
+    if [ -e "$(_antigravity_plugin_dir)" ]; then
+        echo "  - The cs hook and skills for Antigravity in $(_antigravity_plugin_dir)/"
+    fi
     echo "  - Shell completions"
     echo "  - Update-check cache in $update_cache_dir/"
     echo "  - Hook entries in $settings_file"
@@ -953,16 +956,17 @@ run_uninstall() {
     esac
     fi
 
-    # The Antigravity hook is written on any install where agy is, so it goes
-    # whatever engines this install chose. A folder there that is not cs's stays.
+    # The Antigravity plugin (the hook and the skills) is written on any
+    # install where agy is, so it goes whatever engines this install chose. A
+    # folder there that is not cs's stays.
     local agy_plugin agy_rc=0
     agy_plugin=$(_antigravity_plugin_dir)
     if [ -e "$agy_plugin" ] || [ -L "$agy_plugin" ]; then
         _antigravity_plugin_unregister || agy_rc=$?
         case $agy_rc in
-            0) info "Removed the cs hook for Antigravity: $agy_plugin/" ;;
+            0) info "Removed the cs hook and skills for Antigravity: $agy_plugin/" ;;
             3) warn "Kept $agy_plugin: it is not cs's plugin (or jq, which tells, is missing), so it was not removed" ;;
-            *) warn "Could not remove the cs hook for Antigravity from $agy_plugin; remove that folder by hand" ;;
+            *) warn "Could not remove the cs hook and skills for Antigravity from $agy_plugin; remove that folder by hand" ;;
         esac
     fi
 

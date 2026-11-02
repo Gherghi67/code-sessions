@@ -289,6 +289,14 @@ _doctor_check_hook_drift() {
     if [[ ",$engines," == *,codex,* ]] && [ -d "$codex_dir" ]; then
         _drift_scan "Codex skill" "$codex_dir/skills" "${skill_sources[@]}"
     fi
+    # Antigravity's copies sit in cs's plugin, written only where agy is. A
+    # folder of that name that is not cs's got none, and the Antigravity hook
+    # row says so.
+    local agy_plugin
+    agy_plugin=$(_antigravity_plugin_dir)
+    if _antigravity_plugin_is_cs "$agy_plugin"; then
+        _drift_scan "Antigravity skill" "$agy_plugin/skills" "${skill_sources[@]}"
+    fi
 
     if [ "$clean" = "1" ]; then
         _doctor_ok "Deploy drift: hooks, skills, and mods match checkout source"

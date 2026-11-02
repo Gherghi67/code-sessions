@@ -4,8 +4,9 @@ cs can launch a named session with Google's Antigravity CLI (`agy`) while
 keeping the session's files, notes, and workspace under the same `.cs/`
 directory that Claude Code and Codex use. cs starts `agy` in the session with
 the session's context handed over, and a hook records the conversation so a
-reopen resumes exactly that one and `agy`'s edits reach recovery. cs's skills,
-status line, `cs -switch`, mail, and rotation do not reach Antigravity yet.
+reopen resumes exactly that one and `agy`'s edits reach recovery. The same
+plugin carries cs's skills, as `/cs:<name>`. cs's status line, `cs -switch`,
+mail, and rotation do not reach Antigravity yet.
 
 ## Launching
 
@@ -31,7 +32,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 `agy` must be signed in for the current user. cs does not configure its
 credentials or read its conversations under `~/.gemini/`. The one thing cs
-writes there is its own hook plugin (see below).
+writes there is its own plugin, with the hook and the skills (see below).
 
 The first interactive open of each new session folder or feature worktree
 shows `agy`'s folder-trust dialog, which asks
@@ -96,26 +97,33 @@ engines the install chose:
   `cs -antigravity-hook post-tool-use` after each tool (matcher `*`).
 - `scripts/`, holding the recovery consumer (`autosave-commits.sh` and the
   three files it sources), as Codex gets under `$CODEX_HOME/hooks/cs/`.
+- `skills/`, holding cs's skills: the same files `~/.claude/skills/` and
+  `$CODEX_HOME/skills/` get (see [Skills](#skills)).
 
 The folder is cs's whole. An install rewrites both files; it never merges into
 them. A folder of that name is cs's when its `hooks.json` is cs's, or, with no
 `hooks.json`, when it holds only what an install or removal of cs leaves
-there: cs's own `plugin.json`, a `scripts/` folder, and the
+there: cs's own `plugin.json`, a `scripts/` folder, a `skills/` folder holding
+only folders named for cs's skills, and the
 `.hooks.json.XXXXXX` and `.plugin.json.XXXXXX` temporary files of an install
 cut short, each empty or holding what cs writes. Any other folder of that name
-(a `hooks.json` or `plugin.json` that is not cs's, or anything else at its top
-level), or one where the folder, `hooks.json` or `scripts/` is a symbolic
-link, is kept as it is with a warning, and nothing is registered. Without
+(a `hooks.json` or `plugin.json` that is not cs's, a skill of another name
+in `skills/`, or anything else at its top level), or one where the folder,
+`hooks.json`, `scripts/`, `skills/` or a skill's folder is a symbolic link, or
+`scripts/` or `skills/` is not a folder, is kept as it is with a warning, and
+neither the hook nor the skills are installed. Without
 `jq`, which tells cs's files from yours, every folder of that name is kept.
-`cs -uninstall` removes only the files cs wrote: a script you changed stays,
-and is named, and the next install takes the folder back. `cs -doctor` under
+`cs -uninstall` removes only the files cs wrote: a script or skill file you
+changed stays, and is named, and the next install takes the folder back. `cs -doctor` under
 Antigravity reports whether the hook is
 installed, names a cs that is there, has its recovery consumer
 (`scripts/autosave-commits.sh`), and is not switched off in
 `~/.gemini/config/config.json` (`agy plugin enable cs` turns it back on); for
 a folder holding only what cs left, or a hook without its recovery consumer,
 it says to run `setup.sh` again. A launch whose hook lacks the recovery
-consumer says that edits are not autosaved.
+consumer says that edits are not autosaved. Run from the checkout cs was
+installed from, `cs -doctor` also compares the plugin's skill copies with the
+source, as it compares Codex's.
 
 A plugin was picked over a workspace `<session>/.agents/hooks.json` because it
 is written once at install, outside the folder the agent writes. It needs no
@@ -127,6 +135,50 @@ machine. Outside a cs launch of an Antigravity session (no
 
 Every hook prints `{}`, which decides nothing, and exits 0, so it never blocks
 or fails a turn. It acts only for the run that holds the session's lease.
+
+## Skills
+
+The installer copies cs's skills into the plugin's `skills/` folder: the same
+`SKILL.md` files and helper scripts Claude and Codex get, never a separate
+Antigravity copy of their text. `agy` names a plugin's skills after the
+plugin, so they are `/cs:checkpoint`, `/cs:wrap`, `/cs:sweep` and so on, in
+the `/` menu and in the list the model reads.
+
+| Skill | Under Antigravity |
+| --- | --- |
+| `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
+| `rotate`, `feature` | Check `cs -engine supports rotation` and `spawn_brief`, print the line it gives, and stop before writing anything. |
+| `finish`, `switch` | Run only when you type them, then check `feature_finish` and `rotation` the same way and stop. |
+
+- **Explicit-only skills.** `finish` and `switch` carry
+  `disable-model-invocation: true`, the key Claude Code reads. `agy` reads it
+  too and lists them with `model_invocable: false`, so the model never starts
+  them on its own judgment. Codex ignores the key and needs
+  `agents/openai.yaml` beside the skill; `agy` needs nothing extra.
+- **Arguments.** `agy` substitutes no arguments placeholder: it hands the
+  model the skill's text with your message. The skills read their arguments
+  from that message, as they do under Codex (`/cs:checkpoint before the
+  refactor`).
+- **Why the plugin.** The global folder `agy` reads skills from,
+  `~/.gemini/config/skills/`, is yours. cs already owns its plugin folder, and
+  install, uninstall and doctor already handle it, so nothing cs writes can
+  meet a skill of yours: your own `~/.gemini/config/skills/rotate/` stays
+  yours and stays `/rotate`. The cost is the `cs:` prefix. `agy plugin
+  disable cs` turns the hook and the skills off together.
+- `agy` keeps an empty `~/.gemini/antigravity-cli/plugin_data/cs/` for the
+  plugin. That folder is `agy`'s, and cs leaves it alone.
+
+This was checked against `agy` 1.4.11 on 2026-11-02, with no model call.
+`agy plugin validate --strict --json` counts all 11 skills in cs's plugin and
+reports nothing but its note that the plugin has no logo. One
+`agy -p "/skills" --output-format json` run, which `agy` answers locally,
+read a copy of the plugin in a scratch workspace (`.agents/plugins/cs/`) and
+listed the skills as `cs:<name>`, with `cs:finish` and `cs:switch`
+`model_invocable: false` and the others `true`. That `agy`
+substitutes no placeholder comes from its binary: it holds no `$ARGUMENTS`
+string, and it wraps an invoked skill's text in a `<SKILL>` block. No model
+turn checked it, and no skill has yet run in a live `agy` turn. The test
+suite runs the validate check whenever `agy` is on `PATH`.
 
 ## Reopening
 
@@ -185,7 +237,8 @@ row cycles Claude, Codex, and Antigravity with Left, Right, or Space.
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
 `startup_context`, `recovery_autosave`, and `memory_index`.
 `cs -engine supports <capability>` exits 1 for everything else.
-Skills that check before relying on a capability refuse cleanly.
+Skills that check before relying on a capability refuse cleanly
+([Skills](#skills)).
 
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
@@ -254,6 +307,11 @@ that fires the plugin's hooks with payloads of the measured shape.
 
 ## Follow-ups
 
-These come later as separate changes: the shipped skills, the status line,
-`cs -switch`, mail delivery, rotation, spawn briefs, `-finish`, and encrypted
-sessions.
+These come later as separate changes: the status line, `cs -switch`, mail
+delivery, rotation, spawn briefs, `-finish`, and encrypted sessions.
+
+- When `-finish` comes, the finish skill needs its own folder to reach
+  `scripts/finish.sh`. `agy` lists the folder of each skill the model may
+  start, but an explicit-only skill is not in that list, and the `<SKILL>`
+  block of a typed `/cs:finish` names no folder (read from `agy`'s prompt
+  templates, not checked live).
