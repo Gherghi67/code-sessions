@@ -122,7 +122,10 @@ a `skills/` that is a link or a file keeps the folder yours, as `scripts/`
 does.
 `cs -uninstall` removes only the files cs wrote: a script or skill file you
 changed stays and is named, a skill of yours stays, and the next install
-takes the folder back. `cs -doctor` under
+takes the folder back. The uninstall also removes cs's `plugin.json`, and
+`agy` loads no folder without one (`agy plugin list`, 1.4.12), so a skill you
+left in cs's plugin stays on disk but no longer reaches `agy`. Keep your own
+skills in `~/.gemini/config/skills/`, not in cs's plugin. `cs -doctor` under
 Antigravity reports whether the hook is
 installed, names a cs that is there, has its recovery consumer
 (`scripts/autosave-commits.sh`), and is not switched off in
@@ -173,7 +176,10 @@ the `/` menu and in the list the model reads.
   install, uninstall and doctor already handle it, so nothing cs writes can
   meet a skill of yours: your own `~/.gemini/config/skills/rotate/` stays
   yours and stays `/rotate`. The cost is the `cs:` prefix. `agy plugin
-  disable cs` turns the hook and the skills off together.
+  disable cs` switches the whole plugin off in
+  `~/.gemini/config/config.json`, and `agy plugin list` then shows it
+  `enabled: false` with its skills still named. Whether the model still
+  sees a disabled plugin's skills was not checked.
 - `agy` keeps an empty `~/.gemini/antigravity-cli/plugin_data/cs/` for the
   plugin. That folder is `agy`'s, and cs leaves it alone.
 
@@ -320,7 +326,10 @@ These come later as separate changes: the status line, `cs -switch`, mail
 delivery, rotation, spawn briefs, `-finish`, and encrypted sessions.
 
 - When `-finish` comes, the finish skill needs its own folder to reach
-  `scripts/finish.sh`. `agy` lists the folder of each skill the model may
-  start, but an explicit-only skill is not in that list, and the `<SKILL>`
-  block of a typed `/cs:finish` names no folder (read from `agy`'s prompt
-  templates, not checked live).
+  `scripts/finish.sh`. Whether `agy` gives it that folder is not known. Its
+  prompt template lists the folder of each skill the model may start, and an
+  explicit-only skill is probably left out of that list. Its binary (1.4.12)
+  holds three `<SKILL>` templates for a skill's text, and one of them names
+  the path to the skill file, but which one a typed `/cs:finish` gets was
+  not checked. Until a live run shows it, the finish skill stops when it
+  cannot tell its folder.
