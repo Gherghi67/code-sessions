@@ -797,7 +797,9 @@ run_uninstall() {
     if [[ ",$install_engines," == *,codex,* ]]; then
         echo "  - Codex skills in $codex_skills_dir/ and the cs hook in ${codex_skills_dir%/skills}/hooks.json"
     fi
-    if [ -e "$(_antigravity_plugin_dir)" ]; then
+    # Only a folder the removal will take: one that is not cs's is kept.
+    if _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)" \
+        || _antigravity_plugin_is_cs_leftover "$(_antigravity_plugin_dir)"; then
         echo "  - The cs hook and skills for Antigravity in $(_antigravity_plugin_dir)/"
     fi
     echo "  - Shell completions"
