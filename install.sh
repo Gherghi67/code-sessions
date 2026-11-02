@@ -1994,7 +1994,7 @@ CS_PAYLOAD_SHA256=(
     "f4adb68f2666b68b79cfbb80fc8ec77a8cf710298e8126e84dffb73d7f822a2b  skills/finish/SKILL.md"
     "704c0eadbf22fe7338dff1b9cbcdea8f245f410f15a23513f7f1fb6084e75e7e  skills/feature/SKILL.md"
     "12ca76eadfbe0b75c735d8782cc6a8bc6123a97a293349b08c501c62e21cc7f3  skills/write-as-me/SKILL.md"
-    "fe9c1e53728aeee7c0b6c3215164455676307026c406347256486ea638482b28  skills/checkpoint/SKILL.md"
+    "96a5cdb7d563d4360dd58f7ad91ce55dbbe5cde28d141d5e2aeb13ae9483b4ad  skills/checkpoint/SKILL.md"
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
     "9f31030e27a874eb6e1ea6e81019ad606211ff0f836063bfb8d3c5fe0b205055  skills/sweep/SKILL.md"
     "04ea8931b64c1ef51371d9383dd09d402f05b1b13a40e7dd12637ee0a58324f3  skills/wrap/SKILL.md"

@@ -27,7 +27,7 @@ Runs `cs -checkpoint "<label>"` with your shell tool, which captures the current
 
 ## Steps
 
-1. Take the full label from the user's message, the one that invoked this skill: all the text after the skill's name. Codex and Antigravity hand a skill no arguments (neither substitutes the arguments placeholder), so under every engine read it from that message; do not wait for it to arrive any other way.
+1. Take the full label from the user's message, the one that invoked this skill: all the text after the skill's name. Codex and Antigravity hand a skill the user's message, arguments and all, but substitute no arguments placeholder, so under every engine read the label from that message; do not wait for it to arrive any other way.
 2. If it's empty, propose a label derived from the current state of the work and ask the user to confirm or replace it.
 3. Route reserved words to the matching subcommand instead of saving a label: if the label is exactly `list` or `ls`, run `cs -checkpoint list`; if it starts with `show `, run `cs -checkpoint show <name>`. Report that output and skip steps 4-5. If the user actually wants a label that begins with one of these words, rephrase it.
 4. Otherwise save it: run `cs -checkpoint '<label>'` with your shell tool, single-quoting the label and escaping any embedded single quote. If the command fails (for example, run outside a cs session), report its error output verbatim and stop — do not retry with variations.
