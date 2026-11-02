@@ -436,8 +436,11 @@ test_doctor_warns_on_antigravity_skill_drift() {
     require_tool jq || return $?
     local checkout="$TEST_TMPDIR/agyco" home="$TEST_TMPDIR/agy-home" claude_skills="$TEST_TMPDIR/claude-skills" plugin output
     plugin="$home/.gemini/config/plugins/cs"
+    # agy stands present by its own folder, never by a real agy on PATH.
+    local AGY_BIN="$TEST_TMPDIR/no-agy"
+    export AGY_BIN
     make_fake_checkout "$checkout" "$TEST_TMPDIR/deployed-hooks"
-    mkdir -p "$checkout/skills/finish/agents" "$claude_skills/finish" "$plugin/skills/finish"
+    mkdir -p "$checkout/skills/finish/agents" "$claude_skills/finish" "$plugin/skills/finish" "$home/.gemini/antigravity-cli"
     echo 'skill' > "$checkout/skills/finish/SKILL.md"
     echo 'policy: source' > "$checkout/skills/finish/agents/openai.yaml"
     cp -R "$checkout/skills/finish/." "$claude_skills/finish/"
@@ -458,6 +461,15 @@ test_doctor_warns_on_antigravity_skill_drift() {
         CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" "Deploy drift" "the scan ran to its verdict" || return 1
     assert_output_not_contains "$output" "Antigravity skill drift" "in sync: silent" || return 1
+
+    # Where agy is gone, ./install.sh would not refresh the copies, so they
+    # are not compared.
+    echo 'policy: deployed' > "$plugin/skills/finish/agents/openai.yaml"
+    rmdir "$home/.gemini/antigravity-cli"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Antigravity skill drift" "no agy: not compared" || return 1
+    mkdir -p "$home/.gemini/antigravity-cli"
 
     # A folder of that name that is not cs's holds no copies of cs's.
     printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$plugin/hooks.json"

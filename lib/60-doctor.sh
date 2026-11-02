@@ -289,12 +289,14 @@ _doctor_check_hook_drift() {
     if [[ ",$engines," == *,codex,* ]] && [ -d "$codex_dir" ]; then
         _drift_scan "Codex skill" "$codex_dir/skills" "${skill_sources[@]}"
     fi
-    # Antigravity's copies sit in cs's plugin, written only where agy is. A
-    # folder of that name that is not cs's got none, and the Antigravity hook
-    # row says so.
+    # Antigravity's copies sit in cs's plugin, which install.sh writes only
+    # where agy is on PATH or has its own folder: elsewhere ./install.sh would
+    # not refresh them, so they are not compared. A plugin folder that is not
+    # cs's, or a skills/ that is not its own folder, got no copies.
     local agy_plugin
     agy_plugin=$(_antigravity_plugin_dir)
-    if _antigravity_plugin_is_cs "$agy_plugin"; then
+    if { command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; } \
+        && _antigravity_plugin_is_cs "$agy_plugin" && _antigravity_plugin_skills_dir_ok "$agy_plugin/skills"; then
         _drift_scan "Antigravity skill" "$agy_plugin/skills" "${skill_sources[@]}"
     fi
 

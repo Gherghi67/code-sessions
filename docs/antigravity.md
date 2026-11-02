@@ -127,7 +127,8 @@ a folder holding only what cs left, or a hook without its recovery consumer,
 it says to run `setup.sh` again. A launch whose hook lacks the recovery
 consumer says that edits are not autosaved. Run from the checkout cs was
 installed from, `cs -doctor` also compares the plugin's skill copies with the
-source, as it compares Codex's.
+source, as it compares Codex's, wherever an install would write them (`agy`
+on `PATH` or its own folder present).
 
 A plugin was picked over a workspace `<session>/.agents/hooks.json` because it
 is written once at install, outside the folder the agent writes. It needs no
