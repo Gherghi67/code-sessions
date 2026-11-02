@@ -226,11 +226,13 @@ _doctor_check_hook_drift() {
     # on the source path shape so the label stays purely cosmetic. A deployed
     # copy cs did not write (_cs_owns_file, as install.sh decides) is one
     # ./install.sh keeps as the user's, so it is named apart, with advice
-    # that can clear it.
+    # that can clear it. So is a copy missing because a link, or something
+    # that is not a folder, stands where one of its folders belongs below the
+    # deploy root: ./install.sh keeps those too.
     _drift_scan() {
         local label="$1" deploy_root="$2"
         shift 2
-        local drifted=() users_copies=() missing=() src name deployed
+        local drifted=() users_copies=() missing=() src name deployed parent
         for src in "$@"; do
             [ -e "$src" ] || continue
             if [[ "$src" == */SKILL.md ]]; then
@@ -247,7 +249,15 @@ _doctor_check_hook_drift() {
                 deployed="$deploy_root/$name"
             fi
             if [ ! -f "$deployed" ]; then
-                missing+=("$name")
+                parent=$(dirname "$deployed")
+                while [ "${#parent}" -gt "${#deploy_root}" ] && [ ! -e "$parent" ] && [ ! -L "$parent" ]; do
+                    parent=$(dirname "$parent")
+                done
+                if [ "${#parent}" -gt "${#deploy_root}" ] && { [ -L "$parent" ] || [ ! -d "$parent" ]; }; then
+                    users_copies+=("$name")
+                else
+                    missing+=("$name")
+                fi
             elif ! cmp -s "$src" "$deployed"; then
                 if _cs_owns_file "$deployed"; then
                     drifted+=("$name")
@@ -296,7 +306,7 @@ _doctor_check_hook_drift() {
     local agy_plugin
     agy_plugin=$(_antigravity_plugin_dir)
     if { command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; } \
-        && _antigravity_plugin_is_cs "$agy_plugin" && _antigravity_plugin_skills_dir_ok "$agy_plugin/skills"; then
+        && _antigravity_plugin_is_cs "$agy_plugin" && _antigravity_plugin_subdir_ok "$agy_plugin/skills"; then
         _drift_scan "Antigravity skill" "$agy_plugin/skills" "${skill_sources[@]}"
     fi
 

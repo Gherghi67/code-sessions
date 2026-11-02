@@ -231,7 +231,7 @@ test_a_linked_or_file_skills_entry_is_never_written_or_emptied_through() {
     mv "$PLUGIN/skills" "$TEST_TMPDIR/moved-skills"
     ln -s "$TEST_TMPDIR/moved-skills" "$PLUGIN/skills"
     _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: a linked skills/ leaves the hook cs's"; return 1; }
-    _antigravity_plugin_skills_dir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed through the link"; return 1; }
+    _antigravity_plugin_subdir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed through the link"; return 1; }
     _antigravity_plugin_unregister || { echo "  FAIL: the hook must still be removable"; return 1; }
     assert_not_exists "$PLUGIN/hooks.json" "the hook goes" || return 1
     cmp -s "$SCRIPT_DIR/../skills/rotate/SKILL.md" "$TEST_TMPDIR/moved-skills/rotate/SKILL.md" \
@@ -243,7 +243,7 @@ test_a_linked_or_file_skills_entry_is_never_written_or_emptied_through() {
     rm -rf "$PLUGIN"
     _antigravity_plugin_register /opt/cs || return 1
     printf 'mine\n' > "$PLUGIN/skills"
-    _antigravity_plugin_skills_dir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed into a file"; return 1; }
+    _antigravity_plugin_subdir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed into a file"; return 1; }
     _antigravity_plugin_unregister || { echo "  FAIL: a file named skills must not stop the hook's removal"; return 1; }
     assert_eq mine "$(cat "$PLUGIN/skills")" "the file is left as it was" || return 1
     # Inside a skills/ of cs's, a skill folder that is a link is kept with what it points at.

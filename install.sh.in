@@ -803,11 +803,16 @@ if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravi
         case $_agy_rc in
             0)
                 installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
-                mkdir -p "$AGY_PLUGIN_DIR/scripts"
-                for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
-                    _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
-                done
-                if _antigravity_plugin_skills_dir_ok "$AGY_PLUGIN_DIR/skills"; then
+                if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/scripts"; then
+                    mkdir -p "$AGY_PLUGIN_DIR/scripts"
+                    for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
+                        _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
+                    done
+                else
+                    warn "Kept $AGY_PLUGIN_DIR/scripts: not a folder, so the recovery consumer was not deployed and edits under Antigravity are not autosaved"
+                    CS_KEPT_PATHS+=("$AGY_PLUGIN_DIR/scripts")
+                fi
+                if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/skills"; then
                     installed "Antigravity skills" "$AGY_PLUGIN_DIR/skills/"
                     _deploy_skills "$AGY_PLUGIN_DIR/skills"
                 else

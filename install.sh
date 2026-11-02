@@ -555,18 +555,18 @@ _antigravity_hook_command() {  # cs_path, verb
 # whose scripts/ is a link, which a deploy or a removal would go through, is
 # the user's too. skills/ decides nothing here: the hook is cs's whatever
 # stands there, and the skills are deployed and removed only through a
-# skills/ that is a folder of the plugin's own (_antigravity_plugin_skills_dir_ok).
+# skills/ that is a folder of the plugin's own (_antigravity_plugin_subdir_ok).
 _antigravity_plugin_is_cs() {  # plugin_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
     [ ! -L "$1/scripts" ] || return 1
     _antigravity_hooks_file_is_cs "$1/hooks.json"
 }
 
-# Whether cs may deploy its skills into, or remove them from, a plugin's
-# skills/: absent, or a folder of the plugin's own. A link would carry the
-# write or the removal out of the plugin, and a file of that name is the
-# user's; either is kept as it is.
-_antigravity_plugin_skills_dir_ok() {  # skills_dir
+# Whether cs may deploy into, or remove from, a subfolder of its plugin
+# (scripts/, skills/): absent, or a folder of the plugin's own. A link would
+# carry the write or the removal out of the plugin, and a file of that name is
+# the user's; either is kept as it is.
+_antigravity_plugin_subdir_ok() {  # subfolder
     [ ! -L "$1" ] && { [ ! -e "$1" ] || [ -d "$1" ]; }
 }
 
@@ -688,7 +688,7 @@ _antigravity_plugin_unregister() {
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
     # Only the names cs ships: a skill of the user's beside them stays.
-    if _antigravity_plugin_skills_dir_ok "$dir/skills"; then
+    if _antigravity_plugin_subdir_ok "$dir/skills"; then
         for skill in "${CS_SKILLS[@]}"; do
             [ ! -d "$dir/skills/$skill" ] || _cs_remove_tree_if_owned "$dir/skills/$skill" || true
         done
@@ -1961,7 +1961,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "95c79183e6078f6221b17c2d9ae3f108690dcbc4674383a99739db5418af064f  bin/cs"
+    "8114e7bc07c96755ac8b8942afb2e5442b82c6da9826cea6dc5b6e7578c7fa00  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "10063dcb09a56e505f63c75f9b4f0f64d4298b6a3f8cfec05d92ac4c65da609d  bin/cs-statusline"
@@ -2700,11 +2700,16 @@ if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravi
         case $_agy_rc in
             0)
                 installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
-                mkdir -p "$AGY_PLUGIN_DIR/scripts"
-                for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
-                    _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
-                done
-                if _antigravity_plugin_skills_dir_ok "$AGY_PLUGIN_DIR/skills"; then
+                if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/scripts"; then
+                    mkdir -p "$AGY_PLUGIN_DIR/scripts"
+                    for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
+                        _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
+                    done
+                else
+                    warn "Kept $AGY_PLUGIN_DIR/scripts: not a folder, so the recovery consumer was not deployed and edits under Antigravity are not autosaved"
+                    CS_KEPT_PATHS+=("$AGY_PLUGIN_DIR/scripts")
+                fi
+                if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/skills"; then
                     installed "Antigravity skills" "$AGY_PLUGIN_DIR/skills/"
                     _deploy_skills "$AGY_PLUGIN_DIR/skills"
                 else

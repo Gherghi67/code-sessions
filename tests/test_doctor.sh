@@ -429,6 +429,29 @@ test_doctor_warns_on_codex_skill_drift() {
     assert_output_not_contains "$output" "Codex skill drift" "Codex is not installed here" || return 1
 }
 
+# ./install.sh keeps a file, or a link, where a skill's folder belongs, so
+# doctor names it as the user's with advice that clears it, never as a copy
+# ./install.sh would deploy.
+test_doctor_names_a_file_in_a_skills_way_as_the_users() {
+    local checkout="$TEST_TMPDIR/inwayco" deployed_skills="$TEST_TMPDIR/inway-skills" output
+    make_fake_checkout "$checkout" "$TEST_TMPDIR/deployed-hooks"
+    mkdir -p "$checkout/skills/store-secret" "$checkout/skills/wrap" "$deployed_skills/wrap"
+    echo 'skill' > "$checkout/skills/store-secret/SKILL.md"
+    echo 'skill' > "$checkout/skills/wrap/SKILL.md"
+    cp "$checkout/skills/wrap/SKILL.md" "$deployed_skills/wrap/SKILL.md"
+    echo 'mine' > "$deployed_skills/store-secret"
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$deployed_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Skill drift: deployed copy differs from source: store-secret (kept as yours" \
+        "a file in a skill's way is the user's" || return 1
+    assert_output_not_contains "$output" "not deployed: store-secret" "never advice ./install.sh cannot act on" || return 1
+    # A skill that is simply missing still asks for an install.
+    rm "$deployed_skills/wrap/SKILL.md"
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$deployed_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Skill drift: not deployed: wrap (run ./install.sh)" "a missing copy is named as missing" || return 1
+}
+
 # Antigravity gets the same skill files in cs's plugin, so an edit the
 # installer has not copied there is drift too. A plugin folder that is not
 # cs's got no skills from cs, and is not compared.
@@ -1735,6 +1758,7 @@ run_test test_doctor_warns_on_skill_script_drift
 run_test test_doctor_warns_on_skill_drift
 run_test test_doctor_warns_on_codex_skill_drift
 run_test test_doctor_warns_on_antigravity_skill_drift
+run_test test_doctor_names_a_file_in_a_skills_way_as_the_users
 run_test test_doctor_tui_warns_when_a_rust_source_changed_after_the_build
 run_test test_doctor_tui_warns_when_cargo_toml_changed_after_the_build
 run_test test_doctor_tui_warns_when_cargo_lock_changed_after_the_build

@@ -5046,7 +5046,8 @@ test_install_keeps_a_changed_antigravity_skill_file() {
 
 # A file where a skill folder belongs is the user's: the install keeps it,
 # deploys the other skills and finishes. A skills/ that is a link or a file
-# takes no skill, and leaves the hook cs's, so an uninstall still removes it.
+# takes no skill, a file named scripts takes no recovery consumer, and either
+# leaves the hook cs's, so an uninstall still removes it.
 test_install_deploys_antigravity_skills_around_what_is_in_the_way() {
     local fake_home="$TEST_TMPDIR/agy-in-the-way" target="$TEST_TMPDIR/agy-linked-skills" plugin out rc=0
     plugin="$fake_home/.gemini/config/plugins/cs"
@@ -5066,11 +5067,19 @@ test_install_deploys_antigravity_skills_around_what_is_in_the_way() {
     assert_output_contains "$out" "Kept $plugin/skills: a symlink or not a folder" "a linked skills/ is named" || return 1
     assert_output_contains "$out" "Installed Antigravity hook" "and the hook is still cs's to install" || return 1
     assert_eq "" "$(ls -A "$target")" "nothing lands behind the link" || return 1
+    # A file named scripts keeps the recovery consumer out, not the install.
+    rm -rf "$plugin/scripts"
+    printf 'mine\n' > "$plugin/scripts"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: a file named scripts must not stop the install: $out"; return 1; }
+    assert_output_contains "$out" "Kept $plugin/scripts: not a folder" "a file named scripts is named" || return 1
+    assert_eq mine "$(cat "$plugin/scripts")" "and left as it was" || return 1
     printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/agy-in-the-way.out" 2>&1 || rc=$?
     assert_eq 0 "$rc" "the uninstall finishes" || { cat "$TEST_TMPDIR/agy-in-the-way.out"; return 1; }
     assert_not_exists "$plugin/hooks.json" "the uninstall removes the hook" || return 1
     [ -L "$plugin/skills" ] || { echo "  FAIL: the user's link stays"; return 1; }
-    assert_eq "" "$(ls -A "$target")" "and nothing behind it is touched"
+    assert_eq "" "$(ls -A "$target")" "and nothing behind it is touched" || return 1
+    assert_eq mine "$(cat "$plugin/scripts")" "the file named scripts stays"
 }
 
 test_install_writes_no_gemini_folder_without_agy() {

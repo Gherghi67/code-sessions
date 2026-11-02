@@ -111,13 +111,17 @@ level), or one where the folder, `hooks.json` or `scripts/` is a symbolic
 link, is kept as it is with a warning, and neither the hook nor the skills are
 installed. Without
 `jq`, which tells cs's files from yours, every folder of that name is kept.
-`skills/` never decides whose the folder is. cs deploys its skills only into
-a `skills/` that is a folder of the plugin's own: a link or a file of that
-name is kept and named, and the hook is still installed and removed. Inside
-it, a skill of yours, a skill folder that is a link, and a file where a skill
-folder belongs are kept and named, and cs deploys the rest.
+While cs's `hooks.json` is there, `skills/` does not decide whose the folder
+is. cs deploys its skills only into a `skills/` that is a folder of the
+plugin's own, and its recovery scripts only into such a `scripts/`: a file of
+either name, or a link at `skills/`, is kept and named, and the hook is still
+installed and removed. Inside `skills/`, a skill folder that is a link and a
+file where a skill folder belongs are kept and named, a skill of yours under
+another name is never touched, and cs deploys the rest. With no `hooks.json`,
+a `skills/` that is a link or a file keeps the folder yours, as `scripts/`
+does.
 `cs -uninstall` removes only the files cs wrote: a script or skill file you
-changed stays, and is named, as does a skill of yours, and the next install
+changed stays and is named, a skill of yours stays, and the next install
 takes the folder back. `cs -doctor` under
 Antigravity reports whether the hook is
 installed, names a cs that is there, has its recovery consumer

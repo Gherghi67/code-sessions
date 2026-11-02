@@ -445,18 +445,18 @@ _antigravity_hook_command() {  # cs_path, verb
 # whose scripts/ is a link, which a deploy or a removal would go through, is
 # the user's too. skills/ decides nothing here: the hook is cs's whatever
 # stands there, and the skills are deployed and removed only through a
-# skills/ that is a folder of the plugin's own (_antigravity_plugin_skills_dir_ok).
+# skills/ that is a folder of the plugin's own (_antigravity_plugin_subdir_ok).
 _antigravity_plugin_is_cs() {  # plugin_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
     [ ! -L "$1/scripts" ] || return 1
     _antigravity_hooks_file_is_cs "$1/hooks.json"
 }
 
-# Whether cs may deploy its skills into, or remove them from, a plugin's
-# skills/: absent, or a folder of the plugin's own. A link would carry the
-# write or the removal out of the plugin, and a file of that name is the
-# user's; either is kept as it is.
-_antigravity_plugin_skills_dir_ok() {  # skills_dir
+# Whether cs may deploy into, or remove from, a subfolder of its plugin
+# (scripts/, skills/): absent, or a folder of the plugin's own. A link would
+# carry the write or the removal out of the plugin, and a file of that name is
+# the user's; either is kept as it is.
+_antigravity_plugin_subdir_ok() {  # subfolder
     [ ! -L "$1" ] && { [ ! -e "$1" ] || [ -d "$1" ]; }
 }
 
@@ -578,7 +578,7 @@ _antigravity_plugin_unregister() {
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
     # Only the names cs ships: a skill of the user's beside them stays.
-    if _antigravity_plugin_skills_dir_ok "$dir/skills"; then
+    if _antigravity_plugin_subdir_ok "$dir/skills"; then
         for skill in "${CS_SKILLS[@]}"; do
             [ ! -d "$dir/skills/$skill" ] || _cs_remove_tree_if_owned "$dir/skills/$skill" || true
         done
