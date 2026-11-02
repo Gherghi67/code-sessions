@@ -248,6 +248,29 @@ test_uninstall_lists_the_antigravity_plugin_only_when_it_is_cs() {
     assert_output_contains "$out" "  - The cs hook and skills for Antigravity in $plugin/" "a folder cs left is on the list" || return 1
 }
 
+# A removal that keeps a file it did not write says so after naming it: the
+# closing line never claims the whole plugin went. Untouched, it does.
+test_uninstall_says_what_it_kept_of_the_antigravity_plugin() {
+    require_tool jq || return $?
+    local home="$TEST_TMPDIR/agy-kept-home" stub="$TEST_TMPDIR/mount-stub-agy-kept" plugin out rc=0
+    plugin="$home/.gemini/config/plugins/cs"
+    _stage_install "$home"
+    _write_cs_antigravity_hook "$plugin"
+    mkdir -p "$plugin/skills/rotate"
+    printf 'mine\n' > "$plugin/skills/rotate/SKILL.md"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    printf 'ynn' | HOME="$home" CS_SESSIONS_ROOT="$TEST_TMPDIR/agy-kept-sessions" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/agy-kept.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/agy-kept.out")
+    assert_eq 0 "$rc" "the uninstall finishes: $out" || return 1
+    assert_not_exists "$plugin/hooks.json" "the hook goes" || return 1
+    assert_eq mine "$(cat "$plugin/skills/rotate/SKILL.md")" "the user's file stays" || return 1
+    assert_output_contains "$out" "Kept $plugin/skills/rotate/SKILL.md: cs did not write it" "the kept file is named" || return 1
+    assert_output_contains "$out" "Removed the cs hook for Antigravity and the files cs wrote beside it; the files named above stay in $plugin/" \
+        "the closing line says what stayed: $out" || return 1
+    assert_output_not_contains "$out" "Removed the cs hook and skills for Antigravity" "never that the whole plugin went" || return 1
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -260,5 +283,6 @@ run_test test_uninstall_rechecks_mounts_after_the_data_question
 run_test test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock
 run_test test_uninstall_names_each_session_whose_secrets_it_kept
 run_test test_uninstall_lists_the_antigravity_plugin_only_when_it_is_cs
+run_test test_uninstall_says_what_it_kept_of_the_antigravity_plugin
 
 report_results
