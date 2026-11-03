@@ -373,6 +373,24 @@ test_named_set_writes_the_session_file() {
     assert_not_exists "$dir/.cs/local/config" "nothing is written" || return 1
 }
 
+# A machine write from inside a session whose own file sets the key says that
+# file wins there, and names it by the session whose file the loader read
+# (CS_SESSION_DIR's), even when CLAUDE_SESSION_NAME still names a caller, as
+# it does after a verb for another session exports CS_SESSION_* (review N2 on
+# PR #25).
+test_machine_set_names_the_session_file_that_still_wins() {
+    local dir beta out rc=0
+    dir=$(create_test_session_with_git alpha)
+    beta=$(create_test_session beta)
+    session_cfg "$dir" 'CS_SCOPE_DISABLE=0'
+    CS_SESSION_NAME=alpha CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" \
+        CLAUDE_SESSION_NAME=beta CLAUDE_SESSION_DIR="$beta" CLAUDE_SESSION_META_DIR="$beta/.cs" \
+        "$CS_BIN" -config set CS_SCOPE_DISABLE 1 > "$TEST_TMPDIR/out" 2> "$TEST_TMPDIR/err" || rc=$?
+    assert_eq "0|CS_SCOPE_DISABLE=1" "$rc|$(cat "$MCFG")" "the machine's file takes the line" || return 1
+    assert_eq "CS_SCOPE_DISABLE is also set in alpha/.cs/local/config (0), which wins in that session" \
+        "$(cat "$TEST_TMPDIR/err")" "stderr names the file that was read" || return 1
+}
+
 # Precedence: the environment over the session's file over the machine's over
 # nothing. A session's 0 turns a machine's 1 off for both reader shapes.
 test_get_follows_the_precedence() {
@@ -850,6 +868,7 @@ run_test test_reset_names_a_key_the_environment_still_sets
 run_test test_named_reset_touches_only_the_session_file
 run_test test_set_refuses_what_no_reader_takes
 run_test test_named_set_writes_the_session_file
+run_test test_machine_set_names_the_session_file_that_still_wins
 run_test test_get_follows_the_precedence
 run_test test_a_key_that_is_not_a_name_runs_nothing
 run_test test_a_named_verb_reads_the_target_sessions_file

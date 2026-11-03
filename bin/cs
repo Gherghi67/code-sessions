@@ -13682,7 +13682,7 @@ _config_label() {  # file, [session name]
 # name it was given, else its directory's; empty outside a session.
 _config_session_name() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
-    printf '%s\n' "${CLAUDE_SESSION_NAME:-${dir##*/}}"
+    printf '%s\n' "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-${dir##*/}}}"
 }
 
 # The fields of <key>'s record, in _CF_GROUP, _CF_LABEL, _CF_EDIT, _CF_CHECK,
