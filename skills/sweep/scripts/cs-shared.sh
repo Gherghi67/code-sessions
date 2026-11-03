@@ -1197,23 +1197,56 @@ cs_local_state_unset() {  # state, key
     _cs_with_state_lock "$1" cs_write_atomic "$1" _cs_local_state_render "$1" "$2"
 }
 
+# True when fd 9 is open on the regular file <path> names, and <path> is no
+# link. Perl compares device and inode: through /dev/fd/9 macOS reports
+# devfs's device, so neither bash's -ef nor stat(1) can. Without perl the
+# type checks alone still refuse a link and a fifo; only a swap of one
+# regular file for another then goes unseen.
+_cs_fd9_is_file() {  # path
+    if command -v perl >/dev/null 2>&1; then
+        perl -e '
+            open(my $fd, "+<&=", 9) or exit 1;
+            my @held = stat($fd);
+            exit 1 unless @held && -f _;
+            my @path = lstat($ARGV[0]);
+            exit(@path && $path[0] == $held[0] && $path[1] == $held[1] ? 0 : 1);
+        ' "$1" 2>/dev/null
+    else
+        [ -f /dev/fd/9 ] && [ ! -L "$1" ] && [ -f "$1" ]
+    fi
+}
+
 # Serialize ownership changes on a persistent inode. The descriptor belongs to
 # this subshell, so the kernel releases it even after a signal or SIGKILL.
 # Never unlink the guard: waiters must all lock the same inode. BSD lockf and
 # Linux flock both lock the inherited open file description, not just their
 # short-lived utility process. Callback variable assignments stay in this
 # subshell; callers communicate through files and the callback's exit status.
+# The session directory is the agent's to write, so the guard path may hold a
+# link or a fifo planted there. A link or anything but a regular file is
+# refused before the open; the open never truncates (<>, not >), and fd 9 must
+# then be the regular file the path names. A swap between the check and the
+# open opens its target without writing a byte, and is refused.
 cs_run_guarded() (  # meta_dir, callback, arguments...
-    local meta="$1" mask
+    local meta="$1" mask guard
     shift
     [ -d "$meta" ] || { printf 'Error: could not create %s/local\n' "$meta" >&2; return 1; }
     cs_mkdir_inside "$meta/local" || return 1
+    guard="$meta/local/run-lease.guard"
+    if [ -L "$guard" ] || { [ -e "$guard" ] && [ ! -f "$guard" ]; }; then
+        printf 'Error: %s is not a regular file\n' "$guard" >&2
+        return 1
+    fi
     # The guard is private; what the callback writes takes the caller's umask.
     mask=$(umask)
     umask 077
-    { exec 9> "$meta/local/run-lease.guard"; } 2>/dev/null \
-        || { printf 'Error: could not write %s\n' "$meta/local/run-lease.guard" >&2; return 1; }
+    { exec 9<> "$guard"; } 2>/dev/null \
+        || { printf 'Error: could not write %s\n' "$guard" >&2; return 1; }
     umask "$mask"
+    if ! _cs_fd9_is_file "$guard"; then
+        printf 'Error: %s is not a regular file\n' "$guard" >&2
+        return 1
+    fi
     if command -v flock >/dev/null 2>&1; then
         flock -w 5 9 || { printf 'Error: Could not acquire run ownership guard: %s\n' "$meta" >&2; return 1; }
     elif command -v lockf >/dev/null 2>&1; then
