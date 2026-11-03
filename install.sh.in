@@ -512,8 +512,8 @@ fi
 rm -f "$INSTALL_DIR/cs-tui.exe"
 
 # Deploy every shipped skill into one engine's skills directory: each
-# SKILL.md, then the support files listed in CS_SKILL_FILES. Claude and Codex
-# get identical copies.
+# SKILL.md, then the support files listed in CS_SKILL_FILES. Claude, Codex
+# and Antigravity get identical copies.
 _deploy_skills() {
     local SKILLS_DIR="$1" skill skill_file
     for skill in "${CS_SKILLS[@]}"; do
@@ -540,12 +540,14 @@ _mod_link_holds_cs_files() {  # path under SKILLS_DIR
     done
 }
 
-# The symlinked directories under SKILLS_DIR this install kept, one per line,
-# so each is named once however many files sit under it.
+# The symlinked directories (and files where a folder belongs) under
+# SKILLS_DIR this install kept, one per line, so each is named once however
+# many files sit under it.
 _dir_links_kept=$'\n'
 
-# Keeps the symlinked directory $SKILLS_DIR/$1: names it in warning $2 the
-# first time, and lists it with the kept files.
+# Keeps $SKILLS_DIR/$1, a symlinked directory or a file where a folder
+# belongs: names it in warning $2 the first time, and lists it with the kept
+# files.
 _keep_dir_link() {  # path under SKILLS_DIR, warning
     case "$_dir_links_kept" in
         *$'\n'"$SKILLS_DIR/$1"$'\n'*) ;;
@@ -583,14 +585,20 @@ _mod_path_real() {
 # writing through a symlinked directory. A link on the path (the skill
 # directory or the file's directory) is the user's wherever it points, as cs
 # never makes one: it is kept, named once and listed with the kept files, and
-# returns 1 so nothing is placed under it. A link at the file itself is
-# _deploy's to judge.
+# returns 1 so nothing is placed under it. So is a file where one of those
+# folders belongs, which the deploy could not create the folder over. A link
+# at the file itself is _deploy's to judge.
 _skill_path_real() {
     local rel="$1" p
     for p in "${rel%%/*}" "$(dirname "$rel")"; do
-        [ -L "$SKILLS_DIR/$p" ] || continue
-        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink, so cs wrote nothing through it and the skill files under it were not deployed"
-        return 1
+        if [ -L "$SKILLS_DIR/$p" ]; then
+            _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink, so cs wrote nothing through it and the skill files under it were not deployed"
+            return 1
+        fi
+        if [ -e "$SKILLS_DIR/$p" ] && [ ! -d "$SKILLS_DIR/$p" ]; then
+            _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: not a folder, so the skill files under it were not deployed"
+            return 1
+        fi
     done
 }
 
@@ -783,6 +791,8 @@ fi
 # Antigravity runs on any install: its adapter is in cs itself. Its hook, a
 # plugin cs owns under ~/.gemini/config/plugins, records the conversation a
 # reopen resumes and hands agy's edits to recovery (lib/79-antigravity.sh).
+# The same plugin carries cs's skills, the files Claude and Codex get, which
+# agy offers as /cs:<name>.
 # Written where agy is installed or has its own folder, ~/.gemini/antigravity-cli:
 # gemini-cli keeps ~/.gemini too, and a host without agy gets nothing there.
 if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
@@ -793,16 +803,28 @@ if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravi
         case $_agy_rc in
             0)
                 installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
-                mkdir -p "$AGY_PLUGIN_DIR/scripts"
-                for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
-                    _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
-                done
+                if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/scripts"; then
+                    mkdir -p "$AGY_PLUGIN_DIR/scripts"
+                    for hook in "${CS_RECOVERY_SCRIPTS[@]}"; do
+                        _deploy "hooks/$hook" "$AGY_PLUGIN_DIR/scripts/$hook"
+                    done
+                else
+                    warn "Kept $AGY_PLUGIN_DIR/scripts: not a folder, so the recovery consumer was not deployed and edits under Antigravity are not autosaved"
+                    CS_KEPT_PATHS+=("$AGY_PLUGIN_DIR/scripts")
+                fi
+                if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/skills"; then
+                    installed "Antigravity skills" "$AGY_PLUGIN_DIR/skills/"
+                    _deploy_skills "$AGY_PLUGIN_DIR/skills"
+                else
+                    warn "Kept $AGY_PLUGIN_DIR/skills: a symlink or not a folder, so cs wrote nothing through it and its skills for Antigravity were not deployed"
+                    CS_KEPT_PATHS+=("$AGY_PLUGIN_DIR/skills")
+                fi
                 ;;
-            3) warn "Kept $AGY_PLUGIN_DIR: cs did not write it, so the Antigravity hook was not registered. Rename that folder and install again for exact reopens under Antigravity." ;;
-            *) warn "Could not register the Antigravity hook in $AGY_PLUGIN_DIR; reopens under Antigravity start a new conversation until it is" ;;
+            3) warn "Kept $AGY_PLUGIN_DIR: cs did not write it, so the Antigravity hook and skills were not installed. Rename that folder and install again for exact reopens and cs's skills under Antigravity." ;;
+            *) warn "Could not register the Antigravity hook in $AGY_PLUGIN_DIR; reopens under Antigravity start a new conversation and cs's skills are missing there until it is" ;;
         esac
     else
-        warn "jq not found - the Antigravity hook (exact reopen, recovery) was not registered."
+        warn "jq not found - the Antigravity hook (exact reopen, recovery) and cs's skills for Antigravity were not installed."
     fi
 fi
 

@@ -18,11 +18,25 @@ so plainly and the user closes the feature conversation and runs
 `$finish <task>` again. Abandoning a feature instead is `cs -rm <base>@<task>`,
 the user's own call.
 
+## Prerequisites
+
+In a cs session (`$CS_SESSION_NAME` has a value), the engine's adapter has to
+land and retire a feature: run `cs -engine supports feature_finish`. If it
+exits non-zero, print the line it printed, tell the user to finish the
+feature from the base session under Claude or Codex
+(`cs <base> --engine claude -finish <feature>`), and stop before running
+anything else. The Claude and Codex adapters both declare `feature_finish`.
+Outside a cs session there is nothing to ask; go on.
+
 ## Detect the context
 
 Run `scripts/finish.sh prepare [feature]` from the workspace and read its
 `key: value` lines. The script ships with this skill: `scripts/` is relative
-to this skill's directory, the folder this SKILL.md was loaded from.
+to this skill's directory, the folder this SKILL.md was loaded from. If you
+cannot tell which folder that is (an engine can hand over a skill the user
+typed without naming its folder), say so and stop: never guess a path or
+search the disk for another `finish.sh`, which may belong to another cs
+install.
 
 1. **`role: feature`** — this workspace is a cs feature worktree. Print the
    `handoff:` line verbatim (`run /finish <task> in session <base>`) and stop.

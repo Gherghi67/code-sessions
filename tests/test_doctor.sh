@@ -316,6 +316,31 @@ test_doctor_warns_on_mod_drift() {
     assert_output_not_contains "$output" "Mod drift" "in sync: silent" || return 1
 }
 
+# Unlike a skill's, a mod's linked folder is replaced by ./install.sh when it
+# holds cs's files, so an older copy cs wrote behind the link takes the plain
+# advice. A file missing behind the link is in the way: ./install.sh keeps a
+# link it cannot vouch for.
+test_doctor_drift_advice_for_a_linked_mod_folder() {
+    local home="$TEST_TMPDIR/modlink-home" checkout="$TEST_TMPDIR/modlinkco" hooks skills target digest output
+    hooks="$home/.claude/hooks/cs"
+    skills="$home/.claude/skills"
+    target="$TEST_TMPDIR/modlink-target"
+    make_fake_checkout "$checkout" "$hooks"
+    mkdir -p "$checkout/mods/cs/hooks" "$target/hooks" "$skills"
+    echo 'export const CRIT_PERCENT = 65' > "$checkout/mods/cs/hooks/register.tsx"
+    echo '{"tips": ["source"]}' > "$checkout/mods/cs/tips.json"
+    echo 'export const CRIT_PERCENT = 60' > "$target/hooks/register.tsx"
+    digest=$(shasum -a 256 "$target/hooks/register.tsx" | cut -d' ' -f1)
+    printf '%s  .claude/skills/cs/hooks/register.tsx\n' "$digest" > "$hooks/.installed"
+    ln -s "$target" "$skills/cs"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$hooks" CS_SKILLS_DIR="$skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" AGY_BIN="$TEST_TMPDIR/no-agy" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Mod drift: deployed copy differs from source: cs/hooks/register.tsx (run ./install.sh)" \
+        "cs's older copy behind a mod link: ./install.sh replaces the link" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Mod drift: in the way, kept as yours: cs/tips.json (" \
+        "a file missing behind the link: ./install.sh keeps the link" || { echo "$output"; return 1; }
+}
+
 # The cs mod's spinner tips deploy beside its hooks as cs/tips.json, so an
 # edited or missing tips file is drift too.
 test_doctor_warns_on_mod_tips_drift() {
@@ -427,6 +452,130 @@ test_doctor_warns_on_codex_skill_drift() {
     output=$(cd "$checkout" && CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
         CODEX_HOME="$codex_home" CS_INSTALL_DIR="$TEST_TMPDIR/bin" "$CS_BIN" -doctor 2>&1) || true
     assert_output_not_contains "$output" "Codex skill drift" "Codex is not installed here" || return 1
+}
+
+# ./install.sh keeps a file, or a link, where a skill's folder belongs, so
+# doctor names it as the user's with advice that clears it, never as a copy
+# ./install.sh would deploy.
+test_doctor_names_a_file_in_a_skills_way_as_the_users() {
+    local checkout="$TEST_TMPDIR/inwayco" deployed_skills="$TEST_TMPDIR/inway-skills" output
+    make_fake_checkout "$checkout" "$TEST_TMPDIR/deployed-hooks"
+    mkdir -p "$checkout/skills/store-secret" "$checkout/skills/wrap" "$deployed_skills/wrap"
+    echo 'skill' > "$checkout/skills/store-secret/SKILL.md"
+    echo 'skill' > "$checkout/skills/wrap/SKILL.md"
+    cp "$checkout/skills/wrap/SKILL.md" "$deployed_skills/wrap/SKILL.md"
+    echo 'mine' > "$deployed_skills/store-secret"
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$deployed_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Skill drift: in the way, kept as yours: store-secret (" \
+        "a file in a skill's way is the user's, named as in the way, not as a deployed copy" || return 1
+    assert_output_not_contains "$output" "deployed copy differs from source: store-secret" \
+        "nothing of cs's is deployed there" || return 1
+    assert_output_not_contains "$output" "not deployed: store-secret" "never advice ./install.sh cannot act on" || return 1
+    # A skill that is simply missing still asks for an install.
+    rm "$deployed_skills/wrap/SKILL.md"
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$deployed_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Skill drift: not deployed: wrap (run ./install.sh)" "a missing copy is named as missing" || return 1
+}
+
+# ./install.sh writes nothing through a link on a skill's path and keeps what
+# stands at the file itself when it is not a plain file, so doctor names
+# those as the user's too, never with advice ./install.sh cannot clear: a
+# linked skill folder whose target holds an older copy cs wrote, a linked
+# skill folder missing a file below a real subfolder, a folder or a dangling
+# link at SKILL.md. A link at the file itself to cs's content is replaced by
+# ./install.sh, and a linked folder in sync is nothing to report.
+test_doctor_names_what_stands_in_a_skills_way_as_the_users() {
+    local home="$TEST_TMPDIR/way-home" checkout="$TEST_TMPDIR/wayco" deployed_skills hooks elsewhere digest output skill
+    deployed_skills="$home/.claude/skills"
+    hooks="$home/.claude/hooks/cs"
+    elsewhere="$TEST_TMPDIR/way-elsewhere"
+    make_fake_checkout "$checkout" "$hooks"
+    for skill in store-secret finish wrap summary rotate sweep; do
+        mkdir -p "$checkout/skills/$skill"
+        echo "$skill source" > "$checkout/skills/$skill/SKILL.md"
+    done
+    mkdir -p "$checkout/skills/finish/scripts" "$elsewhere/store-secret" "$elsewhere/finish/scripts" \
+        "$elsewhere/sweep" "$deployed_skills/wrap/SKILL.md" "$deployed_skills/summary" "$deployed_skills/rotate"
+    echo 'finish script' > "$checkout/skills/finish/scripts/finish.sh"
+    # store-secret: a linked folder holding an older copy the record says cs wrote.
+    echo 'store-secret, an older cs build' > "$elsewhere/store-secret/SKILL.md"
+    digest=$(shasum -a 256 "$elsewhere/store-secret/SKILL.md" | cut -d' ' -f1)
+    printf '%s  .claude/skills/store-secret/SKILL.md\n' "$digest" > "$hooks/.installed"
+    ln -s "$elsewhere/store-secret" "$deployed_skills/store-secret"
+    # finish: a linked folder with SKILL.md in sync and a real scripts/ missing finish.sh.
+    cp "$checkout/skills/finish/SKILL.md" "$elsewhere/finish/SKILL.md"
+    ln -s "$elsewhere/finish" "$deployed_skills/finish"
+    # summary: a link at SKILL.md that points nowhere.
+    ln -s "$TEST_TMPDIR/nowhere" "$deployed_skills/summary/SKILL.md"
+    # rotate: a link at SKILL.md to an older copy cs wrote, which ./install.sh replaces.
+    echo 'rotate, an older cs build' > "$elsewhere/rotate-SKILL.md"
+    digest=$(shasum -a 256 "$elsewhere/rotate-SKILL.md" | cut -d' ' -f1)
+    printf '%s  .claude/skills/rotate/SKILL.md\n' "$digest" >> "$hooks/.installed"
+    ln -s "$elsewhere/rotate-SKILL.md" "$deployed_skills/rotate/SKILL.md"
+    # sweep: a linked folder in sync.
+    cp "$checkout/skills/sweep/SKILL.md" "$elsewhere/sweep/SKILL.md"
+    ln -s "$elsewhere/sweep" "$deployed_skills/sweep"
+
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$hooks" CS_SKILLS_DIR="$deployed_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" AGY_BIN="$TEST_TMPDIR/no-agy" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Skill drift: in the way, kept as yours: store-secret summary wrap finish/scripts/finish.sh (" \
+        "what ./install.sh keeps is named as the user's" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Skill drift: deployed copy differs from source: rotate (run ./install.sh)" \
+        "a link at the file to cs's content is replaced by ./install.sh" || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "not deployed" "never advice ./install.sh cannot act on" || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "drift.*sweep" "a linked folder in sync is nothing to report" || { echo "$output"; return 1; }
+}
+
+# Antigravity gets the same skill files in cs's plugin, so an edit the
+# installer has not copied there is drift too. A plugin folder that is not
+# cs's got no skills from cs, and is not compared.
+test_doctor_warns_on_antigravity_skill_drift() {
+    require_tool jq || return $?
+    local checkout="$TEST_TMPDIR/agyco" home="$TEST_TMPDIR/agy-home" claude_skills="$TEST_TMPDIR/claude-skills" plugin output
+    plugin="$home/.gemini/config/plugins/cs"
+    # agy stands present by its own folder, never by a real agy on PATH.
+    local AGY_BIN="$TEST_TMPDIR/no-agy"
+    export AGY_BIN
+    make_fake_checkout "$checkout" "$TEST_TMPDIR/deployed-hooks"
+    mkdir -p "$checkout/skills/finish/agents" "$claude_skills/finish" "$plugin/skills/finish" "$home/.gemini/antigravity-cli"
+    echo 'skill' > "$checkout/skills/finish/SKILL.md"
+    echo 'policy: source' > "$checkout/skills/finish/agents/openai.yaml"
+    cp -R "$checkout/skills/finish/." "$claude_skills/finish/"
+    cp -R "$checkout/skills/finish/." "$plugin/skills/finish/"
+    echo 'policy: deployed' > "$plugin/skills/finish/agents/openai.yaml"
+    printf '{"cs-session": {"PreInvocation": [{"type": "command", "command": "/opt/cs -antigravity-hook pre-invocation", "timeout": 10}]}}\n' \
+        > "$plugin/hooks.json"
+
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity skill drift: deployed copy differs from source: finish/agents/openai.yaml" \
+        "an undeployed edit to Antigravity's copy is drift" || return 1
+    assert_output_not_contains "$output" "Skill drift: deployed copy differs" \
+        "Claude's copy is in sync" || return 1
+
+    cp "$checkout/skills/finish/agents/openai.yaml" "$plugin/skills/finish/agents/openai.yaml"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Deploy drift" "the scan ran to its verdict" || return 1
+    assert_output_not_contains "$output" "Antigravity skill drift" "in sync: silent" || return 1
+
+    # Where agy is gone, ./install.sh would not refresh the copies, so they
+    # are not compared.
+    echo 'policy: deployed' > "$plugin/skills/finish/agents/openai.yaml"
+    rmdir "$home/.gemini/antigravity-cli"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Antigravity skill drift" "no agy: not compared" || return 1
+    mkdir -p "$home/.gemini/antigravity-cli"
+
+    # A folder of that name that is not cs's holds no copies of cs's.
+    printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$plugin/hooks.json"
+    rm "$plugin/skills/finish/SKILL.md"
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
+        CODEX_HOME="$TEST_TMPDIR/no-codex" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Antigravity skill drift" "a plugin that is not cs's is not compared" || return 1
 }
 
 # Helper: a cs checkout with a TUI source tree whose files carry mtime $2
@@ -1678,12 +1827,16 @@ run_test test_doctor_drift_advice_follows_whose_the_deployed_copy_is
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift
+run_test test_doctor_drift_advice_for_a_linked_mod_folder
 run_test test_doctor_warns_on_mod_tips_drift
 run_test test_doctor_drift_skips_a_kept_out_mod
 run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_skill_script_drift
 run_test test_doctor_warns_on_skill_drift
 run_test test_doctor_warns_on_codex_skill_drift
+run_test test_doctor_warns_on_antigravity_skill_drift
+run_test test_doctor_names_a_file_in_a_skills_way_as_the_users
+run_test test_doctor_names_what_stands_in_a_skills_way_as_the_users
 run_test test_doctor_tui_warns_when_a_rust_source_changed_after_the_build
 run_test test_doctor_tui_warns_when_cargo_toml_changed_after_the_build
 run_test test_doctor_tui_warns_when_cargo_lock_changed_after_the_build

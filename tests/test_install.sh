@@ -4987,13 +4987,99 @@ test_install_registers_the_antigravity_hook_where_agy_is() {
         cmp -s "$SCRIPT_DIR/../hooks/$script" "$plugin/scripts/$script" \
             || { echo "  FAIL: $script is not deployed beside the hook"; return 1; }
     done
-    before=$(cat "$plugin/hooks.json" "$plugin/plugin.json")
+    _assert_antigravity_skills_deployed "$plugin" || return 1
+    assert_not_exists "$fake_home/.gemini/config/skills" "nothing is written into the user's global skills folder" || return 1
+    before=$(_antigravity_plugin_state "$plugin")
     HOME="$fake_home" AGY_BIN="$fake_agy" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
-    assert_eq "$before" "$(cat "$plugin/hooks.json" "$plugin/plugin.json")" "a reinstall changes nothing" || return 1
+    assert_eq "$before" "$(_antigravity_plugin_state "$plugin")" "a reinstall changes nothing" || return 1
     printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/agy-uninstall.out" 2>&1 || rc=$?
     assert_eq 0 "$rc" "the uninstall finishes" || { cat "$TEST_TMPDIR/agy-uninstall.out"; return 1; }
-    assert_not_exists "$plugin" "an uninstall removes cs's plugin" || return 1
-    assert_file_contains "$TEST_TMPDIR/agy-uninstall.out" "Removed the cs hook for Antigravity"
+    assert_not_exists "$plugin" "an uninstall removes cs's plugin, skills and all" || return 1
+    assert_file_contains "$TEST_TMPDIR/agy-uninstall.out" "Removed the cs hook and skills for Antigravity"
+}
+
+# Every file in cs's plugin with its checksum, in a fixed order: an install
+# replaces each file it deploys, so the folder's own listing order may change.
+_antigravity_plugin_state() {  # plugin_dir
+    (cd "$1" && find . -type f | LC_ALL=C sort | xargs cksum)
+}
+
+# Antigravity gets the skill files Claude and Codex get, in cs's plugin: each
+# SKILL.md and support file the manifests list, byte for byte, and nothing else.
+_assert_antigravity_skills_deployed() {  # plugin_dir
+    local skills skill rel
+    skills=$(extract_array "$SCRIPT_DIR/../install.sh" CS_SKILLS)
+    [ -n "$skills" ] || { echo "  FAIL: CS_SKILLS not found in install.sh"; return 1; }
+    for skill in $skills; do
+        cmp -s "$SCRIPT_DIR/../skills/$skill/SKILL.md" "$1/skills/$skill/SKILL.md" \
+            || { echo "  FAIL: $skill/SKILL.md is not deployed into cs's Antigravity plugin"; return 1; }
+    done
+    for rel in $(extract_array "$SCRIPT_DIR/../install.sh" CS_SKILL_FILES); do
+        cmp -s "$SCRIPT_DIR/../skills/$rel" "$1/skills/$rel" \
+            || { echo "  FAIL: $rel is not deployed into cs's Antigravity plugin"; return 1; }
+    done
+    [ -x "$1/skills/finish/scripts/finish.sh" ] \
+        || { echo "  FAIL: a skill's script must stay executable"; return 1; }
+    assert_eq "$(printf '%s\n' $skills | sort)" "$(ls "$1/skills" | sort)" \
+        "exactly the skills cs ships" || return 1
+}
+
+# A skill file in cs's plugin that the user changed is theirs: an install
+# keeps it and names it, and the uninstall that follows leaves it too.
+test_install_keeps_a_changed_antigravity_skill_file() {
+    local fake_home="$TEST_TMPDIR/agy-skill-edit" plugin out rc=0
+    plugin="$fake_home/.gemini/config/plugins/cs"
+    mkdir -p "$fake_home/.gemini/antigravity-cli"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    printf '\nmy note\n' >> "$plugin/skills/wrap/SKILL.md"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: the reinstall exited non-zero: $out"; return 1; }
+    assert_output_contains "$out" "Kept $plugin/skills/wrap/SKILL.md: cs did not write it" "the install names the file it kept" || return 1
+    assert_file_contains "$plugin/skills/wrap/SKILL.md" 'my note' "the user's change stays" || return 1
+    printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/agy-skill-uninstall.out" 2>&1 || rc=$?
+    assert_eq 0 "$rc" "the uninstall finishes" || { cat "$TEST_TMPDIR/agy-skill-uninstall.out"; return 1; }
+    assert_file_contains "$plugin/skills/wrap/SKILL.md" 'my note' "the uninstall keeps it too" || return 1
+    assert_not_exists "$plugin/hooks.json" "while cs's hook goes" || return 1
+    assert_not_exists "$plugin/skills/rotate" "and so do cs's other skills"
+}
+
+# A file where a skill folder belongs is the user's: the install keeps it,
+# deploys the other skills and finishes. A skills/ that is a link or a file
+# takes no skill, a file named scripts takes no recovery consumer, and either
+# leaves the hook cs's, so an uninstall still removes it.
+test_install_deploys_antigravity_skills_around_what_is_in_the_way() {
+    local fake_home="$TEST_TMPDIR/agy-in-the-way" target="$TEST_TMPDIR/agy-linked-skills" plugin out rc=0
+    plugin="$fake_home/.gemini/config/plugins/cs"
+    mkdir -p "$plugin/skills" "$fake_home/.gemini/antigravity-cli" "$target"
+    printf 'mine\n' > "$plugin/skills/rotate"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: a file in the way of a skill folder must not stop the install: $out"; return 1; }
+    assert_output_contains "$out" "Kept $plugin/skills/rotate: not a folder" "the install names what it kept" || return 1
+    assert_eq mine "$(cat "$plugin/skills/rotate")" "and leaves it as it was" || return 1
+    cmp -s "$SCRIPT_DIR/../skills/wrap/SKILL.md" "$plugin/skills/wrap/SKILL.md" \
+        || { echo "  FAIL: the other skills are deployed"; return 1; }
+    assert_file_exists "$plugin/hooks.json" "the hook is installed" || return 1
+    rm -rf "$plugin/skills"
+    ln -s "$target" "$plugin/skills"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: install.sh exited non-zero: $out"; return 1; }
+    assert_output_contains "$out" "Kept $plugin/skills: a symlink or not a folder" "a linked skills/ is named" || return 1
+    assert_output_contains "$out" "Installed Antigravity hook" "and the hook is still cs's to install" || return 1
+    assert_eq "" "$(ls -A "$target")" "nothing lands behind the link" || return 1
+    # A file named scripts keeps the recovery consumer out, not the install.
+    rm -rf "$plugin/scripts"
+    printf 'mine\n' > "$plugin/scripts"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: a file named scripts must not stop the install: $out"; return 1; }
+    assert_output_contains "$out" "Kept $plugin/scripts: not a folder" "a file named scripts is named" || return 1
+    assert_eq mine "$(cat "$plugin/scripts")" "and left as it was" || return 1
+    printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/agy-in-the-way.out" 2>&1 || rc=$?
+    assert_eq 0 "$rc" "the uninstall finishes" || { cat "$TEST_TMPDIR/agy-in-the-way.out"; return 1; }
+    assert_not_exists "$plugin/hooks.json" "the uninstall removes the hook" || return 1
+    [ -L "$plugin/skills" ] || { echo "  FAIL: the user's link stays"; return 1; }
+    assert_eq "" "$(ls -A "$target")" "and nothing behind it is touched" || return 1
+    assert_eq mine "$(cat "$plugin/scripts")" "the file named scripts stays"
 }
 
 test_install_writes_no_gemini_folder_without_agy() {
@@ -5034,7 +5120,8 @@ test_install_keeps_a_plugin_folder_that_is_not_cs_s() {
     assert_output_contains "$out" "Kept $plugin: cs did not write it" "the install names the folder it kept" || return 1
     assert_output_not_contains "$out" "Installed Antigravity hook" "a kept folder is not reported as installed" || return 1
     assert_eq '{"lint": {"Stop": [{"command": "./lint.sh"}]}}' "$(cat "$plugin/hooks.json")" "the user's hooks stay" || return 1
-    assert_not_exists "$plugin/scripts" "nothing is deployed into it"
+    assert_not_exists "$plugin/scripts" "nothing is deployed into it" || return 1
+    assert_not_exists "$plugin/skills" "not even cs's skills"
 }
 
 run_test test_install_registers_the_antigravity_hook_where_agy_is
@@ -5042,4 +5129,6 @@ run_test test_install_writes_no_gemini_folder_without_agy
 run_test test_install_writes_no_antigravity_hook_for_gemini_cli_alone
 run_test test_install_registers_the_antigravity_hook_where_agy_has_its_folder
 run_test test_install_keeps_a_plugin_folder_that_is_not_cs_s
+run_test test_install_keeps_a_changed_antigravity_skill_file
+run_test test_install_deploys_antigravity_skills_around_what_is_in_the_way
 report_results

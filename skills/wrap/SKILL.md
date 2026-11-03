@@ -26,7 +26,7 @@ Run `cs -narrative rotate` once and keep its single output line. It archives the
 
 ## Pass 4 — Task archive
 
-Archive the native task list's completed rows, exactly as the rotate skill's step 8 does: read `../rotate/SKILL.md` step 8 with the Read tool and follow its first part, the `cs -archive-tasks plan` answer and the one question it may ask (`/wrap` is never a forced rotation: ask as step 8 does for `forced: no`, whatever the plan's `forced:` line says). A refusal moved nothing and does not fail the wrap; report its line.
+Archive the native task list's completed rows, exactly as the rotate skill's step 8 does: read `../rotate/SKILL.md` step 8 with your file-read tool and follow its first part, the `cs -archive-tasks plan` answer and the one question it may ask (`/wrap` is never a forced rotation: ask as step 8 does for `forced: no`, whatever the plan's `forced:` line says). Where step 8 says AskUserQuestion and your engine has no such tool, ask in plain text and wait for the answer. A refusal moved nothing and does not fail the wrap; report its line.
 
 The wrap makes no commit. The memory entries, `.cs/summary.md`, the narrative cut and the task archive stay on disk, uncommitted: cs commits files under `.cs/` only in the commit that creates a session and the merge `/finish` makes, and you commit them only when the user asks.
 

@@ -73,8 +73,9 @@ RETIRED_COMMANDS=(
 )
 
 # Skills cs ships; each deploys as <skills dir>/<name>/SKILL.md, for Claude
-# under ~/.claude/skills and for Codex under $CODEX_HOME/skills (default
-# ~/.codex/skills). Both engines get the same files.
+# under ~/.claude/skills, for Codex under $CODEX_HOME/skills (default
+# ~/.codex/skills) and for Antigravity under skills/ in cs's plugin
+# (_antigravity_plugin_dir). Every engine gets the same files.
 CS_SKILLS=(
     store-secret
     prose-hygiene
@@ -96,8 +97,9 @@ CS_SKILLS=(
 # else ever removes it.
 #
 # Only the Claude skills directory is swept. Every name below retired before
-# cs deployed skills to Codex, so in a Codex skills directory it can only be
-# the user's own skill. A skill retired after shipping to Codex must also be
+# cs deployed skills to Codex or Antigravity, so in a Codex skills directory
+# it can only be the user's own skill, and cs's Antigravity plugin never held
+# it. A skill retired after shipping to Codex or Antigravity must also be
 # removed from there.
 #
 # Do not add a doctor row for a leftover directory; it cannot report one. The
@@ -422,8 +424,9 @@ CS_RECOVERY_SCRIPTS=(autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-ev
 # which no variable moves, and loads each folder under plugins/ that holds a
 # plugin.json, on by default: agy's config.json records only a choice made
 # with `agy plugin enable|disable`. cs's hook is such a folder, cs's whole:
-# plugin.json, hooks.json with the one named hook cs-session, and scripts/
-# with the recovery consumer. Nothing of the user's is merged or rewritten.
+# plugin.json, hooks.json with the one named hook cs-session, scripts/ with
+# the recovery consumer, and skills/ with cs's skills, which agy offers as
+# /cs:<name>. Nothing of the user's is merged or rewritten.
 CS_ANTIGRAVITY_PLUGIN=cs
 CS_ANTIGRAVITY_HOOK_NAME=cs-session
 
@@ -440,11 +443,21 @@ _antigravity_hook_command() {  # cs_path, verb
 # of that name without it is the user's, and cs leaves it alone, unless it
 # holds only what cs leaves there (_antigravity_plugin_is_cs_leftover); one
 # whose scripts/ is a link, which a deploy or a removal would go through, is
-# the user's too.
+# the user's too. skills/ decides nothing here: the hook is cs's whatever
+# stands there, and the skills are deployed and removed only through a
+# skills/ that is a folder of the plugin's own (_antigravity_plugin_subdir_ok).
 _antigravity_plugin_is_cs() {  # plugin_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/hooks.json" ] && [ ! -L "$1/hooks.json" ] || return 1
     [ ! -L "$1/scripts" ] || return 1
     _antigravity_hooks_file_is_cs "$1/hooks.json"
+}
+
+# Whether cs may deploy into, or remove from, a subfolder of its plugin
+# (scripts/, skills/): absent, or a folder of the plugin's own. A link would
+# carry the write or the removal out of the plugin, and a file of that name is
+# the user's; either is kept as it is.
+_antigravity_plugin_subdir_ok() {  # subfolder
+    [ ! -L "$1" ] && { [ ! -e "$1" ] || [ -d "$1" ]; }
 }
 
 # Whether a hooks file names only cs's hook, every command there a cs
@@ -522,11 +535,13 @@ _antigravity_plugin_temp_is_cs() {  # temp
 }
 
 # Whether a folder without hooks.json holds only what cs itself leaves there
-# when an install or a removal is cut short, or a removal keeps a script the
-# user changed: cs's plugin.json, a scripts/ folder (each file in it is still
-# judged by its content when deployed or removed) and cs's write temps. The
-# next install takes such a folder; a removal clears what of it is cs's.
-# jq tells cs's files from the user's, so without it no folder is taken.
+# when an install or a removal is cut short, or a removal keeps a script or a
+# skill file the user changed or a skill of the user's: cs's plugin.json, a
+# scripts/ and a skills/ folder (each file in them is still judged by its
+# content when deployed or removed, and a skill of another name is never
+# touched) and cs's write temps. The next install takes such a folder; a
+# removal clears what of it is cs's. jq tells cs's files from the user's, so
+# without it no folder is taken.
 _antigravity_plugin_is_cs_leftover() {  # plugin_dir
     local entry
     jq -ne true >/dev/null 2>&1 || return 1
@@ -535,7 +550,8 @@ _antigravity_plugin_is_cs_leftover() {  # plugin_dir
     for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         case "${entry##*/}" in
-            scripts) [ -d "$entry" ] ;;
+            scripts) [ -d "$entry" ] && [ ! -L "$entry" ] ;;
+            skills) [ -d "$entry" ] && [ ! -L "$entry" ] ;;
             plugin.json) _antigravity_plugin_manifest_is_cs "$entry" ;;
             .hooks.json.??????|.plugin.json.??????) _antigravity_plugin_temp_is_cs "$entry" ;;
             *) false ;;
@@ -544,11 +560,13 @@ _antigravity_plugin_is_cs_leftover() {  # plugin_dir
 }
 
 # Remove cs's plugin: its hooks.json, a plugin.json that is still cs's, the
-# recovery scripts the install record says cs wrote (others are kept and
-# named) and cs's write temps, then the folders if empty. Returns 3, removing
-# nothing, when the folder is neither cs's nor only what cs left there.
+# recovery scripts and skill files the install record says cs wrote (others
+# are kept and named; nothing through a skills/ that is a link) and cs's write
+# temps, then the folders if empty.
+# Returns 3, removing nothing, when the folder is neither cs's nor only what
+# cs left there.
 _antigravity_plugin_unregister() {
-    local dir script temp
+    local dir script skill temp
     dir=$(_antigravity_plugin_dir)
     [ -e "$dir" ] || [ -L "$dir" ] || return 0
     _antigravity_plugin_is_cs "$dir" || _antigravity_plugin_is_cs_leftover "$dir" || return 3
@@ -559,10 +577,22 @@ _antigravity_plugin_unregister() {
     for script in "${CS_RECOVERY_SCRIPTS[@]}"; do
         [ ! -e "$dir/scripts/$script" ] || _cs_remove_if_owned "$dir/scripts/$script" || true
     done
+    # Only the names cs ships: a skill of the user's beside them stays, and
+    # nothing is removed through a skill folder that is a link.
+    if _antigravity_plugin_subdir_ok "$dir/skills"; then
+        for skill in "${CS_SKILLS[@]}"; do
+            if [ -L "$dir/skills/$skill" ]; then
+                warn "Kept $dir/skills/$skill: a symlink, so cs removed nothing through it"
+                CS_KEPT_PATHS+=("$dir/skills/$skill")
+            elif [ -d "$dir/skills/$skill" ]; then
+                _cs_remove_tree_if_owned "$dir/skills/$skill" || true
+            fi
+        done
+    fi
     for temp in "$dir"/.hooks.json.?????? "$dir"/.plugin.json.??????; do
         if _antigravity_plugin_temp_is_cs "$temp"; then rm -f "$temp" || true; fi
     done
-    rmdir "$dir/scripts" "$dir" 2>/dev/null || true
+    rmdir "$dir/scripts" "$dir/skills" "$dir" 2>/dev/null || true
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,

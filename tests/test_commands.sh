@@ -137,6 +137,12 @@ test_skills_check_adapter_capabilities_before_use() {
         "feature must say where the result mail surfaces" || return 1
     assert_file_contains "$SKILLS_DIR/sweep/SKILL.md" 'cs -engine supports memory_index' \
         "sweep must say which engines load the index" || return 1
+    assert_file_contains "$SKILLS_DIR/finish/SKILL.md" 'cs -engine supports feature_finish' \
+        "finish must check the feature_finish capability" || return 1
+    assert_file_contains "$SKILLS_DIR/switch/SKILL.md" 'cs -engine supports rotation' \
+        "switch leaves from a rotation handoff, so it must check rotation" || return 1
+    assert_file_contains "$SKILLS_DIR/finish/SKILL.md" 'never guess a path or' \
+        "finish outside a cs session must stop when it cannot find its own folder" || return 1
     local hits
     hits=$(grep -l 'CLAUDE_SESSION_NAME' "$SKILLS_DIR"/*/SKILL.md 2>/dev/null || true)
     assert_eq "" "$hits" "skills read the neutral CS_SESSION_NAME, not the Claude alias" || return 1
@@ -281,6 +287,17 @@ test_switch_says_the_new_conversation_starts_itself() {
         "switch must say nothing needs typing after the relaunch" || return 1
     grep -qF 'handoff_arg="Continue from the pending rotation handoff: read .cs/handoffs/$handoff first."' "$SCRIPT_DIR/../lib/42-claude-state.sh" \
         || { echo "  FAIL: the Claude fresh launch no longer passes the handoff as its launch prompt"; return 1; }
+}
+
+# Neither Codex nor Antigravity substitutes the arguments placeholder, and
+# Claude replaces it wherever a file names it, so every skill reads its
+# arguments from the user's message and none spells the placeholder.
+test_no_skill_spells_the_arguments_placeholder() {
+    local hits
+    hits=$(grep -l 'ARGUMENTS' "$SKILLS_DIR"/*/SKILL.md 2>/dev/null || true)
+    assert_eq "" "$hits" "no SKILL.md may name the arguments placeholder" || return 1
+    assert_file_contains "$SKILLS_DIR/checkpoint/SKILL.md" "Take the full label from the user's message" \
+        "checkpoint must read its label from the message that invoked it" || return 1
 }
 
 # The four former commands are skills: each declares its name and the
@@ -747,6 +764,7 @@ run_test test_wrap_references_sibling_skills
 run_test test_sweep_runs_the_memory_index_guard
 run_test test_no_skill_names_a_claude_home_path
 run_test test_former_commands_are_skills
+run_test test_no_skill_spells_the_arguments_placeholder
 run_test test_explicit_only_skills_ship_a_codex_policy
 run_test test_skills_check_adapter_capabilities_before_use
 run_test test_rotate_describes_the_default_countdown

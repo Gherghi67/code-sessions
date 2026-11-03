@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ABOUTME: cs's Antigravity plugin is written whole, only into a folder that is cs's, and removed file by file.
+# ABOUTME: cs's Antigravity plugin (hook and skills) is written whole, only into a folder that is cs's, and removed file by file.
 # ABOUTME: Exercises lib/01-manifests.sh in a temporary HOME; no real ~/.gemini is read or written.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -120,6 +120,36 @@ _deploy_scripts() {
     done
 }
 
+# cs's skills as an install deploys them into the plugin: each SKILL.md and
+# support file the manifests list, the files Claude and Codex get, each in
+# the install record.
+_deploy_skills() {
+    local rel record
+    record=$(_cs_install_record)
+    mkdir -p "${record%/*}"
+    for rel in $(printf '%s/SKILL.md\n' "${CS_SKILLS[@]}") "${CS_SKILL_FILES[@]}"; do
+        mkdir -p "$(dirname "$PLUGIN/skills/$rel")"
+        cp "$SCRIPT_DIR/../skills/$rel" "$PLUGIN/skills/$rel" || return 1
+        printf '%s  %s\n' "$(_cs_sha256_file "$PLUGIN/skills/$rel")" \
+            ".gemini/config/plugins/cs/skills/$rel" >> "$record"
+    done
+}
+
+# agy loads a plugin's skills from its skills/ folder; --strict fails on a
+# SKILL.md its loader would skip, and components.skills counts the ones it
+# loads. HOME is the test's, so the real ~/.gemini is never read.
+test_agy_validates_the_plugin_with_cs_skills() {
+    local output
+    require_tool agy || return $?
+    _antigravity_plugin_register /opt/cs/bin/cs || return 1
+    _deploy_scripts || return 1
+    _deploy_skills || return 1
+    output=$(agy plugin validate "$PLUGIN" --strict --json 2>&1) \
+        || { echo "  FAIL: agy plugin validate --strict refuses cs's skills:"; printf '    %s\n' "$output"; return 1; }
+    assert_eq "${#CS_SKILLS[@]}" "$(printf '%s' "$output" | jq -r '.components.skills')" \
+        "agy loads every skill cs ships" || return 1
+}
+
 test_unregister_removes_only_what_cs_wrote() {
     local output
     _antigravity_plugin_register /opt/cs || return 1
@@ -140,6 +170,103 @@ test_unregister_removes_only_what_cs_wrote() {
     assert_file_contains "$PLUGIN/plugin.json" mine "a plugin.json the user changed stays" || return 1
     _antigravity_plugin_unregister || true
     assert_eq mine "$(cat "$PLUGIN/scripts/notes.txt")" "a second removal leaves the user's file too"
+}
+
+# The skills go with the plugin, file by file: what cs wrote goes, a skill
+# file the user changed stays and is named, and a skill of the user's own
+# beside cs's is never touched.
+test_unregister_removes_cs_skills_and_keeps_the_users() {
+    local output skill
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_scripts || return 1
+    _deploy_skills || return 1
+    _antigravity_plugin_unregister || return 1
+    assert_not_exists "$PLUGIN" "an untouched plugin goes whole, skills and all" || return 1
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_scripts || return 1
+    _deploy_skills || return 1
+    mkdir -p "$PLUGIN/skills/mine"
+    printf -- '---\nname: mine\ndescription: mine\n---\n' > "$PLUGIN/skills/mine/SKILL.md"
+    printf '\nmy note\n' >> "$PLUGIN/skills/rotate/SKILL.md"
+    output=$(_antigravity_plugin_unregister 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_not_exists "$PLUGIN/hooks.json" "the hook goes" || return 1
+    for skill in "${CS_SKILLS[@]}"; do
+        [ "$skill" = rotate ] && continue
+        assert_not_exists "$PLUGIN/skills/$skill" "cs's $skill goes" || return 1
+    done
+    assert_file_contains "$PLUGIN/skills/rotate/SKILL.md" 'my note' "a skill file the user changed stays" || return 1
+    assert_output_contains "$output" "Kept $PLUGIN/skills/rotate/SKILL.md" "and is named" || return 1
+    assert_file_contains "$PLUGIN/skills/mine/SKILL.md" 'name: mine' "the user's own skill stays" || return 1
+}
+
+# A removal that keeps a skill file the user changed leaves a folder of cs's,
+# which the next install takes back.
+test_a_folder_a_removal_left_with_a_changed_skill_is_taken_by_the_next_install() {
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_scripts || return 1
+    _deploy_skills || return 1
+    printf '\nmy note\n' >> "$PLUGIN/skills/wrap/SKILL.md"
+    mkdir -p "$PLUGIN/skills/mine"
+    printf 'mine\n' > "$PLUGIN/skills/mine/SKILL.md"
+    _antigravity_plugin_unregister 2>/dev/null || return 1
+    assert_not_exists "$PLUGIN/hooks.json" "the removal ran" || return 1
+    _antigravity_plugin_register /opt/cs \
+        || { echo "  FAIL: a folder holding a kept skill file and a skill of the user's must be taken"; return 1; }
+    _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: the folder is cs's again"; return 1; }
+    assert_file_contains "$PLUGIN/skills/wrap/SKILL.md" 'my note' "the kept skill file is left as it was" || return 1
+    assert_eq mine "$(cat "$PLUGIN/skills/mine/SKILL.md")" "and so is the user's skill"
+}
+
+# skills/ decides nothing about the hook: with a link or a file there the
+# folder stays cs's, a removal takes the hook, and nothing goes through the
+# link or into the file. A skill folder that is a link is never gone through.
+test_a_linked_or_file_skills_entry_is_never_written_or_emptied_through() {
+    local status target="$TEST_TMPDIR/elsewhere" output
+    mkdir -p "$target/rotate"
+    printf 'theirs\n' > "$target/rotate/SKILL.md"
+    _antigravity_plugin_register /opt/cs || return 1
+    # The files behind the link are ones the install record names as cs's:
+    # only the link keeps a removal from taking them.
+    _deploy_skills || return 1
+    mv "$PLUGIN/skills" "$TEST_TMPDIR/moved-skills"
+    ln -s "$TEST_TMPDIR/moved-skills" "$PLUGIN/skills"
+    _antigravity_plugin_is_cs "$PLUGIN" || { echo "  FAIL: a linked skills/ leaves the hook cs's"; return 1; }
+    _antigravity_plugin_subdir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed through the link"; return 1; }
+    _antigravity_plugin_unregister || { echo "  FAIL: the hook must still be removable"; return 1; }
+    assert_not_exists "$PLUGIN/hooks.json" "the hook goes" || return 1
+    cmp -s "$SCRIPT_DIR/../skills/rotate/SKILL.md" "$TEST_TMPDIR/moved-skills/rotate/SKILL.md" \
+        || { echo "  FAIL: nothing behind the link is removed"; return 1; }
+    [ -L "$PLUGIN/skills" ] || { echo "  FAIL: the user's link stays"; return 1; }
+    # Only the user's link is left, so the folder is theirs, as with scripts/.
+    status=0; _antigravity_plugin_register /opt/cs || status=$?
+    assert_eq 3 "$status" "a folder holding only the user's link is refused" || return 1
+    rm -rf "$PLUGIN"
+    _antigravity_plugin_register /opt/cs || return 1
+    printf 'mine\n' > "$PLUGIN/skills"
+    _antigravity_plugin_subdir_ok "$PLUGIN/skills" && { echo "  FAIL: no skill may be deployed into a file"; return 1; }
+    _antigravity_plugin_unregister || { echo "  FAIL: a file named skills must not stop the hook's removal"; return 1; }
+    assert_eq mine "$(cat "$PLUGIN/skills")" "the file is left as it was" || return 1
+    # Inside a skills/ of cs's, a skill folder that is a link is kept with what it points at.
+    rm -rf "$PLUGIN"
+    mkdir -p "$PLUGIN/skills"
+    ln -s "$target/rotate" "$PLUGIN/skills/rotate"
+    _antigravity_plugin_register /opt/cs || { echo "  FAIL: a leftover skills/ of cs's is taken"; return 1; }
+    output=$(_antigravity_plugin_unregister 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq theirs "$(cat "$target/rotate/SKILL.md")" "the skill behind the link stays" || return 1
+    [ -L "$PLUGIN/skills/rotate" ] || { echo "  FAIL: the link stays"; return 1; }
+    # Even when what it points at is what cs wrote: the removal never goes
+    # through the link, and says why it kept it.
+    rm -rf "$PLUGIN" "$target/rotate"
+    _antigravity_plugin_register /opt/cs || return 1
+    _deploy_skills || return 1
+    mv "$PLUGIN/skills/rotate" "$target/rotate"
+    ln -s "$target/rotate" "$PLUGIN/skills/rotate"
+    output=$(_antigravity_plugin_unregister 2>&1) || { echo "  FAIL: $output"; return 1; }
+    cmp -s "$SCRIPT_DIR/../skills/rotate/SKILL.md" "$target/rotate/SKILL.md" \
+        || { echo "  FAIL: cs's file behind the link stays"; return 1; }
+    [ -L "$PLUGIN/skills/rotate" ] || { echo "  FAIL: the link stays"; return 1; }
+    assert_output_contains "$output" "Kept $PLUGIN/skills/rotate: a symlink, so cs removed nothing through it" \
+        "the link is named for what it is" || { echo "$output"; return 1; }
 }
 
 # hooks.json marks the folder cs's, so it is written first: an install cut
@@ -268,11 +395,13 @@ test_a_folder_a_removal_left_is_taken_by_the_next_install() {
 # Without hooks.json, anything beyond what cs leaves keeps the folder the user's.
 test_a_folder_holding_more_than_cs_leaves_is_still_the_users() {
     local status target="$TEST_TMPDIR/elsewhere" script before
-    mkdir -p "$PLUGIN/skills/mine"
+    # skills/ is cs's own folder now; rules/ is a part of a plugin cs never writes.
+    mkdir -p "$PLUGIN/rules"
+    printf 'mine\n' > "$PLUGIN/rules/AGENTS.md"
     status=0; _antigravity_plugin_register /opt/cs || status=$?
-    assert_eq 3 "$status" "a folder with a skills/ of the user's is refused" || return 1
+    assert_eq 3 "$status" "a folder with a rules/ of the user's is refused" || return 1
     assert_not_exists "$PLUGIN/hooks.json" "and nothing is written" || return 1
-    rm -rf "$PLUGIN/skills"
+    rm -rf "$PLUGIN/rules"
     printf '{"name": "cs", "description": "mine"}\n' > "$PLUGIN/plugin.json"
     status=0; _antigravity_plugin_register /opt/cs || status=$?
     assert_eq 3 "$status" "a plugin.json of the user's is refused" || return 1
@@ -313,7 +442,11 @@ run_test test_register_quotes_a_path_the_shell_would_split
 run_test test_reregister_replaces_cs_files_in_place_and_is_idempotent
 run_test test_a_folder_of_the_users_is_never_written_or_removed
 run_test test_a_linked_folder_or_hooks_file_is_never_written_through
+run_test test_agy_validates_the_plugin_with_cs_skills
 run_test test_unregister_removes_only_what_cs_wrote
+run_test test_unregister_removes_cs_skills_and_keeps_the_users
+run_test test_a_folder_a_removal_left_with_a_changed_skill_is_taken_by_the_next_install
+run_test test_a_linked_or_file_skills_entry_is_never_written_or_emptied_through
 run_test test_unregister_without_a_plugin_is_a_no_op
 run_test test_an_install_cut_short_is_repaired_by_the_next
 run_test test_a_linked_scripts_folder_is_never_written_or_emptied_through

@@ -210,6 +210,67 @@ test_uninstall_names_each_session_whose_secrets_it_kept() {
     assert_eq "export CS_SECRET_API_KEY=v1" "$left" "the live session's secret stays" || return 1
 }
 
+# Write the hooks.json cs registers into Antigravity plugin folder $1.
+_write_cs_antigravity_hook() {  # plugin_dir
+    mkdir -p "$1"
+    printf '{"cs-session": {"PreInvocation": [{"type": "command", "command": "/opt/cs -antigravity-hook pre-invocation", "timeout": 10}]}}\n' \
+        > "$1/hooks.json"
+}
+
+# The list the uninstall asks about names the Antigravity plugin only when the
+# folder is one it will remove: a folder of that name that is not cs's is
+# kept, so it is not on the list. Answered no, nothing is removed.
+test_uninstall_lists_the_antigravity_plugin_only_when_it_is_cs() {
+    require_tool jq || return $?
+    local home="$TEST_TMPDIR/agy-list-home" stub="$TEST_TMPDIR/mount-stub-agy-list" plugin out
+    plugin="$home/.gemini/config/plugins/cs"
+    _stage_install "$home"
+    mkdir -p "$plugin"
+    printf '{"lint": {"Stop": [{"command": "./lint.sh"}]}}\n' > "$plugin/hooks.json"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    printf 'n' | HOME="$home" CS_SESSIONS_ROOT="$TEST_TMPDIR/agy-list-sessions" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/agy-list.out" 2>&1 || true
+    out=$(cat "$TEST_TMPDIR/agy-list.out")
+    assert_output_contains "$out" "This will uninstall cs and all its components" "the list was printed: $out" || return 1
+    assert_output_not_contains "$out" "for Antigravity" "a folder that is not cs's is not on the list" || return 1
+    _write_cs_antigravity_hook "$plugin"
+    printf 'n' | HOME="$home" CS_SESSIONS_ROOT="$TEST_TMPDIR/agy-list-sessions" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/agy-list.out" 2>&1 || true
+    out=$(cat "$TEST_TMPDIR/agy-list.out")
+    assert_output_contains "$out" "  - The cs hook and skills for Antigravity in $plugin/" "cs's plugin is on the list" || return 1
+    assert_file_exists "$plugin/hooks.json" "answered no, nothing is removed" || return 1
+    # What an earlier removal left (a skills/ folder, no hooks.json) is cs's too.
+    rm "$plugin/hooks.json"
+    mkdir -p "$plugin/skills"
+    printf 'n' | HOME="$home" CS_SESSIONS_ROOT="$TEST_TMPDIR/agy-list-sessions" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/agy-list.out" 2>&1 || true
+    out=$(cat "$TEST_TMPDIR/agy-list.out")
+    assert_output_contains "$out" "  - The cs hook and skills for Antigravity in $plugin/" "a folder cs left is on the list" || return 1
+}
+
+# A removal that keeps a file it did not write says so after naming it: the
+# closing line never claims the whole plugin went. Untouched, it does.
+test_uninstall_says_what_it_kept_of_the_antigravity_plugin() {
+    require_tool jq || return $?
+    local home="$TEST_TMPDIR/agy-kept-home" stub="$TEST_TMPDIR/mount-stub-agy-kept" plugin out rc=0
+    plugin="$home/.gemini/config/plugins/cs"
+    _stage_install "$home"
+    _write_cs_antigravity_hook "$plugin"
+    mkdir -p "$plugin/skills/rotate"
+    printf 'mine\n' > "$plugin/skills/rotate/SKILL.md"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    printf 'ynn' | HOME="$home" CS_SESSIONS_ROOT="$TEST_TMPDIR/agy-kept-sessions" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/agy-kept.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/agy-kept.out")
+    assert_eq 0 "$rc" "the uninstall finishes: $out" || return 1
+    assert_not_exists "$plugin/hooks.json" "the hook goes" || return 1
+    assert_eq mine "$(cat "$plugin/skills/rotate/SKILL.md")" "the user's file stays" || return 1
+    assert_output_contains "$out" "Kept $plugin/skills/rotate/SKILL.md: cs did not write it" "the kept file is named" || return 1
+    assert_output_contains "$out" "Removed the cs hook for Antigravity and the files cs wrote beside it; the files named above stay in $plugin/" \
+        "the closing line says what stayed: $out" || return 1
+    assert_output_not_contains "$out" "Removed the cs hook and skills for Antigravity" "never that the whole plugin went" || return 1
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -221,5 +282,7 @@ run_test test_uninstall_rechecks_live_sessions_after_the_data_question
 run_test test_uninstall_rechecks_mounts_after_the_data_question
 run_test test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock
 run_test test_uninstall_names_each_session_whose_secrets_it_kept
+run_test test_uninstall_lists_the_antigravity_plugin_only_when_it_is_cs
+run_test test_uninstall_says_what_it_kept_of_the_antigravity_plugin
 
 report_results
