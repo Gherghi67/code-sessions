@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.10.11"
+VERSION="2026.11.1"
 # This build is code-sessions, a fork of cs, installed with the user's normal
 # engine configuration. install.sh uses this marker to identify the fork;
 # update checks use it to avoid replacing the fork with an upstream release.
@@ -70,6 +70,7 @@ RETIRED_HOOKS=(
     bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
     wrap-sweep.md             # the fork's /wrap reads skills/sweep/SKILL.md; with this copy gone, sync-upstream.py maps upstream's edits to the pass onto that skill
     wrap-summary.md           # likewise for skills/summary/SKILL.md
+    narrative-reminder.sh     # retired: renamed stop-blocks.sh, since every answer it gives is a block and the narrative reminder lives in stop-notices.sh; settings.json entries under this name are stripped and registered under the name it has
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -77,7 +78,8 @@ RETIRED_HOOKS=(
 CS_HOOKS=(
     session-start.sh
     autosave-commits.sh
-    narrative-reminder.sh
+    stop-blocks.sh
+    stop-notices.sh
     session-end.sh
     subagent-context.sh
     tool-failure-logger.sh
@@ -94,6 +96,7 @@ CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
     cs-engine-events.sh
+    cs-config.sh
     cs-iterm-tab.py
     prompt-rewriter.sh
     prompt-rewriter-model.sh
@@ -154,6 +157,7 @@ RETIRED_SKILLS=(
     merge   # replaced by finish: integrate and report, never remove
     cs-hint # a mod (deployed under skills/ like every mod): the hint line under the prompt, retired
     cs-rotate # a mod: renamed to cs, cs's in-session mod (the rotate band, forced rotation, the wrap key)
+    cs-chat-only # a mod: renamed to cs-filter-chat, which ships; it was only ever deployed by hand
 )
 
 # install.sh and run_uninstall join each entry of the three retired lists
@@ -192,14 +196,11 @@ CS_SKILL_FILES=(
 )
 
 # Mod directories under mods/ the installer keeps out: experimental, their
-# source and tests in the checkout only. cs-feed is one, so the cs band, which
-# draws its feed key only beside cs-feed's /feed, draws none. Every file under
-# mods/ outside these and their test/ is in CS_MOD_FILES below
-# (tests/test_install.sh holds the two lists to that), and cs -doctor's drift
-# scan skips them.
+# source and tests in the checkout only. Every file under mods/ outside these and their test/ is in
+# CS_MOD_FILES below (tests/test_install.sh holds the two lists to that), and
+# cs -doctor's drift scan skips them.
 # shellcheck disable=SC2034  # read by cs -doctor and tests/test_install.sh
 CS_MODS_KEPT_OUT=(
-    cs-feed
 )
 
 # Mods cs ships: Claude Code function-hooks plugins, deployed file by file as
@@ -219,6 +220,19 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
+    cs-panel/.claude-plugin/plugin.json
+    cs-panel/hooks/hooks.json
+    cs-panel/hooks/register.tsx
+    cs-panel/hooks/settings.ts
+    cs-panel/hooks/draw.tsx
+    cs-filter-chat/.claude-plugin/plugin.json
+    cs-filter-chat/hooks/hooks.json
+    cs-filter-chat/hooks/register.tsx
+    cs-filter-chat/hooks/session.ts
+    cs-filter-chat/hooks/settings.ts
+    cs-filter-chat/hooks/verdict.ts
+    cs-filter-chat/hooks/words.ts
+    cs-filter-chat/hooks/draw.tsx
 )
 
 # The cs tips file as install.sh names it in settings.json's
@@ -816,8 +830,7 @@ _codex_status_line_remove() {  # codex_dir
 # "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
 # the engine actions the cs mod's band Buttons answer to: they press the
 # band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
-# WRAP_ACTION in mods/cs/hooks/register.tsx; its FEED_ACTION has no key while
-# cs-feed is kept out (CS_MODS_KEPT_OUT above). install.sh
+# WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
 # asks once per machine and binds each in the context block Claude Code wants
 # it in (home, below): the command keys in Chat, the chords in Global, where
 # the mod reads them. cs -uninstall takes back only the keys that still hold
@@ -1055,6 +1068,7 @@ CS_KNOWN_SHA256=(
     014182f33bc549250e76d9cc635cd767d058f3cddaab2459ea01037a09301431
     015576e2388195a123cb8a7a0cf3589b10d899f641af7affb566d370246c29b4
     01c7d4aa68361f5d54bdd1c647bddb73f1e822f67ee35a968250ccce95a2bcb3
+    0202455687b8c8a584cfc1ecf0439de03e8f70fcb0062e479484fdfeb4b83147
     023f9b1e89e8b5762435004a7307da0cec17f0d3cc11d7b2a01d596553f464d4
     025f4821769d0e149680bbfbe5dd69d4e471530a25de6a5699516e3d0e873c79
     02e57aae18a75e92932a08ce8fa2547ab179c0d6fbe8cf344c1498258aaee7f3
@@ -1097,6 +1111,7 @@ CS_KNOWN_SHA256=(
     0f1e182b3ac2d0455eca7b4c796cbe8a0e7ff466e6ac72eaaca7b7f17226a445
     1047d832a7287d8c719c92c35061b69ba7840469ac8f537ec4b19613bedc4b37
     107fb0561039282fa7c858037a3c368000b35c9e717ed6fc0213949f6c59fb1e
+    10aa9a48cf58dcb6982f7dab143fc08b2a48b4ca9b1c655ef90dd25aae1f928c
     1107b6a28dd6b75e3b0231ce0f986692f67de1867f9e93055f2a339e37d71a16
     113f23badc5b50d0b902b47f9814935335a2b208b8bb909ad85a9a25b3f93628
     11611d7d730cbaa0730ede5ab968c4c1a757d3b6db866ad3422b00bce97e29ce
@@ -1152,6 +1167,7 @@ CS_KNOWN_SHA256=(
     1dd82c43b926826091bbdf82b05384ef1dbaa8a5483108442ecae6e9e3ebc629
     1e4acc72345786a71a0b5a6ce90f548244461d58e62900f63107f23f14b07844
     1e7c8bad72a05236a0e6f5105ddda4c039cfb32968be3201632e87b3e60770bf
+    1ee148f2a662c70f25f7a76d0b38ce0a613613c738a77f54d48b5691a738a083
     1f549cd11c1de9844b5be3dd812915d980eb9dcced03e2ae3eb14ca079551b76
     1fa475982564ec70f12bf5295b874989dd95f89224f27bb6be4854cc5b8674e3
     204b2d932f67a7466dfea7693788be0f3d58ff4da4e5c28aa7672320cf159290
@@ -1177,6 +1193,7 @@ CS_KNOWN_SHA256=(
     2585266b55ab05e201507ac292e817b5ba14f84419a6562e761c520b995c8aed
     2596f76eb666c99280e3217311aaf5637451451bfd869fb6d4cdad19c0a41341
     2622d7683ad84be61cfe3a3504f375c3be3b840f0127215b4b6e6020d170d813
+    271be4bc1607706ea82ca610eacc49d7f527880431a24a2a28d03963f3212c91
     2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb
     2768b7ca1b4bfdc449930f44a2867ee5df624997e24e82ece1bc3746c18641f8
     277e14fe4fa01102a4f0388450a4962de4691e0a1cd62cc792d9b51b9313030c
@@ -1184,6 +1201,7 @@ CS_KNOWN_SHA256=(
     28473fdc38b8fad0b9e9999840c67b602a77ebd0f2e476b18b8946eb6cf46cee
     284d10f448552e896b17df6e2b74e71a9c0fe494c5c5509f945590acfe8fd476
     28664088be243080b706804caa305b5d58a0b35466f1c84af8f9b2d29428379a
+    286958e5c6e7f9c436c6ab384b5bf007b35a2b3cb30a63eb0da74e7c57c0d874
     286f75d0b3aa3871751db2d3b6d5590b8e1c28bac58ea993f99d06e0238539cf
     287bc6c368e8b625db8ea12e78c6f4ee7268aefa9cec4d3fce563ef56d20ca11
     2914a0ed30fbf76b9e362151ac3abf7137b10e52ed81257839683f995f33f0d7
@@ -1208,18 +1226,21 @@ CS_KNOWN_SHA256=(
     2ed9473378ba6ef8a6dc90fbfb85bd3b46d4b9d0af9add56be2e079a7290047a
     2f14a322de3390618f9479443f94d9beb906b98b2776297c87c28b3b37196169
     2f858fd0587edeb5f6e3bbbb6f57c825ed7575494ac34b2e20fd54a8c941e771
+    2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985
     2fa96af71094ce6e314556165cb9bed368024605086804f57f4c98f790a26c6b
     2fb334068971d9ac2a8ce9a18c649ff37d7cd9bb298bcb62fe476b1a831a63c9
     307b5f46cbbadaef9748123b54fb3fdbcfce1bc098a3dfcea402b382dc903a5a
     30c34245829beadf46ad44eb35a0dc52879012aeecbc4140a21dc60dc501ded5
     311c5ff675f3a3292c9ebaf220a72ae1544d9bd08a1d0b17fd692b383866a7d0
     312732cd58116d8f34791db068d8709bdc045f4a361400089ab9f0d25bae5ffe
+    31a4e95f517c28fa17d68f731d8adaefc5825872c654ab63f0d04d2f963e109c
     32546a235493972956a6eecda433e4406a10b97704347d12251c4b2b3f7ba48c
     3260a5c69fbc3867fd46c2e56f1821227aa1c6135dfe5a9f8f0749c2891c30d6
     32668a6eab6bb8b57e7bfec1b5cacb4a51d877daf961f629bb81dcd0194266f5
     32ab4c327fd1ac808c74b9caf2d3797fd7171eb64c071ee8792b62d3ec067bf8
     32d85a9ffe8461feb9e4dc5de640fbf12ed16c7d53918c7929ad73537ddd31d9
     32f0b66573299beb28f2f59f2c26c3495dd74fc2990fca6d5bfb9e50caba4e4c
+    336f7d477e1a0bb204b2eac4c460b5e67dc6486e7b6c161f23733b3e8eefb9a6
     33765ffdfea558eb43dd6130862af86362c2d8bd39643bc470ae2e25ee31d54b
     341545358509061f3ec9906cebfc6e47f0c0fd9ae411c4fcef4c07b666cf14c6
     343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48
@@ -1310,10 +1331,12 @@ CS_KNOWN_SHA256=(
     501d1d4c56c7c2108ff3808e78af3e5af724e4d409fd22d36bd04caed8826ebc
     50955bbe0c211707a30d54cb0f215686d2128fc1ad6f9e6cc200916b344ee874
     50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765
+    50fdaf38780882182c4941e11d66c3f60962f8109c9a401fb825038f2070afc5
     51d54f145574999ee82a845f5beb83fdb44f0686250197a93a570e0ba758203a
     51ee7702502dbb74f462aa0da814cf058c958c350442b772ca89e4eb46906673
     529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167
     52c72db4dd0b940a8a84a57818e87d97a613e9e066d6f8b4cd72fa298bb72463
+    531a46cb4bc246ffc6f1734b8aaca0b30258104223f3df6faae9ae5e23a408ab
     53aea9ba9716661c01a89511c5bdfbc6b083d44c567b233ba90ccf66e5e5dc36
     53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156
     5402b578b3f9623db446eeb6b74bd02380b16a27f428245c8e30c3a7853af872
@@ -1338,6 +1361,7 @@ CS_KNOWN_SHA256=(
     5895f7ecb7586a3315e3f9104653f00d139204f59bf07bd19fd085338770828c
     58c0c24b30d9696235eb6ff0b9db5e42300aa13724525da344d9412c62f5ae56
     599001046dae37eaca005d9e4dfa451c5e8d14e9523a7660459141bc101ad726
+    59a45222ec8106787e9e97c7c48acc32b754831ecdc5247fdc40d992f36ee009
     5a2a853bf2da5170e2e2a9e7865f4070db58354ac8e70e4684856acc3d1a6dbb
     5a61c589f8e2a1e7c38aba026244c2ab1864f36035648872595de40fe6fe4cbc
     5ad3fbbb202ed1f118940970ad0ac7764105442ff487b4448b41398243e7a3b9
@@ -1380,9 +1404,12 @@ CS_KNOWN_SHA256=(
     672c7562ba1fac150dc58f6877029fcd84d17b208dc206dc56da04e9beb8f420
     6738befaf5452478a9637867c82ed071227db6f75afffdd7c9cf1c7113800a0c
     67a9ab5ec1a5ee108d1a9b24dcd7464108880fc919d8bdb3cd26f8dd5cdc79d0
+    67c3217e96ce069a27d2f8af84944f1aaf18aeab29f8a570bf0cb0f96fc61519
     68555977d90fb0b7e91b2651893435c071f08b0d68454240ec01211659447760
     6883c1514567332c76c6d44dc5803313da628e38ef03e3c6a2032a79efc70c78
+    68c76099cba2c4cff85321b35745bf148df18f6cc538743a31a424d250ef478d
     68eab27103d1c58fe1f884b4dff2f9f2fd5338043f7358cebdb733d460b1a375
+    6909b481962cddcd80bf35f3c2424bedf5861549f7fd490b9791e352ac7c640f
     69348c57a7230066d20af9cad4b97d89caa431f4fa9e94a31fd07456bd1aa756
     69a2fb0a617f7c32f7fde9235bb55050b9b9d39a8b2ba27af3e8094b7090404f
     6a319959fb9c6e2817b9557a3a8d04d935de737e6f56036b0f2b8c96ea619d91
@@ -1396,6 +1423,7 @@ CS_KNOWN_SHA256=(
     6c0ebfb9fd72b236506e780c5ceb8539c6f377fecdd3f8b6c48e7e0da91f0a9b
     6c665043bc054a73eba479eeb052d1d8aa9d4be550b5492f91af6e13fcac29f6
     6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612
+    6cca574728693b2fa8072182015e17d9dce47a3ca8118b41ca0e09928546aa41
     6d26297cedd67f596fe5d45ba088f2545ba4a35de7ffa554db8ae015fa4023fe
     6d587cac24a039bb062d5d875bf70ef2bf2024aa682f5a5edc101bc27ea67e7f
     6e1b3bef5439651ca4fc2dcabd0eca941d0d4b496cdc92b4467c17d3e7b87db7
@@ -1416,6 +1444,7 @@ CS_KNOWN_SHA256=(
     73a51ada2bc4070c48e5132eae6780c978230391699da80f7a4818dd7a079340
     74603f12ac88925cae9ec2d4d9721d42b6794d8382e012fd99afca06b6544d54
     74e088afb47dac4c03802f66a5dfd04af466ba78c70ac454bfaf77dd778ae26f
+    74ef4854271268223a395468d21992e1fae52d6c6fc3d9fe8f01421bde343463
     752d60bfae43fd1b95fe4a03dfaeb7b76639804480038ff3f97d05423b66bf6b
     75337e6d710599ffd2859124b86455109bf72d27c9109fa19858f30eb79dcd76
     754028d7dd38c51bd5c061b59d77ecd7024708a6c6269ad2d52f99404a4309e8
@@ -1426,6 +1455,7 @@ CS_KNOWN_SHA256=(
     764ac53eaec73661a38bca4dde1ff68748b2f94595a3aee847aeb7d1ad682f5b
     76bf25376f8b5499df4d39a694f4ce536d4cf38fc305527a3c7652e38401c896
     77087584b6ea2557b4d10d834e7438ba9696667adcfc7ff65a72b838405b9bcc
+    7709e7d4a45e074b73880f203957cfe10b99760835015093bdfa87ae858fdb1f
     7710e311b213a88b6582d21a46257d7cd41b309e483b1122827085d59a7ee14e
     7727af041972b9eb7379b9a99e3c3741f5a5a259b84f7b71f99b46a6eb87290a
     77a206d36ec0081215de23274999ed54f92d8d2c920253a1069fd4085e1cc084
@@ -1442,6 +1472,7 @@ CS_KNOWN_SHA256=(
     7bf7337418655ac7eadef3bdc12fa777b8e45f5ae31530fa799e06fe9b4de6e8
     7c3164a5d5e41306ece483a34adac355ea10e165294e461fcac261988cbf0653
     7c3f2c1826d0a859cbac4f3b766b7ba629e8c71e9135f7192f0482dd02febd5e
+    7ca977c9aaef11d11a8dfe8c362e6e2f899aa15e4703b89f19d7a9192af2c8f9
     7cb63558185d58775c64eb1db8623ac7a4f1d04c6fcf464701a1bbee894f3b4d
     7cbd3db82eb1d91d958da5ddbc9312c425ad5d53942983d1fded006a6efacafd
     7d4dc2bcd87b1835c30f8a48a04f57997852e6527fc59a062245c96251f9e1f4
@@ -1472,6 +1503,7 @@ CS_KNOWN_SHA256=(
     8205baffaa49541819c3d1332d09bb3c8d2350e5581a9e985cd7b510abdae915
     8215e7edcd39a00908c680efe267e8c8e3406848028ea88c6efb86e703c6915a
     821a90a9d8d12faee67f0bb5f02b523dd9d26faf5f1e59a7584f78c779249914
+    82317d0619150e8323c6b80d6ddbaaa17463ab225e128d9081d0d3e165249c21
     82562272acd4229914b3df4610dda33fa4959a10f4adbbdc7c2f9102ba1cea5c
     828ab9b4321b7d94ab91a12f73ff04a8376ad56dda500bc6e8613e435b0eb8bc
     82ee7999f35577e940ccaf8d0d0ad6e35fc85d1921f0cc08309e166b7174ef3e
@@ -1505,10 +1537,12 @@ CS_KNOWN_SHA256=(
     8a1520ab9b3e11c96c4c66261862fc130f21d1c1fa21134f232d12162caceb5a
     8a249f960e484dafa1bc7fc28da997f47aac907b1fd2eeafa8b7c868b774cb3d
     8a74658e38b4641fd39083dab19a217b88bb17edcad7b1589aedefa65683c749
+    8aaadea0975e0ccbeadb995515245a9b3a2651f84626c9ba6806a57da3b5ac53
     8ab34ae5a038fada5e1566985657e70d7146c1aed370dfe7737fdc5da51a1acb
     8b0d0853373b664cc2b830805d4c46cbe8ab1290fac9116315b4b92529d2d016
     8b254af4a81324941f34c4e2a9cb86bfdd8321a34ed8570caa9f9864d50b782c
     8b8aa42b47d25d9784de90a7dc2117f46d09489a6d96db563fd1e74eb773d3f2
+    8be7cf198e9e950cb11eeb5d02231bb3e168aa078018495a1a8832186334bbc2
     8c6ab8e4427ac43b1a61f4bdc9955a8b1feab0316a3182252ff983e94276ddc0
     8c923dfe5a1e54907a7e0cb0afc868dc4f4c14ce58385d9522d23c6eb9448345
     8d13d193cc9187dba1fe37237a0b745756c6dc3ac333c5f86c8b0a3fe3d36a67
@@ -1533,10 +1567,12 @@ CS_KNOWN_SHA256=(
     91a64d819d4d38b41aec4dcf6bb108722f2d6d079c8b2985daf7671eff3e1b30
     91ad6cd4d3139bdda41b54f9331cd6ea6f7904efe5361e2f0fc7682455519a83
     930601dc27024ea0ab22a202ac1df2bc43fd284393ef2de6d064aa592ab955e5
+    938985c6dbc9166170d1e0d7e632cd3c4a4089d5cdd5b2cf5f0702600f29110f
     939d047fa7a9f94da1ee23caefea27369b79a3ad9afdefbbb16362792fbbfdb5
     93c1470f66c95f6670c00e0a23eaa725829c088da2a4722b136129f9a24cf70d
     93eb4075b5ac830053b77ec95c4751364650276adbb30690a31b9198846a771f
     93fb6d63c08660ae4ee8549e63876d41b83dbe6b6ba1094e460f72a6cb47294a
+    93ff2dee45bd443aabf3001f48942e5ac3718b7e08581f5c9808f6f9fb723657
     943b6e4b2eb7fce29416652acc57d86b920becddce280de063c65aa39d410a5b
     9440959c4e8bf8d22fa77346122b117943f9f438b2def812ef482f7b47e681a2
     94b09921206713b27366c9f06aed2d1a0fa85b5dd6535792fb84229b5bc5f6a4
@@ -1592,6 +1628,7 @@ CS_KNOWN_SHA256=(
     a3faacf9d06adcc0127b6dacbf9f360488f0d1695add299aaa94cdb7541649bd
     a4486c60d3db91c0a466fb154602eec888ffeb5a9942d74d2c8aac92b8dd7c32
     a47433266497d2a7c77c58e626448cb3732b00101447864e47662a9e7730ca50
+    a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a
     a4fa7ea3be9dd335f8959abbd3adf71e18f7eea563b49305ceb715090b7a2bf7
     a4fef399d4c84c5b30e2a13c1f6b9a3a062c78136d3365b131aa0f041f455a98
     a50a8af3a643632a27181ccc0507994c51167974a55b5bd3b3acd6706d1de334
@@ -1599,12 +1636,14 @@ CS_KNOWN_SHA256=(
     a5540d6098772508987b5f8919ad00662706d352e6f324593ddcb0fbbe028e33
     a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8
     a57e3bdb4fd68482578c1b1d1f07090072284bd2b7a05a5720f02782f00eb43d
+    a5d9864215c3f7b99a49bd59524b72bbc2a75d8df15c97caa23c1aba31ddb428
     a633bd92c5dda03d164420ee7950640eaab25fa0b854cedf743c156b17184f26
     a6e7e9848c2a508127cc2e93726a1528d91ce9525e352c867421f76ce81e0143
     a6fc8ed09021cb0709789037eadc2b15db9558502273a66cc548f67b37f3497a
     a7ca7145e6f4fc1a7163dd5dc2f0ee59046e11d687cbe8e8a6a6b56eae9d0cb1
     a80f6b1cb709a8805f77c61ec31e107ddeb38af5c07888faf13c720635043c9d
     a8dd51579409ffdab6852f5995188114f50d3268294df4e290b5857eca08fda5
+    a96c77d8f13d893e46116b7d61e517f72bba7f8e10b790517934004be21ae43a
     a99cfc8ef3f705c55287512c8f86d27b89c85e45b6f254a5158f6f8ea46c93c0
     a99e9216b51e87a7abf32b7b7810ab2eedde1333a29ae6104cb9c04d35212234
     a9de31342d33fd17c3783d4af4b2ceaeb1c802e3428685029f64642a1af09102
@@ -1626,6 +1665,7 @@ CS_KNOWN_SHA256=(
     aef77395c3ddc6f9a4bfe0a66992451b52e9a29e55d3338de3988d02b8c9d946
     af8fbe5a8c50bcc5099b07fdf3fafee87d14f99291a60428e938b6d6e1606df6
     afa0a6b437c1625bdd9f47827c8d68759a96e8f56f184ce363ad6e9b3ff82a83
+    aff28ed20c622ff6d9607be2c8f757780305052178578962870dd7e52ac5d8fc
     b013b359c49eadea594d9e1d20814fc40087db2955fb7de3303ad14f72bff862
     b074b4aa6be28f2aa64893bc14bf0e65a8e101bc46903f826ca0841cf1b70c38
     b0a267be5660cf330c266dc030ce0900472ce4427943e3b5b6428b0fbe565b43
@@ -1718,6 +1758,7 @@ CS_KNOWN_SHA256=(
     cb38e20f67dd45a986d942791b35dabe982e4694aad202ad1a8613c236bffe72
     cbcd3c42df0da913522d06ccf5bdd524adc8d3b36bbd93037dba8a99dc40228a
     cc0f37d6aae70b256fd24b1a2f77d74bc44440131722e9db7ad6764cd6e77e64
+    cc34939c470679a8a9aec93d11a96806c4fdd83a55224cd530c587d9b8b398f1
     cd41c4d361874cfc167518dbefd4f6fe67a970cc07a351018fe8f398fd19000a
     cd4652ffe78ecf4e307e0acabf37f84cdff59eef9fd7867d0c7c27581ca0d478
     cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112
@@ -1731,6 +1772,7 @@ CS_KNOWN_SHA256=(
     d1b0051b093a3c62b75d76a1d81bbedc5ae6ddcb3e24e01968383ef8e91d9788
     d1b17b6d68e55ed2a88c5127abebf18e38b1e718a3c9976f22668882f0ff6447
     d1ba620fde301d5b7d11de96a79303eb392626f3e33a067fc6eaa05d9e37aed2
+    d22ebd5a106135b9e5d2d5c5be232951ddc8a91c491c28efda4c27e87b45b022
     d267e7420ba1863aad905f864e5e7f202e9cc075c5bd6907c16c4164e9ec21ef
     d26c9590295085bb809bc90202c55e7d3a41e83415d191016cba9baa3211c751
     d2bb54211d793860b8fd6fd106dff837a5818c72dca124849449f3a8372c07ae
@@ -1770,6 +1812,8 @@ CS_KNOWN_SHA256=(
     dfe308bbd64274d52e10431b0b640e7a898ba5b553a6622fee81bc2dcac4bc68
     e041a10fd7f99b825fa340a5148302da6aada2dae9840258d9699f2fb9d22869
     e064a3f323ea96b2b47cf1e5b7ee1810d374b9807b8f04923a32af42a80fe352
+    e1d127ff4b828a434a3ddc4b57e3274f2d3ac94a7675680e44fda6eedf006553
+    e209d54d089fea0a64f8bfb6f75d0edf224aa6711abb567b2063742d42d54063
     e27adef4f90f2b42d0be3b3c03180f32844e82884b3608bc1ed971c51e444ab6
     e29be4c968f48400458a1d6625be931e6910820fede0ce7e0dedacedbd130366
     e2af3787bbe2b388935eaf3fecf78cb1ffbe6f5f7378cd31ed591a1332342654
@@ -1786,6 +1830,7 @@ CS_KNOWN_SHA256=(
     e4efa6a2b3127895b94cffe1b94662f43569ad1bee5bad7fd7e6538d0af7c6d0
     e5e270de1eb6283c691a75ad25134a0fbab50ec778be8c0303327b5846460963
     e6003b91d10d8ea8bddd0b5defa6b9e4562a70c1a612dd378ae89772cc429100
+    e6a9a79ff1b7342171f69c406d601d1bbd8dc631293e368ab8deaafef2d9d27a
     e6ad1820b0c10238df8b0ab0873a4c4eea9276ada2737d9143f256bc2b885181
     e6ee168cc49eb9d9bb2bd9d5031d3b949f1ce28acd260118de4a9c92bd247b4c
     e72558004fe09cd10f0273a25178e8c6374bed8a1da79cca21c83828b31c5592
@@ -1812,6 +1857,7 @@ CS_KNOWN_SHA256=(
     ee3cd0af241b0b3d6e4ba5e212bd6679a2a3e7247da220978bcaa29e4d4c9b8b
     eeaf1d48a1a11b0a5968d36431c69e9ff7d739031f8f9e3acd894b7fc4800802
     ef00fec10761cfe05d396b5fb94ed425c1ca48b1b3ae63b89c2ec967426aad54
+    ef2434b735efc6c5727d230eac9d4f439a9439d59946289b024b6e1bcd8f2c80
     ef3141dad7c2adc740f851c50022dc4c2a3a3250162134ff879645978149d6f6
     ef3872904a9f26f79fe86d6ba3f1ecd9ad586ee8c3422667af3f28e15de645e5
     efe726a833564b7d3cf3a0e3f3682ba028e9fae6a845e7167fb4da45d7bd9e96
@@ -2427,13 +2473,15 @@ _cs_tmux_title_lock_path() {  # pane
 #   another file once it holds the lock, lets it go and takes the lock on the
 #   file the path names, trying three times in all.
 # - A directory that is missing, or cannot take a new file, refuses at once.
-# - A live holder is waited for, but for no more than five seconds: past that
-#   the caller goes ahead without the lock or gives up, as it chooses, since a
-#   launch or a hook must never stall on a lock a stray process holds.
+# - A live holder is waited for, but for no more than the seconds the second
+#   argument names, five when it is absent (zero tries once and waits for no
+#   one): past that the caller goes ahead without the lock or gives up, as it
+#   chooses, since a launch or a hook must never stall on a lock a stray
+#   process holds.
 # - Without perl nothing is locked, and a line on stderr says so.
 # Returns 0 holding the lock, 1 holding nothing.
-_cs_lock() {  # lock file
-    local lock="$1" rc
+_cs_lock() {  # lock file, [seconds to wait for a live holder]
+    local lock="$1" wait="${2:-5}" rc
     if [ -n "${_CS_LOCK_HELD:-}" ]; then
         echo "cs: cannot lock $lock: this process already holds $_CS_LOCK_HELD" >&2
         return 1
@@ -2449,7 +2497,7 @@ _cs_lock() {  # lock file
         fi
         { exec 9<>"$lock"; } 2>/dev/null || return 1
         rc=0
-        perl -e "$_CS_LOCK_PERL" "$lock" || rc=$?
+        perl -e "$_CS_LOCK_PERL" "$wait" "$lock" || rc=$?
         case "$rc" in
             0)
                 _CS_LOCK_HELD="$lock"
@@ -2472,10 +2520,11 @@ _cs_lock() {  # lock file
 }
 
 # _cs_lock's perl, run on the lock file with bash's fd 9 open on it. Exits 0
-# holding the lock; 1 after five seconds of a live holder; 2 when the path is
+# holding the lock; 1 after the seconds $ARGV[0] names of a live holder; 2 when the path
+# ($ARGV[1], last so a test can tell this perl by its argument) is
 # not the regular file fd 9 has open (a link, or another type); 3 when the
 # path names another regular file than fd 9 has, or nothing at all, so the
-# caller opens the path again. The five seconds are read from the clock, not
+# caller opens the path again. The seconds are read from the clock, not
 # counted in polls: a starved CPU wakes each 50 ms poll late, and a hundred
 # late polls would wait twice as long as promised. The clock is the
 # monotonic one, so a wall-clock step during the wait (NTP, a manual date
@@ -2488,14 +2537,14 @@ open(my $fd, "+<&=", 9) or exit 1;
 my @held = stat($fd);
 exit 2 unless @held && -f _;
 sub path_names_held {
-    my @path = lstat($ARGV[0]);
+    my @path = lstat($ARGV[1]);
     return @path && -f _ && $path[0] == $held[0] && $path[1] == $held[1];
 }
-my @path = lstat($ARGV[0]);
+my @path = lstat($ARGV[1]);
 exit 3 if !@path && $!{ENOENT};
 exit 2 unless @path && -f _;
 exit 3 unless path_names_held();
-my $deadline = now() + 5;
+my $deadline = now() + $ARGV[0];
 while (1) {
     if (flock($fd, LOCK_EX | LOCK_NB)) {
         exit 0 if path_names_held();
@@ -2557,8 +2606,26 @@ live_lock_pid() {  # meta_dir
     echo "$pid"
 }
 
+# The name claude is given for session <name>: the same, with a '+' for the
+# '@' of a feature session. Claude Code's SendMessage refuses any address
+# with an '@' in it (its old teammate syntax), so a peer could never message
+# a `base@feature` conversation; ListAgents shows the '+' form and a message
+# to it lands. Only what claude shows and what reads claude's argv back
+# (the live-duplicate guard, _remote_server_pid) use this form; the session
+# directory, CLAUDE_SESSION_NAME, cs -msg and every cs surface keep the '@'.
+# '+' is outside the characters either half of a session name may hold, so
+# the mapped name of a feature session never reads as a plain session's.
+# What reads argv back matches the '@' spelling too: a claude or a server
+# launched before cs mapped the name still runs under it. Verified on Claude
+# Code 2.1.316: a '+' name is listed by ListAgents, receives a SendMessage
+# and resumes by name.
+cs_claude_name() {  # session_name
+    printf '%s\n' "${1//@/+}"
+}
+
 # The pid of the remote-control server serving session <name>, from its
-# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`.
+# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`
+# (the name claude is given, cs_claude_name).
 # Fails otherwise. A server whose release never ran (its process group
 # killed with SIGKILL, a crash, a restart) leaves the file behind, and its pid
 # can later belong to any program, so a running pid alone proves nothing; the
@@ -2568,13 +2635,14 @@ live_lock_pid() {  # meta_dir
 # asks about one pid. cs's opens, cs -rm, cs -live, cs -doctor and the
 # SessionEnd hook all decide "served" here.
 _remote_server_pid() {  # meta_dir, session_name
-    local f="$1/local/remote.pid" pid="" args
+    local f="$1/local/remote.pid" pid="" args name
+    name=$(cs_claude_name "$2")
     [ -f "$f" ] || return 1
     IFS= read -r pid < "$f" 2>/dev/null || true
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     args=$(ps -ww -o args= -p "$pid" 2>/dev/null) || return 1
     case " $args " in
-        *" remote-control --name $2 "*) printf '%s' "$pid" ;;
+        *" remote-control --name $name "*|*" remote-control --name $2 "*) printf '%s' "$pid" ;;
         *) return 1 ;;
     esac
 }
@@ -2655,6 +2723,29 @@ cs_cache_dir_make_private() {  # dir
 # file removed, and returns the failing status. Callers that want a message
 # add it: hooks source this file, and `error` is cs's alone.
 # Usage: cs_write_atomic <dest> <command> [args...]
+# What dirname and basename print for a path, without starting either: every
+# write a hook makes asks both, more than once.
+_cs_path_dir() {  # path
+    local p="$1"
+    while [ "$p" != "${p%/}" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+    case "$p" in
+        /*/*|[!/]*/*) ;;
+        /*) printf '/\n'; return ;;
+        *) printf '.\n'; return ;;
+    esac
+    p=${p%/*}
+    while [ "$p" != "${p%/}" ]; do p=${p%/}; done
+    printf '%s\n' "${p:-/}"
+}
+_cs_path_base() {  # path
+    local p="$1"
+    while [ "$p" != "${p%/}" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+    case "$p" in
+        /) printf '/\n'; return ;;
+    esac
+    printf '%s\n' "${p##*/}"
+}
+
 # Where a write to a path lands: its symlinks followed, 16 hops as
 # cs_write_atomic follows them, and its directory resolved physically, so a
 # linked parent counts too. Fails when that directory does not exist, and
@@ -2675,7 +2766,7 @@ _cs_write_target() {  # path
         link=${link%x}
         case "$link" in
             /*) dest="$link" ;;
-            *) dest="$(dirname -- "$dest")/$link" ;;
+            *) dest="$(_cs_path_dir "$dest")/$link" ;;
         esac
         case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
         hops=$((hops + 1))
@@ -2694,9 +2785,9 @@ _cs_write_target() {  # path
     # collapse `link/..` to the link's own parent, not the target's. The x
     # keeps a directory's trailing newline; the name after it keeps it from
     # the caller's $(...).
-    dir=$(cd -P -- "$(dirname -- "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
+    dir=$(cd -P -- "$(_cs_path_dir "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
     dir=${dir%"$nl"x}
-    printf '%s/%s\n' "${dir%/}" "$(basename -- "$dest")"
+    printf '%s/%s\n' "${dir%/}" "$(_cs_path_base "$dest")"
 }
 
 # True when .cs at <root> is a submodule or nested repository, whose files
@@ -2880,6 +2971,24 @@ _cs_mkdir_spelling_refused() {  # dir, nearest existing level
 # running for a session removed under it, so the levels to make must lie below
 # an existing .cs and must not themselves hold a .cs, judged by spelling as the
 # session is; a directory that already exists makes nothing and gets only the
+# Take directory $1 as a mutex, or fail with status 1 while another holder
+# has it. A bare mkdir is not a claim: Ubuntu 26.04's uutils mkdir exits 0
+# when a racing mkdirat returns EEXIST, so two takers can both read success
+# (measured 2026-11-02, four racers, one real create). The claim file inside
+# settles that race in bash's own O_EXCL open: exactly one writer creates
+# it, and a taker whose mkdir reported success but whose claim is refused
+# leaves the directory to the one that holds it. Release with
+# cs_release_dir_lock, or remove the directory whole.
+cs_take_dir_lock() {  # dir
+    mkdir "$1" 2>/dev/null || return 1
+    ( set -C; : > "$1/.claim" ) 2>/dev/null || return 1
+}
+
+cs_release_dir_lock() {  # dir
+    rm -f "$1/.claim" 2>/dev/null
+    rmdir "$1" 2>/dev/null
+}
+
 # link check. The levels to make do not exist yet, so the nearest one that does
 # is what gets resolved: a link there carries every level made below it. Each
 # level is then made on its own, never with mkdir -p: a session removed after
@@ -2923,21 +3032,41 @@ cs_mkdir_inside() {  # dir
     done
 }
 
+# The key the two Stop hooks (stop-blocks.sh, stop-notices.sh) agree
+# on for one Stop: the cksum of the Stop input, a dot, and the byte size of the
+# transcript the input names. The input alone repeats across turns (session_id,
+# transcript_path and last_assistant_message can all be the same on two Stops),
+# and the transcript holds the turn's assistant message before Stop fires and
+# takes what the hooks return only after they exit, so its size differs per
+# Stop and both hooks, reading at their start, read one size. A transcript the
+# input does not name, or that cannot be read, leaves the cksum alone as the
+# key, and two such Stops on one input share it. The caller hands in the path
+# from its one read of the input. Each hook carries a copy of
+# this function for a partial install without this library, and
+# tests/test_hooks.sh holds the three to one text.
+cs_stop_key() {  # stop input, the transcript path it names
+    local c t="$2" s=""
+    c=$(printf '%s' "$1" | cksum)
+    c=${c%% *}
+    if [ -n "$t" ] && [ -f "$t" ] && [ -r "$t" ]; then s=$(wc -c < "$t" 2>/dev/null) || s=""; s=${s//[[:space:]]/}; fi
+    case "$s" in ''|*[!0-9]*) printf '%s' "$c" ;; *) printf '%s.%s' "$c" "$s" ;; esac
+}
+
 cs_write_atomic() {  # dest, command [args...]
     local dest="$1"; shift
     (
         local dir tmp mode link hops=0
         ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
         [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
-        # readlink, dirname and basename below take dest without --: a
-        # relative dest starting with a dash fails at them or at mktemp and
-        # writes nothing, so that spelling is accepted, not re-fixed.
+        # readlink and mv below take dest without --: a relative dest
+        # starting with a dash fails at them and writes nothing, so that
+        # spelling is accepted, not re-fixed.
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink -n "$dest" && printf x) || exit 1
             link=${link%x}
             case "$link" in
                 /*) dest="$link" ;;
-                *) dest="$(dirname "$dest")/$link" ;;
+                *) dest="$(_cs_path_dir "$dest")/$link" ;;
             esac
             hops=$((hops + 1))
         done
@@ -2945,8 +3074,8 @@ cs_write_atomic() {  # dest, command [args...]
             echo "cs_write_atomic: $dest is a directory" >&2
             exit 1
         fi
-        dir=$(dirname "$dest")
-        tmp=$(mktemp "$dir/.cs-tmp.$(basename "$dest").XXXXXX") || exit 1
+        dir=$(_cs_path_dir "$dest")
+        tmp=$(mktemp "$dir/.cs-tmp.$(_cs_path_base "$dest").XXXXXX") || exit 1
         trap 'rm -f "$tmp"' EXIT
         "$@" > "$tmp" || exit $?
         if [ -f "$dest" ]; then
@@ -3375,6 +3504,489 @@ cs_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypted se
     ' 2>/dev/null) || MAIL_DIGEST=""
     MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | env LC_ALL=C tr -d '\000-\010\013-\037\177')
 }
+# The allow-list, one record per key, in the order `cs -config list` prints:
+#   KEY|group|label|edit|check|choices|default|when|whenText|describe
+# edit is what the panel offers (flag toggles, choice asks with choices, text
+# asks for free text, shell is changed from a shell only); flagoff and
+# shelloff are flag and shell for a key that turns something off, whose label
+# names what it turns off, so the panel shows that on while the key is off.
+# check names the arm of _cs_config_check that accepts what the key's readers
+# accept; when is now, /clear, launch or now+launch; describe is one sentence
+# on what the setting does for you. Walked with parameter expansion only, so
+# loading forks nothing.
+_CS_CONFIG_SPEC=(
+    'CS_STATUSLINE_DISABLE|Status line|Status line|flagoff|flag|-|off|now|applies at the next repaint|Draws the line under the prompt with the session, branch, model, context and usage limits.'
+    'CS_STATUSLINE_LAYOUT|Status line|Layout|choice|enum|quiet,band,capsules|quiet|now|applies at the next repaint|How the status line looks: plain text, one full-width band of colour, or capsules.'
+    'CS_STATUSLINE_SEGMENTS|Status line|Segments|text|segments|-|logo,session,notes,mail,git,model,ctx,limits|now|applies at the next repaint|Which items the status line shows, in order, as a comma-separated list.'
+    'CS_STATUSLINE_BAND|Status line|Band colour|text|band|-|session|now|applies at the next repaint|The colour of the band and the session chip; session gives each session its own colour.'
+    'CS_STATUSLINE_COLS|Status line|Width in columns|text|cols|-|measured|now|applies at the next repaint|A fixed width for the status line; unset, it fits the terminal.'
+    'CS_STATUSLINE_FRAME|Status line|Frame columns|text|num|-|4|now|applies at the next repaint|Columns the prompt frame takes from the measured width, so the line is not cut short.'
+    'CS_STATUSLINE_CTX_WARN|Status line|Context warn %|text|num|-|40|now|applies at the next repaint|Context use at which the gauge turns to its warning colour.'
+    'CS_STATUSLINE_CTX_CRIT|Status line|Context critical %|text|num|-|65|now|applies at the next repaint|Context use at which the gauge turns to its critical colour.'
+    'CS_USAGE_NO_REFRESH|Status line|Usage refresh|flagoff|flag|-|off|now|applies at the next repaint|Fetches your Fable usage for the status line; off, it shows only what is already cached.'
+    'CS_SUBAGENT_STATUSLINE_DISABLE|Status line|Subagent rows|flagoff|flag|-|off|now|applies at the next repaint|Styles the rows Claude Code shows for running subagents to match the status line.'
+    'CS_SCOPE_DISABLE|Prompts|Scope grounding|flagoff|flag|-|off|now|applies at your next prompt|Adds a short summary of the relevant code to each prompt that asks for code work.'
+    'CS_SCOPE_TRACE_DISABLE|Prompts|Scope trace|flagoff|flag|-|off|now|applies at your next prompt|Logs how long each step cs runs on your prompt takes, to find a slow or stuck one.'
+    'CS_SCOPE_BUDGET_MS|Prompts|Scope scan budget (ms)|text|ms|-|1500|now|applies at your next prompt|If the first steps on a prompt take longer than this, cs skips its code scan; 0 always skips it.'
+    'CS_OBJECTIVE_CAPTURE_DISABLE|Prompts|Objective capture|flagoff|flag|-|off|now|applies at your next prompt|Records the first real prompt of a session as its objective in .cs/README.md.'
+    'CS_DATE_REMINDER_DISABLE|Prompts|Date reminder|flagoff|flag|-|off|now|applies at your next prompt|Tells Claude the new date when a conversation runs past midnight.'
+    'CS_CLARIFY_DISABLE|Prompts|Clarifying questions|flagoff|flag|-|off|now|applies at your next prompt|Asks Claude to question an unclear request instead of guessing; a leading ~ skips one prompt.'
+    'CS_NARRATIVE_PROMPT_DISABLE|Prompts|Narrative line|flagoff|flag|-|off|now|applies at your next prompt|Asks Claude, on each prompt, to note a finding in its narrative before it answers.'
+    'CS_CTX_WARN_CTX|Rotation|Context warning %|text|num|-|40|now|applies when the next turn ends|Context use at which Claude tells you, once, that the conversation is filling up.'
+    'CS_ROTATE_BUTTON_CTX|Rotation|Rotate button from %|text|num|-|the warn %|now|applies by your next prompt|Context use from which the band above the prompt shows the rotate key, Ctrl+X 1.'
+    'CS_ROTATE_NUDGE_CTX|Rotation|Rotation nudge %|text|num|-|65|now|applies when the next turn ends|Context use at which Claude suggests, once, writing a handoff and going on after /clear.'
+    'CS_ROTATE_FORCE_CTX|Rotation|Rotate on its own past %|text|force|-|80|now|applies by your next prompt|Context use past which cs rotates by itself after a 20 second countdown you can stop.'
+    'CS_NO_ROTATION_WAKE|Rotation|Wake after /clear|flagoff|flag|-|off|/clear|applies at the next /clear or launch|After /clear on a handoff, the fresh conversation starts its next step without you typing.'
+    'CS_ROTATION_KICK_DELAY|Rotation|Wake delay (s)|text|secs|-|2|now|applies at the next rotation|Seconds between tries to wake the fresh conversation after /clear; 0 tries once.'
+    'CS_REWRITE_PROVIDER|Rewriter (ctrl+g)|Provider|choice|enum|claude,claude-api,openai,openai-api,gemini,gemini-api,grok,xai|claude|now|applies at the next ctrl+g|Who rewrites your prompt; an -api choice calls the vendor API in place of its CLI.'
+    'CS_REWRITE_MODEL|Rewriter (ctrl+g)|Model|text|model|-|per provider|now|applies at the next ctrl+g|The model that rewrites your prompt, by the provider name for it; unset, the provider picks.'
+    'CS_REWRITE_TIMEOUT|Rewriter (ctrl+g)|Timeout (s)|text|secs|-|25|now|applies at the next ctrl+g|Seconds to wait for a rewrite before your prompt is left as you typed it.'
+    'CS_REWRITE_PROGRESS|Rewriter (ctrl+g)|Progress|choice|enum|screen,native,line,static|screen|now|applies at the next ctrl+g|What the screen shows while ctrl+g waits for the rewrite.'
+    'CS_REWRITE_DISABLE|Rewriter (ctrl+g)|Rewrite (ctrl+g)|flagoff|flag|-|off|now+launch|stopping rewrites: the next ctrl+g. Starting them after a launch without them: the next launch, which installs the ctrl+g shim.|Ctrl+g in the prompt rewrites what you typed into a clearer prompt before you send it.'
+    'CS_TERM_THEME|Terminal|Theme|choice|enum|light,dark|detected|now|applies at the next repaint|Whether cs draws for a light or a dark terminal; unset, cs detects it at launch.'
+    'CS_TERM_BG_RGB|Terminal|Background r;g;b|text|rgb|-|detected|now|applies at the next repaint|Your terminal background colour, which the status line shades its capsules from.'
+    'CS_NO_ITERM2|Terminal|iTerm2 features|flagoff|flag|-|off|now+launch|the tab title, the bell bounce and the iTerm reads of the bar: now. The iTerm tmux path of the launch: the next launch.|Uses iTerm2 for the tab title, a dock bounce when a turn ends and the theme of your profile.'
+    'CS_NERD_FONTS|Terminal|Nerd Font glyphs|flag|flag|-|off|now|applies at the next cs command|Shows Nerd Font icons in cs banners and session lists; needs a Nerd Font in the terminal.'
+    'CS_FILTER_CHAT|Terminal|Filter chat|flag|flag|-|off|now+launch|/filter-chat and the band key: now. A change here or in a shell: the next launch.|Shows only your prompts and the replies from Claude in this session; the band key or /filter-chat flips it.'
+    'CS_NO_MAIL_WAKE|Mail|Wake on mail|flagoff|flag|-|off|now|applies when the next turn ends|Unread mail from another session takes a turn, so the exchange goes on without you typing.'
+    'CS_MAIL_WAKE_MAX|Mail|Wakes in a row|text|num|-|5|now|applies when the next turn ends|How many turns mail may take in a row before it waits for a prompt from you.'
+    'CS_NO_TASK_TOOLS|Launch|Task tools|flagoff|flag|-|off|launch|applies at the next launch|Gives Claude its task list tools on every model, for rotation, the queue and handoffs.'
+    'CS_NO_UPDATE_CHECK|Launch|Update check|flagoff|flag|-|off|launch|applies at the next launch|Asks GitHub for a newer cs at most hourly; off, cs makes no network request for it.'
+    'CS_NO_FUNCTION_HOOKS|Launch|Mods|shelloff|flag|-|off|launch|applies at the next launch; with mods off, the cs panel does not load either|Lets a launch load mods, the cs band and settings pane among them; off, none loads.'
+    'CS_QUEUE_MAX_FAILURES|Queue|Stops after failures|text|num|-|5|now|applies when the next turn ends|A queue run stops once one task has this many failed tool calls.'
+    'CS_QUEUE_MAX_CTX|Queue|Stops past context %|text|num|-|85|now|applies when the next turn ends|A queue run stops before its next task once context use reaches this.'
+    'CS_QUEUE_MAX_5H|Queue|Stops past 5h limit %|text|num|-|85|now|applies when the next turn ends|A queue run stops before its next task once your 5-hour usage limit reaches this.'
+    'CS_NARRATIVE_MAX_BYTES|Narrative|Budget (bytes)|text|bytes|-|131072|now|applies when the next turn ends|Size past which a session narrative is due to move its older sections to the archive.'
+    'CS_NARRATIVE_KEEP_BYTES|Narrative|Tail kept (bytes)|text|bytes|-|65536|now|applies when the next turn ends|How much of the newest narrative stays in the live file when it rotates.'
+)
+
+# Keys a file never sets, each with the reason the writer gives. Each names a
+# secret, a program cs runs, a path, where secrets live, or a setting with a
+# record of its own: a file a plugin can write must choose none of them.
+_CS_CONFIG_EXCLUDED=(
+    'CS_SECRETS_PASSWORD|it is a secret, and the file is plain text'
+    'CLAUDE_CODE_BIN|it names a program cs runs, which a file a plugin can write must not choose'
+    'CS_TMUX_BIN|it names a program cs runs, which a file a plugin can write must not choose'
+    'CS_REWRITE_CMD|it names a program cs runs, which a file a plugin can write must not choose'
+    'CS_REAL_EDITOR|it names a program cs runs, which a file a plugin can write must not choose'
+    'CS_SESSIONS_ROOT|it names where every session lives, and each process keys on it'
+    'CS_SECRETS_BACKEND|it moves where cs-secrets looks, and every stored secret would vanish from view until it moved back'
+    'CS_PLATFORM_OVERRIDE|it moves where cs-secrets looks, and every stored secret would vanish from view until it moved back'
+    'CS_USAGE_DIR|it names a directory the status line writes to'
+    'CS_ACTOR|identity has its own per-session file, .cs/local/identity, which outranks a machine-wide name'
+    'CS_STATUSLINE_CAPS|it has its own record, which cs -statusline caps on|off|ask writes'
+)
+
+# Each key's check arm and choices, as "<arm>|<choices>" in _CS_CFG_R_<KEY>,
+# so a line's key is looked up without a walk of the table. Built once a
+# process, the first time a file or a value is checked: a reader on a machine
+# with no settings file never pays for it.
+_cs_config_index() {
+    local rec key arm
+    [ "${_CS_CFG_INDEXED:-}" != "$$" ] || return 0
+    for rec in "${_CS_CONFIG_SPEC[@]}"; do
+        key=${rec%%|*}
+        rec=${rec#*|*|*|*|}
+        arm=${rec%%|*}
+        rec=${rec#*|}
+        printf -v "_CS_CFG_R_$key" '%s|%s' "$arm" "${rec%%|*}"
+    done
+    _CS_CFG_INDEXED=$$
+}
+
+# <key>'s check arm in _CS_CFG_ARM and its choices in _CS_CFG_CHOICES; status
+# 1, nothing set, for a key outside the allow-list. Runs after
+# _cs_config_index.
+_cs_config_record() {  # key
+    # Indirect expansion evaluates an array subscript in the name: a key that
+    # is not a name is no setting, and never reaches it.
+    case "$1" in ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) return 1 ;; esac
+    local r="_CS_CFG_R_$1"
+    [ -n "${!r-}" ] || return 1
+    _CS_CFG_ARM=${!r%%|*}
+    _CS_CFG_CHOICES=${!r#*|}
+}
+
+# "a, b or c" from "a,b,c", in _CS_CONFIG_WHY.
+_cs_config_or_list() {  # csv
+    local rest="$1" out=""
+    while :; do
+        case "$rest" in
+            *,*) out="${out:+$out, }${rest%%,*}"; rest=${rest#*,} ;;
+            *) out="${out:+$out or }$rest"; break ;;
+        esac
+    done
+    _CS_CONFIG_WHY=$out
+}
+
+# Whether <value> is an r;g;b triplet, each part 0 to 255 in one to three
+# digits: what the status line's _parse_rgb_triplet takes.
+_cs_config_rgb() {  # value
+    local v="$1" part n=0
+    case "$v" in ''|*[!0-9\;]*) return 1 ;; esac
+    while :; do
+        part=${v%%;*}
+        case "$part" in ''|????*) return 1 ;; esac
+        [ "$((10#$part))" -le 255 ] || return 1
+        n=$((n + 1))
+        case "$v" in *\;*) v=${v#*;} ;; *) break ;; esac
+    done
+    [ "$n" -eq 3 ]
+}
+
+# Whether <value> passes check arm <arm> (choices for enum), 0 or 1; on a
+# refusal, what the arm accepts in _CS_CONFIG_WHY, phrased to follow "is" or
+# "not". Each arm takes what its readers take today; none takes an empty value
+# or a control character. A value that passes sets nothing: the readers check
+# every line of a file on every repaint.
+_cs_config_check() {  # arm, choices, value
+    case "$1" in
+        flag) case "$3" in 0|1) return 0 ;; esac ;;
+        enum) case "$3" in ''|*,*) ;; *) case ",$2," in *",$3,"*) return 0 ;; esac ;; esac ;;
+        num) case "$3" in ''|*[!0-9]*|????*) ;; *) return 0 ;; esac ;;
+        ms|secs) case "$3" in ''|*[!0-9]*|????????*) ;; *) return 0 ;; esac ;;
+        cols) case "$3" in ''|0*|*[!0-9]*|?????*) ;; *) return 0 ;; esac ;;
+        bytes)
+            case "$3" in
+                ''|*[!0-9]*|????????????????*) ;;
+                *) [ "$((10#$3))" -eq 0 ] || return 0 ;;
+            esac
+            ;;
+        force)
+            case "$3" in
+                [oO][fF][fF]) return 0 ;;
+                ''|*[!0-9]*|????*) ;;
+                *) [ "$((10#$3))" -gt 100 ] || return 0 ;;
+            esac
+            ;;
+        band)
+            case "$3" in red|blue|green|yellow|purple|orange|pink|cyan|brand|periwinkle|session|none) return 0 ;; esac
+            ! _cs_config_rgb "$3" || return 0
+            ;;
+        rgb) ! _cs_config_rgb "$3" || return 0 ;;
+        segments) ! _cs_config_segments "$3" || return 0 ;;
+        model)
+            case "$3" in
+                [A-Za-z0-9]*) case "$3" in *[!A-Za-z0-9._:/-]*) ;; *) [ "${#3}" -gt 128 ] || return 0 ;; esac ;;
+            esac
+            ;;
+    esac
+    _cs_config_why "$1" "$2"
+    return 1
+}
+
+# Whether <value> is a comma-separated list of status line segments, each at
+# most once: the names bin/cs-statusline draws.
+_cs_config_segments() {  # value
+    local rest="$1" item seen=","
+    while :; do
+        item=${rest%%,*}
+        case "$item" in
+            logo|session|notes|mail|pane|git|model|ctx|limits|fable|cost) ;;
+            *) return 1 ;;
+        esac
+        case "$seen" in *",$item,"*) return 1 ;; esac
+        seen="$seen$item,"
+        case "$rest" in *,*) rest=${rest#*,} ;; *) return 0 ;; esac
+    done
+}
+
+# What check arm <arm> accepts, in _CS_CONFIG_WHY.
+_cs_config_why() {  # arm, choices
+    case "$1" in
+        flag) _CS_CONFIG_WHY="1 (on) or 0 (off)" ;;
+        enum) _cs_config_or_list "$2" ;;
+        num) _CS_CONFIG_WHY="a whole number of 1 to 3 digits" ;;
+        ms) _CS_CONFIG_WHY="a whole number of milliseconds of 1 to 7 digits (0 skips the scan)" ;;
+        secs) _CS_CONFIG_WHY="a whole number of seconds of 1 to 7 digits" ;;
+        cols) _CS_CONFIG_WHY="a column count from 1 to 9999" ;;
+        bytes) _CS_CONFIG_WHY="a byte count above 0 of at most 15 digits" ;;
+        force) _CS_CONFIG_WHY="off, 0 or a percentage from 1 to 100" ;;
+        band) _CS_CONFIG_WHY="a palette name, brand, periwinkle, session, none or r;g;b" ;;
+        rgb) _CS_CONFIG_WHY="r;g;b, each 0 to 255" ;;
+        segments) _CS_CONFIG_WHY="a comma-separated list of logo, session, notes, mail, pane, git, model, ctx, limits, fable and cost, each at most once" ;;
+        model) _CS_CONFIG_WHY="a model name of letters, digits and . _ : / -, starting with a letter or digit, at most 128 characters" ;;
+        *)
+            _CS_CONFIG_WHY="a value of check arm '$1', which cs does not have"
+            echo "cs: _cs_config_check has no arm named '$1'" >&2
+            ;;
+    esac
+}
+
+# Whether <value> is one an allowed <key> takes; what it takes in
+# _CS_CONFIG_WHY. The key must be in the allow-list: an unknown one is a
+# caller's bug, said on stderr, status 2.
+cs_config_valid() {  # key, value
+    _cs_config_index
+    if ! _cs_config_record "$1"; then
+        echo "cs: cs_config_valid: $1 is not in the allow-list" >&2
+        return 2
+    fi
+    _cs_config_check "$_CS_CFG_ARM" "$_CS_CFG_CHOICES" "$2"
+}
+
+# Whether <key> is one a file never sets; the reason in _CS_CONFIG_WHY.
+_cs_config_excluded() {  # key
+    local rec
+    for rec in "${_CS_CONFIG_EXCLUDED[@]}"; do
+        if [ "${rec%%|*}" = "$1" ]; then
+            _CS_CONFIG_WHY=${rec#*|}
+            return 0
+        fi
+    done
+    return 1
+}
+
+# One skipped line, appended to _CS_CONFIG_IGNORED as
+# "<scope>\t<line no>\t<line>\t<why>\n", its control characters shown as ?.
+_cs_config_skip() {  # scope, line no, line, why
+    _CS_CONFIG_IGNORED+="$1"$'\t'"$2"$'\t'"${3//[[:cntrl:]]/?}"$'\t'"$4"$'\n'
+}
+
+# Reads one settings file, scope M (this machine's) or S (the session's),
+# line by line with read -r: never sourced, nothing expanded. A good line
+# sets _CS_CFG_<scope>_<KEY> and names the key in _CS_CFG_READ_<scope>
+# (" KEY KEY "); any other is skipped and named in _CS_CONFIG_IGNORED. A
+# value its key refuses is also kept in _CS_CFG_<scope>BAD_<KEY> as
+# "line <n>: <line>: <why>", the key named in _CS_CFG_BAD_<scope>, the value
+# that would otherwise apply, until a later good line of the key in the same
+# file replaces it. A per-key variable counts only while its list names the
+# key, so one the environment carried in is never read as a file's. A missing file, a
+# directory at the path or an unreadable file reads as empty, status 0, so a
+# reader under set -e goes on with the environment alone. The loop body is
+# written out rather than called per line: the status line reads every line
+# on every repaint.
+_cs_config_read() {  # file, scope
+    local line n=0 key value list
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    {
+        while IFS= read -r line || [ -n "$line" ]; do
+            n=$((n + 1))
+            case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+            case "$line" in
+                '#'*) continue ;;
+                *=*) key=${line%%=*}; value=${line#*=} ;;
+                *) _cs_config_skip "$2" "$n" "$line" "not KEY=value"; continue ;;
+            esac
+            case "$key" in
+                ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*) _cs_config_skip "$2" "$n" "$line" "not KEY=value"; continue ;;
+            esac
+            list="_CS_CFG_R_$key"
+            list=${!list-}
+            if [ -z "$list" ]; then
+                if _cs_config_excluded "$key"; then
+                    # One such key is a secret: the listing and doctor name
+                    # the key, never the value.
+                    _cs_config_skip "$2" "$n" "$key=(hidden)" "not kept in cs's config"
+                else
+                    _cs_config_skip "$2" "$n" "$line" "not a cs setting"
+                fi
+                continue
+            fi
+            if ! _cs_config_check "${list%%|*}" "${list#*|}" "$value"; then
+                _cs_config_skip "$2" "$n" "$line" "not $_CS_CONFIG_WHY"
+                printf -v "_CS_CFG_${2}BAD_$key" '%s' "line $n: ${line//[[:cntrl:]]/?}: not $_CS_CONFIG_WHY"
+                list="_CS_CFG_BAD_$2"
+                case "${!list}" in *" $key "*) ;; *) printf -v "$list" '%s' "${!list}$key " ;; esac
+                continue
+            fi
+            printf -v "_CS_CFG_${2}_$key" '%s' "$value"
+            list="_CS_CFG_READ_$2"
+            case "${!list}" in
+                *" $key "*) ;;
+                *)
+                    printf -v "$list" '%s' "${!list}$key "
+                    if [ "$2" = M ]; then
+                        _CS_CONFIG_COUNT_M=$((_CS_CONFIG_COUNT_M + 1))
+                    else
+                        _CS_CONFIG_COUNT_S=$((_CS_CONFIG_COUNT_S + 1))
+                    fi
+                    ;;
+            esac
+            list="_CS_CFG_BAD_$2"
+            if [ "${!list}" != " " ]; then
+                value=${!list}
+                printf -v "$list" '%s' "${value/ $key / }"
+            fi
+        done < "$1"
+    } 2>/dev/null || true
+    return 0
+}
+
+# Where <key>'s value comes from, in _CS_CFG_SOURCE: shell (the environment
+# pins it), launch (the launch measured it: CS_TERM_THEME beside
+# CS_TERM_THEME_AUTO, and CS_TERM_BG_RGB under that marker without
+# CS_TERM_BG_RGB_PINNED, the rule the status line's _sl_bg_pinned states),
+# session, machine or default. A key the loader has not looked at in this
+# process holds what the process started with, so its value answers.
+cs_config_source() {  # key
+    local src="_CS_CFG_SRC_$1"
+    case "${_CS_CFG_SEEN-}" in
+        *" $1 "*) _CS_CFG_SOURCE=${!src}; return 0 ;;
+    esac
+    if [ -z "${!1-}" ]; then
+        _CS_CFG_SOURCE=default
+    elif [ -z "${CS_TERM_THEME_AUTO:-}" ]; then
+        _CS_CFG_SOURCE=shell
+    else
+        case "$1" in
+            CS_TERM_THEME) _CS_CFG_SOURCE=launch ;;
+            CS_TERM_BG_RGB) if [ -n "${CS_TERM_BG_RGB_PINNED:-}" ]; then _CS_CFG_SOURCE=shell; else _CS_CFG_SOURCE=launch; fi ;;
+            *) _CS_CFG_SOURCE=shell ;;
+        esac
+    fi
+}
+
+# Decides, once a process, where <key>'s value comes from (cs_config_source),
+# in _CS_CFG_SRC_<KEY>, and lists the key in _CS_CFG_SEEN.
+_cs_config_see() {  # key
+    case "${_CS_CFG_SEEN-}" in *" $1 "*) return 0 ;; esac
+    cs_config_source "$1"
+    printf -v "_CS_CFG_SRC_$1" '%s' "$_CS_CFG_SOURCE"
+    _CS_CFG_SEEN="${_CS_CFG_SEEN-}$1 "
+}
+
+# Fills each allowed key the environment does not pin from the session's file
+# (<session_dir>/.cs/local/config), else this machine's
+# (${XDG_CONFIG_HOME:-$HOME/.config}/cs/config), in this shell only: every
+# fill is unexported, so a child reads the files itself and an edit reaches
+# the next repaint and the next hook, and nothing a launch hands claude can
+# pose as a pin. A flag's 0 fills as unset, so readers testing = "1" and
+# readers testing -n both see off. A key no file sets is unset only when an
+# earlier call filled it; a value the environment supplied is never touched.
+#
+# Whether the environment pins a key is decided the first time a file names
+# it in this process, before its first fill, so the value it has then is the
+# one the process started with (_CS_CFG_SEEN lists the keys decided, and
+# _CS_CFG_SRC_<KEY> says where each value came from). Keyed on $$, which a
+# subshell shares and a child does not: a copy sourced again in the same
+# process keeps those answers, and a child takes its own. Only the keys a file
+# names, or an earlier call filled, are walked: a status line repaint with a
+# short file pays for its lines, not for the table. Skipped lines:
+# _CS_CONFIG_IGNORED.
+cs_config_load() {  # [session_dir]
+    local rec key arm src have from cand
+    # No XDG_CONFIG_HOME and no HOME (a hook Claude Code runs with a bare
+    # environment) names no machine file at all, rather than /.config.
+    _CS_CONFIG_MACHINE=""
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        _CS_CONFIG_MACHINE="$XDG_CONFIG_HOME/cs/config"
+    elif [ -n "${HOME:-}" ]; then
+        _CS_CONFIG_MACHINE="$HOME/.config/cs/config"
+    fi
+    _CS_CONFIG_SESSION=""
+    [ -z "${1:-}" ] || _CS_CONFIG_SESSION="$1/.cs/local/config"
+    _CS_CONFIG_IGNORED=""
+    _CS_CONFIG_COUNT_M=0
+    _CS_CONFIG_COUNT_S=0
+    _CS_CFG_READ_M=" "
+    _CS_CFG_READ_S=" "
+    _CS_CFG_BAD_M=" "
+    _CS_CFG_BAD_S=" "
+    if [ "${_CS_CFG_PID:-}" != "$$" ]; then
+        _CS_CFG_PID=$$
+        _CS_CFG_SEEN=" "
+        _CS_CFG_FILLED=""
+        _CS_CFG_MEASURED_THEME=""
+        _CS_CFG_BG_PINNED_BY_FILE=""
+    fi
+    # No file to read and nothing an earlier call filled: the environment
+    # stands as it is, at the cost of two tests, every reader's lot on a
+    # machine with no settings file.
+    if [ -z "${_CS_CFG_FILLED-}" ] && { [ -z "$_CS_CONFIG_MACHINE" ] || [ ! -f "$_CS_CONFIG_MACHINE" ]; } \
+        && { [ -z "$_CS_CONFIG_SESSION" ] || [ ! -f "$_CS_CONFIG_SESSION" ]; }; then
+        return 0
+    fi
+    _cs_config_index
+    # The theme and the background are judged together, before any fill: a
+    # theme from a file drops the marker that makes the background a
+    # measurement rather than a pin. The theme the launch measured is kept
+    # across calls: a fill replaces the value, and the background's fate
+    # below compares against it.
+    _cs_config_see CS_TERM_THEME
+    _cs_config_see CS_TERM_BG_RGB
+    if [ "$_CS_CFG_SRC_CS_TERM_THEME" = launch ]; then
+        _CS_CFG_MEASURED_THEME=$CS_TERM_THEME
+    fi
+    [ -z "$_CS_CONFIG_MACHINE" ] || _cs_config_read "$_CS_CONFIG_MACHINE" M
+    [ -z "$_CS_CONFIG_SESSION" ] || _cs_config_read "$_CS_CONFIG_SESSION" S
+    cand="$_CS_CFG_READ_S$_CS_CFG_READ_M${_CS_CFG_SEEN-}"
+    for rec in "${_CS_CONFIG_SPEC[@]}"; do
+        key=${rec%%|*}
+        case "$cand" in *" $key "*) ;; *) continue ;; esac
+        src="_CS_CFG_SRC_$key"
+        _cs_config_see "$key"
+        [ "${!src}" != shell ] || continue
+        if case "$_CS_CFG_READ_S" in *" $key "*) true ;; *) false ;; esac; then
+            have="_CS_CFG_S_$key"
+            from=session
+        elif case "$_CS_CFG_READ_M" in *" $key "*) true ;; *) false ;; esac; then
+            have="_CS_CFG_M_$key"
+            from=machine
+        else
+            case "${!src}" in
+                session|machine)
+                    unset "$key"
+                    printf -v "$src" '%s' default
+                    ;;
+            esac
+            continue
+        fi
+        arm=${rec#*|*|*|*|}
+        if [ "${arm%%|*}" = flag ] && [ "${!have}" = 0 ]; then
+            unset "$key"
+        else
+            printf -v "$key" '%s' "${!have}"
+            # shellcheck disable=SC2163  # the variable named by $key, unexported
+            export -n "$key"
+        fi
+        printf -v "$src" '%s' "$from"
+        _CS_CFG_FILLED=1
+    done
+    # A theme from a file that is not the measured one is a pin: the marker
+    # that called the variable a measurement goes, and so does the measured
+    # background when no file sets one, as the status line would otherwise
+    # tint toward a background of the other theme. A file theme equal to the
+    # measured one leaves the measurement whole, the theme exported under its
+    # marker (put back when an earlier load for another file dropped it), so
+    # a child of this process reads the three as the launch's and not as a
+    # pin nobody exported. A background from a file is a pin too, which
+    # CS_TERM_BG_RGB_PINNED says.
+    case "$_CS_CFG_SRC_CS_TERM_THEME" in
+        session|machine)
+            if [ "${CS_TERM_THEME:-}" != "${_CS_CFG_MEASURED_THEME-}" ]; then
+                unset CS_TERM_THEME_AUTO
+                if [ "$_CS_CFG_SRC_CS_TERM_BG_RGB" = launch ]; then
+                    unset CS_TERM_BG_RGB
+                    _CS_CFG_SRC_CS_TERM_BG_RGB=default
+                fi
+            else
+                export CS_TERM_THEME
+                CS_TERM_THEME_AUTO=1
+                export CS_TERM_THEME_AUTO
+            fi
+            ;;
+    esac
+    case "$_CS_CFG_SRC_CS_TERM_BG_RGB" in
+        session|machine)
+            CS_TERM_BG_RGB_PINNED=1
+            export -n CS_TERM_BG_RGB_PINNED
+            _CS_CFG_BG_PINNED_BY_FILE=1
+            ;;
+        *)
+            if [ -n "${_CS_CFG_BG_PINNED_BY_FILE-}" ]; then
+                unset CS_TERM_BG_RGB_PINNED
+                _CS_CFG_BG_PINNED_BY_FILE=""
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# At source time, so bin/cs's own top-level reads (CS_NERD_FONTS while it
+# loads), every hook that sources a delivery and the status line see the
+# files before their first read.
+cs_config_load "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
 CS_RELEASE_SIGNERS='release namespaces="cs-release-*" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFMX5MLo9e2hYyqNVkQzfxbFcIk4/UL9Atz01BsbfGZ8'
 # Revoked release keys, one per line. cs -update reads this declaration out
 # of a downloaded installer as data: exactly one declaration, single-quoted.
@@ -3624,6 +4236,12 @@ Commands:
   -conversations      Show the session's conversation chain (rotations, lineage)
   -doctor, -diag      Run health checks (Keychain, hooks, memory, audit, tokens)
   -statusline <cmd>   enable|disable the cs status line; caps on|off|ask records whether your font has the rounded caps
+  -config list        Every cs setting: its value, where it comes from and when a change applies, then the lines the files skip (--porcelain prints tab-separated records for tools)
+  -config get <KEY>   The value readers see now; empty when nothing sets it
+  -config set <KEY> <value>  Keep a setting in this machine's ~/.config/cs/config (your environment still wins)
+  -config unset <KEY>  Remove a setting from this machine's file
+  -config reset [--yes]  Remove every setting from this machine's file; asks first unless --yes
+  <name> -config list|get|set|unset|reset  The same for <name>'s own .cs/local/config, which outranks this machine's
   -detect-theme       Show the detected terminal theme (light|dark)
   -tui                Open the interactive session manager (bare 'cs' does too)
   -list, -ls          List sessions (--tag <tag> filters; --archived shows only archived)
@@ -3781,7 +4399,7 @@ _lock_collision_menu() {
     fi
 
     echo
-    printf '  %b%b%b  %b %bis already open%b %b· PID %s%b\n' \
+    printf '  %b%b%b  %b %bis live%b %b· PID %s%b\n' \
         "$YELLOW" "$ICON_LOCK" "$NC" "$(_session_pill "$session_name" "$color")" \
         "$COMMENT" "$NC" "$DIM" "$lock_pid" "$NC"
     echo
@@ -3922,7 +4540,7 @@ acquire_session_lock() {  # meta_dir, force, session_name
             force=true
             warn "Overriding active session lock (PID $lock_pid)"
         else
-            printf 'Error: Session is already open (PID %s)\n' "$lock_pid" >&2
+            printf 'Error: Session is live (PID %s)\n' "$lock_pid" >&2
             printf 'Use --force to override: cs %s --force\n' "$session_name" >&2
             return 1
         fi
@@ -4168,7 +4786,7 @@ _cs_run_stop_helper() {
 # A feature whose retire /finish staged in its base (lib/30-worktree.sh): the
 # base's Stop hook runs the stage once the feature's lock is gone, and a base
 # idle at its prompt has no Stop coming, so the end of the feature's run tells
-# it by mail, which wakes an idle lead (narrative-reminder.sh, the mail wake).
+# it by mail, which wakes an idle lead (stop-blocks.sh, the mail wake).
 # Upstream mails from SessionEnd after removing the lock there; here the lease
 # outlives that hook, so the mail goes once the lease is released, from
 # whichever engine ran the feature. A switch relaunch takes the lease again at
@@ -5113,6 +5731,9 @@ validate_session_name() {
         # -uninstall would run that verb rather than open, and -rm would reach
         # remove_session.
         -*) error "Session name cannot start with a hyphen" ;;
+        # The name Claude Code shows for a feature session (cs_claude_name);
+        # the user read it there and typed it here.
+        *+*) error "$name is the name Claude Code shows for feature session ${name//+/@}; cs takes ${name//+/@}" ;;
     esac
 
     if ! [[ "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
@@ -5131,6 +5752,7 @@ validate_session_ref() {  # name
         '') error "Session name cannot be empty" ;;
         .|..) error "Session name cannot be '.' or '..'" ;;
         */*|*\\*) error "Session name cannot contain a path separator: $1" ;;
+        *+*) error "$1 is the name Claude Code shows for feature session ${1//+/@}; cs takes ${1//+/@}" ;;
     esac
 }
 
@@ -5948,6 +6570,24 @@ _feature_readiness() {  # base_name task
         "$wt_dirty" "$untracked" "$base_dirty" "$lock" "$state"
 }
 
+# What a person reads for a readiness record, on every surface: the band's
+# FEATURE_SENTENCES (mods/cs/hooks/register.tsx) and the TUI's
+# feature_state_cell (tui/src/ui.rs) copy this table, and each one's test runs
+# this function against its copy.
+_feature_state_sentence() {  # state lock untracked ahead
+    case "$1" in
+        ready) if [ "$4" = 0 ]; then echo "no commits"; else echo "ready"; fi ;;
+        merged) echo "merged" ;;
+        staged) echo "retire staged" ;;
+        untracked) if [ "$3" = 1 ]; then echo "1 file untracked"; else echo "$3 files untracked"; fi ;;
+        locked) echo "$2 session is live" ;;
+        dirty) echo "uncommitted changes" ;;
+        base-dirty) echo "base has uncommitted changes" ;;
+        vault-locked) echo "base vault is locked" ;;
+        *) error "Unknown feature state '$1'" ;;
+    esac
+}
+
 # Resolve a symlinked directory to its real path, portably. BSD readlink gained
 # -f only in macOS 12.3; cd+pwd -P follows the link on every platform, and the
 # fallback keeps the original path rather than aborting under set -e.
@@ -6412,7 +7052,7 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     else
         pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
         if [ -n "$pid" ]; then
-            error "Base session '$base_name' is open elsewhere (PID $pid); run $fin $task from that conversation"
+            error "Base session '$base_name' is live elsewhere (PID $pid); run $fin $task from that conversation"
         fi
     fi
     pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
@@ -6421,7 +7061,7 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
         # keeps the refusal: the person closes the feature and runs $finish again.
         case "$(_session_run_engine "$base_dir" "$base_name")" in
             codex|antigravity)
-                error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+                error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is live in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
                 ;;
         esac
         # A directory can't be removed from under a running engine, so the
@@ -6430,8 +7070,8 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
         # once that conversation's lock is gone. Every refusal below runs
         # then as it would now.
         _write_retire_stage "$stage" "$sha" "$force" "$base_dir" "$wt_dir" \
-            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage${_retire_stage_refusal:+: $_retire_stage_refusal}. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
-        printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
+            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is live in it (PID $pid), and cs could not stage its removal at $stage${_retire_stage_refusal:+: $_retire_stage_refusal}. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+        printf "staged %s %s: the '%s' conversation is live in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
         return 0
     fi
@@ -7044,7 +7684,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     # conversation is a refusal, never a wait.
     local pid
     pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
-    [ -z "$pid" ] || error "Base session '$base_name' is open elsewhere (PID $pid); run $fin $task from that conversation"
+    [ -z "$pid" ] || error "Base session '$base_name' is live elsewhere (PID $pid); run $fin $task from that conversation"
 
     local commit
     commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
@@ -7097,7 +7737,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     # flight than another integrate. Five tries a second apart outlast that
     # and still refuse promptly on a genuinely held lock.
     local tries=0
-    while ! mkdir "$lock" 2>/dev/null; do
+    while ! cs_take_dir_lock "$lock"; do
         tries=$((tries + 1))
         if [ "$tries" -ge 5 ]; then
             error "Another integrate or an in-flight autosave holds $lock; wait a few seconds and re-run. Remove that directory only if it persists with no cs running"
@@ -7865,7 +8505,7 @@ run_features() {  # base_name [--porcelain]
         esac
     done
 
-    local features task record
+    local features task record branch ahead untracked lock state sentence
     features=$(_worktree_features "$base_name")
     [ -n "$features" ] || return 0
 
@@ -7881,9 +8521,9 @@ run_features() {  # base_name [--porcelain]
     while IFS= read -r task; do
         [ -n "$task" ] || continue
         record=$(_feature_readiness "$base_name" "$task")
-        printf '%s\n' "$record" | awk -F'\t' \
-            '{ detail = ($10 == "untracked") ? sprintf("%s file%s untracked", $7, ($7 == 1) ? "" : "s") : $10;
-               printf "%-24s %-24s %6s  %s\n", $1, $2, $3, detail }'
+        IFS=$'\t' read -r task branch ahead _ _ _ untracked _ lock state <<< "$record"
+        sentence=$(_feature_state_sentence "$state" "$lock" "$untracked" "$ahead")
+        printf '%-24s %-24s %6s  %s\n' "$task" "$branch" "$ahead" "$sentence"
     done <<< "$features"
 }
 
@@ -9121,7 +9761,7 @@ _exec_fresh_rebind() {
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options claude || return 1
     # shellcheck disable=SC2086
-    cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
+    cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$(cs_claude_name "$session_name")" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
 }
 
 setup_merge_attributes() {
@@ -12339,7 +12979,7 @@ _queue_list() {  # qdir
     for f in "$qdir/queue"/*; do
         [ -f "$f" ] || continue
         n=$((n + 1))
-        [ "$n" -eq 1 ] && echo "Pending ($len)"
+        [ "$n" -eq 1 ] && echo "Queued ($len)"
         text=$(<"$f")
         printf '  %d. %s\n' "$n" "${text//$'\n'/ }"
     done
@@ -13018,6 +13658,306 @@ EOF
     fi
     printf '%s\n' "$rows" | sort -t"$(printf '\t')" -k1,1rn -k2,2rn | cut -f3-
 }
+_CONFIG_USAGE="Usage: cs [<name>] -config list [--porcelain] | get <KEY> | set <KEY> <value> | unset <KEY> | reset [--yes]"
+
+# A settings file as messages name it: a session's as <name>/.cs/local/config,
+# any other with ~ for $HOME. In _CONFIG_LABEL.
+_config_label() {  # file, [session name]
+    if [ -n "${2:-}" ]; then
+        _CONFIG_LABEL="$2/.cs/local/config"
+        return 0
+    fi
+    if [ -z "$1" ]; then
+        _CONFIG_LABEL="this machine's settings file (neither XDG_CONFIG_HOME nor HOME is set)"
+        return 0
+    fi
+    # shellcheck disable=SC2088  # a ~ for the person to read, never expanded
+    case "$1" in
+        "${HOME:-/nonexistent}"/*) _CONFIG_LABEL="~/${1#"${HOME:-}"/}" ;;
+        *) _CONFIG_LABEL=$1 ;;
+    esac
+}
+
+# The name of the session this cs runs in, for the label of its file: the
+# name it was given, else its directory's; empty outside a session.
+_config_session_name() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    printf '%s\n' "${CLAUDE_SESSION_NAME:-${dir##*/}}"
+}
+
+# The fields of <key>'s record, in _CF_GROUP, _CF_LABEL, _CF_EDIT, _CF_CHECK,
+# _CF_CHOICES, _CF_DEFAULT, _CF_WHEN, _CF_WHENTEXT and _CF_DESCRIBE.
+_config_fields() {  # key
+    local rec
+    for rec in "${_CS_CONFIG_SPEC[@]}"; do
+        [ "${rec%%|*}" = "$1" ] || continue
+        IFS='|' read -r _ _CF_GROUP _CF_LABEL _CF_EDIT _CF_CHECK _CF_CHOICES _CF_DEFAULT _CF_WHEN _CF_WHENTEXT _CF_DESCRIBE <<< "$rec"
+        return 0
+    done
+    error "_config_fields: $1 is not in the allow-list"
+}
+
+# Refuses, by name, a key the files never hold and a key that is no setting.
+_config_known_key() {  # key
+    _cs_config_index
+    _cs_config_record "$1" && return 0
+    if _cs_config_excluded "$1"; then
+        error "$1 is not kept in cs's config: $_CS_CONFIG_WHY. Export it in your shell."
+    fi
+    error "$1 is not a cs setting; cs -config list names every one"
+}
+
+# Whether a file's list (_CS_CFG_READ_M, _CS_CFG_BAD_S and their kin) names <key>.
+_config_listed() {  # list, key
+    case "$1" in *" $2 "*) return 0 ;; esac
+    return 1
+}
+
+# <file>'s new contents: every line but those of <keys>, space-separated,
+# then "<keys>=<value>" when a value is given for the one key set writes
+# (three args set; two unset, with one key, and reset, with every setting the
+# file holds). A line is a key's when the text before its first = is the key.
+# Every other line stays as typed, in order, comments, blanks and lines
+# readers skip included. A failed read fails the render, so cs_write_atomic
+# keeps the old file.
+_config_render() {  # file, keys, [value]
+    if [ -f "$1" ]; then
+        awk -v keys=" $2 " '(i = index($0, "=")) < 2 || !index(keys, " " substr($0, 1, i - 1) " ")' "$1" || return 1
+    fi
+    if [ $# -ge 3 ]; then
+        printf '%s=%s\n' "$2" "$3" || return 1
+    fi
+}
+
+# Writes <keys> (or drops their lines, with no value) in <file>, under the lock beside
+# the file, through cs_write_atomic, which refuses a link that leads out of a
+# session. The directory is made first: a session's .cs/local through
+# cs_mkdir_inside, this machine's ~/.config/cs with mkdir -p, its error shown.
+_config_write() {  # file, session dir or "", keys, [value]
+    local file="$1" sdir="$2" err
+    shift 2
+    if [ -n "$sdir" ]; then
+        cs_mkdir_inside "$sdir/.cs/local" || error "$1 not changed: cs could not make $sdir/.cs/local"
+    else
+        err=$(mkdir -p -- "${file%/*}" 2>&1) || error "$1 not changed: cs could not make ${file%/*}: $err"
+    fi
+    _cs_with_state_lock "$file" cs_write_atomic "$file" _config_render "$file" "$@" \
+        || error "$1 not changed: $_CONFIG_LABEL could not be written"
+}
+
+# What `set` and `reset` add on stderr when <key>'s new value, or its
+# default, is not the one readers will see: the environment pins it, or (a
+# machine write from inside a session) the session's own file sets it.
+_config_shadowed() {  # key, wrote the machine's file (1 or "")
+    cs_config_source "$1"
+    if [ "$_CS_CFG_SOURCE" = shell ]; then
+        printf '%s is also set in your environment (%s), which wins until you unset it there\n' "$1" "${!1//[[:cntrl:]]/?}" >&2
+    elif [ -n "$2" ] && _config_listed "$_CS_CFG_READ_S" "$1"; then
+        local v="_CS_CFG_S_$1"
+        _config_label "" "$(_config_session_name)"
+        printf '%s is also set in %s (%s), which wins in that session\n' "$1" "$_CONFIG_LABEL" "${!v}" >&2
+    fi
+}
+
+# The settings <file> holds, each once, in file order: " KEY KEY " in
+# _CONFIG_FILE_KEYS and how many in _CONFIG_FILE_COUNT. A line is a
+# setting's when the text before its first = names a record, whatever its
+# value: the lines _config_render drops for those keys. Status 1 when the
+# file cannot be read.
+_config_file_settings() {  # file
+    local line key
+    _CONFIG_FILE_KEYS=" "
+    _CONFIG_FILE_COUNT=0
+    _cs_config_index
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in *=*) key=${line%%=*} ;; *) continue ;; esac
+        _cs_config_record "$key" || continue
+        case "$_CONFIG_FILE_KEYS" in *" $key "*) continue ;; esac
+        _CONFIG_FILE_KEYS="$_CONFIG_FILE_KEYS$key "
+        _CONFIG_FILE_COUNT=$((_CONFIG_FILE_COUNT + 1))
+    done < "$1"
+}
+
+# The skipped file value that would otherwise apply to <key>, as the
+# porcelain's last field: the session's, else (when the session sets no good
+# value) the machine's; - for none.
+_config_ignored_field() {  # key
+    local v
+    if _config_listed "$_CS_CFG_BAD_S" "$1"; then
+        v="_CS_CFG_SBAD_$1"
+        _CONFIG_IGNORED_FIELD="session ${!v}"
+    elif ! _config_listed "$_CS_CFG_READ_S" "$1" && _config_listed "$_CS_CFG_BAD_M" "$1"; then
+        v="_CS_CFG_MBAD_$1"
+        _CONFIG_IGNORED_FIELD="machine ${!v}"
+    else
+        _CONFIG_IGNORED_FIELD=-
+    fi
+}
+
+# One record per allowed key, in table order, twelve tab-separated fields:
+# key group label edit choices default when whenText value source ignored
+# describe, - for none (describe is never -). The cs-panel and cs mods parse
+# it; tests/fixtures/config-porcelain.txt pins it.
+_config_list_porcelain() {
+    local rec key value
+    for rec in "${_CS_CONFIG_SPEC[@]}"; do
+        key=${rec%%|*}
+        _config_fields "$key"
+        value=${!key-}
+        value=${value//[[:cntrl:]]/?}
+        cs_config_source "$key"
+        _config_ignored_field "$key"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$key" "$_CF_GROUP" "$_CF_LABEL" "$_CF_EDIT" \
+            "$_CF_CHOICES" "$_CF_DEFAULT" "$_CF_WHEN" "$_CF_WHENTEXT" "${value:--}" "$_CS_CFG_SOURCE" "$_CONFIG_IGNORED_FIELD" "$_CF_DESCRIBE"
+    done
+}
+
+# Every setting under its group: value (the default when none is set), where
+# it comes from, when a change applies, and a note where the environment
+# hides a file's value; then each file's skipped lines.
+_config_list_human() {  # session name or ""
+    local rec key value last="" line v scope n text why prev="" mlabel slabel
+    _config_label "$_CS_CONFIG_MACHINE"
+    mlabel=$_CONFIG_LABEL
+    _config_label "" "$1"
+    slabel=$_CONFIG_LABEL
+    for rec in "${_CS_CONFIG_SPEC[@]}"; do
+        key=${rec%%|*}
+        _config_fields "$key"
+        if [ "$_CF_GROUP" != "$last" ]; then
+            printf '%s\n' "$_CF_GROUP"
+            last=$_CF_GROUP
+        fi
+        value=${!key-}
+        value=${value//[[:cntrl:]]/?}
+        cs_config_source "$key"
+        printf -v line '  %-31s %-13s %-8s %-10s' "$key" "${value:-$_CF_DEFAULT}" "$_CS_CFG_SOURCE" "$_CF_WHEN"
+        line=${line%"${line##*[! ]}"}
+        if [ "$_CS_CFG_SOURCE" = shell ]; then
+            if _config_listed "$_CS_CFG_READ_S" "$key"; then
+                v="_CS_CFG_S_$key"
+                printf -v line '%-67s (%s has %s; your environment wins)' "$line" "$slabel" "${!v}"
+            elif _config_listed "$_CS_CFG_READ_M" "$key"; then
+                v="_CS_CFG_M_$key"
+                printf -v line '%-67s (%s has %s; your environment wins)' "$line" "$mlabel" "${!v}"
+            fi
+        fi
+        printf '%s\n' "$line"
+    done
+    while IFS=$'\t' read -r scope n text why; do
+        [ -n "$scope" ] || continue
+        if [ "$scope" != "$prev" ]; then
+            if [ "$scope" = M ]; then printf 'Ignored in %s\n' "$mlabel"; else printf 'Ignored in %s\n' "$slabel"; fi
+            prev=$scope
+        fi
+        printf '  line %s: %s: %s\n' "$n" "$text" "$why"
+    done <<< "$_CS_CONFIG_IGNORED"
+}
+
+cmd_config() {  # session name or "", action, args...
+    local name="$1" sdir="" file action yes="" arg answer count keys key present
+    shift
+    if [ -n "$name" ]; then
+        sdir="$SESSIONS_ROOT/$name"
+        is_session_dir "$sdir" || error "No such session: $name"
+        cs_config_load "$sdir"
+        file="$sdir/.cs/local/config"
+    else
+        file=$_CS_CONFIG_MACHINE
+    fi
+    _config_label "$file" "$name"
+    case "${1:-}" in
+        --yes|-y) [ "${2:-}" != reset ] || set -- reset "$1" "${@:3}" ;;
+    esac
+    case "${1:-}" in
+        set|unset|reset) [ -n "$file" ] || error "$_CONFIG_LABEL: there is no file to write" ;;
+    esac
+    action="${1:-}"
+    [ $# -eq 0 ] || shift
+    case "$action" in
+        list)
+            case "$#:${1:-}" in
+                0:) _config_list_human "${name:-$(_config_session_name)}" ;;
+                1:--porcelain) _config_list_porcelain ;;
+                *) error "$_CONFIG_USAGE" ;;
+            esac
+            ;;
+        get)
+            [ $# -eq 1 ] || error "$_CONFIG_USAGE"
+            _config_known_key "$1"
+            [ -z "${!1-}" ] || printf '%s\n' "${!1}"
+            ;;
+        set)
+            [ $# -eq 2 ] || error "$_CONFIG_USAGE"
+            _config_known_key "$1"
+            [ -n "$2" ] || error "$1 takes a value; cs -config unset $1 removes it"
+            cs_config_valid "$1" "$2" || error "$1 is $_CS_CONFIG_WHY; got ${2//[[:cntrl:]]/?}"
+            [ -z "$sdir" ] || _vet_named_session "$sdir"
+            _config_write "$file" "$sdir" "$1" "$2"
+            _config_fields "$1"
+            printf '%s=%s in %s: %s\n' "$1" "$2" "$_CONFIG_LABEL" "$_CF_WHENTEXT"
+            if [ -n "$sdir" ]; then _config_shadowed "$1" ""; else _config_shadowed "$1" 1; fi
+            ;;
+        unset)
+            [ $# -eq 1 ] || error "$_CONFIG_USAGE"
+            _config_known_key "$1"
+            [ -z "$sdir" ] || _vet_named_session "$sdir"
+            # grep exits 1 for no match and 2 when it cannot read the file;
+            # only the first means the key is absent.
+            present=""
+            if [ -f "$file" ]; then
+                if grep -q "^$1=" "$file" 2>/dev/null; then
+                    present=1
+                elif [ $? -ne 1 ]; then
+                    error "$_CONFIG_LABEL could not be read; nothing changed"
+                fi
+            fi
+            if [ -z "$present" ]; then
+                printf '%s is not in %s; nothing changed\n' "$1" "$_CONFIG_LABEL"
+                return 0
+            fi
+            _config_write "$file" "$sdir" "$1"
+            printf '%s removed from %s\n' "$1" "$_CONFIG_LABEL"
+            ;;
+        reset)
+            for arg in "$@"; do
+                case "$arg" in --yes|-y) yes=1 ;; *) error "$_CONFIG_USAGE" ;; esac
+            done
+            [ -z "$sdir" ] || _vet_named_session "$sdir"
+            if [ ! -f "$file" ]; then
+                printf 'no settings file at %s; nothing to reset\n' "$_CONFIG_LABEL"
+                return 0
+            fi
+            _config_file_settings "$file" 2>/dev/null || error "$_CONFIG_LABEL could not be read; nothing changed"
+            if [ "$_CONFIG_FILE_COUNT" -eq 0 ]; then
+                printf 'nothing to reset in %s\n' "$_CONFIG_LABEL"
+                return 0
+            fi
+            if [ "$_CONFIG_FILE_COUNT" -eq 1 ]; then count="1 setting"; else count="$_CONFIG_FILE_COUNT settings"; fi
+            if [ -z "$yes" ]; then
+                if ! cs_interactive; then
+                    printf "${RED}Error: %s${NC}\n" "cs -config reset needs --yes without a terminal" >&2
+                    exit 2
+                fi
+                printf 'Remove %s from %s? [y/N] ' "$count" "$_CONFIG_LABEL" >&2
+                read -r answer || answer=""
+                case "$answer" in
+                    y|Y) ;;
+                    *) printf 'nothing changed\n'; return 0 ;;
+                esac
+            fi
+            keys=${_CONFIG_FILE_KEYS# }
+            _config_write "$file" "$sdir" "${keys% }"
+            printf '%s removed from %s\n' "$count" "$_CONFIG_LABEL"
+            for key in $_CONFIG_FILE_KEYS; do
+                if [ -n "$sdir" ]; then _config_shadowed "$key" ""; else _config_shadowed "$key" 1; fi
+            done
+            ;;
+        *)
+            error "$_CONFIG_USAGE"
+            ;;
+    esac
+}
 # Print one tag per line from the README's frontmatter tags line. Tolerates
 # arbitrary spacing and double-quoted entries; block-style lists and files
 # without frontmatter read as empty. Never errors.
@@ -13322,6 +14262,7 @@ _list_archived_trailer() {  # count
 _doctor_ok()   { printf "  ${GREEN}[ OK ]${NC} %s\n" "$1"; }
 _doctor_warn() { printf "  ${YELLOW}[WARN]${NC} %s\n" "$1"; DOCTOR_WARN=$((DOCTOR_WARN+1)); }
 _doctor_fail() { printf "  ${RED}[FAIL]${NC} %s\n" "$1"; DOCTOR_FAIL=$((DOCTOR_FAIL+1)); }
+_doctor_info() { printf "  ${DIM}[INFO]${NC} %s\n" "$1"; }
 
 # True when the settings file parses as JSON. Every settings check below reads
 # it through jq with stderr discarded, where a parse failure is indistinguishable
@@ -14313,6 +15254,44 @@ _doctor_check_narrative_size() {
 # resolved its own session ID. The recorded UUID is the source of truth for
 # cs and hooks; doctor surfaces the divergence so the user can decide whether
 # to relaunch via cs or accept the drift.
+# cs's settings files, as the loader bin/cs ran when it started read them
+# (with this session's file when CLAUDE_SESSION_DIR names one): how many
+# settings each holds, every line the readers skip and why, and every value
+# the environment hides, which no edit of the file can change.
+_doctor_check_config() {
+    local mlabel slabel row rec key scope n text why v
+    _config_label "$_CS_CONFIG_MACHINE"
+    mlabel=$_CONFIG_LABEL
+    _config_label "" "$(_config_session_name)"
+    slabel=$_CONFIG_LABEL
+    if [ ! -f "$_CS_CONFIG_MACHINE" ]; then
+        row="no $mlabel (cs -config set keeps one)"
+    elif [ "$_CS_CONFIG_COUNT_M" = 1 ]; then
+        row="1 setting in $mlabel"
+    else
+        row="$_CS_CONFIG_COUNT_M settings in $mlabel"
+    fi
+    [ -z "$_CS_CONFIG_SESSION" ] || row="$row, $_CS_CONFIG_COUNT_S in this session's"
+    _doctor_ok "config: $row"
+    while IFS=$'\t' read -r scope n text why; do
+        [ -n "$scope" ] || continue
+        if [ "$scope" = M ]; then v=$mlabel; else v=$slabel; fi
+        _doctor_warn "config: $v line $n: $text: $why (skipped)"
+    done <<< "$_CS_CONFIG_IGNORED"
+    for rec in "${_CS_CONFIG_SPEC[@]}"; do
+        key=${rec%%|*}
+        cs_config_source "$key"
+        [ "$_CS_CFG_SOURCE" = shell ] || continue
+        if _config_listed "$_CS_CFG_READ_S" "$key"; then
+            v="_CS_CFG_S_$key"
+            _doctor_info "config: $key=${!key//[[:cntrl:]]/?} in your environment hides ${!v} in $slabel"
+        elif _config_listed "$_CS_CFG_READ_M" "$key"; then
+            v="_CS_CFG_M_$key"
+            _doctor_info "config: $key=${!key//[[:cntrl:]]/?} in your environment hides ${!v} in $mlabel"
+        fi
+    done
+}
+
 # Every place cs changes what the model sees, with the switch that turns
 # it off. The consent rule covers what the user looks at — status line, titles —
 # but a hook that injects context installs silently, so this is where that
@@ -14326,21 +15305,31 @@ _doctor_check_hook_authority() {
         disabled_all=1
     fi
     # The hooks read their switch as `= "1"`, so the row must too: an exported
-    # 0 leaves the injection on and has to read as on here.
-    _doctor_authority_row() {  # label hook switch value
-        local state="on"
+    # 0 leaves the injection on and has to read as on here. A row whose switch
+    # is a setting names where its value comes from, when something sets it.
+    _doctor_authority_row() {  # label hook switch value [setting]
+        local state="on" from=""
         if [ -n "$disabled_all" ] || [ "$4" = "1" ]; then state="off"; fi
-        printf "    %-4s %-22s %-20s off: %s\n" "$state" "$1" "$2" "$3"
+        if [ -n "${5:-}" ]; then
+            cs_config_source "$5"
+            case "$_CS_CFG_SOURCE" in
+                shell) from=" (your environment)" ;;
+                session) from=" (this session's config)" ;;
+                machine) from=" (this machine's config)" ;;
+            esac
+        fi
+        printf "    %-4s %-22s %-20s off: %s%s\n" "$state" "$1" "$2" "$3" "$from"
     }
-    _doctor_authority_row "grounding"     "scope-prompt"       'CS_SCOPE_DISABLE=1'             "${CS_SCOPE_DISABLE:-}"
-    _doctor_authority_row "clarify"       "scope-prompt"       'CS_CLARIFY_DISABLE=1'           "${CS_CLARIFY_DISABLE:-}"
-    _doctor_authority_row "date reminder" "scope-prompt"       'CS_DATE_REMINDER_DISABLE=1'     "${CS_DATE_REMINDER_DISABLE:-}"
-    _doctor_authority_row "objective"     "scope-prompt"       'CS_OBJECTIVE_CAPTURE_DISABLE=1' "${CS_OBJECTIVE_CAPTURE_DISABLE:-}"
-    _doctor_authority_row "rewrite"       "prompt-rewriter"    'CS_REWRITE_DISABLE=1'           "${CS_REWRITE_DISABLE:-}"
-    _doctor_authority_row "narrative"     "narrative-reminder" '.cs/local/disabled'             ""
-    _doctor_authority_row "council nudge" "narrative-reminder" '.cs/local/disabled or uninstall the plugin' ""
-    _doctor_authority_row "ctx warning"   "narrative-reminder" 'CS_CTX_WARN_CTX=101'            ""
-    _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
+    _doctor_authority_row "grounding"     "scope-prompt"       'CS_SCOPE_DISABLE=1'             "${CS_SCOPE_DISABLE:-}" CS_SCOPE_DISABLE
+    _doctor_authority_row "clarify"       "scope-prompt"       'CS_CLARIFY_DISABLE=1'           "${CS_CLARIFY_DISABLE:-}" CS_CLARIFY_DISABLE
+    _doctor_authority_row "date reminder" "scope-prompt"       'CS_DATE_REMINDER_DISABLE=1'     "${CS_DATE_REMINDER_DISABLE:-}" CS_DATE_REMINDER_DISABLE
+    _doctor_authority_row "objective"     "scope-prompt"       'CS_OBJECTIVE_CAPTURE_DISABLE=1' "${CS_OBJECTIVE_CAPTURE_DISABLE:-}" CS_OBJECTIVE_CAPTURE_DISABLE
+    _doctor_authority_row "narrative line" "scope-prompt"      'CS_NARRATIVE_PROMPT_DISABLE=1'  "${CS_NARRATIVE_PROMPT_DISABLE:-}" CS_NARRATIVE_PROMPT_DISABLE
+    _doctor_authority_row "rewrite"       "prompt-rewriter"    'CS_REWRITE_DISABLE=1'           "${CS_REWRITE_DISABLE:-}" CS_REWRITE_DISABLE
+    _doctor_authority_row "narrative"     "stop-notices"       '.cs/local/disabled'             ""
+    _doctor_authority_row "council nudge" "stop-notices"       '.cs/local/disabled or uninstall the plugin' ""
+    _doctor_authority_row "ctx warning"   "stop-notices"       'CS_CTX_WARN_CTX=101'            ""
+    _doctor_authority_row "rotate nudge"  "stop-notices"       'CS_ROTATE_NUDGE_CTX=101'        ""
     _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
     _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
     # Local instructions remain in the prompt even when session hooks are disabled.
@@ -14492,7 +15481,7 @@ _doctor_check_session_id_match() {
     fi
 }
 
-# A mod (cs, cs-update; cs-mermaid writes no heartbeat) is a Claude Code function-hooks plugin the
+# A mod (cs, cs-update; cs-mermaid, cs-panel and cs-filter-chat write no heartbeat) is a Claude Code function-hooks plugin the
 # installer deploys under ~/.claude/skills. Absent, it is not news. Present, the
 # row reads the heartbeat the mod writes when Claude Code loads it, never the
 # directory: the loader sits behind CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, which a
@@ -14541,6 +15530,7 @@ run_doctor() {
     _doctor_check_iterm2
     _doctor_check_spawn
     _doctor_check_remote
+    _doctor_check_config
     _doctor_check_hook_authority
 
     if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then
@@ -15028,7 +16018,7 @@ _encrypt_refuse() {  # session_name
     [ -L "$dir" ] && error "$name: an adopted session cannot be encrypted; its .cs/ lives in the project checkout."
     cs_interactive || error "cs -encrypt asks for the vault password; run it from a terminal."
     meta="$dir/.cs"
-    session_is_live "$meta" && error "$name: the session is running; close it, then encrypt."
+    session_is_live "$meta" && error "$name: the session is live; close it, then encrypt."
     for sub in $CS_VAULT_LINKS; do
         [ -L "$meta/$sub" ] && error "$name: .cs/$sub is already a link; the session is encrypted, or half set up by hand."
     done
@@ -15206,7 +16196,7 @@ run_encrypt() {
     _take_session_lock "$meta" || taken=$?
     case "$taken" in
         0) ;;
-        1) error "$name: the session is running; close it, then encrypt." ;;
+        1) error "$name: the session is live; close it, then encrypt." ;;
         2) error "$name: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." ;;
         *) error "_take_session_lock returned $taken for $meta" ;;
     esac
@@ -15453,7 +16443,7 @@ run_tui() {
     # a light/dark palette; reused by the session we launch next.
     _export_term_theme
     local tui_output
-    tui_output=$(CS_VERSION="$VERSION" CS_BIN="$0" "$tui_bin") || exit $?
+    tui_output=$(CS_TERM_THEME="${CS_TERM_THEME:-}" CS_VERSION="$VERSION" CS_BIN="$0" "$tui_bin") || exit $?
     if [ -n "$tui_output" ]; then
         local selected="${tui_output%%$'\n'*}"
         if [ "$tui_output" != "$selected" ]; then
@@ -15491,6 +16481,10 @@ list_sessions() {
             *) error "Unknown list option: $1. Usage: cs -list [--archived] [--tag <tag>]" ;;
         esac
     done
+
+    if _tui_bin >/dev/null 2>&1; then
+        info "Hint: run bare 'cs' for the interactive session manager"
+    fi
 
     if [ ! -d "$SESSIONS_ROOT" ]; then
         info "No sessions found"
@@ -15781,6 +16775,8 @@ _remove_one_session() {
     # worktree name (<base>@<task>) has an @ but never a slash, so it passes.
     case "$session_name" in
         .|..|*/*) error "Invalid session name: $session_name" ;;
+        # The name Claude Code shows for a feature session (cs_claude_name).
+        *+*) error "$session_name is the name Claude Code shows for feature session ${session_name//+/@}; cs takes ${session_name//+/@}" ;;
     esac
 
     local session_dir="$SESSIONS_ROOT/$session_name"
@@ -16933,6 +17929,10 @@ _launch_claude_bound() {
     local session_dir="$2"
     local is_new="$3"
     local force="${4:-}"
+    # What claude is told the session is called, and what ps shows for a
+    # running one (cs_claude_name).
+    local claude_name
+    claude_name=$(cs_claude_name "$session_name")
     local merge_feature="${5:-}"
     local intent="${6:-auto}"
     local remote_mode="${7:-}"
@@ -17035,10 +18035,14 @@ _launch_claude_bound() {
                 fi
             done
         fi
+        # Both spellings of the name: a claude launched before cs mapped the
+        # '@' still runs under it (cs_claude_name).
         if [ -n "$_hit" ] \
+            || [[ "$_ps_out" == *"--name $claude_name "* ]] \
+            || [[ "$_ps_out" == *"--name $claude_name"$'\n'* ]] \
             || [[ "$_ps_out" == *"--name $session_name "* ]] \
             || [[ "$_ps_out" == *"--name $session_name"$'\n'* ]]; then
-            error "Session $session_name is already running elsewhere${claude_session_id:+ (UUID $claude_session_id)}. Use --force to override."
+            error "Session $session_name is live elsewhere${claude_session_id:+ (UUID $claude_session_id)}. Use --force to override."
         fi
     fi
 
@@ -17527,7 +18531,7 @@ EOF
         # an explicit --fresh choice, independent of how quickly native exit occurs.
         local rc=0
         # shellcheck disable=SC2086
-        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ "$rc" -ne 0 ]; then
             printf 'Could not resume the recorded Claude conversation; binding preserved. Retry or run: cs %s --engine claude --fresh\n' "$session_name" >&2
         fi
@@ -17543,7 +18547,7 @@ EOF
         #     always writes one; handled defensively): naked exec.
         if [ "$is_new" = "true" ] && [ -n "$claude_session_id" ]; then
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
         elif [ "$is_new" = "false" ]; then
             _disarm_rotation_marker "$session_dir"
             # An explicit --fresh never asked anything, so it is not a decline.
@@ -17553,7 +18557,7 @@ EOF
             _exec_fresh_rebind "$session_dir" "$_rebind_reason" "" "$spawn_kick" "$merge_kick"
         else
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" ${launch_prompt:+"$launch_prompt"}
         fi
     fi
 }
@@ -18477,7 +19481,7 @@ _remote_refuse_live() {  # session_name, meta_dir, lock_pid, [remote]
         error "Session $1 is served by cs $1 --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window."
     fi
     [ -z "$3" ] || [ -z "${4:-}" ] \
-        || error "Session $1 is already open (PID $3); cs $1 --remote serves only a session that is not open. Close it first."
+        || error "Session $1 is live (PID $3); cs $1 --remote serves only a session that is not live. Close it first."
     return 0
 }
 
@@ -18543,7 +19547,7 @@ _remote_release_after() {  # pid, meta_dir
 # window nobody sees, so the server would wait there; same-dir runs the
 # sessions it starts in the session dir, where worktree mode would run them
 # outside it. --name stays right after the verb: _remote_server_pid matches
-# `remote-control --name <name>`.
+# `remote-control --name <name>`, the name claude is given (cs_claude_name).
 _serve_remote() {  # session_name, session_dir, permission_mode
     local name="$1" dir="$2" mode="$3" meta="$2/.cs"
     # remote-control refuses to start while an API key is set.
@@ -18561,7 +19565,7 @@ _serve_remote() {  # session_name, session_dir, permission_mode
     _cs_run_active=0
     _remote_release_after "$$" "$meta" < /dev/null > /dev/null 2>&1 &
     info "Serving $name through claude remote-control (permission mode $mode). Ctrl-C or closing the window stops it."
-    exec "$_CS_REMOTE_BIN" remote-control --name "$name" --permission-mode "$mode" --spawn=same-dir
+    exec "$_CS_REMOTE_BIN" remote-control --name "$(cs_claude_name "$name")" --permission-mode "$mode" --spawn=same-dir
 }
 # What a fresh Codex conversation is told when it continues a rotation, both
 # after /clear (this hook) and after `r` at launch (the launch context). The
@@ -21558,6 +22562,13 @@ run_uninstall() {
         fi
     fi
 
+    # The settings file holds the person's choices, which a reinstall should
+    # find, so it stays, as statusline-caps does.
+    if [ -f "$_CS_CONFIG_MACHINE" ]; then
+        _config_label "$_CS_CONFIG_MACHINE"
+        info "Kept $_CONFIG_LABEL (your cs settings; delete it to forget them)"
+    fi
+
     echo ""
     info "Uninstall complete!"
 }
@@ -21662,9 +22673,6 @@ main() {
             return 0
             ;;
         -list|-ls)
-            if _tui_bin >/dev/null 2>&1; then
-                info "Hint: run bare 'cs' for the interactive session manager"
-            fi
             shift
             list_sessions "$@"
             return 0
@@ -21849,6 +22857,11 @@ main() {
             run_statusline_cmd "$@"
             return $?
             ;;
+        -config)
+            shift
+            cmd_config "" "$@"
+            return $?
+            ;;
         -*)
             error "Unknown command: $cmd. Run 'cs -help' for usage."
             ;;
@@ -21949,6 +22962,7 @@ main() {
                 export CS_SECRETS_SESSION="${wt_base:-$session_name}"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
+                cs_config_load "$SESSIONS_ROOT/$session_name"
                 run_secrets "$@"
                 return 0
                 ;;
@@ -21981,6 +22995,7 @@ main() {
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
+                cs_config_load "$SESSIONS_ROOT/$session_name"
                 run_queue "$@"
                 return 0
                 ;;
@@ -22014,6 +23029,7 @@ main() {
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
+                cs_config_load "$SESSIONS_ROOT/$session_name"
                 run_conversations "$@"
                 return 0
                 ;;
@@ -22039,14 +23055,21 @@ main() {
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
+                cs_config_load "$SESSIONS_ROOT/$session_name"
                 run_narrative "$@"
                 return 0
+                ;;
+            -config)
+                shift
+                cmd_config "$session_name" "$@"
+                return $?
                 ;;
             -usage)
                 shift
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
+                cs_config_load "$SESSIONS_ROOT/$session_name"
                 run_usage "$session_name" "$@"
                 return 0
                 ;;
@@ -22055,6 +23078,7 @@ main() {
                 export CS_SESSION_NAME="$session_name"
                 export CS_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CS_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
+                cs_config_load "$SESSIONS_ROOT/$session_name"
                 run_tag "$@"
                 return 0
                 ;;
@@ -22128,7 +23152,7 @@ main() {
                 shift 2
                 ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, --remote, --permission-mode, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -config, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, --remote, --permission-mode, or --force."
                 ;;
         esac
     done
@@ -22210,6 +23234,13 @@ main() {
         [ "$engine" != antigravity ] || [ "$resume_binding" != "$CS_ANTIGRAVITY_LATEST" ] || resume_binding=""
         [ -n "$resume_binding" ] || error "Cannot resume: no recorded $engine conversation for $session_name. Use --fresh."
     fi
+
+    # The launch's own settings come from the session it opens: its file
+    # outranks the machine's for the update check below, the theme the launch
+    # measures (a file's theme is not measured over) and every launch-only
+    # setting. bin/cs loaded the files for the session it was started in,
+    # which is another one, or none.
+    cs_config_load "$session_dir"
 
     check_dependencies "$engine"
 

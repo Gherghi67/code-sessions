@@ -28,6 +28,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -encrypt <name>` | Moves a closed session's private files into a vault on macOS. Asks for a password at each open. |
 | `cs -statusline enable\|disable` | Registers or removes the statusline and agent rows. Restart Claude Code after enabling. |
 | `cs -statusline caps on\|off\|ask` | Records whether your font displays rounded capsule ends. |
+| `cs -config list\|get\|set\|unset\|reset` | Lists every cs setting with its value, source and when a change applies, reads one, keeps or removes one in `~/.config/cs/config`, or removes every one after asking (`--yes` skips the question). `cs <name> -config ...` uses that session's own file. `list --porcelain` prints one tab-separated record per setting for tools. See [Settings file](configuration.md#settings-file). |
 | `cs -detect-theme` | Reports terminal theme detection. |
 | `cs -rm <name>...` | Confirms each removal and names user files, including untracked worktree files. |
 | `cs -update [--check\|--force]` | Updates cs after SSH verification of `SHA256SUMS` and the installer's digest. `--check` checks without installing, and `--force` reinstalls the latest release with the same verification. |
@@ -55,7 +56,7 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 - `cs .` requires the exact root of a known session, adopted project, or feature worktree. It refuses subdirectories and unrelated directories with adoption guidance.
 - cs resumes the [recorded conversation](session-layout.md#machine-local-files-cslocal-gitignored) with `claude --resume`, rather than `--continue`. Launches pass `--name` and a per-session `/color`.
 - The duplicate-conversation guard recognizes identifiers after `--session-id`, `--resume`, `-r`, and `--parent-session-id`. A leftover shell child carrying the identifier does not block a launch. `--force` overrides that guard and the ordinary process lock.
-- See [session commit rules](hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) for the initial commit and [autosave](hooks.md#autosave-commitssh-posttooluse-on-writeedit) for later crash recovery.
+- See [session commit rules](hooks.md#stop-noticessh-stop-async) for the initial commit and [autosave](hooks.md#autosave-commitssh-posttooluse-on-writeedit) for later crash recovery.
 - See [session resolution](hooks.md#how-a-hook-finds-its-session-cs-resolvesh) for desktop and IDE hooks, their contribution without rebinding the launched conversation, and the plain-terminal `claude` exception.
 - A newer conversation opened outside cs produces a launch warning with its identifier and `claude --resume <identifier>`.
 
@@ -106,7 +107,8 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 | Installation | Secrets backend, hooks, and statusline registration. |
 | Session | Shadow refs, memory writability, project tokens, and migration stamp. |
 | Claude Code | Settings counts and cs/cs-update runtime markers. |
-| Authority | Context-injecting hooks and their opt-outs. |
+| Settings files | How many settings this machine's and this session's files hold, each line they skip and why, and each value your environment hides from a file. |
+| Authority | Context-injecting hooks and their opt-outs, and where each switch your environment or a settings file sets comes from. |
 | Checkout picker | Rust/Cargo input timestamps and installed bytes against the checkout build, from any directory. Release downloads skip this build check. |
 
 - Build the picker with `cd tui && cargo build --release`.
@@ -139,12 +141,13 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 |---|---|
 | `cs myproj@fix-auth` | Creates a feature on branch `cs/fix-auth`, from the base's current commit. An existing `cs/fix-auth` is reused from its own tip, and the launch says how far behind the base that is. A detached base is refused: the feature would have no branch to land on. |
 | `cs myproj@perf` | Opens another independent feature. |
-| `cs <base> -features` | Lists feature readiness. |
+| `cs <base> -features [--porcelain]` | Lists each feature's branch, commits ahead and readiness: `ready`, `no commits`, `merged`, `retire staged`, `uncommitted changes`, `N files untracked`, `base session is live` or `worktree session is live`, `base has uncommitted changes`, or `base vault is locked`. `--porcelain` prints one tab-separated record per feature with the raw state key. |
 | `cs <base> -finish <feature>` | Opens the base with `/finish <feature>`. |
 | `cs -rm myproj@fix-auth` | Abandons the feature. |
 
-- An already-open base offers existing features, a new feature, a forced launch, the picker, or cancellation.
+- A live base offers existing features, a new feature, a forced launch, the picker, or cancellation.
 - Each feature has its own conversation, color, task list, and recovery refs, and shares the base's secrets.
+- Claude Code is told the feature's name with a `+` for the `@` (`myproj+fix-auth`), since its SendMessage tool refuses an address with an `@`; that is the name ListAgents and the `/resume` picker show, and the one a peer session messages. Everywhere in cs, `CLAUDE_SESSION_NAME` and `cs -msg` included, the feature keeps its `@` name; the `+` form typed into cs is refused by name with the `@` form, and the session's context names both. A feature or its `--remote` server launched before this spelling still counts as running under its `@` name.
 - The base needs a commit. See [tracked-mode prerequisites](session-layout.md#machine-local-files-cslocal-gitignored) before creating a feature.
 - A dirty base asks before branching from its last commit, or refuses without a terminal.
 - With ignored `.cs/`, the feature inherits memory topics, `MEMORY.md`, plans, and summary, but not narratives, local state, or timeline.
@@ -162,7 +165,7 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 
 ### Retirement
 
-- Finish can land work while the feature conversation runs. Retirement then waits for it to close: the retire entry writes a stage for the base (the captured commit, whether `--force` applied, and which worktree it is for) to `retire-staged/<base id>/<task>` under cs's cache (`CS_CACHE_DIR`, by default `~/.cache/cs`), never inside the session, where an agent can write, and answers `staged <task> <sha>: ...`. When that conversation's run ends, its launcher mails the base once the run's lease is released (whichever engine ran the feature; an engine switch's relaunch mails at its own end), and the base's Stop hook starts the entry detached (`--staged`, the stage standing in for the base's own ancestry), waits up to six seconds for it, and reports `retired` or the refusal in the turn that finds it ended. The entry re-reads the feature's lock under its openers' mutex right before the removal, so a conversation reopened meanwhile stages the retire again instead of losing its directory. `cs <base> -features` reads `staged` for it while the stage sits, a regular file, in a stage directory private to the user; the Stop hook drops a stage directory that is not, and says so. `cs -rm` or the picker's delete of the feature drops its stage and run records, and of the base its stage and run directories whole, since a base or feature made later under the same name, or a base given the inode back, would inherit them. No keystroke or signal closes the other session; the user does, when they are done there.
+- Finish can land work while the feature conversation runs. Retirement then waits for it to close: the retire entry writes a stage for the base (the captured commit, whether `--force` applied, and which worktree it is for) to `retire-staged/<base id>/<task>` under cs's cache (`CS_CACHE_DIR`, by default `~/.cache/cs`), never inside the session, where an agent can write, and answers `staged <task> <sha>: ...`. When that conversation's run ends, its launcher mails the base once the run's lease is released (whichever engine ran the feature; an engine switch's relaunch mails at its own end), and the base's Stop hook starts the entry detached (`--staged`, the stage standing in for the base's own ancestry), waits up to six seconds for it, and reports `retired` or the refusal in the turn that finds it ended. The entry re-reads the feature's lock under its openers' mutex right before the removal, so a conversation reopened meanwhile stages the retire again instead of losing its directory. `cs <base> -features` reads `retire staged` for it while the stage sits, a regular file, in a stage directory private to the user; the Stop hook drops a stage directory that is not, and says so. `cs -rm` or the picker's delete of the feature drops its stage and run records, and of the base its stage and run directories whole, since a base or feature made later under the same name, or a base given the inode back, would inherit them. No keystroke or signal closes the other session; the user does, when they are done there.
 - Retirement commits nothing and refuses dirty or untracked work.
 - Recreated build directories such as `node_modules`, `target`, and `.venv` go with the checkout.
 - Other ignored files go to system trash, with each file or whole-directory count listed.
@@ -182,14 +185,14 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 
 - Adding from another session sends task mail requiring acceptance.
 - See [queue controls](hooks.md#cs-not-a-hook-script--a-claude-code-mod) for mid-turn `/queue`, Start/Not yet/Compact, and conversation/subagent/workflow execution. Choosing workflows authorizes that tool.
-- `/cs next|prev|first|last|<n>` scrolls the transcript along the band's rail of prompts (one tick per prompt the person sent), mid-turn too; see [the rail](hooks.md#cs-not-a-hook-script--a-claude-code-mod).
-- See [queue drain and breakers](hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) for listed-order turn boundaries, native-task mirroring, the default five-failure/85%-context/85%-quota limits, rearming, and the return digest.
+- Bare `/cs` opens the settings pane; see [the panel mod](hooks.md#cs-panel-not-a-hook-script--a-claude-code-mod). `/cs next|prev|first|last|<n>` scrolls the transcript along the band's rail of prompts (one tick per prompt the person sent), mid-turn too; see [the rail](hooks.md#cs-not-a-hook-script--a-claude-code-mod).
+- See [queue drain and breakers](hooks.md#stop-blockssh-stop-filechanged-cwdchanged) for listed-order turn boundaries, native-task mirroring, the default five-failure/85%-context/85%-quota limits, rearming, and the return digest.
 - Mail uses `--kind notify|task|text|result`. Task mail enters the queue only after acceptance.
 - Bodies are at most 65,536 bytes. A lone `-` reads stdin.
 - Unread bodies repeat in prompt context until read, at most five and truncated. This is same-machine mail without authenticated sender attribution.
 - Each message has a thread and a sender copy. Replies infer the peer and reject a conflicting named target. Thread views order by reply relationships rather than timestamps.
 - See [message files and spawn staging](session-layout.md) for atomic delivery, the spawned-window-only seed exception, and confirmation on other opens within an hour.
-- See [completion notifications](hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) for mail after a spawned session's queue drains, and [mail wake settings](configuration.md) for wake limits.
+- See [completion notifications](hooks.md#stop-blockssh-stop-filechanged-cwdchanged) for mail after a spawned session's queue drains, and [mail wake settings](configuration.md) for wake limits.
 
 ## Conversation rotation and wrap
 

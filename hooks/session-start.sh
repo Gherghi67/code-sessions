@@ -390,8 +390,13 @@ fi
 # one date and file another.
 CONTEXT_LOADED=$(date '+%Y-%m-%d %H:%M:%S %Z')
 CONTEXT_DAY=${CONTEXT_LOADED%% *}
+# A feature session has two addresses (cs_claude_name): named here so the
+# model never hands a peer the spelling SendMessage refuses.
+NAME_NOTE=""
+[[ "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" != *@* ]] || NAME_NOTE="
+Claude Code's own tools (ListAgents, SendMessage) know this session as ${CLAUDE_SESSION_NAME//@/+}; cs (cs -msg, cs -rm, the directory) takes ${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}."
 CONTEXT=$(cat << EOF
-You are working in a managed Claude Code session: $CLAUDE_SESSION_NAME
+You are working in a managed Claude Code session: $CLAUDE_SESSION_NAME$NAME_NOTE
 Context loaded: $CONTEXT_LOADED ($(date -u +%Y-%m-%dT%H:%M:%SZ))
 
 Session directory: $CLAUDE_SESSION_DIR
@@ -649,7 +654,7 @@ fi
 [ -z "$LOCAL_DIR" ] || rm -f "$LOCAL_DIR/attention" 2>/dev/null || true
 
 # iTerm2: also cancel any dock bounce the previous conversation left running.
-# Mirrors the guard in narrative-reminder.sh (hooks are standalone).
+# Mirrors the guard in stop-blocks.sh (hooks are standalone).
 if [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
     _it2="${CS_IT2_DIR:-$HOME/.iterm2}/it2attention"
     { [ -x "$_it2" ] && "$_it2" stop > "${CS_IT2_TTY:-/dev/tty}"; } 2>/dev/null || true
@@ -889,6 +894,9 @@ NUMSTAT
         fi
     fi
 
+    # Unconditional, so it also prints when nothing above had anything to report.
+    DYNAMIC="${DYNAMIC}The conversation before this one may have finished actions its summary does not show; check git log, cs -msg log and the remote before repeating a push, a merge, an install or a message.${_NL}"
+
     if [ -n "$DYNAMIC" ]; then
         # %s, not %b: escapes in interpolated content are data. Scrubbed once
         # here because DYNAMIC carries text cs did not write — a sibling
@@ -918,7 +926,7 @@ if [ -n "$TASK_BRANCH" ] && [[ "$CLAUDE_SESSION_NAME" == *@* ]]; then
 --- Feature Worktree ---
 This session is a feature worktree of session '$CS_BASE' on branch $TASK_BRANCH. Work and commit here as normal; the checkout is disposable once the feature is integrated.
 
-To integrate this feature, ask the user to run /finish $TASK_NAME in session $CS_BASE: it merges a captured commit into the base after the gates pass there, then retires this worktree — fuses the session records (timeline, narrative) into the base and removes the worktree and branch. That removal needs this conversation closed first: a directory cannot be removed from under a running Claude, so while this conversation is open /finish stages the retire in the base, and the base runs it by itself once the user closes this session; nothing else is asked of them. Say that plainly when the user asks; never try to close, exit or remove anything from here.
+To integrate this feature, ask the user to run /finish $TASK_NAME in session $CS_BASE: it merges a captured commit into the base after the gates pass there, then retires this worktree — fuses the session records (timeline, narrative) into the base and removes the worktree and branch. That removal needs this conversation closed first: a directory cannot be removed from under a running Claude, so while this conversation is live /finish stages the retire in the base, and the base runs it by itself once the user closes this session; nothing else is asked of them. Say that plainly when the user asks; never try to close, exit or remove anything from here.
 Do NOT merge $TASK_BRANCH into the base branch manually and do not delete the branch — that bypasses the record fuse and the cleanup. To abandon the feature instead, ask the user to run: cs -rm $CLAUDE_SESSION_NAME — never run this yourself; it deletes this worktree and its session records."
 fi
 
@@ -998,7 +1006,7 @@ if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ] \
         rm -f "$_kick_dir/delivered" "$_kick_dir"/*.kick 2>/dev/null || true
         # A non-integer override must not reach sleep: under errexit a failed
         # sleep would kill the child before the write, arming a watch nothing
-        # ever fires. Same validation shape as narrative-reminder's _num_or,
+        # ever fires. Same validation shape as stop-blocks.sh's _num_or,
         # inlined because this hook sources no shared library.
         _kick_delay="${CS_ROTATION_KICK_DELAY:-2}"
         case "$_kick_delay" in ''|*[!0-9]*) _kick_delay=2 ;; esac

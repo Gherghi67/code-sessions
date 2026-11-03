@@ -479,6 +479,10 @@ _launch_claude_bound() {
     local session_dir="$2"
     local is_new="$3"
     local force="${4:-}"
+    # What claude is told the session is called, and what ps shows for a
+    # running one (cs_claude_name).
+    local claude_name
+    claude_name=$(cs_claude_name "$session_name")
     local merge_feature="${5:-}"
     local intent="${6:-auto}"
     local remote_mode="${7:-}"
@@ -581,10 +585,14 @@ _launch_claude_bound() {
                 fi
             done
         fi
+        # Both spellings of the name: a claude launched before cs mapped the
+        # '@' still runs under it (cs_claude_name).
         if [ -n "$_hit" ] \
+            || [[ "$_ps_out" == *"--name $claude_name "* ]] \
+            || [[ "$_ps_out" == *"--name $claude_name"$'\n'* ]] \
             || [[ "$_ps_out" == *"--name $session_name "* ]] \
             || [[ "$_ps_out" == *"--name $session_name"$'\n'* ]]; then
-            error "Session $session_name is already running elsewhere${claude_session_id:+ (UUID $claude_session_id)}. Use --force to override."
+            error "Session $session_name is live elsewhere${claude_session_id:+ (UUID $claude_session_id)}. Use --force to override."
         fi
     fi
 
@@ -1073,7 +1081,7 @@ EOF
         # an explicit --fresh choice, independent of how quickly native exit occurs.
         local rc=0
         # shellcheck disable=SC2086
-        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ "$rc" -ne 0 ]; then
             printf 'Could not resume the recorded Claude conversation; binding preserved. Retry or run: cs %s --engine claude --fresh\n' "$session_name" >&2
         fi
@@ -1089,7 +1097,7 @@ EOF
         #     always writes one; handled defensively): naked exec.
         if [ "$is_new" = "true" ] && [ -n "$claude_session_id" ]; then
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
         elif [ "$is_new" = "false" ]; then
             _disarm_rotation_marker "$session_dir"
             # An explicit --fresh never asked anything, so it is not a decline.
@@ -1099,7 +1107,7 @@ EOF
             _exec_fresh_rebind "$session_dir" "$_rebind_reason" "" "$spawn_kick" "$merge_kick"
         else
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" ${launch_prompt:+"$launch_prompt"}
         fi
     fi
 }

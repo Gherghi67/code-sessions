@@ -199,7 +199,7 @@ run_tui() {
     # a light/dark palette; reused by the session we launch next.
     _export_term_theme
     local tui_output
-    tui_output=$(CS_VERSION="$VERSION" CS_BIN="$0" "$tui_bin") || exit $?
+    tui_output=$(CS_TERM_THEME="${CS_TERM_THEME:-}" CS_VERSION="$VERSION" CS_BIN="$0" "$tui_bin") || exit $?
     if [ -n "$tui_output" ]; then
         local selected="${tui_output%%$'\n'*}"
         if [ "$tui_output" != "$selected" ]; then
@@ -237,6 +237,10 @@ list_sessions() {
             *) error "Unknown list option: $1. Usage: cs -list [--archived] [--tag <tag>]" ;;
         esac
     done
+
+    if _tui_bin >/dev/null 2>&1; then
+        info "Hint: run bare 'cs' for the interactive session manager"
+    fi
 
     if [ ! -d "$SESSIONS_ROOT" ]; then
         info "No sessions found"
@@ -527,6 +531,8 @@ _remove_one_session() {
     # worktree name (<base>@<task>) has an @ but never a slash, so it passes.
     case "$session_name" in
         .|..|*/*) error "Invalid session name: $session_name" ;;
+        # The name Claude Code shows for a feature session (cs_claude_name).
+        *+*) error "$session_name is the name Claude Code shows for feature session ${session_name//+/@}; cs takes ${session_name//+/@}" ;;
     esac
 
     local session_dir="$SESSIONS_ROOT/$session_name"

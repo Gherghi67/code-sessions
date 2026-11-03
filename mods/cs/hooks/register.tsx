@@ -4,7 +4,7 @@
 // ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, the band carries the elapsed time.
-// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt.
+// ABOUTME: The band carries a rail: one tick per prompt on the transcript's live branch (read after each turn), the one being read thick; a press or /cs next|prev|first|last|N scrolls the transcript to that prompt; bare /cs goes on to the cs panel.
 import type { On, EngineInterface, PluginOptions, RenderElement, RenderSurface } from 'claude-code'
 
 declare const h: any
@@ -12,9 +12,10 @@ declare const Fragment: any
 
 // KEEP IN SYNC with the ctx warn and crit defaults in bin/cs-statusline
 // (_seg_ctx): by default the band appears where the status bar turns amber and
-// the Stop hook gives its headroom notice. CS_STATUSLINE_CTX_WARN in the
-// process environment moves it, as it moves the bar; CS_ROTATE_BUTTON_CTX moves
-// the band alone. A value that is not a number is ignored.
+// the Stop hook gives its headroom notice. CS_STATUSLINE_CTX_WARN, from the
+// process environment or a cs settings file, moves it, as it moves the bar;
+// CS_ROTATE_BUTTON_CTX moves the band alone. A value that is not a number is
+// ignored.
 export const DEFAULT_PERCENT = 40
 
 // The count's colour ramp, in the status bar's inks. KEEP IN SYNC with _sgr in
@@ -119,6 +120,8 @@ const VET_TIMEOUT_MS = 10000
 // answer may take: the readiness walks git and the tree for every feature.
 const FEATURES_POLL_MS = 30000
 const FEATURES_TIMEOUT_MS = 20000
+// How long cs may take to list its settings before the read counts as failed.
+const SETTINGS_TIMEOUT_MS = 10000
 
 
 // The wrap key's question, and the answer that runs /wrap. `$.ui.ask` opens
@@ -194,7 +197,7 @@ export const TOASTS = {
   exitFailed: (err: string) => `/exit did not run: ${err}`,
   nextStep: (line: string) => `next step: ${line}`,
   noRotation: (refusal: string) => `no rotation in this session: ${refusal}`,
-  feedFailed: (err: string) => `feed update failed: ${err}`,
+  filterChatFailed: (err: string) => `filter chat update failed: ${err}`,
   finishFailed: (task: string, err: string) => `/finish${task === '' ? '' : ` ${task}`} did not run: ${err}`,
   pressedNotEmptied: (err: string) => `could not empty ${PRESSED}: ${err}`,
   wrapFailed: (err: string) => `/wrap did not run: ${err}`,
@@ -215,7 +218,10 @@ export const LOGS = {
   featuresNoAnswer: (base: string, err: string) => `cs ${base} -features did not answer: ${err}`,
   transcriptUnread: (err: string) => `the transcript could not be read: ${err}`,
   colorFailed: (color: string, err: string) => `/color ${color} did not run: ${err}`,
-  feedUnread: (message: string) => `the feed setting could not be read: ${message}`,
+  filterChatUnread: (message: string) => `the filter chat setting could not be read: ${message}`,
+  settingsExited: (code: number, line: string) => `cs -config list exited ${code}: ${line}`,
+  settingsUnreadable: (record: string) => `cs -config list gave a record the band cannot read: ${record}`,
+  settingsUnread: (err: string) => `cs's settings could not be read: ${err}`,
 } as const
 
 // `what` is the cs command a reply is about: `cs -queue add` or `cs -queue list`.
@@ -233,7 +239,7 @@ export const REPLIES = {
 
 export const COMMANDS = {
   queue: { name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true },
-  cs: { name: 'cs', description: "Scroll the transcript along the band's rail of prompts.", argumentHint: 'next|prev|first|last|<n>', immediate: true },
+  cs: { name: 'cs', description: "Bare: cs's settings panel. next|prev|first|last|<n>: scroll the transcript along the band's rail of prompts.", argumentHint: '[next|prev|first|last|<n>]', immediate: true },
 } as const
 
 // The countdown: seconds left, its ticker, and what the band last saw. Module
@@ -260,11 +266,11 @@ let clearing = false
 // asks on every render while a handoff is armed.
 let lastRefusal: string | undefined
 // Whether cs's last answer on this session's control files was a refusal. Set
-// and cleared by every vet (sessionVetted), so the session start's and a feed
-// press's alike; only a passed vet or a reload clears it, never a prompt. The
-// feed key reads off while it is set: the band's label says what cs-feed
-// draws, and cs-feed reads a refused session as off.
-let feedVetRefused = false
+// and cleared by every vet (sessionVetted), so the session start's and a chat
+// only press's alike; only a passed vet or a reload clears it, never a prompt.
+// The filter chat key reads off while it is set: the band's label says what
+// cs-filter-chat draws, and cs-filter-chat reads a refused session as off.
+let filterChatVetRefused = false
 // Counts presses of the clear button: a press acts only if no later press or
 // prompt came while cs was answering it.
 let pressCount = 0
@@ -304,8 +310,9 @@ type BandPress = () => void | Promise<unknown>
 export type BandEntry =
   // A word's ink colours the whole label, or only its `lead` glyph with the rest dim.
   | { key: string; kind: 'word'; label: string; ink?: { color: string | undefined } | { lead: string; color: string } }
-  | { key: string; kind: 'press'; label: string; onPress: BandPress; ink?: { lead: string; color: string } }
-  | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress; ink?: { text: string; color: string | undefined } }
+  // A press's ink colours its `lead` glyph or its `tail` glyph; the rest keeps the line's ink.
+  | { key: string; kind: 'press'; label: string; onPress: BandPress; ink?: { lead: string; color: string } | { tail: string; color: string | undefined } }
+  | { key: string; kind: 'chord'; label: string; action: string; onPress: BandPress }
 type BandFacts = {
   featured?: { label: string; onPress?: BandPress }
   countdown?: { seconds: number; ink: string | undefined }
@@ -314,7 +321,7 @@ type BandFacts = {
   // The engine a pending switch moves to: the armed clear key runs /exit instead.
   switching?: string
   wrapping: boolean
-  feed?: { on: boolean; color: string | undefined; onPress: BandPress }
+  filterChat?: { on: boolean; onPress: BandPress }
   waiting: number
   gate?: string
   queued: number
@@ -330,6 +337,8 @@ type BandFacts = {
 const QUEUE_GLYPH = '\u25a4'
 // The queue press's head: its glyph, its verb and its count.
 const QUEUE_COUNT = /^\u25a4 run \d+/
+// The filter chat key's switch dot while on.
+const FILTER_CHAT_ON = paletteColor('green')
 
 export function buildBandEntries(facts: BandFacts): BandEntry[] {
   const entries: BandEntry[] = []
@@ -337,8 +346,9 @@ export function buildBandEntries(facts: BandFacts): BandEntry[] {
   // The grace follows the clear key whose press stops it.
   if (facts.countdown !== undefined) entries.push({ key: 'cs-countdown', kind: 'word', label: `in ${facts.countdown.seconds}s`, ink: { color: facts.countdown.ink } })
   if (facts.wrapping) entries.push({ key: 'cs-wrap', kind: 'chord', label: 'wrap', action: WRAP_ACTION, onPress: facts.wrap })
-  if (facts.feed !== undefined) entries.push({ key: 'cs-feed', kind: 'chord', label: facts.feed.on ? 'feed ✓' : 'feed', action: FEED_ACTION, onPress: facts.feed.onPress, ink: facts.feed.on ? { text: '✓', color: facts.feed.color } : undefined })
-  // The queue has no chord: a click or Enter under the band's focus starts it.
+  // The filter chat key and the queue have no chord: a click or Enter under the band's focus presses them.
+  // Its tail is a switch dot: ● in green while on, ○ in the line's ink while off.
+  if (facts.filterChat !== undefined) entries.push({ key: 'cs-filter-chat', kind: 'press', label: facts.filterChat.on ? 'filter chat ●' : 'filter chat ○', onPress: facts.filterChat.onPress, ink: { tail: facts.filterChat.on ? '●' : '○', color: facts.filterChat.on ? FILTER_CHAT_ON : undefined } })
   if (facts.waiting > 0) entries.push({ key: 'cs-queue', kind: 'press', label: `${QUEUE_GLYPH} run ${facts.waiting} queued ${facts.waiting === 1 ? 'task' : 'tasks'}`, onPress: facts.queue, ink: { lead: QUEUE_GLYPH, color: facts.queueInk } })
   // The features word leads what the session is; only a ready feature can be pressed.
   if (facts.featured !== undefined) {
@@ -355,6 +365,15 @@ let featuresWord: FeaturesWord | undefined
 let featuresReading = false
 let featuresClock: { cancel: () => void } | undefined
 let featuresComplaint: string | undefined
+
+// cs's settings as cs resolves them (`cs -config list --porcelain`): each
+// key's value, for the records a settings file gave (the session's or this
+// machine's). A key the shell pins, or whose value the launch measured, has
+// none, so its $.env.get answers: cs puts the environment above the files,
+// except a measured theme and background, which a file's pin outranks.
+let fileSettings = new Map<string, FileSetting>()
+let settingsInFlight: Promise<void> | undefined
+let settingsComplaint: string | undefined
 
 // The rail. A prompt is a row of the transcript's live branch; its requestId
 // is the id the engine drew its UserMessage row under, once seen.
@@ -396,8 +415,8 @@ type BandOptions = { prompts: boolean; prompt: 'latest' | 'read'; bars: number }
 let bandOptions: BandOptions | undefined
 let bandProblem: string | undefined
 let bandProblemSaid = false
-let feedPressPending: Promise<void> | undefined
-let feedComplaint: string | undefined
+let filterChatPressPending: Promise<void> | undefined
+let filterChatComplaint: string | undefined
 
 // What is wrong with a value for one of the band's rows, by field name;
 // undefined when the band can draw it, or the field is not the band's.
@@ -416,14 +435,15 @@ export function register(on: On, options: PluginOptions) {
     ? { prompts: options.bandPrompts as boolean, prompt: options.bandPrompt as BandOptions['prompt'], bars: options.bandBars as number }
     : undefined
   bandProblemSaid = false
-  feedPressPending = undefined
-  feedComplaint = undefined
+  filterChatPressPending = undefined
+  filterChatComplaint = undefined
   // A (re)load has no countdown: the engine cancelled the old one's timers.
   left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; stepToastedFor = undefined; adopted = undefined; clearSeen = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
-  feedVetRefused = false
+  filterChatVetRefused = false
   featuresWord = undefined; featuresReading = false; featuresClock = undefined; featuresComplaint = undefined
+  fileSettings = new Map(); settingsInFlight = undefined; settingsComplaint = undefined
   railFile = undefined; prompts = []; drawnRows = new Map(); shown = new Map(); denied = new Set(); denySaid = false; notYetSaid = false; tailSaid = false; drawnRead = -1; redrawPending = false
   on('session.start', async ($, e, next) => {
     if (!registered) {
@@ -433,6 +453,7 @@ export function register(on: On, options: PluginOptions) {
     }
     await refreshRail($)
     readFeaturesLater($)
+    readSettingsLater($)
     // Only in a cs session; anywhere else the mod stays silent. Nor while git
     // tracks the session's control files: the heartbeat would change them.
     if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
@@ -470,8 +491,8 @@ export function register(on: On, options: PluginOptions) {
       $.ui.toast(TOASTS.queued(task))
       return { text: REPLIES.queued(task) }
     }
-    const pending = /^Pending \((\d+)\)$/m.exec(result.stdout)
-    if (pending && !(await queueRunning($))) void offerToStart($, bin, Number(pending[1]))
+    const queuedHeading = /^Queued \((\d+)\)$/m.exec(result.stdout)
+    if (queuedHeading && !(await queueRunning($))) void offerToStart($, bin, Number(queuedHeading[1]))
     return { text: result.stdout.trimEnd() }
   })
 
@@ -480,8 +501,11 @@ export function register(on: On, options: PluginOptions) {
   // the person's own input, which is when the engine lets a plugin move a
   // transcript row, mid-turn too. A move answers with no text: a transcript
   // row of its own would grow the transcript under the view it just moved.
-  on('command.run', { command: 'cs' }, async ($, e) => {
+  // Bare /cs is the cs panel's and goes on to the next hook; the panel's own
+  // hook hands an argument on, so the two answer alike in either order.
+  on('command.run', { command: 'cs' }, async ($, e, next) => {
     const asked = e.args.trim()
+    if (asked === '') return next(e)
     const count = prompts.length
     const current = readIndex()
     let target: number
@@ -518,6 +542,9 @@ export function register(on: On, options: PluginOptions) {
       await clearPressed($)
       await refreshRail($)
       readFeaturesLater($)
+      // The rotation below is decided from cs's current answer, so this
+      // read is waited for; the turn is over, nothing paints meanwhile.
+      await readSettings($)
     }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
@@ -568,7 +595,10 @@ export function register(on: On, options: PluginOptions) {
   // A turn that starts from a prompt is work after any wrap that finished: the
   // marker that wrap left no longer describes the conversation. A continuation
   // (no prompt, as a Stop hook's feedback starts one) is the wrap's own turn.
+  // A main-loop turn rereads cs's settings, so one changed while idle counts
+  // from the next prompt, the rotation its end may force included.
   on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) readSettingsLater($)
     if (e.text !== '') await clearWrapped($)
     return next(e)
   })
@@ -638,17 +668,20 @@ export function register(on: On, options: PluginOptions) {
     // The features word leads what the session is, at the line's right; a
     // running gate already names the feature it lands.
     let featured = !e.props.hasSurvey && gate === undefined ? featuresWord : undefined
-    let feedEligible = bandIdle && !armed
-    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || feedEligible) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; feedEligible = false }
+    // The filter chat key draws mid-turn too: the switch works while a turn
+    // runs, and a reader wants it where it was. A survey or an armed handoff
+    // takes the row.
+    let filterChatEligible = !e.props.hasSurvey && !armed
+    if ((rotating || waiting > 0 || queued > 0 || mail > 0 || railing || featured || filterChatEligible) && !(await ownsRotation($))) { rotating = false; waiting = 0; queued = 0; mail = 0; railing = false; featured = undefined; filterChatEligible = false }
     // The named tick is remembered on every path, drawn or not, so a row's
     // report that moves nothing visible schedules no redraw.
     const named = namedIndex()
     drawnRead = named
     const hasContent = rotating || waiting > 0 || queued > 0 || mail > 0 || gate !== undefined || railing || featured !== undefined
-    if (!hasContent && !feedEligible) return drawn
-    // Listing /feed reads availability without queuing a command or adding a status row.
-    const feeding = feedEligible && (await $.command.list()).some(command => command.name === 'feed' && command.source === 'plugin' && command.plugin === 'cs-feed')
-    if (!hasContent && !feeding) return drawn
+    if (!hasContent && !filterChatEligible) return drawn
+    // Listing /filter-chat reads availability without queuing a command or adding a status row.
+    const offersFilterChat = filterChatEligible && (await $.command.list()).some(command => command.name === 'filter-chat' && command.source === 'plugin' && command.plugin === 'cs-filter-chat')
+    if (!hasContent && !offersFilterChat) return drawn
     const wrapped = rotating && !armed && (await wrapFinished($))
     const target = armed ? await pendingSwitch($) : undefined
     const chords = await boundChords($)
@@ -656,12 +689,13 @@ export function register(on: On, options: PluginOptions) {
     const { Box, Text, Button } = await $.ui.resolve(e)
     const wrapping = rotating && !armed && !wrapped
     const finish = featured?.finish
+    const { bg, theme } = await themeAndBackground($)
     const entries = buildBandEntries({
       featured: featured === undefined ? undefined : { label: featured.label, onPress: finish === undefined || !bandIdle ? undefined : () => pressFinish($, finish) },
       countdown: armed && left !== undefined ? { seconds: left, ink: await rampColor($, left) } : undefined,
       rotating, armed, switching: target, wrapping, waiting, gate, queued, queueRunning: queueStarted, mail,
-      queueInk: amberColor(await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME")),
-      feed: feeding ? { on: !feedVetRefused && await readFeed($), color: own, onPress: () => pressFeed($) } : undefined,
+      queueInk: amberColor(bg, theme),
+      filterChat: offersFilterChat ? { on: !filterChatVetRefused && await readFilterChat($), onPress: () => pressFilterChat($) } : undefined,
       rotate: armed ? () => pressClear($) : () => pressRotate($),
       wrap: () => askToWrap($),
       queue: () => pressQueueStart($),
@@ -705,7 +739,7 @@ const DROP_ORDER = ['cs-mail', 'cs-queued', 'cs-features', 'cs-gate']
 // right edge beside the rail. The line's free cells stand between the two.
 type Zone = 'actions' | 'status'
 const ZONES = new Map<string, Zone>([
-  ['cs-rotate', 'actions'], ['cs-countdown', 'actions'], ['cs-wrap', 'actions'], ['cs-feed', 'actions'], ['cs-queue', 'actions'], ['cs-queued', 'actions'],
+  ['cs-rotate', 'actions'], ['cs-countdown', 'actions'], ['cs-wrap', 'actions'], ['cs-filter-chat', 'actions'], ['cs-queue', 'actions'], ['cs-queued', 'actions'],
   ['cs-features', 'status'], ['cs-gate', 'status'], ['cs-mail', 'status'],
 ])
 // The cells between two entries of a zone, and the fewest between the zones.
@@ -775,8 +809,9 @@ const SHORTEST_CELLS = 2
 
 // The entries that leave whole, first to last, once the words are short and
 // every bound chord is its key: the countdown's free text before the actions,
-// the presses before the chords. Only chords are left after them.
-const LEAVE_ORDER = ['cs-countdown', 'cs-features', 'cs-queue']
+// the presses before the chords, the filter chat key the last press to go.
+// Only chords are left after them.
+const LEAVE_ORDER = ['cs-countdown', 'cs-features', 'cs-queue', 'cs-filter-chat']
 
 // The entries a line of `room` cells draws, and whether it spells the chord
 // prefix. The engine's Buttons never shrink, so a line wider than its room
@@ -804,7 +839,7 @@ export function fitBand(all: BandEntry[], chords: Record<string, string>, room: 
     if (leaving === undefined) {
       if (last.kind !== 'chord') throw new Error(`cs: the band left ${last.key} for last, where only chords stay`)
       const keep = (last.keyOnly ? 0 : cellWidth(last.label)) - excess
-      if (keep >= 1) return { entries: [...fitted.entries.slice(0, -1), { ...last, label: cutToCells(last.label, keep), ink: undefined }], prefixed: false }
+      if (keep >= 1) return { entries: [...fitted.entries.slice(0, -1), { ...last, label: cutToCells(last.label, keep) }], prefixed: false }
     }
     kept = kept.filter(entry => entry.key !== (leaving ?? last.key))
   }
@@ -970,12 +1005,12 @@ export function drawBand(v: BandView, el: BandElements): RenderElement {
           : 'lead' in entry.ink ? <Text><Text color={entry.ink.color}>{entry.ink.lead}</Text><Text dimColor>{entry.label.slice(entry.ink.lead.length)}</Text></Text>
           : <Text bold color={entry.ink.color}>{entry.label}</Text>
         : entry.kind === 'chord'
-          ? entry.keyOnly ? keyButton(entry) : entry.ink === undefined
-            ? <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
-            : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.text.length)}<Text color={entry.ink.color}>{entry.ink.text}</Text></Button>
+          ? entry.keyOnly ? keyButton(entry) : <Button key={entry.key} action={entry.action} plain label={entry.label} onPress={entry.onPress} />
           : entry.ink === undefined
             ? <Button key={entry.key} plain label={entry.label} onPress={entry.onPress} />
-            : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress}><Text color={entry.ink.color}>{entry.ink.lead}</Text>{entry.label.slice(entry.ink.lead.length)}</Button>,
+            : 'lead' in entry.ink
+              ? <Button key={entry.key} plain label={entry.label} onPress={entry.onPress}><Text color={entry.ink.color}>{entry.ink.lead}</Text>{entry.label.slice(entry.ink.lead.length)}</Button>
+              : <Button key={entry.key} plain label={entry.label} onPress={entry.onPress}>{entry.label.slice(0, -entry.ink.tail.length)}<Text color={entry.ink.color}>{entry.ink.tail}</Text></Button>,
     ])
   }
   return (
@@ -1035,28 +1070,39 @@ export function sharedPrefix(chords: (string | undefined)[]): string | undefined
 }
 
 // One `-features --porcelain` record, as _feature_readiness prints it.
-export type FeatureRecord = { task: string; ahead: number; state: string }
-// Every state _feature_readiness prints (lib/30-worktree.sh).
-const FEATURE_STATES = new Set(['ready', 'staged', 'locked', 'dirty', 'untracked', 'vault-locked', 'base-dirty', 'merged'])
+export type FeatureRecord = { task: string; ahead: number; untracked: number; lock: string; state: FeatureState }
+type FeatureState = 'ready' | 'merged' | 'staged' | 'untracked' | 'locked' | 'dirty' | 'base-dirty' | 'vault-locked'
+// What each state _feature_readiness prints reads as: _feature_state_sentence's
+// table (lib/30-worktree.sh), which the test runs against this copy.
+const FEATURE_SENTENCES: Record<FeatureState, (record: FeatureRecord) => string> = {
+  ready: record => record.ahead === 0 ? 'no commits' : 'ready',
+  merged: () => 'merged',
+  staged: () => 'retire staged',
+  untracked: record => `${record.untracked} ${record.untracked === 1 ? 'file' : 'files'} untracked`,
+  locked: record => `${record.lock} session is live`,
+  dirty: () => 'uncommitted changes',
+  'base-dirty': () => 'base has uncommitted changes',
+  'vault-locked': () => 'base vault is locked',
+}
+const isFeatureState = (state: string): state is FeatureState => Object.hasOwn(FEATURE_SENTENCES, state)
 
 // The records of `-features --porcelain`, or what is wrong with the first line
-// that is not one: ten tab-separated fields, a whole `ahead`, a known state.
+// that is not one: ten tab-separated fields, a whole `ahead` and `untracked`,
+// a known lock and state.
 export function parseFeatures(stdout: string): FeatureRecord[] | { unreadable: string } {
   const records: FeatureRecord[] = []
   for (const line of stdout.split('\n')) {
     if (line === '') continue
     const fields = line.split('\t')
-    const [task, , ahead, , , , , , , state] = fields
-    if (fields.length !== 10 || task === undefined || task === '' || !/^\d+$/.test(ahead ?? '') || !FEATURE_STATES.has(state ?? '')) return { unreadable: line }
-    records.push({ task, ahead: Number(ahead), state: state as string })
+    const [task, , ahead, , , , untracked, , lock, state] = fields
+    if (fields.length !== 10 || task === undefined || task === '' || !/^\d+$/.test(ahead ?? '') || !/^\d+$/.test(untracked ?? '') || lock === undefined || !/^(none|base|worktree)$/.test(lock) || state === undefined || !isFeatureState(state)) return { unreadable: line }
+    records.push({ task, ahead: Number(ahead), untracked: Number(untracked), lock, state })
   }
   return records
 }
 
-// A record's state as the band says it: `ready` only with work ahead of the
-// base to land.
 function stateWord(record: FeatureRecord): string {
-  return record.state === 'ready' && record.ahead === 0 ? 'no commits' : record.state
+  return FEATURE_SENTENCES[record.state](record)
 }
 
 // The word for a base's records.
@@ -1126,6 +1172,94 @@ async function readFeatures($: EngineInterface): Promise<FeaturesWord | undefine
   if (complaint !== undefined && complaint !== featuresComplaint) $.ui.log(complaint)
   featuresComplaint = complaint
   return word
+}
+
+// The hooks that paint do not wait on a cs fork for its settings: the answer
+// lands in fileSettings, and the band redraws when a value moved.
+function readSettingsLater($: EngineInterface) {
+  void readSettings($)
+}
+
+// One read at a time: a caller that needs the answer waits on the read in
+// flight rather than starting a second.
+function readSettings($: EngineInterface): Promise<void> {
+  if (settingsInFlight === undefined) settingsInFlight = refreshFileSettings($).finally(() => { settingsInFlight = undefined })
+  return settingsInFlight
+}
+
+// Asks cs for its settings, by the path the launch exported; the child
+// inherits claude's environment, so cs judges the same pins this process has.
+// A failed or unreadable answer keeps the settings last read and is logged
+// once until the complaint changes; a read still running is not doubled.
+async function refreshFileSettings($: EngineInterface) {
+  let complaint: string | undefined
+  try {
+    const bin = await $.env.get("CS_BIN")
+    if (!bin) return
+    const result = await $.process.run([bin, '-config', 'list', '--porcelain'], { timeoutMs: SETTINGS_TIMEOUT_MS })
+    const read = result.exitCode === 0 ? parseFileSettings(result.stdout) : undefined
+    if (read === undefined) {
+      complaint = LOGS.settingsExited(result.exitCode, result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? '')
+    } else if ('unreadable' in read) {
+      complaint = LOGS.settingsUnreadable(read.unreadable)
+    } else if (!sameSettings(read, fileSettings)) {
+      fileSettings = read
+      $.ui.invalidate('ui.render')
+    }
+  } catch (err) {
+    complaint = LOGS.settingsUnread(String(err instanceof Error ? err.message : err))
+  }
+  if (complaint !== undefined && complaint !== settingsComplaint) $.ui.log(complaint)
+  settingsComplaint = complaint
+}
+
+const SETTING_SOURCES = new Set(['default', 'machine', 'session', 'shell', 'launch'])
+
+// One record of cs's resolution: the value a reader sees (none for `-`) and
+// where cs says it comes from.
+type FileSetting = { value: string | undefined; source: string }
+
+// The porcelain's records: twelve tab-separated fields, the key first, the
+// value ninth (`-` for none) and its source tenth. Each value a settings file
+// gave (source session or machine) is kept; a record of any other shape makes
+// the whole answer unreadable.
+function parseFileSettings(text: string): Map<string, FileSetting> | { unreadable: string } {
+  const settings = new Map<string, FileSetting>()
+  for (const line of text.split('\n')) {
+    if (line === '') continue
+    const fields = line.split('\t')
+    const [key, , , , , , , , value, source] = fields
+    if (fields.length !== 12 || key === undefined || value === undefined || source === undefined || !SETTING_SOURCES.has(source)) return { unreadable: line }
+    settings.set(key, { value: value === '-' ? undefined : value, source })
+  }
+  return settings
+}
+
+function sameSettings(a: Map<string, FileSetting>, b: Map<string, FileSetting>): boolean {
+  return a.size === b.size && [...a].every(([key, s]) => b.get(key)?.value === s.value && b.get(key)?.source === s.source)
+}
+
+// A value a settings file gave (source session or machine); any other source
+// leaves the environment's value to its reader.
+function fileValue(key: string): string | undefined {
+  const s = fileSettings.get(key)
+  return s !== undefined && (s.source === 'session' || s.source === 'machine') ? s.value : undefined
+}
+
+// The theme and the background a reader draws with. The background follows
+// its own record: a file's value, the environment's for a shell pin or the
+// launch's measurement, and none when cs reports it as default, as the
+// environment may still hold a measurement cs dropped for a file theme of
+// the other polarity. Before cs has answered, the environment's.
+async function themeAndBackground($: EngineInterface): Promise<{ theme: string | undefined; bg: string | undefined }> {
+  const bg = fileSettings.get('CS_TERM_BG_RGB')
+  return {
+    theme: fileValue('CS_TERM_THEME') ?? await $.env.get("CS_TERM_THEME"),
+    bg: bg === undefined ? await $.env.get("CS_TERM_BG_RGB")
+      : bg.source === 'session' || bg.source === 'machine' ? bg.value
+      : bg.source === 'default' ? undefined
+      : await $.env.get("CS_TERM_BG_RGB"),
+  }
 }
 
 // Whether the sessions root holds a feature of `base`: cs names each one's
@@ -1404,11 +1538,11 @@ function numberOr(raw: string | undefined, fallback: number): number {
 // case) and `0` turn the forcing off, a percentage from 1 to 100 moves it, and
 // anything else — a typo, or a number past 100 no turn can reach — is the
 // default rather than silence, because a value nobody can read must not
-// quietly disable a rotation the person is relying on.
-// `claude plugin validate` lists what a module reads, and a name it does not
-// spell is refused.
+// quietly disable a rotation the person is relying on. A settings file's value
+// comes first (fileSettings). `claude plugin validate` lists what a module
+// reads, and a name it does not spell is refused.
 async function forceThreshold($: EngineInterface): Promise<number | undefined> {
-  const raw = (await $.env.get("CS_ROTATE_FORCE_CTX"))?.trim()
+  const raw = (fileValue('CS_ROTATE_FORCE_CTX') ?? await $.env.get("CS_ROTATE_FORCE_CTX"))?.trim()
   if (raw === undefined || raw === '') return FORCE_DEFAULT
   if (raw.toLowerCase() === 'off' || /^0+$/.test(raw)) return undefined
   const n = /^\d+$/.test(raw) ? Number(raw) : NaN
@@ -1554,12 +1688,13 @@ export function nextStepLine(text: string): string | undefined {
 }
 
 // The band's own threshold; without one it is the bar's warn band, read the way
-// the bar reads it. Each variable's name is a literal: `claude plugin validate`
-// lists what a module reads, and a name it does not spell is refused.
+// the bar reads it. A settings file's value comes first (fileSettings). Each
+// variable's name is a literal: `claude plugin validate` lists what a module
+// reads, and a name it does not spell is refused.
 async function threshold($: EngineInterface): Promise<number> {
   return numberOr(
-    await $.env.get("CS_ROTATE_BUTTON_CTX"),
-    numberOr(await $.env.get("CS_STATUSLINE_CTX_WARN"), DEFAULT_PERCENT),
+    fileValue('CS_ROTATE_BUTTON_CTX') ?? await $.env.get("CS_ROTATE_BUTTON_CTX"),
+    numberOr(fileValue('CS_STATUSLINE_CTX_WARN') ?? await $.env.get("CS_STATUSLINE_CTX_WARN"), DEFAULT_PERCENT),
   )
 }
 
@@ -1674,7 +1809,7 @@ export function clearLabel(target: string | undefined): string {
 // is a no. Each new refusal is toasted once. Each answer starts a cs process
 // (0.15-0.44 s measured), so only the steps that act ask: the session start's
 // heartbeat, a countdown's start and zero, a forced /rotate, a press of the
-// clear, rotate or feed button, and the emptying of the wrap marker
+// clear, rotate or filter chat button, and the emptying of the wrap marker
 // (clearWrapped, as a prompt starts a turn) and of the press marker
 // (clearPressed, at a main-loop turn's end or when the engine refuses the
 // press's run).
@@ -1695,7 +1830,7 @@ async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> 
   }
   if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(TOASTS.noRotation(refusal))
   lastRefusal = refusal
-  feedVetRefused = refusal !== undefined
+  filterChatVetRefused = refusal !== undefined
   return refusal === undefined
 }
 
@@ -1715,10 +1850,12 @@ export function isUnconsumed(text: string): boolean {
   return false
 }
 
-// The count's colour for this session and terminal. Each name is a literal:
-// `claude plugin validate` lists what a module reads.
+// The count's colour for this session and terminal, a settings file's
+// background and theme first. Each name is a literal: `claude plugin validate`
+// lists what a module reads.
 async function rampColor($: EngineInterface, secs: number): Promise<string | undefined> {
-  return countdownColor(secs, await sessionColor($), await $.env.get("CS_TERM_BG_RGB"), await $.env.get("CS_TERM_THEME"))
+  const { bg, theme } = await themeAndBackground($)
+  return countdownColor(secs, await sessionColor($), bg, theme)
 }
 
 // The session's colour name as cs recorded it in state, or undefined.
@@ -1735,44 +1872,67 @@ async function sessionColor($: EngineInterface): Promise<string | undefined> {
 // CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
 export const ROTATE_ACTION = 'strip:jump1'
 export const WRAP_ACTION = 'strip:jump2'
-export const FEED_ACTION = 'strip:jump3'
 
-async function readFeed($: EngineInterface): Promise<boolean> {
+// The cs setting CS_FILTER_CHAT, as cs resolves it: the environment pins it,
+// else this session's file, else this machine's, the last `1` or `0` line of
+// a file winning, and off when none says (KEEP IN SYNC with readFilterChat in
+// mods/cs-filter-chat/hooks/session.ts and _cs_config_read in lib/03-config.sh).
+async function readFilterChat($: EngineInterface): Promise<boolean> {
+  const pin = await $.env.get('CS_FILTER_CHAT')
+  if (pin) return pin === '1'
+  const xdg = await $.env.get('XDG_CONFIG_HOME')
+  const home = await $.env.get('HOME')
+  const machine = xdg ? `${xdg}/cs/config` : home ? `${home}/.config/cs/config` : undefined
   let complaint: string | undefined
-  try {
-    // Writes are non-atomic: only the whole on line counts. Trimming would
-    // accept a torn write without its newline; every other value is off.
-    const text = await $.fs.read(`${await $.session.cwd()}/.cs/local/feed`)
-    feedComplaint = undefined
-    return text === 'on\n'
-  } catch (err) {
-    const message = String(err instanceof Error ? err.message : err)
-    if (!message.endsWith(' failed: ENOENT')) complaint = LOGS.feedUnread(message)
+  let on: boolean | undefined
+  for (const path of [`${await $.session.cwd()}/.cs/local/config`, machine]) {
+    if (path === undefined || on !== undefined) continue
+    try {
+      on = filterChatFlag(await $.fs.read(path))
+    } catch (err) {
+      const message = String(err instanceof Error ? err.message : err)
+      if (!message.endsWith(' failed: ENOENT')) complaint ??= LOGS.filterChatUnread(message)
+    }
   }
-  if (complaint !== undefined && complaint !== feedComplaint) $.ui.log(complaint)
-  feedComplaint = complaint
-  return false
+  if (complaint !== undefined && complaint !== filterChatComplaint) $.ui.log(complaint)
+  filterChatComplaint = complaint
+  return on ?? false
 }
 
-async function pressFeed($: EngineInterface) {
-  if (feedPressPending !== undefined) return feedPressPending
+function filterChatFlag(text: string): boolean | undefined {
+  let flag: boolean | undefined
+  for (const line of text.split('\n')) {
+    const at = line.indexOf('=')
+    if (at < 0 || line.slice(0, at) !== 'CS_FILTER_CHAT') continue
+    const value = line.slice(at + 1)
+    if (value === '1' || value === '0') flag = value === '1'
+  }
+  return flag
+}
+
+async function pressFilterChat($: EngineInterface) {
+  if (filterChatPressPending !== undefined) return filterChatPressPending
   const pending = (async () => {
     try {
       const cwd = await $.session.cwd()
       if (!(await sessionVetted($, cwd))) return
-      const on = !(await readFeed($))
-      await $.fs.write(`${cwd}/.cs/local/feed`, on ? 'on\n' : 'off\n')
+      const bin = await $.env.get("CS_BIN")
+      const name = await csSessionName($, cwd)
+      if (!bin || name === undefined) throw new Error('cs named no session for this directory')
+      const on = !(await readFilterChat($))
+      const result = await $.process.run([bin, name, '-config', 'set', 'CS_FILTER_CHAT', on ? '1' : '0'], { timeoutMs: VET_TIMEOUT_MS })
+      if (result.exitCode !== 0) throw new Error(result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? `cs -config set exited ${result.exitCode}`)
     } catch (err) {
-      $.ui.toast(TOASTS.feedFailed(String(err instanceof Error ? err.message : err)))
+      $.ui.toast(TOASTS.filterChatFailed(String(err instanceof Error ? err.message : err)))
     } finally {
       $.ui.invalidate('ui.render')
     }
   })()
-  feedPressPending = pending
+  filterChatPressPending = pending
   try {
     await pending
   } finally {
-    if (feedPressPending === pending) feedPressPending = undefined
+    if (filterChatPressPending === pending) filterChatPressPending = undefined
   }
 }
 

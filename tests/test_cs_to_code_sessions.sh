@@ -1085,7 +1085,9 @@ test_code_sessions_opens_the_copied_session_and_its_features() {
     assert_file_contains "$TEST_TMPDIR/claude-argv" "name wap --resume $WAP_ID" || { cat "$TEST_TMPDIR/launch.log"; return 1; }
     env "${env_profile[@]}" "$PROFILE_CS" wap@feat < /dev/null > "$TEST_TMPDIR/launch.log" 2>&1 \
         || { cat "$TEST_TMPDIR/launch.log"; return 1; }
-    assert_file_contains "$TEST_TMPDIR/claude-argv" "name wap@feat --resume $FEAT_ID" || { cat "$TEST_TMPDIR/launch.log"; return 1; }
+    # A feature's claude is named with a + for the @ (cs_claude_name), since
+    # Claude Code's SendMessage refuses an address with an @ in it.
+    assert_file_contains "$TEST_TMPDIR/claude-argv" "name wap+feat --resume $FEAT_ID" || { cat "$TEST_TMPDIR/launch.log"; return 1; }
 }
 
 # A session cs created in its own folder (a folder in its sessions root, not a

@@ -657,7 +657,7 @@ test_remote_refuses_a_session_open_locally() {
     pid="$(cat "$CS_SESSIONS_ROOT/demo/.cs/session.lock")"
     out=$("$CS_BIN" demo --remote 2>&1) || rc=$?
     assert_eq "1" "$rc" "a session open locally is not served" || return 1
-    assert_eq "Error: Session demo is already open (PID $pid); cs demo --remote serves only a session that is not open. Close it first." \
+    assert_eq "Error: Session demo is live (PID $pid); cs demo --remote serves only a session that is not live. Close it first." \
         "$(printf '%s' "$out" | strip_ansi | tail -1)" "the refusal names the open session's pid" || return 1
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
 }
@@ -1074,7 +1074,7 @@ test_remote_inside_tmux_refuses_an_open_or_served_session_on_the_callers_termina
     pid="$(cat "$CS_SESSIONS_ROOT/demo/.cs/session.lock")"
     out=$(TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
     assert_eq "1" "$rc" "a session open locally is refused" || return 1
-    assert_eq "Error: Session demo is already open (PID $pid); cs demo --remote serves only a session that is not open. Close it first." \
+    assert_eq "Error: Session demo is live (PID $pid); cs demo --remote serves only a session that is not live. Close it first." \
         "$(printf '%s' "$out" | strip_ansi | tail -1)" "the open refusal" || return 1
     start_fake_server_process demo
     printf '%s\n' "$FAKE_SERVER_PID" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
@@ -1213,5 +1213,17 @@ run_test test_remote_window_close_reaches_the_server
 run_test test_live_shows_a_served_session_as_remote_with_the_server_pid
 run_test test_doctor_reports_a_live_server_and_removes_a_stale_pid_file
 run_test test_a_remote_pid_another_process_took_over_serves_nothing
+
+
+# A feature session's server is named as its conversations are: with a '+'
+# for the '@', the form Claude Code's SendMessage accepts.
+test_remote_names_a_feature_sessions_server_with_a_plus() {
+    create_test_session_with_git "myproj" > /dev/null
+    run_cs_ok "myproj@feat" --remote || return 1
+    assert_eq "[remote-control][--name][myproj+feat][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
+        "remote-control gets base+feature" || return 1
+}
+
+run_test test_remote_names_a_feature_sessions_server_with_a_plus
 
 report_results

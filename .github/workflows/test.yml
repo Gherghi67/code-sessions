@@ -95,9 +95,11 @@ jobs:
         run: |
           bash build.sh
           git diff --exit-code bin/cs bin/cs-secrets bin/cs-codex-thread \
-            bin/cs-statusline bin/cs-subagent-statusline hooks/cs-shared.sh hooks/cs-engine-events.sh \
+            bin/cs-statusline bin/cs-subagent-statusline hooks/cs-shared.sh hooks/cs-config.sh hooks/cs-engine-events.sh \
             skills/sweep/scripts/cs-shared.sh install.sh \
-            || { echo "::error::bin/cs or its helpers, hooks/cs-shared.sh, or install.sh is out of sync with lib/ or install.sh.in. Run ./build.sh and commit the generated files."; exit 1; }
+            || { echo "::error::bin/cs or its helpers, hooks/cs-shared.sh, hooks/cs-config.sh, or install.sh is out of sync with lib/ or install.sh.in. Run ./build.sh and commit the generated files."; exit 1; }
+          git ls-files --error-unmatch hooks/cs-config.sh > /dev/null \
+            || { echo "::error::hooks/cs-config.sh is built but not committed. Run ./build.sh and commit it."; exit 1; }
 
   shellcheck:
     runs-on: ubuntu-latest

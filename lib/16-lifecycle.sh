@@ -40,7 +40,7 @@ _cs_run_stop_helper() {
 # A feature whose retire /finish staged in its base (lib/30-worktree.sh): the
 # base's Stop hook runs the stage once the feature's lock is gone, and a base
 # idle at its prompt has no Stop coming, so the end of the feature's run tells
-# it by mail, which wakes an idle lead (narrative-reminder.sh, the mail wake).
+# it by mail, which wakes an idle lead (stop-blocks.sh, the mail wake).
 # Upstream mails from SessionEnd after removing the lock there; here the lease
 # outlives that hook, so the mail goes once the lease is released, from
 # whichever engine ran the feature. A switch relaunch takes the lease again at

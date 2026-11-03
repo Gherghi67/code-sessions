@@ -750,6 +750,24 @@ _feature_readiness() {  # base_name task
         "$wt_dirty" "$untracked" "$base_dirty" "$lock" "$state"
 }
 
+# What a person reads for a readiness record, on every surface: the band's
+# FEATURE_SENTENCES (mods/cs/hooks/register.tsx) and the TUI's
+# feature_state_cell (tui/src/ui.rs) copy this table, and each one's test runs
+# this function against its copy.
+_feature_state_sentence() {  # state lock untracked ahead
+    case "$1" in
+        ready) if [ "$4" = 0 ]; then echo "no commits"; else echo "ready"; fi ;;
+        merged) echo "merged" ;;
+        staged) echo "retire staged" ;;
+        untracked) if [ "$3" = 1 ]; then echo "1 file untracked"; else echo "$3 files untracked"; fi ;;
+        locked) echo "$2 session is live" ;;
+        dirty) echo "uncommitted changes" ;;
+        base-dirty) echo "base has uncommitted changes" ;;
+        vault-locked) echo "base vault is locked" ;;
+        *) error "Unknown feature state '$1'" ;;
+    esac
+}
+
 # Resolve a symlinked directory to its real path, portably. BSD readlink gained
 # -f only in macOS 12.3; cd+pwd -P follows the link on every platform, and the
 # fallback keeps the original path rather than aborting under set -e.
@@ -1214,7 +1232,7 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
     else
         pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
         if [ -n "$pid" ]; then
-            error "Base session '$base_name' is open elsewhere (PID $pid); run $fin $task from that conversation"
+            error "Base session '$base_name' is live elsewhere (PID $pid); run $fin $task from that conversation"
         fi
     fi
     pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
@@ -1223,7 +1241,7 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
         # keeps the refusal: the person closes the feature and runs $finish again.
         case "$(_session_run_engine "$base_dir" "$base_name")" in
             codex|antigravity)
-                error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+                error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is live in it (PID $pid), and a directory can't be removed from under a running $wt_engine. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
                 ;;
         esac
         # A directory can't be removed from under a running engine, so the
@@ -1232,8 +1250,8 @@ retire_feature_worktree() {  # base_name task sha [--force] [--staged]
         # once that conversation's lock is gone. Every refusal below runs
         # then as it would now.
         _write_retire_stage "$stage" "$sha" "$force" "$base_dir" "$wt_dir" \
-            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and cs could not stage its removal at $stage${_retire_stage_refusal:+: $_retire_stage_refusal}. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
-        printf "staged %s %s: the '%s' conversation is open in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
+            || error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is live in it (PID $pid), and cs could not stage its removal at $stage${_retire_stage_refusal:+: $_retire_stage_refusal}. Close that session yourself ($wt_quit there), then run $fin $task here again and it will be removed."
+        printf "staged %s %s: the '%s' conversation is live in its worktree (PID %s); the worktree and branch are removed from this session once that conversation closes\n" \
             "$task" "$sha" "$wt_name" "$pid"
         return 0
     fi
@@ -1846,7 +1864,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     # conversation is a refusal, never a wait.
     local pid
     pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
-    [ -z "$pid" ] || error "Base session '$base_name' is open elsewhere (PID $pid); run $fin $task from that conversation"
+    [ -z "$pid" ] || error "Base session '$base_name' is live elsewhere (PID $pid); run $fin $task from that conversation"
 
     local commit
     commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
@@ -1899,7 +1917,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     # flight than another integrate. Five tries a second apart outlast that
     # and still refuse promptly on a genuinely held lock.
     local tries=0
-    while ! mkdir "$lock" 2>/dev/null; do
+    while ! cs_take_dir_lock "$lock"; do
         tries=$((tries + 1))
         if [ "$tries" -ge 5 ]; then
             error "Another integrate or an in-flight autosave holds $lock; wait a few seconds and re-run. Remove that directory only if it persists with no cs running"
@@ -2667,7 +2685,7 @@ run_features() {  # base_name [--porcelain]
         esac
     done
 
-    local features task record
+    local features task record branch ahead untracked lock state sentence
     features=$(_worktree_features "$base_name")
     [ -n "$features" ] || return 0
 
@@ -2683,9 +2701,9 @@ run_features() {  # base_name [--porcelain]
     while IFS= read -r task; do
         [ -n "$task" ] || continue
         record=$(_feature_readiness "$base_name" "$task")
-        printf '%s\n' "$record" | awk -F'\t' \
-            '{ detail = ($10 == "untracked") ? sprintf("%s file%s untracked", $7, ($7 == 1) ? "" : "s") : $10;
-               printf "%-24s %-24s %6s  %s\n", $1, $2, $3, detail }'
+        IFS=$'\t' read -r task branch ahead _ _ _ untracked _ lock state <<< "$record"
+        sentence=$(_feature_state_sentence "$state" "$lock" "$untracked" "$ahead")
+        printf '%-24s %-24s %6s  %s\n' "$task" "$branch" "$ahead" "$sentence"
     done <<< "$features"
 }
 
