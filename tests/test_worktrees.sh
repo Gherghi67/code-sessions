@@ -1060,7 +1060,7 @@ test_retire_stages_itself_while_the_feature_conversation_is_open() {
     echo "$$" > "$wt/.cs/session.lock"   # this test process is alive
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "a staged retire is not a refusal: $output" || return 1
-    assert_eq "staged fix-auth $sha: the 'myproj@fix-auth' conversation is open in its worktree (PID $$); the worktree and branch are removed from this session once that conversation closes" \
+    assert_eq "staged fix-auth $sha: the 'myproj@fix-auth' conversation is live in its worktree (PID $$); the worktree and branch are removed from this session once that conversation closes" \
         "$output" "the line says the removal is automatic" || return 1
     assert_dir "$wt" "worktree preserved" || return 1
     assert_eq "sha: $sha
@@ -1092,7 +1092,7 @@ test_retire_refuses_to_stage_when_the_stage_cannot_be_written() {
     : > "$stage_dir"   # a file where the stage directory goes
     output=$("$(_stage_cs_dir)/cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "an unwritable stage is a refusal" || return 1
-    assert_output_contains "$output" "Error: The feature is landed, but its worktree is still here: the 'myproj@fix-auth' conversation is open in it (PID $$), and cs could not stage its removal at $stage_dir/fix-auth" \
+    assert_output_contains "$output" "Error: The feature is landed, but its worktree is still here: the 'myproj@fix-auth' conversation is live in it (PID $$), and cs could not stage its removal at $stage_dir/fix-auth" \
         "the refusal names the stage it could not write" || return 1
     assert_dir "$wt" "worktree preserved" || return 1
     rm -f "$wt/.cs/session.lock"
@@ -1394,7 +1394,7 @@ _base_stop_raw() {  # base_dir
     printf '{}\n' | CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$1" \
         CLAUDE_SESSION_META_DIR="$1/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
         PATH="$(_stage_cs_dir):$PATH" \
-        bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null
+        bash "$SCRIPT_DIR/../hooks/stop-blocks.sh" 2>/dev/null
 }
 _base_stop() {  # base_dir
     _base_stop_raw "$1" | jq -r '.reason // .systemMessage // ""'
@@ -1483,7 +1483,7 @@ test_stop_hook_of_a_teammate_leaves_a_staged_retire_alone() {
     rm -f "$CS_SESSIONS_ROOT/myproj@fix-auth/.cs/session.lock"
     out=$(printf '{}\n' | env -u CS_LEAD_PID -u CLAUDE_PID CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$base_dir" \
         CLAUDE_SESSION_META_DIR="$base_dir/.cs" PATH="$(cd "$(dirname "$CS_BIN")" && pwd):$PATH" \
-        bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""')
+        bash "$SCRIPT_DIR/../hooks/stop-blocks.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""')
     case "$out" in *retire*) echo "  a teammate's Stop touched the staged retire: $out"; return 1 ;; esac
     assert_file_exists "$stage" "stage kept for the lead" || return 1
     assert_dir "$CS_SESSIONS_ROOT/myproj@fix-auth" "worktree kept" || return 1
@@ -1508,7 +1508,7 @@ test_stop_hook_reports_a_missing_cs_binary_and_keeps_the_stage() {
     out=$(printf '{}\n' | CLAUDE_SESSION_NAME="myproj" CLAUDE_SESSION_DIR="$base_dir" \
         CLAUDE_SESSION_META_DIR="$base_dir/.cs" CS_LEAD_PID=$$ CLAUDE_PID=$$ \
         CS_CACHE_DIR="$cache" HOME="$TEST_TMPDIR/nohome" PATH="/usr/bin:/bin" \
-        bash "$SCRIPT_DIR/../hooks/narrative-reminder.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""')
+        bash "$SCRIPT_DIR/../hooks/stop-blocks.sh" 2>/dev/null | jq -r '.reason // .systemMessage // ""')
     assert_output_contains "$out" "no cs binary was found on PATH or at ~/.local/bin/cs, so its staged retire could not run; run /finish fix-auth again" \
         "the hook says what it could not find" || return 1
     assert_file_exists "$stage" "stage kept" || return 1
@@ -1882,7 +1882,7 @@ test_retire_refuses_a_foreign_caller_before_it_stages() {
     output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     kill "$holder" 2>/dev/null
     assert_eq "1" "$status" "a foreign caller is refused" || return 1
-    assert_eq "Error: Base session 'myproj' is open elsewhere (PID $holder); run /finish fix-auth from that conversation" "$output" "before anything is staged" || return 1
+    assert_eq "Error: Base session 'myproj' is live elsewhere (PID $holder); run /finish fix-auth from that conversation" "$output" "before anything is staged" || return 1
     assert_not_exists "$(_retire_dir retire-staged "$base_dir")/fix-auth" "no stage written by a caller the base refuses" || return 1
     rm -f "$wt/.cs/session.lock" "$base_dir/.cs/session.lock"
 }
@@ -2175,7 +2175,7 @@ test_retire_foreign_live_base_lock_still_refuses() {
         "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
 
     [ "$status" -ne 0 ] || { echo "  FAIL: a foreign live base lock must refuse"; return 1; }
-    assert_output_contains "$output" "is open elsewhere" "foreign live lock keeps the hard refusal" || return 1
+    assert_output_contains "$output" "is live elsewhere" "foreign live lock keeps the hard refusal" || return 1
     assert_dir "$wt" "foreign-lock refusal preserves the worktree" || return 1
 }
 
@@ -2204,7 +2204,7 @@ test_retire_reused_live_pid_is_not_treated_as_own_lock() {
     wait "$reused_pid" 2>/dev/null || true
 
     [ "$status" -ne 0 ] || { echo "  FAIL: a reused foreign PID must not be exempted"; return 1; }
-    assert_output_contains "$output" "is open elsewhere" "reused live PID keeps the hard refusal" || return 1
+    assert_output_contains "$output" "is live elsewhere" "reused live PID keeps the hard refusal" || return 1
     assert_dir "$wt" "reused-PID refusal preserves the worktree" || return 1
 }
 
@@ -2227,7 +2227,7 @@ test_retire_reads_the_feature_lock_by_the_one_lock_rule() {
         output=$(CLAUDE_SESSION_NAME="foreign" \
             "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
         assert_eq "1" "$status" "retire over a feature lock of '$text' exits 1: $output" || return 1
-        assert_eq "Error: Base session 'myproj' is open elsewhere (PID $$); run /finish fix-auth from that conversation" \
+        assert_eq "Error: Base session 'myproj' is live elsewhere (PID $$); run /finish fix-auth from that conversation" \
             "$output" "a feature lock of '$text' is not a live conversation" || return 1
         assert_dir "$wt" "the worktree stays over a feature lock of '$text'" || return 1
     done
@@ -2976,7 +2976,7 @@ test_integrate_refuses_foreign_live_base_lock() {
     output=$(CLAUDE_SESSION_NAME="other" CS_PS_BIN="$ps_stub" \
         "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
     assert_eq "1" "$status" "a foreign live base lock refuses" || return 1
-    assert_output_contains "$output" "open elsewhere" "names the live base" || return 1
+    assert_output_contains "$output" "live elsewhere" "names the live base" || return 1
 }
 
 # Integrate reads the base's lock by live_lock_pid's rule: a lock of "-1",
@@ -4549,6 +4549,7 @@ test_retire_and_features_name_a_locked_base_vault_before_any_record() {
     line=$("$CS_BIN" proj -features --porcelain 2>&1)
     assert_eq "vault-locked" "$(_feat_field "$line" 10)" "the features screen reads vault-locked: $line" || return 1
     assert_eq "0" "$(_feat_field "$line" 7)" "with nothing at risk: $line" || return 1
+    assert_output_contains "$("$CS_BIN" proj -features 2>&1)" "  base vault is locked$" "the table says it as a sentence" || return 1
     echo "scratch" > "$wt/scratch.txt"
     line=$("$CS_BIN" proj -features --porcelain 2>&1)
     assert_eq "untracked" "$(_feat_field "$line" 10)" "untracked work comes first, as in the retire: $line" || return 1
@@ -6620,17 +6621,77 @@ test_features_ignores_a_dead_lock_pid() {
 
 run_test test_features_ignores_a_dead_lock_pid
 
+# One row of the -features table, spelled out so an assert names every column.
+_feat_row() {  # task branch ahead state
+    printf '%-24s %-24s %6s  %s' "$1" "$2" "$3" "$4"
+}
+
 test_features_human_table_names_the_state() {
     create_test_session_with_git "myproj" > /dev/null
     cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     local output
     output=$("$CS_BIN" "myproj" -features 2>&1)
-    assert_output_contains "$output" "FEATURE" "the table carries a header" || return 1
-    assert_output_contains "$output" "fix-auth" "the feature is listed" || return 1
-    assert_output_contains "$output" "ready" "the state is named" || return 1
+    assert_eq "$(printf '%-24s %-24s %6s  %s' FEATURE BRANCH AHEAD STATE)" "$(sed -n 1p <<< "$output")" \
+        "the table carries a header" || return 1
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 0 'no commits')" "$(sed -n 2p <<< "$output")" \
+        "a feature with nothing ahead of the base has nothing to land" || return 1
+    echo one > "$wt/a.txt"; (cd "$wt" && git add -A && git commit -q -m one)
+    output=$("$CS_BIN" "myproj" -features 2>&1)
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 ready)" "$(sed -n 2p <<< "$output")" \
+        "a commit ahead of the base makes it ready" || return 1
 }
 
 run_test test_features_human_table_names_the_state
+
+# Every blocker reads as the sentence the TUI and the band print, on a real
+# record; the porcelain beside it keeps the state's key.
+test_features_human_table_says_each_blocker_as_a_sentence() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    echo one > "$wt/a.txt"; (cd "$wt" && git add -A && git commit -q -m one)
+
+    echo edit >> "$wt/a.txt"
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 'uncommitted changes')" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "dirty" || return 1
+    assert_eq "dirty" "$(_feat_field "$("$CS_BIN" myproj -features --porcelain 2>&1)" 10)" "the porcelain keeps the key" || return 1
+    git -C "$wt" checkout -q -- a.txt
+
+    echo scratch > "$wt/one.txt"; echo scratch > "$wt/two.txt"
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 '2 files untracked')" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "untracked, plural" || return 1
+    rm -f "$wt/one.txt" "$wt/two.txt"
+
+    echo "$$" > "$wt/.cs/session.lock"
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 'worktree session is live')" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "a live worktree" || return 1
+    # The fork stages under cs's cache, in a directory private to the user
+    # (700) and as a file of the user's (600), never in the base's .cs/local.
+    local stages
+    stages=$(_retire_dir retire-staged "$base_dir")
+    ( umask 077 && mkdir -p "$stages" && : > "$stages/fix-auth" )
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 'retire staged')" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "a staged retire over a live worktree" || return 1
+    rm -f "$wt/.cs/session.lock" "$stages/fix-auth"
+
+    echo "$$" > "$base_dir/.cs/session.lock"
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 'base session is live')" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "a live base" || return 1
+    rm -f "$base_dir/.cs/session.lock"
+
+    echo edit >> "$base_dir/CLAUDE.md"
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 1 'base has uncommitted changes')" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "a dirty base" || return 1
+    git -C "$base_dir" checkout -q -- CLAUDE.md
+
+    (cd "$base_dir" && git merge -q --no-ff --no-edit cs/fix-auth)
+    assert_eq "$(_feat_row fix-auth cs/fix-auth 0 merged)" "$("$CS_BIN" myproj -features 2>&1 | sed -n 2p)" \
+        "merged" || return 1
+}
+
+run_test test_features_human_table_says_each_blocker_as_a_sentence
 
 test_finish_arms_the_ritual_without_merging() {
     # -finish opens the base with the ritual armed. It must not merge: the
@@ -7133,5 +7194,82 @@ run_test test_finish_progress_records_a_retirement
 run_test test_finish_progress_goes_behind_private_in_an_encrypted_session
 run_test test_finish_progress_drops_the_record_while_the_vault_is_locked
 run_test test_finish_progress_write_failure_changes_nothing_but_one_warning
+
+
+# --- The name claude is given ---
+
+# Claude Code's SendMessage refuses any address with an '@' in it, so a peer
+# could never message a feature session named after its directory. cs hands
+# claude the name with a '+' for the '@' and keeps the '@' form everywhere
+# else: in CLAUDE_SESSION_NAME, on disk, in cs -msg.
+test_worktree_launch_names_claude_with_a_plus_and_keeps_the_at_in_its_env() {
+    create_test_session_with_git "myproj" > /dev/null
+    printf '#!/bin/bash\nprintf "argv=%%s\\n" "$*" > "%s"\nprintf "name=%%s\\n" "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" >> "%s"\n' \
+        "$TEST_TMPDIR/launch" "$TEST_TMPDIR/launch" > "$TEST_TMPDIR/claude"
+    chmod +x "$TEST_TMPDIR/claude"
+    export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude"
+    "$CS_BIN" "myproj@fix-auth" < /dev/null > /dev/null 2>&1 || true
+    assert_file_contains "$TEST_TMPDIR/launch" "^argv=--name myproj+fix-auth --session-id " \
+        "claude is named base+feature" || return 1
+    assert_file_contains "$TEST_TMPDIR/launch" "^name=myproj@fix-auth$" \
+        "CLAUDE_SESSION_NAME keeps the base@feature form" || return 1
+}
+
+# The live-duplicate guard reads the name claude was given back from ps, so
+# it looks for the '+' form.
+test_worktree_open_refuses_a_running_claude_named_with_the_plus() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local ps_stub="$TEST_TMPDIR/ps-stub"
+    printf '#!/bin/sh\nprintf "claude --name myproj+fix-auth\\n"\n' > "$ps_stub"
+    chmod +x "$ps_stub"
+    _make_launch_sentinel
+    local out rc=0
+    out=$(CS_PS_BIN="$ps_stub" "$CS_BIN" "myproj@fix-auth" < /dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open refuses" || return 1
+    assert_output_contains "$out" "Session myproj@fix-auth is live elsewhere" \
+        "the refusal names the session as cs does" || return 1
+    assert_not_exists "$TEST_TMPDIR/launched" "claude never starts" || return 1
+}
+
+# A feature session launched before cs named claude with the '+' still runs
+# as `claude --name base@feature`; the guard reads that spelling too, so the
+# upgrade leaves no session open to a duplicate.
+test_worktree_open_refuses_a_running_claude_named_with_the_at() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local ps_stub="$TEST_TMPDIR/ps-stub"
+    printf '#!/bin/sh\nprintf "claude --name myproj@fix-auth\\n"\n' > "$ps_stub"
+    chmod +x "$ps_stub"
+    _make_launch_sentinel
+    local out rc=0
+    out=$(CS_PS_BIN="$ps_stub" "$CS_BIN" "myproj@fix-auth" < /dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open refuses" || return 1
+    assert_output_contains "$out" "Session myproj@fix-auth is live elsewhere" \
+        "the refusal names the session as cs does" || return 1
+    assert_not_exists "$TEST_TMPDIR/launched" "claude never starts" || return 1
+}
+
+# The name Claude Code shows for a feature session, typed into cs, is refused
+# by name with the name cs takes, and creates nothing.
+test_a_plus_name_is_refused_naming_the_at_form() {
+    create_test_session_with_git "myproj" > /dev/null
+    local out rc=0
+    out=$("$CS_BIN" "myproj+fix-auth" < /dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open refuses" || return 1
+    assert_eq "Error: myproj+fix-auth is the name Claude Code shows for feature session myproj@fix-auth; cs takes myproj@fix-auth" \
+        "$out" "the refusal names both spellings" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj+fix-auth" "nothing is created" || return 1
+    rc=0
+    out=$("$CS_BIN" -rm "myproj+fix-auth" --force < /dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -rm refuses it too" || return 1
+    assert_eq "Error: myproj+fix-auth is the name Claude Code shows for feature session myproj@fix-auth; cs takes myproj@fix-auth" \
+        "$out" "with the same words" || return 1
+}
+
+run_test test_worktree_launch_names_claude_with_a_plus_and_keeps_the_at_in_its_env
+run_test test_worktree_open_refuses_a_running_claude_named_with_the_plus
+run_test test_worktree_open_refuses_a_running_claude_named_with_the_at
+run_test test_a_plus_name_is_refused_naming_the_at_form
 
 report_results

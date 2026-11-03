@@ -175,6 +175,26 @@ test_list_includes_a_legacy_session() {
     assert_output_contains "$out" "legacy" "cs -list should list a pre-.cs/ session" || return 1
 }
 
+# With cs-tui on PATH and every session archived, -list prints the hint,
+# `No sessions found` and the archived trailer. The hint is part of the
+# listing, so an option -list refuses prints the error alone.
+test_list_prints_the_picker_hint_with_the_listing() {
+    local rc=0 human
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TMPDIR/bin/cs-tui"
+    chmod +x "$TEST_TMPDIR/bin/cs-tui"
+    : > "$(create_test_session gamma)/.cs/archived"
+    human=$(PATH="$TEST_TMPDIR/bin:$PATH" "$CS_BIN" -list 2>&1 | sed "s/$(printf '\033')\[[0-9;]*m//g")
+    assert_eq "Hint: run bare 'cs' for the interactive session manager
+No sessions found
+1 archived (cs -list --archived)" "$human" "plain -list prints the hint, the empty notice and the trailer" || return 1
+    PATH="$TEST_TMPDIR/bin:$PATH" "$CS_BIN" -list --bogus > "$TEST_TMPDIR/out" 2> "$TEST_TMPDIR/err" || rc=$?
+    assert_eq "1" "$rc" "cs -list --bogus exits 1" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/out")" "cs -list --bogus prints no hint" || return 1
+    assert_eq "Error: Unknown list option: --bogus. Usage: cs -list [--archived] [--tag <tag>]" \
+        "$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$TEST_TMPDIR/err")" "cs -list --bogus prints the error alone" || return 1
+}
+
 test_tui_launch_exports_the_cs_binary_path() {
     # The picker forks cs back for its own subcommands, so cs must hand it its
     # own path. The launch itself needs a tty and a resolved cs-tui, neither of
@@ -196,6 +216,7 @@ run_test test_list_counts_keychain_secrets_under_the_keychain_backend
 run_test test_list_counts_keychain_secrets_with_no_backend_set
 run_test test_list_skips_the_keychain_under_the_encrypted_backend
 run_test test_list_counts_only_the_keychain_items_under_its_prefix
+run_test test_list_prints_the_picker_hint_with_the_listing
 run_test test_tui_launch_exports_the_cs_binary_path
 
 report_results

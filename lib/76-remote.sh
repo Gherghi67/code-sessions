@@ -164,7 +164,7 @@ _remote_refuse_live() {  # session_name, meta_dir, lock_pid, [remote]
         error "Session $1 is served by cs $1 --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window."
     fi
     [ -z "$3" ] || [ -z "${4:-}" ] \
-        || error "Session $1 is already open (PID $3); cs $1 --remote serves only a session that is not open. Close it first."
+        || error "Session $1 is live (PID $3); cs $1 --remote serves only a session that is not live. Close it first."
     return 0
 }
 
@@ -230,7 +230,7 @@ _remote_release_after() {  # pid, meta_dir
 # window nobody sees, so the server would wait there; same-dir runs the
 # sessions it starts in the session dir, where worktree mode would run them
 # outside it. --name stays right after the verb: _remote_server_pid matches
-# `remote-control --name <name>`.
+# `remote-control --name <name>`, the name claude is given (cs_claude_name).
 _serve_remote() {  # session_name, session_dir, permission_mode
     local name="$1" dir="$2" mode="$3" meta="$2/.cs"
     # remote-control refuses to start while an API key is set.
@@ -248,5 +248,5 @@ _serve_remote() {  # session_name, session_dir, permission_mode
     _cs_run_active=0
     _remote_release_after "$$" "$meta" < /dev/null > /dev/null 2>&1 &
     info "Serving $name through claude remote-control (permission mode $mode). Ctrl-C or closing the window stops it."
-    exec "$_CS_REMOTE_BIN" remote-control --name "$name" --permission-mode "$mode" --spawn=same-dir
+    exec "$_CS_REMOTE_BIN" remote-control --name "$(cs_claude_name "$name")" --permission-mode "$mode" --spawn=same-dir
 }

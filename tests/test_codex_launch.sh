@@ -425,7 +425,7 @@ test_live_lock_blocks_launch() {
     kill "$holder" 2>/dev/null || true
     wait "$holder" 2>/dev/null || true
     assert_eq 1 "$status" "live lock must reject" || return 1
-    assert_output_contains "$output" 'already open' "shared lock diagnostic" || return 1
+    assert_output_contains "$output" 'is live' "shared lock diagnostic" || return 1
     assert_eq "$holder" "$(cat "$lock")" "rejected launch keeps owner lock" || return 1
     assert_not_exists "$CS_HELPER_COUNT" "helper not called when locked" || return 1
 }

@@ -18,7 +18,7 @@ Default order: `logo,session,notes,mail,git,model,ctx,limits`. One capsule holds
 |---|---|---|---|---|---|
 | `logo` | identity | `✳` in brand coral, bold; brandshade while `.cs/local/attention` exists | — | plain mode (no colour) | `.cs/local/attention` marker (raised by the Stop hook, cleared on the next prompt or session start) |
 | `session` | identity | name, bold, primary ink | — | never | stdin `session_name`, falling back to `CLAUDE_SESSION_NAME`, then the workspace dir basename ; a session whose `.cs/README.md` frontmatter tags include `encrypted` gets a lock after the name (U+F023, secondary ink) once `cs -statusline caps` answered yes, `enc` until then |
-| `notes` | identity | `▤ N`, amber ink, regular, directly after the session | — | queue empty or absent | Task files in `.cs/local/queue/` (one file per task; `.cs/private/queue/` in an [encrypted session](session-layout.md#encrypted-sessions)) |
+| `notes` | identity | `▤ N`, the queue count, amber ink, regular, directly after the session | — | queue empty or absent | Task files in `.cs/local/queue/` (one file per task; `.cs/private/queue/` in an [encrypted session](session-layout.md#encrypted-sessions)) |
 | `mail` | identity | `✉ N`, amber ink, regular, after notes | — | nothing unread | Count of `.cs/local/mail/new/*.json` documents (`.cs/private/mail/` in an encrypted session; `cs -msg` moves what it prints to `cur/`); only `.json` files count, so a stray `.DS_Store` or staging leftover never shows a phantom unread |
 | `pane` | identity | `◫ 7` (the `%` dropped), secondary ink; only when named | — | not named, or outside a real tmux | `TMUX_PANE` from inherited environment (no fork); requires `TMUX` too, and that this process is genuinely inside that tmux server, so an inherited pane id never renders |
 | `git` | identity | branch with the arrows and `+N!N` marks, bold ink | — | no `.git` here or above | One `git status --porcelain=v1 -b` call |
@@ -57,7 +57,7 @@ The parent-keyed buckets (`tmux-real/`, `tmux-client3/`, `tmux-walking/`, `tty/`
 
 A cache entry is two lines: `epoch<TAB>identity`, then the text. The identity is the raw value the file name was made from (the workspace path, the config path, `<parent pid>,<TMUX>`), so two values that sanitise to the same name (`/x/a/b` and `/x/a-b`) never answer for each other, and the age is arithmetic against the render's one clock rather than a `find` or `stat` fork; the terminal-theme entry under `~/.cache/cs/term/` (see [Colors](#colors)) carries an epoch too. Every cache write is a builtin `printf`, and a read takes an entry only when both its lines are complete, so a torn read is a miss, never a wrong answer. Data gathering is still gated per segment: disabling `git` in `CS_STATUSLINE_SEGMENTS` means the git line is neither forked for nor cached. There is no transcript parsing and no network access; a Fable session reads the usage cache and never fetches from the render (see [Fable usage](#fable-usage)).
 
-The writes in the render path are machine-local and best-effort: the render stamps the current context-window usage, truncated to an integer, to `.cs/local/context-pct`; the value is written only by the conversation whose id `.cs/local/state` records as launched, and any other conversation in the directory (a tmux teammate) touches the file instead, keeping the liveness heartbeat alive without replacing the lead's reading. The task-queue gate (the `narrative-reminder.sh` Stop hook, see [hooks.md](hooks.md)) reads this file to decide whether to suggest compacting before a walk-away drain. Skipped outside a cs session or when the stdin JSON carries no context percentage.
+The writes in the render path are machine-local and best-effort: the render stamps the current context-window usage, truncated to an integer, to `.cs/local/context-pct`; the value is written only by the conversation whose id `.cs/local/state` records as launched, and any other conversation in the directory (a tmux teammate) touches the file instead, keeping the liveness heartbeat alive without replacing the lead's reading. The task-queue gate (the `stop-blocks.sh` Stop hook, see [hooks.md](hooks.md)) reads this file to decide whether to suggest compacting before a walk-away drain. Skipped outside a cs session or when the stdin JSON carries no context percentage.
 
 The same render also stamps `.cs/local/limits` (5-hour and weekly used percentages and reset epochs) so `cs -usage` can anchor its windows at the true reset boundaries; both files are machine-local and best-effort.
 
@@ -369,6 +369,8 @@ export CS_STATUSLINE_PARENT="$PPID"
 # Plain text, no colors
 export NO_COLOR=1
 ```
+
+Each `CS_*` key above except `CS_STATUSLINE_CAPS`, `CS_USAGE_DIR` and `CS_STATUSLINE_PARENT` can live in a settings file instead of your shell, and so can `CS_TERM_BG_RGB` from [Pinning the background](#pinning-the-background): `cs -config set CS_STATUSLINE_LAYOUT band` keeps it on this machine, `cs <name> -config set` in one session, and the next repaint reads it. A value your shell exports still wins. See [Settings file](configuration.md#settings-file).
 
 `CS_SESSIONS_ROOT` is honored the same way the rest of cs honors it.
 
