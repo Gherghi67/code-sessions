@@ -2486,6 +2486,19 @@ test_session_start_names_both_addresses_of_a_feature_session() {
         | jq -r '.hookSpecificOutput.additionalContext') || return 1
     assert_output_not_contains "$context" "know this session as" \
         "a plain session gets no such line" || return 1
+    # Both spellings and the test for the '@' read the name cs_resolve_session
+    # resolved, never a CS_SESSION_NAME another process left in the
+    # environment (review N1 on PR #25).
+    context=$(echo '{"session_id":"s","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | CS_SESSION_NAME="other" CLAUDE_SESSION_NAME="myproj@fix-auth" bash "$HOOKS_DIR/session-start.sh" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Claude Code's own tools (ListAgents, SendMessage) know this session as myproj+fix-auth; cs (cs -msg, cs -rm, the directory) takes myproj@fix-auth.$" \
+        "a stale plain CS_SESSION_NAME does not hide the line" || return 1
+    context=$(echo '{"session_id":"s","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | CS_SESSION_NAME="myproj@fix-auth" bash "$HOOKS_DIR/session-start.sh" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_not_contains "$context" "know this session as" \
+        "a stale feature CS_SESSION_NAME adds no line to a plain session" || return 1
 }
 
 # A leading zero in the override is a plain integer to the validator and an
