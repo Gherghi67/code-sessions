@@ -1205,7 +1205,7 @@ cs_local_state_unset() {  # state, key
 _cs_fd9_is_file() {  # path
     if command -v perl >/dev/null 2>&1; then
         perl -e '
-            open(my $fd, "+<&=", 9) or exit 1;
+            open(my $fd, "<&=", 9) or exit 1;
             my @held = stat($fd);
             exit 1 unless @held && -f _;
             my @path = lstat($ARGV[0]);
@@ -1224,9 +1224,14 @@ _cs_fd9_is_file() {  # path
 # subshell; callers communicate through files and the callback's exit status.
 # The session directory is the agent's to write, so the guard path may hold a
 # link or a fifo planted there. A link or anything but a regular file is
-# refused before the open; the open never truncates (<>, not >), and fd 9 must
-# then be the regular file the path names. A swap between the check and the
-# open opens its target without writing a byte, and is refused.
+# refused before the open. A missing guard is created with O_EXCL (set -C),
+# which follows no link, dangling or not, and the guard is then opened
+# read-only: that open creates nothing and truncates nothing, and flock and
+# lockf lock a read-only descriptor all the same. fd 9 must then be the
+# regular file the path names. A link swapped in between the check and the
+# open has an existing target opened, never written, and a dangling one's
+# target never created, and is refused. A fifo or a tty swapped in there can
+# stall the open: bash cannot open without blocking, and nothing bounds it.
 cs_run_guarded() (  # meta_dir, callback, arguments...
     local meta="$1" mask guard
     shift
@@ -1238,11 +1243,14 @@ cs_run_guarded() (  # meta_dir, callback, arguments...
         return 1
     fi
     # The guard is private; what the callback writes takes the caller's umask.
+    # A guard another cs created first is as good as one this call creates.
     mask=$(umask)
     umask 077
-    { exec 9<> "$guard"; } 2>/dev/null \
+    [ -e "$guard" ] || ( set -C; : > "$guard" ) 2>/dev/null || [ -f "$guard" ] \
         || { printf 'Error: could not write %s\n' "$guard" >&2; return 1; }
     umask "$mask"
+    { exec 9< "$guard"; } 2>/dev/null \
+        || { printf 'Error: could not open %s\n' "$guard" >&2; return 1; }
     if ! _cs_fd9_is_file "$guard"; then
         printf 'Error: %s is not a regular file\n' "$guard" >&2
         return 1

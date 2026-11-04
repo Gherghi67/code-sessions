@@ -345,16 +345,20 @@ test_guard_refuses_a_fifo_or_directory_without_hanging() {
 }
 
 # Arm a DEBUG trap that swaps <guard> for a link to <target> just before
-# cs_run_guarded's `umask 077`, after its type check and before its open: the
-# race a sandboxed agent could run against cs. Call it in a subshell.
-_swap_guard_for_link_before_the_open() {  # guard, target
-    SWAP_GUARD="$1" SWAP_TARGET="$2"
+# cs_run_guarded runs <command>, by default its `umask 077`, after its type
+# check and before it creates or opens the guard; `umask "$mask"` comes after
+# the create and before the open. The race a sandboxed agent could run
+# against cs. Call it in a subshell.
+_swap_guard_for_link_before_the_open() {  # guard, target, [command]
+    SWAP_GUARD="$1" SWAP_TARGET="$2" SWAP_BEFORE="${3:-umask 077}"
     set -o functrace
-    trap '[ "$BASH_COMMAND" != "umask 077" ] || { rm -f "$SWAP_GUARD"; ln -s "$SWAP_TARGET" "$SWAP_GUARD"; }' DEBUG
+    trap '[ "$BASH_COMMAND" != "$SWAP_BEFORE" ] || { rm -f "$SWAP_GUARD"; ln -s "$SWAP_TARGET" "$SWAP_GUARD"; }' DEBUG
 }
 
-# A link swapped in after the type check is caught after the open: its target
-# is opened without a byte written, and the guard is refused.
+# A link swapped in after the type check is caught after the open: an existing
+# target is opened without a byte written, a dangling link's target is never
+# created, whether the guard was there or this call creates it, and the guard
+# is refused.
 test_guard_refuses_a_link_swapped_in_after_the_type_check() {
     local guard="$CS_TEST_SESSION_DIR/.cs/local/run-lease.guard" status=0
     printf 'precious\n' > "$TEST_TMPDIR/victim"
@@ -367,7 +371,25 @@ test_guard_refuses_a_link_swapped_in_after_the_type_check() {
     [ "$status" -ne 0 ] || { echo '  FAIL: a guard swapped for a link was used'; return 1; }
     assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the link's target keeps its bytes" || return 1
     assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run" || return 1
-    assert_file_contains "$TEST_TMPDIR/err" 'run-lease.guard is not a regular file'
+    assert_file_contains "$TEST_TMPDIR/err" 'run-lease.guard is not a regular file' || return 1
+    _swapped_dangling_link_creates_nothing "$guard" present || return 1
+    _swapped_dangling_link_creates_nothing "$guard" absent || return 1
+    # shellcheck disable=SC2016  # the command as the DEBUG trap sees it, unexpanded
+    _swapped_dangling_link_creates_nothing "$guard" present 'umask "$mask"'
+}
+
+_swapped_dangling_link_creates_nothing() {  # guard, present|absent before the call, [command]
+    local status=0 case="$2 guard${3:+, before $3}"
+    rm -f "$1" "$TEST_TMPDIR/absent" "$TEST_TMPDIR/ran"
+    [ "$2" = absent ] || : > "$1"
+    (
+        _swap_guard_for_link_before_the_open "$1" "$TEST_TMPDIR/absent" "${3:-}"
+        cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran"
+    ) 2> /dev/null || status=$?
+    assert_symlink "$1" "the seam swapped a dangling link in ($case)" || return 1
+    [ "$status" -ne 0 ] || { echo "  FAIL: a guard swapped for a dangling link was used ($case)"; return 1; }
+    assert_not_exists "$TEST_TMPDIR/absent" "a dangling link's target is not created ($case)" || return 1
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run ($case)"
 }
 
 _inode() { ls -di "$1" | awk '{print $1}'; }
