@@ -1230,6 +1230,11 @@ _cs_fd9_is_file() {  # path
 # open has an existing target opened, never written, and a dangling one's
 # target never created, and is refused. A fifo or a tty swapped in there can
 # stall the open: bash cannot open without blocking, and nothing bounds it.
+# Only the last component is checked: a link put in place of .cs/local, or
+# of a directory above it, is followed by the create, the open and the check
+# alike, and by the callback's own writes under it, as by every cs write
+# under .cs/. Checking fd 9's real path would not close that, since the
+# callback names its files by path again after the check.
 cs_run_guarded() (  # meta_dir, callback, arguments...
     local meta="$1" mask guard
     shift

@@ -2013,13 +2013,13 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "f369c86e4543b5f6619a613bbffcbdd1a2b58d0d799a1f0a1f9d6048db999660  bin/cs"
+    "6dab09d479178c0d8b84246d781f6e5ebf5ceb43ee5f9c807e9ee52f2a8cf8af  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "1b49c0900b5127fab964042e15405c1b31aeca2810c99c4ae6a4d0f1511aa5e8  bin/cs-statusline"
     "68d374e006619044bd9a697ffe31c615bdd44e29d50fb8eeacdf52369aa57e0f  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "caa7ac94fc2954933fabd7615d43aa4fb2cb2b8608bc3335b79c8677e41046a7  hooks/cs-shared.sh"
+    "1a657a69a0eae3fffef0a3a47b5e29983b3b6bec4e255b3f6a84ef6caa6c63d1  hooks/cs-shared.sh"
     "d4190dfe1bba3312145072c543d66a6fbbdb82748db0a859cabf9872f4c1ff33  hooks/cs-engine-events.sh"
     "42de78599155dd0e9c15a508c05413616f1ee53876f44580dc5363a73d9d0291  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
@@ -2051,7 +2051,7 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "667cd90617eb7e5ffda0af55e923573a51d986628ec566e5c3c54bdb355a6041  skills/sweep/scripts/memory-index-guard.sh"
-    "caa7ac94fc2954933fabd7615d43aa4fb2cb2b8608bc3335b79c8677e41046a7  skills/sweep/scripts/cs-shared.sh"
+    "1a657a69a0eae3fffef0a3a47b5e29983b3b6bec4e255b3f6a84ef6caa6c63d1  skills/sweep/scripts/cs-shared.sh"
     "a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "e4eac5d86ec4feaf591021ae58b12bbf1932a56ebac8e02312bce280c9ad831b  mods/cs/hooks/register.tsx"
