@@ -1197,23 +1197,28 @@ cs_local_state_unset() {  # state, key
     _cs_with_state_lock "$1" cs_write_atomic "$1" _cs_local_state_render "$1" "$2"
 }
 
-# True when fd 9 is open on the regular file <path> names, and <path> is no
-# symlink. Perl compares device and inode: through /dev/fd/9 macOS reports
-# devfs's device, so neither bash's -ef nor stat(1) can. Without perl the
-# type checks alone still refuse a symlink and a fifo; only a swap of one
-# regular file for another then goes unseen.
+# Whether fd 9 is open on the regular file <path> names, and <path> is no
+# symlink: 0 when it is, 1 when it is not, 2 when that could not be checked
+# (a perl that does not run, or no perl and no /dev/fd/9). Perl compares
+# device and inode: through /dev/fd/9 macOS reports devfs's device, so
+# neither bash's -ef nor stat(1) can. Without perl the type checks alone
+# still refuse a symlink and a fifo; only a swap of one regular file for
+# another then goes unseen.
 _cs_fd9_is_file() {  # path
+    local rc=0
     if command -v perl >/dev/null 2>&1; then
         perl -e '
-            open(my $fd, "<&=", 9) or exit 1;
-            my @held = stat($fd);
-            exit 1 unless @held && -f _;
+            open(my $fd, "<&=", 9) or exit 2;
+            my @held = stat($fd) or exit 2;
+            exit 1 unless -f _;
             my @path = lstat($ARGV[0]);
             exit(@path && $path[0] == $held[0] && $path[1] == $held[1] ? 0 : 1);
-        ' "$1" 2>/dev/null
-    else
-        [ -f /dev/fd/9 ] && [ ! -L "$1" ] && [ -f "$1" ]
+        ' "$1" 2>/dev/null || rc=$?
+        [ "$rc" -le 1 ] || rc=2
+        return "$rc"
     fi
+    [ -e /dev/fd/9 ] || return 2
+    [ -f /dev/fd/9 ] && [ ! -L "$1" ] && [ -f "$1" ]
 }
 
 # Serialize ownership changes on a persistent inode. The descriptor belongs to
@@ -1241,7 +1246,7 @@ _cs_fd9_is_file() {  # path
 # under .cs/. Checking fd 9's real path would not close that, since the
 # callback names its files by path again after the check.
 cs_run_guarded() (  # meta_dir, callback, arguments...
-    local meta="$1" mask guard
+    local meta="$1" mask guard opened=0
     shift
     [ -d "$meta" ] || { printf 'Error: could not create %s/local\n' "$meta" >&2; return 1; }
     cs_mkdir_inside "$meta/local" || return 1
@@ -1259,10 +1264,12 @@ cs_run_guarded() (  # meta_dir, callback, arguments...
     umask "$mask"
     { exec 9< "$guard"; } 2>/dev/null \
         || { printf 'Error: could not open %s\n' "$guard" >&2; return 1; }
-    if ! _cs_fd9_is_file "$guard"; then
-        printf 'Error: %s is not a regular file\n' "$guard" >&2
-        return 1
-    fi
+    _cs_fd9_is_file "$guard" || opened=$?
+    case "$opened" in
+        0) ;;
+        1) printf 'Error: %s changed while cs opened it\n' "$guard" >&2; return 1 ;;
+        *) printf 'Error: could not check that %s is the file cs opened\n' "$guard" >&2; return 1 ;;
+    esac
     if command -v flock >/dev/null 2>&1; then
         flock -w 5 9 || { printf 'Error: Could not acquire run ownership guard: %s\n' "$meta" >&2; return 1; }
     elif command -v lockf >/dev/null 2>&1; then

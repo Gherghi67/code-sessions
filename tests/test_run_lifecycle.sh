@@ -371,7 +371,7 @@ test_guard_refuses_a_link_swapped_in_after_the_type_check() {
     [ "$status" -ne 0 ] || { echo '  FAIL: a guard swapped for a link was used'; return 1; }
     assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the link's target keeps its bytes" || return 1
     assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run" || return 1
-    assert_file_contains "$TEST_TMPDIR/err" 'run-lease.guard is not a regular file' || return 1
+    assert_file_contains "$TEST_TMPDIR/err" 'run-lease.guard changed while cs opened it' || return 1
     _swapped_dangling_link_creates_nothing "$guard" present || return 1
     _swapped_dangling_link_creates_nothing "$guard" absent || return 1
     # shellcheck disable=SC2016  # the command as the DEBUG trap sees it, unexpanded
@@ -390,6 +390,24 @@ _swapped_dangling_link_creates_nothing() {  # guard, present|absent before the c
     [ "$status" -ne 0 ] || { echo "  FAIL: a guard swapped for a dangling link was used ($case)"; return 1; }
     assert_not_exists "$TEST_TMPDIR/absent" "a dangling link's target is not created ($case)" || return 1
     assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run ($case)"
+}
+
+# A perl that is found but cannot run leaves the open unchecked: cs refuses
+# the guard all the same, and says it could not check rather than naming a
+# file that changed under it.
+test_guard_says_when_it_could_not_check_the_open() {
+    local status=0
+    mkdir "$TEST_TMPDIR/broken-perl"
+    printf '#!/bin/sh\nexit 126\n' > "$TEST_TMPDIR/broken-perl/perl"
+    chmod +x "$TEST_TMPDIR/broken-perl/perl"
+    (
+        PATH="$TEST_TMPDIR/broken-perl:$PATH"
+        cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran"
+    ) 2> "$TEST_TMPDIR/err" || status=$?
+    [ "$status" -ne 0 ] || { echo '  FAIL: an unchecked guard was used'; return 1; }
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run" || return 1
+    assert_file_contains "$TEST_TMPDIR/err" 'could not check that .*run-lease.guard is the file cs opened' || return 1
+    assert_file_not_contains "$TEST_TMPDIR/err" 'not a regular file\|changed while'
 }
 
 _inode() { ls -di "$1" | awk '{print $1}'; }
@@ -426,9 +444,16 @@ _fd9_is_file_without_perl() (  # path
     _cs_fd9_is_file "$1"
 )
 
+_fd9_is_file_with_broken_perl() (  # path
+    PATH="$TEST_TMPDIR/broken-perl:$PATH"
+    _cs_fd9_is_file "$1"
+)
+
 _guard_open_check_cases() {
-    local dir="$TEST_TMPDIR/fd" status=0
-    mkdir "$dir" "$TEST_TMPDIR/no-perl"
+    local dir="$TEST_TMPDIR/fd" status=0 checked=0
+    mkdir "$dir" "$TEST_TMPDIR/no-perl" "$TEST_TMPDIR/broken-perl"
+    printf '#!/bin/sh\nexit 126\n' > "$TEST_TMPDIR/broken-perl/perl"
+    chmod +x "$TEST_TMPDIR/broken-perl/perl"
     : > "$dir/a"
     : > "$dir/b"
     ln -s a "$dir/link"
@@ -438,6 +463,8 @@ _guard_open_check_cases() {
     if _cs_fd9_is_file "$dir/b"; then echo '  FAIL: another regular file was accepted'; status=1; fi
     if _cs_fd9_is_file "$dir/link"; then echo '  FAIL: a link to the open file was accepted'; status=1; fi
     _fd9_is_file_without_perl "$dir/a" || { echo '  FAIL: no perl: the open file was refused'; status=1; }
+    _fd9_is_file_with_broken_perl "$dir/a" || checked=$?
+    [ "$checked" -eq 2 ] || { echo "  FAIL: a perl that cannot run answered $checked, not 2 (could not check)"; status=1; }
     if _fd9_is_file_without_perl "$dir/link"; then echo '  FAIL: no perl: a link was accepted'; status=1; fi
     if _fd9_is_file_without_perl "$dir/fifo"; then echo '  FAIL: no perl: a fifo path was accepted'; status=1; fi
     mv "$dir/a" "$dir/a.old"
@@ -451,8 +478,14 @@ _guard_open_check_cases() {
     : > "$dir/fifo"
     if _cs_fd9_is_file "$dir/fifo"; then echo '  FAIL: an open fifo was accepted'; status=1; fi
     if _fd9_is_file_without_perl "$dir/fifo"; then echo '  FAIL: no perl: an open fifo was accepted'; status=1; fi
+    # With fd 9 closed, neither perl nor /dev/fd/9 has a file to compare.
     exec 9<&-
-    if _cs_fd9_is_file "$dir/a"; then echo '  FAIL: a closed descriptor was accepted'; status=1; fi
+    checked=0
+    _cs_fd9_is_file "$dir/a" || checked=$?
+    [ "$checked" -eq 2 ] || { echo "  FAIL: a closed descriptor answered $checked, not 2 (could not check)"; status=1; }
+    checked=0
+    _fd9_is_file_without_perl "$dir/a" || checked=$?
+    [ "$checked" -eq 2 ] || { echo "  FAIL: no perl: a closed descriptor answered $checked, not 2 (could not check)"; status=1; }
     return "$status"
 }
 
@@ -472,6 +505,7 @@ run_test test_guard_released_when_holding_shell_is_killed
 run_test test_guard_refuses_a_planted_link_and_leaves_its_target
 run_test test_guard_refuses_a_fifo_or_directory_without_hanging
 run_test test_guard_refuses_a_link_swapped_in_after_the_type_check
+run_test test_guard_says_when_it_could_not_check_the_open
 run_test test_guard_keeps_its_inode_and_bytes_across_calls
 run_test test_guard_open_check_needs_the_file_the_path_names
 report_results
