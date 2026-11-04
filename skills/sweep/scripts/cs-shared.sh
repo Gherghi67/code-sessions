@@ -1198,9 +1198,9 @@ cs_local_state_unset() {  # state, key
 }
 
 # True when fd 9 is open on the regular file <path> names, and <path> is no
-# link. Perl compares device and inode: through /dev/fd/9 macOS reports
+# symlink. Perl compares device and inode: through /dev/fd/9 macOS reports
 # devfs's device, so neither bash's -ef nor stat(1) can. Without perl the
-# type checks alone still refuse a link and a fifo; only a swap of one
+# type checks alone still refuse a symlink and a fifo; only a swap of one
 # regular file for another then goes unseen.
 _cs_fd9_is_file() {  # path
     if command -v perl >/dev/null 2>&1; then
@@ -1223,16 +1223,19 @@ _cs_fd9_is_file() {  # path
 # short-lived utility process. Callback variable assignments stay in this
 # subshell; callers communicate through files and the callback's exit status.
 # The session directory is the agent's to write, so the guard path may hold a
-# link or a fifo planted there. A link or anything but a regular file is
-# refused before the open. A missing guard is created with O_EXCL (set -C),
-# which follows no link, dangling or not, and the guard is then opened
+# symlink or a fifo planted there. A symlink or anything but a regular file
+# is refused before the open. A missing guard is created with O_EXCL (set -C),
+# which follows no symlink, dangling or not, and the guard is then opened
 # read-only: that open creates nothing and truncates nothing, and flock and
 # lockf lock a read-only descriptor all the same. fd 9 must then be the
-# regular file the path names. A link swapped in between the check and the
+# regular file the path names. A symlink swapped in between the check and the
 # open has an existing target opened, never written, and a dangling one's
 # target never created, and is refused. A fifo or a tty swapped in there can
 # stall the open: bash cannot open without blocking, and nothing bounds it.
-# Only the last component is checked: a link put in place of .cs/local, or
+# A hard link to a regular file outside, on the same volume, is a regular
+# file the path names and passes every check: that file is opened read-only
+# and locked while the callback runs, and nothing is written to it.
+# Only the last component is checked: a symlink put in place of .cs/local, or
 # of a directory above it, is followed by the create, the open and the check
 # alike, and by the callback's own writes under it, as by every cs write
 # under .cs/. Checking fd 9's real path would not close that, since the
