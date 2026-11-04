@@ -300,6 +300,195 @@ HOLDER
     assert_exists "$TEST_TMPDIR/after-kill"
 }
 
+# The session directory is the agent's to write, so a link may wait at the
+# guard path. Following it would truncate, or create, a file the agent could
+# not write itself; cs refuses the guard instead and runs nothing.
+test_guard_refuses_a_planted_link_and_leaves_its_target() {
+    local guard="$CS_TEST_SESSION_DIR/.cs/local/run-lease.guard" status=0
+    printf 'precious\n' > "$TEST_TMPDIR/victim"
+    ln -s "$TEST_TMPDIR/victim" "$guard"
+    cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran" 2> "$TEST_TMPDIR/err" || status=$?
+    [ "$status" -ne 0 ] || { echo '  FAIL: a linked guard was used'; return 1; }
+    assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the link's target keeps its bytes" || return 1
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run" || return 1
+    assert_file_contains "$TEST_TMPDIR/err" 'run-lease.guard is not a regular file' || return 1
+    rm "$guard"
+    ln -s "$TEST_TMPDIR/absent" "$guard"
+    status=0
+    cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran" 2> /dev/null || status=$?
+    [ "$status" -ne 0 ] || { echo '  FAIL: a dangling guard link was used'; return 1; }
+    assert_not_exists "$TEST_TMPDIR/absent" "a dangling link's target is not created" || return 1
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run"
+}
+
+_guarded_touch_bounded() {  # file to touch
+    _run_bounded 5 bash -c 'source "$1/lib/02-shared.sh"; cs_run_guarded "$2" touch "$3"' _ \
+        "$CS_TEST_SOURCE_DIR" "$CS_TEST_SESSION_DIR/.cs" "$1" 2> /dev/null
+}
+
+# Opening a fifo for writing waits for a reader, so a planted fifo would stall
+# every ownership change; a directory cannot be locked as a file.
+test_guard_refuses_a_fifo_or_directory_without_hanging() {
+    local guard="$CS_TEST_SESSION_DIR/.cs/local/run-lease.guard" status=0
+    mkfifo "$guard"
+    _guarded_touch_bounded "$TEST_TMPDIR/ran" || status=$?
+    [ "$status" -ne 142 ] || { echo '  FAIL: a fifo guard hung the open'; return 1; }
+    [ "$status" -ne 0 ] || { echo '  FAIL: a fifo guard was used'; return 1; }
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run on a fifo" || return 1
+    rm "$guard"
+    mkdir "$guard"
+    status=0
+    _guarded_touch_bounded "$TEST_TMPDIR/ran" || status=$?
+    [ "$status" -ne 142 ] || { echo '  FAIL: a directory guard hung the open'; return 1; }
+    [ "$status" -ne 0 ] || { echo '  FAIL: a directory guard was used'; return 1; }
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run on a directory"
+}
+
+# Arm a DEBUG trap that swaps <guard> for a link to <target> just before
+# cs_run_guarded runs <command>, by default its `umask 077`, after its type
+# check and before it creates or opens the guard; `umask "$mask"` comes after
+# the create and before the open. The race a sandboxed agent could run
+# against cs. Call it in a subshell.
+_swap_guard_for_link_before_the_open() {  # guard, target, [command]
+    SWAP_GUARD="$1" SWAP_TARGET="$2" SWAP_BEFORE="${3:-umask 077}"
+    set -o functrace
+    trap '[ "$BASH_COMMAND" != "$SWAP_BEFORE" ] || { rm -f "$SWAP_GUARD"; ln -s "$SWAP_TARGET" "$SWAP_GUARD"; }' DEBUG
+}
+
+# A link swapped in after the type check is caught after the open: an existing
+# target is opened without a byte written, a dangling link's target is never
+# created, whether the guard was there or this call creates it, and the guard
+# is refused.
+test_guard_refuses_a_link_swapped_in_after_the_type_check() {
+    local guard="$CS_TEST_SESSION_DIR/.cs/local/run-lease.guard" status=0
+    printf 'precious\n' > "$TEST_TMPDIR/victim"
+    : > "$guard"
+    (
+        _swap_guard_for_link_before_the_open "$guard" "$TEST_TMPDIR/victim"
+        cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran"
+    ) 2> "$TEST_TMPDIR/err" || status=$?
+    assert_symlink "$guard" "the seam swapped a link in" || return 1
+    [ "$status" -ne 0 ] || { echo '  FAIL: a guard swapped for a link was used'; return 1; }
+    assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the link's target keeps its bytes" || return 1
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run" || return 1
+    assert_file_contains "$TEST_TMPDIR/err" 'run-lease.guard changed while cs opened it' || return 1
+    _swapped_dangling_link_creates_nothing "$guard" present || return 1
+    _swapped_dangling_link_creates_nothing "$guard" absent || return 1
+    # shellcheck disable=SC2016  # the command as the DEBUG trap sees it, unexpanded
+    _swapped_dangling_link_creates_nothing "$guard" present 'umask "$mask"'
+}
+
+_swapped_dangling_link_creates_nothing() {  # guard, present|absent before the call, [command]
+    local status=0 case="$2 guard${3:+, before $3}"
+    rm -f "$1" "$TEST_TMPDIR/absent" "$TEST_TMPDIR/ran"
+    [ "$2" = absent ] || : > "$1"
+    (
+        _swap_guard_for_link_before_the_open "$1" "$TEST_TMPDIR/absent" "${3:-}"
+        cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran"
+    ) 2> /dev/null || status=$?
+    assert_symlink "$1" "the seam swapped a dangling link in ($case)" || return 1
+    [ "$status" -ne 0 ] || { echo "  FAIL: a guard swapped for a dangling link was used ($case)"; return 1; }
+    assert_not_exists "$TEST_TMPDIR/absent" "a dangling link's target is not created ($case)" || return 1
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run ($case)"
+}
+
+# A perl that is found but cannot run leaves the open unchecked: cs refuses
+# the guard all the same, and says it could not check rather than naming a
+# file that changed under it.
+test_guard_says_when_it_could_not_check_the_open() {
+    local status=0
+    mkdir "$TEST_TMPDIR/broken-perl"
+    printf '#!/bin/sh\nexit 126\n' > "$TEST_TMPDIR/broken-perl/perl"
+    chmod +x "$TEST_TMPDIR/broken-perl/perl"
+    (
+        PATH="$TEST_TMPDIR/broken-perl:$PATH"
+        cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran"
+    ) 2> "$TEST_TMPDIR/err" || status=$?
+    [ "$status" -ne 0 ] || { echo '  FAIL: an unchecked guard was used'; return 1; }
+    assert_not_exists "$TEST_TMPDIR/ran" "the callback does not run" || return 1
+    assert_file_contains "$TEST_TMPDIR/err" 'could not check that .*run-lease.guard is the file cs opened' || return 1
+    assert_file_not_contains "$TEST_TMPDIR/err" 'not a regular file\|changed while'
+}
+
+_inode() { ls -di "$1" | awk '{print $1}'; }
+
+# Every waiter must lock one persistent inode, and opening it never truncates:
+# the file cs locks is never rewritten, only created, private, when absent.
+test_guard_keeps_its_inode_and_bytes_across_calls() {
+    local guard="$CS_TEST_SESSION_DIR/.cs/local/run-lease.guard" before
+    cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" true || return 1
+    assert_eq 600 "$(_file_mode "$guard")" "a new guard is private" || return 1
+    printf 'kept\n' > "$guard"
+    before=$(_inode "$guard")
+    cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" touch "$TEST_TMPDIR/ran" || return 1
+    cs_run_guarded "$CS_TEST_SESSION_DIR/.cs" true || return 1
+    assert_exists "$TEST_TMPDIR/ran" "the callback runs on a regular guard" || return 1
+    assert_eq "$before" "$(_inode "$guard")" "the guard keeps its inode" || return 1
+    assert_eq kept "$(cat "$guard")" "the guard is opened without truncation"
+}
+
+# The check after the open: fd 9 must be the regular file the path names. A
+# link, a fifo or another file swapped in between the type check and the open
+# is refused. Without perl the type checks still refuse a link and a fifo.
+# The cases open fd 9 in a subshell, so the suite's own descriptors stay put.
+test_guard_open_check_needs_the_file_the_path_names() {
+    ( _guard_open_check_cases )
+}
+
+# PATH is assigned in a subshell, not prefixed to the call: through a prefixed
+# PATH, bash 3.2's command -v still finds the perl it hashed, which then fails
+# to run.
+_fd9_is_file_without_perl() (  # path
+    # shellcheck disable=SC2123  # a PATH without perl is the point
+    PATH="$TEST_TMPDIR/no-perl"
+    _cs_fd9_is_file "$1"
+)
+
+_fd9_is_file_with_broken_perl() (  # path
+    PATH="$TEST_TMPDIR/broken-perl:$PATH"
+    _cs_fd9_is_file "$1"
+)
+
+_guard_open_check_cases() {
+    local dir="$TEST_TMPDIR/fd" status=0 checked=0
+    mkdir "$dir" "$TEST_TMPDIR/no-perl" "$TEST_TMPDIR/broken-perl"
+    printf '#!/bin/sh\nexit 126\n' > "$TEST_TMPDIR/broken-perl/perl"
+    chmod +x "$TEST_TMPDIR/broken-perl/perl"
+    : > "$dir/a"
+    : > "$dir/b"
+    ln -s a "$dir/link"
+    mkfifo "$dir/fifo"
+    exec 9<> "$dir/a"
+    _cs_fd9_is_file "$dir/a" || { echo '  FAIL: the open file itself was refused'; status=1; }
+    if _cs_fd9_is_file "$dir/b"; then echo '  FAIL: another regular file was accepted'; status=1; fi
+    if _cs_fd9_is_file "$dir/link"; then echo '  FAIL: a link to the open file was accepted'; status=1; fi
+    _fd9_is_file_without_perl "$dir/a" || { echo '  FAIL: no perl: the open file was refused'; status=1; }
+    _fd9_is_file_with_broken_perl "$dir/a" || checked=$?
+    [ "$checked" -eq 2 ] || { echo "  FAIL: a perl that cannot run answered $checked, not 2 (could not check)"; status=1; }
+    if _fd9_is_file_without_perl "$dir/link"; then echo '  FAIL: no perl: a link was accepted'; status=1; fi
+    if _fd9_is_file_without_perl "$dir/fifo"; then echo '  FAIL: no perl: a fifo path was accepted'; status=1; fi
+    mv "$dir/a" "$dir/a.old"
+    : > "$dir/a"
+    if _cs_fd9_is_file "$dir/a"; then echo '  FAIL: a replaced path was accepted'; status=1; fi
+    exec 9<> "$dir/fifo"
+    if _cs_fd9_is_file "$dir/fifo"; then echo '  FAIL: a fifo was accepted'; status=1; fi
+    if _fd9_is_file_without_perl "$dir/fifo"; then echo '  FAIL: no perl: a fifo was accepted'; status=1; fi
+    # The fifo opened, then a regular file put back at its path.
+    rm "$dir/fifo"
+    : > "$dir/fifo"
+    if _cs_fd9_is_file "$dir/fifo"; then echo '  FAIL: an open fifo was accepted'; status=1; fi
+    if _fd9_is_file_without_perl "$dir/fifo"; then echo '  FAIL: no perl: an open fifo was accepted'; status=1; fi
+    # With fd 9 closed, neither perl nor /dev/fd/9 has a file to compare.
+    exec 9<&-
+    checked=0
+    _cs_fd9_is_file "$dir/a" || checked=$?
+    [ "$checked" -eq 2 ] || { echo "  FAIL: a closed descriptor answered $checked, not 2 (could not check)"; status=1; }
+    checked=0
+    _fd9_is_file_without_perl "$dir/a" || checked=$?
+    [ "$checked" -eq 2 ] || { echo "  FAIL: no perl: a closed descriptor answered $checked, not 2 (could not check)"; status=1; }
+    return "$status"
+}
+
 run_test test_shared_exit_status_and_cleanup
 run_test test_pre_claim_launcher_keeps_its_native_lead_after_upgrade
 run_test test_pre_claim_lease_checks_native_identity_on_every_call
@@ -313,4 +502,10 @@ run_test test_guard_is_held_across_callback_and_recovers_after_exit
 run_test test_killed_launcher_keeps_surviving_native_excluded
 run_test test_term_escalates_when_native_ignores_it
 run_test test_guard_released_when_holding_shell_is_killed
+run_test test_guard_refuses_a_planted_link_and_leaves_its_target
+run_test test_guard_refuses_a_fifo_or_directory_without_hanging
+run_test test_guard_refuses_a_link_swapped_in_after_the_type_check
+run_test test_guard_says_when_it_could_not_check_the_open
+run_test test_guard_keeps_its_inode_and_bytes_across_calls
+run_test test_guard_open_check_needs_the_file_the_path_names
 report_results
