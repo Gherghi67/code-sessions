@@ -1,22 +1,6 @@
 # ABOUTME: Codex hook entry points the installer registers in $CODEX_HOME/hooks.json (`cs -codex-hook <verb>`):
 # ABOUTME: rebind after /clear with an armed rotation, recovery, and the automatic /clear after a rotation.
 
-# What a fresh Codex conversation is told when it continues a rotation, both
-# after /clear (this hook) and after `r` at launch (the launch context). The
-# Claude wording lives in hooks/session-start.sh, which cannot source cs.
-# Codex starts no turn on its own after /clear, so the context arrives with the
-# user's first message and says how to read it. printf, not a here-document:
-# bash 3.2 writes a here-document to a temp file.
-_rotation_preamble_codex() {  # handoff_basename, actor_slug
-    printf '%s\n' \
-        '--- Conversation Rotation ---' \
-        "This fresh conversation continues rotated work. Read .cs/handoffs/$1 FIRST — it is the previous conversation's handoff; the prior conversation is not loaded, and the handoff plus your own .cs/memory/narrative.$2.md carry the context." \
-        '' \
-        'The message that arrives with this context starts the work. A bare nudge — "go", "continue", "ok" — means begin: execute the handoff'"'"'s next step and report what you did, without re-summarising the handoff or asking which part to start with. A message carrying its own content takes precedence over the handoff; answer that instead. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible.' \
-        '' \
-        "Once that next step is done, append a \`## Successor report\` section to the end of .cs/handoffs/$1: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
-}
-
 # A /clear with nothing armed: a clean break, said so the conversation does not
 # act on history it no longer has.
 _fresh_notice_codex() {  # actor_slug
@@ -97,7 +81,7 @@ _codex_hook_session_start() {
     if [ -n "$handoff" ]; then
         _handoff_set_status "$session_dir/.cs/handoffs/$handoff" consumed "$session_id" || true
         rm -f "$meta/local/pending-handoff" 2>/dev/null || true
-        context=$(_rotation_preamble_codex "$handoff" "$actor")
+        context=$(_rotation_preamble "$handoff" "$actor")
         sysmsg="Rotation loaded from $handoff; this conversation continues from it."
     else
         context=$(_fresh_notice_codex "$actor")

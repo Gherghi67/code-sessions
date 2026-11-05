@@ -67,7 +67,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave memory_index mail_delivery spawn_brief
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -420,7 +420,7 @@ _launch_codex_bound() {
         return 1
     }
     if [ -n "$rotation_handoff" ]; then
-        { printf '\n'; _rotation_preamble_codex "$rotation_handoff" "$actor"; } >> "$context_file" || {
+        { printf '\n'; _rotation_preamble "$rotation_handoff" "$actor"; } >> "$context_file" || {
             _codex_launch_error "Could not add the rotation handoff to the Codex context: $context_file"
             return 1
         }

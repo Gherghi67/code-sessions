@@ -121,6 +121,104 @@ _handoff_set_status() {  # handoff_file, status, [consumed_by]
     ' "$1" 2>/dev/null
 }
 
+# Shared rotation context for native launch prompts and hooks.
+_rotation_preamble() {  # handoff_basename, actor_slug
+    printf '%s\n' \
+        '--- Conversation Rotation ---' \
+        "This fresh conversation continues rotated work. Read .cs/handoffs/$1 FIRST — it is the previous conversation's handoff; the prior conversation is not loaded, and the handoff plus your own .cs/memory/narrative.$2.md carry the context." \
+        '' \
+        'The message that arrives with this context starts the work. A bare nudge — "go", "continue", "ok" — means begin: execute the handoff'"'"'s next step and report what you did, without re-summarising the handoff or asking which part to start with. A message carrying its own content takes precedence over the handoff; answer that instead. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible.' \
+        '' \
+        "Once that next step is done, append a \`## Successor report\` section to the end of .cs/handoffs/$1: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
+}
+
+# A launch carries only the handoff it selected before starting the native
+# child. Called under the run lease, once that child reaches its first turn.
+# Do not remove a newer marker an agent may have armed in the meantime.
+_launch_handoff_consume() {  # session_dir, handoff_basename, conversation_id
+    local dir="$1" handoff="$2" id="$3" handoffs private
+    _cs_is_plain_name "$handoff" && _is_uuid "$id" || return 1
+    ! cs_files_tracked_notice "$dir/.cs" "$dir" >/dev/null || return 1
+    handoffs=$(cs_handoff_dir "$dir/.cs") || return 1
+    private=$(cs_private_dir "$dir/.cs") || return 1
+    _handoff_is_unconsumed "$handoffs/$handoff" || return 1
+    _handoff_set_status "$handoffs/$handoff" consumed "$id" || return 1
+    if [ "$(_rotation_marker_basename "$dir")" = "$handoff" ]; then
+        rm -f "$private/pending-handoff" 2>/dev/null || true
+    fi
+}
+
+# Native adapters that learn the conversation ID only at the first model call
+# journal its receipt BEFORE changing the binding or handoff. Keep the journal
+# in the trusted cache, outside the agent-writable session, across failed runs.
+_launch_handoff_receipt_dir() {  # session_dir, engine
+    cs_engine_known "$2" || return 1
+    local dir
+    dir=$(cs_retire_cache_dir launch-handoffs "$1") || return 1
+    printf '%s/%s\n' "$dir" "$2"
+}
+
+_launch_handoff_receipt_dir_ok() {  # dir, session_dir
+    cs_cache_dir_private "$1" \
+        && ! _codex_run_dir_in_sandbox_root "$1" "$2" \
+        && ! _codex_run_dir_in_config_root "$1" "$2"
+}
+
+_launch_handoff_record() {  # session_dir, engine, handoff, id, previous
+    local dir tmp
+    _cs_is_plain_name "$3" && _is_uuid "$4" || return 1
+    dir=$(_launch_handoff_receipt_dir "$1" "$2") || return 1
+    cs_cache_dir_make_private "$dir" && _launch_handoff_receipt_dir_ok "$dir" "$1" || return 1
+    # An unfinished receipt belongs to its original consumer. Never replace
+    # it with another conversation's claim, even if a hook arrives late.
+    if [ -e "$dir/pending.json" ] || [ -L "$dir/pending.json" ]; then
+        [ ! -L "$dir/pending.json" ] && jq -e --arg id "$4" --arg h "$3" \
+            '.id == $id and .handoff == $h' "$dir/pending.json" >/dev/null
+        return $?
+    fi
+    tmp=$(mktemp "$dir/.receipt.XXXXXX") || return 1
+    if ! { jq -nc --arg id "$4" --arg previous "$5" --arg handoff "$3" \
+        '{id: $id, previous: $previous, handoff: $handoff}' > "$tmp" \
+        && mv -f "$tmp" "$dir/pending.json"; }; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# Also called before selecting a handoff at the next launch. A failed receipt
+# write is retried without sending the initial prompt a second time. Each
+# transition is idempotent; a crash after the timeline append cannot duplicate
+# lineage. The caller owns the run lease.
+_launch_handoff_recover() {  # session_dir, engine
+    local session_dir="$1" engine="$2" dir file id previous handoff current handoffs consumer
+    dir=$(_launch_handoff_receipt_dir "$session_dir" "$engine") || return 1
+    file="$dir/pending.json"
+    [ -e "$file" ] || [ -L "$file" ] || return 0
+    _launch_handoff_receipt_dir_ok "$dir" "$session_dir" && [ ! -L "$file" ] && [ -f "$file" ] || return 1
+    id=$(jq -er '.id' "$file") && _is_uuid "$id" || return 1
+    previous=$(jq -r '.previous // ""' "$file") || return 1
+    handoff=$(jq -er '.handoff' "$file") && _cs_is_plain_name "$handoff" || return 1
+    current=$(cs_binding_read "$session_dir" "$engine") || return 1
+    [ "$current" = "$previous" ] || [ "$current" = "$id" ] || return 1
+    handoffs=$(cs_handoff_dir "$session_dir/.cs") || return 1
+    if _handoff_is_unconsumed "$handoffs/$handoff"; then
+        _launch_handoff_consume "$session_dir" "$handoff" "$id" || return 1
+    else
+        consumer=$(awk 'NR == 1 { if ($0 != "---") exit; next } $0 == "---" {exit} /^consumed_by: / {print $2; exit}' "$handoffs/$handoff") || return 1
+        [ "$consumer" = "$id" ] || return 1
+    fi
+    cs_binding_write "$session_dir" "$engine" "$id" || return 1
+    _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine "$engine" || return 1
+    if _is_uuid "$previous" && [ "$previous" != "$id" ]; then
+        if ! jq -se --arg from "$previous" --arg to "$id" --arg h "$handoff" --arg e "$engine" \
+            'any(.[]; .event == "rotated" and .from == $from and .to == $to and .handoff == $h and .engine == $e)' \
+            "$session_dir/.cs/timeline.jsonl" >/dev/null 2>&1; then
+            _timeline_rotated "$session_dir" "$previous" "$id" handoff "$handoff" "$engine" || return 1
+        fi
+    fi
+    rm -f "$file"
+}
+
 # The last context usage stamped in this session, 0-100, or nothing.
 # cs-statusline keys the stamp by SESSION NAME, not by conversation, so it is
 # the newest render from any conversation opened here — usually the one being
@@ -448,7 +546,7 @@ _cs_claude_adapter_capabilities() {
     # memory_index: .cs/memory/MEMORY.md loads at every session start.
     # mail_delivery: hooks surface `cs -msg` mail inside the conversation.
     printf '%s\n' launch exact_resume startup_context feature_finish \
-        rotation spawn_brief memory_index mail_delivery recovery_autosave
+        rotation engine_switch spawn_brief memory_index mail_delivery recovery_autosave
 }
 
 _claude_native_id_valid() {  # native conversation ID

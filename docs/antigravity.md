@@ -6,7 +6,7 @@ directory that Claude Code and Codex use. cs starts `agy` in the session with
 the session's context handed over, and a hook records the conversation so a
 reopen resumes exactly that one and `agy`'s edits reach recovery. The same
 plugin carries cs's skills, as `/cs:<name>`. cs's status line, `cs -switch`,
-mail, and rotation do not reach Antigravity yet.
+and mail do not reach Antigravity yet. Rotation uses an exit and a fresh managed launch.
 
 ## Launching
 
@@ -159,8 +159,9 @@ the `/` menu and in the list the model reads.
 | Skill | Under Antigravity |
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
-| `rotate`, `feature` | Check `cs -engine supports rotation` and `spawn_brief`, print the line it gives, and stop before writing anything. |
-| `finish`, `switch` | Run only when you type them. In a cs session they check `feature_finish` and `rotation` the same way and stop. Outside one, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from (see [Follow-ups](#follow-ups)). |
+| `rotate` | Writes and arms the shared handoff, then asks you to `/exit` and reopen with `cs <name> --from-handoff`. |
+| `feature` | Checks `cs -engine supports spawn_brief` and stops before writing anything. |
+| `finish`, `switch` | Run only when you type them. In a cs session they check `feature_finish` and `engine_switch` the same way and stop. Outside one, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from (see [Follow-ups](#follow-ups)). |
 
 - **Explicit-only skills.** `finish` and `switch` carry
   `disable-model-invocation: true`, the key Claude Code reads. `agy` reads it
@@ -247,17 +248,73 @@ As with Claude, Antigravity keeps its native approval default unless you ask
 for automatic approval. In the picker (`cs -tui`, `e` on a session), the Engine
 row cycles Claude, Codex, and Antigravity with Left, Right, or Space.
 
+## Rotation
+
+Run `/cs:rotate <purpose>` inside the session. The shared skill writes and
+arms a lineage-stamped handoff. Then run `/exit` and reopen from your shell:
+
+```bash
+cs investigate --from-handoff
+```
+
+The saved engine remains Antigravity. You can also reopen normally and answer
+`r` at the pending-handoff prompt. `--from-handoff` takes the armed handoff,
+or the lexicographically last unconsumed handoff when none is armed, using
+the same manager selection as Claude and Codex. A selection from another
+checkout is identified in the prompt. With none pending, the launch refuses.
+
+cs passes the shared rotation context through `agy --prompt-interactive`;
+this starts the next step without an extra `go`. It never puts the handoff
+into the always-on rule. On the first PreInvocation, cs binds that exact
+conversation, marks the selected handoff `consumed` with `consumed_by`, clears
+only its matching marker, and records a timeline event with reason `handoff`.
+Repeated model calls and subagent conversations do not consume it again.
+A later resume uses only `--conversation <id>`, with no handoff prompt.
+
+Before changing the handoff or binding, the hook journals the consumer ID in
+cs's private cache (`launch-handoffs/<workspace identity>/antigravity/`). A
+receipt directory must be owned by you, mode 700, and outside the session,
+`/tmp`, `$TMPDIR` and configured sandbox writable roots. A receipt failure
+is retried in the same conversation or repaired at the next
+launch before any handoff can be offered again. Recovery refuses while state
+is unwritable; repair it and reopen with `--resume` to avoid replaying work.
+
+A launch cancelled or failed before PreInvocation leaves the handoff pending
+and the previous binding intact. Retry with `--from-handoff`. Once the hook
+has bound the conversation, its receipt stays spent even if agy later fails;
+reopen with `--resume` to recover that conversation. A missing or disabled cs
+plugin, an unavailable `--prompt-interactive` flag, or failure to create cs's
+private cache directory refuses rotation and leaves the handoff pending.
+
+`Y` or Enter at the picker resumes the previous conversation; `n` and
+`--fresh` start a bare conversation. Those choices, explicit `--resume`, and
+unattended ordinary opens disarm the marker while leaving the handoff pending.
+`d` discards the selected handoff. Cancelling the picker leaves it armed.
+
+Antigravity's native `/clear` (alias `/new`) resets context, and `/exit`
+(alias `/quit`) closes the CLI; see the [native command reference](https://antigravity.google/docs/cli/reference).
+cs uses the exit/reopen route because its current hook contract does not
+identify a new main conversation separately from a subagent after the run
+has bound once. In-place `/clear` rotation and automatic terminal input are
+not implemented. Rotation does not enable `cs -switch` (`engine_switch`),
+spawn briefs or any of the capabilities below. Native approval settings and
+explicit model/effort options follow the ordinary launch behavior.
+
+The route and initial-prompt flag were checked against agy 1.4.12's help,
+embedded exit documentation, and the native command reference. Local
+regressions use fake agy with isolated state. A live model turn exercising
+rotation has not been run.
+
 ## Capabilities and limits
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
-`startup_context`, `recovery_autosave`, and `memory_index`.
+`startup_context`, `recovery_autosave`, `memory_index`, and `rotation`.
 `cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly
 ([Skills](#skills)).
 
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
-| Rotation (`rotation`) | `--from-handoff` is refused before the session is opened or migrated, and the refusal names the Claude command. A pending handoff stays armed for the next Claude or Codex launch. |
 | `cs -switch` | Refused both from an Antigravity run and to Antigravity as a target. Exit and reopen with `--engine` instead. |
 | Spawn briefs and task queues (`spawn_brief`) | `cs -spawn --engine antigravity` opens the session only; with `--brief` or `--task` it is refused before anything is staged. |
 | `-finish` (`feature_finish`) | Refused before the session opens. Run it under Claude or Codex. A retire refusal for a feature of an Antigravity base names `cs <base> --engine claude -finish`. |
@@ -323,7 +380,7 @@ that fires the plugin's hooks with payloads of the measured shape.
 ## Follow-ups
 
 These come later as separate changes: the status line, `cs -switch`, mail
-delivery, rotation, spawn briefs, `-finish`, and encrypted sessions.
+delivery, in-place `/clear` rotation, spawn briefs, `-finish`, and encrypted sessions.
 
 - When `-finish` comes, the finish skill needs its own folder to reach
   `scripts/finish.sh`. Whether `agy` gives it that folder is not known. Its
