@@ -164,6 +164,47 @@ _launch_handoff_receipt_dir_ok() {  # dir, session_dir
         && ! _codex_run_dir_in_config_root "$1" "$2"
 }
 
+# Persist intent before the native child can see a prompt. An attempt with no
+# consumer is ambiguous, not proof that the native runtime did no work.
+_launch_handoff_prepare() {  # session_dir, engine, handoff
+    local dir tmp previous
+    _cs_is_plain_name "$3" && _is_uuid "${CS_RUN_ID:-}" || return 1
+    previous=$(cs_binding_read "$1" "$2") || return 1
+    dir=$(_launch_handoff_receipt_dir "$1" "$2") || return 1
+    cs_cache_dir_make_private "$dir" && _launch_handoff_receipt_dir_ok "$dir" "$1" || return 1
+    [ ! -e "$dir/intent.json" ] && [ ! -L "$dir/intent.json" ] \
+        && [ ! -e "$dir/pending.json" ] && [ ! -L "$dir/pending.json" ] || return 1
+    rm -f "$dir/consumer" "$dir/claim-open" || return 1
+    tmp=$(mktemp "$dir/.intent.XXXXXX") || return 1
+    if ! { jq -nc --arg run "$CS_RUN_ID" --arg previous "$previous" --arg handoff "$3" \
+        '{run: $run, previous: $previous, handoff: $handoff}' > "$tmp" \
+        && ( umask 077; set -C; : > "$dir/claim-open" ) \
+        && mv -f "$tmp" "$dir/intent.json"; }; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# Claim once, before the fallible receipt write. Taking away the permit first
+# means even a partial consumer write cannot let a later ID take ownership.
+_launch_handoff_claim() {  # session_dir, engine, handoff, id, previous
+    local dir consumer
+    dir=$(_launch_handoff_receipt_dir "$1" "$2") || return 1
+    _launch_handoff_receipt_dir_ok "$dir" "$1" \
+        && [ ! -L "$dir/intent.json" ] \
+        && jq -e --arg run "${CS_RUN_ID:-}" --arg h "$3" --arg previous "$5" \
+            '.run == $run and .handoff == $h and .previous == $previous' "$dir/intent.json" >/dev/null || return 1
+    if [ -e "$dir/consumer" ] || [ -L "$dir/consumer" ]; then
+        [ -f "$dir/consumer" ] && [ ! -L "$dir/consumer" ] || return 1
+        IFS= read -r consumer < "$dir/consumer" || return 1
+        [ "$consumer" = "$4" ]
+        return $?
+    fi
+    [ -f "$dir/claim-open" ] && [ ! -L "$dir/claim-open" ] || return 1
+    rm "$dir/claim-open" || return 1
+    ( umask 077; set -C; printf '%s\n' "$4" > "$dir/consumer" )
+}
+
 _launch_handoff_record() {  # session_dir, engine, handoff, id, previous
     local dir tmp
     _cs_is_plain_name "$3" && _is_uuid "$4" || return 1
@@ -190,9 +231,21 @@ _launch_handoff_record() {  # session_dir, engine, handoff, id, previous
 # transition is idempotent; a crash after the timeline append cannot duplicate
 # lineage. The caller owns the run lease.
 _launch_handoff_recover() {  # session_dir, engine
-    local session_dir="$1" engine="$2" dir file id previous handoff current handoffs consumer
+    local session_dir="$1" engine="$2" dir file id previous handoff current handoffs consumer intent
     dir=$(_launch_handoff_receipt_dir "$session_dir" "$engine") || return 1
     file="$dir/pending.json"
+    intent="$dir/intent.json"
+    if [ -e "$intent" ] || [ -L "$intent" ]; then
+        _launch_handoff_receipt_dir_ok "$dir" "$session_dir" \
+            && [ -f "$intent" ] && [ ! -L "$intent" ] \
+            && [ -f "$dir/consumer" ] && [ ! -L "$dir/consumer" ] || return 1
+        IFS= read -r id < "$dir/consumer" && _is_uuid "$id" || return 1
+        previous=$(jq -er '.previous | strings' "$intent") || return 1
+        handoff=$(jq -er '.handoff' "$intent") && _cs_is_plain_name "$handoff" || return 1
+        # Also covers a crash after ownership was claimed but before the
+        # first receipt could be created. No initial prompt is sent again.
+        _launch_handoff_record "$session_dir" "$engine" "$handoff" "$id" "$previous" || return 1
+    fi
     [ -e "$file" ] || [ -L "$file" ] || return 0
     _launch_handoff_receipt_dir_ok "$dir" "$session_dir" && [ ! -L "$file" ] && [ -f "$file" ] || return 1
     id=$(jq -er '.id' "$file") && _is_uuid "$id" || return 1
@@ -216,7 +269,7 @@ _launch_handoff_recover() {  # session_dir, engine
             _timeline_rotated "$session_dir" "$previous" "$id" handoff "$handoff" "$engine" || return 1
         fi
     fi
-    rm -f "$file"
+    rm -f "$file" "$intent" "$dir/consumer" "$dir/claim-open"
 }
 
 # The last context usage stamped in this session, 0-100, or nothing.

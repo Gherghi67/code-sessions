@@ -271,16 +271,20 @@ only its matching marker, and records a timeline event with reason `handoff`.
 Repeated model calls and subagent conversations do not consume it again.
 A later resume uses only `--conversation <id>`, with no handoff prompt.
 
-Before changing the handoff or binding, the hook journals the consumer ID in
-cs's private cache (`launch-handoffs/<workspace identity>/antigravity/`). A
+Before starting agy, cs journals the launch intent in its private cache
+(`launch-handoffs/<workspace identity>/antigravity/`). The first hook claims
+the consumer ID separately before changing the handoff or binding. A
 receipt directory must be owned by you, mode 700, and outside the session,
 `/tmp`, `$TMPDIR` and configured sandbox writable roots. A receipt failure
 is retried in the same conversation or repaired at the next
 launch before any handoff can be offered again. Recovery refuses while state
 is unwritable; repair it and reopen with `--resume` to avoid replaying work.
 
-A launch cancelled or failed before PreInvocation leaves the handoff pending
-and the previous binding intact. Retry with `--from-handoff`. Once the hook
+A launch cancelled or failed without a consumer receipt leaves the handoff
+pending and the previous binding intact, but is ambiguous: the missing hook
+does not prove that no work ran. cs refuses another launch until you inspect
+native agy history and repair the cached intent. Do not retry that attempt
+with `--from-handoff`. Once the hook
 has bound the conversation, its receipt stays spent even if agy later fails;
 reopen with `--resume` to recover that conversation. A missing or disabled cs
 plugin, an unavailable `--prompt-interactive` flag, or failure to create cs's

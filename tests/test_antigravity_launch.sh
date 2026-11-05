@@ -186,19 +186,28 @@ test_handoff_launch_binds_consumes_and_resumes_without_replay() {
     assert_file_contains "$handoff" "^consumed_by: $second$" "resume preserves the receipt"
 }
 
-test_cancelled_and_failed_handoff_launches_keep_the_handoff_recoverable() {
+test_cancelled_handoff_launch_does_not_replay_an_ambiguous_attempt() {
     local output dir code status second=22222222-2222-4222-8222-222222222222
     output=$("$CS_BIN" retry --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir retry)
     _arm_rotation retry
     for code in 0 1 130; do
+        # Each interrupted native launch is a separate handoff attempt. With
+        # no hook receipt cs cannot prove that no native work happened.
+        _arm_rotation retry
         status=0
         output=$(AGY_NEW_ID=$second AGY_NO_TURN=1 AGY_EXIT=$code "$CS_BIN" retry --from-handoff 2>&1) || status=$?
         assert_eq "$code" "$status" "native exit status survives" || return 1
         assert_eq "$AGY_NEW_ID" "$(_binding retry)" "no turn leaves the old binding" || return 1
         assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
         assert_eq 2026-11-05-rotate.md "$(cat "$dir/.cs/local/pending-handoff")" || return 1
-        assert_output_contains "$output" 'stays pending' || return 1
+        : > "$AGY_LOG"
+        status=0
+        output=$("$CS_BIN" retry --from-handoff 2>&1) || status=$?
+        assert_eq 1 "$status" "an unknown native consumer must not replay" || return 1
+        assert_eq '' "$(cat "$AGY_LOG")" "recovery refuses before another native launch" || return 1
+        # Explicit fixture repair after inspecting this fake's no-turn run.
+        rm -rf "$CS_CACHE_DIR/launch-handoffs"
     done
     # A failure after the hook reached the model keeps its receipt. Retrying
     # a failed native turn resumes its conversation, not the handoff again.
@@ -208,6 +217,60 @@ test_cancelled_and_failed_handoff_launches_keep_the_handoff_recoverable() {
     assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: consumed$' || return 1
     assert_eq "$second" "$(_binding retry)" || return 1
     assert_not_exists "$dir/.cs/local/pending-handoff"
+}
+
+test_first_receipt_failure_keeps_the_main_consumer_across_subagents_and_reopens() {
+    local output dir real_mktemp second=22222222-2222-4222-8222-222222222222 sub=55555555-5555-4555-8555-555555555555
+    output=$("$CS_BIN" first-receipt --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir first-receipt)
+    _arm_rotation first-receipt
+    real_mktemp=$(command -v mktemp)
+    cat > "$TEST_TMPDIR/bin/mktemp" <<'FAIL_RECEIPT'
+#!/usr/bin/env bash
+case "$*" in *'/.receipt.'*) exit 1 ;; esac
+exec "$AGY_REAL_MKTEMP" "$@"
+FAIL_RECEIPT
+    chmod +x "$TEST_TMPDIR/bin/mktemp"
+    output=$(AGY_REAL_MKTEMP="$real_mktemp" AGY_NEW_ID=$second AGY_SUBAGENTS=$sub \
+        "$CS_BIN" first-receipt --from-handoff 2>&1) || { echo "$output"; return 1; }
+    assert_file_not_contains "$AGY_HOOK_OUT" '[^{}[:space:]]' "failure keeps the fail-open JSON contract" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding first-receipt)" "receipt failure preserves the old binding" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
+    rm "$TEST_TMPDIR/bin/mktemp"
+    output=$("$CS_BIN" first-receipt --resume 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $second" "$(_agy_argv)" "retry recovers the first main ID without another prompt" || return 1
+    assert_eq "$second" "$(_binding first-receipt)" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$"
+}
+
+test_rotation_refuses_before_agy_when_launch_intent_cannot_be_saved() {
+    local output dir real_mktemp status=0
+    output=$("$CS_BIN" intent --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir intent)
+    _arm_rotation intent
+    real_mktemp=$(command -v mktemp)
+    cat > "$TEST_TMPDIR/bin/mktemp" <<'FAIL_INTENT'
+#!/usr/bin/env bash
+case "$*" in *'/.intent.'*) exit 1 ;; esac
+exec "$AGY_REAL_MKTEMP" "$@"
+FAIL_INTENT
+    chmod +x "$TEST_TMPDIR/bin/mktemp"
+    : > "$AGY_LOG"
+    output=$(AGY_REAL_MKTEMP="$real_mktemp" "$CS_BIN" intent --from-handoff 2>&1) || status=$?
+    assert_eq 1 "$status" "a native prompt requires durable intent" || return 1
+    assert_eq '' "$(cat "$AGY_LOG")" "agy never starts on failed preparation" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$'
+}
+
+test_rotation_from_a_legacy_binding_claims_its_consumer() {
+    local output dir second=22222222-2222-4222-8222-222222222222
+    output=$(AGY_NO_TURN=1 "$CS_BIN" legacy-rotation --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir legacy-rotation)
+    printf 'latest\n' > "$dir/.cs/local/antigravity-conversation"
+    _arm_rotation legacy-rotation
+    output=$(AGY_NEW_ID=$second "$CS_BIN" legacy-rotation --from-handoff 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$second" "$(_binding legacy-rotation)" "claim retains the raw previous binding" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$"
 }
 
 test_pending_handoff_menu_and_explicit_intents() {
@@ -372,6 +435,8 @@ test_a_failed_receipt_can_retry_in_the_same_conversation() {
         mkdir -m 700 "$run_dir"
         printf 'fresh\n' > "$run_dir/opened"
         printf '2026-11-05-rotate.md\n' > "$run_dir/handoff"
+        export CS_RUN_ID=33333333-3333-4333-8333-333333333333
+        _launch_handoff_prepare "$dir" antigravity 2026-11-05-rotate.md || exit 1
         _handoff_set_status() { return 1; }
         if _antigravity_hook_bind "$dir" "$second" "$run_dir"; then
             echo '  FAIL: receipt failure must stay retryable'; exit 1
@@ -381,6 +446,10 @@ test_a_failed_receipt_can_retry_in_the_same_conversation() {
         assert_not_exists "$run_dir/bound" || exit 1
         assert_eq "$AGY_NEW_ID" "$(_binding receipt)" "failure leaves the original binding" || exit 1
         source "$SCRIPT_DIR/../lib/75-launch.sh"
+        if _antigravity_hook_bind "$dir" 55555555-5555-4555-8555-555555555555 "$run_dir"; then
+            echo '  FAIL: a later subagent cannot claim a failed main receipt'; exit 1
+        fi
+        assert_eq "$AGY_NEW_ID" "$(_binding receipt)" "subagent leaves the binding alone" || exit 1
         _antigravity_hook_bind "$dir" "$second" "$run_dir" || exit 1
         assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$" || exit 1
         assert_file_exists "$run_dir/bound" || exit 1
@@ -1039,7 +1108,10 @@ test_edits_in_a_run_are_autosaved_for_recovery() {
 }
 
 run_test test_handoff_launch_binds_consumes_and_resumes_without_replay
-run_test test_cancelled_and_failed_handoff_launches_keep_the_handoff_recoverable
+run_test test_cancelled_handoff_launch_does_not_replay_an_ambiguous_attempt
+run_test test_first_receipt_failure_keeps_the_main_consumer_across_subagents_and_reopens
+run_test test_rotation_refuses_before_agy_when_launch_intent_cannot_be_saved
+run_test test_rotation_from_a_legacy_binding_claims_its_consumer
 run_test test_pending_handoff_menu_and_explicit_intents
 run_test test_rotation_preflight_keeps_handoff_on_missing_disabled_hook_or_flag
 run_test test_rotation_cannot_enable_switching_into_antigravity

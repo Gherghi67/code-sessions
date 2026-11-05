@@ -200,7 +200,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     }
     export CS_BIN
     cs_run_with_lease "$meta_dir" _launch_handoff_recover "$session_dir" antigravity || {
-        _antigravity_launch_error "An Antigravity handoff receipt needs recovery. Repair the session's writable state and reopen with --resume; do not replay it with --from-handoff."
+        _antigravity_launch_error "An Antigravity handoff attempt needs recovery. Repair writable state and reopen with --resume. If no consumer was recorded, inspect native agy history before repairing $(_launch_handoff_receipt_dir "$session_dir" antigravity)/intent.json; do not replay it with --from-handoff."
         return 1
     }
     binding_file="$meta_dir/local/$(_cs_binding_file antigravity)"
@@ -351,15 +351,17 @@ $prompt"
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
     fi
     printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. Mail and the task queue are not available under Antigravity yet."
+    if [ -n "$rotation_handoff" ]; then
+        cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
+            _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."
+            return 1
+        }
+    fi
     local status=0
     cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
         ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
-        if [ -f "$(_launch_handoff_receipt_dir "$session_dir" antigravity)/pending.json" ]; then
-            warn "The Antigravity handoff reached its conversation but its receipt needs recovery. Reopen with: cs $session_name --resume"
-        else
-            warn "The Antigravity launch did not bind the handoff; it stays pending. Retry with: cs $session_name --from-handoff"
-        fi
+        warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
     fi
     return "$status"
 }
@@ -468,6 +470,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     [ "$opened" != resume ] || { source=resume; reason=rebind; }
     if [ "$opened" = fresh ] && [ -f "$run_dir/handoff" ]; then
         IFS= read -r handoff < "$run_dir/handoff" || handoff=""
+        _launch_handoff_claim "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_record "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_recover "$session_dir" antigravity || return 1
         reason=handoff

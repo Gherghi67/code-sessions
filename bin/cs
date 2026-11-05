@@ -17721,6 +17721,47 @@ _launch_handoff_receipt_dir_ok() {  # dir, session_dir
         && ! _codex_run_dir_in_config_root "$1" "$2"
 }
 
+# Persist intent before the native child can see a prompt. An attempt with no
+# consumer is ambiguous, not proof that the native runtime did no work.
+_launch_handoff_prepare() {  # session_dir, engine, handoff
+    local dir tmp previous
+    _cs_is_plain_name "$3" && _is_uuid "${CS_RUN_ID:-}" || return 1
+    previous=$(cs_binding_read "$1" "$2") || return 1
+    dir=$(_launch_handoff_receipt_dir "$1" "$2") || return 1
+    cs_cache_dir_make_private "$dir" && _launch_handoff_receipt_dir_ok "$dir" "$1" || return 1
+    [ ! -e "$dir/intent.json" ] && [ ! -L "$dir/intent.json" ] \
+        && [ ! -e "$dir/pending.json" ] && [ ! -L "$dir/pending.json" ] || return 1
+    rm -f "$dir/consumer" "$dir/claim-open" || return 1
+    tmp=$(mktemp "$dir/.intent.XXXXXX") || return 1
+    if ! { jq -nc --arg run "$CS_RUN_ID" --arg previous "$previous" --arg handoff "$3" \
+        '{run: $run, previous: $previous, handoff: $handoff}' > "$tmp" \
+        && ( umask 077; set -C; : > "$dir/claim-open" ) \
+        && mv -f "$tmp" "$dir/intent.json"; }; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# Claim once, before the fallible receipt write. Taking away the permit first
+# means even a partial consumer write cannot let a later ID take ownership.
+_launch_handoff_claim() {  # session_dir, engine, handoff, id, previous
+    local dir consumer
+    dir=$(_launch_handoff_receipt_dir "$1" "$2") || return 1
+    _launch_handoff_receipt_dir_ok "$dir" "$1" \
+        && [ ! -L "$dir/intent.json" ] \
+        && jq -e --arg run "${CS_RUN_ID:-}" --arg h "$3" --arg previous "$5" \
+            '.run == $run and .handoff == $h and .previous == $previous' "$dir/intent.json" >/dev/null || return 1
+    if [ -e "$dir/consumer" ] || [ -L "$dir/consumer" ]; then
+        [ -f "$dir/consumer" ] && [ ! -L "$dir/consumer" ] || return 1
+        IFS= read -r consumer < "$dir/consumer" || return 1
+        [ "$consumer" = "$4" ]
+        return $?
+    fi
+    [ -f "$dir/claim-open" ] && [ ! -L "$dir/claim-open" ] || return 1
+    rm "$dir/claim-open" || return 1
+    ( umask 077; set -C; printf '%s\n' "$4" > "$dir/consumer" )
+}
+
 _launch_handoff_record() {  # session_dir, engine, handoff, id, previous
     local dir tmp
     _cs_is_plain_name "$3" && _is_uuid "$4" || return 1
@@ -17747,9 +17788,21 @@ _launch_handoff_record() {  # session_dir, engine, handoff, id, previous
 # transition is idempotent; a crash after the timeline append cannot duplicate
 # lineage. The caller owns the run lease.
 _launch_handoff_recover() {  # session_dir, engine
-    local session_dir="$1" engine="$2" dir file id previous handoff current handoffs consumer
+    local session_dir="$1" engine="$2" dir file id previous handoff current handoffs consumer intent
     dir=$(_launch_handoff_receipt_dir "$session_dir" "$engine") || return 1
     file="$dir/pending.json"
+    intent="$dir/intent.json"
+    if [ -e "$intent" ] || [ -L "$intent" ]; then
+        _launch_handoff_receipt_dir_ok "$dir" "$session_dir" \
+            && [ -f "$intent" ] && [ ! -L "$intent" ] \
+            && [ -f "$dir/consumer" ] && [ ! -L "$dir/consumer" ] || return 1
+        IFS= read -r id < "$dir/consumer" && _is_uuid "$id" || return 1
+        previous=$(jq -er '.previous | strings' "$intent") || return 1
+        handoff=$(jq -er '.handoff' "$intent") && _cs_is_plain_name "$handoff" || return 1
+        # Also covers a crash after ownership was claimed but before the
+        # first receipt could be created. No initial prompt is sent again.
+        _launch_handoff_record "$session_dir" "$engine" "$handoff" "$id" "$previous" || return 1
+    fi
     [ -e "$file" ] || [ -L "$file" ] || return 0
     _launch_handoff_receipt_dir_ok "$dir" "$session_dir" && [ ! -L "$file" ] && [ -f "$file" ] || return 1
     id=$(jq -er '.id' "$file") && _is_uuid "$id" || return 1
@@ -17773,7 +17826,7 @@ _launch_handoff_recover() {  # session_dir, engine
             _timeline_rotated "$session_dir" "$previous" "$id" handoff "$handoff" "$engine" || return 1
         fi
     fi
-    rm -f "$file"
+    rm -f "$file" "$intent" "$dir/consumer" "$dir/claim-open"
 }
 
 # The last context usage stamped in this session, 0-100, or nothing.
@@ -21376,7 +21429,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     }
     export CS_BIN
     cs_run_with_lease "$meta_dir" _launch_handoff_recover "$session_dir" antigravity || {
-        _antigravity_launch_error "An Antigravity handoff receipt needs recovery. Repair the session's writable state and reopen with --resume; do not replay it with --from-handoff."
+        _antigravity_launch_error "An Antigravity handoff attempt needs recovery. Repair writable state and reopen with --resume. If no consumer was recorded, inspect native agy history before repairing $(_launch_handoff_receipt_dir "$session_dir" antigravity)/intent.json; do not replay it with --from-handoff."
         return 1
     }
     binding_file="$meta_dir/local/$(_cs_binding_file antigravity)"
@@ -21527,15 +21580,17 @@ $prompt"
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
     fi
     printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. Mail and the task queue are not available under Antigravity yet."
+    if [ -n "$rotation_handoff" ]; then
+        cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
+            _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."
+            return 1
+        }
+    fi
     local status=0
     cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
         ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
-        if [ -f "$(_launch_handoff_receipt_dir "$session_dir" antigravity)/pending.json" ]; then
-            warn "The Antigravity handoff reached its conversation but its receipt needs recovery. Reopen with: cs $session_name --resume"
-        else
-            warn "The Antigravity launch did not bind the handoff; it stays pending. Retry with: cs $session_name --from-handoff"
-        fi
+        warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
     fi
     return "$status"
 }
@@ -21644,6 +21699,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     [ "$opened" != resume ] || { source=resume; reason=rebind; }
     if [ "$opened" = fresh ] && [ -f "$run_dir/handoff" ]; then
         IFS= read -r handoff < "$run_dir/handoff" || handoff=""
+        _launch_handoff_claim "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_record "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_recover "$session_dir" antigravity || return 1
         reason=handoff
