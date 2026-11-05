@@ -3627,7 +3627,7 @@ test_install_report_names_first_repeat_and_update_runs() {
     mkdir -p "$fake_home"
     out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
     assert_output_contains "$out" "^   cs $(_bre_literal "$version")$" "a first install opens with the version alone" || return 1
-    assert_output_contains "$out" "✓ Placed $total files *~/.local/bin, ~/.claude$" "a first install places every file" || return 1
+    assert_output_contains "$out" "✓ Placed $total files *$(_bre_literal "$fake_home/.local/bin, $fake_home/.claude")$" "a first install places every file" || return 1
     assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed$" "a first install closes with installed" || return 1
     assert_output_contains "$out" "Getting started:" "a first install shows the usage examples" || return 1
     out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
@@ -3688,6 +3688,24 @@ test_codex_install_report_ignores_an_unrelated_claude_stamp() {
     assert_output_contains "$out" "Getting started:" "a first Codex install still shows onboarding" || return 1
     out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
     assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed again$" "the deployed binary takes precedence over the stale Claude stamp"
+}
+
+# The placement summary describes the adapters deployed in this run, including
+# a custom Codex home, on both the first and unchanged-file paths.
+test_install_report_names_the_selected_adapter_destinations() {
+    local fake_home="$TEST_TMPDIR/destinations" codex_home="$TEST_TMPDIR/custom-codex" out summary
+    mkdir -p "$fake_home"
+    out=$(HOME="$fake_home" CODEX_HOME="$codex_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    summary=$(printf '%s\n' "$out" | grep '✓ Placed ')
+    assert_output_contains "$summary" "$(_bre_literal "$fake_home/.local/bin, $codex_home")$" "a Codex-only install names its actual destinations" || return 1
+    assert_output_not_contains "$summary" '\.claude' "a Codex-only install does not report Claude deployment" || return 1
+    out=$(HOME="$fake_home" CODEX_HOME="$codex_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    summary=$(printf '%s\n' "$out" | grep '✓ Placed ')
+    assert_output_contains "$summary" "unchanged · $(_bre_literal "$fake_home/.local/bin, $codex_home")$" "an unchanged install names the same destinations" || return 1
+    fake_home="$TEST_TMPDIR/both-destinations"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=claude,codex bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    summary=$(printf '%s\n' "$out" | grep '✓ Placed ')
+    assert_output_contains "$summary" "$(_bre_literal "$fake_home/.local/bin, $fake_home/.claude, $fake_home/.codex")$" "a combined install names both native adapter homes"
 }
 
 # The unchanged-file path reads the install record to see whether it already
@@ -4540,6 +4558,7 @@ run_test test_reinstall_finishes_when_the_record_is_a_fifo
 run_test test_install_report_names_first_repeat_and_update_runs
 run_test test_codex_install_report_names_first_repeat_and_update_runs
 run_test test_codex_install_report_ignores_an_unrelated_claude_stamp
+run_test test_install_report_names_the_selected_adapter_destinations
 run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
@@ -5366,7 +5385,10 @@ test_install_registers_the_antigravity_hook_where_agy_has_its_folder() {
     out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
         || { echo "  FAIL: install.sh exited non-zero: $out"; return 1; }
     assert_file_exists "$fake_home/.gemini/config/plugins/cs/hooks.json" "agy's folder gets the hook with agy off PATH" || return 1
-    assert_output_contains "$out" "Installed Antigravity hook" "the install reports the hook it wrote"
+    assert_output_contains "$out" "Installed Antigravity hook" "the install reports the hook it wrote" || return 1
+    local summary
+    summary=$(printf '%s\n' "$out" | grep '✓ Placed ')
+    assert_output_contains "$summary" "$(_bre_literal "$fake_home/.local/bin, $fake_home/.codex, $fake_home/.gemini/config/plugins/cs")$" "the placement summary includes Antigravity's deployed plugin"
 }
 
 test_install_keeps_a_plugin_folder_that_is_not_cs_s() {

@@ -2529,6 +2529,7 @@ fi
 echo ""
 
 _step "Placing files"
+CS_DESTINATIONS="$INSTALL_DIR"
 # Shared binaries always land; each adapter adds its own helpers.
 _bins=(cs cs-secrets)
 if _install_has_engine codex; then
@@ -2715,6 +2716,7 @@ _skill_path_real() {
 
 
 if _install_has_engine claude; then
+CS_DESTINATIONS="$CS_DESTINATIONS, $HOME/.claude"
 # Install hooks
 mkdir -p "$HOOKS_DIR"
 
@@ -2854,6 +2856,7 @@ if _install_has_engine codex; then
 # payload natively. CODEX_HOME is where Codex itself looks (setup.sh points it
 # at the profile). Mods stay with Claude: they are Claude Code function hooks.
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+CS_DESTINATIONS="$CS_DESTINATIONS, $CODEX_DIR"
 CODEX_SKILLS_DIR="$CODEX_DIR/skills"
 installed "Codex skills" "$CODEX_SKILLS_DIR/"
 # Codex keeps its login in this directory; a first install creates it private.
@@ -2910,6 +2913,7 @@ if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravi
         _antigravity_plugin_register "$INSTALL_DIR/cs" || _agy_rc=$?
         case $_agy_rc in
             0)
+                CS_DESTINATIONS="$CS_DESTINATIONS, $AGY_PLUGIN_DIR"
                 installed "Antigravity hook" "$AGY_PLUGIN_DIR/"
                 if _antigravity_plugin_subdir_ok "$AGY_PLUGIN_DIR/scripts"; then
                     mkdir -p "$AGY_PLUGIN_DIR/scripts"
@@ -2946,11 +2950,9 @@ else
 fi
 _place_file "$_record_tmp" "$(_cs_install_record)" 644
 if [ "$CS_UNCHANGED" -gt 0 ]; then
-    # shellcheck disable=SC2088  # a tilde the user reads, not a path cs opens
-    _done "Placed $CS_PLACED files" "$CS_UNCHANGED unchanged · ~/.local/bin, ~/.claude"
+    _done "Placed $CS_PLACED files" "$CS_UNCHANGED unchanged · $CS_DESTINATIONS"
 else
-    # shellcheck disable=SC2088  # a tilde the user reads, not a path cs opens
-    _done "Placed $CS_PLACED files" "~/.local/bin, ~/.claude"
+    _done "Placed $CS_PLACED files" "$CS_DESTINATIONS"
 fi
 if [ -n "$CS_PICKER" ]; then
     _done "Picker cs-tui" "$CS_PICKER"
