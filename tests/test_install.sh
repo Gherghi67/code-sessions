@@ -3635,6 +3635,8 @@ test_install_report_names_first_repeat_and_update_runs() {
     assert_output_contains "$out" "✓ Placed 4 files *$deployed unchanged" "a repeat places the binaries and leaves the rest" || return 1
     assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed again$" "a repeat closes with installed again" || return 1
     assert_output_not_contains "$out" "Getting started:" "a repeat shows no usage examples" || return 1
+    # A Claude install whose binary is missing still reports its hook version.
+    rm -f "$fake_home/.local/bin/cs"
     printf '2000.1.1\n' > "$fake_home/.claude/hooks/cs/.version"
     out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
     assert_output_contains "$out" "^   cs 2000.1.1 → $(_bre_literal "$version")$" "an update opens with old → new" || return 1
@@ -3648,6 +3650,44 @@ test_install_report_names_first_repeat_and_update_runs() {
     out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
     assert_output_contains "$out" "Kept $(_bre_literal "$fake_home")/.local/bin/cs: a symlink" "the foreign link is kept" || return 1
     assert_output_contains "$out" "✓ Placed 3 files" "a kept destination is not counted as placed" || return 1
+}
+
+# A Codex-only install has no Claude hook stamp. Repeats and upgrades must
+# still suppress onboarding and name the version they replace.
+test_codex_install_report_names_first_repeat_and_update_runs() {
+    local fake_home="$TEST_TMPDIR/codex-report" out version
+    local CS_INSTALL_ENGINES=codex
+    export CS_INSTALL_ENGINES
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    mkdir -p "$fake_home"
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^   cs $(_bre_literal "$version")$" "a first Codex install opens with the version alone" || return 1
+    assert_output_contains "$out" "Getting started:" "a first Codex install shows onboarding" || return 1
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed again$" "a Codex repeat is reported as a repeat" || return 1
+    assert_output_not_contains "$out" "Getting started:" "a Codex repeat omits onboarding" || return 1
+    sed 's/^VERSION=.*/VERSION="2000.1.1"/' "$fake_home/.local/bin/cs" > "$TEST_TMPDIR/older-cs"
+    mv "$TEST_TMPDIR/older-cs" "$fake_home/.local/bin/cs"
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^   cs 2000.1.1 → $(_bre_literal "$version")$" "a Codex update names the previous version" || return 1
+    assert_output_contains "$out" "✓ cs updated to $(_bre_literal "$version")$" "a Codex update is reported as an update" || return 1
+    assert_output_not_contains "$out" "Getting started:" "a Codex update omits onboarding"
+}
+
+# Claude's hook stamp may describe a different deployment. It cannot decide
+# whether a Codex-only install is new or which version it replaces.
+test_codex_install_report_ignores_an_unrelated_claude_stamp() {
+    local fake_home="$TEST_TMPDIR/codex-report-claude" out version
+    local CS_INSTALL_ENGINES=codex
+    export CS_INSTALL_ENGINES
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    mkdir -p "$fake_home/.claude/hooks/cs"
+    printf '1999.1.1\n' > "$fake_home/.claude/hooks/cs/.version"
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^   cs $(_bre_literal "$version")$" "an unrelated Claude stamp does not turn a first Codex install into an update" || return 1
+    assert_output_contains "$out" "Getting started:" "a first Codex install still shows onboarding" || return 1
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed again$" "the deployed binary takes precedence over the stale Claude stamp"
 }
 
 # The unchanged-file path reads the install record to see whether it already
@@ -4498,6 +4538,8 @@ run_test test_web_install_refuses_an_archive_missing_a_payload_file
 run_test test_reinstall_leaves_an_unchanged_file_in_place
 run_test test_reinstall_finishes_when_the_record_is_a_fifo
 run_test test_install_report_names_first_repeat_and_update_runs
+run_test test_codex_install_report_names_first_repeat_and_update_runs
+run_test test_codex_install_report_ignores_an_unrelated_claude_stamp
 run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name

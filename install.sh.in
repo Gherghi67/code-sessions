@@ -531,13 +531,19 @@ fi
 # Create install directory if needed
 mkdir -p "$INSTALL_DIR"
 
-# The version this install places, read from the payload's bin/cs:
-# $INSTALL_DIR/cs may be a link _place_file kept, which holds content cs did
-# not write and may point at anything, a FIFO included. The version installed
-# before it, from the hooks' stamp, heads the report as "<old> → <new>".
+# Read versions as data, never by running an existing binary: a kept link
+# may point at content cs did not write, or even a FIFO. The shared binary
+# describes the previous install regardless of the selected adapters.
 CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 CS_PREVIOUS=""
-if [ -f "$HOOKS_DIR/.version" ] && [ ! -L "$HOOKS_DIR/.version" ]; then
+if [ -f "$INSTALL_DIR/cs" ] && [ ! -L "$INSTALL_DIR/cs" ] \
+    && grep -q '^CS_FORK="code-sessions"' "$INSTALL_DIR/cs" 2>/dev/null; then
+    CS_PREVIOUS=$(grep -m1 '^VERSION=' "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || true)
+fi
+# A Claude install without a readable binary can still have a hook stamp.
+# It does not describe a separate Codex-only deployment.
+if [ -z "$CS_PREVIOUS" ] && _install_has_engine claude \
+    && [ -f "$HOOKS_DIR/.version" ] && [ ! -L "$HOOKS_DIR/.version" ]; then
     CS_PREVIOUS=$(head -n1 "$HOOKS_DIR/.version" 2>/dev/null || true)
 fi
 if [ -z "$CS_PREVIOUS" ]; then
