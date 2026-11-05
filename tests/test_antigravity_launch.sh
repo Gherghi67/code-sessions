@@ -333,6 +333,65 @@ test_rotation_preflight_keeps_handoff_on_missing_disabled_hook_or_flag() {
     assert_file_exists "$dir/.cs/local/pending-handoff"
 }
 
+_assert_rotation_hook_refused() {  # session_name
+    local output status=0 dir
+    dir=$(_session_dir "$1")
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" "$1" --from-handoff 2>&1) || status=$?
+    assert_eq 1 "$status" "rotation requires a usable binding hook" || return 1
+    assert_eq '' "$(cat "$AGY_LOG")" "refuse before agy receives the handoff" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff"
+}
+
+test_rotation_refuses_a_plugin_without_preinvocation() {
+    local output hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    output=$("$CS_BIN" no-binding-hook --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _arm_rotation no-binding-hook
+    jq 'del(."cs-session".PreInvocation)' "$hooks" > "$TEST_TMPDIR/hooks.json"
+    mv "$TEST_TMPDIR/hooks.json" "$hooks"
+    _assert_rotation_hook_refused no-binding-hook
+}
+
+test_rotation_refuses_unusable_preinvocation_commands() {
+    local output change hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    output=$("$CS_BIN" unusable-binding --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _arm_rotation unusable-binding
+    cp "$hooks" "$TEST_TMPDIR/good-hooks.json"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TMPDIR/not-executable"
+    for change in missing-executable nonexecutable wrong-type wrong-verb disabled; do
+        case "$change" in
+            missing-executable) jq --arg c "$TEST_TMPDIR/missing -antigravity-hook pre-invocation" '."cs-session".PreInvocation[0].command = $c' "$TEST_TMPDIR/good-hooks.json" ;;
+            nonexecutable) jq --arg c "$TEST_TMPDIR/not-executable -antigravity-hook pre-invocation" '."cs-session".PreInvocation[0].command = $c' "$TEST_TMPDIR/good-hooks.json" ;;
+            wrong-type) jq '."cs-session".PreInvocation[0].type = "prompt"' "$TEST_TMPDIR/good-hooks.json" ;;
+            wrong-verb) jq '."cs-session".PreInvocation[0].command |= sub("pre-invocation$"; "post-tool-use")' "$TEST_TMPDIR/good-hooks.json" ;;
+            disabled) jq '."cs-session".PreInvocation[0].enabled = false' "$TEST_TMPDIR/good-hooks.json" ;;
+        esac > "$hooks"
+        _assert_rotation_hook_refused unusable-binding || { echo "  FAIL: $change"; return 1; }
+    done
+}
+
+test_rotation_requires_the_plugin_manifest() {
+    local output
+    output=$("$CS_BIN" no-manifest --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _arm_rotation no-manifest
+    rm "$HOME/.gemini/config/plugins/cs/plugin.json"
+    _assert_rotation_hook_refused no-manifest
+}
+
+test_rotation_accepts_a_quoted_binding_hook_executable() {
+    local output dir odd="$TEST_TMPDIR/it's here" second=22222222-2222-4222-8222-222222222222
+    output=$("$CS_BIN" quoted-rotation --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir quoted-rotation)
+    _arm_rotation quoted-rotation
+    mkdir -p "$odd"
+    ln -s "$CS_BIN" "$odd/cs"
+    ( source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$odd/cs" ) || return 1
+    output=$(AGY_NEW_ID=$second "$CS_BIN" quoted-rotation --from-handoff 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$second" "$(_binding quoted-rotation)" "quoted binding hook runs" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$"
+}
+
 test_rotation_cannot_enable_switching_into_antigravity() {
     local output dir status=0
     output=$("$CS_BIN" target --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -1114,6 +1173,10 @@ run_test test_rotation_refuses_before_agy_when_launch_intent_cannot_be_saved
 run_test test_rotation_from_a_legacy_binding_claims_its_consumer
 run_test test_pending_handoff_menu_and_explicit_intents
 run_test test_rotation_preflight_keeps_handoff_on_missing_disabled_hook_or_flag
+run_test test_rotation_refuses_a_plugin_without_preinvocation
+run_test test_rotation_refuses_unusable_preinvocation_commands
+run_test test_rotation_requires_the_plugin_manifest
+run_test test_rotation_accepts_a_quoted_binding_hook_executable
 run_test test_rotation_cannot_enable_switching_into_antigravity
 run_test test_a_session_marker_cannot_switch_an_antigravity_run
 run_test test_a_failed_receipt_can_retry_in_the_same_conversation

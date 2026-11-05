@@ -165,6 +165,42 @@ _antigravity_flags_listed() {  # agy_bin, args...
     done
 }
 
+# Ownership lets the installer repair a partial plugin. Rotation instead
+# needs an enabled PreInvocation command that can actually bind its consumer.
+_antigravity_rotation_hook_ready() {
+    local dir commands command cs_path
+    dir=$(_antigravity_plugin_dir)
+    _antigravity_plugin_is_cs "$dir" \
+        && _antigravity_plugin_manifest_is_cs "$dir/plugin.json" || return 1
+    if [ -f "$HOME/.gemini/config/config.json" ]; then
+        jq -e --arg name "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$name].enabled != false' \
+            "$HOME/.gemini/config/config.json" >/dev/null 2>&1 || return 1
+    fi
+    commands=$(jq -er --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
+        .[$name].PreInvocation | arrays | .[]
+        | select(type == "object" and .enabled != false)
+        | (.hooks // [.]) | arrays | .[]
+        | select(type == "object" and .enabled != false and .type == "command")
+        | .command | strings | select(endswith(" -antigravity-hook pre-invocation"))
+    ' "$dir/hooks.json" 2>/dev/null) || return 1
+    while IFS= read -r command; do
+        cs_path=${command%" -antigravity-hook pre-invocation"}
+        case "$cs_path" in
+            \'*\')
+                cs_path=${cs_path#\'}
+                cs_path=${cs_path%\'}
+                cs_path=${cs_path//"'\\''"/\'}
+                ;;
+        esac
+        # Accept only the installer's shell-word encoding, never evaluate a
+        # hook command to find its path. This includes paths with quotes.
+        [ "$(_antigravity_hook_command "$cs_path" pre-invocation)" = "$command" ] || continue
+        case "$cs_path" in /*) ;; *) continue ;; esac
+        [ -f "$cs_path" ] && [ -x "$cs_path" ] && return 0
+    done < <(printf '%s\n' "$commands")
+    return 1
+}
+
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
     local session_name="$1" session_dir="$2" intent="${6:-auto}"
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
@@ -273,9 +309,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     if [ -n "$rotation_handoff" ]; then
         # A rotation requires the binding hook and a private run directory.
         # Ordinary launches can still work without either, with a warning.
-        if ! _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)" \
-            || { [ -f "$HOME/.gemini/config/config.json" ] \
-                && ! jq -e '.plugins.cs.enabled != false' "$HOME/.gemini/config/config.json" >/dev/null 2>&1; }; then
+        if ! _antigravity_rotation_hook_ready; then
             _antigravity_launch_error "The cs Antigravity hook is missing or disabled; enable the cs plugin or run setup.sh again. The handoff stays pending."
             return 1
         fi
