@@ -1130,7 +1130,7 @@ test_doctor_reports_a_live_server_and_removes_a_stale_pid_file() {
     dpid=$!
     kill "$dpid"; wait "$dpid" 2>/dev/null || true
     printf '%s\n' "$dpid" > "$CS_SESSIONS_ROOT/gone/.cs/local/remote.pid"
-    out=$("$CS_BIN" -doctor 2>&1 | strip_ansi) || true
+    out=$(CS_SESSION_DIR="$TEST_TMPDIR" "$CS_BIN" -doctor 2>&1 | strip_ansi) || true
     assert_eq "  [ OK ] Remote: live is served by claude remote-control (PID $spid)" \
         "$(grep -F 'Remote: live' <<< "$out")" "a live server is reported" || return 1
     assert_eq "  [WARN] Remote: gone's .cs/local/remote.pid named PID $dpid, which is no longer gone's claude remote-control server, and nothing removed it when that server ended; removed it now." \
@@ -1158,7 +1158,7 @@ test_a_remote_pid_another_process_took_over_serves_nothing() {
     assert_eq "Overriding active session lock (PID $OTHER_PID)" \
         "$(strip_ansi < "$TEST_TMPDIR/out" | grep -F 'Overriding active session lock')" "--force overrides the lock" || { cat "$TEST_TMPDIR/out"; return 1; }
     assert_eq "1" "$(grep -c '^argv=' "$FAKE_CLAUDE_LOG")" "claude opened the session" || return 1
-    out=$("$CS_BIN" -doctor 2>&1 | strip_ansi) || true
+    out=$(CS_SESSION_DIR="$TEST_TMPDIR" "$CS_BIN" -doctor 2>&1 | strip_ansi) || true
     assert_eq "  [WARN] Remote: demo's .cs/local/remote.pid named PID $OTHER_PID, which is no longer demo's claude remote-control server, and nothing removed it when that server ended; removed it now." \
         "$(grep -F 'Remote: demo' <<< "$out")" "the doctor reports the file" || return 1
     assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "the doctor removes the file" || return 1
