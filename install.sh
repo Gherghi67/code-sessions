@@ -1171,6 +1171,7 @@ CS_KNOWN_SHA256=(
     0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c
     0d3d60f2f308f236b2561f56ca0f1de1ac872b950a3c81de7ceec9080ccd68b3
     0d7b28c0e06eea53144a32cc5da08950353f7d77178459342e73162709a9c820
+    0d88656291eb6078b08187204807c72bd926b93c360041767cdbc26e64567353
     0df2fc779a4db019d983d6db8da4ec2be7603289be08273a9f503695b5265e72
     0e586a783f0f533b35bb89e49279ae91299499be0a662a69be0c4adadc18e96f
     0eb842afa385a746c64a058cdba8b6682291ac33d2330c587e9bb1fabdd667db
@@ -1252,6 +1253,7 @@ CS_KNOWN_SHA256=(
     24562bb8bd36b92883e5699ba1135a2ddc97c55741dc3e854b178903b5a507f9
     248aa2d2ab7386bc5fac4426a0a7d0bd9b82fdb38cd6dce8c354dbf7c2060daf
     249fdff466059bbf8ba3075e46f659c75f575954708b3b79a84f32c9efcc145c
+    24a173a7705879c5f7835e7154a6b694a6ba23320e19ffd8fbfa7e15506d2a39
     24a1a5e44a2a88a6444403d285649d2118da68d88c168c5bf32ad36aa2497306
     24cd5b852e02f3471d383f9adc7c6e9afd587bd22f9300fba097ca1caec367d8
     24ce7ad83c765b019d8861c82d13ed6d50123f22a6efe3ef7731295b8a785414
@@ -1314,6 +1316,7 @@ CS_KNOWN_SHA256=(
     343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48
     34f6402e2f786213bbd1c4222e2ef187f215fe2f9fdfd49d28d205467f1abdf7
     3517c4d85ffa8710da326661e65bd3eb46d84f657fb723c0e562bc5c6a33fc08
+    3542f04b3400bf34cda2ea3ceaabe135ee36c3c7e4c82bf745f0637ff57c2ebe
     358488277d27eedb52eff8242c4a02a998b0d5d7796312b9d3566d3a6c846e84
     358b975281d1221ba77d6a44152731a1acf510c33512b16e65ebde9c257a7737
     362767dec9cf96deb73561b439889f9d452844b9173081ccd3703aaf288a8be0
@@ -1822,6 +1825,7 @@ CS_KNOWN_SHA256=(
     c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757
     c9d442882b52ae328c603677a1f6284467543e3163b8b878beb418bd614def2d
     ca60246d6ebe881a79b5f40a843b71cf1655eae178444296bb026bd552d55c78
+    caa1d32940b2a16921f89aadcb2c6d097d47734a8f5b182018ef023fa4328b5d
     cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b
     cb38e20f67dd45a986d942791b35dabe982e4694aad202ad1a8613c236bffe72
     cbcd3c42df0da913522d06ccf5bdd524adc8d3b36bbd93037dba8a99dc40228a
@@ -1960,6 +1964,7 @@ CS_KNOWN_SHA256=(
     fb33250d3abde8e902bcea4cf47e972b886dcbfe377e1a052b933017677b6432
     fb469f4c48f7f5349d37de997fc49db00f1fc34ecabdc7f9f3aa970d65966921
     fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054
+    fbafc4d45025e225947bc1ef8215cbaabbffe92aeebb729487b9a1504d911708
     fbb3ca4863c2032e0e2bbe9a409cb0a515f2b5d308519f2b5e2111423331764b
     fc0f047f5cec5ba2ff999c7c16275df474ea7c364ba5fee76306da11d8addbff
     fc2a73985eab32b26946f2501cfc6d124d280fcdc6097dca768f880adedcfaf3
@@ -2013,7 +2018,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "36fc61a56a7afa419b0278413d16d655cd4cc46ab44956b7da89d0d92d4af1c7  bin/cs"
+    "1b6d4acb12a3da406536dd264ac967b9cbe005f2b01f1866fda0480946c78e2c  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "1b49c0900b5127fab964042e15405c1b31aeca2810c99c4ae6a4d0f1511aa5e8  bin/cs-statusline"
@@ -2039,7 +2044,7 @@ CS_PAYLOAD_SHA256=(
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
     "7e541f68e0f4b6bf0f604b3d03f865ea1764773dc4df451521813617b4023723  skills/rotate/SKILL.md"
     "433a1002a4236cd67f973415c06dd48004364807d525b016003328706601197b  skills/switch/SKILL.md"
-    "f4adb68f2666b68b79cfbb80fc8ec77a8cf710298e8126e84dffb73d7f822a2b  skills/finish/SKILL.md"
+    "f0bbd22f95fb24e4d6b5ece9542ec94823839716de059b15f0e2757879bcb5d3  skills/finish/SKILL.md"
     "9d8a52aba840d5ed74e092fdec889ba60e8cc49d04d9cce9f0b85e97a3279cee  skills/feature/SKILL.md"
     "12ca76eadfbe0b75c735d8782cc6a8bc6123a97a293349b08c501c62e21cc7f3  skills/write-as-me/SKILL.md"
     "96a5cdb7d563d4360dd58f7ad91ce55dbbe5cde28d141d5e2aeb13ae9483b4ad  skills/checkpoint/SKILL.md"
@@ -2054,11 +2059,11 @@ CS_PAYLOAD_SHA256=(
     "00554feb5c84ceae248021b8c457313fed7519668e9bce85474ca9aa1461db9c  skills/sweep/scripts/cs-shared.sh"
     "a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "e4eac5d86ec4feaf591021ae58b12bbf1932a56ebac8e02312bce280c9ad831b  mods/cs/hooks/register.tsx"
+    "ffd38d4d22d07eafcde12ae090d473b35e5f49ca3a4b7fbf9284d708857cfcef  mods/cs/hooks/register.tsx"
     "31a4e95f517c28fa17d68f731d8adaefc5825872c654ab63f0d04d2f963e109c  mods/cs/tips.json"
     "2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
-    "85259ae873d4a1700a1639a3a41f6ac073b4baabc4e4c66ccadc8e5af8154c05  mods/cs-update/hooks/register.tsx"
+    "c21b13a6276835f3366643a6dc00206f803e6b3c18b3e60554fe8fc226038826  mods/cs-update/hooks/register.tsx"
     "67c3217e96ce069a27d2f8af84944f1aaf18aeab29f8a570bf0cb0f96fc61519  mods/cs-mermaid/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
     "7581d949b64b3eff85606df1b3e44c82354daf48533e68d10a3a006d3ecf69cc  mods/cs-mermaid/hooks/layout.ts"
@@ -2071,10 +2076,10 @@ CS_PAYLOAD_SHA256=(
     "6909b481962cddcd80bf35f3c2424bedf5861549f7fd490b9791e352ac7c640f  mods/cs-panel/hooks/register.tsx"
     "336f7d477e1a0bb204b2eac4c460b5e67dc6486e7b6c161f23733b3e8eefb9a6  mods/cs-panel/hooks/settings.ts"
     "cc34939c470679a8a9aec93d11a96806c4fdd83a55224cd530c587d9b8b398f1  mods/cs-panel/hooks/draw.tsx"
-    "531a46cb4bc246ffc6f1734b8aaca0b30258104223f3df6faae9ae5e23a408ab  mods/cs-filter-chat/.claude-plugin/plugin.json"
+    "3542f04b3400bf34cda2ea3ceaabe135ee36c3c7e4c82bf745f0637ff57c2ebe  mods/cs-filter-chat/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-filter-chat/hooks/hooks.json"
     "271be4bc1607706ea82ca610eacc49d7f527880431a24a2a28d03963f3212c91  mods/cs-filter-chat/hooks/register.tsx"
-    "286958e5c6e7f9c436c6ab384b5bf007b35a2b3cb30a63eb0da74e7c57c0d874  mods/cs-filter-chat/hooks/session.ts"
+    "fbafc4d45025e225947bc1ef8215cbaabbffe92aeebb729487b9a1504d911708  mods/cs-filter-chat/hooks/session.ts"
     "50fdaf38780882182c4941e11d66c3f60962f8109c9a401fb825038f2070afc5  mods/cs-filter-chat/hooks/settings.ts"
     "6cca574728693b2fa8072182015e17d9dce47a3ca8118b41ca0e09928546aa41  mods/cs-filter-chat/hooks/verdict.ts"
     "ef2434b735efc6c5727d230eac9d4f439a9439d59946289b024b6e1bcd8f2c80  mods/cs-filter-chat/hooks/words.ts"

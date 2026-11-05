@@ -623,7 +623,9 @@ state of the session's features,
 read from
 `cs <base> -features --porcelain` after each turn and at session start,
 without holding either up, and every 30 s while the band is idle once cs has
-been asked. Only the lead conversation asks cs, and a base asks only while
+been asked. cs gets 20 s to answer; a reading that runs past that stops the
+30 s clock, and the end of the next turn asks once more. Only the lead
+conversation asks cs, and a base asks only while
 the sessions root holds a `<base>@<task>` directory: a feature `/feature`
 makes shows when that turn ends. In a base, one feature ready reads
 `1 feature · fix-auth ready` (or `3 features · fix-auth ready`) and a press
@@ -1163,11 +1165,10 @@ transcript, 60 columns wide, in fullscreen from 110 columns.
 
 The rows come from two places. `Mods` lists the `/config` rows of `cs`,
 `cs-update`, `cs-mermaid` and `cs-filter-chat` (`$.config.list()`, those four
-plugins by name, so another `cs-*` plugin's rows are not drawn). The cs, cs-update and
-cs-mermaid mods title each row `cs: ` and its label, so `/config` marks the row
-as cs's; under `Mods` the mark says nothing and the pane draws the label
-without it. cs-filter-chat titles its row `Filter chat: your lines' colour`,
-which the pane draws whole. Under it, cs's own settings come in
+plugins by name, so another `cs-*` plugin's rows are not drawn). The four mods
+title each row `cs: ` and its label, so `/config` marks the row as cs's; under
+`Mods` the mark says nothing and the pane draws the label without it. Under
+them, cs's own settings come in
 cs's groups and order from `cs -config list --porcelain`, run through `CS_BIN`
 (the path the launch exported) with no shell. The panel holds no list of
 settings and no copy of their checks: labels, choices, defaults, when a change
@@ -1527,7 +1528,7 @@ above the prompt stay Claude Code's. A row that reports itself expanded
 (ctrl+o, `--verbose`) draws Claude Code's own, so the detailed view still
 shows everything. Each ink is a Claude Code theme key: violet is `merged`,
 red is `error` and plain text is `text`. The you ink is the mod's one
-`/config` row, `cs-filter-chat.youInk` (`Filter chat: your lines' colour`), listed
+`/config` row, `cs-filter-chat.youInk` (`cs: Filter chat: your lines' colour`), listed
 under `Mods` in the `/cs` pane too, one setting for every session:
 `remember` (blue, the default), `planMode` (teal), `success` (green),
 `merged` (violet), `error` (red) or `text` (plain), each at 4.5:1 or more on
