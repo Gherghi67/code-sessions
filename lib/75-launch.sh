@@ -164,6 +164,22 @@ _launch_handoff_receipt_dir_ok() {  # dir, session_dir
         && ! _codex_run_dir_in_config_root "$1" "$2"
 }
 
+# A read-only preflight for --resume with no binding yet. Presence requires
+# recovery, including an ambiguous intent; only the leased launch may repair
+# it or decide that it cannot safely recover a consumer.
+_launch_handoff_needs_recovery() {  # session_dir, engine
+    local dir file found=""
+    dir=$(_launch_handoff_receipt_dir "$1" "$2") || return 1
+    _launch_handoff_receipt_dir_ok "$dir" "$1" || return 1
+    for file in "$dir/intent.json" "$dir/pending.json"; do
+        if [ -e "$file" ] || [ -L "$file" ]; then
+            [ -f "$file" ] && [ ! -L "$file" ] || return 1
+            found=1
+        fi
+    done
+    [ -n "$found" ]
+}
+
 # Persist intent before the native child can see a prompt. An attempt with no
 # consumer is ambiguous, not proof that the native runtime did no work.
 _launch_handoff_prepare() {  # session_dir, engine, handoff

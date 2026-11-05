@@ -209,7 +209,7 @@ records nothing.
 | --- | --- |
 | `cs <name>` on a terminal, once a conversation is bound | asks `Continue previous Antigravity conversation? [Y/n]`; `y` or Enter adds `--conversation <id>`, `n` starts a new conversation |
 | `cs <name>` unattended (no terminal) | `--conversation <id>` |
-| `cs <name> --resume` | `--conversation <id>`; refused if no conversation is bound yet |
+| `cs <name> --resume` | `--conversation <id>`; requires a bound conversation or a recoverable handoff receipt |
 | `cs <name> --fresh` | a new conversation |
 
 - The run's first conversation to reach the model is the session's: the one a
@@ -279,6 +279,9 @@ receipt directory must be owned by you, mode 700, and outside the session,
 is retried in the same conversation or repaired at the next
 launch before any handoff can be offered again. Recovery refuses while state
 is unwritable; repair it and reopen with `--resume` to avoid replaying work.
+This also restores the first binding when its write failed: cs inspects
+protected recovery state during the resume precheck and repairs it only after
+acquiring the session's run lease.
 
 A launch cancelled or failed without a consumer receipt leaves the handoff
 pending and the previous binding intact, but is ambiguous: the missing hook

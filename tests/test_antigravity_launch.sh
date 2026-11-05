@@ -543,6 +543,99 @@ test_next_launch_recovers_a_receipt_without_replaying_the_prompt() {
     assert_eq 1 "$(jq -s '[.[] | select(.event == "rotated" and .reason == "handoff")] | length' "$dir/.cs/timeline.jsonl")"
 }
 
+test_resume_recovers_the_first_antigravity_binding_under_the_lease() {
+    local output dir kind status second=22222222-2222-4222-8222-222222222222
+    for kind in receipt intent; do
+        output=$(AGY_NO_TURN=1 "$CS_BIN" "first-$kind" --engine antigravity 2>&1) || { echo "$output"; return 1; }
+        dir=$(_session_dir "first-$kind")
+        _arm_rotation "first-$kind"
+        (
+            local fragment
+            for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+                # shellcheck disable=SC1090
+                [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+            done
+            if [ "$kind" = receipt ]; then
+                _launch_handoff_record "$dir" antigravity 2026-11-05-rotate.md "$second" '' || exit 1
+                _launch_handoff_consume "$dir" 2026-11-05-rotate.md "$second" || exit 1
+            else
+                export CS_RUN_ID=33333333-3333-4333-8333-333333333333
+                _launch_handoff_prepare "$dir" antigravity 2026-11-05-rotate.md || exit 1
+                _launch_handoff_claim "$dir" antigravity 2026-11-05-rotate.md "$second" '' || exit 1
+            fi
+        ) || return 1
+        assert_not_exists "$dir/.cs/local/antigravity-conversation" || return 1
+        # A live lease still prevents recovery: the early resume check must
+        # inspect the receipt without allocating the missing binding.
+        printf '%s\n' "$$" > "$dir/.cs/session.lock"
+        : > "$AGY_LOG"
+        status=0
+        output=$("$CS_BIN" "first-$kind" --resume 2>&1) || status=$?
+        assert_eq 1 "$status" "recovery cannot replace a live session" || return 1
+        assert_output_contains "$output" 'Session is live' || return 1
+        assert_not_exists "$dir/.cs/local/antigravity-conversation" || return 1
+        assert_eq '' "$(cat "$AGY_LOG")" "no native launch before recovery owns the lease" || return 1
+        rm "$dir/.cs/session.lock"
+        output=$("$CS_BIN" "first-$kind" --resume 2>&1) || { echo "$output"; return 1; }
+        assert_eq "--conversation $second" "$(_agy_argv)" "$kind recovery resumes without an initial prompt" || return 1
+        assert_eq "$second" "$(_binding "first-$kind")" || return 1
+        assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$" || return 1
+    done
+}
+
+test_resume_preserves_an_ambiguous_first_launch_intent() {
+    local output dir status=0
+    output=$(AGY_NO_TURN=1 "$CS_BIN" ambiguous-first --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir ambiguous-first)
+    _arm_rotation ambiguous-first
+    (
+        local fragment
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        export CS_RUN_ID=33333333-3333-4333-8333-333333333333
+        _launch_handoff_prepare "$dir" antigravity 2026-11-05-rotate.md
+    ) || return 1
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" ambiguous-first --resume 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$output" 'handoff attempt needs recovery' || return 1
+    assert_output_not_contains "$output" 'Use --fresh' || return 1
+    assert_not_exists "$dir/.cs/local/antigravity-conversation" || return 1
+    assert_eq '' "$(cat "$AGY_LOG")" "an unknown consumer is never guessed"
+}
+
+test_resume_without_binding_rejects_untrusted_or_linked_receipts() {
+    local output dir identity receipt_dir good_cache="$CS_CACHE_DIR" status
+    output=$(AGY_NO_TURN=1 "$CS_BIN" forged-first --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir forged-first)
+    _arm_rotation forged-first
+    identity=$(source "$SCRIPT_DIR/../lib/02-shared.sh"; cs_dir_identity "$dir")
+    receipt_dir="$good_cache/launch-handoffs/$identity/antigravity"
+    mkdir -p "$receipt_dir"
+    chmod 700 "$receipt_dir"
+    printf '{"id":"22222222-2222-4222-8222-222222222222","previous":"","handoff":"2026-11-05-rotate.md"}\n' > "$TEST_TMPDIR/receipt.json"
+    ln -s "$TEST_TMPDIR/receipt.json" "$receipt_dir/pending.json"
+    : > "$AGY_LOG"
+    status=0
+    output=$("$CS_BIN" forged-first --resume 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$output" 'no recorded antigravity conversation' || return 1
+    rm "$receipt_dir/pending.json"
+    receipt_dir="$dir/.cs/local/cache/launch-handoffs/$identity/antigravity"
+    mkdir -p "$receipt_dir"
+    chmod 700 "$receipt_dir"
+    cp "$TEST_TMPDIR/receipt.json" "$receipt_dir/pending.json"
+    status=0
+    output=$(CS_CACHE_DIR="$dir/.cs/local/cache" "$CS_BIN" forged-first --resume 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$output" 'no recorded antigravity conversation' || return 1
+    assert_not_exists "$dir/.cs/local/antigravity-conversation" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
+    assert_eq '' "$(cat "$AGY_LOG")" "untrusted recovery state never starts agy"
+}
+
 test_missing_agy_names_the_install_line_before_creating_anything() {
     local output status=0
     output=$(PATH="$AGY_CLEAN_PATH" "$CS_BIN" no-agy --engine antigravity 2>&1) || status=$?
@@ -1181,6 +1274,9 @@ run_test test_rotation_cannot_enable_switching_into_antigravity
 run_test test_a_session_marker_cannot_switch_an_antigravity_run
 run_test test_a_failed_receipt_can_retry_in_the_same_conversation
 run_test test_next_launch_recovers_a_receipt_without_replaying_the_prompt
+run_test test_resume_recovers_the_first_antigravity_binding_under_the_lease
+run_test test_resume_preserves_an_ambiguous_first_launch_intent
+run_test test_resume_without_binding_rejects_untrusted_or_linked_receipts
 run_test test_rotation_refuses_unsafe_receipts_before_starting_agy
 run_test test_a_session_marker_cannot_switch_to_antigravity
 run_test test_missing_agy_names_the_install_line_before_creating_anything
