@@ -1560,7 +1560,7 @@ test_doctor_statusline_caps_follow_a_readable_bridge() {
         esac
         jq -n --arg cmd "$cmd" '{statusLine:{command:$cmd}}' > "$home/.claude/settings.json"
         output=$(env -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME \
-            HOME="$home" XDG_CONFIG_HOME="$home/config" CS_CLAUDE_DIR="$home/.claude" \
+            HOME="$home" XDG_CONFIG_HOME="$home/config" CS_CLAUDE_DIR="$home/.claude" CS_SESSION_DIR="$home" \
             "$CS_BIN" -doctor 2> "$TEST_TMPDIR/doctor.stderr") || true
         line=$(printf '%s\n' "$output" | grep -E 'Statusline(:| caps:)' \
             | sed "s/$(printf '\033')\\[[0-9;]*m//g")

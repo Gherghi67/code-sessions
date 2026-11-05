@@ -792,7 +792,7 @@ test_doctor_names_skipped_lines_and_hidden_values() {
     assert_eq "on clarify scope-prompt off: CS_CLARIFY_DISABLE=1" \
         "$(printf '%s\n' "$out" | awk '$2 == "clarify" {$1=$1; print}')" "a default row names no source" || return 1
     rm "$MCFG" "$dir/.cs/local/config"
-    out=$(cs_plain -doctor) || true
+    out=$(cd "$HOME" && cs_plain -doctor) || true
     assert_eq "  [ OK ] config: no ~/.config/cs/config (cs -config set keeps one)" \
         "$(printf '%s\n' "$out" | grep -E '^  \[[A-Z ]{4}\] config: ')" "no file, outside a session" || return 1
 }

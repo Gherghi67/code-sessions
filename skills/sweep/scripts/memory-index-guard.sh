@@ -102,7 +102,7 @@ _need_snapshot() {
 _reference_tokens() {  # entry
     env LC_ALL=C awk -v branch_prefixes="$BRANCH_PREFIXES" '
         function scan(line, rest, token, path, segment, marker) {
-            if (match(line, /^ {0,3}(```+|~~~+)/)) {
+            if (match(line, /^ ? ? ?(```+|~~~+)/)) {
                 marker = substr(line, 1, RLENGTH)
                 sub(/^ */, "", marker)
                 if (!fenced) {

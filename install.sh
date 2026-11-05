@@ -31,6 +31,7 @@ else
 fi
 
 error() {
+    [ -z "${_STEP_LIVE:-}" ] || printf '\r\033[K'
     echo -e "${RED}Error: $1${NC}" >&2
     exit 1
 }
@@ -38,24 +39,63 @@ error() {
 # Every line sits in the same three-space gutter as the Installed lines and
 # the closing check mark: a dim dot marks a note, an amber triangle a warning.
 info() {
+    _step_clear
     echo -e "   ${COMMENT}·${NC} ${GREEN}$1${NC}"
+    _step_redraw
 }
 
 warn() {
+    _step_clear
     echo -e "   ${YELLOW}▲ $1${NC}"
+    _step_redraw
 }
 
 # A follow-on line of the note or warning above it, aligned with its text.
 info_more() {
+    _step_clear
     echo -e "     ${GREEN}$1${NC}"
+    _step_redraw
 }
 
 warn_more() {
+    _step_clear
     echo -e "     ${YELLOW}$1${NC}"
+    _step_redraw
 }
 
-installed() {
-    echo -e "   ${COMMENT}Installed${NC} $1 ${COMMENT}→${NC} ${GOLD}$2${NC}"
+# A phase of the install is one line: while it runs, a gold asterisk and its
+# present-tense label on a terminal; once done, a green check, the past-tense
+# label and, in the second column, what it did. Off a terminal only the done
+# line prints. A note or warning raised while a phase is running takes the
+# line, and the running label is drawn again under it.
+_STEP_LIVE=""
+_STEP_LABEL=""
+_step() {  # label
+    _step_clear
+    _STEP_LABEL="$1"
+    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+        _STEP_LIVE=1
+        printf '   %b✳%b %s…' "$GOLD" "$NC" "$1"
+    fi
+}
+_step_clear() {
+    [ -n "$_STEP_LIVE" ] || return 0
+    printf '\r\033[K'
+}
+_step_redraw() {
+    [ -n "$_STEP_LIVE" ] || return 0
+    printf '   %b✳%b %s…' "$GOLD" "$NC" "$_STEP_LABEL"
+}
+_done() {  # label, detail
+    _step_clear
+    _STEP_LIVE=""
+    _STEP_LABEL=""
+    printf '   %b✓%b %-24s %b%s%b\n' "$GREEN" "$NC" "$1" "$COMMENT" "$2" "$NC"
+}
+
+# Adapter registrations also report through the phase display.
+installed() {  # name, destination
+    _done "Installed $1" "$2"
 }
 
 show_banner() {
@@ -109,6 +149,7 @@ _install_has_engine() { [[ ",$INSTALL_ENGINES," == *,$1,* ]]; }
 # fetches the files whose sha256s it carries (CS_PAYLOAD_SHA256 below).
 CS_DEFAULT_REF=main
 REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-$CS_DEFAULT_REF}"
+ARCHIVE_URL="https://codeload.github.com/hex/claude-sessions/tar.gz/${CS_INSTALL_REF:-$CS_DEFAULT_REF}"
 RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 
 # ---- lib/01-manifests.sh (spliced by build.sh) ----
@@ -1145,6 +1186,7 @@ CS_KNOWN_SHA256=(
     0321362c2f76929b668bb632546f2a2b9e1cb36b8f120dee5ed03ef891fc5114
     0428a8eeb58089c168c6328dcc436de9cbb39257c6d67fcdfc8a8adfcd6269a2
     0482cb10fb7f9b2b7414be54b7cc06be725c213e641baa506ce6e7edc5055bd1
+    054454213cef99daeec0a56bc2b39496b7044e46795b0fca29be59101941e18a
     05687630e164cf75b205a5a2db9def56e2342aed97f50f6171684138fabef2ef
     056886a6278fe7f88bb706abab1132f87055f8fab2591cd8ee40875c6f54539a
     06030c70725f932051685ea087391c9aecd958d512190c366b34c82f224686b9
@@ -1275,6 +1317,7 @@ CS_KNOWN_SHA256=(
     286f75d0b3aa3871751db2d3b6d5590b8e1c28bac58ea993f99d06e0238539cf
     287bc6c368e8b625db8ea12e78c6f4ee7268aefa9cec4d3fce563ef56d20ca11
     2914a0ed30fbf76b9e362151ac3abf7137b10e52ed81257839683f995f33f0d7
+    293b6da5250820f2247d1ba122cf4c732f0e987bc80cb8e7fe3500917d4f373f
     296ecfe833395f88e4a5eff36f0ce39267f51bd33abc1329295bc9b5871e9b42
     29ac06fdebc523b5c2a4de15dcf47e47a486f4c043f22615172318ba80714b51
     29b05b58ef8049d9a36a75af3d747c15fa7bcd5b9fed9e65558e78d78441e2f1
@@ -1706,6 +1749,7 @@ CS_KNOWN_SHA256=(
     a51b158574547d0560e254653d04d0ec069c1b911152f8da0c4615fd59c452c4
     a5540d6098772508987b5f8919ad00662706d352e6f324593ddcb0fbbe028e33
     a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8
+    a56e579e12839d35e969e7f44f99f6938a898abe05504f37f54e01975b8f80a1
     a57e3bdb4fd68482578c1b1d1f07090072284bd2b7a05a5720f02782f00eb43d
     a5d9864215c3f7b99a49bd59524b72bbc2a75d8df15c97caa23c1aba31ddb428
     a633bd92c5dda03d164420ee7950640eaab25fa0b854cedf743c156b17184f26
@@ -1844,6 +1888,7 @@ CS_KNOWN_SHA256=(
     d1b0051b093a3c62b75d76a1d81bbedc5ae6ddcb3e24e01968383ef8e91d9788
     d1b17b6d68e55ed2a88c5127abebf18e38b1e718a3c9976f22668882f0ff6447
     d1ba620fde301d5b7d11de96a79303eb392626f3e33a067fc6eaa05d9e37aed2
+    d2211a0814db82373d621155a753a21be1beff486d78b79700fc6d0e83e27c1a
     d22ebd5a106135b9e5d2d5c5be232951ddc8a91c491c28efda4c27e87b45b022
     d267e7420ba1863aad905f864e5e7f202e9cc075c5bd6907c16c4164e9ec21ef
     d26c9590295085bb809bc90202c55e7d3a41e83415d191016cba9baa3211c751
@@ -2018,7 +2063,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "1b6d4acb12a3da406536dd264ac967b9cbe005f2b01f1866fda0480946c78e2c  bin/cs"
+    "0b48178e6de3ce758a3a38b54c3d096fb3082c3a2797674a96477f7d446ffa27  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "1b49c0900b5127fab964042e15405c1b31aeca2810c99c4ae6a4d0f1511aa5e8  bin/cs-statusline"
@@ -2049,18 +2094,18 @@ CS_PAYLOAD_SHA256=(
     "12ca76eadfbe0b75c735d8782cc6a8bc6123a97a293349b08c501c62e21cc7f3  skills/write-as-me/SKILL.md"
     "96a5cdb7d563d4360dd58f7ad91ce55dbbe5cde28d141d5e2aeb13ae9483b4ad  skills/checkpoint/SKILL.md"
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
-    "9f31030e27a874eb6e1ea6e81019ad606211ff0f836063bfb8d3c5fe0b205055  skills/sweep/SKILL.md"
-    "04ea8931b64c1ef51371d9383dd09d402f05b1b13a40e7dd12637ee0a58324f3  skills/wrap/SKILL.md"
+    "9ef1c5135bbbbd85838d28d711c7df4028e2bbe7cd6c6723ab3cfdc1cdce95e0  skills/sweep/SKILL.md"
+    "d987b136ff545808fe7275da1c93a0e06cf1d53d010c957c3418e233251c8c82  skills/wrap/SKILL.md"
     "c4149c7e5e8295965b0f5b1e64683919294e6b6fd48900660065cba005fce126  skills/write-as-me/scripts/build-corpus.sh"
     "225f2385a01a0a8dcee29ed8d797a3bb087a0822c9702f89350faa37693ebd8d  skills/finish/scripts/finish.sh"
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
-    "667cd90617eb7e5ffda0af55e923573a51d986628ec566e5c3c54bdb355a6041  skills/sweep/scripts/memory-index-guard.sh"
+    "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
     "00554feb5c84ceae248021b8c457313fed7519668e9bce85474ca9aa1461db9c  skills/sweep/scripts/cs-shared.sh"
     "a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "ffd38d4d22d07eafcde12ae090d473b35e5f49ca3a4b7fbf9284d708857cfcef  mods/cs/hooks/register.tsx"
-    "31a4e95f517c28fa17d68f731d8adaefc5825872c654ab63f0d04d2f963e109c  mods/cs/tips.json"
+    "a56e579e12839d35e969e7f44f99f6938a898abe05504f37f54e01975b8f80a1  mods/cs/tips.json"
     "2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "c21b13a6276835f3366643a6dc00206f803e6b3c18b3e60554fe8fc226038826  mods/cs-update/hooks/register.tsx"
@@ -2191,8 +2236,9 @@ fi
 STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-install.XXXXXX") || error "Could not create a temp dir to download into"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
-# Where the payload is read from: the checkout on a local install, the
-# downloads in STAGE_DIR on a web install.
+# Where the payload is read from: the checkout on a local install; on a web
+# install the unpacked archive under STAGE_DIR, or STAGE_DIR itself when the
+# files were downloaded one by one.
 if [ "$INSTALL_METHOD" = "local" ]; then
     PAYLOAD_DIR="$SCRIPT_DIR"
 else
@@ -2229,11 +2275,16 @@ _payload_mode() {  # repo-path
 # The rename replaces the link itself, never writing through it, so its
 # target is left as it was either way. A directory at $2 is kept and named
 # the same way: a rename onto it would drop the file inside it.
+# _PLACE_KEPT is set when the destination was kept instead of written, so a
+# caller can count or report only what landed.
+_PLACE_KEPT=""
 _place_file() {  # src, dest, mode
     local dest="$2" dir tmp digest link_target=""
+    _PLACE_KEPT=""
     if [ -d "$dest" ] && [ ! -L "$dest" ]; then
         warn "Kept $dest: a directory, so it was not replaced"
         CS_KEPT_PATHS+=("$dest")
+        _PLACE_KEPT=1
         return 0
     fi
     if [ -L "$dest" ]; then
@@ -2241,6 +2292,7 @@ _place_file() {  # src, dest, mode
         if ! _cs_owns_file "$dest" "$digest"; then
             warn "Kept $dest: a symlink to content cs did not write, so it was not replaced"
             CS_KEPT_PATHS+=("$dest")
+            _PLACE_KEPT=1
             return 0
         fi
         link_target=$(readlink "$dest") || error "Could not read the symlink $dest"
@@ -2265,6 +2317,9 @@ _place() {  # repo-path, dest
 # The install record's lines for the files this install writes under
 # ~/.claude, written out once every file is in place.
 CS_RECORD_LINES=()
+# What the placing phase reports: files written, and files left as they were.
+CS_PLACED=0
+CS_UNCHANGED=0
 
 # Record sha256 $1 for path $2 (under $HOME) in the install record as soon as
 # the file is in place, keeping every other line as it was: a run that stops
@@ -2287,14 +2342,35 @@ _record_placed() {  # sha256, path-under-home
 # again at the end. A file is cs's as _cs_owns_file decides; a symlink that
 # points nowhere holds nothing cs wrote, so it is kept too.
 _deploy() {  # repo-path, dest
-    local digest
+    local digest record existing=""
     digest=$(_cs_sha256_file "$PAYLOAD_DIR/$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
+    # A regular file already there is hashed once, for both checks below.
+    if [ -f "$2" ] && [ ! -L "$2" ]; then
+        existing=$(_cs_sha256_file "$2") || existing=""
+    fi
+    # A deployed copy that already holds this content is cs's and is left in
+    # place, its mode set again in case it drifted. A copy whose mode cannot
+    # be set (not this user's file) goes through the replacement below. The
+    # record gains its line now only when it lacks one, so a run that stops
+    # later still names the file; a record that is not a regular file (a FIFO
+    # would hold grep forever) is rewritten the way _record_placed rewrites it.
+    if [ -n "$existing" ] && [ "$existing" = "$digest" ] \
+        && chmod "$(_payload_mode "$1")" "$2" 2>/dev/null; then
+        record=$(_cs_install_record)
+        if ! { [ -f "$record" ] && grep -qxF "$digest  ${2#"$HOME"/}" "$record" 2>/dev/null; }; then
+            _record_placed "$digest" "${2#"$HOME"/}"
+        fi
+        CS_RECORD_LINES+=("$digest  ${2#"$HOME"/}")
+        CS_UNCHANGED=$((CS_UNCHANGED + 1))
+        return 0
+    fi
     if { [ -e "$2" ] || [ -L "$2" ]; } && ! _cs_owns_file "$2" "$digest"; then
         warn "Kept $2: cs did not write it, so it was not replaced"
         CS_KEPT_PATHS+=("$2")
         return 0
     fi
     _place "$1" "$2"
+    [ -n "$_PLACE_KEPT" ] || CS_PLACED=$((CS_PLACED + 1))
     _record_placed "$digest" "${2#"$HOME"/}"
     CS_RECORD_LINES+=("$digest  ${2#"$HOME"/}")
 }
@@ -2317,12 +2393,12 @@ fi
 # Show banner
 show_banner
 
-# Whether downloaded file $STAGE_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
-# carries for repo path $1. A path with no entry, or a digest that cannot be
-# computed, does not match.
+# Whether downloaded file $PAYLOAD_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
+# carries for repo path $1. A path with no entry, a missing file, or a digest
+# that cannot be computed, does not match.
 _payload_matches() {  # repo-path
     local entry actual
-    actual=$(_cs_sha256_file "$STAGE_DIR/$1") || return 1
+    actual=$(_cs_sha256_file "$PAYLOAD_DIR/$1") || return 1
     for entry in "${CS_PAYLOAD_SHA256[@]}"; do
         if [ "${entry#*  }" = "$1" ]; then
             [ "${entry%%  *}" = "$actual" ]
@@ -2332,31 +2408,85 @@ _payload_matches() {  # repo-path
     return 1
 }
 
-# A web install downloads every payload file and checks it against the sha256
+# Downloads the ref's source archive once and unpacks it under STAGE_DIR, so
+# the payload arrives in one transfer instead of one per file. On success
+# PAYLOAD_DIR is the unpacked tree; nothing in it is trusted until
+# _payload_matches has checked it. Fails, saying why, when there is no tar,
+# when the download fails, or when the archive does not unpack, and leaves
+# PAYLOAD_DIR as it was so the caller can fetch the files one by one.
+_fetch_payload_archive() {
+    local tgz="$STAGE_DIR/payload.tar.gz" tree="$STAGE_DIR/tree"
+    if ! command -v tar >/dev/null 2>&1; then
+        warn "No tar found; downloading the files one by one"
+        return 1
+    fi
+    if ! _download "$ARCHIVE_URL" "$tgz"; then
+        warn "Could not download the source archive; downloading the files one by one"
+        return 1
+    fi
+    mkdir -p "$tree" || error "Could not create $tree"
+    if ! tar -xzf "$tgz" -C "$tree" --strip-components=1 2>/dev/null; then
+        rm -rf "$tree"
+        warn "The source archive did not unpack; downloading the files one by one"
+        return 1
+    fi
+    PAYLOAD_DIR="$tree"
+}
+
+# A web install fetches the payload and checks every file against the sha256
 # this installer carries before it puts any in place, so a transfer that fails
 # partway, or a file that is not the released one, leaves the installed files
-# as they were. A local install copies from its own checkout, which is what
-# it was built from, and checks nothing.
+# as they were. The ref's source archive is one download; when it cannot be
+# had, each file is downloaded on its own. A local install copies from its
+# own checkout, which is what it was built from, and checks nothing.
 if [ "$INSTALL_METHOD" = "web" ]; then
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         error "Neither curl nor wget found. Please install one of them."
     fi
-    while IFS= read -r _rel; do
-        mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
-        _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel" || error "Failed to download $_rel"
-        _payload_matches "$_rel" \
-            || error "$_rel does not match the sha256 this installer carries for it; nothing was installed"
-    done < <(_cs_payload_files)
-    for _rel in "${CS_COMPLETION_FILES[@]}"; do
-        mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
-        if ! _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel"; then
-            rm -f "$STAGE_DIR/$_rel"
-            warn "Failed to download $_rel"
-        elif ! _payload_matches "$_rel"; then
-            rm -f "$STAGE_DIR/$_rel"
-            warn "$_rel does not match the sha256 this installer carries for it; not installed"
-        fi
-    done
+    _step "Downloading release"
+    _dl_start=$SECONDS
+    if _fetch_payload_archive; then
+        _dl_size=$(wc -c < "$STAGE_DIR/payload.tar.gz" | LC_ALL=C awk '{ printf "%.1f MB", $1 / 1048576 }')
+        _done "Downloaded release" "$_dl_size · $((SECONDS - _dl_start)) s"
+        _step "Verifying files"
+        _verified=0
+        while IFS= read -r _rel; do
+            [ -f "$PAYLOAD_DIR/$_rel" ] || error "$_rel is not in the source archive; nothing was installed"
+            _payload_matches "$_rel" \
+                || error "$_rel does not match the sha256 this installer carries for it; nothing was installed"
+            _verified=$((_verified + 1))
+        done < <(_cs_payload_files)
+        for _rel in "${CS_COMPLETION_FILES[@]}"; do
+            if [ ! -f "$PAYLOAD_DIR/$_rel" ]; then
+                warn "$_rel is not in the source archive; not installed"
+            elif ! _payload_matches "$_rel"; then
+                rm -f "$PAYLOAD_DIR/$_rel"
+                warn "$_rel does not match the sha256 this installer carries for it; not installed"
+            fi
+        done
+        _done "Verified $_verified files" "against the installer's digests"
+    else
+        _step "Downloading files"
+        _verified=0
+        while IFS= read -r _rel; do
+            mkdir -p "$PAYLOAD_DIR/$(dirname "$_rel")"
+            _download "$REPO_URL/$_rel" "$PAYLOAD_DIR/$_rel" || error "Failed to download $_rel"
+            _payload_matches "$_rel" \
+                || error "$_rel does not match the sha256 this installer carries for it; nothing was installed"
+            _verified=$((_verified + 1))
+        done < <(_cs_payload_files)
+        for _rel in "${CS_COMPLETION_FILES[@]}"; do
+            mkdir -p "$PAYLOAD_DIR/$(dirname "$_rel")"
+            if ! _download "$REPO_URL/$_rel" "$PAYLOAD_DIR/$_rel"; then
+                rm -f "$PAYLOAD_DIR/$_rel"
+                warn "Failed to download $_rel"
+            elif ! _payload_matches "$_rel"; then
+                rm -f "$PAYLOAD_DIR/$_rel"
+                warn "$_rel does not match the sha256 this installer carries for it; not installed"
+            fi
+        done
+        _done "Downloaded $_verified files" "one by one, each against the installer's digests"
+    fi
 fi
 
 # Stop, before anything is placed, on a settings.json jq cannot parse or that
@@ -2374,33 +2504,38 @@ fi
 # Create install directory if needed
 mkdir -p "$INSTALL_DIR"
 
-# Install cs script
-installed "cs" "$INSTALL_DIR/cs"
-_place bin/cs "$INSTALL_DIR/cs"
+# The version this install places, read from the payload's bin/cs:
+# $INSTALL_DIR/cs may be a link _place_file kept, which holds content cs did
+# not write and may point at anything, a FIFO included. The version installed
+# before it, from the hooks' stamp, heads the report as "<old> → <new>".
+CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+CS_PREVIOUS=""
+if [ -f "$HOOKS_DIR/.version" ] && [ ! -L "$HOOKS_DIR/.version" ]; then
+    CS_PREVIOUS=$(head -n1 "$HOOKS_DIR/.version" 2>/dev/null || true)
+fi
+if [ -z "$CS_PREVIOUS" ]; then
+    echo -e "   ${COMMENT}cs${NC} ${GOLD}${CS_VERSION}${NC}"
+elif [ "$CS_PREVIOUS" = "$CS_VERSION" ]; then
+    echo -e "   ${COMMENT}cs${NC} ${GOLD}${CS_VERSION}${NC} ${COMMENT}again${NC}"
+else
+    echo -e "   ${COMMENT}cs${NC} ${RUST}${CS_PREVIOUS}${NC} ${COMMENT}→${NC} ${GOLD}${CS_VERSION}${NC}"
+fi
+echo ""
 
-# Install cs-secrets utility
-installed "cs-secrets" "$INSTALL_DIR/cs-secrets"
-_place bin/cs-secrets "$INSTALL_DIR/cs-secrets"
-
+_step "Placing files"
+# Shared binaries always land; each adapter adds its own helpers.
+_bins=(cs cs-secrets)
 if _install_has_engine codex; then
-# Install the optional Codex runtime's no-model thread bootstrap helper.
-# Python is required only when a user selects the Codex engine.
-installed "cs-codex-thread" "$INSTALL_DIR/cs-codex-thread"
-_place bin/cs-codex-thread "$INSTALL_DIR/cs-codex-thread"
-
+    _bins+=(cs-codex-thread)
 fi
-
 if _install_has_engine claude; then
-# Install cs-statusline (Claude Code status line)
-installed "cs-statusline" "$INSTALL_DIR/cs-statusline"
-_place bin/cs-statusline "$INSTALL_DIR/cs-statusline"
-
-# Install cs-subagent-statusline (Claude Code agent-panel rows). It sources
-# cs-statusline for the shared palette, so the two must land in the same dir.
-installed "cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
-_place bin/cs-subagent-statusline "$INSTALL_DIR/cs-subagent-statusline"
-
+    # The subagent status line sources cs-statusline from this directory.
+    _bins+=(cs-statusline cs-subagent-statusline)
 fi
+for _bin in "${_bins[@]}"; do
+    _place "bin/$_bin" "$INSTALL_DIR/$_bin"
+    [ -n "$_PLACE_KEPT" ] || CS_PLACED=$((CS_PLACED + 1))
+done
 
 # Records where the cs-tui just put in $INSTALL_DIR came from, in
 # HOOKS_DIR/.tui-origin beside the .version stamp: "checkout <path>" for a
@@ -2433,9 +2568,10 @@ _cs_tui_built="$SCRIPT_DIR/tui/target/release/cs-tui"
 if [ -f "$_cs_tui_built" ] && { [ ! -f "$_cs_tui_src" ] || [ "$_cs_tui_built" -nt "$_cs_tui_src" ]; }; then
     _cs_tui_src="$_cs_tui_built"
 fi
+CS_PICKER=""
 if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
-    installed "cs-tui" "$INSTALL_DIR/cs-tui"
     _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
+    [ -n "$_PLACE_KEPT" ] || CS_PICKER="from this checkout"
     _record_tui_origin "checkout $SCRIPT_DIR"
 elif [ "$INSTALL_METHOD" = "web" ]; then
     # The release this install downloaded, read from its verified bin/cs:
@@ -2466,8 +2602,8 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
         fi
         if [ -f "$_tui_dst" ]; then
             _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
+            [ -n "$_PLACE_KEPT" ] || CS_PICKER="${_os}-${_arch}, signed release"
             _record_tui_origin release
-            installed "cs-tui" "$INSTALL_DIR/cs-tui"
         fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
@@ -2574,7 +2710,6 @@ _skill_path_real() {
 
 if _install_has_engine claude; then
 # Install hooks
-installed "${#CS_HOOKS[@]} hooks" "$HOOKS_DIR/"
 mkdir -p "$HOOKS_DIR"
 
 # Removes file $1, under a name cs retired, when cs wrote it, and returns 0.
@@ -2669,7 +2804,6 @@ done
 
 
 # Install commands
-installed "commands" "$COMMANDS_DIR/"
 mkdir -p "$COMMANDS_DIR"
 
 for cmd in "${CS_COMMANDS[@]+"${CS_COMMANDS[@]}"}"; do
@@ -2688,7 +2822,6 @@ done
 
 # Install skills
 SKILLS_DIR="$HOME/.claude/skills"
-installed "skills" "$SKILLS_DIR/"
 
 # Drop skill directories earlier cs versions installed but no longer ship. A
 # skill left on disk keeps answering its slash command, so a rename is not
@@ -2806,20 +2939,32 @@ else
     : > "$_record_tmp"
 fi
 _place_file "$_record_tmp" "$(_cs_install_record)" 644
+if [ "$CS_UNCHANGED" -gt 0 ]; then
+    # shellcheck disable=SC2088  # a tilde the user reads, not a path cs opens
+    _done "Placed $CS_PLACED files" "$CS_UNCHANGED unchanged · ~/.local/bin, ~/.claude"
+else
+    # shellcheck disable=SC2088  # a tilde the user reads, not a path cs opens
+    _done "Placed $CS_PLACED files" "~/.local/bin, ~/.claude"
+fi
+if [ -n "$CS_PICKER" ]; then
+    _done "Picker cs-tui" "$CS_PICKER"
+fi
 
 # Install shell completions. One a web install could not download was
 # reported then, and is skipped here.
-installed "completions" "bash, zsh"
+_completions=""
 if [ -f "$PAYLOAD_DIR/completions/cs.bash" ]; then
     _place completions/cs.bash "$BASH_COMPLETION_DIR/cs.bash"
+    _completions="bash"
 fi
 if [ -f "$PAYLOAD_DIR/completions/_cs" ]; then
     _place completions/_cs "$ZSH_COMPLETION_DIR/_cs"
+    _completions="${_completions:+$_completions, }zsh"
 fi
+[ -z "$_completions" ] || _done "Completions" "$_completions"
 
 if _install_has_engine claude; then
 # Configure Claude Code settings
-installed "hook config" "~/.claude/settings.json"
 
 # Create or merge settings.json
 mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
@@ -2827,6 +2972,7 @@ mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
 if ! command -v jq >/dev/null 2>&1; then
     warn "jq not found - cannot configure hooks automatically."
     warn "See README for manual hook configuration."
+    _done "Hooks not registered" "no jq"
 else
     # settings.json is read and rewritten once, by cs_settings_update from
     # the hooks' shared library in the payload (the checkout, or the verified
@@ -3334,7 +3480,11 @@ else
         fi
     done
     if [ "$_register_statusline" = "1" ]; then
-        installed "status line" "cs-statusline + cs-subagent-statusline"
+        # shellcheck disable=SC2088  # a tilde the user reads, not a path cs opens
+        _done "Registered hooks" "~/.claude/settings.json · status line"
+    else
+        # shellcheck disable=SC2088  # a tilde the user reads, not a path cs opens
+        _done "Registered hooks" "~/.claude/settings.json"
     fi
 
     # Add cs's keys that nothing binds yet to keybindings.json, each into the
@@ -3540,14 +3690,7 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     warn "$INSTALL_DIR is not in your PATH"
     warn_more "Add this line to your ~/.bashrc, ~/.zshrc, or equivalent:"
     warn_more "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
 fi
-
-# The version this install placed, for the completion message and the hooks'
-# stamp, read from the payload's bin/cs: $INSTALL_DIR/cs may be a link
-# _place_file kept, which holds content cs did not write and may point at
-# anything, a FIFO included.
-CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 
 # Stamp the deployed-hooks version so cs -doctor can flag installs whose
 # deployed artifacts lag behind the running cs binary. Written as .tui-origin
@@ -3570,16 +3713,12 @@ esac
 mkdir -p "$(dirname "$INSTALL_CONFIG")"
 printf '%s\n' "$INSTALL_ENGINES" > "$INSTALL_CONFIG"
 
-echo ""
-echo -e "   ${GREEN}✓${NC} ${ORANGE}Installation complete${NC} ${COMMENT}(${CS_VERSION})${NC}"
-echo ""
-
 if [ "${#CS_KEPT_PATHS[@]}" -gt 0 ]; then
+    echo ""
     warn "Left in place, because cs did not write them:"
     for _kept in "${CS_KEPT_PATHS[@]}"; do
         warn_more "$_kept"
     done
-    echo ""
 fi
 
 # Check if completion setup is needed
@@ -3587,30 +3726,41 @@ SHELL_NAME=$(basename "$SHELL")
 case "$SHELL_NAME" in
     bash)
         if ! grep -q 'bash_completion.d/cs.bash' "$HOME/.bashrc" 2>/dev/null; then
+            echo ""
             warn "To enable tab completion, add to ~/.bashrc:"
             warn_more "  [[ -f ~/.bash_completion.d/cs.bash ]] && source ~/.bash_completion.d/cs.bash"
-            echo ""
         fi
         ;;
     zsh)
         if ! grep -qE 'fpath.*zsh/completions?' "$HOME/.zshrc" 2>/dev/null; then
+            echo ""
             warn "To enable tab completion, add to ~/.zshrc (before compinit):"
             warn_more "  fpath=(~/.zsh/completions \$fpath)"
             warn_more "  autoload -Uz compinit && compinit"
-            echo ""
         fi
         ;;
 esac
 
-echo -e "   ${RUST}Usage:${NC} cs ${GOLD}<session-name>${NC}"
 echo ""
-echo -e "   ${COMMENT}Examples:${NC}"
-echo -e "     ${COMMENT}cs${NC} ${GOLD}debug-api${NC}    ${COMMENT}# Create or resume session${NC}"
-echo -e "     ${COMMENT}cs${NC} ${GOLD}server-fix${NC}   ${COMMENT}# Work on server issues${NC}"
+if [ -z "$CS_PREVIOUS" ]; then
+    echo -e "   ${GREEN}✓${NC} ${ORANGE}cs ${CS_VERSION} installed${NC}"
+elif [ "$CS_PREVIOUS" = "$CS_VERSION" ]; then
+    echo -e "   ${GREEN}✓${NC} ${ORANGE}cs ${CS_VERSION} installed again${NC}"
+else
+    echo -e "   ${GREEN}✓${NC} ${ORANGE}cs updated to ${CS_VERSION}${NC}"
+fi
 echo ""
 
-echo ""
-echo "   Getting started:"
-echo "     cs my-first-session --engine ${INSTALL_ENGINES%%,*}    # Create your first session"
-echo "     cs -help               # See all commands"
-echo "     cs -version            # Verify installation"
+# A first install says how to start; an update or a repeat install does not.
+if [ -z "$CS_PREVIOUS" ]; then
+    echo -e "   ${RUST}Usage:${NC} cs ${GOLD}<session-name>${NC}"
+    echo ""
+    echo -e "   ${COMMENT}Examples:${NC}"
+    echo -e "     ${COMMENT}cs${NC} ${GOLD}debug-api${NC}    ${COMMENT}# Create or resume session${NC}"
+    echo -e "     ${COMMENT}cs${NC} ${GOLD}server-fix${NC}   ${COMMENT}# Work on server issues${NC}"
+    echo ""
+    echo "   Getting started:"
+    echo "     cs my-first-session --engine ${INSTALL_ENGINES%%,*}    # Create your first session"
+    echo "     cs -help               # See all commands"
+    echo "     cs -version            # Verify installation"
+fi

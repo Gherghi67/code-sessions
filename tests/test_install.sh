@@ -1571,8 +1571,8 @@ test_install_keeps_a_symlinked_skill_directory_and_writes_nothing_through_it() {
         [ -L "$home/.claude/skills/$l" ] || { echo "  FAIL: the link at skills/$l was not kept"; return 1; }
         assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Kept $(_bre_literal "$home/.claude/skills/$l"): a symlink, so cs wrote nothing through it and the skill files under it were not deployed$")" \
             "one warning names the link at skills/$l" || return 1
-        printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "^ *$(_bre_literal "$home/.claude/skills/$l")$" \
-            || { echo "  FAIL: skills/$l is not listed after the completion line"; return 1; }
+        printf '%s\n' "$out" | sed -n '/Left in place/,$p' | grep -q "^ *$(_bre_literal "$home/.claude/skills/$l")$" \
+            || { echo "  FAIL: skills/$l is not listed under the kept paths"; return 1; }
     done
     assert_eq "$(_cs_shipped_content)" "$(cat "$ext/rotate/SKILL.md")" "the rotate link's target is untouched" || return 1
     assert_eq "my finish skill" "$(cat "$ext/finish/SKILL.md")" "the finish link's SKILL.md is untouched" || return 1
@@ -3210,6 +3210,9 @@ _install_tui_with_broken_verification() {  # tag
     [ -f "$sandbox/home/.claude/hooks/cs/.tui-origin" ] \
         || printf 'checkout /work/cs\n' > "$sandbox/home/.claude/hooks/cs/.tui-origin"
 
+    # The codeload URL falls through to the stub binary below, so the
+    # archive is a 200 that is not a gzip: tar fails and the install takes the
+    # one-file-at-a-time path, which is what these tests need.
     cat > "$bindir/curl" <<STUB
 #!/usr/bin/env bash
 out=""; url=""; prev=""
@@ -3370,11 +3373,24 @@ test_web_install_that_places_no_picker_keeps_its_origin_record() {
 # transfer: half the file is written, then curl exits 18. A path named in
 # CS_TEST_TAMPER is served with one line appended. Leaves the exit status in
 # $sandbox/install.rc and the output in $sandbox/install.out; echoes the HOME.
+# The stub curl serves the ref's source archive from a tarball of this
+# checkout's payload directories, and single files from the checkout. It logs
+# every URL to $sandbox/urls. CS_TEST_ARCHIVE=fail, CS_TEST_BREAK and
+# CS_TEST_DROP make the archive unavailable, so the install takes the
+# one-file-at-a-time path, where CS_TEST_BREAK truncates that file's transfer.
+# CS_TEST_TAMPER alters the file in the archive and in a single download alike.
+# CS_TEST_DROP leaves the file out of the archive.
 _web_install() {  # sandbox-name
-    local sandbox="$TEST_TMPDIR/$1" repo
+    local sandbox="$TEST_TMPDIR/$1" repo src
     repo="$(cd "$SCRIPT_DIR/.." && pwd)"
     mkdir -p "$sandbox/stub" "$sandbox/home"
     cp "$INSTALL_SH" "$sandbox/install.sh"
+    src="$sandbox/src/claude-sessions-main"
+    mkdir -p "$src"
+    cp -R "$repo/bin" "$repo/hooks" "$repo/skills" "$repo/mods" "$repo/completions" "$src/" || return 1
+    [ -z "${CS_TEST_TAMPER:-}" ] || echo 'echo tampered' >> "$src/$CS_TEST_TAMPER"
+    [ -z "${CS_TEST_DROP:-}" ] || rm -f "$src/$CS_TEST_DROP"
+    tar -czf "$sandbox/payload.tgz" -C "$sandbox/src" claude-sessions-main
     cat > "$sandbox/stub/curl" <<STUB
 #!/usr/bin/env bash
 out=""; url=""; prev=""
@@ -3383,7 +3399,14 @@ for a in "\$@"; do
     case "\$a" in https://*) url="\$a" ;; esac
     prev="\$a"
 done
+printf '%s\n' "\$url" >> "$sandbox/urls"
 case "\$url" in
+    https://codeload.github.com/hex/claude-sessions/tar.gz/*)
+        [ "\${CS_TEST_ARCHIVE:-ok}" = ok ] && [ -z "\${CS_TEST_BREAK:-}" ] || exit 22
+        [ -n "\$out" ] || exit 2
+        cp "$sandbox/payload.tgz" "\$out"
+        exit 0
+        ;;
     https://raw.githubusercontent.com/hex/claude-sessions/*) ;;
     *) exit 22 ;;
 esac
@@ -3421,6 +3444,9 @@ _seed_installed_cs() {  # home
 
 # A web install whose own download of cs drops halfway fails, and the cs
 # already installed is still whole: curl never writes onto ~/.local/bin/cs.
+# CS_TEST_BREAK also withholds the archive, so this and the next test run the
+# one-file-at-a-time path; the archive path's refusal is tested by
+# test_web_install_refuses_a_payload_file_that_does_not_match.
 test_web_install_keeps_the_installed_cs_when_its_download_breaks() {
     local home
     _seed_installed_cs "$TEST_TMPDIR/break-cs/home"
@@ -3461,8 +3487,10 @@ test_piped_install_is_the_web_install_in_any_directory() {
     assert_eq "1" "$rc" "install exit status" || { cat "$TEST_TMPDIR/piped.out"; return 1; }
     assert_file_contains "$TEST_TMPDIR/piped.out" "^Error: Failed to download bin/cs$" "the web install stops at its first download" || return 1
     assert_eq "$(printf '#!/bin/sh\nCS_FORK="code-sessions"\necho installed cs')" "$(cat "$home/.local/bin/cs")" "the installed cs is untouched" || return 1
-    assert_eq "curl -fsSL https://raw.githubusercontent.com/hex/claude-sessions/main/bin/cs -o" \
-        "$(sed 's/ [^ ]*$//' "$shim/calls")" "the one network call is the download of bin/cs" || return 1
+    assert_eq "$(printf '%s\n' \
+        "curl -fsSL https://codeload.github.com/hex/claude-sessions/tar.gz/main -o" \
+        "curl -fsSL https://raw.githubusercontent.com/hex/claude-sessions/main/bin/cs -o")" \
+        "$(sed 's/ [^ ]*$//' "$shim/calls")" "the network calls are the archive, then the download of bin/cs" || return 1
 }
 
 # Positive control for the two above: the same stub with nothing broken
@@ -3511,6 +3539,131 @@ test_web_install_skips_a_completion_that_does_not_match() {
     assert_file_not_exists "$home/.zsh/completions/_cs" "the altered completion was not deployed" || return 1
     cmp -s "$SCRIPT_DIR/../completions/cs.bash" "$home/.bash_completion.d/cs.bash" \
         || { echo "  FAIL: the matching bash completion was not deployed"; return 1; }
+}
+
+# The payload comes down as the ref's source archive, one transfer, and no
+# file is fetched on its own.
+test_web_install_fetches_the_payload_as_one_archive() {
+    local home repo
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    home=$(_web_install web-archive)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/web-archive/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/web-archive/install.out"; return 1; }
+    assert_eq "1" "$(grep -c '^https://codeload.github.com/hex/claude-sessions/tar.gz/main$' "$TEST_TMPDIR/web-archive/urls")" \
+        "the archive of the ref is fetched once" || return 1
+    assert_eq "0" "$(grep -c '^https://raw.githubusercontent.com/' "$TEST_TMPDIR/web-archive/urls" || true)" \
+        "no payload file is fetched on its own" || return 1
+    assert_file_not_contains "$TEST_TMPDIR/web-archive/install.out" "one by one" "no fallback warning" || return 1
+    cmp -s "$repo/bin/cs" "$home/.local/bin/cs" || { echo "  FAIL: bin/cs differs"; return 1; }
+    cmp -s "$repo/mods/cs/hooks/register.tsx" "$home/.claude/skills/cs/hooks/register.tsx" || { echo "  FAIL: mod differs"; return 1; }
+    cmp -s "$repo/completions/_cs" "$home/.zsh/completions/_cs" || { echo "  FAIL: completion differs"; return 1; }
+    assert_eq "755" "$(_file_mode "$home/.claude/skills/finish/scripts/finish.sh")" "skill script mode" || return 1
+}
+
+# When the archive cannot be had, the install says so once and fetches each
+# file on its own, and the result is the same install.
+test_web_install_fetches_each_file_when_the_archive_fails() {
+    local home repo
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    home=$(CS_TEST_ARCHIVE=fail _web_install web-noarchive)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/web-noarchive/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/web-noarchive/install.out"; return 1; }
+    assert_eq "1" "$(grep -c 'Could not download the source archive; downloading the files one by one' "$TEST_TMPDIR/web-noarchive/install.out")" \
+        "the fallback is reported once" || return 1
+    assert_eq "1" "$(grep -c '^https://raw.githubusercontent.com/hex/claude-sessions/main/bin/cs$' "$TEST_TMPDIR/web-noarchive/urls")" \
+        "bin/cs is fetched on its own" || return 1
+    cmp -s "$repo/bin/cs" "$home/.local/bin/cs" || { echo "  FAIL: bin/cs differs"; return 1; }
+    cmp -s "$repo/hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook differs"; return 1; }
+}
+
+# An archive that lacks a payload file is not the released tree: the install
+# stops before anything is placed and names the file.
+test_web_install_refuses_an_archive_missing_a_payload_file() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/web-drop/home"
+    home=$(CS_TEST_DROP=hooks/session-start.sh _web_install web-drop)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/web-drop/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/web-drop/install.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/web-drop/install.out" "hooks/session-start\.sh is not in the source archive; nothing was installed" \
+        "the refusal names the missing file" || return 1
+    assert_eq "$(printf '#!/bin/sh\nCS_FORK="code-sessions"\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
+    assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "no hook was deployed" || return 1
+}
+
+# A second install over the same content leaves every unchanged file in
+# place rather than writing it again (the inode survives), and still puts a
+# drifted mode right.
+test_reinstall_leaves_an_unchanged_file_in_place() {
+    local fake_home="$TEST_TMPDIR/reinstall" hook before after
+    mkdir -p "$fake_home"
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install failed"; return 1; }
+    hook="$fake_home/.claude/hooks/cs/session-start.sh"
+    before=$(ls -i "$hook" | awk '{print $1}')
+    chmod 600 "$hook"
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: second install failed"; return 1; }
+    after=$(ls -i "$hook" | awk '{print $1}')
+    assert_eq "$before" "$after" "the unchanged hook keeps its inode" || return 1
+    assert_eq "755" "$(_file_mode "$hook")" "a drifted mode is set again" || return 1
+    cmp -s "$SCRIPT_DIR/../hooks/session-start.sh" "$hook" || { echo "  FAIL: hook content differs"; return 1; }
+    grep -qF "  .claude/hooks/cs/session-start.sh" "$fake_home/.claude/hooks/cs/.installed" \
+        || { echo "  FAIL: the install record lacks the unchanged hook"; return 1; }
+}
+
+# The report says what this run did: a first install closes with "installed"
+# and the usage examples; a second run over the same version closes with
+# "installed again" and no examples; a run over an older version opens with
+# "old → new" and closes with "updated to". A kept destination is not counted
+# among the files placed.
+test_install_report_names_first_repeat_and_update_runs() {
+    local fake_home="$TEST_TMPDIR/report" out version total deployed
+    local CS_INSTALL_ENGINES=claude
+    export CS_INSTALL_ENGINES
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    # This report covers Claude's payload; the fork also ships a Codex
+    # binary and a second native deployment of the shared skills.
+    # Completions are counted separately; four binaries are written each run.
+    total=$((4 + $(. "$SCRIPT_DIR/../lib/01-manifests.sh"; _cs_claude_payload_files | wc -l)))
+    deployed=$((total - 4))
+    mkdir -p "$fake_home"
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^   cs $(_bre_literal "$version")$" "a first install opens with the version alone" || return 1
+    assert_output_contains "$out" "✓ Placed $total files *~/.local/bin, ~/.claude$" "a first install places every file" || return 1
+    assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed$" "a first install closes with installed" || return 1
+    assert_output_contains "$out" "Getting started:" "a first install shows the usage examples" || return 1
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^   cs $(_bre_literal "$version") again$" "a repeat opens with again" || return 1
+    assert_output_contains "$out" "✓ Placed 4 files *$deployed unchanged" "a repeat places the binaries and leaves the rest" || return 1
+    assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed again$" "a repeat closes with installed again" || return 1
+    assert_output_not_contains "$out" "Getting started:" "a repeat shows no usage examples" || return 1
+    printf '2000.1.1\n' > "$fake_home/.claude/hooks/cs/.version"
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^   cs 2000.1.1 → $(_bre_literal "$version")$" "an update opens with old → new" || return 1
+    assert_output_contains "$out" "✓ cs updated to $(_bre_literal "$version")$" "an update closes with updated to" || return 1
+    assert_output_not_contains "$out" "Getting started:" "an update shows no usage examples" || return 1
+    # A foreign fork-marked file passes the original-cs replacement guard,
+    # but its content is not cs-owned and must stay linked. /bin/true exists
+    # on Linux but not macOS, so it models different cases on the two hosts.
+    printf '#!/bin/sh\nCS_FORK="code-sessions"\necho foreign\n' > "$fake_home/foreign-cs"
+    rm -f "$fake_home/.local/bin/cs" && ln -s "$fake_home/foreign-cs" "$fake_home/.local/bin/cs"
+    out=$(HOME="$fake_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$fake_home")/.local/bin/cs: a symlink" "the foreign link is kept" || return 1
+    assert_output_contains "$out" "✓ Placed 3 files" "a kept destination is not counted as placed" || return 1
+}
+
+# The unchanged-file path reads the install record to see whether it already
+# names the file. A record that is a FIFO with no writer would hold that read
+# forever; the install must finish, and leave a regular record behind.
+test_reinstall_finishes_when_the_record_is_a_fifo() {
+    local fake_home="$TEST_TMPDIR/reinstall-fifo" record rc=0
+    mkdir -p "$fake_home"
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install failed"; return 1; }
+    record="$fake_home/.claude/hooks/cs/.installed"
+    rm -f "$record" && mkfifo "$record"
+    _run_bounded 60 env HOME="$fake_home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/reinstall-fifo.out" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "the second install finishes" || { tail -5 "$TEST_TMPDIR/reinstall-fifo.out"; return 1; }
+    [ -f "$record" ] || { echo "  FAIL: the record is not a regular file afterwards"; return 1; }
+    grep -qF "  .claude/hooks/cs/session-start.sh" "$record" \
+        || { echo "  FAIL: the record lacks the unchanged hook"; return 1; }
 }
 
 # The built install.sh carries, for every file a web install downloads, the
@@ -3596,10 +3749,10 @@ test_install_keeps_user_files_that_share_a_cs_name() {
     # Everything that is not in the way is still installed.
     cmp -s "$SCRIPT_DIR/../skills/wrap/SKILL.md" "$home/.claude/skills/wrap/SKILL.md" || { echo "  FAIL: wrap.md not installed"; return 1; }
     cmp -s "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook not installed"; return 1; }
-    # The skipped paths are reported again after the completion line.
-    assert_output_contains "$out" "Installation complete" "the install finished" || return 1
-    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "$home/.claude/commands/checkpoint.md" \
-        || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
+    # The skipped paths are reported again, together, before the closing line.
+    assert_output_contains "$out" "✓ cs [0-9.]* installed" "the install finished" || return 1
+    printf '%s\n' "$out" | sed -n '/Left in place/,$p' | grep -q "$home/.claude/commands/checkpoint.md" \
+        || { echo "  FAIL: the skipped command is not listed under the kept paths"; return 1; }
 }
 
 # A symlink where cs deploys a file is the user's unless what it points at is
@@ -3983,8 +4136,8 @@ test_install_reads_its_version_from_the_payload_not_a_kept_link() {
         || { echo "  FAIL: the link and the fifo are not left as they were"; return 1; }
     assert_output_contains "$out" "Kept $(_bre_literal "$home/.local/bin/cs"): a symlink to content cs did not write, so it was not replaced" \
         "the kept link is named" || return 1
-    assert_output_contains "$out" "Installation complete ($(_bre_literal "$version"))$" \
-        "the completion line names the version installed" || return 1
+    assert_output_contains "$out" "✓ cs $(_bre_literal "$version") installed$" \
+        "the closing line names the version installed" || return 1
     assert_eq "$version" "$(cat "$home/.claude/hooks/cs/.version")" "the hooks are stamped with the version installed" || return 1
 }
 
@@ -4026,8 +4179,8 @@ test_install_writes_the_version_stamp_without_opening_what_is_there() {
     assert_eq "" "$(ls -A "$stamp")" "nothing is put inside the directory" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$stamp"): a directory, so it was not replaced" \
         "the kept directory is named" || return 1
-    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "^ *$(_bre_literal "$stamp")$" \
-        || { echo "  FAIL: the kept directory is not listed at the end"; return 1; }
+    printf '%s\n' "$out" | sed -n '/Left in place/,$p' | grep -q "^ *$(_bre_literal "$stamp")$" \
+        || { echo "  FAIL: the kept directory is not listed under the kept paths"; return 1; }
 }
 
 test_uninstall_removes_leftover_cs_tui_exe() {
@@ -4339,6 +4492,12 @@ run_test test_web_install_deploys_the_payload_from_the_stub
 run_test test_piped_install_is_the_web_install_in_any_directory
 run_test test_web_install_refuses_a_payload_file_that_does_not_match
 run_test test_web_install_skips_a_completion_that_does_not_match
+run_test test_web_install_fetches_the_payload_as_one_archive
+run_test test_web_install_fetches_each_file_when_the_archive_fails
+run_test test_web_install_refuses_an_archive_missing_a_payload_file
+run_test test_reinstall_leaves_an_unchanged_file_in_place
+run_test test_reinstall_finishes_when_the_record_is_a_fifo
+run_test test_install_report_names_first_repeat_and_update_runs
 run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name

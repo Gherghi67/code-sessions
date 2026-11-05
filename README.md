@@ -23,7 +23,8 @@ Codex also requires Python 3. Shared run ownership uses `lockf` on macOS or
 `flock` on Linux. Install and authenticate your chosen native CLI separately.
 Claude's remote control requires Claude Code 2.1.299+. Setup installs from this
 checkout and verifies no download; the original cs's updates and web installs
-check its signed release manifest with `ssh-keygen -Y verify`
+fetch its source archive, check each payload file against the installer's
+digests, and check its signed release manifest with `ssh-keygen -Y verify`
 ([release verification](docs/configuration.md#release-verification-and-notes)).
 
 Follow [Getting started](docs/getting-started.md) for setup, adopting
@@ -79,7 +80,7 @@ The [statusline guide](docs/statusline.md) covers the quiet default layout, the 
 | Prompt grounding | Adds matching files, recent commits, changes, and clarification guidance to code-work prompts. | [Scope hook](docs/hooks.md#scope-promptsh-userpromptsubmit) |
 | Prompt rewriting | Ctrl+G rewrites a draft in the composer for you to review before sending. | [Prompt rewriter](docs/hooks.md#prompt-rewritersh-not-a-hook--an-editor-shim) |
 | Writing skills | Judges prose or drafts from a writing profile. | [Skills](docs/hooks.md#skills) |
-| Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. Its memory pass also finds references to paths, `cs` verbs and identifiers that no longer exist, and updates them or marks them gone. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
+| Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. Its memory pass first lists where the session struggled and files one task per fix, applying none. It also finds references to paths, `cs` verbs and identifiers that no longer exist, and updates them or marks them gone. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
 | Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
 | Filter chat | While on, the chat shows what you type and what Claude answers, and nothing of the work between them. Off by default; `/filter-chat` or the band's key switches it for that session. | [Filter chat mod](docs/hooks.md#cs-filter-chat-not-a-hook-script--a-claude-code-mod) |
 | Release notes | A launch from your terminal offers a pending release once. In the session, `/cs-update` shows its release notes. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
