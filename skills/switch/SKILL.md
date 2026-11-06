@@ -20,6 +20,10 @@ cs's.
 Only works in a cs session: check that `$CS_SESSION_NAME` is set. If
 empty, tell the user switching engines needs a cs session and stop.
 
+A switch needs its own adapter capability: run `cs -engine supports engine_switch`
+and stop before writing anything if it fails. Rotation alone does not enable
+switching engines.
+
 A switch leaves from a rotation handoff, so this engine's adapter has to
 carry one: run `cs -engine supports rotation`. If it exits non-zero, print
 the line it printed, tell the user to exit and reopen the session with

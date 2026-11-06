@@ -659,7 +659,13 @@ main() {
         # Antigravity's legacy word names no conversation, and its adapter
         # resumes none for it (lib/79-antigravity.sh).
         [ "$engine" != antigravity ] || [ "$resume_binding" != "$CS_ANTIGRAVITY_LATEST" ] || resume_binding=""
-        [ -n "$resume_binding" ] || error "Cannot resume: no recorded $engine conversation for $session_name. Use --fresh."
+        # A native handoff may have recorded its consumer before the first
+        # binding write failed. Inspect only: recovery must own the run lease.
+        if [ -z "$resume_binding" ]; then
+            if [ "$engine" != antigravity ] || ! _launch_handoff_needs_recovery "$session_dir" "$engine"; then
+                error "Cannot resume: no recorded $engine conversation for $session_name. Use --fresh."
+            fi
+        fi
     fi
 
     # The launch's own settings come from the session it opens: its file

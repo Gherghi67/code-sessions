@@ -1,7 +1,7 @@
 ---
 model: opus
 name: rotate
-description: Rotate the current cs conversation - write a lineage-stamped handoff to .cs/handoffs/, arm it, and tell the user to run /clear so a fresh conversation continues from it. Invoke when the user asks to rotate, or accepts a context-heavy rotation suggestion.
+description: Rotate the current cs conversation - write and arm a lineage-stamped handoff, then explain the engine's native fresh-conversation route. Invoke when the user asks to rotate, or accepts a context-heavy rotation suggestion.
 ---
 
 Rotation ends this conversation's useful life deliberately: you distill the
@@ -19,7 +19,7 @@ The engine's adapter has to carry the handoff into the fresh conversation:
 run `cs -engine supports rotation`. If it exits non-zero, print the line it
 printed, tell the user that exiting and answering `r` at the next
 `cs <session-name>` launch is not available either, and stop before writing
-anything. The Claude and Codex adapters both declare `rotation`; steps 10 and
+anything. Claude, Codex and Antigravity declare `rotation`; steps 10 and
 11 differ between them, so note the `engine:` line `cs -engine` prints.
 
 A rotation needs a purpose — one line describing what the next conversation
@@ -322,7 +322,23 @@ vault is locked: tell the user to mount it and stop.
    marker makes `/clear` continue, and only an interrupted ritual leaves a
    disarmed one behind. So arm once nothing remains that could be
    interrupted.
-10. Tell the user what the rotation now does on its own: the fresh
+10. Tell the user what the rotation now does for their engine.
+
+   Under Antigravity (`engine: antigravity`), tell the user to exit with
+   `/exit` and reopen with `cs <session-name> --from-handoff` (substitute
+   the session name). cs starts a fresh Antigravity conversation with the
+   handoff as its initial interactive prompt, and its PreInvocation hook
+   binds that exact conversation and consumes the handoff once. No extra
+   `go` is needed. A launch cancelled before that hook leaves the handoff
+   pending for another attempt. They can also reopen normally and answer
+   `r`; `Y`, Enter, `n` or `--fresh` leave the handoff pending and disarm
+   its marker, and `d` discards it. Antigravity's `/clear` (alias `/new`)
+   resets native context, but cs does not carry a rotation through that
+   in-place route. There is no automatic countdown or terminal input.
+   Skip the Claude and Codex guidance below and use Antigravity's final
+   line in step 11.
+
+   Under Claude, tell the user what the rotation now does on its own: the fresh
    conversation picks up this handoff and begins its next step by itself, a
    couple of seconds after the `/clear` — they do not need to type anything
    to start it, and a message they do send takes precedence over the handoff.
@@ -356,6 +372,10 @@ vault is locked: tell the user to mount it and stop.
    Under Codex the line is, exactly:
 
    **Run `/clear` now, then send `go`** — this conversation is ready to rotate.
+
+   Under Antigravity, substitute the actual session name and end with:
+
+   **Run `/exit`, then `cs <session-name> --from-handoff`** — this conversation is ready to rotate.
 
    This is the one step you cannot take for the user. A hook cannot submit
    to Claude Code's command queue (it accepts the TUI's own input only); the

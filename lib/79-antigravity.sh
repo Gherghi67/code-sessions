@@ -45,7 +45,9 @@ _cs_antigravity_adapter_capabilities() {
     # startup_context, memory_index: the always-on rule carries the session's
     # facts and its memory index, rewritten at each launch.
     # recovery_autosave: the hook hands write_file and edit_file to recovery.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index
+    # rotation: exit and reopen with --from-handoff (or answer r). The launch
+    # supplies an interactive prompt; PreInvocation binds and consumes it.
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation
 }
 
 _cs_antigravity_adapter_prepare_workspace() {  # session_dir, mode
@@ -163,11 +165,48 @@ _antigravity_flags_listed() {  # agy_bin, args...
     done
 }
 
+# Ownership lets the installer repair a partial plugin. Rotation instead
+# needs an enabled PreInvocation command that can actually bind its consumer.
+_antigravity_rotation_hook_ready() {
+    local dir commands command cs_path
+    dir=$(_antigravity_plugin_dir)
+    _antigravity_plugin_is_cs "$dir" \
+        && _antigravity_plugin_manifest_is_cs "$dir/plugin.json" || return 1
+    if [ -f "$HOME/.gemini/config/config.json" ]; then
+        jq -e --arg name "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$name].enabled != false' \
+            "$HOME/.gemini/config/config.json" >/dev/null 2>&1 || return 1
+    fi
+    commands=$(jq -er --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
+        .[$name].PreInvocation | arrays | .[]
+        | select(type == "object" and .enabled != false)
+        | (.hooks // [.]) | arrays | .[]
+        | select(type == "object" and .enabled != false and .type == "command")
+        | .command | strings | select(endswith(" -antigravity-hook pre-invocation"))
+    ' "$dir/hooks.json" 2>/dev/null) || return 1
+    while IFS= read -r command; do
+        cs_path=${command%" -antigravity-hook pre-invocation"}
+        case "$cs_path" in
+            \'*\')
+                cs_path=${cs_path#\'}
+                cs_path=${cs_path%\'}
+                cs_path=${cs_path//"'\\''"/\'}
+                ;;
+        esac
+        # Accept only the installer's shell-word encoding, never evaluate a
+        # hook command to find its path. This includes paths with quotes.
+        [ "$(_antigravity_hook_command "$cs_path" pre-invocation)" = "$command" ] || continue
+        case "$cs_path" in /*) ;; *) continue ;; esac
+        [ -f "$cs_path" ] && [ -x "$cs_path" ] && return 0
+    done < <(printf '%s\n' "$commands")
+    return 1
+}
+
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
     local session_name="$1" session_dir="$2" intent="${6:-auto}"
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
-    local binding_file recorded reopen response="" actor run_dir
-    local -a reopen_args=()
+    local binding_file recorded reopen response="" actor run_dir=""
+    local pending_handoff rotation_handoff="" rotation_origin="" prompt="" receipt_dir
+    local -a reopen_args=() prompt_args=()
 
     [ -d "$session_dir" ] || {
         _antigravity_launch_error "Session directory does not exist: $session_dir"
@@ -196,6 +235,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         return 1
     }
     export CS_BIN
+    cs_run_with_lease "$meta_dir" _launch_handoff_recover "$session_dir" antigravity || {
+        _antigravity_launch_error "An Antigravity handoff attempt needs recovery. Repair writable state and reopen with --resume. If no consumer was recorded, inspect native agy history before repairing $(_launch_handoff_receipt_dir "$session_dir" antigravity)/intent.json; do not replay it with --from-handoff."
+        return 1
+    }
     binding_file="$meta_dir/local/$(_cs_binding_file antigravity)"
     recorded=$(cs_binding_read "$session_dir" antigravity) || {
         _antigravity_launch_error "Cannot read the Antigravity binding: $binding_file. Repair or remove it, then reopen."
@@ -210,32 +253,78 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     [ "$recorded" != "$CS_ANTIGRAVITY_LATEST" ] || recorded=""
     reopen="$recorded"
 
-    # A pending rotation handoff stays armed for the next Claude or Codex
-    # launch: no cs hook takes one under agy yet.
+    pending_handoff=$(_pending_handoff_pick "$session_dir")
     case "$intent" in
         handoff)
-            _antigravity_launch_error "Antigravity cannot start from a rotation handoff yet. Continue from it under Claude: cs $session_name --engine claude --from-handoff"
-            return 1
+            [ -n "$pending_handoff" ] || {
+                _antigravity_launch_error "$(_switch_no_handoff_message "$session_name")"
+                return 1
+            }
+            rotation_handoff=${pending_handoff##*/}
+            rotation_origin=$(_switch_handoff_origin "$pending_handoff" "$session_dir")
+            reopen=""
             ;;
         resume)
             [ -n "$recorded" ] || {
                 _antigravity_launch_error "Cannot resume: no recorded Antigravity conversation. Use --fresh."
                 return 1
             }
+            _disarm_rotation_marker "$session_dir" "$pending_handoff"
             ;;
         auto)
-            if [ -n "$recorded" ] && cs_interactive; then
-                printf 'Continue previous Antigravity conversation? [Y/n] '
+            if { [ -n "$recorded" ] || [ -n "$pending_handoff" ]; } && cs_interactive; then
+                if [ -n "$pending_handoff" ]; then
+                    local origin=""
+                    _handoff_is_local "$pending_handoff" "$session_dir" || origin=" (from another checkout)"
+                    printf 'Rotation handoff pending: %s%s\n' "${pending_handoff##*/}" "$origin"
+                    printf 'Continue previous Antigravity conversation? [Y/n/r=from handoff/d=discard] '
+                else
+                    printf 'Continue previous Antigravity conversation? [Y/n] '
+                fi
                 IFS= read -rsn1 response || { printf '\n'; return 130; }
                 printf '\n'
                 case "$response" in
                     $'\e') return 130 ;;
-                    [nN]) reopen="" ;;
+                    [nN]) reopen=""; _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
+                    [rR])
+                        if [ -n "$pending_handoff" ]; then
+                            rotation_handoff=${pending_handoff##*/}
+                            reopen=""
+                        else
+                            _disarm_rotation_marker "$session_dir"
+                        fi
+                        ;;
+                    [dD])
+                        _disarm_rotation_marker "$session_dir"
+                        [ -z "$pending_handoff" ] || _handoff_set_status "$pending_handoff" discarded || return 1
+                        ;;
+                    *) _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
                 esac
+            else
+                _disarm_rotation_marker "$session_dir" "$pending_handoff"
             fi
             ;;
-        fresh) reopen="" ;;
+        fresh) reopen=""; _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
     esac
+    if [ -n "$rotation_handoff" ]; then
+        # A rotation requires the binding hook and a private run directory.
+        # Ordinary launches can still work without either, with a warning.
+        if ! _antigravity_rotation_hook_ready; then
+            _antigravity_launch_error "The cs Antigravity hook is missing or disabled; enable the cs plugin or run setup.sh again. The handoff stays pending."
+            return 1
+        fi
+        receipt_dir=$(_launch_handoff_receipt_dir "$session_dir" antigravity) \
+            && cs_cache_dir_make_private "$receipt_dir" \
+            && _launch_handoff_receipt_dir_ok "$receipt_dir" "$session_dir" || {
+                _antigravity_launch_error "Cannot prepare private handoff receipts; the handoff stays pending."
+                return 1
+            }
+        actor=$(cs_actor_slug "$session_dir") || return 1
+        prompt=$(_rotation_preamble "$rotation_handoff" "$actor") || return 1
+        [ -z "$rotation_origin" ] || prompt="$rotation_origin
+$prompt"
+        prompt_args=(--prompt-interactive "$prompt")
+    fi
     case "$reopen" in
         '') ;;
         *) reopen_args=(--conversation "$reopen") ;;
@@ -243,7 +332,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options antigravity || return 1
     _antigravity_flags_listed "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} \
-        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || return 1
+        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${rotation_handoff:+--prompt-interactive} || return 1
 
     cd -- "$session_dir" || return 1
     cs_unset_claude_env
@@ -285,12 +374,29 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         else
             printf 'fresh\n' > "$run_dir/opened" || true
         fi
+        if [ -n "$rotation_handoff" ]; then
+            printf '%s\n' "$rotation_handoff" > "$run_dir/handoff" || return 1
+        fi
     else
+        if [ -n "$rotation_handoff" ]; then
+            _antigravity_launch_error "Cannot prepare a private Antigravity run directory; the handoff stays pending."
+            return 1
+        fi
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
     fi
-    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotation, mail and the task queue are not available under Antigravity yet."
+    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. Mail and the task queue are not available under Antigravity yet."
+    if [ -n "$rotation_handoff" ]; then
+        cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
+            _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."
+            return 1
+        }
+    fi
     local status=0
-    cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} || status=$?
+    cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
+        ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
+    if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
+        warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
+    fi
     return "$status"
 }
 
@@ -384,7 +490,7 @@ _antigravity_hook_pre_invocation() {  # payload
 # binding alone. A run without its directory cannot tell first from later,
 # and binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
-    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir
+    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff=""
     previous=$(cs_binding_read "$session_dir" antigravity) || return 1
     if [ -n "$run_dir" ]; then
         if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
@@ -396,15 +502,23 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
         return 0
     fi
     [ "$opened" != resume ] || { source=resume; reason=rebind; }
-    if [ "$previous" != "$id" ]; then
+    if [ "$opened" = fresh ] && [ -f "$run_dir/handoff" ]; then
+        IFS= read -r handoff < "$run_dir/handoff" || handoff=""
+        _launch_handoff_claim "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
+        _launch_handoff_record "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
+        _launch_handoff_recover "$session_dir" antigravity || return 1
+        reason=handoff
+    elif [ "$previous" != "$id" ]; then
         cs_binding_write "$session_dir" antigravity "$id" || return 1
         _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+    fi
+    if [ "$previous" != "$id" ]; then
         if log_dir=$(cs_private_dir "$session_dir/.cs"); then
             CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
                 "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         fi
-        if _is_uuid "$previous"; then
-            _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "" antigravity || true
+        if _is_uuid "$previous" && [ "$reason" != handoff ]; then
+            _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "$handoff" antigravity || true
         fi
     fi
     # The rotate skill reads which conversations this checkout ran from this

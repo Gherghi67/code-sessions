@@ -165,6 +165,8 @@ cmd_switch() {
 
     local current
     current=$(_cs_current_engine) || exit 1
+    cs_engine_supports "$current" engine_switch \
+        || error "cs -switch is not supported under $current yet; exit, then reopen with: cs $name --engine <engine>"
     # A switch leaves from a handoff the rotate skill wrote in this
     # conversation, so the engine it leaves needs rotation too.
     cs_engine_supports "$current" rotation \
@@ -179,6 +181,8 @@ cmd_switch() {
     # Asked first: no reinstall or install makes a target without rotation one.
     cs_engine_supports "$target" rotation \
         || error "Cannot switch to $target: its adapter has no rotation support to start from the handoff; use the rotate skill instead"
+    cs_engine_supports "$target" engine_switch \
+        || error "Cannot switch to $target: its adapter has no engine switch support; exit, then reopen with: cs $name --engine $target"
     _switch_engine_installed "$target" \
         || error "$target is not set up by this cs install; reinstall with CS_INSTALL_ENGINES=claude,codex, then switch"
     local missing
@@ -284,6 +288,13 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
 
     if ! cs_engine_known "$target" || [ "$target" = "$engine" ]; then
         printf 'Not switching: the pending switch names no other engine (%s).\n' "${target:-none}" >&2
+        return 0
+    fi
+    # The marker lives in the agent-writable session. Recheck capabilities
+    # here as well as in cmd_switch: rotation alone permits no engine move.
+    if ! cs_engine_supports "$engine" engine_switch || ! cs_engine_supports "$target" engine_switch \
+        || ! cs_engine_supports "$engine" rotation || ! cs_engine_supports "$target" rotation; then
+        printf 'Not switching to %s: engine switch support is required on both engines; the handoff stays armed.\n' "$target" >&2
         return 0
     fi
     if [ "$status" -ne 0 ]; then

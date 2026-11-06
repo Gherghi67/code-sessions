@@ -31,11 +31,11 @@ before adapter launch side effects.
 The capability check `cs_engine_supports <engine> <capability>` performs an
 exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
-`startup_context`, `feature_finish`, `rotation`, `spawn_brief`,
+`startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
-`startup_context`, `feature_finish`, `rotation`, `spawn_brief`, `memory_index`,
+`startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
-`exact_resume`, `startup_context`, `recovery_autosave`, and `memory_index`
+`exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, and `rotation`
 ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
@@ -46,7 +46,8 @@ The four session-manager capabilities name what the shipped skills rely on:
 
 | Capability | Means | Checked by |
 | --- | --- | --- |
-| `rotation` | a fresh conversation consumes the armed handoff and the binding follows `/clear` (Claude and Codex) | the rotate skill |
+| `rotation` | a fresh conversation consumes the handoff and binds its exact ID: `/clear` under Claude/Codex, exit/reopen under Antigravity | the rotate skill |
+| `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude and Codex) | the switch skill and verb |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |
 | `mail_delivery` | `cs -msg` unread mail surfaces on the next prompt (idle wake is separate) | the feature skill |
@@ -212,7 +213,7 @@ arms the handoff by the `rotate` skill's steps, then runs
 refuses, naming the fix, outside a session or a live run of it (its
 `CS_RUN_ID` must match `.cs/local/run-lease.json`), for an unknown engine or the
 current one, for a target the install did not set up or whose CLI is missing,
-for a target adapter without `rotation`, for a switch already pending, for an
+for a source or target adapter without `engine_switch` or `rotation`, for a switch already pending, for an
 encrypted session whose vault is locked, whose target is Codex (its rotation
 does not read `.cs/private` yet) or whose open would refuse the relaunch
 (`_refuse_unmounted_meta`, for example a plaintext `.cs/local/session.log` an
@@ -285,9 +286,9 @@ its own inside the vault: main checks before the pre-open, and
 (`_codex_encrypted_refusal`). Antigravity refuses them the same way
 (`_antigravity_encrypted_refusal`).
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
-`~/.gemini/config/plugins/cs/`, and no status line, switch, mail, or
-rotation. `cs -switch` refuses to leave an engine without
-`rotation`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
+`~/.gemini/config/plugins/cs/`, and no status line, switch or mail. Rotation uses `/exit` then a fresh
+managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
+`rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Its
 `files_changed` reads the payload of `agy`'s PostToolUse hook and keeps
 `write_file` and `edit_file` calls that succeeded. Its rule `.agents/rules/cs-session.md` counts as cs's own
