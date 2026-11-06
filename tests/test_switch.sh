@@ -134,6 +134,13 @@ if [ "${1:-}" = --help ]; then
 fi
 STUB_PPID=$PPID "$CS_STUB_DIR/record" antigravity "$@"
 if [ -f "$CS_STUB_DIR/antigravity.fail-early" ]; then
+    if [ -f "$CS_STUB_DIR/antigravity.break-journal" ]; then
+        journal=$(find "$CS_CACHE_DIR/launch-handoffs" -name intent.json | head -1)
+        case "$(cat "$CS_STUB_DIR/antigravity.break-journal")" in
+            permissions) chmod 777 "${journal%/*}" ;;
+            entry) rm "$journal"; mkdir "$journal" ;;
+        esac
+    fi
     exit "$(cat "$CS_STUB_DIR/antigravity.fail-early")"
 fi
 id=$(printf '77777777-7777-4777-8777-%012d' "$(cat "$CS_STUB_DIR/antigravity.calls")")
@@ -1242,6 +1249,25 @@ test_antigravity_ambiguous_switch_is_never_replayed() {
     done
 }
 
+test_antigravity_unsafe_journal_never_advises_replay() {
+    local out status kind name
+    _enable_antigravity || return 1
+    for kind in permissions entry; do
+        name="unsafe-$kind"
+        _new_claude_session "$name"
+        printf '1\n' > "$CS_STUB_DIR/antigravity.fail-early"
+        printf '%s\n' "$kind" > "$CS_STUB_DIR/antigravity.break-journal"
+        _plan claude "PLAN_HANDOFF=$HANDOFF" 'PLAN_SWITCH=antigravity'
+        status=0
+        out=$("$CS_BIN" "$name" --resume </dev/null 2>&1) || status=$?
+        assert_eq 1 "$status" || return 1
+        assert_output_contains "$out" 'needs recovery' || return 1
+        assert_output_contains "$out" 'do not replay with --from-handoff' || return 1
+        assert_output_not_contains "$out" 'did not start' || return 1
+        rm "$CS_STUB_DIR/antigravity.fail-early" "$CS_STUB_DIR/antigravity.break-journal"
+    done
+}
+
 test_failed_antigravity_after_a_turn_keeps_the_handoff_spent() {
     local out status=0
     _enable_antigravity || return 1
@@ -1319,6 +1345,7 @@ run_test test_antigravity_target_automatic_approval_is_explicit
 run_test test_antigravity_requires_an_explicit_destination
 run_test test_all_antigravity_engine_pairs_carry_fresh_and_resumed_handoffs
 run_test test_antigravity_resume_without_a_binding_falls_back_to_fresh
+run_test test_antigravity_unsafe_journal_never_advises_replay
 run_test test_antigravity_ambiguous_switch_is_never_replayed
 run_test test_failed_antigravity_after_a_turn_keeps_the_handoff_spent
 run_test test_antigravity_cancel_preserves_the_native_reopen_route
