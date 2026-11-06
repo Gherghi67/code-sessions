@@ -674,17 +674,21 @@ _antigravity_plugin_register() {  # cs_path
 }
 
 _antigravity_plugin_manifest() {
-    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs", version: "1.0.0"}'
 }
 
 # Whether a file holds cs's plugin.json. False when either side cannot be
 # read or worked out: without jq both would be empty, and alike.
 _antigravity_plugin_manifest_is_cs() {  # plugin.json
-    local want have
+    local want have unversioned
     [ -f "$1" ] && [ ! -L "$1" ] || return 1
     want=$(_antigravity_plugin_manifest 2>/dev/null | jq -cS . 2>/dev/null) && [ -n "$want" ] || return 1
     have=$(jq -cS . "$1" 2>/dev/null) && [ -n "$have" ] || return 1
-    [ "$have" = "$want" ]
+    [ "$have" = "$want" ] && return 0
+    # Earlier installs omitted the version. Keep recognizing that exact
+    # document so an upgrade or interrupted uninstall can repair its files.
+    unversioned=$(printf '%s' "$want" | jq -cS 'del(.version)') || return 1
+    [ "$have" = "$unversioned" ]
 }
 
 # Whether a write temp of register's is cs's: a plain file, empty (the write
@@ -2075,7 +2079,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "7b09596ad4d1149d51f7b8f125812a6c3e17afdfdfa60ad1380d91cd9df4f9a7  bin/cs"
+    "dab990ff61b743e78219b53b767b7c7eb5c9b68ee9130e46e515de263e965fb9  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"

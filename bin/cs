@@ -565,17 +565,21 @@ _antigravity_plugin_register() {  # cs_path
 }
 
 _antigravity_plugin_manifest() {
-    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs", version: "1.0.0"}'
 }
 
 # Whether a file holds cs's plugin.json. False when either side cannot be
 # read or worked out: without jq both would be empty, and alike.
 _antigravity_plugin_manifest_is_cs() {  # plugin.json
-    local want have
+    local want have unversioned
     [ -f "$1" ] && [ ! -L "$1" ] || return 1
     want=$(_antigravity_plugin_manifest 2>/dev/null | jq -cS . 2>/dev/null) && [ -n "$want" ] || return 1
     have=$(jq -cS . "$1" 2>/dev/null) && [ -n "$have" ] || return 1
-    [ "$have" = "$want" ]
+    [ "$have" = "$want" ] && return 0
+    # Earlier installs omitted the version. Keep recognizing that exact
+    # document so an upgrade or interrupted uninstall can repair its files.
+    unversioned=$(printf '%s' "$want" | jq -cS 'del(.version)') || return 1
+    [ "$have" = "$unversioned" ]
 }
 
 # Whether a write temp of register's is cs's: a plain file, empty (the write

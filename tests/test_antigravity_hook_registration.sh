@@ -49,6 +49,18 @@ test_agy_validates_the_plugin_register_writes() {
         || { echo "  FAIL: agy plugin validate --strict refuses cs's plugin:"; printf '    %s\n' "$output"; return 1; }
 }
 
+test_an_unversioned_cs_manifest_is_repaired_and_removed() {
+    _antigravity_plugin_register /opt/cs || return 1
+    printf '{"name":"cs","author":"cs"}\n' > "$PLUGIN/plugin.json"
+    rm "$PLUGIN/hooks.json"
+    _antigravity_plugin_register /opt/cs || return 1
+    jq -e '.version | strings | test("^[0-9]+[.][0-9]+[.][0-9]+$")' "$PLUGIN/plugin.json" >/dev/null \
+        || { echo '  FAIL: repaired plugin must carry a semantic version'; return 1; }
+    printf '{"name":"cs","author":"cs"}\n' > "$PLUGIN/plugin.json"
+    _antigravity_plugin_unregister || return 1
+    assert_not_exists "$PLUGIN" "uninstall recognizes the previously shipped manifest"
+}
+
 test_register_quotes_a_path_the_shell_would_split() {
     _antigravity_plugin_register "/Users/a b/it's/cs" || return 1
     assert_eq "'/Users/a b/it'\\''s/cs' -antigravity-hook pre-invocation" \
@@ -438,6 +450,7 @@ test_unregister_without_a_plugin_is_a_no_op() {
 
 run_test test_register_writes_one_named_hook_for_the_installed_cs
 run_test test_agy_validates_the_plugin_register_writes
+run_test test_an_unversioned_cs_manifest_is_repaired_and_removed
 run_test test_register_quotes_a_path_the_shell_would_split
 run_test test_reregister_replaces_cs_files_in_place_and_is_idempotent
 run_test test_a_folder_of_the_users_is_never_written_or_removed
