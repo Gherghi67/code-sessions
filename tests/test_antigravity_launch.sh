@@ -508,6 +508,44 @@ test_switch_consumer_rechecks_antigravity_hook_readiness() {
     )
 }
 
+test_binding_failure_cannot_transfer_the_first_handoff_consumer() {
+    local output dir
+    output=$("$CS_BIN" binding-failure --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir binding-failure)
+    (
+        local fragment kind run_dir receipt_dir binding="$dir/.cs/local/antigravity-conversation"
+        local first=22222222-2222-4222-8222-222222222222 later=55555555-5555-4555-8555-555555555555
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        export CS_RUN_ID=33333333-3333-4333-8333-333333333333
+        for kind in empty directory; do
+            _arm_rotation binding-failure
+            run_dir="$TEST_TMPDIR/run-$kind"
+            mkdir -m 700 "$run_dir"
+            printf 'fresh\n' > "$run_dir/opened"
+            printf '2026-11-05-rotate.md\n' > "$run_dir/handoff"
+            _launch_handoff_prepare "$dir" antigravity 2026-11-05-rotate.md || exit 1
+            receipt_dir=$(_launch_handoff_receipt_dir "$dir" antigravity)
+            mv "$binding" "$binding.saved"
+            if [ "$kind" = empty ]; then : > "$binding"; else mkdir "$binding"; fi
+            if _antigravity_hook_bind "$dir" "$first" "$run_dir"; then
+                echo '  FAIL: damaged binding must defer recovery'; exit 1
+            fi
+            if [ "$kind" = empty ]; then rm "$binding"; else rmdir "$binding"; fi
+            mv "$binding.saved" "$binding"
+            if _antigravity_hook_bind "$dir" "$later" "$run_dir"; then
+                echo '  FAIL: later conversation took the first consumer claim'; exit 1
+            fi
+            assert_eq "$first" "$(cat "$receipt_dir/consumer")" || exit 1
+            _launch_handoff_recover "$dir" antigravity || exit 1
+            assert_eq "$first" "$(_binding binding-failure)" || exit 1
+            assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $first$" || exit 1
+        done
+    )
+}
+
 test_a_failed_receipt_can_retry_in_the_same_conversation() {
     local output dir
     output=$("$CS_BIN" receipt --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -1301,6 +1339,7 @@ run_test test_rotation_requires_the_plugin_manifest
 run_test test_rotation_accepts_a_quoted_binding_hook_executable
 run_test test_switch_preflight_requires_a_usable_antigravity_hook
 run_test test_switch_from_antigravity_rechecks_target_dependencies
+run_test test_binding_failure_cannot_transfer_the_first_handoff_consumer
 run_test test_a_failed_receipt_can_retry_in_the_same_conversation
 run_test test_next_launch_recovers_a_receipt_without_replaying_the_prompt
 run_test test_resume_recovers_the_first_antigravity_binding_under_the_lease

@@ -21946,27 +21946,38 @@ _antigravity_hook_pre_invocation() {  # payload
 # binding alone. A run without its directory cannot tell first from later,
 # and binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
-    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff=""
-    previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir
     if [ -n "$run_dir" ]; then
         if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
             _antigravity_run_mark "$run_dir/seen-$id"
             return 0
         fi
         IFS= read -r opened < "$run_dir/opened" 2>/dev/null || opened=""
-    elif [ "$previous" = "$id" ] || { [ -n "$previous" ] && [ "$previous" != "$CS_ANTIGRAVITY_LATEST" ]; }; then
-        return 0
     fi
     [ "$opened" != resume ] || { source=resume; reason=rebind; }
     if [ -n "$run_dir" ] && [ -f "$run_dir/handoff" ]; then
         IFS= read -r handoff < "$run_dir/handoff" || handoff=""
+        # Ownership comes from the protected launch intent. Reading mutable
+        # binding state first could let a later conversation claim this turn
+        # after a transient binding failure. Recovery may fail, ownership stays.
+        receipt_dir=$(_launch_handoff_receipt_dir "$session_dir" antigravity) || return 1
+        _launch_handoff_receipt_dir_ok "$receipt_dir" "$session_dir" \
+            && [ -f "$receipt_dir/intent.json" ] && [ ! -L "$receipt_dir/intent.json" ] || return 1
+        previous=$(jq -er '.previous | strings' "$receipt_dir/intent.json") || return 1
         _launch_handoff_claim "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_record "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_recover "$session_dir" antigravity || return 1
         reason=handoff
-    elif [ "$previous" != "$id" ]; then
-        cs_binding_write "$session_dir" antigravity "$id" || return 1
-        _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+    else
+        previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+        if [ -z "$run_dir" ] && { [ "$previous" = "$id" ] \
+            || { [ -n "$previous" ] && [ "$previous" != "$CS_ANTIGRAVITY_LATEST" ]; }; }; then
+            return 0
+        fi
+        if [ "$previous" != "$id" ]; then
+            cs_binding_write "$session_dir" antigravity "$id" || return 1
+            _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+        fi
     fi
     if [ "$previous" != "$id" ]; then
         if log_dir=$(cs_private_dir "$session_dir/.cs"); then
