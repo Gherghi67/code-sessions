@@ -241,6 +241,8 @@ Commit your work first: the merge starts from the last commit, and git only reco
 
 Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its own. What is left is where both sides changed the same lines. `continue` refuses while a conflict marker remains or a function is defined in two fragments, then runs `build.sh` and `tests/run_all.sh` (`--skip-tests` skips them) and commits. Nothing is pushed. When the fork rewrites another upstream form, add the rule to `rename()` in the script so the next merge applies it.
 
+Land upstream-sync pull requests with a merge commit, preserving the sync commit's upstream parent. Squashing or rebasing loses release ancestry and makes the next sync offer releases already integrated.
+
 ## Releasing
 
 Releases are managed via the `/release` slash command. See `.claude/commands/release.md` for the full checklist, which covers version bumps, changelog, signing, and GitHub Release creation.

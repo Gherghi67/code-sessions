@@ -162,15 +162,16 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     local src="$MOD/hooks/register.tsx" scroll_lines jump_range filter_chat_range
     # The validator cuts its calls line at a fixed length (`… [+N chars]`);
     # every assert on it must name something before the cut. $.ui.log and
-    # selected later calls are checked on the source instead.
+    # selected later calls are checked on the source instead, and $.ui.ask's
+    # callers by test_mod_asks_only_from_the_wrap_key_and_the_start_offer.
     assert_eq "6" "$(grep -c '\$\.ui\.log' "$src")" "six calls log a features word read failure, a features complaint, a transcript read failure, a /color that did not run, a filter chat read failure and a settings read complaint" || return 1
     filter_chat_range=$(awk '/^async function pressFilterChat\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")
     set -- $filter_chat_range
     assert_eq "0" "$(awk -v start="$1" -v end="$2" 'NR > start && NR < end && /\$\.fs\.write/ { count++ } END { print count + 0 }' "$src")" "pressFilterChat writes no file itself" || return 1
     assert_eq "1" "$(awk -v start="$1" -v end="$2" 'NR > start && NR < end && /-config.*CS_FILTER_CHAT/ { count++ } END { print count + 0 }' "$src")" "one call inside pressFilterChat runs cs -config set" || return 1
-    # The fork's pending-switch reads push the line's cut to just after
-    # $.session.id, so $.session.usage and $.ui.ask are checked on the source.
-    assert_output_contains "$out" '$.session.id' "the visible inventory includes the session id call" || return 1
+    # The validator truncates this inventory inside $.session.cwd's callers.
+    # Check the later session and dialog calls against the source instead.
+    assert_file_contains "$src" '\$\.session\.id' "the band reads the session id" || return 1
     assert_file_contains "$src" '\$\.session\.usage' "the band reads the session's usage" || return 1
     assert_file_contains "$src" '\$\.ui\.ask' "the band asks through \$.ui.ask" || return 1
     assert_file_contains "$src" '\$\.ui\.invalidate(.ui\.render.)' "the band redraws itself through \$.ui.invalidate" || return 1
@@ -180,15 +181,41 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     set -- $jump_range
     [ "${scroll_lines% }" -gt "$1" ] && [ "${scroll_lines% }" -lt "$2" ] \
         || { echo "  FAIL: \$.ui.scroll at line ${scroll_lines% } is outside jumpTo (lines $1-$2)"; return 1; }
-    # Past the cut (above), so read on the source: the wrap key's question and
-    # the /queue start offer's two.
-    assert_eq "3" "$(grep -c 'await \$\.ui\.ask(' "$src")" "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.open' "$src")" "the mod opens no pane" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.close' "$src")" "and closes none" || return 1
     assert_eq "0" "$(grep -c '\$\.ui\.panes' "$src")" "and lists none" || return 1
     assert_output_contains "$out" '$.fs.list (via hasFeatureDirs, queueLength, unreadMail)' "the band counts the queue's tasks and the mailbox's unread mail by listing their directories, and looks for a base's feature directories at the sessions root before asking cs; nothing else lists one" || return 1
     assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, clearPressed, csSessionName, forceRotation, pendingSwitch, queueRunning, readFilterChat, readFinish, readState, readWrapped, refreshRail)' "the wrap marker, the press marker, the state (for the session's recorded name too), the pending switch, the queue's state, the filter chat file, the /finish record, keybindings.json and the transcript are read" || return 1
-    assert_output_contains "$out" '$.fs.stat (via refreshRail, resolvedPath)' "stat resolves where a path lands, to prove the cwd is the sessions root's entry, and gates the transcript's re-read on its size and mtime; no other rule hangs on a modification time" || return 1
+    assert_output_contains "$out" '$.fs.stat (via refreshRail, resolvedPath, transcriptPath)' "stat resolves where a path lands, to prove the cwd is the sessions root's entry, gates the transcript's re-read on its size and mtime, and finds a session's own claude-config even when a locked vault leaves its link dangling; no other rule hangs on a modification time" || return 1
+}
+
+# The wrap key and the /queue start offer ask through the engine's own
+# dialog: every $.ui.ask sits in askToWrap or offerToStart, and each of them
+# makes one. The calls are found in the source read as a whole, so one with
+# whitespace or a line break between `$.ui`, `.ask` and `(` counts too. The
+# validate inventory cuts its calls line before them and runs only where
+# claude is installed; this check needs neither.
+test_mod_asks_only_from_the_wrap_key_and_the_start_offer() {
+    local src="$MOD/hooks/register.tsx" asks ask_line wrap_start wrap_end offer_start offer_end in_wrap=0 in_offer=0
+    read -r wrap_start wrap_end <<< "$(awk '/^async function askToWrap\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")"
+    read -r offer_start offer_end <<< "$(awk '/^async function offerToStart\(/ { start = NR } start && !end && /^}/ { end = NR } END { print start, end }' "$src")"
+    [ -n "$wrap_end" ] && [ -n "$offer_end" ] \
+        || { echo "  FAIL: could not locate askToWrap and offerToStart in $src"; return 1; }
+    # The line each call starts on: one more than the newlines before it.
+    asks=$(perl -0777 -ne 'while (/\$\s*\.\s*ui\s*\.\s*ask\s*\(/g) { print 1 + (substr($_, 0, $-[0]) =~ tr/\n//), "\n" }' "$src") \
+        || { echo "  FAIL: could not scan $src for \$.ui.ask"; return 1; }
+    while IFS= read -r ask_line; do
+        [ -n "$ask_line" ] || continue
+        if [ "$ask_line" -gt "$wrap_start" ] && [ "$ask_line" -lt "$wrap_end" ]; then
+            in_wrap=$((in_wrap + 1))
+        elif [ "$ask_line" -gt "$offer_start" ] && [ "$ask_line" -lt "$offer_end" ]; then
+            in_offer=$((in_offer + 1))
+        else
+            echo "  FAIL: \$.ui.ask at line $ask_line is outside askToWrap and offerToStart"; return 1
+        fi
+    done <<< "$asks"
+    [ "$in_wrap" -gt 0 ] && [ "$in_offer" -gt 0 ] \
+        || { echo "  FAIL: askToWrap ($in_wrap) and offerToStart ($in_offer) must each call \$.ui.ask"; return 1; }
 }
 
 run_test test_mod_manifest_names_the_plugin_and_its_module
@@ -200,5 +227,6 @@ run_test test_mod_reads_the_switch_record_cs_writes
 run_test test_mod_switch_key_matches_the_switch_skill
 run_test test_mod_unit_tests_pass_under_bun
 run_test test_mod_validate_inventories_the_hooks_and_calls
+run_test test_mod_asks_only_from_the_wrap_key_and_the_start_offer
 
 report_results

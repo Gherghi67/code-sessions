@@ -12,7 +12,7 @@ _lock_menu_row() {  # action color label consequence
 }
 
 _lock_collision_menu() {
-    local session_name="$1" lock_pid="$2"
+    local session_name="$1" lock_pid="$2" resume="${3:-}"
     local choice="" feature="" offers_worktree=1
     # Worktrees can't nest: a worktree session offers only force/cancel.
     case "$session_name" in
@@ -81,7 +81,12 @@ _lock_collision_menu() {
 
     case "$action" in
         force) return 0 ;;                              # force a second launch here
-        open:*) exec "$0" "${action#open:}" ;;          # resume an existing feature
+        open:*)                                         # resume an existing feature
+            if [ -n "$resume" ]; then
+                exec "$0" "${action#open:}" --resume
+            fi
+            exec "$0" "${action#open:}"
+            ;;
         tui) _vault_leave; exec "$0" -tui ;;            # pick a different session
         new)
             printf '    %bFeature name%b  %b›%b ' "$WHITE" "$NC" "$GOLD" "$NC"
@@ -152,8 +157,9 @@ _take_session_lock() {  # meta_dir
     esac
 }
 
-acquire_session_lock() {  # meta_dir, force, session_name
+acquire_session_lock() {  # meta_dir, force, session_name, remote, resume
     local meta="$1" force="${2:-}" session_name="$3" remote="${4:-}" status=0 lock_pid=""
+    local resume="${5:-}"
     _require_session_lock_perl "$meta" || return 1
     _refuse_session_lock_not_a_file "$meta/session.lock"
     lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
@@ -173,13 +179,13 @@ acquire_session_lock() {  # meta_dir, force, session_name
         lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
         if cs_interactive; then
             # Never hold the ownership guard while waiting for user input.
-            _lock_collision_menu "$session_name" "$lock_pid"
+            _lock_collision_menu "$session_name" "$lock_pid" "$resume"
             CS_COLLISION_FORCE=1
             force=true
             warn "Overriding active session lock (PID $lock_pid)"
         else
             printf 'Error: Session is live (PID %s)\n' "$lock_pid" >&2
-            printf 'Use --force to override: cs %s --force\n' "$session_name" >&2
+            printf 'Use --force to override: cs %s --force%s\n' "$session_name" "${resume:+ --resume}" >&2
             return 1
         fi
     done

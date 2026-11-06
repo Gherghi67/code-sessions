@@ -55,6 +55,7 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 - `cs <name>` creates or resumes a session. Names such as `cs homeassistant`, `cs router-config`, and `cs research-llms` work for home automation, network setup, and research.
 - `cs .` requires the exact root of a known session, adopted project, or feature worktree. It refuses subdirectories and unrelated directories with adoption guidance.
 - cs resumes the [recorded conversation](session-layout.md#machine-local-files-cslocal-gitignored) with `claude --resume`, rather than `--continue`. Launches pass `--name` and a per-session `/color`.
+- `cs <name> --resume` and `cs . --resume` resume the recorded conversation without asking, at any context reading. They refuse an unbound session; use `--fresh` to start its first conversation. A pending handoff stays pending, and with `-finish` the merge's `/finish` still runs. They refuse `--remote`. See [launch answers](#conversation-rotation-and-wrap).
 - The duplicate-conversation guard recognizes identifiers after `--session-id`, `--resume`, `-r`, and `--parent-session-id`. A leftover shell child carrying the identifier does not block a launch. `--force` overrides that guard and the ordinary process lock.
 - See [session commit rules](hooks.md#stop-noticessh-stop-async) for the initial commit and [autosave](hooks.md#autosave-commitssh-posttooluse-on-writeedit) for later crash recovery.
 - See [session resolution](hooks.md#how-a-hook-finds-its-session-cs-resolvesh) for desktop and IDE hooks, their contribution without rebinding the launched conversation, and the plain-terminal `claude` exception.
@@ -201,13 +202,18 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 
 | Launch answer | Result |
 |---|---|
-| `y` or Enter | Resumes the recorded conversation. |
+| `y` | Resumes the recorded conversation. |
+| Enter | Resumes the recorded conversation. At critical context, starts fresh, from the handoff when the recorded conversation wrote it and `-finish` armed no merge. With no recorded conversation, starts fresh. |
 | `r` | Starts from the handoff. |
 | `n` | Starts fresh. |
-| `d` | Discards the handoff, then resumes. |
+| `d` | Discards the handoff, then resumes. With no recorded conversation, discards the handoff, then starts fresh. |
+| Escape | Cancels the launch and leaves the marker untouched. An arrow key sends Escape first, so it cancels too. |
 
-- Resume and fresh disarm the marker with a notice but leave the handoff pending.
-- The launch card and plain resume prompt show recorded context when the statusline supplies it.
+For launchers that cannot press a key, `cs <name> --resume` answers `y` without asking.
+
+- Every answer that does not start from the handoff, Escape aside, disarms an armed marker with a notice. Resume and fresh leave the handoff pending, and `d` retires it. Starting from the handoff, with `r` or, at critical context, with Enter or any key the table does not list, arms the marker, so the fresh conversation's SessionStart consumes the handoff.
+- The launch card shows the last context reading the statusline recorded in the session, when it recorded one and the conversation to resume has replied. A conversation left before its first reply has a transcript with no reply in it, and the reading beside it belongs to its predecessor, so the card shows no figure for it and the prompt keeps its resume default. The figure is bold amber from `CS_STATUSLINE_CTX_WARN` (default 40) and white on red from `CS_STATUSLINE_CTX_CRIT` (default 60), as on the status line.
+- Context is critical at or above `CS_STATUSLINE_CTX_CRIT`. There the resume prompt defaults to a fresh conversation, and a bold red line above it gives the reading and says that `y` resumes. The plain prompt reads `[y/N]`. When the recorded conversation wrote the pending handoff, the menu marks `r` as the default, so the fresh conversation picks up the handoff, and `n` still leaves the handoff for later. Any other pending handoff, one from another checkout or from an earlier conversation, waits, and the menu marks `n` as the default. Every handoff waits the same way when `cs <session> -finish <feature>` armed a merge, and `n` keeps the merge. Enter and any key the table does not list take the default. A spawned launch still resumes.
 - Cross-checkout handoffs carry a label and remain usable. Choosing one consumes it under the successor's identifier.
 - Names must contain only letters, digits, `._@-`, and at most 160 characters. cs skips invalid names with a notice.
 - A valid armed marker wins. Otherwise, the last unconsumed basename in lexical order wins.

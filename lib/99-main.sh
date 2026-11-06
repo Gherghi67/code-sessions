@@ -609,6 +609,8 @@ main() {
     if [ -n "$remote_flag" ]; then
         [ -z "$force_flag" ] \
             || error "--force cannot be used with --remote: a served session never shares its directory with another claude."
+        [ "$launch_intent" != resume ] \
+            || error "--resume cannot be used with --remote: a served session never asks whether to resume."
         [ -z "$merge_feature" ] \
             || error "-finish cannot be used with --remote: remote-control takes no prompt to run /finish with."
         # Set only on the command _remote_open_window gives the server's tmux

@@ -152,6 +152,13 @@ export CODEX_BIN="/path/to/codex"
 # executable path, without extra arguments. See antigravity.md.
 export AGY_BIN="/path/to/agy"
 
+# Claude Code's own config dir (unset: ~/.claude). cs reads a conversation's
+# transcript from $CLAUDE_CONFIG_DIR/projects, the cs band reads the same
+# dir, and the installer binds the rotate and wrap keys in its
+# keybindings.json. An encrypted session runs claude on its own
+# .cs/claude-config instead (see session-layout.md).
+export CLAUDE_CONFIG_DIR="$HOME/.config/claude"
+
 # Nerd Font icons in cs banners and session listings (lock, host);
 # the status line uses standard Unicode and is unaffected by this
 export CS_NERD_FONTS="1"
@@ -301,15 +308,17 @@ export CS_REWRITE_CMD="/path/to/my-rewriter"
 # a plain integer of at most three digits; anything else falls back to the
 # default shown. A value above 100 is out of the gauge's reach and so switches
 # that band off, the same idiom cs -doctor uses on the Stop hook's tiers below.
+# The launch card colours its context figure at the same two marks, and from
+# the crit mark the resume prompt defaults to a fresh conversation.
 export CS_STATUSLINE_CTX_WARN="40"
-export CS_STATUSLINE_CTX_CRIT="65"
+export CS_STATUSLINE_CTX_CRIT="60"
 
 # Disable the subagent (agent-panel) statusline rows without unregistering
 export CS_SUBAGENT_STATUSLINE_DISABLE="1"
 
 # Context tiers in the Stop hook: one-time warning band start, rotation nudge
 export CS_CTX_WARN_CTX="40"
-export CS_ROTATE_NUDGE_CTX="65"
+export CS_ROTATE_NUDGE_CTX="60"
 
 # Seconds, counted from its start, that the async Stop hook (stop-notices.sh)
 # waits for the other Stop hook's verdict once that verdict reads pending; a
@@ -537,7 +546,7 @@ stays with its session.
 | `CS_STATUSLINE_COLS` | a column count from 1 to 9999 | measured | at the next repaint |
 | `CS_STATUSLINE_FRAME` | a whole number of 1 to 3 digits | 4 | at the next repaint |
 | `CS_STATUSLINE_CTX_WARN` | a whole number of 1 to 3 digits | 40 | at the next repaint |
-| `CS_STATUSLINE_CTX_CRIT` | a whole number of 1 to 3 digits | 65 | at the next repaint |
+| `CS_STATUSLINE_CTX_CRIT` | a whole number of 1 to 3 digits | 60 | at the next repaint |
 | `CS_USAGE_NO_REFRESH` | `1` (on) or `0` (off) | off | at the next repaint |
 | `CS_SUBAGENT_STATUSLINE_DISABLE` | `1` (on) or `0` (off) | off | at the next repaint |
 | `CS_SCOPE_DISABLE` | `1` (on) or `0` (off) | off | at your next prompt |
@@ -548,7 +557,7 @@ stays with its session.
 | `CS_CLARIFY_DISABLE` | `1` (on) or `0` (off) | off | at your next prompt |
 | `CS_NARRATIVE_PROMPT_DISABLE` | `1` (on) or `0` (off) | off | at your next prompt |
 | `CS_CTX_WARN_CTX` | a whole number of 1 to 3 digits | 40 | when the next turn ends |
-| `CS_ROTATE_NUDGE_CTX` | a whole number of 1 to 3 digits | 65 | when the next turn ends |
+| `CS_ROTATE_NUDGE_CTX` | a whole number of 1 to 3 digits | 60 | when the next turn ends |
 | `CS_QUEUE_MAX_FAILURES` | a whole number of 1 to 3 digits | 5 | when the next turn ends |
 | `CS_QUEUE_MAX_CTX` | a whole number of 1 to 3 digits | 85 | when the next turn ends |
 | `CS_QUEUE_MAX_5H` | a whole number of 1 to 3 digits | 85 | when the next turn ends |
