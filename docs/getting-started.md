@@ -101,12 +101,14 @@ own conversation, which has not seen the work done since it last ran. Keep
 one interactive owner open for a workspace at a time.
 
 To carry the current conversation's work across, ask for the `switch` skill
-from inside the conversation (`/switch` in Claude, `$switch` in Codex; name
-`claude` or `codex`, or leave it out for the other engine). It writes and arms
-a rotation handoff the way the `rotate` skill does, then records the move with
+from inside the conversation (`/switch` in Claude, `$switch` in Codex,
+`/cs:switch` in Antigravity; name `claude`, `codex` or `antigravity`). Claude
+and Codex default to each other; Antigravity requires an explicit target. The
+skill writes and arms a rotation handoff the way the `rotate` skill does,
+then records the move with
 `cs -switch` and tells you how to leave: `/exit` in Claude (the `cs` mod
-counts down and runs it for you), `/quit` in Codex. When the CLI exits, cs
-reopens the session in the same terminal under the other engine, in a fresh
+counts down and runs it for you), `/quit` in Codex, `/exit` in Antigravity.
+When the CLI exits, cs reopens the session in the same terminal under the other engine, in a fresh
 conversation that starts from the handoff. That engine becomes the session's
 saved engine. The previous conversation stays on disk and is not resumed;
 `ccs research-notes --engine <previous engine>` opens it again.
@@ -117,8 +119,9 @@ message. When that engine has no conversation recorded here, cs says so and
 starts a fresh one.
 
 `cs -switch cancel` drops a recorded switch and leaves the handoff armed, so
-`/clear` continues from it in the same engine. A `/clear` instead of the exit
-also takes the handoff in the same engine; cs then drops the switch with a
+`/clear` continues from it under Claude or Codex. Under Antigravity, exit and
+reopen with `--engine antigravity --from-handoff`. Under Claude or Codex,
+a `/clear` instead of the exit also takes the handoff in the same engine; cs then drops the switch with a
 notice. If the CLI exits with an error, or the other engine cannot start, cs
 prints both ways back and the handoff stays armed:
 
@@ -131,9 +134,11 @@ ccs research-notes --engine claude
 the resume prompt: the armed one, otherwise the newest unconsumed one, labelled
 `(from another checkout)` when this checkout did not write it. Without a
 pending handoff it refuses and points at `--fresh`. It cannot be combined with
-`--fresh`, `--resume` or `-finish`. Codex does not open an
+`--fresh`, `--resume` or `-finish`. An ambiguous Antigravity launch must recover
+with `--engine antigravity --resume`; follow cs's notice and inspect native
+history before attempting any replay. Codex and Antigravity do not open an
 [encrypted session](session-layout.md#encrypted-sessions) yet, so the switch
-into Codex and `--engine codex --from-handoff` refuse there; open it with
+into either engine refuses there; open it with
 `cs <name> --engine claude`.
 
 Run `ccs .` from the root of an adopted project or registered session to open

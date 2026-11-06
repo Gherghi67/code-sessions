@@ -47,7 +47,7 @@ _cs_antigravity_adapter_capabilities() {
     # recovery_autosave: the hook hands write_file and edit_file to recovery.
     # rotation: exit and reopen with --from-handoff (or answer r). The launch
     # supplies an interactive prompt; PreInvocation binds and consumes it.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch
 }
 
 _cs_antigravity_adapter_prepare_workspace() {  # session_dir, mode
@@ -269,7 +269,16 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
                 _antigravity_launch_error "Cannot resume: no recorded Antigravity conversation. Use --fresh."
                 return 1
             }
-            _disarm_rotation_marker "$session_dir" "$pending_handoff"
+            if [ -n "${_cs_switch_resume:-}" ]; then
+                rotation_handoff=$(_rotation_armed_handoff "$session_dir")
+                [ -n "$rotation_handoff" ] || {
+                    _antigravity_launch_error "No armed handoff to carry into the switched conversation."
+                    return 1
+                }
+                pending_handoff="$(cs_handoff_dir "$meta_dir")/$rotation_handoff"
+            else
+                _disarm_rotation_marker "$session_dir" "$pending_handoff"
+            fi
             ;;
         auto)
             if { [ -n "$recorded" ] || [ -n "$pending_handoff" ]; } && cs_interactive; then
@@ -320,7 +329,11 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
                 return 1
             }
         actor=$(cs_actor_slug "$session_dir") || return 1
-        prompt=$(_rotation_preamble "$rotation_handoff" "$actor") || return 1
+        if [ -n "${_cs_switch_resume:-}" ]; then
+            prompt="This conversation resumes after the session ran under ${_cs_switched_from:-another engine}. Read .cs/handoffs/$rotation_handoff first: it carries the work done since you last ran here. Then continue from its next step."
+        else
+            prompt=$(_rotation_preamble "$rotation_handoff" "$actor") || return 1
+        fi
         [ -z "$rotation_origin" ] || prompt="$rotation_origin
 $prompt"
         prompt_args=(--prompt-interactive "$prompt")
@@ -490,27 +503,38 @@ _antigravity_hook_pre_invocation() {  # payload
 # binding alone. A run without its directory cannot tell first from later,
 # and binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
-    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff=""
-    previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+    local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir
     if [ -n "$run_dir" ]; then
         if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
             _antigravity_run_mark "$run_dir/seen-$id"
             return 0
         fi
         IFS= read -r opened < "$run_dir/opened" 2>/dev/null || opened=""
-    elif [ "$previous" = "$id" ] || { [ -n "$previous" ] && [ "$previous" != "$CS_ANTIGRAVITY_LATEST" ]; }; then
-        return 0
     fi
     [ "$opened" != resume ] || { source=resume; reason=rebind; }
-    if [ "$opened" = fresh ] && [ -f "$run_dir/handoff" ]; then
+    if [ -n "$run_dir" ] && [ -f "$run_dir/handoff" ]; then
         IFS= read -r handoff < "$run_dir/handoff" || handoff=""
+        # Ownership comes from the protected launch intent. Reading mutable
+        # binding state first could let a later conversation claim this turn
+        # after a transient binding failure. Recovery may fail, ownership stays.
+        receipt_dir=$(_launch_handoff_receipt_dir "$session_dir" antigravity) || return 1
+        _launch_handoff_receipt_dir_ok "$receipt_dir" "$session_dir" \
+            && [ -f "$receipt_dir/intent.json" ] && [ ! -L "$receipt_dir/intent.json" ] || return 1
+        previous=$(jq -er '.previous | strings' "$receipt_dir/intent.json") || return 1
         _launch_handoff_claim "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_record "$session_dir" antigravity "$handoff" "$id" "$previous" || return 1
         _launch_handoff_recover "$session_dir" antigravity || return 1
         reason=handoff
-    elif [ "$previous" != "$id" ]; then
-        cs_binding_write "$session_dir" antigravity "$id" || return 1
-        _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+    else
+        previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+        if [ -z "$run_dir" ] && { [ "$previous" = "$id" ] \
+            || { [ -n "$previous" ] && [ "$previous" != "$CS_ANTIGRAVITY_LATEST" ]; }; }; then
+            return 0
+        fi
+        if [ "$previous" != "$id" ]; then
+            cs_binding_write "$session_dir" antigravity "$id" || return 1
+            _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+        fi
     fi
     if [ "$previous" != "$id" ]; then
         if log_dir=$(cs_private_dir "$session_dir/.cs"); then

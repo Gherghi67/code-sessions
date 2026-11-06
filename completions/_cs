@@ -104,7 +104,7 @@ _cs() {
         '-whoami:Show the current actor (multi-person sessions)'
         '-who:Show who contributed to shared memory/narrative'
         '-engine:Show the engine, conversation and capabilities of this session'
-        '-switch:Leave this CLI for the other engine; cs reopens the session there from the armed handoff'
+        '-switch:Leave this CLI for a target engine; cs reopens the session there from the armed handoff'
         '-secrets:Manage session secrets'
         '-checkpoint:Save or manage session checkpoints'
         '-narrative:Archive the oldest sections of your session narrative'
@@ -133,6 +133,17 @@ _cs() {
         '-version:Show version'
         '-v:Show version (alias)'
     )
+
+    # Switch destinations are engine names, never session names.
+    local switch_i
+    for ((switch_i=2; switch_i < CURRENT; switch_i++)); do
+        if [[ "${words[switch_i]}" == -switch ]]; then
+            local -a switch_choices
+            switch_choices=(claude codex antigravity cancel --check --resume --model --effort --approve-for-me --native-approval)
+            _describe 'switch target or option' switch_choices
+            return
+        fi
+    done
 
     # Determine context
     local in_secrets=false in_update=false in_checkpoint=false in_queue=false in_narrative=false in_tag=false in_list=false has_session=false after_remove=false after_archive=false expect_engine=false after_adopt=false

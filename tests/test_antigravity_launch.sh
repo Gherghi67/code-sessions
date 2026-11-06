@@ -243,6 +243,32 @@ FAIL_RECEIPT
     assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$"
 }
 
+test_resumed_switch_receipt_failure_recovers_without_replaying_or_rebinding_to_subagents() {
+    local output dir real_mktemp sub=55555555-5555-4555-8555-555555555555
+    output=$("$CS_BIN" resumed-receipt --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir resumed-receipt)
+    _arm_rotation resumed-receipt
+    real_mktemp=$(command -v mktemp)
+    cat > "$TEST_TMPDIR/bin/mktemp" <<'FAIL_RECEIPT'
+#!/usr/bin/env bash
+case "$*" in *'/.receipt.'*) exit 1 ;; esac
+exec "$AGY_REAL_MKTEMP" "$@"
+FAIL_RECEIPT
+    chmod +x "$TEST_TMPDIR/bin/mktemp"
+    output=$(AGY_REAL_MKTEMP="$real_mktemp" AGY_SUBAGENTS=$sub \
+        "$CS_BIN" resumed-receipt --resume --switched-from codex 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$AGY_ARGV" '^--conversation$' || return 1
+    assert_file_contains "$AGY_ARGV" '^--prompt-interactive$' || return 1
+    assert_file_contains "$AGY_ARGV" 'work done since you last ran here' || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding resumed-receipt)" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
+    rm "$TEST_TMPDIR/bin/mktemp"
+    output=$("$CS_BIN" resumed-receipt --resume 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "no second handoff prompt" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $AGY_NEW_ID$" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff"
+}
+
 test_rotation_refuses_before_agy_when_launch_intent_cannot_be_saved() {
     local output dir real_mktemp status=0
     output=$("$CS_BIN" intent --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -392,26 +418,27 @@ test_rotation_accepts_a_quoted_binding_hook_executable() {
     assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$"
 }
 
-test_rotation_cannot_enable_switching_into_antigravity() {
+test_switch_preflight_requires_a_usable_antigravity_hook() {
     local output dir status=0
     output=$("$CS_BIN" target --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir target)
     _arm_rotation target
     printf '{"run_id":"run-1"}\n' > "$dir/.cs/local/run-lease.json"
+    rm "$HOME/.gemini/config/plugins/cs/hooks.json"
     output=$(CS_SESSION_DIR="$dir" CS_SESSION_NAME=target CS_RUN_ID=run-1 CS_RUN_ENGINE=claude \
         "$CS_BIN" -switch antigravity --check 2>&1) || status=$?
     assert_eq 1 "$status" || return 1
-    assert_output_contains "$output" 'no engine switch support' || return 1
+    assert_output_contains "$output" 'hook is missing or disabled' || return 1
     assert_not_exists "$dir/.cs/local/pending-switch"
 }
 
-test_a_session_marker_cannot_switch_an_antigravity_run() {
+test_switch_from_antigravity_rechecks_target_dependencies() {
     local output dir
     output=$("$CS_BIN" marker --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir marker)
     _arm_rotation marker
     output=$(AGY_RAW_SWITCH=claude "$CS_BIN" marker --resume 2>&1) || { echo "$output"; return 1; }
-    assert_output_contains "$output" 'engine switch support is required on both engines' || return 1
+    assert_output_contains "$output" 'not found; the handoff' || return 1
     assert_not_exists "$dir/.cs/local/pending-switch" || return 1
     assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$'
 }
@@ -460,7 +487,7 @@ test_rotation_refuses_unsafe_receipts_before_starting_agy() {
     assert_eq '' "$(cat "$AGY_LOG")" "none of the unsafe launches starts agy"
 }
 
-test_a_session_marker_cannot_switch_to_antigravity() {
+test_switch_consumer_rechecks_antigravity_hook_readiness() {
     local output dir
     output=$("$CS_BIN" rawtarget --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir rawtarget)
@@ -473,10 +500,49 @@ test_a_session_marker_cannot_switch_to_antigravity() {
         done
         export CS_RUN_ID=33333333-3333-4333-8333-333333333333
         printf 'engine=antigravity\nmode=fresh\nhandoff=2026-11-05-rotate.md\nrun=%s\n' "$CS_RUN_ID" > "$dir/.cs/local/pending-switch"
+        rm "$HOME/.gemini/config/plugins/cs/hooks.json"
         _switch_settle rawtarget "$dir" claude 0 > "$TEST_TMPDIR/settle.out" 2>&1
         assert_eq '' "$_cs_switch_next" "a marker cannot bypass the target capability" || exit 1
-        assert_file_contains "$TEST_TMPDIR/settle.out" 'engine switch support is required on both engines' || exit 1
+        assert_file_contains "$TEST_TMPDIR/settle.out" 'hook is missing or disabled' || exit 1
         assert_not_exists "$dir/.cs/local/pending-switch"
+    )
+}
+
+test_binding_failure_cannot_transfer_the_first_handoff_consumer() {
+    local output dir
+    output=$("$CS_BIN" binding-failure --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir binding-failure)
+    (
+        local fragment kind run_dir receipt_dir binding="$dir/.cs/local/antigravity-conversation"
+        local first=22222222-2222-4222-8222-222222222222 later=55555555-5555-4555-8555-555555555555
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        export CS_RUN_ID=33333333-3333-4333-8333-333333333333
+        for kind in empty directory; do
+            _arm_rotation binding-failure
+            run_dir="$TEST_TMPDIR/run-$kind"
+            mkdir -m 700 "$run_dir"
+            printf 'fresh\n' > "$run_dir/opened"
+            printf '2026-11-05-rotate.md\n' > "$run_dir/handoff"
+            _launch_handoff_prepare "$dir" antigravity 2026-11-05-rotate.md || exit 1
+            receipt_dir=$(_launch_handoff_receipt_dir "$dir" antigravity)
+            mv "$binding" "$binding.saved"
+            if [ "$kind" = empty ]; then : > "$binding"; else mkdir "$binding"; fi
+            if _antigravity_hook_bind "$dir" "$first" "$run_dir"; then
+                echo '  FAIL: damaged binding must defer recovery'; exit 1
+            fi
+            if [ "$kind" = empty ]; then rm "$binding"; else rmdir "$binding"; fi
+            mv "$binding.saved" "$binding"
+            if _antigravity_hook_bind "$dir" "$later" "$run_dir"; then
+                echo '  FAIL: later conversation took the first consumer claim'; exit 1
+            fi
+            assert_eq "$first" "$(cat "$receipt_dir/consumer")" || exit 1
+            _launch_handoff_recover "$dir" antigravity || exit 1
+            assert_eq "$first" "$(_binding binding-failure)" || exit 1
+            assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $first$" || exit 1
+        done
     )
 }
 
@@ -621,7 +687,9 @@ test_resume_without_binding_rejects_untrusted_or_linked_receipts() {
     status=0
     output=$("$CS_BIN" forged-first --resume 2>&1) || status=$?
     assert_eq 1 "$status" || return 1
-    assert_output_contains "$output" 'no recorded antigravity conversation' || return 1
+    assert_output_contains "$output" 'needs recovery' || return 1
+    assert_output_contains "$output" 'do not replay it with --from-handoff' || return 1
+    assert_eq '' "$(cat "$AGY_LOG")" "a linked receipt never starts agy" || return 1
     rm "$receipt_dir/pending.json"
     receipt_dir="$dir/.cs/local/cache/launch-handoffs/$identity/antigravity"
     mkdir -p "$receipt_dir"
@@ -630,7 +698,7 @@ test_resume_without_binding_rejects_untrusted_or_linked_receipts() {
     status=0
     output=$(CS_CACHE_DIR="$dir/.cs/local/cache" "$CS_BIN" forged-first --resume 2>&1) || status=$?
     assert_eq 1 "$status" || return 1
-    assert_output_contains "$output" 'no recorded antigravity conversation' || return 1
+    assert_output_contains "$output" 'needs recovery' || return 1
     assert_not_exists "$dir/.cs/local/antigravity-conversation" || return 1
     assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
     assert_eq '' "$(cat "$AGY_LOG")" "untrusted recovery state never starts agy"
@@ -904,11 +972,11 @@ test_capabilities_claim_rotation_but_not_deferred_features() {
     assert_output_contains "$output" 'engine: antigravity' || return 1
     assert_output_contains "$output" "conversation: $AGY_NEW_ID" || return 1
     assert_output_contains "$output" 'capabilities: launch exact_resume startup_context recovery_autosave memory_index' || return 1
-    for capability in launch exact_resume startup_context recovery_autosave memory_index rotation; do
+    for capability in launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch; do
         CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" \
             || { echo "  FAIL: $capability should be supported"; return 1; }
     done
-    for capability in engine_switch spawn_brief mail_delivery feature_finish status_line; do
+    for capability in spawn_brief mail_delivery feature_finish status_line; do
         status=0
         output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" 2>&1) \
             || status=$?
@@ -962,7 +1030,7 @@ test_finish_and_missing_handoff_are_refused() {
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
 }
 
-test_switch_is_refused_from_an_antigravity_run() {
+test_switch_from_antigravity_refuses_a_missing_target() {
     local output status=0 dir
     output=$("$CS_BIN" leaver --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir leaver)
@@ -970,7 +1038,7 @@ test_switch_is_refused_from_an_antigravity_run() {
     output=$(CS_SESSION_DIR="$dir" CS_SESSION_NAME=leaver CS_RUN_ID=run-1 CS_RUN_ENGINE=antigravity \
         "$CS_BIN" -switch claude 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: a switch from antigravity must fail"; return 1; }
-    assert_output_contains "$output" 'cs -switch is not supported under antigravity' || return 1
+    assert_output_contains "$output" 'Cannot switch to claude:' || return 1
     assert_not_exists "$dir/.cs/local/pending-switch" "no switch is armed"
 }
 
@@ -1262,6 +1330,7 @@ test_edits_in_a_run_are_autosaved_for_recovery() {
 run_test test_handoff_launch_binds_consumes_and_resumes_without_replay
 run_test test_cancelled_handoff_launch_does_not_replay_an_ambiguous_attempt
 run_test test_first_receipt_failure_keeps_the_main_consumer_across_subagents_and_reopens
+run_test test_resumed_switch_receipt_failure_recovers_without_replaying_or_rebinding_to_subagents
 run_test test_rotation_refuses_before_agy_when_launch_intent_cannot_be_saved
 run_test test_rotation_from_a_legacy_binding_claims_its_consumer
 run_test test_pending_handoff_menu_and_explicit_intents
@@ -1270,15 +1339,16 @@ run_test test_rotation_refuses_a_plugin_without_preinvocation
 run_test test_rotation_refuses_unusable_preinvocation_commands
 run_test test_rotation_requires_the_plugin_manifest
 run_test test_rotation_accepts_a_quoted_binding_hook_executable
-run_test test_rotation_cannot_enable_switching_into_antigravity
-run_test test_a_session_marker_cannot_switch_an_antigravity_run
+run_test test_switch_preflight_requires_a_usable_antigravity_hook
+run_test test_switch_from_antigravity_rechecks_target_dependencies
+run_test test_binding_failure_cannot_transfer_the_first_handoff_consumer
 run_test test_a_failed_receipt_can_retry_in_the_same_conversation
 run_test test_next_launch_recovers_a_receipt_without_replaying_the_prompt
 run_test test_resume_recovers_the_first_antigravity_binding_under_the_lease
 run_test test_resume_preserves_an_ambiguous_first_launch_intent
 run_test test_resume_without_binding_rejects_untrusted_or_linked_receipts
 run_test test_rotation_refuses_unsafe_receipts_before_starting_agy
-run_test test_a_session_marker_cannot_switch_to_antigravity
+run_test test_switch_consumer_rechecks_antigravity_hook_readiness
 run_test test_missing_agy_names_the_install_line_before_creating_anything
 run_test test_fresh_launch_starts_agy_in_the_session_with_its_context_rule
 run_test test_reopen_resumes_by_id_and_fresh_and_resume_choose_explicitly
@@ -1299,7 +1369,7 @@ run_test test_unknown_engine_errors_list_all_three
 run_test test_spawn_refuses_a_brief_or_task_it_cannot_deliver
 run_test test_a_staged_spawn_seed_is_named_and_left_for_another_engine
 run_test test_finish_and_missing_handoff_are_refused
-run_test test_switch_is_refused_from_an_antigravity_run
+run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_an_encrypted_session_is_refused_before_its_vault_opens
 run_test test_a_feature_worktree_launches_and_keeps_its_rule_out_of_git
 run_test test_the_engine_is_recorded_before_agy_starts

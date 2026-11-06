@@ -35,7 +35,7 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
-`exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, and `rotation`
+`exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, and `engine_switch`
 ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
@@ -47,7 +47,7 @@ The four session-manager capabilities name what the shipped skills rely on:
 | Capability | Means | Checked by |
 | --- | --- | --- |
 | `rotation` | a fresh conversation consumes the handoff and binds its exact ID: `/clear` under Claude/Codex, exit/reopen under Antigravity | the rotate skill |
-| `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude and Codex) | the switch skill and verb |
+| `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude, Codex and Antigravity) | the switch skill and verb |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |
 | `mail_delivery` | `cs -msg` unread mail surfaces on the next prompt (idle wake is separate) | the feature skill |
@@ -206,16 +206,17 @@ an engine as Claude records. Each engine retains its own current binding.
 
 ## Switching engines
 
-`cs -switch` (lib/78-switch.sh) moves a session to the other engine through a
-rotation handoff; no transcript crosses engines. The `switch` skill writes and
+`cs -switch` (lib/78-switch.sh) moves a session to a target engine through a
+rotation handoff; no transcript crosses engines. Claude and Codex default to
+each other; Antigravity requires an explicit target. The `switch` skill writes and
 arms the handoff by the `rotate` skill's steps, then runs
-`cs -switch [claude|codex] [--resume]` from inside the conversation. The verb
+`cs -switch [claude|codex|antigravity] [--resume]` from inside the conversation. The verb
 refuses, naming the fix, outside a session or a live run of it (its
 `CS_RUN_ID` must match `.cs/local/run-lease.json`), for an unknown engine or the
 current one, for a target the install did not set up or whose CLI is missing,
 for a source or target adapter without `engine_switch` or `rotation`, for a switch already pending, for an
-encrypted session whose vault is locked, whose target is Codex (its rotation
-does not read `.cs/private` yet) or whose open would refuse the relaunch
+encrypted session whose vault is locked, whose target is Codex or Antigravity,
+or whose open would refuse the relaunch
 (`_refuse_unmounted_meta`, for example a plaintext `.cs/local/session.log` an
 older Codex run left there), and when no unconsumed handoff is armed.
 `--check` runs every refusal except the last and writes nothing; the skill
@@ -230,10 +231,17 @@ handoff=<basename of the armed handoff>
 run=<CS_RUN_ID of the run that wrote it>
 ```
 
-and prints how to leave the CLI (`/exit` for Claude, `/quit` for Codex).
+and prints how to leave the CLI (`/exit` for Claude or Antigravity, `/quit` for Codex).
 `cs -switch cancel` removes it and leaves the handoff armed. Under Claude the
 `cs` mod reads the same file: its forced-rotation countdown runs `/exit`
 instead of `/clear` while a switch is pending.
+
+Antigravity targets require a usable enabled PreInvocation hook. Fresh and
+resumed targets receive `--prompt-interactive`; the protected launch journal
+records intent before agy starts and claims the first consumer. An ambiguous
+attempt requires recovery with `--engine antigravity --resume`, never replay
+with `--from-handoff`. Cancel under Antigravity leaves the handoff for an
+exit/reopen with `--from-handoff`, since in-place `/clear` rotation is deferred.
 
 `cs_launch_session` settles the switch after the CLI exits, while the run
 still holds its lease and an encrypted session's vault is mounted. Only the
@@ -264,8 +272,8 @@ relaunched conversation that did run, or that armed a newer handoff, keeps what
 it took, and nothing is printed.
 
 Launch intent `handoff` (`--from-handoff`) is the `r` answer taken without the
-prompt on both adapters, from `_pending_handoff_pick`. The relaunch's resume
-mode spends the handoff in the launch, just before the CLI starts: it marks it
+prompt on all three adapters, from `_pending_handoff_pick`. Claude and
+Codex's relaunch resume mode spends the handoff in the launch, just before the CLI starts: it marks it
 consumed by the resumed conversation, removes the marker so a later `/clear`
 cannot rotate into it again, and passes a prompt pointing at it (Claude's
 launch prompt, Codex's `codex resume <id> -C <dir> <prompt>`). An encrypted
@@ -286,7 +294,7 @@ its own inside the vault: main checks before the pre-open, and
 (`_codex_encrypted_refusal`). Antigravity refuses them the same way
 (`_antigravity_encrypted_refusal`).
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
-`~/.gemini/config/plugins/cs/`, and no status line, switch or mail. Rotation uses `/exit` then a fresh
+`~/.gemini/config/plugins/cs/`, and no status line or mail. Rotation uses `/exit` then a fresh
 managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Its

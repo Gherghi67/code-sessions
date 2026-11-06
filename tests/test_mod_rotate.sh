@@ -123,7 +123,7 @@ test_mod_reads_the_switch_record_cs_writes() {
 test_mod_switch_key_matches_the_switch_skill() {
     grep -qF '`${countVerb(target)} to ${target}`' "$MOD/hooks/register.tsx" \
         || { echo "  FAIL: the mod no longer labels the key '/exit to <engine>'"; return 1; }
-    assert_file_contains "$SCRIPT_DIR/../skills/switch/SKILL.md" '`/exit to codex`' \
+    assert_file_contains "$SCRIPT_DIR/../skills/switch/SKILL.md" '`/exit to <target>`' \
         "the switch skill quotes the key the mod draws" || return 1
 }
 

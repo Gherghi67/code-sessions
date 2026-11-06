@@ -36,6 +36,14 @@ _cs_completions() {
     local session_opts="-secrets -queue -msg -narrative -conversations -config -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --from-handoff --force --remote --permission-mode"
     local engine_values="claude codex antigravity"
 
+    # Switch targets are engines, independent of session-name completion.
+    for ((i=1; i < cword; i++)); do
+        if [ "${words[i]}" = -switch ]; then
+            COMPREPLY=($(compgen -W "$engine_values cancel --check --resume --model --effort --approve-for-me --native-approval" -- "$cur"))
+            return 0
+        fi
+    done
+
     # Get list of session names. cs owns the definition of a session, including
     # which symlinks and marker directories count; asking it keeps this script
     # from drifting out of step with `cs -list`.

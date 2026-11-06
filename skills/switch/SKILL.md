@@ -1,7 +1,7 @@
 ---
 model: opus
 name: switch
-description: Switch this cs session to the other engine (Claude <-> Codex) - write and arm a rotation handoff by the rotate skill's own steps, record the move with `cs -switch`, and tell the user to exit so cs reopens the session under the other engine from that handoff. Invoke only when the user asks to switch engines.
+description: Switch this cs session to another engine (Claude, Codex or Antigravity) - write and arm a rotation handoff by the rotate skill's own steps, record the move with `cs -switch`, and tell the user to exit so cs reopens the session under the other engine from that handoff. Invoke only when the user asks to switch engines.
 disable-model-invocation: true
 ---
 
@@ -31,21 +31,23 @@ the line it printed, tell the user to exit and reopen the session with
 anything.
 
 Run `cs -engine` and note its `engine:` line: the engine this conversation
-runs under. The steps below differ between Claude and Codex, and rotate's
+runs under. The steps below differ between engines, and rotate's
 step 1 reads the `conversation:` line of the same output.
 
 Take the target and the option from the user's message, the one that invoked
-this skill: an engine name, `claude` or `codex`, and optionally `--resume`.
+this skill: an engine name, `claude`, `codex` or `antigravity`, and optionally `--resume`.
 Also carry any requested `--model MODEL`, `--effort LEVEL`,
 `--approve-for-me` or `--native-approval` options through both the check and
 the final `cs -switch` call, quoting each value as a separate argument.
 Codex defaults to automatic approval review in a workspace-write sandbox;
 `--native-approval` uses its configured policy. Explicit `--approve-for-me`
-selects Claude's `auto` permission mode when Claude is the target.
+selects Claude's `auto` permission mode or Antigravity's `--mode auto`.
 Codex hands a skill no arguments (it never substitutes the arguments
-placeholder), so under both engines read them from the user's message; do
+placeholder), and Antigravity passes none either, so under all engines read them from the user's message; do
 not wait for them to arrive any other way. No engine named means the other
-one: `claude` switches to `codex`, `codex` to `claude`. A target equal to the
+one for the established pair: `claude` switches to `codex`, `codex` to
+`claude`. Under Antigravity, require an explicit `claude` or `codex` target;
+ask for that choice before writing the handoff if the user omitted it. A target equal to the
 current engine is not a switch: `cs -switch` refuses it, and the rotate
 skill is what the user wants.
 
@@ -78,7 +80,9 @@ engine other than this one, the target installed with its
 CLI found and its adapter declaring `rotation`, no switch already pending,
 and, in an encrypted session, the vault mounted with no plaintext session
 files left beside it and a target that reads its handoffs from the vault
-(Codex does not yet, so an encrypted session cannot switch into Codex). It
+(only Claude does; Codex and Antigravity cannot open encrypted sessions).
+Antigravity also requires a usable enabled PreInvocation hook and no
+unresolved handoff attempt from an earlier launch. It
 writes nothing. If it exits
 non-zero, print the line it printed (it names the fix) and stop: no handoff,
 no commit, no marker. A handoff written for a switch that cannot happen is
@@ -131,7 +135,8 @@ vault is committed. `cs -switch` keeps its record there too,
    Any other refusal means something changed since the check: a switch
    recorded from another shell, the vault unmounted, the target's CLI gone.
    Print the line it printed and tell the user the handoff stays armed: `/clear`
-   continues from it in this engine, or they fix the cause and run
+   continues from it under Claude or Codex; under Antigravity, exit and reopen
+   with `cs <session-name> --engine antigravity --from-handoff`. Or fix the cause and run
    `cs -switch <target>` again. Under Claude, say too that the `cs` mod's
    countdown runs that `/clear` itself twenty seconds after this turn ends,
    unless they send a prompt (which stops it) or launched with
@@ -147,12 +152,12 @@ vault is committed. `cs -switch` keeps its record there too,
      target has no conversation recorded here, cs says so and starts a
      fresh one.
    - The new conversation begins the handoff's next step by itself, under
-     either engine: cs launches it with the handoff as its opening prompt
-     (Claude's launch prompt, Codex's starting prompt), so there is nothing
+     any engine: cs launches it with the handoff as its opening prompt
+     (Antigravity uses `--prompt-interactive`), so there is nothing
      to type, not even `go`.
    - Under Claude (`engine: claude`), the `cs` mod counts twenty seconds
      down once this turn ends and runs `/exit` itself; its key on the capsule
-     reads `/exit to codex` (Ctrl+X 1, if they bound it). A prompt they send stops the count
+     reads `/exit to <target>` (Ctrl+X 1, if they bound it). A prompt they send stops the count
      (it starts again when that turn ends) and keeps this conversation; the
      switch stays pending for a later exit. Launched with
      `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no countdown: the key or a
@@ -171,30 +176,40 @@ vault is committed. `cs -switch` keeps its record there too,
      whatever approval the switch names: cs never carries out a switch
      unattended there, so the line says the exit is theirs. A `/clear` cannot
      change engines.
+   - Under Antigravity (`engine: antigravity`), type `/exit` yourself.
+     There is no countdown or terminal input automation. Invoke this shared
+     skill there as `/cs:switch <target>`.
    - The old conversation stays on disk, untouched:
      `cs <session-name> --engine <current engine>` opens it again later.
    - To call the switch off before exiting: `cs -switch cancel`. The
-     handoff stays armed, so `/clear` then continues in this engine.
-   - A `/clear` instead of the exit takes the handoff in this engine, and cs
-     drops the switch with a notice when the CLI exits. If the CLI exits with
+     handoff stays armed. Under Antigravity, exit and reopen with
+     `cs <session-name> --engine antigravity --from-handoff`; under Claude
+     or Codex, `/clear` continues in this engine.
+   - Under Claude or Codex, a `/clear` instead of the exit takes the handoff
+     in this engine, and cs drops the switch with a notice when the CLI exits.
+     Under Antigravity, `/clear` does not cancel the switch or consume the
+     handoff: run `cs -switch cancel`, then exit and reopen as described above.
+     If the CLI exits with
      an error or the relaunch fails, cs prints both ways back
      (`cs <session-name> --engine <target> --from-handoff` and
      `cs <session-name> --engine <current engine>`) and the handoff stays
-     armed.
+     armed. An Antigravity launch that received the prompt but has no
+     confirmed consumer is ambiguous: follow cs's `--engine antigravity
+     --resume` recovery instruction, inspect native agy history when needed,
+     and never replay with `--from-handoff`.
 
-5. End your response with the instruction and nothing after it, on its own
-   final line, exactly. Under Claude the line is:
+5. End your response with the instruction on its own final line, with
+   `<target>` replaced by the selected engine. Under Claude:
 
-   **Run `/exit` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — cs reopens this session under Codex.
+   **Run `/exit` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — cs reopens this session under <target>.
 
-   Under Codex the line is, exactly:
+   Under Codex:
 
-   **Quit Codex now (`/quit`)** — cs reopens this session under Claude.
+   **Quit Codex now (`/quit`)** — cs reopens this session under <target>.
 
-   This is the one step you cannot take for the user: cs relaunches only
-   after the CLI it waits on has exited. A hook cannot exit for them; the
-   `cs` mod's key and countdown can under Claude, and they run `/exit`
-   rather than `/clear` because the pending switch is recorded. Codex has no
-   key; cs types its `/quit` after twenty seconds unless the count is off or
-   the run was launched with `--native-approval`.
-   The line must not end up buried under a summary of what you just wrote.
+   Under Antigravity:
+
+   **Run `/exit` now** — cs reopens this session under <target>.
+
+   The user exits the CLI. Antigravity has no exit countdown; Claude and
+   Codex follow the countdown rules above. Put nothing after this line.

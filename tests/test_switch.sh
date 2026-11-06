@@ -3,6 +3,7 @@
 # ABOUTME: launch flag on both engines, and the relaunch under the other engine after the CLI exits.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SWITCH_TEST_CACHE_PARENT="$HOME/.cache"
 source "$SCRIPT_DIR/test_lib.sh"
 
 HANDOFF=2026-10-07-switch.md
@@ -125,6 +126,32 @@ fi
 export CS_STUB_THREAD="${3:-}"
 exit "$("$CS_STUB_DIR/plan" codex)"
 CODEX
+    cat > "$stub/agy" <<'AGY'
+#!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '  %s\n' --conversation --model --effort --mode --prompt-interactive
+    exit 0
+fi
+STUB_PPID=$PPID "$CS_STUB_DIR/record" antigravity "$@"
+if [ -f "$CS_STUB_DIR/antigravity.fail-early" ]; then
+    if [ -f "$CS_STUB_DIR/antigravity.break-journal" ]; then
+        journal=$(find "$CS_CACHE_DIR/launch-handoffs" -name intent.json | head -1)
+        case "$(cat "$CS_STUB_DIR/antigravity.break-journal")" in
+            permissions) chmod 777 "${journal%/*}" ;;
+            entry) rm "$journal"; mkdir "$journal" ;;
+            missing) rm -rf "${journal%/*}" ;;
+        esac
+    fi
+    exit "$(cat "$CS_STUB_DIR/antigravity.fail-early")"
+fi
+id=$(printf '77777777-7777-4777-8777-%012d' "$(cat "$CS_STUB_DIR/antigravity.calls")")
+while [ $# -gt 0 ]; do
+    case "$1" in --conversation) id="$2"; shift ;; esac
+    shift
+done
+jq -nc --arg id "$id" '{conversationId:$id}' | "$CS_BIN" -antigravity-hook pre-invocation >/dev/null
+exit "$("$CS_STUB_DIR/plan" antigravity)"
+AGY
     cat > "$stub/cs-codex-thread" <<'HELPER'
 #!/usr/bin/env bash
 # The newest turn of the thread's history, one line per turn in codex.turns.
@@ -157,6 +184,8 @@ setup() {
     export CS_NO_UPDATE_CHECK=1 CS_NO_ITERM2=1 CS_NO_FUNCTION_HOOKS=1
     export CLAUDE_CODE_BIN="$TEST_TMPDIR/bin/claude"
     export CODEX_BIN="$TEST_TMPDIR/bin/codex"
+    export AGY_BIN="$TEST_TMPDIR/bin/agy"
+    SWITCH_TEST_CACHE=""
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/bin/cs-codex-thread"
     export CS_TEST_START_HOOK="$SCRIPT_DIR/../hooks/session-start.sh"
     export EDITOR=switch-test-editor
@@ -171,6 +200,8 @@ setup() {
 
 teardown() {
     rm -rf "$TEST_TMPDIR"
+    [ -z "$SWITCH_TEST_CACHE" ] || rm -rf "$SWITCH_TEST_CACHE"
+    unset CS_CACHE_DIR AGY_BIN
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_HOOKS_DIR CS_STUB_DIR CS_NO_UPDATE_CHECK
     unset CS_NO_ITERM2 CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN CS_CODEX_THREAD_BIN
     unset CS_TEST_START_HOOK CS_ASSUME_TTY CS_SESSION_NAME CS_SESSION_DIR CS_RUN_ID CS_RUN_ENGINE
@@ -1120,6 +1151,205 @@ test_switch_marker_keeps_spaces_in_selected_model() {
     _has "$CS_SESSION_DIR/.cs/local/pending-switch" 'approval=auto' || return 1
 }
 
+
+# Handoff receipts deliberately reject temporary or agent-writable roots.
+# Only tests exercising Antigravity create this private throwaway host cache.
+_enable_antigravity() {
+    use_fake_keychain
+    mkdir -p "$SWITCH_TEST_CACHE_PARENT" || return 1
+    SWITCH_TEST_CACHE=$(mktemp -d "$SWITCH_TEST_CACHE_PARENT/cs-switch-test.XXXXXX") || return 1
+    export CS_CACHE_DIR="$SWITCH_TEST_CACHE"
+    ( source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$CS_BIN" )
+}
+
+test_antigravity_requires_an_explicit_destination() {
+    local out status=0
+    _fake_run choose antigravity
+    _arm
+    out=$("$CS_BIN" -switch --check 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$out" 'Choose a target explicitly' || return 1
+    assert_not_exists "$CS_SESSION_DIR/.cs/local/pending-switch"
+}
+
+test_all_antigravity_engine_pairs_carry_fresh_and_resumed_handoffs() {
+    local source target mode name out before saved
+    _enable_antigravity || return 1
+    for source in claude codex antigravity; do
+        for target in claude codex antigravity; do
+            [ "$source" != "$target" ] || continue
+            # The existing suites cover Claude <-> Codex in depth.
+            [ "$source" = antigravity ] || [ "$target" = antigravity ] || continue
+            for mode in fresh resume; do
+                name="$source-$target-$mode"
+                "$CS_BIN" "$name" --engine "$target" </dev/null >/dev/null 2>&1 || return 1
+                saved=$(cat "$(_dir "$name")/.cs/local/antigravity-conversation" 2>/dev/null || true)
+                "$CS_BIN" "$name" --engine "$source" --fresh </dev/null >/dev/null 2>&1 || return 1
+                before=$(_calls "$target")
+                _plan "$source" "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH='$target $([ "$mode" = fresh ] || printf -- --resume) --model provider/model --effort high --native-approval'"
+                out=$("$CS_BIN" "$name" --resume </dev/null 2>&1) || { echo "$out"; return 1; }
+                assert_eq "$((before + 1))" "$(_calls "$target")" "$name launched target once: $out" || return 1
+                assert_eq "$target" "$(_state "$(_dir "$name")" engine)" || return 1
+                _has "$CS_STUB_DIR/switch.out" 'Switch armed:' || return 1
+                _has "$CS_STUB_DIR/$target.args.$((before + 1))" 'provider/model' || return 1
+                _has "$(_dir "$name")/.cs/handoffs/$HANDOFF" 'status: consumed' || return 1
+                assert_not_exists "$(_dir "$name")/.cs/local/pending-handoff" || return 1
+                assert_not_exists "$(_dir "$name")/.cs/local/pending-switch" || return 1
+                if [ "$target" = antigravity ]; then
+                    _has "$CS_STUB_DIR/antigravity.args.$((before + 1))" --prompt-interactive || return 1
+                    _has "$CS_STUB_DIR/antigravity.args.$((before + 1))" high || return 1
+                    assert_file_not_contains "$CS_STUB_DIR/antigravity.args.$((before + 1))" '^--mode$'  || return 1
+                    if [ "$mode" = resume ]; then
+                        _has "$CS_STUB_DIR/antigravity.args.$((before + 1))" "$saved" || return 1
+                        _has "$CS_STUB_DIR/antigravity.args.$((before + 1))" 'work done since you last ran here' || return 1
+                    else
+                        _lacks "$CS_STUB_DIR/antigravity.args.$((before + 1))" --conversation || return 1
+                        [ "$saved" != "$(cat "$(_dir "$name")/.cs/local/antigravity-conversation")" ] || { echo '  FAIL: fresh target must bind a new ID'; return 1; }
+                    fi
+                    assert_not_exists "$CS_CACHE_DIR/antigravity-runs/$(_envv antigravity "$((before + 1))" CS_RUN_ID)" || return 1
+                else
+                    _has "$CS_STUB_DIR/switch.out" /exit || return 1
+                fi
+            done
+        done
+    done
+}
+
+test_antigravity_resume_without_a_binding_falls_back_to_fresh() {
+    local out
+    _enable_antigravity || return 1
+    _new_claude_session no-agy-binding
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH='antigravity --resume'"
+    out=$("$CS_BIN" no-agy-binding --resume </dev/null 2>&1) || { echo "$out"; return 1; }
+    assert_output_contains "$out" 'No recorded antigravity conversation' || return 1
+    _has "$CS_STUB_DIR/antigravity.args.1" --prompt-interactive || return 1
+    _lacks "$CS_STUB_DIR/antigravity.args.1" --conversation
+}
+
+test_antigravity_ambiguous_switch_is_never_replayed() {
+    local out status mode name before
+    _enable_antigravity || return 1
+    for mode in fresh resume; do
+        name="ambiguous-$mode"
+        "$CS_BIN" "$name" --engine antigravity </dev/null >/dev/null 2>&1 || return 1
+        "$CS_BIN" "$name" --engine claude --fresh </dev/null >/dev/null 2>&1 || return 1
+        before=$(_calls antigravity)
+        printf '1\n' > "$CS_STUB_DIR/antigravity.fail-early"
+        _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH='antigravity $([ "$mode" = fresh ] || printf -- --resume)'"
+        status=0
+        out=$("$CS_BIN" "$name" --resume </dev/null 2>&1) || status=$?
+        assert_eq 1 "$status" || return 1
+        assert_output_contains "$out" 'needs recovery' || return 1
+        assert_output_not_contains "$out" 'stays armed. Reopen with either' || return 1
+        assert_output_contains "$out" 'do not replay with --from-handoff' || return 1
+        rm "$CS_STUB_DIR/antigravity.fail-early"
+        status=0
+        out=$("$CS_BIN" "$name" --from-handoff </dev/null 2>&1) || status=$?
+        assert_eq 1 "$status" || return 1
+        assert_eq "$((before + 1))" "$(_calls antigravity)" "no second prompt" || return 1
+    done
+}
+
+test_antigravity_unsafe_journal_never_advises_replay() {
+    local out status kind name
+    _enable_antigravity || return 1
+    for kind in missing permissions entry; do
+        name="unsafe-$kind"
+        _new_claude_session "$name"
+        printf '1\n' > "$CS_STUB_DIR/antigravity.fail-early"
+        printf '%s\n' "$kind" > "$CS_STUB_DIR/antigravity.break-journal"
+        _plan claude "PLAN_HANDOFF=$HANDOFF" 'PLAN_SWITCH=antigravity'
+        status=0
+        out=$("$CS_BIN" "$name" --resume </dev/null 2>&1) || status=$?
+        assert_eq 1 "$status" || return 1
+        assert_output_contains "$out" 'needs recovery' || return 1
+        assert_output_contains "$out" 'do not replay with --from-handoff' || return 1
+        assert_output_not_contains "$out" 'did not start' || return 1
+        rm "$CS_STUB_DIR/antigravity.fail-early" "$CS_STUB_DIR/antigravity.break-journal"
+    done
+}
+
+test_failed_antigravity_after_a_turn_keeps_the_handoff_spent() {
+    local out status=0
+    _enable_antigravity || return 1
+    _new_claude_session agy-turn
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH=antigravity"
+    _plan antigravity 'PLAN_EXIT=1'
+    out=$("$CS_BIN" agy-turn --resume </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    _has "$(_dir agy-turn)/.cs/handoffs/$HANDOFF" 'status: consumed' || return 1
+    assert_output_not_contains "$out" 'did not start' || return 1
+    assert_not_exists "$(_dir agy-turn)/.cs/local/pending-handoff"
+}
+
+test_antigravity_cancel_preserves_the_native_reopen_route() {
+    local out
+    _fake_run cancel-agy antigravity
+    _arm
+    "$CS_BIN" -switch claude >/dev/null 2>&1 || return 1
+    out=$("$CS_BIN" -switch cancel 2>&1) || return 1
+    assert_output_contains "$out" '--engine antigravity --from-handoff' || return 1
+    assert_output_not_contains "$out" '/clear' || return 1
+    assert_exists "$CS_SESSION_DIR/.cs/local/pending-handoff"
+}
+
+test_antigravity_preflight_and_settle_keep_unsupported_targets_safe() {
+    local out status=0 dir
+    _enable_antigravity || return 1
+    _fake_run preflight claude
+    dir="$CS_SESSION_DIR"
+    mkdir -p "$dir/.cs/private"
+    out=$("$CS_BIN" -switch antigravity --check 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_output_contains "$out" 'this session is encrypted' || return 1
+    assert_not_exists "$dir/.cs/private/pending-switch" || return 1
+    rmdir "$dir/.cs/private"
+    _arm
+    "$CS_BIN" -switch antigravity --check >/dev/null 2>&1 || return 1
+    assert_not_exists "$dir/.cs/local/pending-switch" || return 1
+    # The CLI exists at arm time but disappears before exit.
+    unset CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR CS_RUN_ID CS_RUN_ENGINE
+    _new_claude_session lost-agy
+    _plan claude "PLAN_HANDOFF=$HANDOFF" 'PLAN_SWITCH=antigravity' "PLAN_CMD='rm -f \"\$AGY_BIN\"'"
+    out=$("$CS_BIN" lost-agy --resume </dev/null 2>&1) || { echo "$out"; return 1; }
+    assert_eq 0 "$(_calls antigravity)" || return 1
+    assert_output_contains "$out" 'Not switching to antigravity' || return 1
+    _has "$(_dir lost-agy)/.cs/handoffs/$HANDOFF" 'status: unconsumed'
+}
+
+test_antigravity_source_error_leaves_the_handoff_for_reopen() {
+    local out status=0
+    _enable_antigravity || return 1
+    "$CS_BIN" agy-error --engine antigravity </dev/null >/dev/null 2>&1 || return 1
+    _plan antigravity "PLAN_HANDOFF=$HANDOFF" 'PLAN_SWITCH=codex' 'PLAN_EXIT=1'
+    out=$("$CS_BIN" agy-error --resume </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" || return 1
+    assert_eq 0 "$(_calls codex)" || return 1
+    assert_output_contains "$out" 'antigravity exited with status 1' || return 1
+    _has "$(_dir agy-error)/.cs/handoffs/$HANDOFF" 'status: unconsumed'
+}
+
+test_antigravity_target_automatic_approval_is_explicit() {
+    local out
+    _enable_antigravity || return 1
+    _new_claude_session agy-approval
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH='antigravity --approve-for-me'"
+    out=$("$CS_BIN" agy-approval --resume </dev/null 2>&1) || { echo "$out"; return 1; }
+    _has "$CS_STUB_DIR/antigravity.args.1" --mode || return 1
+    _has "$CS_STUB_DIR/antigravity.args.1" auto
+}
+
+run_test test_antigravity_preflight_and_settle_keep_unsupported_targets_safe
+run_test test_antigravity_source_error_leaves_the_handoff_for_reopen
+run_test test_antigravity_target_automatic_approval_is_explicit
+
+run_test test_antigravity_requires_an_explicit_destination
+run_test test_all_antigravity_engine_pairs_carry_fresh_and_resumed_handoffs
+run_test test_antigravity_resume_without_a_binding_falls_back_to_fresh
+run_test test_antigravity_unsafe_journal_never_advises_replay
+run_test test_antigravity_ambiguous_switch_is_never_replayed
+run_test test_failed_antigravity_after_a_turn_keeps_the_handoff_spent
+run_test test_antigravity_cancel_preserves_the_native_reopen_route
 
 run_test test_verb_defaults_to_the_other_engine_and_writes_the_file
 run_test test_verb_from_codex_targets_claude_and_says_quit

@@ -674,17 +674,21 @@ _antigravity_plugin_register() {  # cs_path
 }
 
 _antigravity_plugin_manifest() {
-    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs"}'
+    jq -n --arg name "$CS_ANTIGRAVITY_PLUGIN" '{name: $name, author: "cs", version: "1.0.0"}'
 }
 
 # Whether a file holds cs's plugin.json. False when either side cannot be
 # read or worked out: without jq both would be empty, and alike.
 _antigravity_plugin_manifest_is_cs() {  # plugin.json
-    local want have
+    local want have unversioned
     [ -f "$1" ] && [ ! -L "$1" ] || return 1
     want=$(_antigravity_plugin_manifest 2>/dev/null | jq -cS . 2>/dev/null) && [ -n "$want" ] || return 1
     have=$(jq -cS . "$1" 2>/dev/null) && [ -n "$have" ] || return 1
-    [ "$have" = "$want" ]
+    [ "$have" = "$want" ] && return 0
+    # Earlier installs omitted the version. Keep recognizing that exact
+    # document so an upgrade or interrupted uninstall can repair its files.
+    unversioned=$(printf '%s' "$want" | jq -cS 'del(.version)') || return 1
+    [ "$have" = "$unversioned" ]
 }
 
 # Whether a write temp of register's is cs's: a plain file, empty (the write
@@ -2075,7 +2079,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "8aba32f2f43b7f374fa1a987db7c9a0c24c83af6d899382b919c5b81be9d1ef3  bin/cs"
+    "dab990ff61b743e78219b53b767b7c7eb5c9b68ee9130e46e515de263e965fb9  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
     "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"
@@ -2100,7 +2104,7 @@ CS_PAYLOAD_SHA256=(
     "0254497096328ee6b7882ab2cb7177cad137544eb5332df3d1563bb70babb523  skills/store-secret/SKILL.md"
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
     "972c9bd13588bed5bd03eaea310b65505f715999cd19110da11e65439fe5b32b  skills/rotate/SKILL.md"
-    "d5310e043730601207599345cfbb754cf07dbdb4a5092efff3751b523d2bd428  skills/switch/SKILL.md"
+    "f9a660d2ffa1086c381b7d15f1a68804836bccac3663bdd67fbc983de4dd48c3  skills/switch/SKILL.md"
     "f0bbd22f95fb24e4d6b5ece9542ec94823839716de059b15f0e2757879bcb5d3  skills/finish/SKILL.md"
     "9d8a52aba840d5ed74e092fdec889ba60e8cc49d04d9cce9f0b85e97a3279cee  skills/feature/SKILL.md"
     "6da3554cc3215ad0d4c66fe2956f275dbd424fb49d90a23c81ca9a092bf28a6c  skills/write-as-me/SKILL.md"
@@ -2142,8 +2146,8 @@ CS_PAYLOAD_SHA256=(
     "6cca574728693b2fa8072182015e17d9dce47a3ca8118b41ca0e09928546aa41  mods/cs-filter-chat/hooks/verdict.ts"
     "ef2434b735efc6c5727d230eac9d4f439a9439d59946289b024b6e1bcd8f2c80  mods/cs-filter-chat/hooks/words.ts"
     "a5d9864215c3f7b99a49bd59524b72bbc2a75d8df15c97caa23c1aba31ddb428  mods/cs-filter-chat/hooks/draw.tsx"
-    "2a8638957dbfcdb4371bb55c678348e6a9bd69322fd0311623d35388533b40bb  completions/cs.bash"
-    "6f05e669680248ea87ce2147578181f8903b65f04a53cdc57cbbf2f0e5149fa9  completions/_cs"
+    "872d288e3cdacbd3b92b525b825e3b1908c7f832ce622ea9ebf7ae1f7d688cca  completions/cs.bash"
+    "c1ff1936ff98b18c62bfccec546d26c23e61c273bed503bd84741b1bb8bdf02b  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
