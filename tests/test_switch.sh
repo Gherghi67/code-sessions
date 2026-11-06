@@ -139,6 +139,7 @@ if [ -f "$CS_STUB_DIR/antigravity.fail-early" ]; then
         case "$(cat "$CS_STUB_DIR/antigravity.break-journal")" in
             permissions) chmod 777 "${journal%/*}" ;;
             entry) rm "$journal"; mkdir "$journal" ;;
+            missing) rm -rf "${journal%/*}" ;;
         esac
     fi
     exit "$(cat "$CS_STUB_DIR/antigravity.fail-early")"
@@ -1252,7 +1253,7 @@ test_antigravity_ambiguous_switch_is_never_replayed() {
 test_antigravity_unsafe_journal_never_advises_replay() {
     local out status kind name
     _enable_antigravity || return 1
-    for kind in permissions entry; do
+    for kind in missing permissions entry; do
         name="unsafe-$kind"
         _new_claude_session "$name"
         printf '1\n' > "$CS_STUB_DIR/antigravity.fail-early"

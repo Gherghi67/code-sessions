@@ -482,10 +482,9 @@ _switch_relaunch_failed() {  # session_name, session_dir, engine
     # Antigravity persists intent before receiving the prompt. Missing hook
     # evidence is ambiguous: never put a consumed handoff back or suggest replay.
     if [ "$engine" = antigravity ]; then
-        if _launch_handoff_needs_recovery "$dir" antigravity; then
+        if _launch_handoff_needs_recovery "$dir" antigravity \
+            || _handoff_is_unconsumed "$(cs_handoff_dir "$dir/.cs")/$handoff"; then
             printf 'The switch to Antigravity needs recovery. Reopen with: cs %s --engine antigravity --resume. Inspect native agy history if no consumer was recorded; do not replay with --from-handoff.\n' "$name" >&2
-        elif _handoff_is_unconsumed "$(cs_handoff_dir "$dir/.cs")/$handoff"; then
-            _switch_failed_notice "$name" "$engine" "$_cs_switched_from" "$handoff"
         fi
         return 0
     fi
