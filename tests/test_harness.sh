@@ -269,8 +269,7 @@ test_suites_clear_the_launchers_profile_overrides() {
         export CS_RUN_ID=live-run CS_RUN_OWNER_PID=123 CS_RUN_ENGINE=codex CS_LEAD_PID=123
         export CS_SECRETS_SESSION=live-session CS_SECRETS_KEYCHAIN_PREFIX=live-prefix
         run_throwaway_suite '
-test_profile_isolation() {
-    local name
+test_profile_isolation() { local name
     for name in CS_CLAUDE_DIR CODE_SESSIONS_HOME CS_HOOKS_DIR CS_COMMANDS_DIR CS_SKILLS_DIR CS_RUN_ID CS_RUN_OWNER_PID CS_RUN_ENGINE CS_LEAD_PID CS_SECRETS_SESSION CS_SECRETS_KEYCHAIN_PREFIX; do
         [ -z "${!name:-}" ] || return 1
     done

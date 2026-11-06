@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.11.3"
+VERSION="2026.11.4"
 # This build is code-sessions, a fork of cs, installed with the user's normal
 # engine configuration. install.sh uses this marker to identify the fork;
 # update checks use it to avoid replacing the fork with an upstream release.
@@ -188,6 +188,7 @@ _check_retired_entries() {  # list name, kind (file or directory), entries...
 # per-skill settings, which Claude ignores.
 CS_SKILL_FILES=(
     write-as-me/scripts/build-corpus.sh
+    write-as-me/scripts/corpus-check.sh
     finish/scripts/finish.sh
     finish/agents/openai.yaml   # Codex ignores disable-model-invocation; this is its switch
     switch/agents/openai.yaml   # the same switch for the switch skill: run only when the user asks
@@ -1095,6 +1096,7 @@ CS_KNOWN_SHA256=(
     0974dd01895f06c0bd3f8dbb90d89cce9bb8143ef8bc68b90c262e8aac633692
     098ea3d3b5965806d5a4b57e5163496fffe0ed32a6e7d3041de38650ef597905
     09c0b31012936f2f8b08829549b33c35ae8bb76bbbfa3d16cb99306f9e5a87b7
+    0a7693d12a8eaf4852f68b8022494f2fb44507352324c18ba21e28a702c990cf
     0a9ec3757fa5a7e88aa3a6b900e647d0c32f8c494277985704ca4314fd406fb1
     0b396877264f71e1fe8df9f5593d67551d883891218dab902354768c2e2cacc1
     0b823b29bcb59ec3afa7ac718ed6f8aa283c0e07ed665d0792dbad989606cc28
@@ -1125,6 +1127,7 @@ CS_KNOWN_SHA256=(
     12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5
     12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f
     12f70805836b5a2f74001196f27c3725a915d4526a931af3f1efdac39238b34e
+    12fe62d3e76ace5f5fa96cab0abf9c8822159640d0ac8b7d23df77d7f981d168
     138cb03c6210ee1837d6599af471e8a3a179564aeea2c093f0856de524ca08b8
     13910fa0d6ece796a56ece9b9b21a43a41acc4a81c70ce45bd9bd5d4ce80d82b
     13f387cb787f4b66110cad8aca438be122dec035a88dbcfc13e6ae533c596216
@@ -1262,6 +1265,7 @@ CS_KNOWN_SHA256=(
     3802bae45a3ab2f19670dc050dca4b27a2e45bc3f207229e826521e38beb9c0d
     38552b36244dbfce8e579f9f53f86ff66f5e7661414b73498db2a20446efd7a7
     38d26f03a61dd4e8e73cc4c04bbf48f7fcef394fd6cc994760120d9ec3b5a84a
+    397f71caaa863ec6c1659a24a88f2faa1e824a05ce2a6c386e15586e535ae7de
     399c7df8140efa2a67824693fa2e90c720ff98e00a72575243223c7857692add
     39e94a5b98088ed150d91f50de425cf9ab5d32c6af34833207bb19cd2e52a066
     3a2bd4a3d88bdb4c72b4a85d24120742fdb7fd81a16c610262d529bebe851d94
@@ -1281,6 +1285,7 @@ CS_KNOWN_SHA256=(
     3d8e2904d6cf437db11191200f442ecc30711aec490924205e57cfd5cc0c4257
     3da261996d10561cae6a12e7a7cdf44ab4cb8a5c6d96b5d7c6de9ea9462f9fed
     3dc17bb99560802f3257932ce64b7c6186f160e53ba884dec52394ca83890f80
+    3df2e20f640de9b099a8c5c6801a06260d3916a2b94e55c2519e47ba47b1ee4e
     3e7a61a2fdfd10fbbd9ffe90b283ea62b2c2775c1eea0052697f31a8a74742e1
     3ed00e68ac1111cf0db71f672e97f68b89cf98725e617ba7ba4915bcd866ddd1
     3eeac7bb07e1ce70889cdb5dc1cbdfd16115390ffecc414a699ce99166dd40b1
@@ -1383,6 +1388,7 @@ CS_KNOWN_SHA256=(
     5e0ef916d9cc2cb171f104edcb0f4ab7767b13e2d867dd236e74e68798f70fb3
     5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f
     5e3e0f38ff158b53194f7ae4c7fe41461752e2ff62082c6d08bb8578cf5b5a68
+    5e3fb3a9b5ba649d0c5b02db87a27bacd73afef1bd1033ddf9ab5da5612f92cf
     5ec4bee955576fe7aa105abcffbf1126e97eee129267edb42d672741e1908f60
     5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f
     5f626af7bd4cf3f0d988e7b2f40c76c706f490fcc9416428c0d90c63fc4f0a7b
@@ -1417,6 +1423,7 @@ CS_KNOWN_SHA256=(
     6909b481962cddcd80bf35f3c2424bedf5861549f7fd490b9791e352ac7c640f
     69348c57a7230066d20af9cad4b97d89caa431f4fa9e94a31fd07456bd1aa756
     69a2fb0a617f7c32f7fde9235bb55050b9b9d39a8b2ba27af3e8094b7090404f
+    69b235a1793eacf9a06df13ad9a4125e9d5258fb903d7746ed0739013bb47e72
     6a319959fb9c6e2817b9557a3a8d04d935de737e6f56036b0f2b8c96ea619d91
     6a47be149bfd8aab500ed071860ff9fa923ec0e764b82b0f56c2e08a9683c50c
     6aa489261b3448946752ce20431ce39d5be316f3f03124e976608aedb7fa51d8
@@ -1588,6 +1595,7 @@ CS_KNOWN_SHA256=(
     961e4c844acd86f0ab2224dc4f3c127b43bc8cd80f3985fa73850e30d9286aab
     96607e33613b509f43149af0cbd96cbf5d708216ca0658832fcf5667b9678a50
     966440e05707a828f0d84999d9a1865fe3f175add63058ec0d356d19ccc7be9a
+    96cc4d5a8511904fe972fb1b47c35c970d6367485828c6cad0b89926528d7917
     9775221ab90f92f35063ce76bafd073666db4a56f91ebb5abcd662e03be5ea11
     9783681f6400ac60d9b6cfb70405fbb40e9fff2a5021aa63dbeb42b262688a44
     986a751ca603299289428c398266babd67cf173f001861a6f7aad5528ccc5c01
@@ -1648,6 +1656,8 @@ CS_KNOWN_SHA256=(
     a6fc8ed09021cb0709789037eadc2b15db9558502273a66cc548f67b37f3497a
     a7ca7145e6f4fc1a7163dd5dc2f0ee59046e11d687cbe8e8a6a6b56eae9d0cb1
     a80f6b1cb709a8805f77c61ec31e107ddeb38af5c07888faf13c720635043c9d
+    a8a14c22510b49f89557b401730875996064682af719a85322215b61d046b054
+    a8abe8e196ab085c28a30db08b3a52781d14c14ed1134cea5464a75ef03486b6
     a8dd51579409ffdab6852f5995188114f50d3268294df4e290b5857eca08fda5
     a96c77d8f13d893e46116b7d61e517f72bba7f8e10b790517934004be21ae43a
     a99cfc8ef3f705c55287512c8f86d27b89c85e45b6f254a5158f6f8ea46c93c0
@@ -1732,6 +1742,7 @@ CS_KNOWN_SHA256=(
     c14f4a99d73b5c0c22fd95fc70bb4cf3204cb8f4a9a91b4d9c0987eab5a32e1c
     c1ce68d61570ce34feb49b7956aeb2f0258c62fb288d160ee9ac89c6185b5abb
     c207c0bac0f5d4870a72e192862117af59f7cdbbb012d36e237b3106e0cec9db
+    c24183ee25fdd41cada613b2829b2a2ae86e3ee7837392aa1cfb41d4c7952a37
     c256ccde30abcb1fa303c031107de458e3c93698127cf2ca7c5efee62ec6a80e
     c265f33ee7863e4d5ce2691c62f7eda90c6f7b6b315f7a864781ff9ceee40d3c
     c2af6154d1152c7ea99ae879bf09dc33f6fe05e4690675f2f54df73110eb77d1
@@ -1902,6 +1913,7 @@ CS_KNOWN_SHA256=(
     fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054
     fbafc4d45025e225947bc1ef8215cbaabbffe92aeebb729487b9a1504d911708
     fbb3ca4863c2032e0e2bbe9a409cb0a515f2b5d308519f2b5e2111423331764b
+    fc0c2b4db8af8da64c52cd4f65b52785ed0a1b2113f5fea196f69d84f83ae5f3
     fc0f047f5cec5ba2ff999c7c16275df474ea7c364ba5fee76306da11d8addbff
     fc2a73985eab32b26946f2501cfc6d124d280fcdc6097dca768f880adedcfaf3
     fce7a2abdb941a6291d1f2d01b042cc5a9b4b97fbdc9d559e80ee84884d8106f
@@ -3587,7 +3599,7 @@ _CS_CONFIG_SPEC=(
     'CS_STATUSLINE_COLS|Status line|Width in columns|text|cols|-|measured|now|applies at the next repaint|A fixed width for the status line; unset, it fits the terminal.'
     'CS_STATUSLINE_FRAME|Status line|Frame columns|text|num|-|4|now|applies at the next repaint|Columns the prompt frame takes from the measured width, so the line is not cut short.'
     'CS_STATUSLINE_CTX_WARN|Status line|Context warn %|text|num|-|40|now|applies at the next repaint|Context use at which the gauge turns to its warning colour.'
-    'CS_STATUSLINE_CTX_CRIT|Status line|Context critical %|text|num|-|65|now|applies at the next repaint|Context use at which the gauge turns to its critical colour.'
+    'CS_STATUSLINE_CTX_CRIT|Status line|Context critical %|text|num|-|60|now|applies at the next repaint|Context use at which the gauge turns to its critical colour.'
     'CS_USAGE_NO_REFRESH|Status line|Usage refresh|flagoff|flag|-|off|now|applies at the next repaint|Fetches your Fable usage for the status line; off, it shows only what is already cached.'
     'CS_SUBAGENT_STATUSLINE_DISABLE|Status line|Subagent rows|flagoff|flag|-|off|now|applies at the next repaint|Styles the rows Claude Code shows for running subagents to match the status line.'
     'CS_SCOPE_DISABLE|Prompts|Scope grounding|flagoff|flag|-|off|now|applies at your next prompt|Adds a short summary of the relevant code to each prompt that asks for code work.'
@@ -3599,7 +3611,7 @@ _CS_CONFIG_SPEC=(
     'CS_NARRATIVE_PROMPT_DISABLE|Prompts|Narrative line|flagoff|flag|-|off|now|applies at your next prompt|Asks Claude, on each prompt, to note a finding in its narrative before it answers.'
     'CS_CTX_WARN_CTX|Rotation|Context warning %|text|num|-|40|now|applies when the next turn ends|Context use at which Claude tells you, once, that the conversation is filling up.'
     'CS_ROTATE_BUTTON_CTX|Rotation|Rotate button from %|text|num|-|the warn %|now|applies by your next prompt|Context use from which the band above the prompt shows the rotate key, Ctrl+X 1.'
-    'CS_ROTATE_NUDGE_CTX|Rotation|Rotation nudge %|text|num|-|65|now|applies when the next turn ends|Context use at which Claude suggests, once, writing a handoff and going on after /clear.'
+    'CS_ROTATE_NUDGE_CTX|Rotation|Rotation nudge %|text|num|-|60|now|applies when the next turn ends|Context use at which Claude suggests, once, writing a handoff and going on after /clear.'
     'CS_ROTATE_FORCE_CTX|Rotation|Rotate on its own past %|text|force|-|80|now|applies by your next prompt|Context use past which cs rotates by itself after a 20 second countdown you can stop.'
     'CS_NO_ROTATION_WAKE|Rotation|Wake after /clear|flagoff|flag|-|off|/clear|applies at the next /clear or launch|After /clear on a handoff, the fresh conversation starts its next step without you typing.'
     'CS_ROTATION_KICK_DELAY|Rotation|Wake delay (s)|text|secs|-|2|now|applies at the next rotation|Seconds between tries to wake the fresh conversation after /clear; 0 tries once.'
@@ -4065,6 +4077,7 @@ setup_palette() {
     if [[ -n "${NO_COLOR:-}" ]] || [[ ! -t 1 ]]; then
         RED=''; GREEN=''; YELLOW=''; ORANGE=''; GOLD=''; RUST=''
         COMMENT=''; WHITE=''; DIM=''; BOLD=''; NC=''
+        AMBER=''; CRIT=''; CRIT_FILL=''
         return
     fi
     BOLD='\033[1m'
@@ -4089,6 +4102,22 @@ setup_palette() {
         COMMENT='\033[38;2;161;136;127m'  # #a1887f - warm taupe
         WHITE='\033[38;2;245;230;211m'    # #f5e6d3 - warm cream
         DIM='\033[2m'
+    fi
+    # The status line's context inks, so the launch card and the resume ask
+    # warn in the colours the bar uses: amber, the crit red, and the bar's
+    # inverted crit capsule, white on the crit red on either theme. KEEP IN
+    # SYNC with the amber), crit) and critink) arms of _sgr in
+    # bin/cs-statusline. The bar's amber also follows a measured background;
+    # these follow CS_TERM_THEME, like the rest of this palette.
+    # shellcheck disable=SC2034  # read by the launch card and the resume ask (lib/75-launch.sh)
+    if [ "${CS_TERM_THEME:-dark}" = "light" ]; then
+        AMBER='\033[38;2;180;83;9m'
+        CRIT='\033[38;2;215;0;21m'
+        CRIT_FILL='\033[48;2;215;0;21;38;2;255;255;255m'
+    else
+        AMBER='\033[38;2;251;191;36m'
+        CRIT='\033[38;2;255;69;58m'
+        CRIT_FILL='\033[48;2;255;69;58;38;2;255;255;255m'
     fi
 }
 setup_palette
@@ -4449,7 +4478,11 @@ _lock_menu_row() {  # action color label consequence
 }
 
 _lock_collision_menu() {
-    local session_name="$1" lock_pid="$2"
+    local session_name="$1" lock_pid="$2" resume="${3:-}"
+    local explicit_engine="${4:-}" engine_args=()
+    # A redirect keeps an explicit choice; without one the destination's own
+    # stored engine wins, rather than the base's resolved preference.
+    [ -z "$explicit_engine" ] || engine_args=(--engine "$explicit_engine")
     local choice="" feature="" offers_worktree=1
     # Worktrees can't nest: a worktree session offers only force/cancel.
     case "$session_name" in
@@ -4518,7 +4551,12 @@ _lock_collision_menu() {
 
     case "$action" in
         force) return 0 ;;                              # force a second launch here
-        open:*) exec "$0" "${action#open:}" ;;          # resume an existing feature
+        open:*)                                         # resume an existing feature
+            if [ -n "$resume" ]; then
+                exec "$0" "${action#open:}" ${engine_args[@]+"${engine_args[@]}"} --resume
+            fi
+            exec "$0" "${action#open:}" ${engine_args[@]+"${engine_args[@]}"}
+            ;;
         tui) _vault_leave; exec "$0" -tui ;;            # pick a different session
         new)
             printf '    %bFeature name%b  %b›%b ' "$WHITE" "$NC" "$GOLD" "$NC"
@@ -4527,7 +4565,7 @@ _lock_collision_menu() {
                 "$DIM" "$session_name" "$feature" "$feature" "$NC"
             # cs_split_worktree_name validates the name after the re-exec;
             # keeping a second copy of its regex here would just drift.
-            exec "$0" "$session_name@$feature"
+            exec "$0" "$session_name@$feature" ${engine_args[@]+"${engine_args[@]}"}
             ;;
         *) info "Cancelled"; exit 0 ;;
     esac
@@ -4589,8 +4627,9 @@ _take_session_lock() {  # meta_dir
     esac
 }
 
-acquire_session_lock() {  # meta_dir, force, session_name
+acquire_session_lock() {  # meta_dir, force, session_name, remote, resume, explicit_engine
     local meta="$1" force="${2:-}" session_name="$3" remote="${4:-}" status=0 lock_pid=""
+    local resume="${5:-}" explicit_engine="${6:-}"
     _require_session_lock_perl "$meta" || return 1
     _refuse_session_lock_not_a_file "$meta/session.lock"
     lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
@@ -4610,13 +4649,13 @@ acquire_session_lock() {  # meta_dir, force, session_name
         lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
         if cs_interactive; then
             # Never hold the ownership guard while waiting for user input.
-            _lock_collision_menu "$session_name" "$lock_pid"
+            _lock_collision_menu "$session_name" "$lock_pid" "$resume" "$explicit_engine"
             CS_COLLISION_FORCE=1
             force=true
             warn "Overriding active session lock (PID $lock_pid)"
         else
             printf 'Error: Session is live (PID %s)\n' "$lock_pid" >&2
-            printf 'Use --force to override: cs %s --force\n' "$session_name" >&2
+            printf 'Use --force to override: cs %s --force%s\n' "$session_name" "${resume:+ --resume}" >&2
             return 1
         fi
     done
@@ -4991,9 +5030,10 @@ _cs_run_unarchive() {  # meta_dir, name
 # Internal compatibility alias for adapters adopting the orchestration API.
 cs_run_native() { cs_run_child "$@"; }
 
-cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
+cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, remote, explicit_engine
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
     local merge="${6:-}" intent="${7:-auto}" remote_mode="${8:-}" status=0
+    local explicit_engine="${9:-}"
     local _spawn_token="${CS_SPAWN_TOKEN:-}"
     unset CS_SPAWN_TOKEN
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
@@ -5007,7 +5047,9 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     [ -d "$directory" ] || { printf 'Error: Session directory does not exist: %s\n' "$directory" >&2; return 1; }
     # handoff: --from-handoff, the resume prompt's r answer taken unasked.
     case "$intent" in auto|resume|fresh|handoff) ;; *) printf 'Error: Unknown launch intent: %s\n' "$intent" >&2; return 2 ;; esac
-    acquire_session_lock "$_cs_run_meta" "$force" "$name" "${remote_mode:+remote}" || return $?
+    local resume=""
+    [ "$intent" != resume ] || resume=true
+    acquire_session_lock "$_cs_run_meta" "$force" "$name" "${remote_mode:+remote}" "$resume" "$explicit_engine" || return $?
     _cs_run_active=1
     saved_exit=$(trap -p EXIT); saved_int=$(trap -p INT); saved_term=$(trap -p TERM)
     trap '_cs_run_cleanup' EXIT
@@ -9671,13 +9713,30 @@ _alloc_random_color() {
 # input are resolved via `pwd -P` so the encoding matches claude's own —
 # macOS mktemp returns /var/folders/... which is a symlink to
 # /private/var/folders/... and claude realpaths cwd before encoding.
-# CS_TRANSCRIPTS_DIR overrides the base for tests (also used by doctor).
 # A session with .cs/claude-config runs Claude Code on that config dir, so its
 # transcripts live in the dir's projects/. A dangling link (vault locked) still
 # names that base: the shared one never holds the session's conversations.
+# Otherwise CS_TRANSCRIPTS_DIR overrides the base for tests (also used by
+# doctor), then Claude Code's own config dir holds them: CLAUDE_CONFIG_DIR's
+# projects/, else ~/.claude/projects. A CLAUDE_CONFIG_DIR naming some
+# session's .cs/claude-config was inherited from a claude running in that
+# session and says nothing about this one, so the shell's own config dir,
+# which the launch keeps in CLAUDE_SECURESTORAGE_CONFIG_DIR (empty for
+# ~/.claude), stands in, as it does for the keybindings (_cs_keybindings_file)
+# and for the claude the launch starts (_export_session_claude_config), so a
+# lookup before that export and one after it read the same dir.
 _claude_project_dir() {
-    local cwd="$1"
-    local resolved base="${CS_TRANSCRIPTS_DIR:-$HOME/.claude/projects}"
+    local cwd="$1" config="${CLAUDE_CONFIG_DIR:-}"
+    case "$config" in
+        */.cs/claude-config)
+            if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+                config="$CODE_SESSIONS_HOME/.claude"
+            else
+                config="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}"
+            fi
+            ;;
+    esac
+    local resolved base="${CS_TRANSCRIPTS_DIR:-${config:-$HOME/.claude}/projects}"
     resolved=$( (cd -- "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
     if [ -e "$cwd/.cs/claude-config" ] || [ -L "$cwd/.cs/claude-config" ]; then
         base="$cwd/.cs/claude-config/projects"
@@ -17573,6 +17632,20 @@ _handoff_is_unconsumed() {  # handoff_file
     ' "$1" 2>/dev/null
 }
 
+# The parent: UUID in a handoff's YAML frontmatter, the conversation that wrote
+# it. Prints nothing when the frontmatter names none.
+_handoff_parent() {  # handoff_file
+    awk '
+        NR==1 { if ($0 != "---") exit; next }
+        $0 == "---" { exit }
+        /^parent:[[:space:]]*/ {
+            sub(/^parent:[[:space:]]*/, "")
+            gsub(/[[:space:]\r]+$/, "")
+            print; exit
+        }
+    ' "$1" 2>/dev/null
+}
+
 # True when the handoff's parent: UUID appears in this checkout's session log,
 # meaning this machine ran the conversation that wrote it. The log is
 # machine-local by design, so a co-worker's handoff — and this user's own from a
@@ -17583,15 +17656,7 @@ _handoff_is_local() {  # handoff_file, session_dir
     local log parent
     log="$(cs_private_dir "$2/.cs")/session.log" || return 1
     [ -f "$log" ] || return 1
-    parent=$(awk '
-        NR==1 { if ($0 != "---") exit; next }
-        $0 == "---" { exit }
-        /^parent:[[:space:]]*/ {
-            sub(/^parent:[[:space:]]*/, "")
-            gsub(/[[:space:]\r]+$/, "")
-            print; exit
-        }
-    ' "$1" 2>/dev/null)
+    parent=$(_handoff_parent "$1")
     [ -n "$parent" ] || return 1
     # Anchored to the line session-start.sh writes, not a bare substring: this
     # file can hold the `BASH:` command lines the retired bash-logger hook
@@ -17909,6 +17974,31 @@ _resume_context_pct() {  # session_dir
     printf '%s' "$v"
 }
 
+# Where a context reading sits against the status line's own thresholds,
+# CS_STATUSLINE_CTX_WARN and CS_STATUSLINE_CTX_CRIT: crit, warn, or none, and
+# none for no reading. Each knob parses as the bar's _num_or does, one to three
+# digits or else the default, so a crit of 101 never fires here either. The
+# defaults are the config record's; test_config.sh holds the bar's own
+# literals to the same record.
+_resume_context_heat() {  # pct
+    local warn crit
+    _config_fields CS_STATUSLINE_CTX_WARN
+    warn=$_CF_DEFAULT
+    _config_fields CS_STATUSLINE_CTX_CRIT
+    crit=$_CF_DEFAULT
+    case "${CS_STATUSLINE_CTX_WARN:-}" in ''|*[!0-9]*|????*) ;; *) warn="$CS_STATUSLINE_CTX_WARN" ;; esac
+    case "${CS_STATUSLINE_CTX_CRIT:-}" in ''|*[!0-9]*|????*) ;; *) crit="$CS_STATUSLINE_CTX_CRIT" ;; esac
+    if [ -z "$1" ]; then
+        echo none
+    elif [ "$1" -ge "$crit" ]; then
+        echo crit
+    elif [ "$1" -ge "$warn" ]; then
+        echo warn
+    else
+        echo none
+    fi
+}
+
 # Drop a rotation marker the user declined to consume. Armed by the rotate
 # skill for a /clear, or by an earlier r, it must not outlive the answer: left
 # in place it would be consumed by an unrelated /clear hours later, injecting a
@@ -17944,12 +18034,15 @@ _disarm_rotation_marker() {  # session_dir [surviving_handoff]
 # on the shell's own config. Under code-sessions that is the profile's, on the
 # shared login: ~/.claude belongs to the original cs.
 _export_session_claude_config() {  # session_dir
-    local config="$1/.cs/claude-config"
+    local config="$1/.cs/claude-config" shell_config
     case "${CLAUDE_CONFIG_DIR:-}" in
         */.cs/claude-config)
+            shell_config="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}"
             unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR
             if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
                 export CLAUDE_CONFIG_DIR="$CODE_SESSIONS_HOME/.claude" CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+            elif [ -n "$shell_config" ]; then
+                export CLAUDE_CONFIG_DIR="$shell_config"
             fi
             ;;
     esac
@@ -18507,6 +18600,21 @@ _launch_claude_bound() {
         status_icon="↻"
         status_text="resuming"
     fi
+    # The last context reading in this session and where it sits against the
+    # status line's thresholds, read once for the card's context row and the
+    # resume ask. Only a conversation to resume has a figure to describe, and
+    # only one that has replied: the status line stamps the reading per
+    # session once a conversation replies, so a conversation left before its
+    # first reply has said nothing, and the stamp beside it is the one its
+    # predecessor left. Claude Code writes the transcript with the first
+    # prompt, before any reply, so what counts is an assistant record in it.
+    local ctx_pct="" ctx_heat=none _transcript
+    if [ "$status_text" = "resuming" ] \
+        && _transcript=$(_conversation_transcript "$session_dir" "$claude_session_id") \
+        && grep -q -m1 '"type":"assistant"' "$_transcript" 2>/dev/null; then
+        ctx_pct=$(_resume_context_pct "$session_dir")
+        ctx_heat=$(_resume_context_heat "$ctx_pct")
+    fi
 
     # Count secrets for this session
     local secret_count=0
@@ -18548,12 +18656,20 @@ _launch_claude_bound() {
         [ "$secret_count" -gt 1 ] && secret_word="secrets"
         _seg_secrets="${COMMENT}${ICON_LOCK}${NC} ${YELLOW}$secret_count${NC} ${COMMENT}$secret_word${NC}"
     fi
-    if [ "$status_text" = "resuming" ]; then
-        local _card_ctx=""
-        _card_ctx=$(_resume_context_pct "$session_dir")
-        if [ -n "$_card_ctx" ]; then
-            _seg_ctx="${COMMENT}${ICON_CTX}${NC} ${YELLOW}${_card_ctx}%${NC} ${COMMENT}context used${NC}"
-        fi
+    if [ -n "$ctx_pct" ]; then
+        # The figure in the status line's inks: bold amber from warn, and from
+        # crit the bar's inverted capsule, bold white on the crit red with a
+        # space each side. The spaces belong to the fill, so a card without
+        # colour reads the same at every level.
+        local _ctx_fig="" _pad=""
+        [ -z "$NC" ] || _pad=" "
+        case "$ctx_heat" in
+            none) _ctx_fig="${YELLOW}${ctx_pct}%${NC}" ;;
+            warn) _ctx_fig="${BOLD}${AMBER}${ctx_pct}%${NC}" ;;
+            crit) _ctx_fig="${BOLD}${CRIT_FILL}${_pad}${ctx_pct}%${_pad}${NC}" ;;
+            *) error "context heat '$ctx_heat' is not none, warn or crit" ;;
+        esac
+        _seg_ctx="${COMMENT}${ICON_CTX}${NC} ${_ctx_fig} ${COMMENT}context used${NC}"
     fi
     if [ -n "$_seg_secrets" ] || [ -n "$_seg_ctx" ]; then
         local _row="$_seg_secrets"
@@ -18707,6 +18823,33 @@ EOF
         elif [ -z "$claude_session_id" ] && [ -z "$pending_handoff" ]; then
             response="n"
         else
+            # From the status line's crit threshold the ask defaults to a
+            # fresh conversation: one line above it says so, and the default
+            # mark moves off resume. That conversation picks up a pending
+            # handoff, r, only when the bound conversation wrote it, its
+            # parent, and no merge is armed: otherwise it is n and the handoff
+            # waits. One from another checkout, or an older one an earlier
+            # conversation here wrote, is the user's to choose: armed by a key
+            # they did not mean for it, SessionStart would mark it consumed.
+            # And r displaces the merge -finish armed for this launch, which
+            # only a typed r may do; n keeps it. The status line stamps the
+            # figure per session, not per conversation, so the line calls it
+            # the last reading in this session and claims no more.
+            local _resume_default=' · default' _handoff_default='' _fresh_default='' _ask_keys='[Y/n]'
+            local _crit_default=n _crit_start='a fresh conversation'
+            if [ "$ctx_heat" = crit ]; then
+                _resume_default=''
+                _ask_keys="[y/${BOLD}N${NC}]"
+                if [ -n "$pending_handoff" ] && [ -z "$merge_kick" ] \
+                    && [ "$(_handoff_parent "$pending_handoff")" = "$claude_session_id" ]; then
+                    _crit_default=r
+                    _crit_start='a fresh conversation from the handoff'
+                    _handoff_default=' · default'
+                else
+                    _fresh_default=' · default'
+                fi
+                printf "${BOLD}${CRIT}%s${NC}\n" "${ICON_CTX} The last context reading in this session was ${ctx_pct}%, so ${_crit_start} is the default. Press y to resume."
+            fi
             if [ -n "$pending_handoff" ]; then
                 # Answering blind is the hazard this label exists for: r arms
                 # the marker with this basename, and the next SessionStart flips
@@ -18722,9 +18865,9 @@ EOF
                 # menu; the keys stay the letters the one-line ask used.
                 echo
                 if [ -n "$claude_session_id" ]; then
-                    _resume_menu_row y "$GREEN" 'resume' 'continue the previous conversation · default'
-                    _resume_menu_row r "$GOLD" 'from handoff' 'fresh conversation that picks up the handoff'
-                    _resume_menu_row n "$COMMENT" 'fresh' 'fresh conversation; the handoff waits for later'
+                    _resume_menu_row y "$GREEN" 'resume' "continue the previous conversation$_resume_default"
+                    _resume_menu_row r "$GOLD" 'from handoff' "fresh conversation that picks up the handoff$_handoff_default"
+                    _resume_menu_row n "$COMMENT" 'fresh' "fresh conversation; the handoff waits for later$_fresh_default"
                     _resume_menu_row d "$ORANGE" 'discard' 'retire the handoff, then resume'
                 else
                     _resume_menu_row r "$GOLD" 'from handoff' 'fresh conversation that picks up the handoff'
@@ -18734,14 +18877,27 @@ EOF
                 echo
                 printf '    %b›%b ' "$GOLD" "$NC"
             else
-                printf "${DIM}Continue previous conversation?${NC} [Y/n] "
+                printf "${DIM}Continue previous conversation?${NC} ${_ask_keys} "
             fi
             # Single keypress, no Enter needed (mirrors the collision menu).
             # ESC or EOF (piped close) cancels the launch; Enter takes the
-            # default (resume) via the case's *) arm below.
+            # default: resume via the case's *) arm below, or at crit a fresh
+            # conversation, via the r arm for a handoff the bound conversation
+            # wrote with no merge armed, and the n arm otherwise.
             IFS= read -rsn1 response || { echo; exit 130; }
             echo
             case "$response" in $'\e') exit 130 ;; esac
+            # At crit only y resumes, and n starts fresh as it always does.
+            # Enter and any key not offered take the crit default, disarm
+            # included on the n arm; r and d keep their meaning while a
+            # handoff is offered.
+            if [ "$ctx_heat" = crit ]; then
+                case "$response" in
+                    [yYnN]) ;;
+                    [rRdD]) [ -n "$pending_handoff" ] || response=$_crit_default ;;
+                    *) response=$_crit_default ;;
+                esac
+            fi
         fi
         case "$response" in
             [nN]|[nN][oO])
@@ -18762,8 +18918,9 @@ EOF
                     _exec_fresh_rebind "$session_dir" handoff "$(basename "$pending_handoff")" "$spawn_kick" ""
                     return $?
                 fi
-                # r without a pending handoff was never offered: treat as the
-                # default resume answer, disarm included.
+                # r without a pending handoff was never offered. At crit the
+                # ask has already turned it into n, so it reaches here only
+                # below crit, where the default is resume, disarm included.
                 _disarm_rotation_marker "$session_dir"
                 resume_id="$claude_session_id"
                 ;;
@@ -18775,8 +18932,8 @@ EOF
                     _handoff_set_status "$pending_handoff" discarded || true
                     printf "${DIM}Handoff discarded:${NC} %s\n" "$(basename "$pending_handoff")"
                 fi
-                # d without a pending handoff was never offered: treat as the
-                # default resume answer.
+                # d without a pending handoff was never offered. As with r, it
+                # reaches here only below crit, where the default is resume.
                 resume_id="$claude_session_id"
                 ;;
             switch-resume)
@@ -18787,8 +18944,9 @@ EOF
                 resume_id="$claude_session_id"
                 ;;
             *)
-                # Also the unattended spawn path, which takes this default
-                # without asking.
+                # y, and below crit Enter or any key not offered. Also the
+                # unattended spawn path and --resume, which resume without
+                # asking.
                 _disarm_rotation_marker "$session_dir" "$pending_handoff"
                 # --resume <uuid>, never --continue: the uuid names the exact
                 # conversation, while --continue means "most recent" and may
@@ -18837,21 +18995,19 @@ EOF
     fi
 }
 
-# A resume may run in place of cs when it is sure to land and cs has nothing
-# to do after it: claude reads its transcripts from where cs looks (no
-# CLAUDE_CONFIG_DIR set at all, even empty), the transcript holds a whole
-# top-level user record (a torn line, or a user message nested inside
-# another record, does not count), and no vault waits on cs to detach it
-# when claude ends without its hooks. Without jq the resume stays a child.
-_resume_lands_in_place() {  # session_dir, conversation id
+# Locate the bound conversation's transcript for the launch card and context
+# prompt: first in the session's project dir, then in the parent repo's project
+# dir after validating a relocated worktree transcript. Prints the path; fails
+# when there is none. Native resumes remain supervised and do not require this
+# lookup to succeed; migration's Phase 8 binding uses conversation discovery.
+_conversation_transcript() {  # session_dir, conversation id
     local file
-    [ -f "$1/.cs/local/vault" ] && return 1
-    [ -z "${CLAUDE_CONFIG_DIR+set}" ] || return 1
     file="$(_claude_project_dir "$1")/$2.jsonl"
-    [ -f "$file" ] || file=$(_relocated_worktree_transcript "$1" "$2") || return 1
-    [ -f "$file" ] && command -v jq >/dev/null 2>&1 || return 1
-    jq -n -R -e 'first(inputs | fromjson? | objects | select(.type == "user")) | true' \
-        "$file" >/dev/null 2>&1
+    if [ -f "$file" ]; then
+        printf '%s\n' "$file"
+        return 0
+    fi
+    _relocated_worktree_transcript "$1" "$2"
 }
 
 # The transcript of a session's conversation once `claude --worktree` has
@@ -23564,6 +23720,8 @@ main() {
     if [ -n "$remote_flag" ]; then
         [ -z "$force_flag" ] \
             || error "--force cannot be used with --remote: a served session never shares its directory with another claude."
+        [ "$launch_intent" != resume ] \
+            || error "--resume cannot be used with --remote: a served session never asks whether to resume."
         [ -z "$merge_feature" ] \
             || error "-finish cannot be used with --remote: remote-control takes no prompt to run /finish with."
         # Set only on the command _remote_open_window gives the server's tmux
@@ -23762,7 +23920,7 @@ $merge_feature
         esac
     fi
 
-    cs_launch_session "$engine" "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$launch_intent" "$remote_mode"
+    cs_launch_session "$engine" "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$launch_intent" "$remote_mode" "$explicit_engine"
     # Reached when the run succeeded (errexit ends cs on a failed one; the
     # switch's own notices for that case were printed as the run settled).
     # With a switch settled, this execs cs for the target and never returns.

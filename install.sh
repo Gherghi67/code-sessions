@@ -297,6 +297,7 @@ _check_retired_entries() {  # list name, kind (file or directory), entries...
 # per-skill settings, which Claude ignores.
 CS_SKILL_FILES=(
     write-as-me/scripts/build-corpus.sh
+    write-as-me/scripts/corpus-check.sh
     finish/scripts/finish.sh
     finish/agents/openai.yaml   # Codex ignores disable-model-invocation; this is its switch
     switch/agents/openai.yaml   # the same switch for the switch skill: run only when the user asks
@@ -1204,6 +1205,7 @@ CS_KNOWN_SHA256=(
     0974dd01895f06c0bd3f8dbb90d89cce9bb8143ef8bc68b90c262e8aac633692
     098ea3d3b5965806d5a4b57e5163496fffe0ed32a6e7d3041de38650ef597905
     09c0b31012936f2f8b08829549b33c35ae8bb76bbbfa3d16cb99306f9e5a87b7
+    0a7693d12a8eaf4852f68b8022494f2fb44507352324c18ba21e28a702c990cf
     0a9ec3757fa5a7e88aa3a6b900e647d0c32f8c494277985704ca4314fd406fb1
     0b396877264f71e1fe8df9f5593d67551d883891218dab902354768c2e2cacc1
     0b823b29bcb59ec3afa7ac718ed6f8aa283c0e07ed665d0792dbad989606cc28
@@ -1234,6 +1236,7 @@ CS_KNOWN_SHA256=(
     12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5
     12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f
     12f70805836b5a2f74001196f27c3725a915d4526a931af3f1efdac39238b34e
+    12fe62d3e76ace5f5fa96cab0abf9c8822159640d0ac8b7d23df77d7f981d168
     138cb03c6210ee1837d6599af471e8a3a179564aeea2c093f0856de524ca08b8
     13910fa0d6ece796a56ece9b9b21a43a41acc4a81c70ce45bd9bd5d4ce80d82b
     13f387cb787f4b66110cad8aca438be122dec035a88dbcfc13e6ae533c596216
@@ -1371,6 +1374,7 @@ CS_KNOWN_SHA256=(
     3802bae45a3ab2f19670dc050dca4b27a2e45bc3f207229e826521e38beb9c0d
     38552b36244dbfce8e579f9f53f86ff66f5e7661414b73498db2a20446efd7a7
     38d26f03a61dd4e8e73cc4c04bbf48f7fcef394fd6cc994760120d9ec3b5a84a
+    397f71caaa863ec6c1659a24a88f2faa1e824a05ce2a6c386e15586e535ae7de
     399c7df8140efa2a67824693fa2e90c720ff98e00a72575243223c7857692add
     39e94a5b98088ed150d91f50de425cf9ab5d32c6af34833207bb19cd2e52a066
     3a2bd4a3d88bdb4c72b4a85d24120742fdb7fd81a16c610262d529bebe851d94
@@ -1390,6 +1394,7 @@ CS_KNOWN_SHA256=(
     3d8e2904d6cf437db11191200f442ecc30711aec490924205e57cfd5cc0c4257
     3da261996d10561cae6a12e7a7cdf44ab4cb8a5c6d96b5d7c6de9ea9462f9fed
     3dc17bb99560802f3257932ce64b7c6186f160e53ba884dec52394ca83890f80
+    3df2e20f640de9b099a8c5c6801a06260d3916a2b94e55c2519e47ba47b1ee4e
     3e7a61a2fdfd10fbbd9ffe90b283ea62b2c2775c1eea0052697f31a8a74742e1
     3ed00e68ac1111cf0db71f672e97f68b89cf98725e617ba7ba4915bcd866ddd1
     3eeac7bb07e1ce70889cdb5dc1cbdfd16115390ffecc414a699ce99166dd40b1
@@ -1492,6 +1497,7 @@ CS_KNOWN_SHA256=(
     5e0ef916d9cc2cb171f104edcb0f4ab7767b13e2d867dd236e74e68798f70fb3
     5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f
     5e3e0f38ff158b53194f7ae4c7fe41461752e2ff62082c6d08bb8578cf5b5a68
+    5e3fb3a9b5ba649d0c5b02db87a27bacd73afef1bd1033ddf9ab5da5612f92cf
     5ec4bee955576fe7aa105abcffbf1126e97eee129267edb42d672741e1908f60
     5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f
     5f626af7bd4cf3f0d988e7b2f40c76c706f490fcc9416428c0d90c63fc4f0a7b
@@ -1526,6 +1532,7 @@ CS_KNOWN_SHA256=(
     6909b481962cddcd80bf35f3c2424bedf5861549f7fd490b9791e352ac7c640f
     69348c57a7230066d20af9cad4b97d89caa431f4fa9e94a31fd07456bd1aa756
     69a2fb0a617f7c32f7fde9235bb55050b9b9d39a8b2ba27af3e8094b7090404f
+    69b235a1793eacf9a06df13ad9a4125e9d5258fb903d7746ed0739013bb47e72
     6a319959fb9c6e2817b9557a3a8d04d935de737e6f56036b0f2b8c96ea619d91
     6a47be149bfd8aab500ed071860ff9fa923ec0e764b82b0f56c2e08a9683c50c
     6aa489261b3448946752ce20431ce39d5be316f3f03124e976608aedb7fa51d8
@@ -1697,6 +1704,7 @@ CS_KNOWN_SHA256=(
     961e4c844acd86f0ab2224dc4f3c127b43bc8cd80f3985fa73850e30d9286aab
     96607e33613b509f43149af0cbd96cbf5d708216ca0658832fcf5667b9678a50
     966440e05707a828f0d84999d9a1865fe3f175add63058ec0d356d19ccc7be9a
+    96cc4d5a8511904fe972fb1b47c35c970d6367485828c6cad0b89926528d7917
     9775221ab90f92f35063ce76bafd073666db4a56f91ebb5abcd662e03be5ea11
     9783681f6400ac60d9b6cfb70405fbb40e9fff2a5021aa63dbeb42b262688a44
     986a751ca603299289428c398266babd67cf173f001861a6f7aad5528ccc5c01
@@ -1757,6 +1765,8 @@ CS_KNOWN_SHA256=(
     a6fc8ed09021cb0709789037eadc2b15db9558502273a66cc548f67b37f3497a
     a7ca7145e6f4fc1a7163dd5dc2f0ee59046e11d687cbe8e8a6a6b56eae9d0cb1
     a80f6b1cb709a8805f77c61ec31e107ddeb38af5c07888faf13c720635043c9d
+    a8a14c22510b49f89557b401730875996064682af719a85322215b61d046b054
+    a8abe8e196ab085c28a30db08b3a52781d14c14ed1134cea5464a75ef03486b6
     a8dd51579409ffdab6852f5995188114f50d3268294df4e290b5857eca08fda5
     a96c77d8f13d893e46116b7d61e517f72bba7f8e10b790517934004be21ae43a
     a99cfc8ef3f705c55287512c8f86d27b89c85e45b6f254a5158f6f8ea46c93c0
@@ -1841,6 +1851,7 @@ CS_KNOWN_SHA256=(
     c14f4a99d73b5c0c22fd95fc70bb4cf3204cb8f4a9a91b4d9c0987eab5a32e1c
     c1ce68d61570ce34feb49b7956aeb2f0258c62fb288d160ee9ac89c6185b5abb
     c207c0bac0f5d4870a72e192862117af59f7cdbbb012d36e237b3106e0cec9db
+    c24183ee25fdd41cada613b2829b2a2ae86e3ee7837392aa1cfb41d4c7952a37
     c256ccde30abcb1fa303c031107de458e3c93698127cf2ca7c5efee62ec6a80e
     c265f33ee7863e4d5ce2691c62f7eda90c6f7b6b315f7a864781ff9ceee40d3c
     c2af6154d1152c7ea99ae879bf09dc33f6fe05e4690675f2f54df73110eb77d1
@@ -2011,6 +2022,7 @@ CS_KNOWN_SHA256=(
     fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054
     fbafc4d45025e225947bc1ef8215cbaabbffe92aeebb729487b9a1504d911708
     fbb3ca4863c2032e0e2bbe9a409cb0a515f2b5d308519f2b5e2111423331764b
+    fc0c2b4db8af8da64c52cd4f65b52785ed0a1b2113f5fea196f69d84f83ae5f3
     fc0f047f5cec5ba2ff999c7c16275df474ea7c364ba5fee76306da11d8addbff
     fc2a73985eab32b26946f2501cfc6d124d280fcdc6097dca768f880adedcfaf3
     fce7a2abdb941a6291d1f2d01b042cc5a9b4b97fbdc9d559e80ee84884d8106f
@@ -2063,15 +2075,15 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "e35f92a041af3bb65311a9bc4c2fea43ceb66c98c15a71820454c0857d963ee5  bin/cs"
+    "8aba32f2f43b7f374fa1a987db7c9a0c24c83af6d899382b919c5b81be9d1ef3  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
-    "1b49c0900b5127fab964042e15405c1b31aeca2810c99c4ae6a4d0f1511aa5e8  bin/cs-statusline"
-    "68d374e006619044bd9a697ffe31c615bdd44e29d50fb8eeacdf52369aa57e0f  bin/cs-subagent-statusline"
+    "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"
+    "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "00554feb5c84ceae248021b8c457313fed7519668e9bce85474ca9aa1461db9c  hooks/cs-shared.sh"
+    "b71af951a35dd453db2034341d03edeaf656b0060117fc51432de69eeae331fc  hooks/cs-shared.sh"
     "d4190dfe1bba3312145072c543d66a6fbbdb82748db0a859cabf9872f4c1ff33  hooks/cs-engine-events.sh"
-    "42de78599155dd0e9c15a508c05413616f1ee53876f44580dc5363a73d9d0291  hooks/cs-config.sh"
+    "24b9a4740ab6789810abca0463df531883dd972242f19e47051eb0092c9fc3bd  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "0df470229aed0ca15acdd0ab115d6633dbcd1542e30b64936df5124045f4e6ee  hooks/prompt-rewriter.sh"
     "dd6e555242f0161cdb832249a491a41babe407da745a7ca0b30d9780d045a680  hooks/prompt-rewriter-model.sh"
@@ -2079,7 +2091,7 @@ CS_PAYLOAD_SHA256=(
     "751c9e8781f26c38e51e80d6f5e5888cc8974378a471dfc88dc3debb803a523d  hooks/session-start.sh"
     "0c8420c589f8973709b0a62915bf9c7c9e931553e38ee7a0a3bc70834c9103b1  hooks/autosave-commits.sh"
     "0932277b77a613a6cb75d7bba1aa5a57b88a77e3aa9f15935b218c527427fc23  hooks/stop-blocks.sh"
-    "46d6e696c9787691a0e384c2baf42a897a9b446b84eabd0531cd556710e70031  hooks/stop-notices.sh"
+    "5ab5da9bd06072cd1e91a4e2059c6aa404f29052f36ba30d345a7d493a1415ea  hooks/stop-notices.sh"
     "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
@@ -2087,25 +2099,26 @@ CS_PAYLOAD_SHA256=(
     "12a1d214de1fc27b2ad9b7210df72a96e0fddca969f95e569f71356cbf6d40a4  hooks/scope-prompt.sh"
     "0254497096328ee6b7882ab2cb7177cad137544eb5332df3d1563bb70babb523  skills/store-secret/SKILL.md"
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
-    "c18b8fdffd7f71893388ab6d4f3acdcc22faceb46970208e72cae9021cba0b2c  skills/rotate/SKILL.md"
+    "972c9bd13588bed5bd03eaea310b65505f715999cd19110da11e65439fe5b32b  skills/rotate/SKILL.md"
     "d5310e043730601207599345cfbb754cf07dbdb4a5092efff3751b523d2bd428  skills/switch/SKILL.md"
     "f0bbd22f95fb24e4d6b5ece9542ec94823839716de059b15f0e2757879bcb5d3  skills/finish/SKILL.md"
     "9d8a52aba840d5ed74e092fdec889ba60e8cc49d04d9cce9f0b85e97a3279cee  skills/feature/SKILL.md"
-    "12ca76eadfbe0b75c735d8782cc6a8bc6123a97a293349b08c501c62e21cc7f3  skills/write-as-me/SKILL.md"
+    "6da3554cc3215ad0d4c66fe2956f275dbd424fb49d90a23c81ca9a092bf28a6c  skills/write-as-me/SKILL.md"
     "96a5cdb7d563d4360dd58f7ad91ce55dbbe5cde28d141d5e2aeb13ae9483b4ad  skills/checkpoint/SKILL.md"
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
     "9ef1c5135bbbbd85838d28d711c7df4028e2bbe7cd6c6723ab3cfdc1cdce95e0  skills/sweep/SKILL.md"
     "d987b136ff545808fe7275da1c93a0e06cf1d53d010c957c3418e233251c8c82  skills/wrap/SKILL.md"
-    "c4149c7e5e8295965b0f5b1e64683919294e6b6fd48900660065cba005fce126  skills/write-as-me/scripts/build-corpus.sh"
+    "e6f68d4b71897174fb9aa19a2243147607b7afb282f0939572a379a46cc6d88d  skills/write-as-me/scripts/build-corpus.sh"
+    "a8a14c22510b49f89557b401730875996064682af719a85322215b61d046b054  skills/write-as-me/scripts/corpus-check.sh"
     "225f2385a01a0a8dcee29ed8d797a3bb087a0822c9702f89350faa37693ebd8d  skills/finish/scripts/finish.sh"
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
-    "00554feb5c84ceae248021b8c457313fed7519668e9bce85474ca9aa1461db9c  skills/sweep/scripts/cs-shared.sh"
+    "b71af951a35dd453db2034341d03edeaf656b0060117fc51432de69eeae331fc  skills/sweep/scripts/cs-shared.sh"
     "a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "ffd38d4d22d07eafcde12ae090d473b35e5f49ca3a4b7fbf9284d708857cfcef  mods/cs/hooks/register.tsx"
-    "a56e579e12839d35e969e7f44f99f6938a898abe05504f37f54e01975b8f80a1  mods/cs/tips.json"
+    "1d56121c24634bf6ebb65bc0e1ede9e4a64680c8dd4c3ecdcb411bbd4a9f58d4  mods/cs/hooks/register.tsx"
+    "397f71caaa863ec6c1659a24a88f2faa1e824a05ce2a6c386e15586e535ae7de  mods/cs/tips.json"
     "2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "c21b13a6276835f3366643a6dc00206f803e6b3c18b3e60554fe8fc226038826  mods/cs-update/hooks/register.tsx"
@@ -2113,8 +2126,8 @@ CS_PAYLOAD_SHA256=(
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
     "7581d949b64b3eff85606df1b3e44c82354daf48533e68d10a3a006d3ecf69cc  mods/cs-mermaid/hooks/layout.ts"
     "4258a64c8eb8a2a172fb0680c578204f90ad97f344e82b25b4ff1ff9be701633  mods/cs-mermaid/hooks/parse.ts"
-    "fba40610714fd7201f496d3e1d7a7a6553b06c0da937710f6da3fcf8f4409054  mods/cs-mermaid/hooks/register.tsx"
-    "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
+    "69b235a1793eacf9a06df13ad9a4125e9d5258fb903d7746ed0739013bb47e72  mods/cs-mermaid/hooks/register.tsx"
+    "5e3fb3a9b5ba649d0c5b02db87a27bacd73afef1bd1033ddf9ab5da5612f92cf  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
     "8aaadea0975e0ccbeadb995515245a9b3a2651f84626c9ba6806a57da3b5ac53  mods/cs-panel/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-panel/hooks/hooks.json"

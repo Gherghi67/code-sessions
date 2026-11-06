@@ -170,9 +170,10 @@ _cs_run_unarchive() {  # meta_dir, name
 # Internal compatibility alias for adapters adopting the orchestration API.
 cs_run_native() { cs_run_child "$@"; }
 
-cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
+cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent, remote, explicit_engine
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
     local merge="${6:-}" intent="${7:-auto}" remote_mode="${8:-}" status=0
+    local explicit_engine="${9:-}"
     local _spawn_token="${CS_SPAWN_TOKEN:-}"
     unset CS_SPAWN_TOKEN
     [ -z "$remote_mode" ] || [ "$engine" = claude ] || { printf 'Error: --remote requires --engine claude\n' >&2; return 1; }
@@ -186,7 +187,9 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     [ -d "$directory" ] || { printf 'Error: Session directory does not exist: %s\n' "$directory" >&2; return 1; }
     # handoff: --from-handoff, the resume prompt's r answer taken unasked.
     case "$intent" in auto|resume|fresh|handoff) ;; *) printf 'Error: Unknown launch intent: %s\n' "$intent" >&2; return 2 ;; esac
-    acquire_session_lock "$_cs_run_meta" "$force" "$name" "${remote_mode:+remote}" || return $?
+    local resume=""
+    [ "$intent" != resume ] || resume=true
+    acquire_session_lock "$_cs_run_meta" "$force" "$name" "${remote_mode:+remote}" "$resume" "$explicit_engine" || return $?
     _cs_run_active=1
     saved_exit=$(trap -p EXIT); saved_int=$(trap -p INT); saved_term=$(trap -p TERM)
     trap '_cs_run_cleanup' EXIT

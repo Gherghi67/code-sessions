@@ -4,6 +4,27 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
+## 2026.11.4
+
+### Added
+- `cs <name> --resume` opens the session with the resume prompt's `y` already given, for a launcher that cannot press a key, such as a Resume button in a sidebar. It resumes the recorded conversation at any context reading and starts fresh when none is recorded. A pending handoff stays pending and an armed marker is disarmed, as `y` does, and with `-finish` the merge's `/finish` still runs. It refuses `--remote`, since a served session never asks.
+  code-sessions keeps its existing exact-resume contract across engines: an unbound session refuses `--resume` and requires `--fresh` instead.
+
+### Changed
+- `cs <name>`'s resume prompt shows how full the conversation it would resume got. The launch card gives the last context reading the status line recorded, in the status line's colours: bold amber from `CS_STATUSLINE_CTX_WARN` (40), white on red from `CS_STATUSLINE_CTX_CRIT`. At the crit mark the prompt defaults to a fresh conversation. A bold red line above it says `The last context reading in this session was 72%, so a fresh conversation is the default. Press y to resume.` and the plain prompt reads `[y/N]`. When the conversation to resume wrote the pending handoff and `-finish` armed no merge, the default is `r`, so Enter starts the fresh conversation from that handoff. A handoff from another checkout, or one an older conversation wrote, keeps `n` as the default. The card shows no figure for a conversation left before its first reply, since the reading beside it belongs to its predecessor.
+- `CS_STATUSLINE_CTX_CRIT` and `CS_ROTATE_NUDGE_CTX` default to 60 instead of 65, so the red context figure, Claude's rotation suggestion and the resume prompt's fresh default start at the same reading.
+- The `cs-mermaid` mod picks its palette from cs's reading of the terminal under `/config`'s `auto` theme and any `custom:` theme: `CS_TERM_THEME` first, then the luminance of `CS_TERM_BG_RGB`. It drew the light palette there before. A claude started outside cs has neither and still draws light. Every line and label colour reads at 4.5:1 or better on white, cream and Solarized Light under the light palette, and on black, `#1C1C1E` and `#282C34` under the dark one. The green of a good label was 4.07:1 on cream.
+
+### Fixes
+- `/write-as-me`'s corpus leaves out text you did not type: a side agent's note or a side check relayed into your prompt, every prompt from a test session (a project under `/tmp`, `$TMPDIR` or a session's `.cs/local`), and a paste Claude Code wraps in a `pasted_content` tag, keeping the words you typed around it. The build's `Dropped` line counts each kind, and `~/.claude/skills/write-as-me/scripts/corpus-check.sh` names any a built corpus still holds. On one machine's transcripts the build dropped 599 such messages where the previous one kept them; 16 of those were typed: a remark under a relayed note, or a session started in a temp dir.
+- cs finds a conversation's transcript under `$CLAUDE_CONFIG_DIR/projects` when you set `CLAUDE_CONFIG_DIR`, where it only looked in `~/.claude/projects`. The launch card, the resume check, the repair of an orphaned conversation id and the `cs` band all read it from there.
+- With your own `CLAUDE_CONFIG_DIR` set, a `cs <name>` run from inside an encrypted session's claude starts its claude on that dir. It cleared the variable before, so that claude ran on `~/.claude`.
+- `cs-mermaid` counts `✅`, `🚀`, `❤️` and `⭐` as two columns, and wide East Asian text and Indic vowel signs at the width the terminal draws them, so a chart with them in its labels keeps its boxes and lines aligned.
+- `cs-mermaid` finds fences the way Claude Code's markdown renderer does. A fence indented four or more columns is an indented code block and stays as text. A fence inside a list item counts its indent from the item's content. A mermaid fence quoted inside another code block, such as a ` ```markdown ` example, stays as text. The prose after a chart in a nested list keeps its list instead of showing as code. [docs/hooks.md](docs/hooks.md) lists the cases where the mod and the renderer still differ.
+
+### Docs
+- The configuration guide documents `CLAUDE_CONFIG_DIR`. The session layout says when the resume prompt arms and disarms the rotation marker, and that transcripts live under your Claude Code config dir. Four spinner tips point at `cs <name> --resume`, the resume prompt's context reading, the rotation suggestion and mermaid drawing.
+
 ## 2026.11.3
 
 ### Performance

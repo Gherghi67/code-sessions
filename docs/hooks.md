@@ -7,7 +7,7 @@ The installer configures Claude Code hooks that enable session management featur
 | Skill | Behavior |
 |-------|----------|
 | [`prose-hygiene`](../skills/prose-hygiene/SKILL.md) | Judges a draft with a scoring rubric and reports its score. The caller controls revision and repeated scoring. |
-| [`/write-as-me`](../skills/write-as-me/SKILL.md) | Drafts in your voice using a writing profile. Its corpus contains typed transcript messages and supplementary writing from `.voice/sources/*.md`, included on each build. |
+| [`/write-as-me`](../skills/write-as-me/SKILL.md) | Drafts in your voice using a writing profile. Its corpus contains typed transcript messages and supplementary writing from `.voice/sources/*.md`, included on each build. It leaves out side-agent notes, side checks, tagged pastes and prompts from test sessions, and `scripts/corpus-check.sh` counts any a built corpus still holds. |
 
 ## How a hook finds its session (`cs-resolve.sh`)
 
@@ -291,7 +291,7 @@ Runs when Claude Code starts a session:
 - On `resume` only: injects dynamic context (last activity, recent commits with the plain file names among the first five files they touched, objective, up to 5 most recently active sibling sessions with their objectives, followed by the full `cs -msg <session> "<body>"` send form and its `--kind` values, which appear only when a sibling exists to send to; scope-prompt.sh's digest already carries inbound mail, so this block is the only place cs states the outbound form. The block asks Claude to raise an AskUserQuestion before starting work that belongs to a sibling's stated goal rather than merely sharing its vocabulary, and to offer both paths rather than push one; the bar sits high on purpose, since a routing prompt that fires on every overlap becomes a block nobody reads), and a per-actor digest of shared memory/narrative activity since this actor's `.cs/local/watermark` (grouped by git author; and, for each teammate narrative that grew since that watermark, committed or not, and is a regular file with a plain name directly below `.cs/memory`, the added-section count and the line the new content starts on, taken from the last hunk that adds lines in a diff against the working tree, so the actor reads its own file in full and only those lines of the others; a narrative nobody has committed goes unmentioned, since nothing exists to measure it against, and the hook names uncommitted growth again on every resume until a commit carries it), then advances the watermark and stamps the day's date into `last_resumed`. In a git repository the `Session State` block always prints and ends with a line saying the conversation before this one may have finished actions its summary does not show, and to check `git log`, `cs -msg log` and the remote before repeating a push, a merge, an install or a message
 - In a feature worktree (when `task_branch` is in machine-local state): injects a Feature Worktree contract instructing Claude that integration and retirement both go through `/finish <feature>` in the base session, that retirement waits for this conversation to close, and never to merge the branch manually
 - Where the conversation genuinely starts clean — source `clear`, or source `startup` with `CS_FRESH_REBIND=1` — injects a Fresh Conversation notice so Claude treats the turn as a clean break. The source is part of the test because `CS_FRESH_REBIND` is exported before `exec` and outlives the launch: on its own it would tell a later `/compact` of a rebound session that its transcript is not loaded while it still is
-- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or by the launch prompt's `r` answer): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff, or a file name that is not plain, is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. Where no claim stands under a launch that takes claims (the lead's `SessionStart` could not write one, or `ps` could not show the lead was under the launch), a `claude` the hooks cannot show to be a guest keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds. Under a launch that takes no claim (no `CS_LEAD_CLAIM`), only the claude carrying the launch pid gets the rotation: on the resume arm or behind a forking `CLAUDE_CODE_BIN` the lead does not, and the marker and the handoff wait for the next `cs <name>`
+- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or at the launch prompt by `r` or by the Enter that defaults to `r` at critical context): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff, or a file name that is not plain, is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. Where no claim stands under a launch that takes claims (the lead's `SessionStart` could not write one, or `ps` could not show the lead was under the launch), a `claude` the hooks cannot show to be a guest keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds. Under a launch that takes no claim (no `CS_LEAD_CLAIM`), only the claude carrying the launch pid gets the rotation: on the resume arm or behind a forking `CLAUDE_CODE_BIN` the lead does not, and the marker and the handoff wait for the next `cs <name>`
 - On all sources: surfaces the same queue-inbox digest as scope-prompt.sh — unseen entries in `.cs/local/notifications.jsonl` (task counts, the last breaker trip if any), gated by the `.cs/local/notifications.seen` cursor so it's shown at most once. Whichever of the two injection points runs first (this hook fires once at session start/resume; scope-prompt.sh fires on every prompt) claims the surfacing and advances the cursor for the other. Shares the `_build_digest` jq recipe verbatim with scope-prompt.sh ; the recipe has not moved into `cs-shared.sh`, so an edit to one copy goes into the other as well. A `claude` started from inside the session, or a tmux teammate, is not shown the digest and does not move the cursor
 - Does NOT surface the cross-session mail digest: that lives only in scope-prompt.sh now (it fires on every prompt), so duplicating it here would double-inject the same unread bodies on every startup and resume
 - On all sources: names the current actor and its narrative file in the injected context, and states that the durable memory buckets are shared while only narratives are per-actor, so an entry naming someone else as the user was written by or for another actor. `.cs/memory/` is one store for every actor on a git-synced session, so a `type: user` entry written as an unconditional claim loads for all of them and reads as settled fact; a bare identity line is not enough, because a global instruction naming the right person was already in context and lost to such an entry. The actor precedence (`$CS_ACTOR`, then `.cs/local/identity`, then git `user.email`/`user.name`) is `cs_actor_raw` from `cs-shared.sh`, the same function `cs -whoami` runs; shelling out to `cs` instead would make the hook depend on `cs` being on `PATH`
@@ -354,9 +354,9 @@ The turn-end notices: the rotation nudge, the context warning and the narrative 
 The notices also stand down for every block [stop-blocks.sh](#stop-blockssh-stop-filechanged-cwdchanged) answers the same `Stop` with, through a verdict handshake: a drain that trips a breaker or hands out its last task writes `idle` before it blocks, so the queue state alone says nothing, and the staged retire and the mail wake never touch it. On the lead's `Stop`, stop-blocks.sh writes `.cs/local/stop-verdict`, one line `<key> <word> <epoch>`, overwritten per `Stop`: the key is `cs_stop_key`'s (cs-shared.sh, with a copy in each hook for a partial install, held to one text by `tests/test_hooks.sh`), the `cksum` of the Stop input, which Claude Code hands both hooks byte for byte, and after a dot the byte size of the transcript the input names, read by both hooks at their start. The input alone repeats across turns (session_id, transcript_path and last_assistant_message can all be the same on two Stops), and the transcript holds the turn's assistant message before Stop fires and takes the hooks' output only after they exit, so the size tells two Stops apart; a transcript the input does not name, or that cannot be read, leaves the `cksum` alone as the key, and the epoch is for a reader. The word is `pending` from the moment the sync hook knows the `Stop` is the lead's, and `approve` or `block` from its exit, every block routed through one function so the two can never disagree. Claude Code starts the two hooks together, so stop-notices.sh waits, once it has something to say: no line for its key inside two seconds of its start means no verdict is coming (a partial install, or a sync hook that predates the verdict) and the notices go ahead as before; a `pending` line extends the wait to `CS_STOP_VERDICT_WAIT` seconds from the start (default 7, clamped to the 8 s budget), after which a verdict still pending counts as approve, and `block` ends the run silently with no cursor or cooldown spent. The sync hook turns its verdict to `block` only once the block line exists, so a block it could not print (a failed `jq`) leaves `approve` for its exit to post. The staged retire can block later than the bound (its settle waits up to six seconds, twice), and a notice then lands beside that block, as every notice did before the handshake. Measured in `tests/test_hooks.sh`: a lead `Stop` with no verdict costs the two-second grace, one with an approve posted costs nothing, and one with a verdict pending for ever beside a lock a stray process holds ends inside the budget. A teammate's `Stop` neither writes nor reads the verdict: every block the sync hook answers with is the lead's.
 
 The notices are worded for where they land, beside the user's next request and about the turn that ended before it: each says it is carried over, names what the previous turn ended on, and asks Claude to answer the request below. The tiers run in order, and the first that speaks ends the run, so the rotation nudge and the context warning never both fire on one `Stop`, and either one keeps the narrative reminder for a later turn. That ordering is why the three share one script: three hooks running side by side could not see each other's decision.
-- Rotation nudge: when context is at or above `CS_ROTATE_NUDGE_CTX` (default 65, non-numeric override falls back to the default) per the statusline's `context-pct`, hands Claude a notice saying context was at that reading when the previous turn ended, to tell the user in one line, answer the request, and then invoke the `rotate` skill to write a handoff and arm it (before the request when it is large enough to need the headroom), after which the user runs `/clear` to continue in a fresh conversation. An armed or draining queue gets no nudge: the drain's context breaker owns hot context during a walk-away run
+- Rotation nudge: when context is at or above `CS_ROTATE_NUDGE_CTX` (default 60, non-numeric override falls back to the default) per the statusline's `context-pct`, hands Claude a notice saying context was at that reading when the previous turn ended, to tell the user in one line, answer the request, and then invoke the `rotate` skill to write a handoff and arm it (before the request when it is large enough to need the headroom), after which the user runs `/clear` to continue in a fresh conversation. An armed or draining queue gets no nudge: the drain's context breaker owns hot context during a walk-away run
 - Both context tiers read `.cs/local/context-pct`, which the status line writes for the launched conversation alone, so both stay silent in a tmux teammate: the reading is the lead's, and a teammate acting on it would announce the lead's context as its own.
-- Context warning: one tier below the nudge — when context is in the `[CS_CTX_WARN_CTX, CS_ROTATE_NUDGE_CTX)` band (defaults 40 to 65; a non-numeric override falls back to its default), hands Claude a notice saying context was at that reading when the previous turn ended, past the comfortable-headroom mark, to tell the user in one line so they can steer toward a stopping point or plan a rotation, then answer the request. At or above the nudge threshold only the rotation nudge fires — never both in one Stop
+- Context warning: one tier below the nudge — when context is in the `[CS_CTX_WARN_CTX, CS_ROTATE_NUDGE_CTX)` band (defaults 40 to 60; a non-numeric override falls back to its default), hands Claude a notice saying context was at that reading when the previous turn ended, past the comfortable-headroom mark, to tell the user in one line so they can steer toward a stopping point or plan a rotation, then answer the request. At or above the nudge threshold only the rotation nudge fires — never both in one Stop
 - Each context tier's cursor is an append-only list of conversation UUIDs (`.cs/local/rotate-nudged`, `.cs/local/ctx-warned`; append-only so a tmux teammate sharing the directory cannot re-arm the lead's notice), read and written under the hook's lock (`.cs/local/stop-notices.mutex.lock`), the same one the cooldown stamps take, so two overlapping runs send one notice. The first send is printed and then recorded: a notice reaches Claude only if Claude Code reads it before the process ends, and a hook killed between the print and the record leaves a notice the cursor does not count as sent, while a cursor that cannot be written costs no notice. The cursor expires once: on a later `Stop` where the notice still applies, the hook sends it a second time unless the conversation's transcript (`transcript_path` in the Stop input) already records the first, which Claude Code writes as an `async_hook_response` attachment carrying the hook's output when it delivers it; only that attachment counts, never the notice's words in a user message or a tool result. The repeat is recorded as `<uuid> again` and then printed, and goes out only once that line is written: a repeat the cursor cannot record would come back on every `Stop`, and a lost repeat costs less than an unbounded one. After that line the conversation is never nudged or warned again. What this promises: the bookkeeping is of attempted sends, a conversation gets each notice at most twice, and a first send the hook recorded but Claude Code never read goes out once more when the transcript records no delivery. What it does not: that an unrecorded first notice was lost (Claude Code may read it after the hook's next run), that a first send recorded and then lost in the same instant is told from a delivered one by anything but the transcript, nor that the second arrives
 - Reminds Claude to review and append to its per-actor narrative (`.cs/memory/narrative.<actor>.md`, the session lab notebook), keyed on that file alone, when it has not been touched recently. The actor is the one SessionStart names (`cs_actor_raw` in `cs-shared.sh`: `CS_ACTOR`, then `.cs/local/identity`, then the git identity), so a teammate writing its own narrative does not hold back the reminder, and a missing narrative counts as never written. The reminder names the file as `Yours is <path>`; without `cs-shared.sh` the actor is unknown and it names `narrative.<actor>.md`. The reminder says it is carried over from the previous turn, which ended without a narrative note, asks Claude to record what that turn found before answering the request below, lists what counts (a decision and its reason, a measured fact, a failed approach, a preference the user stated), says that a line restating routine work is not a finding and must not be written, and names the empty case: say so in one line and answer the request. The contract is append-only: a disproven entry gets a dated correction that names it; earlier sections are never rewritten or deleted (that is what keeps `cs -narrative rotate`'s head-truncation safe under `merge=union`)
 - Carries the commit rule: the model never commits narrative appends or anything else under `.cs/` on its own, not even beside a project change, since cs commits files under `.cs/` only in the commit that creates a session and the merge `/finish` makes, and the model commits them only when the user asks; a commit holding narrative appends is pushed only when the user asks; and uncommitted appends are safe because `autosave-commits.sh` already snapshots every edit to the shadow ref. The generated session protocol states the same rule in its `cs:session-commits` section, and it rides this reminder as well because the protocol is read once at startup and is stale by the time a commit happens, while this fires at the append itself — and because the text is rebuilt every run, so every existing session picks it up on upgrade with no migration phase. Unconditional rather than gated on whether `.cs/` is tracked: the check is cheap, but the advice is inert rather than wrong where `.cs/` is gitignored, and a condition the model has to evaluate is one it will not
@@ -569,9 +569,15 @@ the prompt being read, and `/cs first`, `/cs last` and `/cs N`, which go to
 that prompt, all mid-turn too, for keybindings. A
 refusal is toasted once a session; a prompt no row has drawn since a resume
 toasts `cs: that prompt is not on screen yet` once. The prompts come from the
-session's transcript (`~/.claude/projects/<slug>/<id>.jsonl`, or
-`CS_TRANSCRIPTS_DIR`, or an encrypted session's own `.cs/claude-config/projects`),
-read again after each turn and at session start only when its size or
+session's transcript, `<slug>/<id>.jsonl` in the directory Claude Code writes
+it to: an encrypted session's own `.cs/claude-config/projects`, else
+`CS_TRANSCRIPTS_DIR`, else `$CLAUDE_CONFIG_DIR/projects`, else
+`~/.claude/projects`. The band takes `CLAUDE_CONFIG_DIR` as the claude it runs
+in has it, even when it names another session's `.cs/claude-config`, because
+that claude writes its transcript there. cs itself, launching a session from
+inside such a claude, reads your shell's own config dir instead, since the
+claude it starts runs on that. The band reads the transcript again after each turn
+and at session start only when its size or
 modification time moved, and only its live branch is listed: a `/rewind`
 drops the prompts it abandoned, a `/compact` keeps the earlier ones. Tool
 results, slash-command echoes, hook feedback, task notifications, a
@@ -833,7 +839,7 @@ and the button stays. The conversation the mod meets at launch, after a reload,
 or through a `/resume` is not judged: a session resumed at 72% with the knob at
 70 is exactly the one the person asked to have rotated. A handoff the person
 arms by hand in a judged conversation still gets the countdown. The default,
-80, sits above the 65% nudge and below Claude Code's own auto-compact, so the
+80, sits above the 60% nudge and below Claude Code's own auto-compact, so the
 mod writes the handoff while the conversation is still whole.
 
 The button is for the lead conversation of a cs session only: past the threshold
@@ -1071,8 +1077,9 @@ checks the manifest and its `/config` field, the cache-name pin against
 
 `mods/cs-mermaid/` is a Claude Code function-hooks plugin, deployed and gated
 the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
-`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
-environment, writes no file and runs no process. Unlike the `cs` mod it needs no
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads two
+environment variables (`CS_TERM_THEME` and `CS_TERM_BG_RGB`, cs's reading of the
+terminal), writes no file and runs no process. Unlike the `cs` mod it needs no
 cs session: with function hooks on it draws in any directory. The flowchart
 instruction lives in a cs session's `CLAUDE.local.md`.
 
@@ -1081,14 +1088,42 @@ instruction lives in a cs session's `CLAUDE.local.md`.
 It hooks one event:
 
 - `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
-  ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
+  ` ```mermaid ` fence goes to the engine untouched. A fence indented four or
+  more columns (a tab counts to the next multiple of four) is an indented code
+  block, as CommonMark reads it, and stays with the engine; one indented up to
+  three draws. Inside a list item the columns count from the item's content
+  column, past its `-`, `+`, `*`, `1.` or `1)` marker and the blanks after it,
+  and a fence may open on the marker's own line: a fence under `1. flow:` at
+  four columns draws, and one four columns past the item's content stays
+  source. The scanner checks list continuation from the outermost item inward.
+  A line left of an item's content column ends that item if it starts a block
+  within three columns of its parent's content column, follows a blank line in
+  that item, or follows a fence mark, heading, thematic break or indented code
+  at that level. The previous-line checks
+  use each item's content column: four spaces make indented code; a fence,
+  heading or thematic break counts only within `min(3, item indent - 1)` spaces.
+  A mermaid fence still
+  open when its item ends draws up to there. A mermaid fence closes on a bare
+  line of three or more backticks. A mermaid fence inside another code block (a
+  ` ```markdown ` or bare ` ``` ` one, four backticks or tildes) is that
+  block's text and stays source. A reply with a fence is split
   into prose, which goes back to the engine (so the reply keeps its opening
   bullet, on its first part only), and fences, each parsed (`hooks/parse.ts`) and
   laid out (`hooks/layout.ts`) in character cells; the last 32 layouts are
   kept, since a streaming reply re-renders on every flush. Nodes are solid
   blocks, three rows tall, taller or wider where more than one edge meets them,
-  coloured by their role in the flow, in a light or dark palette from the
-  `theme` row of `/config`: a decision (`{ }`, `{{ }}`, or any node with two
+  coloured by their role in the flow, in a light or dark palette: the `theme`
+  row of `/config` decides for a built-in theme (`dark`, `light` and
+  their `-daltonized` and `-ansi` kinds); under `auto` or a `custom:` theme the
+  terminal cs read decides, `CS_TERM_THEME` first, else the luminance of
+  `CS_TERM_BG_RGB`, else light. Both come from the environment cs launched
+  claude with. A claude started outside cs has neither, and a teammate pane,
+  whose environment comes from tmux, can lack both: either draws light. A cs
+  config change or a terminal theme switch after launch shows from the next
+  launch. Every line and label colour reads at 4.5:1,
+  with 0.1 to spare, on white, cream (252;247;229), Solarized Light
+  (253;246;227) and 251;246;233 under the light palette and on black, #1C1C1E
+  and #282C34 under the dark one, and every label on its fill. A decision (`{ }`, `{{ }}`, or any node with two
   or more outgoing edges) amber, an end (a node edges arrive at and none leave, a
   `(( ))` circle included) grey, a start (a node edges leave and none arrive at,
   or any other `(( ))` circle) green, every other step lavender.
@@ -1106,6 +1141,27 @@ It hooks one event:
   diagram types, more than 200 nodes, 400 edges or 60-cell
   labels) or one still too wide stays a code block with `mermaid: <reason>`
   under it.
+
+After a chart in a list, `splitReply` removes the indentation of the enclosing
+items still open on each prose line. It starts a separate prose part when one
+of those items ends, so a numbered sibling can start a list. It removes the
+item's final line break; only the last item in a list loses the remaining
+trailing whitespace, as marked does. It keeps the list
+markers and the indentation of items opened after the chart. On a continuation
+that reaches an enclosing item's margin, it expands each tab to four spaces
+before removing indentation, as marked does. Lazy lines keep their literal text.
+
+The scanner follows marked 15.0.12, whose block rules Claude Code's bundle
+carries. Known differences from it remain. The scanner does not track HTML blocks
+such as `<details>` or blockquotes inside list items. A tab immediately after a
+list marker, a lone CR line break, or a lazy nested line under a wide numbered
+marker can give different fence boundaries. Openers ` ````mermaid ` and
+`~~~mermaid` stay source by design, as do replies whose
+only Mermaid fences are empty. Because the engine reads prose parts separately,
+an ordered list a chart splits numbers each later part from that part's first
+source number, where marked counts on from the list's first number. For
+example, a `1.` or a `3.` after a chart that follows `1.` shows as written,
+where marked shows `2.` in the whole reply.
 
 cs adds a `cs:mermaid-diagrams` section headed `Diagrams` to `CLAUDE.local.md`
 when it creates a session, or on migration when the sentinel is absent. The
@@ -1154,6 +1210,8 @@ the hook inventory check skips when validation cannot list function hooks.
 The shell suite always checks the manifest, its `/config` field and that the
 installer names the mod. `tests/test_mermaid_section.sh` checks the session
 instruction and tombstone, and `tests/test_migrate_claude_md.sh` covers migration.
+After changing `mods/cs-mermaid/hooks/`, run `./build.sh` to refresh the payload
+hashes in `install.sh`.
 
 ## cs-panel (not a hook script — a Claude Code mod)
 
