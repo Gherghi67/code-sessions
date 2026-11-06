@@ -1379,29 +1379,11 @@ EOF
     fi
 }
 
-# A resume may run in place of cs when it is sure to land and cs has nothing
-# to do after it: claude runs on the default config dir (no CLAUDE_CONFIG_DIR
-# set at all, even empty), so its transcripts sit where cs looks, the
-# transcript holds a whole
-# top-level user record (a torn line, or a user message nested inside
-# another record, does not count), and no vault waits on cs to detach it
-# when claude ends without its hooks. Without jq the resume stays a child.
-_resume_lands_in_place() {  # session_dir, conversation id
-    local file
-    [ -f "$1/.cs/local/vault" ] && return 1
-    [ -z "${CLAUDE_CONFIG_DIR+set}" ] || return 1
-    file=$(_conversation_transcript "$1" "$2") || return 1
-    command -v jq >/dev/null 2>&1 || return 1
-    jq -n -R -e 'first(inputs | fromjson? | objects | select(.type == "user")) | true' \
-        "$file" >/dev/null 2>&1
-}
-
-# The transcript `claude --resume <id>` reads for a session's conversation:
-# the one in the session's project dir, else, once `claude --worktree` has
-# exited, the one it moved into the parent repo's (_relocated_worktree_transcript).
-# The launch card, the resume and migrate's Phase 8 binding all ask this, so
-# they agree on whether the conversation exists. Prints the path; fails when
-# there is none.
+# Locate the bound conversation's transcript for the launch card and context
+# prompt: first in the session's project dir, then in the parent repo's project
+# dir after validating a relocated worktree transcript. Prints the path; fails
+# when there is none. Native resumes remain supervised and do not require this
+# lookup to succeed; migration's Phase 8 binding uses conversation discovery.
 _conversation_transcript() {  # session_dir, conversation id
     local file
     file="$(_claude_project_dir "$1")/$2.jsonl"
