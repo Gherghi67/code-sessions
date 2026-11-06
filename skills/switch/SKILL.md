@@ -185,8 +185,11 @@ vault is committed. `cs -switch` keeps its record there too,
      handoff stays armed. Under Antigravity, exit and reopen with
      `cs <session-name> --engine antigravity --from-handoff`; under Claude
      or Codex, `/clear` continues in this engine.
-   - A `/clear` instead of the exit takes the handoff in this engine, and cs
-     drops the switch with a notice when the CLI exits. If the CLI exits with
+   - Under Claude or Codex, a `/clear` instead of the exit takes the handoff
+     in this engine, and cs drops the switch with a notice when the CLI exits.
+     Under Antigravity, `/clear` does not cancel the switch or consume the
+     handoff: run `cs -switch cancel`, then exit and reopen as described above.
+     If the CLI exits with
      an error or the relaunch fails, cs prints both ways back
      (`cs <session-name> --engine <target> --from-handoff` and
      `cs <session-name> --engine <current engine>`) and the handoff stays
