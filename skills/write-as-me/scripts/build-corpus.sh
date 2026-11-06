@@ -129,23 +129,25 @@ while IFS= read -r f; do
         # cs hands claude a kick as its launch prompt, which Claude Code stamps
         # "typed". Patterns mirror handoff_arg (lib/42-claude-state.sh) and spawn_kick
         # (lib/75-launch.sh); test_cs_launch_kicks_dropped pins both wordings.
+        # Classify the remaining text: sentinels inside a removed paste do not
+        # change who authored the words typed around it.
         | ($src_machine
-           or ($t | test("^Continue from the pending rotation handoff(: read \\.cs/handoffs/|\\.$)"))
-           or ($t | test("^Spawned by .* Send results with: cs -msg "))
-           or ($t | test("^Your (brief is \\.cs/brief\\.md: read it first\\.|walk-away queue is armed with [0-9]+ task)"))) as $machine
+           or ($typed | test("^Continue from the pending rotation handoff(: read \\.cs/handoffs/|\\.$)"))
+           or ($typed | test("^Spawned by .* Send results with: cs -msg "))
+           or ($typed | test("^Your (brief is \\.cs/brief\\.md: read it first\\.|walk-away queue is armed with [0-9]+ task)"))) as $machine
         | (if ($t | length) == 0 then "not-typed"
            elif $machine then "machine"
-           elif ($t | startswith("Caveat:")) then "sentinel"
-           elif ($t | startswith("This session is being continued")) then "sentinel"
-           elif ($t | test("<command-name>|<local-command-stdout>|<system-reminder>|Stop hook feedback:|\\[Request interrupted|TASKMASTER|<task-notification>|<teammate-message|<bash-input>|<bash-stdout>|<bash-stderr>")) then "sentinel"
+           elif ($typed | startswith("Caveat:")) then "sentinel"
+           elif ($typed | startswith("This session is being continued")) then "sentinel"
+           elif ($typed | test("<command-name>|<local-command-stdout>|<system-reminder>|Stop hook feedback:|\\[Request interrupted|TASKMASTER|<task-notification>|<teammate-message|<bash-input>|<bash-stdout>|<bash-stderr>")) then "sentinel"
            elif $test_session then "test-session"
            # A side agent relays its note through a draft the user sends
            # unedited, which Claude Code stamps typed: its own side-agent
            # wrapper, and the claude-council heads-up mod Tell Claude draft
            # ("A side check by codex (not you) flagged this:", also seen as
            # "raised this:").
-           elif ($t | startswith("Here is a note offered by a side agent:")) then "side-note"
-           elif ($t | startswith("A side check by ")) then "side-check"
+           elif ($typed | startswith("Here is a note offered by a side agent:")) then "side-note"
+           elif ($typed | startswith("A side check by ")) then "side-check"
            elif ($typed | length) == 0 then "tagged-paste"
            elif ($typed | length) > $paste then "paste"
            else null end) as $drop

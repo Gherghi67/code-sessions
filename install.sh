@@ -2108,7 +2108,7 @@ CS_PAYLOAD_SHA256=(
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
     "9ef1c5135bbbbd85838d28d711c7df4028e2bbe7cd6c6723ab3cfdc1cdce95e0  skills/sweep/SKILL.md"
     "d987b136ff545808fe7275da1c93a0e06cf1d53d010c957c3418e233251c8c82  skills/wrap/SKILL.md"
-    "c31279f95ca4f15e23264fb60d8440d337669d6bbfea18f9faa3dde1521f0bdd  skills/write-as-me/scripts/build-corpus.sh"
+    "e6f68d4b71897174fb9aa19a2243147607b7afb282f0939572a379a46cc6d88d  skills/write-as-me/scripts/build-corpus.sh"
     "a8a14c22510b49f89557b401730875996064682af719a85322215b61d046b054  skills/write-as-me/scripts/corpus-check.sh"
     "225f2385a01a0a8dcee29ed8d797a3bb087a0822c9702f89350faa37693ebd8d  skills/finish/scripts/finish.sh"
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
