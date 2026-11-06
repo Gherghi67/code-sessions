@@ -809,7 +809,7 @@ $merge_feature
         esac
     fi
 
-    cs_launch_session "$engine" "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$launch_intent" "$remote_mode"
+    cs_launch_session "$engine" "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$launch_intent" "$remote_mode" "$explicit_engine"
     # Reached when the run succeeded (errexit ends cs on a failed one; the
     # switch's own notices for that case were printed as the run settled).
     # With a switch settled, this execs cs for the target and never returns.

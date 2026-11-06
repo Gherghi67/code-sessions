@@ -417,7 +417,79 @@ test_original_launch_leaves_the_credential_dir_alone() {
     assert_file_not_contains "$CS_CLAUDE_ENV" '^CLAUDE_SECURESTORAGE_CONFIG_DIR=' || return 1
 }
 
+# Both native bindings exist, but the feature was last used with Claude and
+# the base with Codex. A collision redirect must carry only an explicit engine
+# override; otherwise the feature's own preference decides what opens.
+_collision_engine_fixture() {
+    local output base feature
+    output=$("$CS_BIN" collision-base --engine codex 2>&1) || { echo "$output"; return 1; }
+    output=$("$CS_BIN" collision-base@feature --engine codex 2>&1) || { echo "$output"; return 1; }
+    output=$("$CS_BIN" collision-base@feature --engine claude --fresh 2>&1) || { echo "$output"; return 1; }
+    base=$(_engine_session_dir collision-base)
+    feature=$(_engine_session_dir collision-base@feature)
+    assert_file_contains "$feature/.cs/local/state" '^engine: claude$' || return 1
+    assert_file_exists "$feature/.cs/local/codex-thread-id" || return 1
+    assert_file_contains "$feature/.cs/local/state" '^claude_session_id:' || return 1
+    printf '%s\n' "$$" > "$base/.cs/session.lock"
+    rm -f "$CS_CLAUDE_LOG" "$CS_CODEX_LOG" "$CS_HELPER_LOG"
+}
+
+test_collision_resume_preserves_explicit_engine() {
+    _collision_engine_fixture || return 1
+    local output status=0 feature thread_id
+    feature=$(_engine_session_dir collision-base@feature)
+    thread_id=$(cat "$feature/.cs/local/codex-thread-id")
+    output=$(printf '1' | CS_ASSUME_TTY=1 "$CS_BIN" collision-base --engine codex --resume 2>&1) || status=$?
+    assert_eq 0 "$status" "explicit Codex resume redirect failed: $output" || return 1
+    assert_file_contains "$CS_CODEX_LOG" "resume $thread_id -C $feature" \
+        "the redirect resumes the feature's Codex binding" || return 1
+    assert_file_not_exists "$CS_CLAUDE_LOG" "explicit Codex redirect must not launch Claude" || return 1
+    assert_output_not_contains "$output" 'Continue previous' "--resume stays unattended after redirect" || return 1
+}
+
+test_collision_attended_open_preserves_explicit_engine() {
+    _collision_engine_fixture || return 1
+    local output status=0 feature thread_id
+    feature=$(_engine_session_dir collision-base@feature)
+    thread_id=$(cat "$feature/.cs/local/codex-thread-id")
+    output=$(printf '1y' | CS_ASSUME_TTY=1 "$CS_BIN" collision-base --engine codex 2>&1) || status=$?
+    assert_eq 0 "$status" "attended explicit Codex redirect failed: $output" || return 1
+    assert_file_contains "$CS_CODEX_LOG" "resume $thread_id -C $feature" \
+        "the attended redirect also selects Codex" || return 1
+    assert_file_not_exists "$CS_CLAUDE_LOG" "the attended override must not launch Claude" || return 1
+}
+
+test_collision_without_explicit_engine_uses_feature_preference() {
+    _collision_engine_fixture || return 1
+    local output status=0 feature claude_id
+    feature=$(_engine_session_dir collision-base@feature)
+    claude_id=$(awk '/^claude_session_id:/ {print $2; exit}' "$feature/.cs/local/state")
+    output=$(printf '1' | CS_ASSUME_TTY=1 "$CS_BIN" collision-base --resume 2>&1) || status=$?
+    assert_eq 0 "$status" "feature preference redirect failed: $output" || return 1
+    assert_file_contains "$CS_CLAUDE_LOG" " --resume $claude_id" \
+        "without an override the feature's stored Claude engine wins" || return 1
+    assert_file_not_exists "$CS_CODEX_LOG" "the base's resolved Codex preference must not be forwarded" || return 1
+}
+
+test_collision_new_feature_preserves_explicit_engine() {
+    local output status=0 base feature
+    output=$("$CS_BIN" collision-base --engine claude 2>&1) || { echo "$output"; return 1; }
+    base=$(_engine_session_dir collision-base)
+    printf '%s\n' "$$" > "$base/.cs/session.lock"
+    rm -f "$CS_CLAUDE_LOG" "$CS_CODEX_LOG"
+    feature=$(_engine_session_dir collision-base@new-feature)
+    output=$(printf '2new-feature\n' | CS_ASSUME_TTY=1 "$CS_BIN" collision-base --engine codex 2>&1) || status=$?
+    assert_eq 0 "$status" "new feature redirect failed: $output" || return 1
+    assert_file_contains "$CS_CODEX_LOG" "resume .* -C $feature" \
+        "a new feature keeps the explicit engine" || return 1
+    assert_file_not_exists "$CS_CLAUDE_LOG" "new feature must not fall back to Claude" || return 1
+}
+
 echo 'Engine selection tests'
+run_test test_collision_resume_preserves_explicit_engine
+run_test test_collision_attended_open_preserves_explicit_engine
+run_test test_collision_without_explicit_engine_uses_feature_preference
+run_test test_collision_new_feature_preserves_explicit_engine
 run_test test_engine_roundtrip_resumes_each_acknowledged_binding
 run_test test_launch_intent_flags_validate_before_creation
 run_test test_resume_missing_binding_does_not_migrate_or_allocate

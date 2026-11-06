@@ -13,6 +13,10 @@ _lock_menu_row() {  # action color label consequence
 
 _lock_collision_menu() {
     local session_name="$1" lock_pid="$2" resume="${3:-}"
+    local explicit_engine="${4:-}" engine_args=()
+    # A redirect keeps an explicit choice; without one the destination's own
+    # stored engine wins, rather than the base's resolved preference.
+    [ -z "$explicit_engine" ] || engine_args=(--engine "$explicit_engine")
     local choice="" feature="" offers_worktree=1
     # Worktrees can't nest: a worktree session offers only force/cancel.
     case "$session_name" in
@@ -83,9 +87,9 @@ _lock_collision_menu() {
         force) return 0 ;;                              # force a second launch here
         open:*)                                         # resume an existing feature
             if [ -n "$resume" ]; then
-                exec "$0" "${action#open:}" --resume
+                exec "$0" "${action#open:}" ${engine_args[@]+"${engine_args[@]}"} --resume
             fi
-            exec "$0" "${action#open:}"
+            exec "$0" "${action#open:}" ${engine_args[@]+"${engine_args[@]}"}
             ;;
         tui) _vault_leave; exec "$0" -tui ;;            # pick a different session
         new)
@@ -95,7 +99,7 @@ _lock_collision_menu() {
                 "$DIM" "$session_name" "$feature" "$feature" "$NC"
             # cs_split_worktree_name validates the name after the re-exec;
             # keeping a second copy of its regex here would just drift.
-            exec "$0" "$session_name@$feature"
+            exec "$0" "$session_name@$feature" ${engine_args[@]+"${engine_args[@]}"}
             ;;
         *) info "Cancelled"; exit 0 ;;
     esac
@@ -157,9 +161,9 @@ _take_session_lock() {  # meta_dir
     esac
 }
 
-acquire_session_lock() {  # meta_dir, force, session_name, remote, resume
+acquire_session_lock() {  # meta_dir, force, session_name, remote, resume, explicit_engine
     local meta="$1" force="${2:-}" session_name="$3" remote="${4:-}" status=0 lock_pid=""
-    local resume="${5:-}"
+    local resume="${5:-}" explicit_engine="${6:-}"
     _require_session_lock_perl "$meta" || return 1
     _refuse_session_lock_not_a_file "$meta/session.lock"
     lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
@@ -179,7 +183,7 @@ acquire_session_lock() {  # meta_dir, force, session_name, remote, resume
         lock_pid=$(_cs_session_live_pid "$meta") || lock_pid=""
         if cs_interactive; then
             # Never hold the ownership guard while waiting for user input.
-            _lock_collision_menu "$session_name" "$lock_pid" "$resume"
+            _lock_collision_menu "$session_name" "$lock_pid" "$resume" "$explicit_engine"
             CS_COLLISION_FORCE=1
             force=true
             warn "Overriding active session lock (PID $lock_pid)"
