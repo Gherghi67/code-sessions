@@ -260,9 +260,9 @@ test_switch_step_numbers_match_rotate() {
 # user must act on, so both lines are pinned exactly.
 test_switch_names_both_final_lines() {
     local skill="$SKILLS_DIR/switch/SKILL.md"
-    grep -qxF '   **Run `/exit` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — cs reopens this session under Codex.' "$skill" \
+    grep -qxF '   **Run `/exit` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — cs reopens this session under <target>.' "$skill" \
         || { echo "  FAIL: switch must end, under Claude, on the exact /exit line"; return 1; }
-    grep -qxF '   **Quit Codex now (`/quit`)** — cs reopens this session under Claude.' "$skill" \
+    grep -qxF '   **Quit Codex now (`/quit`)** — cs reopens this session under <target>.' "$skill" \
         || { echo "  FAIL: switch must end, under Codex, on the exact /quit line"; return 1; }
     assert_file_contains "$skill" 'CS_ROTATE_FORCE_CTX=off' \
         "the skill must name the switch that turns the mod's /exit countdown off" || return 1

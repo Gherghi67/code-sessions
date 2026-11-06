@@ -534,6 +534,20 @@ echo "cs completion drift tests"
 echo "========================="
 echo ""
 
+test_completions_offer_all_switch_targets() {
+    local out target
+    out=$(bash_candidates_words "$BASH_COMP" cs -switch '')
+    for target in antigravity claude codex cancel; do
+        assert_candidate "$out" "$target" "bash completes switch $target" || return 1
+    done
+    require_tool zsh || return $?
+    out=$(zsh_candidates_words cs -switch '')
+    assert_candidate "$out" antigravity "zsh completes switch antigravity" || return 1
+    assert_candidate "$out" --resume "zsh completes switch resume"
+}
+
+run_test test_completions_offer_all_switch_targets
+
 run_test test_complete_sessions_includes_symlinked_session
 run_test test_complete_sessions_excludes_directories_without_a_session_marker
 run_test test_complete_sessions_includes_a_legacy_session

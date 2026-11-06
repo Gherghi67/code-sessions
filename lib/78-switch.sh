@@ -1,4 +1,4 @@
-# ABOUTME: cs -switch: a rotate that also moves the session to the other engine (Claude <-> Codex).
+# ABOUTME: cs -switch: a rotate that also moves the session to another engine (Claude, Codex or Antigravity).
 # ABOUTME: The verb arms pending-switch; the run settles it at exit and main re-execs cs under the target.
 
 # The flow. The switch skill runs rotate's steps (a handoff written and armed
@@ -30,23 +30,38 @@ _switch_field() {  # file, key
     awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$1" 2>/dev/null || true
 }
 
-# With two engines, "the other one". Written over the registry so a test
-# adapter never makes a third engine everyone's default.
+# Preserve the established Claude/Codex defaults. Antigravity has two
+# destinations and requires an explicit choice; registry ordering is no policy.
 _switch_other_engine() {  # engine
-    local registered
-    for registered in "${CS_ENGINE_IDS[@]}"; do
-        [ "$registered" = "$1" ] && continue
-        printf '%s\n' "$registered"
-        return 0
-    done
-    return 1
+    case "$1" in
+        claude) printf 'codex\n' ;;
+        codex) printf 'claude\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Target readiness shared by the read-only verb and the exit-time consumer.
+# An older ambiguous Antigravity attempt must be recovered before sending
+# another prompt, even when its binding still names the previous conversation.
+_switch_target_ready() {  # target, session_dir
+    if [ "$1" = antigravity ]; then
+        _antigravity_rotation_hook_ready || {
+            printf 'the cs Antigravity hook is missing or disabled; enable its PreInvocation hook or run setup.sh again'
+            return 1
+        }
+        if _launch_handoff_needs_recovery "$2" antigravity; then
+            printf 'an Antigravity handoff attempt needs recovery; reopen with --engine antigravity --resume and inspect native history if no consumer was recorded; do not replay with --from-handoff'
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # How the user leaves each CLI. /clear cannot change engines; only an exit
 # hands control back to the cs that relaunches.
 _switch_quit_command() {  # engine
     case "$1" in
-        claude) printf '/exit\n' ;;
+        claude|antigravity) printf '/exit\n' ;;
         codex) printf '/quit\n' ;;
         *) printf 'its own exit command\n' ;;
     esac
@@ -99,20 +114,18 @@ _switch_session_encrypted() {  # session_dir
     [ -e "$1/.cs/private" ] || [ -L "$1/.cs/private" ]
 }
 
-# Whether an engine's rotation can start from a handoff kept in the vault.
-# Codex's cannot yet: its launch's r path and its session-start hook read and
-# write .cs/handoffs and .cs/local/pending-handoff, so it would miss the
-# handoff, leave the marker armed, and name the handoff (the session's topic)
-# in plaintext.
+# Only Claude can start from a handoff kept in the vault. Codex's launch
+# and hook paths read plaintext handoffs; Antigravity stores conversations
+# outside the vault and refuses encrypted sessions altogether.
 _switch_engine_reads_vault() {  # engine
-    [ "$1" != codex ]
+    [ "$1" = claude ]
 }
 
 _switch_usage() {
-    error "Usage: cs -switch [--check] [claude|codex] [--resume] [--model MODEL] [--effort LEVEL] [--approve-for-me|--native-approval], or cs -switch cancel"
+    error "Usage: cs -switch [--check] [claude|codex|antigravity] [--resume] [--model MODEL] [--effort LEVEL] [--approve-for-me|--native-approval], or cs -switch cancel"
 }
 
-# cs -switch [--check] [claude|codex] [--resume] | cancel
+# cs -switch [--check] [claude|codex|antigravity] [--resume] | cancel
 # Run from inside the conversation, after the handoff is written and armed.
 # Every refusal is one line naming the fix. --check runs all of them except the
 # armed-handoff one and writes nothing: the skill asks before writing a handoff.
@@ -173,7 +186,7 @@ cmd_switch() {
         || error "cs -switch is not supported under $current yet: its adapter has no rotation support to write the handoff. Exit, then reopen with: cs $name --engine <engine>"
     if [ -z "$target" ]; then
         target=$(_switch_other_engine "$current") \
-            || error "No other engine to switch to from $current"
+            || error "Choose a target explicitly: cs -switch claude or cs -switch codex (current engine: $current)"
     fi
     cs_engine_known "$target" || error "Unknown engine: $target. Choose $(cs_engine_choices)."
     [ "$target" != "$current" ] \
@@ -184,7 +197,7 @@ cmd_switch() {
     cs_engine_supports "$target" engine_switch \
         || error "Cannot switch to $target: its adapter has no engine switch support; exit, then reopen with: cs $name --engine $target"
     _switch_engine_installed "$target" \
-        || error "$target is not set up by this cs install; reinstall with CS_INSTALL_ENGINES=claude,codex, then switch"
+        || error "$target is not set up by this cs install; reinstall with CS_INSTALL_ENGINES=claude,codex,antigravity, then switch"
     local missing
     missing=$(cs_engine_call "$target" dependencies) || exit 1
     [ -z "$missing" ] \
@@ -192,6 +205,9 @@ cmd_switch() {
     if _switch_session_encrypted "$session_dir" && ! _switch_engine_reads_vault "$target"; then
         error "Cannot switch to $target: this session is encrypted, and $target does not read handoffs from .cs/private yet; use the rotate skill to continue in $current"
     fi
+    local readiness
+    readiness=$(_switch_target_ready "$target" "$session_dir") \
+        || error "Cannot switch to $target: $readiness"
     # The relaunch opens the session again, and an encrypted one refuses with
     # plaintext leftovers beside its vault (a session.log an older Codex run
     # left in .cs/local). Asked now, before the skill writes a handoff for nothing.
@@ -237,7 +253,11 @@ _switch_cancel() {
     fi
     target=$(_switch_field "$file" engine)
     rm -f "$file" || error "Could not remove $file"
-    printf 'Switch to %s cancelled; the handoff stays armed, so /clear here continues from it.\n' "${target:-the other engine}"
+    if [ "$(_cs_current_engine)" = antigravity ]; then
+        printf 'Switch to %s cancelled; the handoff stays armed. Exit, then reopen with: cs %s --engine antigravity --from-handoff\n' "${target:-the other engine}" "${CS_SESSION_NAME:-$(basename "$session_dir")}"
+    else
+        printf 'Switch to %s cancelled; the handoff stays armed, so /clear here continues from it.\n' "${target:-the other engine}"
+    fi
 }
 
 # Called by cs_launch_session as a run starts, with the lease held: any pending
@@ -325,6 +345,15 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
         printf 'Not switching to %s: the session would not reopen.\n%s\nThe handoff %s stays armed. Fix that, then reopen with either:\n' \
             "$target" "$refusal" "$handoff" >&2
         _switch_reopen_hint "$name" "$target" "$engine" >&2
+        return 0
+    fi
+    if ! _switch_engine_installed "$target" \
+        || { _switch_session_encrypted "$dir" && ! _switch_engine_reads_vault "$target"; }; then
+        printf 'Not switching to %s: it is not installed or cannot read this encrypted session; the handoff stays armed.\n' "$target" >&2
+        return 0
+    fi
+    if ! refusal=$(_switch_target_ready "$target" "$dir"); then
+        printf 'Not switching to %s: %s; the handoff stays armed.\n' "$target" "$refusal" >&2
         return 0
     fi
     if [ "$mode" = resume ]; then
@@ -450,6 +479,16 @@ _switch_relaunch_failed() {  # session_name, session_dir, engine
     local name="$1" dir="$2" engine="$3" handoff consumer=""
     # Unset when the run ended before its launch, which then spent nothing.
     handoff=${_cs_switch_carry-$(_rotation_armed_handoff "$dir")}
+    # Antigravity persists intent before receiving the prompt. Missing hook
+    # evidence is ambiguous: never put a consumed handoff back or suggest replay.
+    if [ "$engine" = antigravity ]; then
+        if _launch_handoff_needs_recovery "$dir" antigravity; then
+            printf 'The switch to Antigravity needs recovery. Reopen with: cs %s --engine antigravity --resume. Inspect native agy history if no consumer was recorded; do not replay with --from-handoff.\n' "$name" >&2
+        elif _handoff_is_unconsumed "$(cs_handoff_dir "$dir/.cs")/$handoff"; then
+            _switch_failed_notice "$name" "$engine" "$_cs_switched_from" "$handoff"
+        fi
+        return 0
+    fi
     [ "${_cs_switch_spent:-}" != "$handoff" ] || consumer="${_cs_switch_spent_by:-}"
     cs_run_with_lease "$dir/.cs" _restore_launch_handoff "$dir" "$handoff" \
         "$consumer" "${_cs_switch_starts:-}" "${_cs_switch_ran:-}" || return 0
