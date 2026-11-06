@@ -687,7 +687,9 @@ test_resume_without_binding_rejects_untrusted_or_linked_receipts() {
     status=0
     output=$("$CS_BIN" forged-first --resume 2>&1) || status=$?
     assert_eq 1 "$status" || return 1
-    assert_output_contains "$output" 'no recorded antigravity conversation' || return 1
+    assert_output_contains "$output" 'needs recovery' || return 1
+    assert_output_contains "$output" 'do not replay it with --from-handoff' || return 1
+    assert_eq '' "$(cat "$AGY_LOG")" "a linked receipt never starts agy" || return 1
     rm "$receipt_dir/pending.json"
     receipt_dir="$dir/.cs/local/cache/launch-handoffs/$identity/antigravity"
     mkdir -p "$receipt_dir"
@@ -696,7 +698,7 @@ test_resume_without_binding_rejects_untrusted_or_linked_receipts() {
     status=0
     output=$(CS_CACHE_DIR="$dir/.cs/local/cache" "$CS_BIN" forged-first --resume 2>&1) || status=$?
     assert_eq 1 "$status" || return 1
-    assert_output_contains "$output" 'no recorded antigravity conversation' || return 1
+    assert_output_contains "$output" 'needs recovery' || return 1
     assert_not_exists "$dir/.cs/local/antigravity-conversation" || return 1
     assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' || return 1
     assert_eq '' "$(cat "$AGY_LOG")" "untrusted recovery state never starts agy"
