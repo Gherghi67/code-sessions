@@ -299,13 +299,13 @@ run_spawn() {
     # Explicit selection wins; otherwise inherit the spawning run, then the
     # target preference/default. Do not rely on tmux's ambient environment.
     engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
-    if [ "$engine" = codex ] && [ "${#tasks[@]}" -gt 0 ]; then
-        error "Codex does not host the walk-away task queue; use --brief without --task"
+    if [ "${#tasks[@]}" -gt 0 ]; then
+        _spawn_refuse_queue "$engine" ""
     fi
     # A seed waits for a launch that consumes it, and an adapter without
     # spawn_brief never does: refused here, before anything is staged.
     if { [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; } && ! cs_engine_supports "$engine" spawn_brief; then
-        error "cs -spawn --engine $engine only opens the session: $engine takes no brief or task from cs yet. Drop --brief and --task, or spawn under claude or codex"
+        error "cs -spawn --engine $engine only opens the session: $engine takes no brief or task from cs yet. Drop --brief and --task, or spawn under another engine"
     fi
     _spawn_precheck "$name"
     # One token per spawn, for the window command and the seed alike. The
@@ -479,8 +479,8 @@ _spawn_prepare_launch() {  # session_name, session_dir
         fi
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
-            if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ "$_n" -gt 0 ]; then
-                error "Codex does not host the walk-away task queue; use --brief without --task (seed kept)"
+            if [ "$_n" -gt 0 ]; then
+                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)"
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -577,10 +577,26 @@ _spawn_prepare_launch() {  # session_name, session_dir
     fi
 }
 
+# The walk-away queue is drained by Claude's hooks; the other engines take a
+# brief only, and a seed with tasks is refused before anything is staged or
+# written.
+_spawn_refuse_queue() {  # engine, suffix
+    case "$1" in
+        codex) error "Codex does not host the walk-away task queue; use --brief without --task$2" ;;
+        antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
+    esac
+}
+
 # Only an owned, fresh seed or an already accepted receipt bypasses native
 # resume questions. Foreign staged work still needs the seed consent flow.
 _spawn_launch_is_owned() {  # session_name, session_dir
     [ ! -f "$2/.cs/local/spawn-kick.json" ] || return 0
+    _spawn_seed_is_owned "$1"
+}
+
+# The seed staged for this name carries the token of the window this open
+# runs in, and is fresh enough to be consumed unasked.
+_spawn_seed_is_owned() {  # session_name
     [ -n "${SESSIONS_ROOT:-}" ] && [ -n "${_spawn_token:-}" ] || return 1
     local seed="$SESSIONS_ROOT/.spawn/$1.seed" token age
     [ -f "$seed" ] || return 1
