@@ -2079,9 +2079,9 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "dab990ff61b743e78219b53b767b7c7eb5c9b68ee9130e46e515de263e965fb9  bin/cs"
+    "494426accc342631221ca1a84cd24e64ee940b8f1c650408f679d52545cc08a0  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
-    "79c320263a3659dcdb13ad5933a8504a15d33a3a08e78abb45f6d502a61b5454  bin/cs-codex-thread"
+    "c1ee28f1c514c7621d796dc6096cc38018824bf4a93f771a4fae3becbb79e153  bin/cs-codex-thread"
     "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
@@ -2092,7 +2092,7 @@ CS_PAYLOAD_SHA256=(
     "0df470229aed0ca15acdd0ab115d6633dbcd1542e30b64936df5124045f4e6ee  hooks/prompt-rewriter.sh"
     "dd6e555242f0161cdb832249a491a41babe407da745a7ca0b30d9780d045a680  hooks/prompt-rewriter-model.sh"
     "b3704bde599a45a4f2d2a8b0ccd16e01869ef7ba6dcc85e642e306448ded7d44  hooks/prompt-rewriter-vendor.sh"
-    "751c9e8781f26c38e51e80d6f5e5888cc8974378a471dfc88dc3debb803a523d  hooks/session-start.sh"
+    "3c833a9e7be921a1083ac1b338036be4a7afb25e065a297d46a21fd7c110fd9c  hooks/session-start.sh"
     "0c8420c589f8973709b0a62915bf9c7c9e931553e38ee7a0a3bc70834c9103b1  hooks/autosave-commits.sh"
     "0932277b77a613a6cb75d7bba1aa5a57b88a77e3aa9f15935b218c527427fc23  hooks/stop-blocks.sh"
     "5ab5da9bd06072cd1e91a4e2059c6aa404f29052f36ba30d345a7d493a1415ea  hooks/stop-notices.sh"

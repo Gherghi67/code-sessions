@@ -27,7 +27,8 @@ run_conversations() {
             (if .event == "started"
              then (.session_id | type == "string") and (.source | str_or_null)
              else (.to | type == "string") and (.from | str_or_null)
-                 and (.reason | str_or_null) and (.handoff | str_or_null) end);
+                 and (.reason | str_or_null) and (.handoff | str_or_null)
+                 and (.carried_from | str_or_null) end);
         [split("\n") | to_entries[] | select(.value | length > 0)
          | {line: (.key + 1), e: (.value | fromjson? // empty)}
          | select((.e | type == "object") and (.e.event == "started" or .e.event == "rotated"))] as $all |
@@ -58,6 +59,10 @@ run_conversations() {
                     txt: ($e.engine + ":" + (if ($e.from // "") == "" then "?" else $e.from[0:8] end)
                         + " > " + ($e.to[0:8]) + "  rotated (" + ($e.reason // "?")
                         + (if ($e.handoff // "") != "" then ": " + $e.handoff else "" end)
+                        + (if ($e.carried_from // "") != ""
+                           then " from " + ($e.carried_from | split(":")
+                                | .[0] + ":" + ((.[1:] | join(":"))[0:8]))
+                           else "" end)
                         + ")")}]
             end)).out[] |
         "O:" + (((.ts as $ts | try ($ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch ($ts // "?"))

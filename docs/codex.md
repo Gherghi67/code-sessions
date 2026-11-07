@@ -98,8 +98,21 @@ CLI exit status is returned to the caller.
 cs investigate --engine claude
 ```
 
-A plain `--engine` reopens the other engine's own conversation, which has not
-seen the work done since it last ran. To carry the work across, ask for
+After a run under Claude, an attended `--engine codex` reopen offers Claude's
+newer conversation (and the other way round): `y` carries it over, `e` resumes
+the engine's own earlier conversation, `n` starts fresh. The carried thread is
+a new one: cs starts it through app-server, adds the session context, then a
+developer note and Claude's messages as user and assistant items, with every
+tool call and each tool result's first 4,000 characters, and binds it. Claude's
+thinking stays behind, and since its last compaction a Claude conversation
+starts from the compact summary. A carry-over Codex refuses leaves one line, and
+the launch resumes the earlier thread, or starts a fresh one when there is none.
+The other direction writes the Codex thread as a Claude transcript that Claude
+resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
+`<environment_context>`, skill bodies) stay behind. [Getting
+started](getting-started.md#resume-and-switch-engines) shows the prompt.
+
+To carry the work across in a written handoff instead, ask for
 `$switch` in Codex (or `/switch` in Claude), optionally naming the engine and
 `--resume`. The skill writes and arms a handoff by the `rotate` skill's steps,
 then runs `cs -switch`, which writes into `.cs/` within the workspace sandbox.
@@ -156,10 +169,9 @@ The workspace and CS records remain shared across engines: project files,
 `.cs/README.md`, plans, handoffs, and memory are in the same session directory.
 At startup, CS appends context about the relevant `.cs/` files to the Codex
 thread so it can load the session protocol and current notes. This does not
-transfer the other engine's conversation history or native memory. The
-`switch` skill carries the work across in a rotation handoff; for a plain
-`--engine` reopen, summarize important findings in the shared notes so both
-conversations can pick them up.
+transfer the other engine's native memory. A plain `--engine` reopen offers to
+carry the other engine's newer conversation over (see Switching engines), and
+the `switch` skill carries the work across in a rotation handoff.
 
 CS does not replace or edit a project's `AGENTS.md`. Claude-specific session
 configuration, including `CLAUDE.local.md` and Claude's auto-memory redirect,

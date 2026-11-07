@@ -124,6 +124,16 @@ the owning SessionStart acknowledges it; Codex commits after its helper confirms
 the persistent thread ID. Process exit alone does not acknowledge a conversation.
 Switching engines leaves the other engine's binding alone.
 
+A carry-over (`lib/47-transplant.sh`) is offered on an attended reopen under
+Claude or Codex when the session's last run was under the other of the two.
+`cs-codex-thread` converts in both directions: `--export-claude` writes a Codex
+thread's saved rollout as a Claude transcript, and `--history-from-claude`
+starts a new thread carrying a Claude transcript. The launch stages the result
+as an ordinary candidate with reason `transplant` and a `carried_from` field,
+`<engine>:<native id>`, and commits it the usual way, so the `rotated` event
+names the source conversation. It is recorded even when the target engine had
+no conversation before.
+
 Engine selection retains this order: an explicit `--engine`, then the saved
 session preference, then `CS_DEFAULT_ENGINE`, then a sole installed Codex adapter, otherwise Claude. The selected engine
 preference is recorded only after the launch path accepts the choice. Claude remains the default on legacy and dual-adapter installations.
@@ -158,6 +168,7 @@ iteration does not move the entire source tree or migrate storage formats.
 | `30-worktree.sh`, `45-migrate.sh`: shared worktree/scaffold/migration operations | `75-launch.sh`: existing Claude launch adapter and its orchestration |
 | CLI commands consume `CS_SESSION_*`, falling back to legacy aliases | `76-codex.sh`, `bin/cs-codex-thread`: Codex launch, context renderer, and protocol |
 | `78-switch.sh`: `cs -switch`, `pending-switch`, and the relaunch under the other engine | `79-antigravity.sh`: Antigravity launch, its always-on context rule, and the hook that binds its conversation |
+| `47-transplant.sh`: the carry-over offer on a reopen under the other engine | |
 
 Create/adopt/migrate/worktree paths dispatch `prepare_workspace` after preparing
 portable storage. They allocate no native conversation IDs themselves. Claude adoption appends its

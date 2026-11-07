@@ -85,7 +85,9 @@ if mode == 'cleanup':
 '''
 
 
-class BootstrapTests(unittest.TestCase):
+class HelperFixture(unittest.TestCase):
+    """An isolated fake app-server and the helper command line around it."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="cs-codex-test-")
         self.addCleanup(self.temp.cleanup)
@@ -128,6 +130,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn(text, result.stderr)
         return result
 
+
+class BootstrapTests(HelperFixture):
     def test_new_thread_persists_in_fresh_process_and_preserves_context(self):
         result = self.run_helper()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -401,6 +405,334 @@ class BootstrapTests(unittest.TestCase):
             result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), expected)
+
+
+CLAUDE_ID = "a0000000-0000-4000-8000-00000000000a"
+NEW_CLAUDE_ID = "b0000000-0000-4000-8000-00000000000b"
+
+
+def rollout_line(kind, payload, stamp="2026-11-06T16:49:50.000Z"):
+    return json.dumps({"timestamp": stamp, "type": kind, "payload": payload})
+
+
+def codex_message(role, text, kind=None):
+    kind = kind or ("output_text" if role == "assistant" else "input_text")
+    return {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}
+
+
+def claude_record(kind, content, uid, parent, **extra):
+    record = {"type": kind, "uuid": uid, "parentUuid": parent, "sessionId": CLAUDE_ID,
+              "timestamp": "2026-11-07T10:00:00.000Z",
+              "message": {"role": kind, "content": content}}
+    record.update(extra)
+    return json.dumps(record)
+
+
+class TransplantTests(HelperFixture):
+    """A conversation carried across engines: a Codex thread out as a Claude
+    transcript, a Claude transcript into a new thread."""
+
+    def setUp(self):
+        super().setUp()
+        self.codex_home = self.root / "codex home"
+        self.codex_home.mkdir()
+        self.env["CODEX_HOME"] = str(self.codex_home)
+
+    def write_rollout(self, lines, thread=THREAD_ID):
+        folder = self.codex_home / "sessions" / "2026" / "11" / "06"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / ("rollout-2026-11-06T18-49-45-" + thread + ".jsonl")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def export(self, *extra):
+        out = self.root / "carried.jsonl"
+        command = [sys.executable, str(HELPER), "--export-claude", "--thread-id", THREAD_ID,
+                   "--session-id", NEW_CLAUDE_ID, "--cwd", str(self.cwd), "--out", str(out),
+                   "--claude-version", "2.1.300", "--git-branch", "cs/x", *extra]
+        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=10)
+        records = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
+        return result, records
+
+    @staticmethod
+    def text_of(record):
+        content = record["message"]["content"]
+        return content if isinstance(content, str) else content[0]["text"]
+
+    def sample_rollout(self):
+        return [
+            rollout_line("session_meta", {"id": THREAD_ID, "cwd": "/x"}),
+            rollout_line("response_item", codex_message("developer", "SECRET DEVELOPER TEXT")),
+            rollout_line("response_item", {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "# AGENTS.md instructions for /x\n\n<INSTRUCTIONS>AGENTS</INSTRUCTIONS>"},
+                {"type": "input_text", "text": "<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"}]}),
+            rollout_line("response_item", codex_message("user", "what is the codename?")),
+            rollout_line("response_item", {"type": "reasoning", "summary": [],
+                                           "encrypted_content": "ENCRYPTED REASONING"}),
+            rollout_line("response_item", codex_message("assistant", "Checking the notes.")),
+            rollout_line("response_item", {"type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                                           "input": "cat notes.txt"}),
+            rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "c1",
+                                           "output": [{"type": "input_text", "text": "AMBER-FALCON " + "x" * 5000}]}),
+            rollout_line("response_item", {"type": "function_call", "name": "shell", "call_id": "c2",
+                                           "arguments": "{\"cmd\": \"ls\"}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "c2", "output": "notes.txt"}),
+            "not json at all",
+            rollout_line("response_item", {"type": "some_future_item", "text": "FUTURE ITEM"}),
+            rollout_line("event_msg", {"type": "agent_message", "message": "EVENT DUPLICATE"}),
+            rollout_line("response_item", codex_message("assistant", "The codename is AMBER-FALCON.")),
+            rollout_line("response_item", codex_message("user", "$wrap")),
+            rollout_line("response_item", codex_message("user", "<skill>\n<name>wrap</name>\nBODY\n</skill>")),
+            rollout_line("response_item", codex_message("assistant", "Wrapped.")),
+        ]
+
+    def test_thread_exports_as_a_resumable_claude_transcript(self):
+        self.write_rollout(self.sample_rollout())
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stats = json.loads(result.stdout)
+        self.assertEqual(stats["messages"], 4)
+        self.assertEqual([r["type"] for r in records], ["user", "assistant", "user", "assistant"])
+        # One chain, every record naming the new conversation and this folder.
+        self.assertIsNone(records[0]["parentUuid"])
+        for before, after in zip(records, records[1:]):
+            self.assertEqual(after["parentUuid"], before["uuid"])
+        for record in records:
+            self.assertEqual(record["sessionId"], NEW_CLAUDE_ID)
+            self.assertEqual(record["cwd"], str(self.cwd.resolve()))
+            self.assertEqual(record["version"], "2.1.300")
+            self.assertEqual(record["gitBranch"], "cs/x")
+            self.assertFalse(record["isSidechain"])
+        for record in records[1::2]:
+            self.assertEqual(record["message"]["model"], "<synthetic>")
+            self.assertEqual(record["message"]["stop_reason"], "end_turn")
+            self.assertTrue(record["requestId"])
+        first = self.text_of(records[0])
+        self.assertTrue(first.startswith("[cs carried this conversation over from Codex thread " + THREAD_ID))
+        self.assertIn("4,000 characters", first)
+        self.assertTrue(first.endswith("what is the codename?"))
+        agent = self.text_of(records[1])
+        self.assertIn("Checking the notes.", agent)
+        self.assertIn("[tool call: exec]\ncat notes.txt", agent)
+        self.assertIn("[tool result]\nAMBER-FALCON " + "x" * (4000 - len("AMBER-FALCON ")), agent)
+        self.assertIn("[cs cut the remaining 1,013 characters]", agent)
+        self.assertIn('[tool call: shell]\n{"cmd": "ls"}', agent)
+        self.assertIn("[tool result]\nnotes.txt", agent)
+        self.assertIn("The codename is AMBER-FALCON.", agent)
+        self.assertEqual(self.text_of(records[2]), "$wrap")
+        whole = json.dumps(records)
+        for absent in ("SECRET DEVELOPER TEXT", "ENCRYPTED REASONING", "AGENTS.md", "environment_context",
+                       "FUTURE ITEM", "EVENT DUPLICATE", "<skill>"):
+            self.assertNotIn(absent, whole)
+        self.assertEqual(os.stat(self.root / "carried.jsonl").st_mode & 0o777, 0o600)
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".carried")], [])
+
+    def test_compaction_keeps_only_what_codex_kept(self):
+        lines = self.sample_rollout()[:7] + [
+            rollout_line("compacted", {"message": "", "replacement_history": [
+                codex_message("user", "<environment_context>\n</environment_context>"),
+                codex_message("user", "summary: the codename question was answered"),
+                {"type": "reasoning", "encrypted_content": "X"},
+                codex_message("assistant", "Kept answer.")]}),
+            rollout_line("response_item", codex_message("user", "after compaction")),
+        ]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        texts = [self.text_of(r) for r in records]
+        self.assertEqual(len(texts), 3)
+        self.assertTrue(texts[0].endswith("summary: the codename question was answered"))
+        self.assertEqual(texts[1], "Kept answer.")
+        self.assertEqual(texts[2], "after compaction")
+        self.assertNotIn("Checking the notes.", json.dumps(records))
+
+    def test_summary_only_compaction_starts_from_the_summary(self):
+        self.write_rollout(self.sample_rollout()[:7] + [
+            rollout_line("compacted", {"message": "Earlier: codename work."}),
+            rollout_line("response_item", codex_message("assistant", "Next step."))])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([r["type"] for r in records], ["user", "assistant"])
+        self.assertIn("[Summary of the earlier conversation]\nEarlier: codename work.", self.text_of(records[0]))
+
+    def test_a_thread_that_starts_with_the_agent_gets_a_user_note_first(self):
+        self.write_rollout([rollout_line("response_item", codex_message("assistant", "Hello."))])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([r["type"] for r in records], ["user", "assistant"])
+        self.assertTrue(self.text_of(records[0]).startswith("[cs carried"))
+
+    def test_clip_is_adjustable(self):
+        self.write_rollout(self.sample_rollout())
+        result, records = self.export("--clip", "5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[tool result]\nAMBER\n[cs cut the remaining", self.text_of(records[1]))
+        self.assertIn("first 5 characters", self.text_of(records[0]))
+
+    def test_a_thread_with_nothing_to_carry_writes_nothing(self):
+        self.write_rollout(self.sample_rollout()[:3])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"messages": 0, "characters": 0})
+        self.assertEqual(records, [])
+
+    def test_a_thread_without_saved_history_is_named(self):
+        result, records = self.export()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("no saved history for thread " + THREAD_ID, result.stderr)
+        self.assertEqual(records, [])
+
+    def test_archived_and_newest_rollouts_are_found(self):
+        old = self.write_rollout([rollout_line("response_item", codex_message("user", "old copy"))])
+        archived = self.codex_home / "archived_sessions"
+        archived.mkdir()
+        newer = archived / old.name
+        newer.write_text(rollout_line("response_item", codex_message("user", "archived copy")) + "\n")
+        os.utime(old, (1, 1))
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.text_of(records[0]).endswith("archived copy"))
+
+    def test_export_arguments_are_checked(self):
+        base = [sys.executable, str(HELPER), "--export-claude", "--thread-id", THREAD_ID,
+                "--cwd", str(self.cwd), "--out", str(self.root / "o.jsonl")]
+        for extra in ([], ["--session-id", "not-a-uuid"]):
+            result = subprocess.run(base + extra, env=self.env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--session-id", result.stderr)
+
+    def sample_transcript(self):
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        lines = [
+            json.dumps({"type": "custom-title", "customTitle": "x", "sessionId": CLAUDE_ID}),
+            claude_record("user", "OLD BRANCH PROMPT", "u0", None),
+            claude_record("user", "<command-name>/color</command-name>\n<command-args>blue</command-args>",
+                          "u1", None),
+            claude_record("user", "<local-command-stdout>Session color set</local-command-stdout>", "u2", "u1"),
+            claude_record("user", "Caveat: generated by local commands", "u3", "u2", isMeta=True),
+            claude_record("user", "find the budget<system-reminder>REMINDER TEXT</system-reminder>", "u4", "u3"),
+            json.dumps({"type": "attachment", "uuid": "a1", "parentUuid": "u4", "attachment": {"text": "HOOK CONTEXT"}}),
+            claude_record("assistant", [
+                {"type": "thinking", "thinking": "SECRET THINKING", "signature": "sig"},
+                {"type": "text", "text": "Reading notes."},
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "notes.txt"}}],
+                "x1", "a1"),
+            claude_record("assistant", "SIDECHAIN WORK", "s1", "x1", isSidechain=True),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "text", "text": "budget is 42<system-reminder>RESULT REMINDER</system-reminder>"},
+                {"type": "image", "source": {}}]}], "x2", "x1"),
+            claude_record("assistant", [{"type": "text", "text": "API ERROR"}], "x3", "x2", isApiErrorMessage=True),
+            claude_record("assistant", [{"type": "text", "text": "The budget is 42."}], "x4", "x3"),
+            # A rewind: the abandoned reply is off the newest message's path.
+            claude_record("user", "follow-up v1", "r1", "x4"),
+            claude_record("assistant", [{"type": "text", "text": "ABANDONED REPLY"}], "r2", "r1"),
+            claude_record("user", "follow-up v2", "r3", "x4"),
+            claude_record("assistant", [{"type": "text", "text": "Answer two."}], "r4", "r3"),
+            "{broken",
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_claude_transcript_is_read_along_the_live_branch(self):
+        path = self.sample_transcript()
+        result = subprocess.run([sys.executable, str(HELPER), "--read-claude", str(path)], env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["messages"], 4)
+
+    def test_claude_transcript_starts_a_thread_after_the_context(self):
+        path = self.sample_transcript()
+        result = self.run_helper('', '--history-from-claude', str(path), '--history-source', CLAUDE_ID)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, THREAD_ID + '\n')
+        requests = [r['request'] for r in self.requests()]
+        injections = [r['params']['items'] for r in requests if r['method'] == 'thread/inject_items']
+        self.assertEqual(len(injections), 2)
+        self.assertEqual(injections[0][0]['content'][0]['text'], self.instructions.read_text())
+        items = injections[1]
+        self.assertEqual([(i['role'], i['content'][0]['type']) for i in items], [
+            ('developer', 'input_text'), ('user', 'input_text'), ('assistant', 'output_text'),
+            ('user', 'input_text'), ('assistant', 'output_text')])
+        texts = [i['content'][0]['text'] for i in items]
+        self.assertTrue(texts[0].startswith('[cs carried this conversation over from Claude conversation ' + CLAUDE_ID))
+        self.assertIn("Claude's thinking is not included", texts[0])
+        self.assertEqual(texts[1], '/color blue\n\nfind the budget')
+        self.assertIn('Reading notes.', texts[2])
+        self.assertIn('[tool call: Read]\n{"file_path": "notes.txt"}', texts[2])
+        self.assertIn('[tool result]\nbudget is 42\n[image]', texts[2])
+        self.assertIn('The budget is 42.', texts[2])
+        self.assertEqual(texts[3], 'follow-up v2')
+        self.assertEqual(texts[4], 'Answer two.')
+        whole = json.dumps(items)
+        for absent in ('OLD BRANCH', 'Session color set', 'Caveat', 'REMINDER', 'HOOK CONTEXT',
+                       'SECRET THINKING', 'SIDECHAIN', 'API ERROR', 'ABANDONED', 'v1'):
+            self.assertNotIn(absent, whole)
+        # Injection precedes the durability check in a fresh process.
+        methods = [r['method'] for r in requests]
+        self.assertLess(methods.index('thread/unsubscribe'), methods.index('thread/resume'))
+
+    def test_claude_compaction_starts_at_its_summary(self):
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        path.write_text("\n".join([
+            claude_record("user", "BEFORE COMPACTION", "p1", None),
+            json.dumps({"type": "system", "subtype": "compact_boundary", "uuid": "b1", "parentUuid": None,
+                        "logicalParentUuid": "p1"}),
+            claude_record("user", "This session is being continued. Summary: budget 42.", "c1", "b1",
+                          isCompactSummary=True),
+            claude_record("assistant", [{"type": "text", "text": "Continuing."}], "c2", "c1"),
+        ]) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        items = [r['request']['params']['items'] for r in self.requests()
+                 if r['request']['method'] == 'thread/inject_items'][1]
+        texts = [i['content'][0]['text'] for i in items]
+        self.assertEqual(texts[1:], ['This session is being continued. Summary: budget 42.', 'Continuing.'])
+        # Without --history-source the note names the transcript's own ID.
+        self.assertIn(CLAUDE_ID, texts[0])
+
+    def test_large_conversations_are_injected_in_order_in_batches(self):
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        lines, parent = [], None
+        for n in range(12):
+            uid = "m%d" % n
+            if n % 2 == 0:
+                lines.append(claude_record("user", "prompt %d " % n + "p" * 120000, uid, parent))
+            else:
+                lines.append(claude_record("assistant", [{"type": "text", "text": "reply %d" % n}], uid, parent))
+            parent = uid
+        path.write_text("\n".join(lines) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        batches = [r['request']['params']['items'] for r in self.requests()
+                   if r['request']['method'] == 'thread/inject_items'][1:]
+        self.assertGreater(len(batches), 1)
+        for batch in batches:
+            self.assertLessEqual(len(json.dumps(batch)), 512 * 1024 + 130000)
+        texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
+        self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(12)])
+
+    def test_nothing_to_carry_starts_no_server(self):
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        path.write_text(claude_record("user", "meta only", "u1", None, isMeta=True) + "\n")
+        self.assert_failure('', 'nothing to carry over', '--history-from-claude', str(path))
+        self.assertFalse((self.root / 'pids').exists())
+        result = subprocess.run([sys.executable, str(HELPER), "--read-claude", str(path)], env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"messages": 0, "characters": 0})
+
+    def test_carrying_needs_a_new_thread_and_a_readable_transcript(self):
+        path = self.sample_transcript()
+        result = self.run_helper('', '--history-from-claude', str(path), '--thread-id', THREAD_ID)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--history-from-claude starts a new thread', result.stderr)
+        self.assert_failure('', 'could not read bootstrap inputs', '--history-from-claude', str(self.root / 'missing.jsonl'))
+        self.assertFalse((self.root / 'pids').exists())
+        result = subprocess.run([sys.executable, str(HELPER), "--read-claude", str(self.root / "missing.jsonl")],
+                                env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not read the Claude transcript", result.stderr)
 
 
 if __name__ == '__main__':

@@ -2,6 +2,8 @@
 # ABOUTME: Creates or refreshes an exact Codex thread, or reads its newest turn or project
 # ABOUTME: model settings, without a model.
 # ABOUTME: Persists CS context through app-server and verifies it in a fresh process.
+# ABOUTME: Also carries a conversation across engines: a thread out as a Claude transcript,
+# ABOUTME: a Claude transcript into a new thread.
 """Requires Codex app-server's experimental thread/inject_items API."""
 
 import argparse
@@ -14,7 +16,9 @@ import selectors
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 
 
 class BootstrapError(Exception):
@@ -179,6 +183,359 @@ def exact_id(result, expected=None):
     return value
 
 
+# A plain reopen under the other engine can continue that engine's newer
+# conversation (lib/47-transplant.sh). Both native formats are private, so each
+# record is checked as it is read and anything unknown is skipped, never fatal.
+# What crosses: the user's and the agent's text and every tool call, each tool
+# result cut to its first CLIP characters. What stays: Codex's encrypted
+# reasoning, Claude's thinking, and the context each engine injects for itself.
+DEFAULT_CLIP = 4000
+# thread/inject_items requests are kept to about this many bytes each.
+INJECT_BATCH = 512 * 1024
+# Context Codex adds as user messages: the AGENTS.md text, and items it wraps
+# whole in one tag (<environment_context>, <skill>, <user_instructions>, ...).
+CODEX_AGENTS = "# AGENTS.md instructions"
+TAG_WRAPPED = re.compile(r"\A\s*<([A-Za-z_][\w-]*)>.*</\1>\s*\Z", re.S)
+SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
+COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
+COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>")
+ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
+# Claude Code's own label for messages no model produced.
+CARRIED_MODEL = "<synthetic>"
+DEFAULT_CLAUDE_VERSION = "2.1.0"
+
+
+class History:
+    """User and agent messages in order. One agent message holds everything
+    the agent did between two user messages: its text, calls and results."""
+
+    def __init__(self):
+        self.messages = []
+
+    def add(self, role, text, timestamp=None):
+        if not isinstance(text, str) or not text.strip():
+            return
+        last = self.messages[-1] if self.messages else None
+        if last is not None and last["role"] == role:
+            last["parts"].append(text)
+        else:
+            self.messages.append({"role": role, "parts": [text], "timestamp": timestamp})
+
+    def reset(self):
+        self.messages = []
+
+    def export(self):
+        return [{"role": m["role"], "text": "\n\n".join(m["parts"]), "timestamp": m["timestamp"]}
+                for m in self.messages]
+
+
+def clipped(text, limit):
+    if limit and len(text) > limit:
+        return text[:limit] + "\n[cs cut the remaining {:,} characters]".format(len(text) - limit)
+    return text
+
+
+def tool_call(name, body):
+    if body is None:
+        body = ""
+    elif not isinstance(body, str):
+        body = json.dumps(body, ensure_ascii=False)
+    label = name if isinstance(name, str) and name else "tool"
+    return ("[tool call: " + label + "]\n" + body).rstrip()
+
+
+def tool_result(text, limit):
+    return "[tool result]\n" + clipped(text, limit)
+
+
+def history_stats(messages):
+    return json.dumps({"messages": len(messages),
+                       "characters": sum(len(m["text"]) for m in messages)})
+
+
+def carried_note(engine, native_id, limit):
+    source = ENGINE_NAMES.get(engine, engine)
+    kind = "thread" if engine == "codex" else "conversation"
+    hidden = "Codex's reasoning is" if engine == "codex" else "Claude's thinking is"
+    return ("[cs carried this conversation over from {} {} {}. Tool calls and their results appear "
+            "as text, each result cut to its first {:,} characters; {} not included. Those tools "
+            "were {}'s: use your own from here on.]").format(source, kind, native_id, limit, hidden, source)
+
+
+def write_private(path, text):
+    # Written beside its destination and renamed in, so no reader ever finds
+    # half a transcript under the final name.
+    path = Path(path)
+    fd, temp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, str(path))
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def codex_texts(content):
+    if isinstance(content, str):
+        return [content]
+    texts = []
+    for part in content if isinstance(content, list) else []:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str):
+            texts.append(part["text"])
+        elif part.get("type") in ("input_image", "output_image", "image"):
+            texts.append("[image]")
+    return texts
+
+
+def codex_injected(text):
+    stripped = text.lstrip()
+    return stripped.startswith(CODEX_AGENTS) or TAG_WRAPPED.match(stripped) is not None
+
+
+def codex_output(output):
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        return "\n".join(codex_texts(output))
+    if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
+        return codex_output(output["content"])
+    return "" if output is None else json.dumps(output, ensure_ascii=False)
+
+
+def codex_item(history, item, timestamp, limit):
+    if not isinstance(item, dict):
+        return
+    kind = item.get("type")
+    if kind == "message":
+        texts = codex_texts(item.get("content"))
+        if item.get("role") == "user":
+            history.add("user", "\n\n".join(t for t in texts if not codex_injected(t)), timestamp)
+        elif item.get("role") == "assistant":
+            history.add("assistant", "\n\n".join(texts), timestamp)
+        # Developer and system messages are Codex's own instructions.
+    elif kind == "function_call":
+        history.add("assistant", tool_call(item.get("name"), item.get("arguments")), timestamp)
+    elif kind == "custom_tool_call":
+        history.add("assistant", tool_call(item.get("name"), item.get("input")), timestamp)
+    elif kind in ("function_call_output", "custom_tool_call_output"):
+        history.add("assistant", tool_result(codex_output(item.get("output")), limit), timestamp)
+    elif kind == "local_shell_call":
+        action = item.get("action")
+        command = action.get("command") if isinstance(action, dict) else None
+        if isinstance(command, list):
+            command = " ".join(str(word) for word in command)
+        history.add("assistant", tool_call("shell", command if isinstance(command, str) else None), timestamp)
+    elif kind == "web_search_call":
+        action = item.get("action")
+        query = action.get("query") if isinstance(action, dict) else None
+        history.add("assistant", tool_call("web_search", query if isinstance(query, str) else None), timestamp)
+    # Reasoning (encrypted), tool lists and item kinds not known here stay behind.
+
+
+def codex_rollout(thread_id):
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    pattern = "rollout-*-" + thread_id + ".jsonl"
+    found = []
+    for folder in ("sessions", "archived_sessions"):
+        root = home / folder
+        if root.is_dir():
+            found.extend(path for path in root.rglob(pattern) if path.is_file())
+    if not found:
+        raise BootstrapError("Codex keeps no saved history for thread " + thread_id)
+    return max(found, key=lambda path: path.stat().st_mtime)
+
+
+def read_codex(path, limit):
+    history = History()
+    with open(str(path), encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            item, stamp = record.get("payload"), record.get("timestamp")
+            stamp = stamp if isinstance(stamp, str) else None
+            if record.get("type") == "compacted" and isinstance(item, dict):
+                # A compaction replaces what the model sees from here on: the
+                # retained history when Codex kept it, else its summary.
+                replacement, summary = item.get("replacement_history"), item.get("message")
+                if isinstance(replacement, list):
+                    history.reset()
+                    for entry in replacement:
+                        codex_item(history, entry, stamp, limit)
+                elif isinstance(summary, str) and summary.strip():
+                    history.reset()
+                    history.add("user", "[Summary of the earlier conversation]\n" + summary, stamp)
+            elif record.get("type") == "response_item":
+                codex_item(history, item, stamp, limit)
+    return history.export()
+
+
+def claude_blocks(content):
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+
+
+def claude_result_text(content):
+    # Claude Code's reminders ride on tool results; they were never the tool's.
+    parts = []
+    for block in claude_blocks(content):
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(SYSTEM_REMINDER.sub("", block["text"]).strip())
+        elif block.get("type") == "image":
+            parts.append("[image]")
+    return "\n".join(part for part in parts if part)
+
+
+def claude_user_text(text):
+    text = SYSTEM_REMINDER.sub("", text).strip()
+    if text.startswith(LOCAL_COMMAND_OUTPUT):
+        return ""
+    name = COMMAND_NAME.search(text)
+    if name:
+        arguments = COMMAND_ARGS.search(text)
+        return (name.group(1).strip() + " " + (arguments.group(1).strip() if arguments else "")).strip()
+    return text
+
+
+def claude_chain(records):
+    # The conversation as Claude Code sends it: from the newest message back
+    # through its parents. A rewind's abandoned branch is off this path, and a
+    # compaction's boundary has no parent, so the walk starts at its summary.
+    by_id, leaf = {}, None
+    for record in records:
+        record_id = record.get("uuid")
+        if not isinstance(record_id, str):
+            continue
+        by_id[record_id] = record
+        if record.get("type") in ("user", "assistant") and not record.get("isSidechain"):
+            leaf = record
+    chain, seen, node = [], set(), leaf
+    while node is not None and node["uuid"] not in seen:
+        seen.add(node["uuid"])
+        chain.append(node)
+        parent = node.get("parentUuid")
+        node = by_id.get(parent) if isinstance(parent, str) else None
+    chain.reverse()
+    return chain
+
+
+def read_claude(path, limit):
+    records = []
+    with open(str(path), encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    history = History()
+    for record in claude_chain(records):
+        message = record.get("message")
+        if not isinstance(message, dict) or record.get("isMeta") or record.get("isApiErrorMessage"):
+            continue
+        stamp = record.get("timestamp")
+        stamp = stamp if isinstance(stamp, str) else None
+        for block in claude_blocks(message.get("content")):
+            kind = block.get("type")
+            if record.get("type") == "user":
+                if kind == "text" and isinstance(block.get("text"), str):
+                    history.add("user", claude_user_text(block["text"]), stamp)
+                elif kind == "tool_result":
+                    history.add("assistant", tool_result(claude_result_text(block.get("content")), limit), stamp)
+                elif kind == "image":
+                    history.add("user", "[image]", stamp)
+            elif record.get("type") == "assistant":
+                if kind == "text":
+                    history.add("assistant", block.get("text"), stamp)
+                elif kind == "tool_use":
+                    history.add("assistant", tool_call(block.get("name"), block.get("input")), stamp)
+                # Thinking is signed for the model that wrote it and stays behind.
+    return history.export()
+
+
+def claude_transcript(messages, session_id, cwd, version, branch, note):
+    messages = list(messages)
+    if messages and messages[0]["role"] == "user":
+        messages[0] = dict(messages[0], text=note + "\n\n" + messages[0]["text"])
+    else:
+        messages.insert(0, {"role": "user", "text": note, "timestamp": None})
+    now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    lines, parent = [], None
+    for message in messages:
+        record_id = str(uuid.uuid4())
+        record = {"parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd,
+                  "sessionId": session_id, "version": version, "gitBranch": branch,
+                  "type": message["role"], "uuid": record_id, "timestamp": message["timestamp"] or now}
+        if message["role"] == "user":
+            record["message"] = {"role": "user", "content": message["text"]}
+        else:
+            record["message"] = {
+                "id": "msg_cs_" + uuid.uuid4().hex, "type": "message", "role": "assistant",
+                "model": CARRIED_MODEL, "content": [{"type": "text", "text": message["text"]}],
+                "stop_reason": "end_turn", "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0,
+                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            }
+            record["requestId"] = "req_cs_" + uuid.uuid4().hex
+        lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+        parent = record_id
+    return "\n".join(lines) + "\n"
+
+
+def export_claude(args):
+    # A Codex thread written out as a Claude Code transcript that
+    # `claude --resume <session id>` continues. Prints what it carried.
+    messages = read_codex(codex_rollout(args.thread_id), args.clip)
+    if messages:
+        cwd = str(Path(args.cwd).resolve(strict=True))
+        note = carried_note("codex", args.thread_id, args.clip)
+        write_private(args.out, claude_transcript(
+            messages, args.session_id, cwd, args.claude_version or DEFAULT_CLAUDE_VERSION,
+            args.git_branch or "", note))
+    return history_stats(messages)
+
+
+def read_claude_stats(args):
+    return history_stats(read_claude(args.read_claude, args.clip))
+
+
+def carried_items(messages, note):
+    items = [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": note}]}]
+    for message in messages:
+        if message["role"] == "user":
+            items.append({"type": "message", "role": "user",
+                          "content": [{"type": "input_text", "text": message["text"]}]})
+        else:
+            items.append({"type": "message", "role": "assistant",
+                          "content": [{"type": "output_text", "text": message["text"]}]})
+    return items
+
+
+def item_batches(items):
+    batch, size = [], 0
+    for item in items:
+        length = len(json.dumps(item))
+        if batch and size + length > INJECT_BATCH:
+            yield batch
+            batch, size = [], 0
+        batch.append(item)
+        size += length
+    if batch:
+        yield batch
+
+
 def bootstrap(args):
     # Codex refuses a CODEX_HOME that does not exist; name it rather than
     # starting a server whose explanation would stay private.
@@ -195,6 +552,14 @@ def bootstrap(args):
         raise BootstrapError("instructions file must not be empty")
     if len(instructions.encode("utf-8")) > MAX_MESSAGE // 2:
         raise BootstrapError("instructions file is too large")
+    # Read before any server starts, so an unreadable conversation creates no thread.
+    carried = []
+    if args.history_from_claude:
+        messages = read_claude(args.history_from_claude, args.clip)
+        if not messages:
+            raise BootstrapError("the Claude conversation has nothing to carry over")
+        source = args.history_source or Path(args.history_from_claude).stem
+        carried = carried_items(messages, carried_note("claude", source, args.clip))
     deadline = time.monotonic() + args.timeout
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
@@ -215,6 +580,9 @@ def bootstrap(args):
                 {"type": "input_text", "text": instructions},
             ]}],
         })
+        # The carried conversation follows the context, a batch at a time.
+        for batch in item_batches(carried):
+            server.request("thread/inject_items", {"threadId": thread_id, "items": batch})
         server.request("thread/unsubscribe", {"threadId": thread_id})
     # A successful start/injection response is insufficient proof of durability.
     with AppServer(args.codex_bin, cwd, deadline) as server:
@@ -277,33 +645,66 @@ def project_config(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--codex-bin", required=True)
-    parser.add_argument("--cwd", required=True)
+    parser.add_argument("--codex-bin")
+    parser.add_argument("--cwd")
     parser.add_argument("--instructions-file")
     parser.add_argument("--thread-id")
     parser.add_argument("--latest-turn", action="store_true",
                         help="print the thread's newest turn ID (empty for none) and change nothing")
     parser.add_argument("--project-config", action="store_true",
                         help="print, as JSON, the model settings a project layer sets for --cwd")
+    parser.add_argument("--export-claude", action="store_true",
+                        help="write --thread-id's saved history to --out as a Claude transcript for --session-id")
+    parser.add_argument("--read-claude", metavar="TRANSCRIPT",
+                        help="print, as JSON, what a Claude transcript would carry into a thread")
+    parser.add_argument("--history-from-claude", metavar="TRANSCRIPT",
+                        help="carry a Claude transcript into the new thread, after the instructions")
+    parser.add_argument("--history-source", help="the Claude conversation ID the carried note names")
+    parser.add_argument("--session-id")
+    parser.add_argument("--out")
+    parser.add_argument("--claude-version")
+    parser.add_argument("--git-branch")
+    parser.add_argument("--clip", type=int, default=DEFAULT_CLIP,
+                        help="characters of each tool result to carry (default %(default)s)")
     parser.add_argument("--timeout", type=float, default=30)
     args = parser.parse_args()
     if not math.isfinite(args.timeout) or not 0 < args.timeout <= 300:
         parser.error("--timeout must be between 0 and 300 seconds")
+    if args.clip < 1:
+        parser.error("--clip must be a positive number of characters")
     if args.thread_id is not None and not THREAD_ID.fullmatch(args.thread_id):
         parser.error("--thread-id must be an exact Codex UUID")
-    if args.latest_turn and args.thread_id is None:
-        parser.error("--latest-turn needs --thread-id")
-    if args.project_config and (args.latest_turn or args.thread_id is not None):
-        parser.error("--project-config reads no thread")
-    if not args.latest_turn and not args.project_config and args.instructions_file is None:
-        parser.error("--instructions-file is required")
+    if args.export_claude:
+        if args.thread_id is None or args.out is None or args.cwd is None:
+            parser.error("--export-claude needs --thread-id, --cwd and --out")
+        if args.session_id is None or not THREAD_ID.fullmatch(args.session_id):
+            parser.error("--export-claude needs --session-id, a UUID")
+    elif args.read_claude is not None:
+        if args.thread_id is not None or args.latest_turn or args.project_config:
+            parser.error("--read-claude reads no thread")
+    else:
+        if args.codex_bin is None or args.cwd is None:
+            parser.error("--codex-bin and --cwd are required")
+        if args.latest_turn and args.thread_id is None:
+            parser.error("--latest-turn needs --thread-id")
+        if args.project_config and (args.latest_turn or args.thread_id is not None):
+            parser.error("--project-config reads no thread")
+        if not args.latest_turn and not args.project_config and args.instructions_file is None:
+            parser.error("--instructions-file is required")
+        if args.history_from_claude is not None and (
+                args.thread_id is not None or args.latest_turn or args.project_config):
+            parser.error("--history-from-claude starts a new thread")
 
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        if args.project_config:
+        if args.export_claude:
+            printed = export_claude(args)
+        elif args.read_claude is not None:
+            printed = read_claude_stats(args)
+        elif args.project_config:
             printed = project_config(args)
         else:
             printed = latest_turn(args) if args.latest_turn else bootstrap(args)
@@ -315,6 +716,8 @@ def main():
         message = str(exc) if isinstance(exc, BootstrapError) else (
             "could not read the thread's turns" if args.latest_turn
             else "could not read the project's configuration" if args.project_config
+            else "could not write the Claude transcript" if args.export_claude
+            else "could not read the Claude transcript" if args.read_claude is not None
             else "could not read bootstrap inputs")
         print("cs-codex-thread: " + message, file=sys.stderr)
         return 1
