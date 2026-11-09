@@ -1051,6 +1051,7 @@ test_spawn_delivers_its_brief_as_the_first_prompt_once() {
     assert_file_exists "$seed" "the brief is staged" || return 1
     assert_file_contains "$AGY_TMUX_LOG" " --engine 'antigravity'" "the window opens under agy" || return 1
     token=$(head -1 "$seed")
+    assert_file_contains "$AGY_TMUX_LOG" "'CS_SPAWN_TOKEN=$token'" "the window's open carries the seed's token" || return 1
     output=$(CS_SPAWN_TOKEN=$token "$CS_BIN" worker --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir worker)
     assert_eq '# Brief for the test worker' "$(cat "$dir/.cs/brief.md")" "the brief is written in" || return 1
