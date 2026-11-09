@@ -1097,18 +1097,25 @@ test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt() {
 }
 
 # agy hosts no walk-away queue: a seed with tasks (staged under Claude, its
-# window dead) is refused at the open and stays staged for a Claude open.
-test_a_spawn_seed_with_tasks_is_refused_and_kept() {
-    local output status=0 seed="$CS_SESSIONS_ROOT/.spawn/worker.seed"
+# window dead) is not taken, nor asked about, at an agy open. The open goes
+# on without it and names the Claude open that takes it.
+test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/worker.seed"
     output=$("$CS_BIN" worker --engine antigravity 2>&1) || { echo "$output"; return 1; }
     _stage_seed worker "$AGY_SPAWN_TOKEN" 'run the tests'
-    : > "$AGY_LOG"
-    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" worker 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: a seed with tasks must be refused: $output"; return 1; }
-    assert_output_contains "$output" 'Antigravity does not host the walk-away task queue' "says why" || return 1
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" worker 2>&1) \
+        || { echo "  FAIL: the open must go on: $output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "agy starts without a kickoff" || return 1
+    assert_output_contains "$output" 'only Claude runs the walk-away queue' "the open says why" || return 1
+    assert_output_contains "$output" 'cs worker --engine claude' "and names the open that takes it" || return 1
     assert_file_exists "$seed" "the seed stays staged" || return 1
-    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
-    assert_not_exists "$(_session_dir worker)/.cs/brief.md" "nothing is delivered"
+    assert_not_exists "$(_session_dir worker)/.cs/brief.md" "nothing is delivered" || return 1
+    _stage_seed foreign "$AGY_SPAWN_TOKEN" 'run the tests'
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" foreign --engine antigravity 2>&1 </dev/null) \
+        || { echo "  FAIL: the open must go on: $output"; return 1; }
+    assert_output_not_contains "$output" 'A spawn seed is staged for this session:' "a seed it cannot take is not offered" || return 1
+    assert_output_contains "$output" 'only Claude runs the walk-away queue' "the open says why" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/foreign.seed" "the foreign seed stays staged"
 }
 
 # A seed without its window's token is shown and asked about on a terminal;
@@ -1547,7 +1554,7 @@ run_test test_spawn_refuses_a_task_queue_before_staging_anything
 run_test test_spawn_delivers_its_brief_as_the_first_prompt_once
 run_test test_a_spawn_run_left_before_its_first_turn_never_replays_the_kickoff
 run_test test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt
-run_test test_a_spawn_seed_with_tasks_is_refused_and_kept
+run_test test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open
 run_test test_a_foreign_spawn_seed_is_left_staged_without_a_terminal
 run_test test_a_rotation_open_leaves_a_spawn_seed_staged
 run_test test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged

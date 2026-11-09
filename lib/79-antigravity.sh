@@ -412,10 +412,14 @@ $prompt"
     # work, which cs cannot tell (rotation treats a missing consumer the same
     # way), and the brief stays for the agent to read. agy takes one first
     # prompt, so a rotation handoff this open carries keeps the seed staged
-    # for a later open, as does an agy that cannot take the prompt.
+    # for a later open, as does an agy that cannot take the prompt. A seed
+    # with tasks waits for a Claude open, unoffered, since taking it here
+    # could only fail.
     local spawn_kick="" spawn_wait=""
     if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
-        if [ -n "$rotation_handoff" ]; then
+        if _spawn_seed_has_tasks "$SESSIONS_ROOT/.spawn/$session_name.seed"; then
+            spawn_wait="it carries tasks and only Claude runs the walk-away queue (take it with: cs $session_name --engine claude)"
+        elif [ -n "$rotation_handoff" ]; then
             spawn_wait="this open carries the rotation handoff"
         elif ! _antigravity_flags_listed "$agy_bin" --prompt-interactive 2>/dev/null; then
             spawn_wait="the Antigravity CLI at $agy_bin does not list --prompt-interactive in its --help (update it: agy update)"

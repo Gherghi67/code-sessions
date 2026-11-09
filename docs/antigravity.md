@@ -209,6 +209,7 @@ records nothing.
 | --- | --- |
 | `cs <name>` on a terminal, once a conversation is bound | asks `Continue previous Antigravity conversation? [Y/n]`; `y` or Enter adds `--conversation <id>`, `n` starts a new conversation |
 | `cs <name>` unattended (no terminal) | `--conversation <id>` |
+| `cs <name>` in the spawn's own window, its seed staged | `--conversation <id>` when one is bound, then `--prompt-interactive <kickoff>`; asks nothing ([Spawn briefs](#spawn-briefs)) |
 | `cs <name> --resume` | `--conversation <id>`; requires a bound conversation or a recoverable handoff receipt |
 | `cs <name> --fresh` | a new conversation |
 
@@ -348,7 +349,7 @@ Skills that check before relying on a capability refuse cleanly
 
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
-| The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is refused at an Antigravity open and stays staged. |
+| The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | `-finish` (`feature_finish`) | Refused before the session opens. Run it under Claude or Codex. A retire refusal for a feature of an Antigravity base names `cs <base> --engine claude -finish`. |
 | Mail delivery (`mail_delivery`) | `cs -msg` still works from the shell. Nothing surfaces mail inside `agy`. |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
@@ -367,7 +368,12 @@ session in a tmux window. That window's open writes the brief to
 `agy` with the kickoff as its first prompt (`--prompt-interactive`): read the
 brief, begin, and report back with `cs -msg <spawner> -k result "..."`. Where
 the session already has a conversation, the window resumes it with the
-kickoff and asks nothing, since nobody sits at it.
+kickoff and asks nothing, since nobody sits at it. That holds while a rotation
+handoff is pending too, as Enter would: the window disarms the rotation marker
+and leaves the handoff unconsumed, and the next attended open still offers it
+with `r`. Resuming with the kickoff passes `--conversation <id>` and
+`--prompt-interactive` together. agy 1.5.2's `--help` lists both and states
+no conflict between them, but no live run has combined them yet.
 
 The kickoff is sent at most once. The seed is spent before `agy` starts, so no
 reopen sends it again. When a run ends before its first model call, cs cannot
@@ -376,11 +382,19 @@ It says so and leaves the brief in place for the agent to read at the next open.
 Codex instead keeps a receipt and retries, because its thread history shows
 whether a turn started.
 
+The cs hook is that evidence, and the binding a reopen needs. Without a usable
+one (missing, switched off in `~/.gemini/config/config.json`, or naming a cs
+that cannot run), the brief still goes in, since cs spends the seed itself.
+The open names the hook instead of doubting the kickoff, and says the next
+open starts a new conversation that knows nothing of the spawn, with the brief
+still in `.cs/brief.md`.
+
 `agy` takes one first prompt. An open that carries a rotation handoff keeps
 the seed staged for a later open, and so does an `agy` whose `--help` does not
-list `--prompt-interactive`. Both say so. An open outside the spawn's window
-shows the seed and asks before taking it, as under Claude and Codex. Without
-a terminal, it leaves the seed staged.
+list `--prompt-interactive`. A seed with tasks, staged for Claude, also stays
+staged, unoffered, for `cs <name> --engine claude`. All three say so. An open
+outside the spawn's window shows any other seed and asks before taking it, as
+under Claude and Codex. Without a terminal, it leaves the seed staged.
 
 ## Recovery copies
 

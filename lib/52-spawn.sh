@@ -40,6 +40,16 @@ _spawn_brief_mark_line() {  # seed
     awk -v m="$SPAWN_BRIEF_MARK" 'NR > 2 && $0 == m { print NR; exit }' "$1"
 }
 
+# Whether a staged seed carries a task: a line after the token and the
+# spawner, before any brief marker, with more than whitespace, as the
+# consumer counts them. Read without claiming, for a launch that cannot run
+# tasks to leave the seed alone before it writes anything.
+_spawn_seed_has_tasks() {  # seed
+    awk -v m="$SPAWN_BRIEF_MARK" '
+        NR > 2 { if ($0 == m) exit; if ($0 ~ /[^[:space:]]/) { found = 1; exit } }
+        END { exit !found }' "$1"
+}
+
 # The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
 # session name, and of what the launch sets aside when the seed ages out, one
 # per line. Nothing stages or reads a .brief.md name; a session's removal still
