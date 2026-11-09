@@ -66,6 +66,9 @@ hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
 fire() {  # event, payload
     local cmd
     [ -f "$hooks" ] || return 0
+    # A plugin switched off in agy's config runs no hooks, which is what
+    # doctor and the rotation preflight take enabled=false to mean.
+    [ "$(jq -r '.plugins.cs.enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" != false ] || return 0
     jq -r --arg e "$1" '.[] | (.[$e] // [])[] | (.hooks // [.])[] | .command' "$hooks" \
         | while IFS= read -r cmd; do
             printf '%s' "$2" | (cd "${hooks%/*}" && sh -c "$cmd") >> "$AGY_HOOK_OUT" 2>&1
@@ -1150,6 +1153,32 @@ test_the_spawns_own_window_resumes_with_the_kickoff_without_asking() {
         "it resumes the conversation with the kickoff"
 }
 
+# A hook switched off in agy's config, or missing, never marks the run, so
+# the brief still goes in but the open neither doubts the kickoff nor
+# promises a reopen. The conversation is not recorded, so the next open
+# starts one that knows nothing of the spawn, and the open names the brief.
+test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt() {
+    local output
+    mkdir -p "$HOME/.gemini/config"
+    printf '{"plugins": {"cs": {"enabled": false}}}\n' > "$HOME/.gemini/config/config.json"
+    _stage_seed off "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" off --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" "a switched-off hook still gets the kickoff" || return 1
+    assert_output_contains "$output" 'is switched off or cannot run cs' "the open names the hook" || return 1
+    assert_output_not_contains "$output" 'a reopen resumes this conversation' "and promises no reopen" || return 1
+    assert_output_not_contains "$output" 'no turn start' "and doubts no kickoff over a mark the hook cannot make" || return 1
+    assert_output_contains "$output" 'the next open starts a new conversation' "it says the spawn is not resumed" || return 1
+    assert_output_contains "$output" 'brief stays in .cs/brief.md' "and points at the brief" || return 1
+    rm -f "$HOME/.gemini/config/config.json"
+    rm -rf "$HOME/.gemini/config/plugins/cs"
+    _stage_seed gone "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" gone --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" "a missing hook still gets the kickoff" || return 1
+    assert_output_contains "$output" 'The cs hook for Antigravity is missing' "the open names the hook" || return 1
+    assert_output_not_contains "$output" 'no turn start' "and doubts no kickoff" || return 1
+    assert_output_contains "$output" 'brief stays in .cs/brief.md' "and points at the brief"
+}
+
 test_finish_and_missing_handoff_are_refused() {
     local output status=0
     output=$("$CS_BIN" lander --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -1508,6 +1537,7 @@ run_test test_a_foreign_spawn_seed_is_left_staged_without_a_terminal
 run_test test_a_rotation_open_leaves_a_spawn_seed_staged
 run_test test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged
 run_test test_the_spawns_own_window_resumes_with_the_kickoff_without_asking
+run_test test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt
 run_test test_finish_and_missing_handoff_are_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_an_encrypted_session_is_refused_before_its_vault_opens

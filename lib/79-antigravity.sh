@@ -369,11 +369,17 @@ $prompt"
 
     # The binding comes from cs's hook, not from here: a run that ends before
     # its conversation reaches the model leaves the binding as it was, so the
-    # next open never continues a conversation of another folder.
+    # next open never continues a conversation of another folder. A plugin
+    # switched off in agy's config, or one whose PreInvocation cannot run cs,
+    # binds nothing either, which the rotation preflight already knows.
     local reopens="a reopen resumes this conversation, and edits are autosaved for recovery" hooked=1
     if ! _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)"; then
         warn "The cs hook for Antigravity is missing from $(_antigravity_plugin_dir): this run's conversation is not recorded for a reopen, and its edits are not autosaved. Run setup.sh again, with agy installed, to add it."
         reopens="the cs hook is missing"
+        hooked=""
+    elif ! _antigravity_rotation_hook_ready; then
+        warn "The cs hook for Antigravity in $(_antigravity_plugin_dir) is switched off or cannot run cs: this run's conversation is not recorded for a reopen. cs -doctor names the fix."
+        reopens="the cs hook is off"
         hooked=""
     elif [ ! -r "$(_antigravity_plugin_dir)/scripts/autosave-commits.sh" ]; then
         warn "The cs hook for Antigravity has no recovery consumer in $(_antigravity_plugin_dir)/scripts: this run's edits are not autosaved. Run setup.sh again to add it."
@@ -437,6 +443,8 @@ $prompt"
     # the kickoff may not have arrived; it is not sent again either way.
     if [ -n "$spawn_kick" ] && [ -n "$hooked" ] && [ -n "$run_dir" ] && [ ! -e "$run_dir/bound" ]; then
         warn "cs saw no turn start in this run, so the spawn kickoff may not have reached Antigravity. It is not sent again; the brief stays in .cs/brief.md for the agent to read when you reopen: cs $session_name"
+    elif [ -n "$spawn_kick" ] && [ -z "$hooked" ]; then
+        warn "Without the cs hook this conversation was not recorded, so the next open starts a new conversation that knows nothing of the spawn. The brief stays in .cs/brief.md; point that conversation at it."
     fi
     return "$status"
 }
