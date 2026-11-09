@@ -12382,13 +12382,15 @@ _spawn_prepare_launch() {  # session_name, session_dir
     fi
 }
 
-# The walk-away queue is drained by Claude's hooks; the other engines take a
-# brief only, and a seed with tasks is refused before anything is staged or
-# written.
+# The walk-away queue is drained by Claude's hooks; every other engine, an
+# adapter added later included, takes a brief only, and a seed with tasks is
+# refused before anything is staged or written.
 _spawn_refuse_queue() {  # engine, suffix
     case "$1" in
+        claude) ;;
         codex) error "Codex does not host the walk-away task queue; use --brief without --task$2" ;;
         antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
+        *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;
     esac
 }
 
