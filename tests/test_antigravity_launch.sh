@@ -60,6 +60,8 @@ done
 # could: cs's marks must never write through it.
 [ -z "${AGY_PLANT_LINK:-}" ] \
     || ln -s "$AGY_PLANT_LINK" "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/seen-$conversation"
+[ -z "${AGY_PLANT_BOUND:-}" ] \
+    || ln -s "$AGY_PLANT_BOUND" "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/bound"
 [ -z "${AGY_PLANT_LOG:-}" ] \
     || { rm -f "$CS_SESSION_META_DIR/local/session.log"; ln -s "$AGY_PLANT_LOG" "$CS_SESSION_META_DIR/local/session.log"; }
 hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
@@ -113,7 +115,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_RAW_SWITCH
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -127,7 +129,7 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
-    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_RAW_SWITCH
+    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
     unset CS_TMUX_BIN AGY_TMUX_LOG
 }
 
@@ -1082,6 +1084,17 @@ test_a_spawn_run_left_before_its_first_turn_never_replays_the_kickoff() {
     assert_eq "" "$(_agy_argv)" "the next open sends no kickoff"
 }
 
+# The hook reads any bound entry, a dangling link included, as the run being
+# bound, and the open after the run reads it the same way.
+test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt() {
+    local output
+    _stage_seed linked "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN AGY_NO_TURN=1 AGY_PLANT_BOUND="$TEST_TMPDIR/nowhere" \
+        "$CS_BIN" linked --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" "the kickoff was sent" || return 1
+    assert_output_not_contains "$output" 'no turn start' "a bound link reads as bound, as the hook reads it"
+}
+
 # agy hosts no walk-away queue: a seed with tasks (staged under Claude, its
 # window dead) is refused at the open and stays staged for a Claude open.
 test_a_spawn_seed_with_tasks_is_refused_and_kept() {
@@ -1532,6 +1545,7 @@ run_test test_unknown_engine_errors_list_all_three
 run_test test_spawn_refuses_a_task_queue_before_staging_anything
 run_test test_spawn_delivers_its_brief_as_the_first_prompt_once
 run_test test_a_spawn_run_left_before_its_first_turn_never_replays_the_kickoff
+run_test test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt
 run_test test_a_spawn_seed_with_tasks_is_refused_and_kept
 run_test test_a_foreign_spawn_seed_is_left_staged_without_a_terminal
 run_test test_a_rotation_open_leaves_a_spawn_seed_staged

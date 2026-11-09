@@ -440,8 +440,10 @@ $prompt"
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
     fi
     # The hook marks the run bound at its first model call. Without the mark
-    # the kickoff may not have arrived; it is not sent again either way.
-    if [ -n "$spawn_kick" ] && [ -n "$hooked" ] && [ -n "$run_dir" ] && [ ! -e "$run_dir/bound" ]; then
+    # the kickoff may not have arrived; it is not sent again either way. Any
+    # entry, a dangling link included, is the mark, as the hook reads it.
+    if [ -n "$spawn_kick" ] && [ -n "$hooked" ] && [ -n "$run_dir" ] \
+        && [ ! -e "$run_dir/bound" ] && [ ! -L "$run_dir/bound" ]; then
         warn "cs saw no turn start in this run, so the spawn kickoff may not have reached Antigravity. It is not sent again; the brief stays in .cs/brief.md for the agent to read when you reopen: cs $session_name"
     elif [ -n "$spawn_kick" ] && [ -z "$hooked" ]; then
         warn "Without the cs hook this conversation was not recorded, so the next open starts a new conversation that knows nothing of the spawn. The brief stays in .cs/brief.md; point that conversation at it."
