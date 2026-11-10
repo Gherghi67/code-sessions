@@ -564,6 +564,10 @@ _launch_codex_bound() {
         if [ -n "$carry" ]; then
             printf "${DIM}Carried over the Claude conversation:${NC} %s ${DIM}(%s)${NC}\n" \
                 "${transplant_id:0:8}" "$transplant_size"
+            # codex resume opens the earlier thread outside cs: the binding
+            # stays on the carried one.
+            [ -z "$previous_id" ] \
+                || printf "${DIM}The earlier Codex conversation stays. To return to it:${NC} codex resume %s\n" "$previous_id"
         fi
     fi
     if [ -n "$recorded_id" ]; then

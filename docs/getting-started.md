@@ -111,17 +111,22 @@ The newest conversation here is Codex's: 01a1b1c4 (8 messages, ~29k tokens)
 messages, the agent's replies and every tool call come across, with each tool
 result cut to its first 4,000 characters. Codex's reasoning, Claude's thinking
 and the context each engine adds for itself stay behind. The new conversation
-replaces this engine's binding; the earlier one stays on disk, and `e`
-resumes it instead. `e` appears only when this engine has a conversation
-here. With a rotation handoff pending, `r` and `d` join the menu as they do
-on any reopen, and `d` carries over after retiring the handoff. The first turn
-after a carry-over reads the whole carried history uncached, so it costs about
-the token figure shown. A conversation that cannot be read is named in one
-line and the usual prompt follows. If Claude exits with an error before it
-opens the carried-over conversation, cs deletes it and the next reopen asks
-again; if Claude had already written to it, cs keeps it and prints the
-`claude --resume` line that continues it. `--resume`, a spawned open and an open
-without a terminal resume this engine's own conversation as before.
+replaces this engine's binding; the earlier one stays on disk. `e` resumes
+it instead; it appears only on this prompt, and only when this engine has a
+conversation here. After `y`, cs names the earlier conversation's full id and
+how to return to it: `/resume <id>` inside Claude, which moves the binding
+back, or `codex resume <id>`, which opens it outside cs while the binding
+stays on the carried thread. With a rotation handoff pending, `r` and `d`
+join the menu as they do on any reopen, and `d` carries over after retiring
+the handoff. The first turn after a carry-over reads the whole carried history
+uncached, so it costs roughly the token figure shown plus the engine's own
+context: the figure counts only the carried text, at four characters a token.
+A conversation that cannot be read is named in one line and the usual prompt
+follows. If Claude exits with an error before it opens the carried-over
+conversation, cs deletes it and the next reopen asks again; if Claude had
+already written to it, cs keeps it and prints the `claude --resume` line that
+continues it. `--resume`, a spawned open and an open without a terminal
+resume this engine's own conversation as before.
 Antigravity sessions and encrypted sessions are not offered a carry-over.
 `ccs research-notes -conversations` shows a carry-over as `rotated
 (transplant from codex:01a1b1c4)`. Keep one interactive owner open for a

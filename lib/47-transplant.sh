@@ -5,7 +5,8 @@
 # conversation, the one from before the switch, so the work done since stayed
 # behind. An attended open now offers the newer conversation instead: y carries
 # it over, converted by cs-codex-thread, as a new conversation that takes the
-# target engine's binding (the old one stays on disk, and e still resumes it).
+# target engine's binding (the old one stays on disk: e still resumes it, and
+# after y a line names it and the way back to it).
 # cs -switch never asks: its relaunch passes --from-handoff or --resume, and
 # keeps its handoff design. Spawned, --resume and unattended opens resume as
 # before.

@@ -577,6 +577,7 @@ test_claude_reopen_carries_the_newer_codex_conversation() {
     assert_output_contains "$output" "2 messages" "the offer says how much it carries" || return 1
     assert_output_contains "$output" "resume the earlier Claude conversation instead" "e is offered beside an earlier conversation" || return 1
     assert_output_contains "$output" "Carrying over the Codex conversation" "y says what it carries" || return 1
+    assert_output_contains "$output" "/resume $old_id" "y names the earlier conversation and the way back to it" || return 1
     new_id=$(_tp_claude_id "$session_dir")
     _is_uuid_shape "$new_id" || { echo "  FAIL: no new Claude binding: $new_id"; return 1; }
     [ "$new_id" != "$old_id" ] || { echo "  FAIL: y kept the earlier Claude conversation"; return 1; }
@@ -752,6 +753,7 @@ test_claude_first_open_after_codex_offers_the_carry_over() {
     output=$(CS_ASSUME_TTY=1 "$CS_BIN" codex-first --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
     assert_output_contains "$output" "The newest conversation here is Codex's" "an engine's first open still offers" || return 1
     assert_output_not_contains "$output" "earlier" "no e without an earlier conversation" || return 1
+    assert_output_not_contains "$output" "/resume" "no way back is named without an earlier conversation" || return 1
     new_id=$(_tp_claude_id "$session_dir")
     _is_uuid_shape "$new_id" || { echo "  FAIL: no binding: $new_id"; return 1; }
     assert_eq "--name codex-first --resume $new_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "y resumes the carried conversation" || return 1
@@ -805,6 +807,7 @@ test_codex_reopen_carries_the_newer_claude_conversation() {
     assert_output_contains "$output" "The newest conversation here is Claude's" "the offer names the newer conversation" || return 1
     assert_output_contains "$output" "resume the earlier Codex conversation instead" "e is offered beside the earlier thread" || return 1
     assert_output_contains "$output" "Carried over the Claude conversation" "y says what it carried" || return 1
+    assert_output_contains "$output" "codex resume $_tp_codex_thread" "y names the earlier thread and the way back to it" || return 1
     assert_file_contains "$CS_HELPER_LOG" "history-from-claude $transcript --history-source $claude_id" "the new thread carries the transcript" || return 1
     assert_file_not_contains "$CS_HELPER_LOG" "thread-id" "a carry-over starts a new thread" || return 1
     assert_eq "$_tp_carried_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the carried thread is bound" || return 1
@@ -817,6 +820,18 @@ test_codex_reopen_carries_the_newer_claude_conversation() {
         and .source == "transplant")' "$session_dir/.cs/timeline.jsonl" >/dev/null \
         || { echo "  FAIL: the carried thread's start is not recorded"; return 1; }
     assert_eq "$claude_id" "$(_tp_claude_id "$session_dir")" "the Claude binding is untouched" || return 1
+}
+
+test_codex_first_open_after_claude_names_no_earlier_thread() {
+    local output session_dir
+    output=$("$CS_BIN" claude-first --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    session_dir=$(_engine_session_dir claude-first)
+    _tp_write_transcript "$session_dir" "$(_tp_claude_id "$session_dir")"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" claude-first --engine codex <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Carried over the Claude conversation" "an engine's first open still carries over" || return 1
+    assert_output_not_contains "$output" "earlier" "no e without an earlier thread" || return 1
+    assert_output_not_contains "$output" "codex resume" "no way back is named without an earlier thread" || return 1
+    assert_eq "$_tp_carried_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the carried thread is bound" || return 1
 }
 
 test_codex_reopen_e_and_n_do_not_carry() {
@@ -893,6 +908,7 @@ run_test test_claude_first_open_after_codex_offers_the_carry_over
 run_test test_unreadable_codex_history_falls_back_to_the_usual_question
 run_test test_unattended_and_explicit_resume_never_carry_over
 run_test test_codex_reopen_carries_the_newer_claude_conversation
+run_test test_codex_first_open_after_claude_names_no_earlier_thread
 run_test test_codex_reopen_e_and_n_do_not_carry
 run_test test_codex_carry_failure_resumes_the_earlier_thread
 report_results

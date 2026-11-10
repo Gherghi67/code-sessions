@@ -1461,6 +1461,9 @@ EOF
                 "$transplant_from:$transplant_id"; then
                 printf "${DIM}Carrying over the %s conversation:${NC} %s ${DIM}(%s)${NC}\n" \
                     "$_t_label" "${transplant_id:0:8}" "$transplant_size"
+                # The way back: an in-app /resume rebinds through SessionStart.
+                [ -z "$claude_session_id" ] \
+                    || printf "${DIM}The earlier Claude conversation stays. To return to it, in Claude:${NC} /resume %s\n" "$claude_session_id"
                 export CS_CLAUDE_SESSION_ID="$transplant_uuid"
                 local rc=0
                 # shellcheck disable=SC2086
