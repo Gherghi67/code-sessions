@@ -1460,7 +1460,50 @@ test_codex_task_queue_spawn_refuses_before_staging_anything() {
     assert_not_exists "$FAKE_TMUX_DIR/session-exists" || return 1
 }
 
+# cs -spawn under an engine cs does not ship, for the refusals no shipped
+# engine reaches: bin/cs sourced without its closing main call, with a stub
+# adapter that declares the capabilities given. bash 3.2 sources nothing from
+# a process substitution, hence the copy.
+_spawn_under_a_stub_engine() {  # capabilities, cs -spawn arguments...
+    local caps="$1"
+    shift
+    [ "$(tail -n 1 "$CS_BIN")" = 'main "$@"' ] || { echo "  FAIL: bin/cs no longer ends with its main call"; return 1; }
+    sed '$d' "$CS_BIN" > "$TEST_TMPDIR/cs-functions.sh"
+    STUB_CAPS="$caps" bash -c '
+        source "$1"
+        shift
+        CS_ENGINE_IDS+=(stub)
+        _cs_stub_adapter_capabilities() { printf "%s\n" $STUB_CAPS; }
+        run_spawn "$@"
+    ' _ "$TEST_TMPDIR/cs-functions.sh" "$@"
+}
+
+# Only Claude's hooks drain the walk-away queue, so a new adapter that takes
+# a brief still refuses tasks, and nothing is staged.
+test_a_task_queue_is_refused_under_any_engine_but_claude() {
+    local out status=0
+    out=$(_spawn_under_a_stub_engine 'launch spawn_brief' worker --engine stub --task 'do something' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --task under an engine without the queue must be refused: $out"; return 1; }
+    assert_output_contains "$out" 'stub does not host the walk-away task queue; use --brief without --task' || return 1
+    assert_not_exists "$(SEED)" "no seed is staged" || return 1
+    assert_not_exists "$FAKE_TMUX_DIR/session-exists" "no window opens"
+}
+
+# An adapter without spawn_brief never consumes a seed: a brief for it is
+# refused before anything is staged.
+test_a_brief_is_refused_under_an_engine_without_spawn_brief() {
+    local out status=0
+    printf '# Brief\n' > "$TEST_TMPDIR/brief.md"
+    out=$(_spawn_under_a_stub_engine launch worker --engine stub --brief "$TEST_TMPDIR/brief.md" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a brief under an engine without spawn_brief must be refused: $out"; return 1; }
+    assert_output_contains "$out" 'stub takes no brief or task from cs yet' || return 1
+    assert_not_exists "$(SEED)" "no seed is staged" || return 1
+    assert_not_exists "$FAKE_TMUX_DIR/session-exists" "no window opens"
+}
+
 run_test test_spawn_propagates_the_selected_engine_and_inherits_the_current_run
 run_test test_codex_task_queue_spawn_refuses_before_staging_anything
+run_test test_a_task_queue_is_refused_under_any_engine_but_claude
+run_test test_a_brief_is_refused_under_an_engine_without_spawn_brief
 
 report_results

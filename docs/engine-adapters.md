@@ -35,8 +35,8 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
-`exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, and `engine_switch`
-([Antigravity sessions](antigravity.md)). These
+`exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
+and `spawn_brief` ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -311,7 +311,9 @@ Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 `~/.gemini/config/plugins/cs/`, and no status line or mail. Rotation uses `/exit` then a fresh
 managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
-for an engine without `spawn_brief` before staging a seed. Its
+for an engine without `spawn_brief` before staging a seed. Antigravity takes a brief but no
+`--task`, as Codex does: its launch consumes the seed through the shared reader and sends the
+kickoff once with `--prompt-interactive`. Its
 `files_changed` reads the payload of `agy`'s PostToolUse hook and keeps
 `write_file` and `edit_file` calls that succeeded. Its rule `.agents/rules/cs-session.md` counts as cs's own
 bookkeeping while it carries cs's mark (`_antigravity_rule_is_cs`,

@@ -160,7 +160,7 @@ the `/` menu and in the list the model reads.
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
 | `rotate` | Writes and arms the shared handoff, then asks you to `/exit` and reopen with `cs <name> --from-handoff`. |
-| `feature` | Checks `cs -engine supports spawn_brief` and stops before writing anything. |
+| `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail is not shown inside `agy`, so read it with `cs -msg`; `-finish` lands the feature only from a Claude or Codex open of the base. |
 | `finish`, `switch` | Run only when you type them. `switch` carries a handoff to Claude or Codex through a managed exit. `finish` checks `feature_finish` and stops in a cs session. Outside one, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from (see [Follow-ups](#follow-ups)). |
 
 - **Explicit-only skills.** `finish` and `switch` carry
@@ -209,6 +209,7 @@ records nothing.
 | --- | --- |
 | `cs <name>` on a terminal, once a conversation is bound | asks `Continue previous Antigravity conversation? [Y/n]`; `y` or Enter adds `--conversation <id>`, `n` starts a new conversation |
 | `cs <name>` unattended (no terminal) | `--conversation <id>` |
+| `cs <name>` in the spawn's own window, its seed staged | `--conversation <id>` when one is bound, then `--prompt-interactive <kickoff>`; asks nothing ([Spawn briefs](#spawn-briefs)) |
 | `cs <name> --resume` | `--conversation <id>`; requires a bound conversation or a recoverable handoff receipt |
 | `cs <name> --fresh` | a new conversation |
 
@@ -304,7 +305,7 @@ cs uses the exit/reopen route because its current hook contract does not
 identify a new main conversation separately from a subagent after the run
 has bound once. In-place `/clear` rotation and automatic terminal input are
 not implemented. Engine switching uses the managed exit described below.
-Spawn briefs and the capabilities below remain unavailable. Native approval settings and
+The capabilities listed under [Capabilities and limits](#capabilities-and-limits) remain unavailable. Native approval settings and
 explicit model/effort options follow the ordinary launch behavior.
 
 The route and initial-prompt flag were checked against agy 1.4.12's help,
@@ -340,14 +341,15 @@ Codex and Antigravity targets refuse encrypted sessions.
 ## Capabilities and limits
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
-`startup_context`, `recovery_autosave`, `memory_index`, `rotation`, and `engine_switch`.
+`startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
+and `spawn_brief`.
 `cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly
 ([Skills](#skills)).
 
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
-| Spawn briefs and task queues (`spawn_brief`) | `cs -spawn --engine antigravity` opens the session only; with `--brief` or `--task` it is refused before anything is staged. |
+| The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | `-finish` (`feature_finish`) | Refused before the session opens. Run it under Claude or Codex. A retire refusal for a feature of an Antigravity base names `cs <base> --engine claude -finish`. |
 | Mail delivery (`mail_delivery`) | `cs -msg` still works from the shell. Nothing surfaces mail inside `agy`. |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
@@ -356,6 +358,43 @@ Skills that check before relying on a capability refuse cleanly
 
 A feature worktree (`cs <base>@<feature> --engine antigravity`) launches like
 any other session, with its own rule and the shared exclude entry.
+
+## Spawn briefs
+
+`cs -spawn <name> --engine antigravity --brief <file>`, and the `feature`
+skill under `agy`, stage the brief as under the other engines and open the
+session in a tmux window. That window's open writes the brief to
+`.cs/brief.md`, records the spawner in `.cs/local/spawned-by`, and starts
+`agy` with the kickoff as its first prompt (`--prompt-interactive`): read the
+brief, begin, and report back with `cs -msg <spawner> -k result "..."`. Where
+the session already has a conversation, the window resumes it with the
+kickoff and asks nothing, since nobody sits at it. That holds while a rotation
+handoff is pending too, as Enter would: the window disarms the rotation marker
+and leaves the handoff unconsumed, and the next attended open still offers it
+with `r`. Resuming with the kickoff passes `--conversation <id>` and
+`--prompt-interactive` together. agy 1.5.2's `--help` lists both and states
+no conflict between them, but no live run has combined them yet.
+
+The kickoff is sent at most once. The seed is spent before `agy` starts, so no
+reopen sends it again. When a run ends before its first model call, cs cannot
+tell whether `agy` did any work, as with a rotation that records no consumer.
+It says so and leaves the brief in place for the agent to read at the next open.
+Codex instead keeps a receipt and retries, because its thread history shows
+whether a turn started.
+
+The cs hook is that evidence, and the binding a reopen needs. Without a usable
+one (missing, switched off in `~/.gemini/config/config.json`, or naming a cs
+that cannot run), the brief still goes in, since cs spends the seed itself.
+The open names the hook instead of doubting the kickoff, and says the next
+open starts a new conversation that knows nothing of the spawn, with the brief
+still in `.cs/brief.md`.
+
+`agy` takes one first prompt. An open that carries a rotation handoff keeps
+the seed staged for a later open, and so does an `agy` whose `--help` does not
+list `--prompt-interactive`. A seed with tasks, staged for Claude, also stays
+staged, unoffered, for `cs <name> --engine claude`. All three say so. An open
+outside the spawn's window shows any other seed and asks before taking it, as
+under Claude and Codex. Without a terminal, it leaves the seed staged.
 
 ## Recovery copies
 
@@ -411,7 +450,7 @@ that fires the plugin's hooks with payloads of the measured shape.
 ## Follow-ups
 
 These come later as separate changes: the status line, mail
-delivery, in-place `/clear` rotation, spawn briefs, `-finish`, and encrypted sessions.
+delivery, in-place `/clear` rotation, `-finish`, and encrypted sessions.
 
 - When `-finish` comes, the finish skill needs its own folder to reach
   `scripts/finish.sh`. Whether `agy` gives it that folder is not known. Its

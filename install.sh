@@ -2079,7 +2079,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "97caf763317dce0762bee64aab57322aa4c147125064bc4af486182d32df7bf9  bin/cs"
+    "ad13c0112613dc803f037a66c3bb7a57c78e22620bfb2c55cc829df7524cdaa7  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "01988a1eedb8376080aa4d324f321137514571ab1a1d4dfcb8cc998c678ab8bf  bin/cs-codex-thread"
     "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"
@@ -2106,7 +2106,7 @@ CS_PAYLOAD_SHA256=(
     "972c9bd13588bed5bd03eaea310b65505f715999cd19110da11e65439fe5b32b  skills/rotate/SKILL.md"
     "f9a660d2ffa1086c381b7d15f1a68804836bccac3663bdd67fbc983de4dd48c3  skills/switch/SKILL.md"
     "f0bbd22f95fb24e4d6b5ece9542ec94823839716de059b15f0e2757879bcb5d3  skills/finish/SKILL.md"
-    "9d8a52aba840d5ed74e092fdec889ba60e8cc49d04d9cce9f0b85e97a3279cee  skills/feature/SKILL.md"
+    "539b6bd3cc7962e4dfa449899d3a01db49423d7309d8dbd20a34545b541c7a2d  skills/feature/SKILL.md"
     "6da3554cc3215ad0d4c66fe2956f275dbd424fb49d90a23c81ca9a092bf28a6c  skills/write-as-me/SKILL.md"
     "96a5cdb7d563d4360dd58f7ad91ce55dbbe5cde28d141d5e2aeb13ae9483b4ad  skills/checkpoint/SKILL.md"
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
