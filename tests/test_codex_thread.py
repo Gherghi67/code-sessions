@@ -549,6 +549,33 @@ class TransplantTests(HelperFixture):
         self.assertEqual(os.stat(self.root / "carried.jsonl").st_mode & 0o777, 0o600)
         self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".carried")], [])
 
+    def test_only_the_context_codex_adds_stays_behind(self):
+        # Tags seen whole in real rollouts. The first group is Codex's own;
+        # the second holds the user's words, as does a prompt pasted in a tag.
+        context = ["environment_context", "user_instructions", "skill", "turn_aborted", "recommended_plugins",
+                   "guardian_tool_descriptions", "external_codex_apps_open_page", "node_repl_review_evidence"]
+        words = {
+            "task": "<task>\nrefactor the WORDS-1 parser\n</task>",
+            "send_user_message_question_reply":
+                "<send_user_message_question_reply>WORDS-2 option B</send_user_message_question_reply>",
+            "user_shell_command": "<user_shell_command>\n<command>ls WORDS-3</command>\n"
+                                  "<result>\nnotes.txt\n</result>\n</user_shell_command>",
+            "heartbeat": "<heartbeat>\n<automation_id>a1</automation_id>\n"
+                         "<instructions>WORDS-4 check the build</instructions>\n</heartbeat>",
+        }
+        lines = [rollout_line("response_item", codex_message("user", "<%s>\nCONTEXT %s\n</%s>" % (t, t, t)))
+                 for t in context]
+        for text in words.values():
+            lines.append(rollout_line("response_item", codex_message("user", text)))
+            lines.append(rollout_line("response_item", codex_message("assistant", "Noted.")))
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        whole = "\n".join(self.text_of(r) for r in records)
+        for text in words.values():
+            self.assertIn(text, whole)
+        self.assertNotIn("CONTEXT", whole)
+
     def test_compaction_keeps_only_what_codex_kept(self):
         lines = self.sample_rollout()[:7] + [
             rollout_line("compacted", {"message": "", "replacement_history": [

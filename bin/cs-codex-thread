@@ -197,8 +197,13 @@ INJECT_BATCH = 512 * 1024
 # Seconds the zstd command gets to unpack a compressed rollout.
 ZSTD_TIMEOUT = 60
 # Context Codex adds as user messages: the AGENTS.md text, and items it wraps
-# whole in one tag (<environment_context>, <skill>, <user_instructions>, ...).
+# whole in one of these tags (as seen in real rollouts). Other whole-tag items
+# are the user's words: a question's reply, a ! command, an automation's
+# heartbeat, a prompt pasted in a tag.
 CODEX_AGENTS = "# AGENTS.md instructions"
+CODEX_CONTEXT = frozenset((
+    "environment_context", "user_instructions", "skill", "turn_aborted", "recommended_plugins",
+    "guardian_tool_descriptions", "external_codex_apps_open_page", "node_repl_review_evidence"))
 TAG_WRAPPED = re.compile(r"\A\s*<([A-Za-z_][\w-]*)>.*</\1>\s*\Z", re.S)
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
@@ -300,7 +305,8 @@ def codex_texts(content):
 
 def codex_injected(text):
     stripped = text.lstrip()
-    return stripped.startswith(CODEX_AGENTS) or TAG_WRAPPED.match(stripped) is not None
+    wrapped = TAG_WRAPPED.match(stripped)
+    return stripped.startswith(CODEX_AGENTS) or (wrapped is not None and wrapped.group(1) in CODEX_CONTEXT)
 
 
 def codex_output(output):
