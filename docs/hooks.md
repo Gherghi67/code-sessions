@@ -291,7 +291,7 @@ Runs when Claude Code starts a session:
 - On `resume` only: injects dynamic context (last activity, recent commits with the plain file names among the first five files they touched, objective, up to 5 most recently active sibling sessions with their objectives, followed by the full `cs -msg <session> "<body>"` send form and its `--kind` values, which appear only when a sibling exists to send to; scope-prompt.sh's digest already carries inbound mail, so this block is the only place cs states the outbound form. The block asks Claude to raise an AskUserQuestion before starting work that belongs to a sibling's stated goal rather than merely sharing its vocabulary, and to offer both paths rather than push one; the bar sits high on purpose, since a routing prompt that fires on every overlap becomes a block nobody reads), and a per-actor digest of shared memory/narrative activity since this actor's `.cs/local/watermark` (grouped by git author; and, for each teammate narrative that grew since that watermark, committed or not, and is a regular file with a plain name directly below `.cs/memory`, the added-section count and the line the new content starts on, taken from the last hunk that adds lines in a diff against the working tree, so the actor reads its own file in full and only those lines of the others; a narrative nobody has committed goes unmentioned, since nothing exists to measure it against, and the hook names uncommitted growth again on every resume until a commit carries it), then advances the watermark and stamps the day's date into `last_resumed`. In a git repository the `Session State` block always prints and ends with a line saying the conversation before this one may have finished actions its summary does not show, and to check `git log`, `cs -msg log` and the remote before repeating a push, a merge, an install or a message
 - In a feature worktree (when `task_branch` is in machine-local state): injects a Feature Worktree contract instructing Claude that integration and retirement both go through `/finish <feature>` in the base session, that retirement waits for this conversation to close, and never to merge the branch manually
 - Where the conversation genuinely starts clean — source `clear`, or source `startup` with `CS_FRESH_REBIND=1` — injects a Fresh Conversation notice so Claude treats the turn as a clean break. The source is part of the test because `CS_FRESH_REBIND` is exported before `exec` and outlives the launch: on its own it would tell a later `/compact` of a rebound session that its transcript is not loaded while it still is
-- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or at the launch prompt by `r` or by the Enter that defaults to `r` at critical context): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff, or a file name that is not plain, is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. Where no claim stands under a launch that takes claims (the lead's `SessionStart` could not write one, or `ps` could not show the lead was under the launch), a `claude` the hooks cannot show to be a guest keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds. Under a launch that takes no claim (no `CS_LEAD_CLAIM`), only the claude carrying the launch pid gets the rotation: on the resume arm or behind a forking `CLAUDE_CODE_BIN` the lead does not, and the marker and the handoff wait for the next `cs <name>`
+- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or at the launch prompt by `r` or by the Enter that defaults to `r` at critical context): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker once that flip is written, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff, or a file name that is not plain, is stale and is removed silently. The marker is removed only once the flip has been written; when the handoff store refuses the write, the marker stays armed, the rotation still loads, and the preamble carries a WARNING naming the handoff that still says `unconsumed` and the first line the store wrote to stderr (a directory the hook cannot write, a store that links out of the session, or a handoff gone since the marker named it), so the next `startup` or `clear` loads and flips the same handoff again. Because the marker stays, the cs mod's rotation band still offers `/clear now` in the conversation that loaded the handoff, and pressing it reloads the same handoff and retries the flip. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. Where no claim stands under a launch that takes claims (the lead's `SessionStart` could not write one, or `ps` could not show the lead was under the launch), a `claude` the hooks cannot show to be a guest keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds. Under a launch that takes no claim (no `CS_LEAD_CLAIM`), only the claude carrying the launch pid gets the rotation: on the resume arm or behind a forking `CLAUDE_CODE_BIN` the lead does not, and the marker and the handoff wait for the next `cs <name>`
 - On all sources: surfaces the same queue-inbox digest as scope-prompt.sh — unseen entries in `.cs/local/notifications.jsonl` (task counts, the last breaker trip if any), gated by the `.cs/local/notifications.seen` cursor so it's shown at most once. Whichever of the two injection points runs first (this hook fires once at session start/resume; scope-prompt.sh fires on every prompt) claims the surfacing and advances the cursor for the other. Shares the `_build_digest` jq recipe verbatim with scope-prompt.sh ; the recipe has not moved into `cs-shared.sh`, so an edit to one copy goes into the other as well. A `claude` started from inside the session, or a tmux teammate, is not shown the digest and does not move the cursor
 - Does NOT surface the cross-session mail digest: that lives only in scope-prompt.sh now (it fires on every prompt), so duplicating it here would double-inject the same unread bodies on every startup and resume
 - On all sources: names the current actor and its narrative file in the injected context, and states that the durable memory buckets are shared while only narratives are per-actor, so an entry naming someone else as the user was written by or for another actor. `.cs/memory/` is one store for every actor on a git-synced session, so a `type: user` entry written as an unconditional claim loads for all of them and reads as settled fact; a bare identity line is not enough, because a global instruction naming the right person was already in context and lost to such an entry. The actor precedence (`$CS_ACTOR`, then `.cs/local/identity`, then git `user.email`/`user.name`) is `cs_actor_raw` from `cs-shared.sh`, the same function `cs -whoami` runs; shelling out to `cs` instead would make the hook depend on `cs` being on `PATH`
@@ -341,9 +341,9 @@ On `Stop`, also:
 - Raises the statusline's attention marker (`.cs/local/attention`, machine-local) so the Claude mark takes its darker `brandshade` color until the user next interacts; skipped inside subagents, for a `claude` started from inside the session and for a tmux teammate, none of which ends a turn of the lead's
 - Inside iTerm2 with shell integration installed (`~/.iterm2/it2attention`), also starts a dock bounce whenever it raises the marker, so the finished turn reaches a user working in another app; escapes go to `/dev/tty` because hook stdout is captured. `CS_NO_ITERM2=1` disables; silent everywhere else
 - Runs a staged feature retire: `/finish`'s retire entry writes `retire-staged/<base id>/<task>` under cs's cache (`sha:`, `force:` and `worktree:` lines; `<base id>` is the base directory's `<device>-<inode>`, and `worktree:` records the feature worktree's `<device>-<inode>` and birth time, so `--staged` refuses a stage written for an earlier worktree removed and made again under the same name, even one ext4 or XFS gave the old inode back; on a filesystem that keeps no birth time, a worktree made again on the old inode passes for the earlier one) while the feature conversation still holds its worktree. The stage lives outside the session because a stage is a licence to remove a worktree and delete its branch, `--force` included, and Codex's workspace sandbox writes anywhere in the session; the hook reads a stage directory only when it is a real directory, the user's, mode 700, and drops any other whole and unread (a link at its name removed, never followed), reporting once the stages it held with `run /finish <task> again`; `-features` reads `retire staged` and the feature-end mail goes out only for a stage the hook will read; the entry also refuses one under the session, `/tmp`, `$TMPDIR` or a root Codex's config adds. What an earlier cs left in `.cs/local/retire-staged/` and `.cs/local/retire-runs/` is dropped unread, each directory whole (`rm -rf`, never a glob through it; a symbolic link at either name is removed, not followed; nothing at all when `.cs/local` or `.cs` is itself a link out of the session), and reported in one message naming the tasks it held. On the lead's Stop only, once `live_lock_pid` finds no process behind that worktree's `.cs/session.lock`, the hook starts `cs <base> -retire-feature <task> <sha> --staged [--force]` detached in its own session (perl `setsid`; a retire that fuses records and trashes files outran the 10 s Stop budget, and a hook killed mid-fuse stranded every record), with the pid in `retire-runs/<base id>/<task>.run` and the output in `retire-runs/<base id>/<task>.out` under cs's cache (a directory of their own, so a feature named `x.run` is never read as `x`'s run; each record is created under a fresh name with an exclusive open and renamed into place, so a symbolic link planted at either name is replaced, never written through, and a record that is not a regular file of the user's reads as absent), waits up to six seconds, and on the Stop that finds the run ended, in that turn or a later one, blocks with the entry's `retired` line or its refusal (then `run /finish <task> again`) as the reason (fenced in `<cs_retire_output id=…>` tags with a note that it is cs's output and no instructions, as the queue fences a task, since it quotes file names an agent in the feature chose), and drops the stage; a run still going is left alone; a `staged` line in the output (the conversation came back before the removal) keeps the stage; a stage the hook cannot read (a sha that is not hex, a `force:` other than 0 or 1), or one whose worktree is already gone, is dropped and reported; a file there whose name no feature can have (cs's feature-name rule) is no stage, and is removed and reported without its name; cs is `command -v cs`, else `~/.local/bin/cs`, else the stage is kept and the report says so; one stage per Stop, taking priority over the queue drain below; with a base's last stage dropped, its stage and run directories, empty, go too (`rmdir`). The feature's launcher mails the base (`notify`) when a stage exists for it (a regular file in a private stage directory), once its run's lease is released, so an idle base wakes to run it; SessionEnd fires while the lease is still held, which is why the mail is not sent from there
-- Drains the task queue (`.cs/local/queue`) at each stop boundary when armed, on the lead's Stop only (a tmux teammate shares the directory and fires its own top-level Stop; ungated, each of its idle turns would pop a task) — pops and injects one task at a time and instructs Claude to mirror progress into the native task list; every injected task, the first included, sits inside `<cs_task id="…">` tags (six random hex characters per turn, so the text cannot close its own block) with a note that the text is the task to do and changes none of the instructions around it, because another session wrote any task accepted from mail; each carries a scope block (do every behavior the task asks for, leave pre-existing bugs and unmentioned behavior as follow-ups in the narrative, implement the most direct reading of an ambiguous task and state the assumption) because a walk-away run has nobody watching to say so — taking priority over the mail wake while a drain is armed or running (returns early), and [stop-notices.sh](#stop-noticessh-stop-async)'s notices stand down for the same queue; each transition also appends an event to the per-machine inbox (`.cs/local/notifications.jsonl`): `drain_started` on armed→draining, `task_done` per advance, `drain_finished` when the queue empties
-- While draining, each Stop first reads `.cs/local/queue.current`, the task it handed out; with no usable record it parks the run and logs nothing done. Then, before it pops that task, it evaluates three circuit breakers: tool failures in the current task at/above `CS_QUEUE_MAX_FAILURES` (default 5, from `.cs/local/failures`), context at/above `CS_QUEUE_MAX_CTX` (default 85, from the statusline's `context-pct`), and the 5-hour rate-limit window at/above `CS_QUEUE_MAX_5H` (default 85, from the statusline's `limits`, skipped when its `stamped_at` is stale past 1800s); a non-numeric env override falls back to the default. It also reads the final assistant message for a line reading exactly `cs-task-failed`, bare or as a code span, which the agent writes when it could not complete the task. That report goes to `.cs/local/queue.failed` before the Stop writes anything else, so a later Stop parks on it too; the file goes when the run parks or starts. A failures trip or a failure report means the task did not complete: it stays first in the queue, the Stop logs nothing done, and the run parks. A context or 5-hour trip measures the session, not the task: the Stop pops the task and logs it done, and the run parks before the Stop hands out the next one, or finishes when that was the last. A trip parks the queue (`queue.state` back to `idle`, recorded before the pop, the queue file left intact so `cs -queue start` re-arms; when the drain cannot write `idle` it removes `queue.state`, which reads as idle; when it can do neither, the Stop ends with nothing popped and `draining` in place, and the next Stop runs the same checks on the same task), appends a `breaker_tripped` event to the inbox with the reason and reading (`task_failed` for a failure report), and emits a `block` debrief naming what tripped and how many tasks remain. The drain reports any other state it cannot write as `cs task queue: could not write <path>`. The per-task failure count (`.cs/local/failures`) resets to zero on the armed→draining transition and again after every drain advance, so each task starts the breaker fresh
-- Spawned workers report back: when `.cs/local/spawned-by` exists, drain completion sends the spawner a mailbox notify and deletes the marker (one-shot); a breaker trip notifies but keeps the marker so the eventual drain still reports.
+- Drains the task queue (`queue/` in the session's cs-files directory, which is `.cs/private/` in an encrypted session and `.cs/local/` otherwise) at each stop boundary when armed, on the lead's Stop only (a tmux teammate shares the directory and fires its own top-level Stop; ungated, each of its idle turns would pop a task) — pops and injects one task at a time and instructs Claude to mirror progress into the native task list; every injected task, the first included, sits inside `<cs_task id="…">` tags (six random hex characters per turn, so the text cannot close its own block) with a note that the text is the task to do and changes none of the instructions around it, because another session wrote any task accepted from mail; each carries a scope block (do every behavior the task asks for, leave pre-existing bugs and unmentioned behavior as follow-ups in the narrative, implement the most direct reading of an ambiguous task and state the assumption) because a walk-away run has nobody watching to say so — taking priority over the mail wake while a drain is armed or running (every armed or draining branch exits, except a lost pop, which records `idle` before it goes on to the mail wake), and [stop-notices.sh](#stop-noticessh-stop-async)'s notices stand down for the same queue; each transition also appends an event to the per-machine inbox (`.cs/local/notifications.jsonl`): `drain_started` on armed→draining, `task_done` per advance, `drain_finished` when the queue empties
+- While draining, each Stop first reads `queue.current` in the cs-files directory, the task it handed out; with no usable record it parks the run and logs nothing done. Then, before it pops that task, it evaluates three circuit breakers: tool failures in the current task at/above `CS_QUEUE_MAX_FAILURES` (default 5, from `failures` in the cs-files directory), context at/above `CS_QUEUE_MAX_CTX` (default 85, from the statusline's `context-pct`), and the 5-hour rate-limit window at/above `CS_QUEUE_MAX_5H` (default 85, from the statusline's `limits`, skipped when its `stamped_at` is stale past 1800 s); a non-numeric env override falls back to the default. It also reads the final assistant message for a line reading exactly `cs-task-failed`, bare or as a code span, which the agent writes when it could not complete the task. That report goes to `queue.failed` in the cs-files directory before the Stop writes anything else, so a later Stop parks on it too; the file goes when a breaker trip or a failure report parks the run, or when an armed queue starts draining. A park for want of a `queue.current` record happens before the Stop reads the message, so it records no report and leaves an existing `queue.failed` until the queue next starts draining. A failures trip or a failure report means the task did not complete: it stays first in the queue, the Stop logs nothing done, and the run parks. A context or 5-hour trip measures the session, not the task: the Stop pops the task and logs it done, and the run parks before the Stop hands out the next one, or finishes when that was the last. A trip parks the queue (`queue.state` back to `idle`, recorded before the pop, the queue file left intact so `cs -queue start` re-arms; when the drain cannot write `idle` it removes `queue.state`, which reads as idle; when it can do neither, the Stop ends with nothing popped and `draining` in place, and the next Stop runs the same checks on the same task), appends a `breaker_tripped` event to the inbox with the reason and reading (`task_failed` for a failure report), and emits a `block` debrief naming what tripped and how many tasks remain. The drain reports any other state it cannot write as `cs task queue: could not write <path>`. The per-task failure count (`failures` in the cs-files directory) resets to zero on the armed→draining transition and again after every drain advance, so each task starts the breaker fresh
+- Spawned workers report back: when `.cs/local/spawned-by` exists, drain completion sends the spawner a mailbox notify and deletes the marker (one-shot); a park after a breaker trip or a failure report notifies but keeps the marker so the eventual drain still reports. A context or 5-hour trip on the last task finishes the run instead of parking it, so the spawner gets the completion notify and the marker goes. A park for want of a `queue.current` record and a lost pop send nothing and keep the marker.
 - When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ run N queued tasks` press. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
 - Approves silently inside subagents and outside cs sessions
 
@@ -390,7 +390,7 @@ Runs when Claude Code spawns a subagent (via the Agent tool):
 Runs when a tool call fails (async, non-blocking):
 - Logs tool name and truncated error message to `.cs/local/session.log` (`.cs/private/session.log` in an encrypted session, and nowhere while its vault is locked)
 - Helps debug build failures, test errors, and other tool issues after the fact
-- Increments the per-task failure counter (`.cs/local/failures`, written through `cs_write_atomic`) that feeds the queue's failures circuit breaker (see stop-blocks.sh); absent or non-numeric reads as zero. A lost increment under exact concurrency with the Stop hook's reset degrades the breaker by one count but never corrupts state, and the increment stays silent and non-blocking like the rest of the hook
+- Increments the per-task failure counter (`failures` in the session's cs-files directory, which is `.cs/private/` in an encrypted session and `.cs/local/` otherwise, written through `cs_write_atomic`) that feeds the queue's failures circuit breaker (see stop-blocks.sh); absent or non-numeric reads as zero. A lost increment under exact concurrency with the Stop hook's reset degrades the breaker by one count but never corrupts state, and the increment stays silent and non-blocking like the rest of the hook
 
 ## session-auto-approve.sh (PermissionRequest on Write/Edit)
 
@@ -911,7 +911,7 @@ the conversation it meets next unjudged.
 The mods hand Claude Code every toast, `$.ui.ask` dialog, `$.ui.log` notice,
 slash-command reply and command registration from tables they export: cs in
 `register.tsx` (`TOASTS`, `ASKS`, `LOGS`, `REPLIES`, `COMMANDS`), cs-update in
-`register.tsx` (`TOASTS`, `REPLIES`, `COMMANDS`),
+`register.tsx` (`TOASTS`, `LOGS`, `REPLIES`, `COMMANDS`),
 cs-panel in `register.tsx`, `draw.tsx` (`WORDS`) and `settings.ts`
 (`LABELS`), cs-filter-chat in
 `words.ts`. `tests/test_mod_tables.sh` fails when a call site writes
@@ -1034,16 +1034,31 @@ deployed file, and Claude Code reloads it as soon as the install lands. `Esc`
 closes the pane at any point.
 
 That reload resets the mod's module state mid-pane, which would otherwise
-blank a pane still showing "Update finished". A clean exit also writes
-`.cs/local/cs-update.done` (version plus the outcome line); the engine
-re-renders the open pane the instant it reloads the module, which can come
-before the reloaded module's `session.start` runs, so the reloaded module reads the marker back and redraws the finished
-pane from its own next render. That redraw asks the lead check first,
-so a directory the sessions root does not name gets no pane back. A pane dismissed before the install landed
+blank a pane showing "Update finished" or offer the key again during a run. The
+update key keeps its state in `.cs/local/cs-update.done`: the press writes
+the version, `running`, the time and the version `~/.claude/hooks/cs/.version`
+names then, and a clean exit replaces those with the version and the outcome
+line. A failed run empties the marker, which gives the key back. The installer
+writes that version stamp before the mod's own files, and the reload those
+files cause can end both the run and the module that pressed the key before
+either writes the outcome. A reloaded module that finds the stamp changed since
+the press draws "Update finished" at once and writes it to the
+marker. Any version counts, since `cs -update` installs the latest release,
+which can be newer than the one the launch saw. A reinstall of the version
+already installed rewrites the stamp with the same text, so if its reload
+cuts the report short the pane stays `updating…` until the ten-minute stale
+rule, though the install finished. The engine re-renders the open pane the instant it reloads the module, which can come
+before the reloaded module's `session.start` runs, so the reloaded module reads the marker back and redraws the
+pane from its own next render, running or finished. That redraw asks the lead check first,
+so a directory the sessions root does not name gets no pane back. While the marker says `running`, a reloaded
+module reads it once a second, since the module that pressed the key can
+outlive the reload and write the outcome after the reloaded module has read
+it. A `running` marker older than the update's ten-minute timeout means
+something ended the run, and reads as stale, so the key comes back. A press on an idle pane reads the marker first and starts no installer when it names a finished or running update. A pane dismissed before the install landed
 leaves nothing open to redraw, so `/cs-update` after the reload reads the
-marker too and shows the finished pane instead of offering the install a
+marker too and shows the running or finished pane instead of offering the install a
 second time. The mod clears the marker (writes it empty, since `$.fs` offers no
-delete) once it names a version that is no longer pending: at the next launch,
+delete) once it names a version that is no longer pending or a run past that timeout: at the next launch,
 at the pane's redraw after a reload, or at a `/cs-update` run while another
 version is pending. A `/cs-update` with nothing pending says so before it reads
 the marker, and leaves it. In a directory the sessions root does not name, or
@@ -1057,7 +1072,20 @@ toast that stands in for it; `/cs-update` still opens the pane with the option o
 
 `install.sh` deploys the mod's three files (`.claude-plugin/plugin.json`,
 `hooks/hooks.json`, `hooks/register.tsx`) under `~/.claude/skills/cs-update/`,
-the same layout as the `cs` mod, and `cs -uninstall` removes the directory. When
+the same layout as the `cs` mod, and `cs -uninstall` removes the directory. It
+places them last, after every other file, the install record, the completions,
+the settings merge and the version stamp. After them come only the report: the
+placed count, the list of files kept because cs did not write them, the
+completion setup hints and the closing line, then the release notes `cs -update`
+prints after the installer. Claude Code reloads a mod soon after its files
+change (0.4 to 0.7 s measured on 2.1.319). A key press older than 10 s no
+longer holds the process it started, and every real update runs longer than
+that, so the reload can stop `cs -update` during the report, which takes about
+0.16 s from the module landing to the installer's exit, before the release
+notes. The install has finished its work by then, and the version stamp is how
+the reloaded pane knows it. A run stopped before the mod's
+files leaves the mod at its previous version, and the record still names it, so
+running `cs -update` again finishes the install. When
 Claude Code loads the plugin, the mod writes `.cs/local/cs-update.heartbeat`
 (one UTC timestamp) when the cwd has `.cs/local`, the sessions root names the directory (as
 for the pane) and `cs -vet-session` passes, and `cs -doctor` reports the
@@ -1213,6 +1241,79 @@ instruction and tombstone, and `tests/test_migrate_claude_md.sh` covers migratio
 After changing `mods/cs-mermaid/hooks/`, run `./build.sh` to refresh the payload
 hashes in `install.sh`.
 
+## cs-images
+
+`mods/cs-images/` is a Claude Code function-hooks plugin, deployed and gated
+the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. Unlike the
+`cs` mod it needs no cs session: with function hooks on it draws in any
+directory. It draws a picture wherever a reply has a line holding
+only `![short name](/absolute/path.png)`, outside a code block. The path must
+be absolute and have no spaces. It accepts `png`, `jpg`, `jpeg`, `gif`, `heic`,
+`webp`, `tif`, `tiff` and `bmp` files, in any letter case. Prose around a picture stays with the engine's renderer.
+
+Real pixels work in kitty and Ghostty, or iTerm2 3.5 and later. Inside tmux,
+every terminal needs tmux 3.3 or later with `allow-passthrough` and
+`focus-events` on. iTerm2 draws `png` and `rgba` bytes and also needs Claude
+Code's fullscreen display. Inside tmux, iTerm2 requires `allow-passthrough`
+set to `on` rather than `all`, and a tmux window no bigger than the terminal.
+
+Everywhere else, pictures draw as coloured block glyphs. Under blocks they
+are previews, small text is not readable, and transparent areas draw black.
+The first picture of a
+session draws as an `Image`, then the mod asks `$.ui.blit` whether the
+terminal shows it. That picture can show blank for a moment while the mod
+finds out. A refusal switches drawing to a `Raster` of fitted
+block glyphs, with 8 by 8 samples per cell. A transient refusal such as
+`not mounted` asks again. A failed `png` conversion or a `png` over 2 MiB also
+uses blocks, without asking the terminal.
+
+The `/config` row `cs-images.drawImages` is on by default; off, the image
+line stays text. `cs-images.cellHeightRatio`, 2 by default, sets the
+terminal cell's height divided by its width. Values outside the finite
+range 1 to 5 use 2 and produce one debug line naming the value. Nothing
+reports a terminal's cell shape to a mod. A line height of 1.5 needs a
+ratio of 3. The picture fits within 60 columns and 30 rows, keeping its
+proportions at that ratio.
+
+At `session.start`, the mod checks `sips --version` once. If it throws or
+exits nonzero, image lines stay text. With `sips` present, startup removes
+only regular `cs-images-tmp-*` files older than 60 minutes from the per-user
+`TMPDIR`, or `/tmp/` when unset. The directory argument ends in a slash so
+the sweep follows macOS's `/tmp` symlink. A failed sweep writes its exit
+code and stderr to the debug log and leaves drawing on. Conversion uses `sips` through
+process argv, with no shell, and writes its temporary files in that same
+directory. An unscaled bitmap normalizes photo orientation. `sips` queries
+its displayed size before either drawing path resizes it. The mod reads
+only resized bytes, within the engine's 4 MiB file-read limit.
+The mod caches decoded pictures by path, drawing width capped at 60 columns,
+modification time and cell ratio. A successful startup probe invalidates
+rendering so an image line drawn before the probe completes gets another try.
+
+The bundled `skills/show-image/SKILL.md` gives the model the syntax when
+asked to see, show or display an image, screenshot, photo or chart on disk,
+or to explain something in pictures. For an explanation it draws a mermaid
+diagram and, beside it, a file on disk that shows the point or else one
+generated image where the session has an image tool; a generated image costs what that tool's provider charges and
+its description leaves the machine, so the skill keeps private content out
+of it. Before drawing a generated image, the skill has the model open it and
+compare it with its own explanation and diagram, then say what is wrong
+beside it or leave it out, and it presents the image as how the thing looks
+and the diagram as how it works.
+It needs no `prompt.compose` hook, which organizations can refuse. The
+engine lists it as `/cs-images:show-image`. Turning drawing off leaves the
+skill in place.
+
+`install.sh` deploys five files under `~/.claude/skills/cs-images/`:
+`.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/picture.ts`,
+`hooks/register.tsx` and `skills/show-image/SKILL.md`. Tests stay under
+`mods/cs-images/test/`. The mod writes no heartbeat.
+
+`tests/test_mod_images.sh` checks the manifest, both configuration rows,
+installer paths and skill frontmatter. With `claude` available, it runs the
+engine kit and plugin validation. After changing the mod's shipped files,
+run `./build.sh` to refresh `install.sh`'s payload hashes.
+
 ## cs-panel (not a hook script — a Claude Code mod)
 
 `mods/cs-panel/` is a Claude Code function-hooks plugin, deployed and gated like
@@ -1222,8 +1323,8 @@ pane sits inline above the prompt on the main screen (tmux) and docks beside the
 transcript, 60 columns wide, in fullscreen from 110 columns.
 
 The rows come from two places. `Mods` lists the `/config` rows of `cs`,
-`cs-update`, `cs-mermaid` and `cs-filter-chat` (`$.config.list()`, those four
-plugins by name, so another `cs-*` plugin's rows are not drawn). The four mods
+`cs-update`, `cs-mermaid`, `cs-images` and `cs-filter-chat` (`$.config.list()`, those five
+plugins by name, so another `cs-*` plugin's rows are not drawn). The five mods
 title each row `cs: ` and its label, so `/config` marks the row as cs's; under
 `Mods` the mark says nothing and the pane draws the label without it. Under
 them, cs's own settings come in

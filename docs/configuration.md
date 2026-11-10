@@ -23,7 +23,7 @@ The installer deploys these components:
 | Hooks and wrap passes | `~/.claude/hooks/cs/`, including the memory and summary passes that `/wrap` reads. |
 | Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
 | Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
-| Mods | `cs`, `cs-update`, `cs-mermaid`, `cs-panel` and `cs-filter-chat` in `~/.claude/skills/`. |
+| Mods | `cs`, `cs-update`, `cs-mermaid`, `cs-images`, `cs-panel` and `cs-filter-chat` in `~/.claude/skills/`. |
 | Spinner tip | `~/.claude/skills/cs/tips.json`, named in `settings.json` as `spinnerTipsOverride.tipsFile`. See [band settings](#band-settings). |
 | Antigravity hook and skills | `~/.gemini/config/plugins/cs/`, only where `agy` is installed or `~/.gemini/antigravity-cli`, `agy`'s own folder, exists. The skills sit in its `skills/` folder. See [Antigravity sessions](antigravity.md#the-cs-hook). |
 
@@ -308,8 +308,9 @@ export CS_REWRITE_CMD="/path/to/my-rewriter"
 # a plain integer of at most three digits; anything else falls back to the
 # default shown. A value above 100 is out of the gauge's reach and so switches
 # that band off, the same idiom cs -doctor uses on the Stop hook's tiers below.
-# The launch card colours its context figure at the same two marks, and from
-# the crit mark the resume prompt defaults to a fresh conversation.
+# The launch card colours its context figure at the same two marks. From the
+# warn mark a red line above the resume prompt says n starts a fresh
+# conversation, and from the crit mark the prompt defaults to one.
 export CS_STATUSLINE_CTX_WARN="40"
 export CS_STATUSLINE_CTX_CRIT="60"
 
@@ -707,7 +708,7 @@ alone. To get cs's tips back, delete `~/.config/cs/tips-file` and run
 ## In-session switches
 
 Bare `/cs` (or `/cs-panel`) opens a pane of these switches and of cs's settings
-together: the `/config` rows of `cs`, `cs-update`, `cs-mermaid` and `cs-filter-chat`, then every
+together: the `/config` rows of `cs`, `cs-update`, `cs-mermaid`, `cs-images` and `cs-filter-chat`, then every
 setting `cs -config list` names. Type to filter the rows, then press Enter on
 one to open its choices under it: a new value, `Default` (which removes it from
 the file that holds it), or `Keep`; the scope line under the keys says which
@@ -727,6 +728,24 @@ instruction lives under `cs:mermaid-diagrams` in a cs session's `CLAUDE.local.md
 neither this toggle nor `.cs/local/disabled` removes it. To opt out of the
 instruction, delete its prose but keep the `<!-- cs:mermaid-diagrams -->`
 comment so migration does not add it again.
+
+Image drawing has two Claude Code `/config` rows. `cs-images.drawImages` is
+on by default; off, image lines stay text. `cs-images.cellHeightRatio` is the
+terminal cell's height divided by its width, 2 by default. It accepts finite
+numbers from 1 to 5. Any other value uses 2 and writes one debug line naming
+the value. Nothing reports a terminal's cell shape to a mod. A line height
+of 1.5 needs a ratio of 3.
+
+Real pixels work in kitty and Ghostty, or iTerm2 3.5 and later. Inside tmux,
+every terminal needs tmux 3.3 or later with `allow-passthrough` and
+`focus-events` on. iTerm2 draws `png` and `rgba` bytes and also needs Claude
+Code's fullscreen display. Inside tmux, iTerm2 requires `allow-passthrough`
+set to `on` rather than `all`, and a tmux window no bigger than the terminal.
+Everywhere else,
+the picture is block glyphs, and transparent areas draw black. The first
+picture of a session can show blank for a moment while the mod finds out.
+Without `sips`, image lines stay text. See [the images mod](hooks.md#cs-images)
+for the syntax and bundled skill.
 
 Filter chat is off by default. While it is on, the chat shows what you type and
 what Claude answers, and nothing of the work between them. `/filter-chat`, or
