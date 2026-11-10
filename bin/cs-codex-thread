@@ -7,12 +7,14 @@
 """Requires Codex app-server's experimental thread/inject_items API."""
 
 import argparse
+import io
 import json
 import math
 import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -192,6 +194,8 @@ def exact_id(result, expected=None):
 DEFAULT_CLIP = 4000
 # thread/inject_items requests are kept to about this many bytes each.
 INJECT_BATCH = 512 * 1024
+# Seconds the zstd command gets to unpack a compressed rollout.
+ZSTD_TIMEOUT = 60
 # Context Codex adds as user messages: the AGENTS.md text, and items it wraps
 # whole in one tag (<environment_context>, <skill>, <user_instructions>, ...).
 CODEX_AGENTS = "# AGENTS.md instructions"
@@ -340,21 +344,51 @@ def codex_item(history, item, timestamp, limit):
 
 
 def codex_rollout(thread_id):
+    # Codex compresses older rollouts to .jsonl.zst. A plain one is the copy
+    # Codex still writes to; otherwise the newest wins.
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    pattern = "rollout-*-" + thread_id + ".jsonl"
     found = []
     for folder in ("sessions", "archived_sessions"):
         root = home / folder
         if root.is_dir():
-            found.extend(path for path in root.rglob(pattern) if path.is_file())
+            for suffix in (".jsonl", ".jsonl.zst"):
+                found.extend(path for path in root.rglob("rollout-*-" + thread_id + suffix) if path.is_file())
     if not found:
         raise BootstrapError("Codex keeps no saved history for thread " + thread_id)
-    return max(found, key=lambda path: path.stat().st_mtime)
+    return max(found, key=lambda path: (path.suffix == ".jsonl", path.stat().st_mtime))
+
+
+def open_rollout(path):
+    if path.suffix != ".zst":
+        return open(str(path), encoding="utf-8", errors="replace")
+    # Python's own zstd module from 3.14, else the zstd command.
+    try:
+        from compression import zstd
+    except ImportError:
+        zstd = None
+    command = shutil.which("zstd") if zstd is None else None
+    if zstd is None and command is None:
+        raise BootstrapError("Codex compressed this thread and no zstd reader is available "
+                             "(Python 3.14 or the zstd command)")
+    unreadable = "could not read Codex's compressed history of this thread"
+    if zstd is not None:
+        try:
+            data = zstd.decompress(path.read_bytes())
+        except zstd.ZstdError as exc:
+            raise BootstrapError(unreadable) from exc
+    else:
+        try:
+            data = subprocess.run([command, "-dcq", "--", str(path)], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                  timeout=ZSTD_TIMEOUT, check=True).stdout
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise BootstrapError(unreadable) from exc
+    return io.StringIO(data.decode("utf-8", errors="replace"))
 
 
 def read_codex(path, limit):
     history = History()
-    with open(str(path), encoding="utf-8", errors="replace") as handle:
+    with open_rollout(path) as handle:
         for line in handle:
             try:
                 record = json.loads(line)

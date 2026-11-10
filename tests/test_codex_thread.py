@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -449,12 +450,29 @@ class TransplantTests(HelperFixture):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
-    def export(self, *extra):
+    def export(self, *extra, hide=()):
         out = self.root / "carried.jsonl"
-        command = [sys.executable, str(HELPER), "--export-claude", "--thread-id", THREAD_ID,
-                   "--session-id", NEW_CLAUDE_ID, "--cwd", str(self.cwd), "--out", str(out),
-                   "--claude-version", "2.1.300", "--git-branch", "cs/x", *extra]
-        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=10)
+        if out.exists():
+            out.unlink()
+        arguments = ["--export-claude", "--thread-id", THREAD_ID, "--session-id", NEW_CLAUDE_ID,
+                     "--cwd", str(self.cwd), "--out", str(out), "--claude-version", "2.1.300",
+                     "--git-branch", "cs/x", *extra]
+        command, env = [sys.executable, str(HELPER), *arguments], self.env
+        if hide:
+            # The helper without the zstd readers named: "module" (Python's
+            # compression.zstd) and "command" (zstd on PATH).
+            folder = self.root / "path"
+            folder.mkdir(exist_ok=True)
+            if (folder / "zstd").is_symlink():
+                (folder / "zstd").unlink()
+            if "command" not in hide and shutil.which("zstd"):
+                (folder / "zstd").symlink_to(shutil.which("zstd"))
+            block = "sys.modules['compression.zstd'] = None\n" if "module" in hide else ""
+            prelude = ("import runpy, sys\n" + block +
+                       "sys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')\n")
+            command = [sys.executable, "-c", prelude, str(HELPER), *arguments]
+            env = dict(self.env, PATH=str(folder))
+        result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         records = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
         return result, records
 
@@ -597,6 +615,74 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.text_of(records[0]).endswith("archived copy"))
+
+    @staticmethod
+    def zstd_module():
+        try:
+            from compression import zstd
+        except ImportError:
+            return None
+        return zstd
+
+    def available_readers(self):
+        readers = [name for name, present in (("module", self.zstd_module() is not None),
+                                              ("command", shutil.which("zstd") is not None)) if present]
+        if not readers:
+            self.skipTest("neither compression.zstd nor the zstd command is here")
+        return readers
+
+    def compress(self, plain):
+        # The rollout as Codex keeps an older one, rollout-...-<id>.jsonl.zst.
+        packed = plain.with_name(plain.name + ".zst")
+        module = self.zstd_module()
+        if module is not None:
+            packed.write_bytes(module.compress(plain.read_bytes()))
+        elif shutil.which("zstd"):
+            subprocess.run([shutil.which("zstd"), "-q", "-o", str(packed), str(plain)], check=True, timeout=10)
+        else:
+            self.available_readers()
+        plain.unlink()
+        return packed
+
+    def test_compressed_rollouts_are_read(self):
+        self.compress(self.write_rollout(self.sample_rollout()))
+        for reader in self.available_readers():
+            with self.subTest(reader=reader):
+                result, records = self.export(hide=[r for r in ("module", "command") if r != reader])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["messages"], 4)
+                self.assertTrue(self.text_of(records[0]).endswith("what is the codename?"))
+                self.assertIn("The codename is AMBER-FALCON.", self.text_of(records[1]))
+
+    def test_a_compressed_rollout_without_a_reader_is_named(self):
+        plain = self.write_rollout(self.sample_rollout())
+        plain.rename(plain.with_name(plain.name + ".zst"))
+        result, records = self.export(hide=("module", "command"))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Codex compressed this thread and no zstd reader is available", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(records, [])
+
+    def test_a_damaged_compressed_rollout_is_named(self):
+        plain = self.write_rollout(self.sample_rollout())
+        plain.rename(plain.with_name(plain.name + ".zst"))
+        for reader in self.available_readers():
+            with self.subTest(reader=reader):
+                result, records = self.export(hide=[r for r in ("module", "command") if r != reader])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("could not read Codex's compressed history", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(records, [])
+
+    def test_a_plain_rollout_wins_over_a_compressed_one(self):
+        plain = self.write_rollout([rollout_line("response_item", codex_message("user", "plain copy"))])
+        packed = plain.with_name(plain.name + ".zst")
+        packed.write_bytes(b"never read")
+        os.utime(plain, (1, 1))
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.text_of(records[0]).endswith("plain copy"))
 
     def test_real_codex_shapes_export(self):
         # A guard against the reader drifting from what Codex writes.
