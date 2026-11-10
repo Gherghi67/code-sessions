@@ -531,7 +531,7 @@ _cs_acknowledge_claude_binding() {
     RECORDED_UUID=$(awk '/^claude_session_id:/ { print $2; exit }' "$STATE_FILE" 2>/dev/null || true)
     local pending="$META_DIR/local/pending-binding-claude.json" pending_match=0
     local transition_reason="rebind" transition_handoff="$ROTATION_HANDOFF"
-    local transition_from="$RECORDED_UUID" lineage_recorded=0
+    local transition_from="$RECORDED_UUID" lineage_recorded=0 transition_carried=""
     [ -z "$transition_handoff" ] || transition_reason="handoff"
     if [ -n "${CS_RUN_ID:-}" ] && [ -f "$pending" ]; then
         if jq -e --arg run "$CS_RUN_ID" '.run_id == $run' "$pending" >/dev/null 2>&1; then
@@ -544,6 +544,8 @@ _cs_acknowledge_claude_binding() {
             transition_from=$(jq -r .previous_id "$pending") || return 1
             transition_reason=$(jq -r '.reason' "$pending") || return 1
             transition_handoff=$(jq -r '.handoff // ""' "$pending") || return 1
+            # A conversation carried over from the other engine names it.
+            transition_carried=$(jq -r '.carried_from // ""' "$pending") || return 1
         fi
     fi
     if [ "$RECORDED_UUID" != "$SESSION_ID" ] || [ "$pending_match" = 1 ]; then
@@ -569,17 +571,21 @@ _cs_acknowledge_claude_binding() {
         fi
         # A launch that staged the session's first conversation (none was
         # recorded: the first open after cs -adopt, Claude's first open of a
-        # workspace) rotates from nothing, so it records no rotation.
-        if [ "$pending_match" = 1 ] && [ -z "$transition_from" ]; then lineage_recorded=1; fi
+        # workspace) rotates from nothing, so it records no rotation. One
+        # carried over from the other engine is recorded anyway: its lineage
+        # runs through that engine's conversation.
+        if [ "$pending_match" = 1 ] && [ -z "$transition_from" ] \
+            && [ "$transition_reason" != transplant ]; then lineage_recorded=1; fi
         if [ "$lineage_recorded" = 0 ]; then
         cs_append_inside "$META_DIR/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                --arg from "$transition_from" \
                --arg to "$SESSION_ID" \
                --arg handoff "$transition_handoff" --arg reason "$transition_reason" \
-               --arg run_id "${CS_RUN_ID:-}" \
+               --arg run_id "${CS_RUN_ID:-}" --arg carried "$transition_carried" \
                '{ts: $ts, event: "rotated", engine: "claude", run_id: $run_id, from: $from, to: $to,
                  reason: $reason}
-                + (if $handoff == "" then {} else {handoff: $handoff} end)' || {
+                + (if $handoff == "" then {} else {handoff: $handoff} end)
+                + (if $carried == "" then {} else {carried_from: $carried} end)' || {
                 # Keep an acknowledged pending transition until its lineage
                 # is durable; the next acknowledgement can finish it.
                 [ "$pending_match" = 0 ] || return 1

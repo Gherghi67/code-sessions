@@ -83,9 +83,11 @@ cs_binding_write() (  # session_dir, engine, native_id
 
 # Stage a candidate without replacing the acknowledged native conversation.
 # Keep an earlier unacknowledged transition as recovery evidence when retrying.
-_cs_binding_stage_locked() {  # session_dir, engine, previous, candidate, reason, handoff
+# A carried-over conversation (reason transplant) names its source as
+# "<engine>:<native id>", which the commit records as the rotation's carried_from.
+_cs_binding_stage_locked() {  # session_dir, engine, previous, candidate, reason, handoff, [carried_from]
     local session_dir="$1" engine="$2" previous="$3" candidate="$4"
-    local reason="$5" handoff="${6:-}" path tmp archive recorded
+    local reason="$5" handoff="${6:-}" carried="${7:-}" path tmp archive recorded
     case "$engine" in claude|codex) ;; *) return 2 ;; esac
     [ -n "${CS_RUN_ID:-}" ] && [ -n "$candidate" ] || return 1
     [ "${CS_RUN_ENGINE:-}" = "$engine" ] || return 1
@@ -95,9 +97,10 @@ _cs_binding_stage_locked() {  # session_dir, engine, previous, candidate, reason
     tmp=$(mktemp "$session_dir/.cs/local/.pending-binding.XXXXXX") || return 1
     if ! jq -nc --arg run_id "$CS_RUN_ID" --arg engine "$engine" \
         --arg previous_id "$previous" --arg candidate_id "$candidate" \
-        --arg reason "$reason" --arg handoff "$handoff" \
+        --arg reason "$reason" --arg handoff "$handoff" --arg carried "$carried" \
         '{run_id:$run_id,engine:$engine,previous_id:$previous_id,
-          candidate_id:$candidate_id,reason:$reason,handoff:$handoff}' > "$tmp"; then
+          candidate_id:$candidate_id,reason:$reason,handoff:$handoff}
+         + (if $carried == "" then {} else {carried_from:$carried} end)' > "$tmp"; then
         rm -f "$tmp"; return 1
     fi
     if [ -e "$path" ]; then
@@ -109,6 +112,6 @@ _cs_binding_stage_locked() {  # session_dir, engine, previous, candidate, reason
     mv "$tmp" "$path" || { rm -f "$tmp"; return 1; }
 }
 
-cs_binding_stage() {  # session_dir, engine, previous, candidate, reason, [handoff]
+cs_binding_stage() {  # session_dir, engine, previous, candidate, reason, [handoff], [carried_from]
     cs_run_with_lease "$1/.cs" _cs_binding_stage_locked "$@"
 }

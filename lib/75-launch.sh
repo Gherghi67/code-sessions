@@ -667,6 +667,67 @@ launch_claude_code() {
     cs_launch_session claude "$@"
 }
 
+# The installed Claude Code's version, for the records of a carried-over
+# transcript; empty when it does not say.
+_claude_transplant_version() {
+    local out
+    # shellcheck disable=SC2086
+    out=$($CLAUDE_CODE_BIN --version 2>/dev/null) || out=""
+    [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+}
+
+# Offered when the session's newer conversation is Codex's (lib/47-transplant.sh).
+# The thread is converted before the question, so an empty or unreadable one is
+# never offered: the latter is named in one dim line and the usual question
+# follows. Sets the caller's transplant_from, transplant_id, transplant_size,
+# transplant_uuid and transplant_file (the converted transcript). It waits for
+# the answer in Claude Code's projects dir, beside the conversation it would
+# become, never in the session's agent-writable .cs/local; its dot name
+# without .jsonl keeps Claude Code and discovery from listing it.
+_claude_transplant_prepare() {  # session_dir
+    local session_dir="$1" source helper stats cwd branch proj file uuid
+    proj=$(_claude_project_dir "$session_dir")
+    # A conversion an interrupted launch left behind is never placed.
+    rm -f "$proj"/.cs-transplant-* 2>/dev/null || true
+    source=$(_transplant_source "$session_dir" claude) || return 0
+    helper=$(_codex_thread_helper 2>/dev/null) && [ -x "$helper" ] || return 0
+    uuid=$(_alloc_uuid) || return 0
+    cwd=$(cd -- "$session_dir" 2>/dev/null && pwd -P) || return 0
+    branch=$(git -C "$session_dir" branch --show-current 2>/dev/null) || branch=""
+    # Made before the answer, so made the way Claude Code makes it: private.
+    (umask 077 && mkdir -p "$proj") || return 0
+    file="$proj/.cs-transplant-$uuid"
+    if ! stats=$("$helper" --export-claude --thread-id "${source#* }" --session-id "$uuid" \
+        --cwd "$cwd" --out "$file" --claude-version "$(_claude_transplant_version)" \
+        --git-branch="$branch" 2>&1); then
+        rm -f "$file"
+        _transplant_unreadable codex "$stats"
+        return 0
+    fi
+    if [ "$(_transplant_count "$stats")" -lt 1 ] || [ ! -f "$file" ]; then
+        rm -f "$file"
+        return 0
+    fi
+    transplant_from=codex
+    transplant_id=${source#* }
+    transplant_size=$(_transplant_size "$stats")
+    transplant_uuid=$uuid
+    transplant_file=$file
+}
+
+# y renames the converted transcript, already beside the session's
+# conversations, to the name Claude Code resumes, so no reader ever sees half
+# of one. Never over an existing conversation, and never a staged name that is
+# no longer a plain file: a link would place whatever it points at.
+_claude_transplant_place() {  # session_dir, converted file, conversation id
+    local dest
+    dest="$(_claude_project_dir "$1")/$3.jsonl"
+    [ ! -e "$dest" ] && [ ! -L "$dest" ] || return 1
+    [ -f "$2" ] && [ ! -L "$2" ] || return 1
+    mv "$2" "$dest"
+}
+
 _launch_claude_bound() {
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options claude || return 1
@@ -1187,6 +1248,13 @@ EOF
         _marker_dir=$(cs_private_dir "$session_dir/.cs") && cs_handoff_dir "$session_dir/.cs" >/dev/null \
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
         pending_handoff=$(_pending_handoff_pick "$session_dir")
+        # Reopened here after a run under Codex: its conversation is the newer
+        # one, and an attended open offers to carry it over (lib/47-transplant.sh).
+        local transplant_from="" transplant_id="" transplant_size="" transplant_uuid="" transplant_file=""
+        local do_transplant=""
+        if [ "$intent" = auto ] && [ -z "$spawn_kick" ] && cs_interactive; then
+            _claude_transplant_prepare "$session_dir"
+        fi
         # A spawned launch is unattended: take the default (resume) instead
         # of parking the tmux window on an interactive ask. So is an explicit
         # --resume, and an open with no terminal to ask on. Unbound, the
@@ -1207,7 +1275,7 @@ EOF
         elif [ "$intent" = resume ] || [ -n "$spawn_kick" ] || ! cs_interactive; then
             response=""
             [ -n "$claude_session_id" ] || response="n"
-        elif [ -z "$claude_session_id" ] && [ -z "$pending_handoff" ]; then
+        elif [ -z "$claude_session_id" ] && [ -z "$pending_handoff" ] && [ -z "$transplant_from" ]; then
             response="n"
         else
             # From the status line's crit threshold the ask defaults to a
@@ -1223,7 +1291,9 @@ EOF
             # figure per session, not per conversation, so the line calls it
             # the last reading in this session and claims no more.
             local _resume_default=' · default' _handoff_default='' _fresh_default='' _ask_keys='[Y/n]'
-            local _crit_default=n _crit_start='a fresh conversation'
+            local _crit_default=n _crit_start='a fresh conversation' _crit_press='Press y to resume.'
+            [ -z "$transplant_from" ] \
+                || _crit_press="Press y to carry the $(_transplant_label "$transplant_from") conversation over."
             if [ "$ctx_heat" = crit ]; then
                 _resume_default=''
                 _ask_keys="[y/${BOLD}N${NC}]"
@@ -1235,9 +1305,21 @@ EOF
                 else
                     _fresh_default=' · default'
                 fi
-                printf "${BOLD}${CRIT}%s${NC}\n" "${ICON_CTX} The last context reading in this session was ${ctx_pct}%, so ${_crit_start} is the default. Press y to resume."
+                printf "${BOLD}${CRIT}%s${NC}\n" "${ICON_CTX} The last context reading in this session was ${ctx_pct}%, so ${_crit_start} is the default. ${_crit_press}"
             fi
-            if [ -n "$pending_handoff" ]; then
+            if [ -n "$transplant_from" ]; then
+                # The carry-over offer, with the handoff's rows when one waits.
+                if [ -n "$pending_handoff" ]; then
+                    local _t_origin=""
+                    _handoff_is_local "$pending_handoff" "$session_dir" \
+                        || _t_origin=" ${DIM}(from another checkout)${NC}"
+                    printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)" "$_t_origin"
+                fi
+                local _t_default=y
+                [ "$ctx_heat" != crit ] || _t_default=$_crit_default
+                _transplant_offer_print "$transplant_from" "$transplant_id" claude "$transplant_size" \
+                    "$claude_session_id" "$pending_handoff" "$_t_default"
+            elif [ -n "$pending_handoff" ]; then
                 # Answering blind is the hazard this label exists for: r arms
                 # the marker with this basename, and the next SessionStart flips
                 # that file to consumed under this machine's UUID — on a
@@ -1271,9 +1353,9 @@ EOF
             # default: resume via the case's *) arm below, or at crit a fresh
             # conversation, via the r arm for a handoff the bound conversation
             # wrote with no merge armed, and the n arm otherwise.
-            IFS= read -rsn1 response || { echo; exit 130; }
+            IFS= read -rsn1 response || { echo; [ -z "$transplant_file" ] || rm -f "$transplant_file"; exit 130; }
             echo
-            case "$response" in $'\e') exit 130 ;; esac
+            case "$response" in $'\e') [ -z "$transplant_file" ] || rm -f "$transplant_file"; exit 130 ;; esac
             # At crit only y resumes, and n starts fresh as it always does.
             # Enter and any key not offered take the crit default, disarm
             # included on the n arm; r and d keep their meaning while a
@@ -1282,10 +1364,16 @@ EOF
                 case "$response" in
                     [yYnN]) ;;
                     [rRdD]) [ -n "$pending_handoff" ] || response=$_crit_default ;;
+                    [eE]) [ -n "$transplant_from" ] && [ -n "$claude_session_id" ] || response=$_crit_default ;;
                     *) response=$_crit_default ;;
                 esac
             fi
         fi
+        # e, offered beside a carry-over when this engine has a conversation of
+        # its own, resumes that one. Anywhere else it is a key not offered.
+        case "$response" in
+            [eE]) [ -z "$transplant_from" ] || [ -z "$claude_session_id" ] || response=earlier ;;
+        esac
         case "$response" in
             [nN]|[nN][oO])
                 _disarm_rotation_marker "$session_dir" "$pending_handoff"
@@ -1302,14 +1390,17 @@ EOF
                     if [ -n "$merge_kick" ]; then
                         warn "Rotation handoff takes this launch; re-run: cs $session_name -finish $merge_feature"
                     fi
+                    [ -z "$transplant_file" ] || rm -f "$transplant_file"
                     _exec_fresh_rebind "$session_dir" handoff "$(basename "$pending_handoff")" "$spawn_kick" ""
                     return $?
                 fi
                 # r without a pending handoff was never offered. At crit the
                 # ask has already turned it into n, so it reaches here only
-                # below crit, where the default is resume, disarm included.
+                # below crit, where the default is resume (or the carry-over
+                # when one is offered), disarm included.
                 _disarm_rotation_marker "$session_dir"
                 resume_id="$claude_session_id"
+                [ -z "$transplant_from" ] || do_transplant=1
                 ;;
             [dD])
                 # Nothing survives d: it retires the handoff it was offered, and
@@ -1321,6 +1412,14 @@ EOF
                 fi
                 # d without a pending handoff was never offered. As with r, it
                 # reaches here only below crit, where the default is resume.
+                # Beside a carry-over, d retires the handoff and carries over.
+                resume_id="$claude_session_id"
+                [ -z "$transplant_from" ] || do_transplant=1
+                ;;
+            earlier)
+                # Never typed: e, beside a carry-over, resuming this engine's
+                # own conversation instead. The handoff waits, as on y.
+                _disarm_rotation_marker "$session_dir" "$pending_handoff"
                 resume_id="$claude_session_id"
                 ;;
             switch-resume)
@@ -1339,12 +1438,63 @@ EOF
                 # conversation, while --continue means "most recent" and may
                 # resolve to a sibling Claude session the user ran in a
                 # different terminal between cs launches. Empty on an unbound
-                # session, which the fresh path below starts.
+                # session, which the fresh path below starts. Beside a
+                # carry-over, y takes it instead.
                 resume_id="$claude_session_id"
+                [ -z "$transplant_from" ] || do_transplant=1
                 ;;
         esac
         echo ""
     fi
+
+    # y on a carry-over: the converted Codex thread becomes a new Claude
+    # conversation that Claude resumes, staged as this engine's binding with
+    # reason transplant; SessionStart commits it once Claude has it open. When
+    # it cannot be placed or staged, one line says so and the launch does what
+    # y did before: resume this engine's own conversation, or start fresh.
+    if [ -n "${do_transplant:-}" ]; then
+        local _t_label _t_dest _t_sum
+        _t_label=$(_transplant_label "$transplant_from")
+        _t_dest="$(_claude_project_dir "$session_dir")/$transplant_uuid.jsonl"
+        if _claude_transplant_place "$session_dir" "$transplant_file" "$transplant_uuid"; then
+            _t_sum=$(cksum < "$_t_dest") || _t_sum=""
+            if cs_binding_stage "$session_dir" claude "$claude_session_id" "$transplant_uuid" transplant "" \
+                "$transplant_from:$transplant_id"; then
+                printf "${DIM}Carrying over the %s conversation:${NC} %s ${DIM}(%s)${NC}\n" \
+                    "$_t_label" "${transplant_id:0:8}" "$transplant_size"
+                # The way back: an in-app /resume rebinds through SessionStart.
+                [ -z "$claude_session_id" ] \
+                    || printf "${DIM}The earlier Claude conversation stays. To return to it, in Claude:${NC} /resume %s\n" "$claude_session_id"
+                export CS_CLAUDE_SESSION_ID="$transplant_uuid"
+                local rc=0
+                # shellcheck disable=SC2086
+                cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" --resume "$transplant_uuid" ${launch_prompt:+"$launch_prompt"} || rc=$?
+                if [ "$rc" -ne 0 ] && [ "$(cs_binding_read "$session_dir" claude 2>/dev/null)" != "$transplant_uuid" ]; then
+                    # Claude failed before SessionStart bound it. Left as cs
+                    # placed it, the conversion is removed, or the next open
+                    # would name it as a newer conversation opened outside cs;
+                    # one Claude wrote to holds the user's turns and stays.
+                    if [ -n "$_t_sum" ] && [ "$(cksum 2>/dev/null < "$_t_dest")" = "$_t_sum" ]; then
+                        rm -f "$_t_dest"
+                    fi
+                    if [ -e "$_t_dest" ]; then
+                        printf 'Claude did not open the carried-over conversation; the binding is unchanged. To continue it: claude --resume %s\n' "$transplant_uuid" >&2
+                    else
+                        printf 'Claude did not open the carried-over conversation; the binding is unchanged. Reopen to be asked again.\n' >&2
+                    fi
+                fi
+                return "$rc"
+            fi
+            rm -f "$_t_dest"
+        fi
+        if [ -n "$claude_session_id" ]; then
+            printf 'cs: could not carry the %s conversation over; resuming the earlier Claude conversation.\n' "$_t_label" >&2
+        else
+            printf 'cs: could not carry the %s conversation over; starting a fresh conversation.\n' "$_t_label" >&2
+        fi
+        resume_id="$claude_session_id"
+    fi
+    [ -z "${transplant_file:-}" ] || rm -f "$transplant_file"
 
     if [ -n "$resume_id" ]; then
         # Resume errors keep the exact binding. Creating a replacement is

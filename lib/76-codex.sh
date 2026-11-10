@@ -165,14 +165,24 @@ _codex_commit_prepared() {  # session_dir, previous_id, thread_id, source
              .engine == "codex" and .run_id == $run and .session_id == $id)] | length > 0
         ' "$timeline" >/dev/null 2>&1; then started_recorded=1; fi
     fi
-    if [ -n "$previous_id" ] && [ "$rotated_recorded" = 0 ]; then
+    if [ "$rotated_recorded" = 0 ]; then
         # A launch that continues a rotation handoff stages that reason and the
-        # handoff's name; every other new thread is a plain fresh start.
-        local reason handoff
+        # handoff's name, and a carry-over the Claude conversation it carries;
+        # every other new thread is a plain fresh start. A first thread rotates
+        # from nothing and records no rotation, unless it was carried over:
+        # its lineage runs through the other engine's conversation.
+        local reason handoff carried
         reason=$(jq -r '.reason // ""' "$pending") || return 1
         handoff=$(jq -r '.handoff // ""' "$pending") || return 1
-        [ "$reason" = handoff ] || { reason=fresh; handoff=""; }
-        _timeline_rotated "$session_dir" "$previous_id" "$thread_id" "$reason" "$handoff" codex || return 1
+        carried=$(jq -r '.carried_from // ""' "$pending") || return 1
+        case "$reason" in
+            handoff) carried="" ;;
+            transplant) handoff="" ;;
+            *) reason=fresh; handoff=""; carried="" ;;
+        esac
+        if [ -n "$previous_id" ] || [ "$reason" = transplant ]; then
+            _timeline_rotated "$session_dir" "$previous_id" "$thread_id" "$reason" "$handoff" codex "$carried" || return 1
+        fi
     fi
     if [ "$started_recorded" = 0 ]; then
         _timeline_started "$session_dir" codex "$thread_id" "$source" || return 1
@@ -228,6 +238,26 @@ _codex_spawn_reconcile() {  # session_dir, helper, codex_bin
     # No turn ran, so the receipt goes back to pending: a rotation or finish
     # prompt that takes this open would otherwise run the turn that spends it.
     cs_write_atomic "$pending" jq 'del(.thread, .turn_before) | .attempted = false' "$pending"
+}
+
+# Offered when the session's newer conversation is Claude's (lib/47-transplant.sh).
+# The transcript is read before the question, so an empty or unreadable one is
+# never offered: the latter is named in one dim line and the usual question
+# follows. Sets the caller's transplant_from, transplant_id, transplant_size
+# and transplant_path (the transcript the new thread will carry).
+_codex_transplant_prepare() {  # session_dir, helper
+    local source transcript stats
+    source=$(_transplant_source "$1" codex) || return 0
+    transcript=$(_conversation_transcript "$1" "${source#* }") || return 0
+    if ! stats=$("$2" --read-claude "$transcript" 2>&1); then
+        _transplant_unreadable claude "$stats"
+        return 0
+    fi
+    [ "$(_transplant_count "$stats")" -gt 0 ] || return 0
+    transplant_from=claude
+    transplant_id=${source#* }
+    transplant_size=$(_transplant_size "$stats")
+    transplant_path=$transcript
 }
 
 # The actual cs process owns session.lock, so terminating that PID runs these
@@ -326,6 +356,12 @@ _launch_codex_bound() {
     # as on Claude: r starts a fresh thread that continues from it.
     local pending_handoff rotation_handoff="" rotation_origin=""
     pending_handoff=$(_pending_handoff_pick "$session_dir")
+    # Reopened here after a run under Claude: its conversation is the newer
+    # one, and an attended open offers to carry it over (lib/47-transplant.sh).
+    local transplant_from="" transplant_id="" transplant_size="" transplant_path="" carry=""
+    if [ "$intent" = auto ] && cs_interactive && ! _spawn_launch_is_owned "$session_name" "$session_dir"; then
+        _codex_transplant_prepare "$session_dir" "$helper"
+    fi
     if [ "$intent" = handoff ]; then
         # --from-handoff (and the relaunch of a cs -switch): the r answer,
         # unasked, as on Claude.
@@ -337,9 +373,19 @@ _launch_codex_bound() {
         rotation_origin=$(_switch_handoff_origin "$pending_handoff" "$session_dir")
         intent=fresh
     elif [ "$intent" = auto ] && cs_interactive \
-        && ! _spawn_launch_is_owned "$session_name" "$session_dir" && { [ -n "$recorded_id" ] || [ -n "$pending_handoff" ]; }; then
+        && ! _spawn_launch_is_owned "$session_name" "$session_dir" \
+        && { [ -n "$recorded_id" ] || [ -n "$pending_handoff" ] || [ -n "$transplant_from" ]; }; then
         local response=""
-        if [ -n "$pending_handoff" ]; then
+        if [ -n "$transplant_from" ]; then
+            if [ -n "$pending_handoff" ]; then
+                local t_origin=""
+                _handoff_is_local "$pending_handoff" "$session_dir" \
+                    || t_origin=" ${DIM}(from another checkout)${NC}"
+                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(basename "$pending_handoff")" "$t_origin"
+            fi
+            _transplant_offer_print "$transplant_from" "$transplant_id" codex "$transplant_size" \
+                "$recorded_id" "$pending_handoff" y
+        elif [ -n "$pending_handoff" ]; then
             local origin=""
             _handoff_is_local "$pending_handoff" "$session_dir" \
                 || origin=" ${DIM}(from another checkout)${NC}"
@@ -360,6 +406,9 @@ _launch_codex_bound() {
         fi
         IFS= read -rsn1 response || { printf '\n'; return 130; }
         printf '\n'
+        # Beside a carry-over, y (and the r or d that continue as y) takes
+        # it; e, offered when this engine has a thread of its own, resumes
+        # that one instead. Anywhere else e is a key not offered.
         case "$response" in
             $'\e') return 130 ;;
             [nN])
@@ -372,6 +421,7 @@ _launch_codex_bound() {
                     intent=fresh
                 else
                     _disarm_rotation_marker "$session_dir"
+                    [ -z "$transplant_from" ] || carry=1
                 fi
                 ;;
             [dD])
@@ -380,9 +430,19 @@ _launch_codex_bound() {
                     _handoff_set_status "$pending_handoff" discarded || true
                     printf "${DIM}Handoff discarded:${NC} %s\n" "$(basename "$pending_handoff")"
                 fi
+                [ -z "$transplant_from" ] || carry=1
                 ;;
-            *) _disarm_rotation_marker "$session_dir" "$pending_handoff" ;;
+            [eE])
+                _disarm_rotation_marker "$session_dir" "$pending_handoff"
+                [ -z "$transplant_from" ] || [ -n "$recorded_id" ] || carry=1
+                ;;
+            *)
+                _disarm_rotation_marker "$session_dir" "$pending_handoff"
+                [ -z "$transplant_from" ] || carry=1
+                ;;
         esac
+        # The carried thread is a new one, so the launch takes the fresh path.
+        [ -z "$carry" ] || intent=fresh
     elif [ "$intent" = fresh ]; then
         # An explicit fresh start with a rotation armed continues it. Claude's
         # --fresh does not: it disarms the marker (lib/75-launch.sh). Both are
@@ -434,6 +494,29 @@ _launch_codex_bound() {
     if [ -n "$recorded_id" ]; then
         cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
             --instructions-file "$context_file" --thread-id "$recorded_id" > "$prepared_file" || helper_status=$?
+    elif [ -n "$carry" ]; then
+        # y on a carry-over: the new thread takes the Claude conversation
+        # after its context. When that fails, the helper says why, one line
+        # says what happens instead, and the launch does what y did before:
+        # resume this engine's own thread, or start a fresh one.
+        cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
+            --instructions-file "$context_file" --history-from-claude "$transplant_path" \
+            --history-source "$transplant_id" > "$prepared_file" || helper_status=$?
+        if [ "$helper_status" -ne 0 ]; then
+            carry=""
+            helper_status=0
+            if [ -n "$previous_id" ]; then
+                printf 'cs: could not carry the Claude conversation over; resuming the earlier Codex conversation.\n' >&2
+                intent=auto
+                recorded_id="$previous_id"
+                cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
+                    --instructions-file "$context_file" --thread-id "$recorded_id" > "$prepared_file" || helper_status=$?
+            else
+                printf 'cs: could not carry the Claude conversation over; starting a fresh Codex conversation.\n' >&2
+                cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
+                    --instructions-file "$context_file" > "$prepared_file" || helper_status=$?
+            fi
+        fi
     else
         cs_run_child "$helper" --codex-bin "$codex_bin" --cwd "$session_dir" \
             --instructions-file "$context_file" > "$prepared_file" || helper_status=$?
@@ -462,15 +545,29 @@ _launch_codex_bound() {
             return 1
         }
     else
-        local stage_reason="${intent:-fresh}"
+        local stage_reason="${intent:-fresh}" carried_from="" start_source=fresh
         [ -z "$rotation_handoff" ] || stage_reason=handoff
-        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$rotation_handoff"; then
+        if [ -n "$carry" ]; then
+            stage_reason=transplant
+            carried_from="claude:$transplant_id"
+            start_source=transplant
+        fi
+        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$rotation_handoff" \
+            "$carried_from"; then
             _codex_launch_error "Could not stage Codex thread binding: $binding_file"
             return 1
         fi
-        if ! cs_run_with_lease "$meta_dir" _codex_commit_prepared "$session_dir" "$previous_id" "$thread_id" fresh; then
+        if ! cs_run_with_lease "$meta_dir" _codex_commit_prepared "$session_dir" "$previous_id" "$thread_id" "$start_source"; then
             _codex_launch_error "Could not save acknowledged Codex binding; prior transition remains recoverable: $binding_file"
             return 1
+        fi
+        if [ -n "$carry" ]; then
+            printf "${DIM}Carried over the Claude conversation:${NC} %s ${DIM}(%s)${NC}\n" \
+                "${transplant_id:0:8}" "$transplant_size"
+            # codex resume opens the earlier thread outside cs: the binding
+            # stays on the carried one.
+            [ -z "$previous_id" ] \
+                || printf "${DIM}The earlier Codex conversation stays. To return to it:${NC} codex resume %s\n" "$previous_id"
         fi
     fi
     if [ -n "$recorded_id" ]; then

@@ -250,8 +250,11 @@ _append_record() {  # file, jq args...
 # the conversation being left and the one about to start. Shape shared with
 # hooks/session-start.sh's rebind emitter (hooks cannot source bin/cs).
 # Report append failure so acknowledged transitions keep their recovery record.
-_timeline_rotated() {  # session_dir, from, to, reason, [handoff]
+# A carry-over (reason transplant) names the other engine's conversation it
+# continues as carried_from, "<engine>:<native id>".
+_timeline_rotated() {  # session_dir, from, to, reason, [handoff], [engine], [carried_from]
     local session_dir="$1" from="$2" to="$3" reason="$4" handoff="${5:-}" engine="${6:-claude}"
+    local carried="${7:-}"
     _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
     cs_append_inside "$session_dir/.cs/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg from "$from" \
@@ -259,8 +262,10 @@ _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
            --arg reason "$reason" \
            --arg handoff "$handoff" \
            --arg engine "$engine" --arg run_id "${CS_RUN_ID:-}" \
+           --arg carried "$carried" \
            '{ts: $ts, event: "rotated", engine: $engine, run_id: $run_id, from: $from, to: $to, reason: $reason}
-            + (if $handoff == "" then {} else {handoff: $handoff} end)'
+            + (if $handoff == "" then {} else {handoff: $handoff} end)
+            + (if $carried == "" then {} else {carried_from: $carried} end)'
 }
 
 # A native adapter calls this only after its conversation readiness acknowledgement.

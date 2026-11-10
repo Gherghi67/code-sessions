@@ -32,12 +32,16 @@ uuid=""
 while [ "$#" -gt 0 ]; do
     case "$1" in --session-id|--resume) uuid="$2"; shift 2 ;; *) shift ;; esac
 done
-if [ -n "$uuid" ]; then
+if [ -n "$uuid" ] && [ -z "${CS_CLAUDE_NO_START:-}" ]; then
     jq -nc --arg session_id "$uuid" --arg cwd "$CS_SESSION_DIR" \
         '{session_id:$session_id,cwd:$cwd,source:"startup"}' \
         | CLAUDE_PID=$$ bash "$CS_TEST_START_HOOK" >/dev/null
 fi
-exit 0
+# A run that wrote a record to the conversation it opened.
+if [ -n "$uuid" ] && [ -n "${CS_CLAUDE_WRITES:-}" ]; then
+    find "$CS_TRANSCRIPTS_DIR" -name "$uuid.jsonl" -exec sh -c 'printf "%s\n" "$1" >> "$2"' _ "$CS_CLAUDE_WRITES" {} \;
+fi
+exit "${CS_CLAUDE_EXIT:-0}"
 CLAUDE
     cat > "$CODEX_BIN" <<'CODEX'
 #!/usr/bin/env bash
@@ -49,13 +53,35 @@ printf '%s\n' "$*" >> "$CS_CODEX_LOG"
 printf '%s\n' "$@" > "$CS_CODEX_ARGV"
 exit 0
 CODEX
+    # The carry-over's conversions run the real helper (no app-server in them);
+    # a thread start stays stubbed, and one that carries a Claude conversation
+    # gets its own ID, or fails when CS_HELPER_FAIL_CARRY is set.
+    export CS_REAL_THREAD_HELPER="$SCRIPT_DIR/../bin/cs-codex-thread"
     cat > "$CS_CODEX_THREAD_BIN" <<'HELPER'
 #!/usr/bin/env bash
+case " $* " in
+    *" --export-claude "*|*" --read-claude "*)
+        printf '%s\n' "$*" >> "$CS_HELPER_LOG.real"
+        [ -n "${CS_HELPER_SWAP_STAGED:-}" ] || exec python3 "$CS_REAL_THREAD_HELPER" "$@"
+        # The converted transcript swapped for a link while the question waits.
+        python3 "$CS_REAL_THREAD_HELPER" "$@" || exit
+        while [ "$#" -gt 1 ] && [ "$1" != --out ]; do shift; done
+        [ "$1" != --out ] || ln -sf "$CS_HELPER_SWAP_STAGED" "$2"
+        exit 0
+        ;;
+esac
 printf '%s\n' "$*" >> "$CS_HELPER_LOG"
-thread_id=12345678-1234-1234-1234-123456789abc
+thread_id=${CS_HELPER_FRESH_ID:-12345678-1234-1234-1234-123456789abc}
 while [ "$#" -gt 0 ]; do
     if [ "$1" = --thread-id ]; then
         thread_id="$2"
+        shift 2
+    elif [ "$1" = --history-from-claude ]; then
+        if [ -n "${CS_HELPER_FAIL_CARRY:-}" ]; then
+            printf 'cs-codex-thread: codex app-server rejected thread/inject_items\n' >&2
+            exit 1
+        fi
+        thread_id=87654321-4321-4321-4321-cba987654321
         shift 2
     else
         shift
@@ -73,6 +99,8 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN CS_CODEX_THREAD_BIN
     unset CS_CLAUDE_LOG CS_CLAUDE_ENV CS_CODEX_LOG CS_HELPER_LOG CS_DEFAULT_ENGINE
+    unset CS_REAL_THREAD_HELPER CS_HELPER_FAIL_CARRY CS_HELPER_FRESH_ID CS_HELPER_SWAP_STAGED CS_ASSUME_TTY
+    unset CS_CLAUDE_NO_START CS_CLAUDE_WRITES CS_CLAUDE_EXIT
 }
 
 _engine_session_dir() {
@@ -486,6 +514,374 @@ test_collision_new_feature_preserves_explicit_engine() {
 }
 
 echo 'Engine selection tests'
+# --- Carrying the other engine's newer conversation over (lib/47-transplant.sh) ---
+
+_tp_codex_thread=12345678-1234-1234-1234-123456789abc
+_tp_carried_thread=87654321-4321-4321-4321-cba987654321
+
+# A saved Codex history for the stub helper's thread, where the real helper
+# finds it (CODEX_HOME defaults to ~/.codex).
+_tp_write_rollout() {  # thread_id
+    local folder="$HOME/.codex/sessions/2026/11/07"
+    mkdir -p "$folder"
+    {
+        jq -nc '{timestamp:"2026-11-07T10:00:00.000Z",type:"response_item",
+                 payload:{type:"message",role:"user",content:[{type:"input_text",text:"what is the codename?"}]}}'
+        jq -nc '{timestamp:"2026-11-07T10:00:01.000Z",type:"response_item",
+                 payload:{type:"custom_tool_call",name:"exec",call_id:"c1",input:"cat notes.txt"}}'
+        jq -nc '{timestamp:"2026-11-07T10:00:02.000Z",type:"response_item",
+                 payload:{type:"custom_tool_call_output",call_id:"c1",output:"AMBER-FALCON"}}'
+        jq -nc '{timestamp:"2026-11-07T10:00:03.000Z",type:"response_item",
+                 payload:{type:"message",role:"assistant",content:[{type:"output_text",text:"The codename is AMBER-FALCON."}]}}'
+    } > "$folder/rollout-2026-11-07T10-00-00-$1.jsonl"
+}
+
+_tp_project_dir() {  # session_dir
+    local resolved
+    resolved=$(cd -- "$1" && pwd -P)
+    printf '%s/%s\n' "$CS_TRANSCRIPTS_DIR" "${resolved//[^A-Za-z0-9]/-}"
+}
+
+# A Claude transcript for the session's bound conversation.
+_tp_write_transcript() {  # session_dir, conversation id
+    local proj
+    proj=$(_tp_project_dir "$1")
+    mkdir -p "$proj"
+    {
+        jq -nc --arg s "$2" '{type:"user",uuid:"u1",parentUuid:null,sessionId:$s,
+                 message:{role:"user",content:"find the budget"}}'
+        jq -nc --arg s "$2" '{type:"assistant",uuid:"a1",parentUuid:"u1",sessionId:$s,
+                 message:{role:"assistant",content:[{type:"text",text:"The budget is 42."}]}}'
+    } > "$proj/$2.jsonl"
+}
+
+_tp_claude_id() {  # session_dir
+    awk '/^claude_session_id:/ {print $2; exit}' "$1/.cs/local/state"
+}
+
+# Claude first, then Codex: the Codex thread is the newer conversation.
+_tp_claude_then_codex() {  # name
+    local output
+    output=$("$CS_BIN" "$1" --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    output=$("$CS_BIN" "$1" --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    _tp_write_rollout "$_tp_codex_thread"
+}
+
+test_claude_reopen_carries_the_newer_codex_conversation() {
+    local output session_dir old_id new_id proj
+    _tp_claude_then_codex carry || return 1
+    session_dir=$(_engine_session_dir carry)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" carry --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the offer names the newer conversation" || return 1
+    assert_output_contains "$output" "2 messages" "the offer says how much it carries" || return 1
+    assert_output_contains "$output" "resume the earlier Claude conversation instead" "e is offered beside an earlier conversation" || return 1
+    assert_output_contains "$output" "Carrying over the Codex conversation" "y says what it carries" || return 1
+    assert_output_contains "$output" "/resume $old_id" "y names the earlier conversation and the way back to it" || return 1
+    new_id=$(_tp_claude_id "$session_dir")
+    _is_uuid_shape "$new_id" || { echo "  FAIL: no new Claude binding: $new_id"; return 1; }
+    [ "$new_id" != "$old_id" ] || { echo "  FAIL: y kept the earlier Claude conversation"; return 1; }
+    assert_eq "--name carry --resume $new_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "Claude resumes the carried conversation" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    assert_file_contains "$proj/$new_id.jsonl" 'The codename is AMBER-FALCON' "the transcript holds the Codex conversation" || return 1
+    assert_file_contains "$proj/$new_id.jsonl" "\"sessionId\":\"$new_id\"" "the transcript is the new conversation's" || return 1
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "no converted copy is left behind" || return 1
+    assert_file_not_exists "$session_dir/.cs/local/pending-binding-claude.json" "SessionStart committed the staged binding" || return 1
+    assert_eq "$_tp_codex_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the Codex binding is untouched" || return 1
+    jq -e --arg from "$old_id" --arg to "$new_id" --arg src "codex:$_tp_codex_thread" \
+        'select(.event == "rotated" and .engine == "claude" and .from == $from and .to == $to
+                and .reason == "transplant" and .carried_from == $src)' \
+        "$session_dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no transplant rotation in the timeline"; return 1; }
+    output=$("$CS_BIN" carry -conversations 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "rotated (transplant from codex:${_tp_codex_thread:0:8})" "cs -conversations names the source" || return 1
+
+    # The run ended under Claude, so the next Claude open asks as before.
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" carry --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "The newest conversation" "a same-engine reopen offers nothing" || return 1
+    assert_output_not_contains "$output" "carried over" "a same-engine reopen tries no conversion" || return 1
+    assert_eq "--name carry --resume $new_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "the carried conversation is now the one resumed" || return 1
+}
+
+_is_uuid_shape() {
+    [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+test_claude_reopen_e_resumes_the_earlier_conversation() {
+    local output session_dir old_id
+    _tp_claude_then_codex earlier || return 1
+    session_dir=$(_engine_session_dir earlier)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" earlier --engine claude <<< "e" 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--name earlier --resume $old_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "e resumes Claude's own conversation" || return 1
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "e keeps the binding" || return 1
+    assert_eq 0 "$(find "$(_tp_project_dir "$session_dir")" -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')" \
+        "e places no carried transcript" || return 1
+    assert_eq 0 "$(find "$(_tp_project_dir "$session_dir")" -name '*cs-transplant*' | wc -l | tr -d ' ')" "e leaves no converted copy" || return 1
+}
+
+# The conversion waits for the answer where Claude keeps the session's
+# conversations, outside the session an agent can write, under a name neither
+# Claude nor discovery lists; y renames it in.
+test_claude_carry_over_is_never_staged_in_the_session() {
+    local output session_dir real_dir out proj new_id
+    _tp_claude_then_codex staged || return 1
+    session_dir=$(_engine_session_dir staged)
+    real_dir=$(cd -- "$session_dir" && pwd -P)
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" staged --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    out=$(sed -n 's/.* --out \([^ ]*\) .*/\1/p' "$CS_HELPER_LOG.real" | tail -1)
+    [ -n "$out" ] || { echo "  FAIL: the helper wrote no transcript"; return 1; }
+    case "$out" in
+        "$session_dir"/*|"$real_dir"/*) echo "  FAIL: staged in the session: $out"; return 1 ;;
+        *.jsonl) echo "  FAIL: staged under a name Claude lists: $out"; return 1 ;;
+    esac
+    new_id=$(_tp_claude_id "$session_dir")
+    proj=$(_tp_project_dir "$session_dir")
+    assert_file_contains "$proj/$new_id.jsonl" 'AMBER-FALCON' "y places the converted conversation" || return 1
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "no staged copy is left behind" || return 1
+}
+
+test_claude_never_places_a_swapped_staged_transcript() {
+    local output session_dir old_id proj
+    _tp_claude_then_codex swapped || return 1
+    session_dir=$(_engine_session_dir swapped)
+    old_id=$(_tp_claude_id "$session_dir")
+    jq -nc '{type:"user",message:{role:"user",content:"SWAPPED-IN"}}' > "$TEST_TMPDIR/swapped.jsonl"
+    output=$(CS_HELPER_SWAP_STAGED="$TEST_TMPDIR/swapped.jsonl" CS_ASSUME_TTY=1 \
+        "$CS_BIN" swapped --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "could not carry the Codex conversation over; resuming the earlier Claude conversation" \
+        "a staged copy that is no longer a plain file is refused" || return 1
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "the binding is unchanged" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    if cat "$proj"/*.jsonl 2>/dev/null | grep -qF SWAPPED-IN; then
+        echo "  FAIL: the link's target was placed as a conversation"; return 1
+    fi
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "the refused copy is removed" || return 1
+}
+
+# Claude exits with an error before it opens the carried conversation: the
+# conversion it never wrote to is removed, so it is not left behind as the
+# newest conversation here, and the next open asks again.
+test_claude_carry_over_never_opened_is_removed() {
+    local output session_dir old_id proj status=0
+    _tp_claude_then_codex unopened || return 1
+    session_dir=$(_engine_session_dir unopened)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_CLAUDE_NO_START=1 CS_CLAUDE_EXIT=1 CS_ASSUME_TTY=1 \
+        "$CS_BIN" unopened --engine claude <<< "y" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a failed Claude run reported success"; return 1; }
+    assert_output_contains "$output" "Reopen to be asked again" "one line says what to do" || return 1
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "the binding is unchanged" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    assert_eq 0 "$(find "$proj" -name '*.jsonl' | wc -l | tr -d ' ')" "the unopened conversion is removed" || return 1
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "no converted copy is left behind" || return 1
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" unopened --engine claude <<< "e" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the next open asks again" || return 1
+}
+
+# A carried conversation Claude wrote to before it failed holds the user's
+# work: it stays, and one line says how to continue it.
+test_claude_carry_over_written_before_a_failure_is_kept() {
+    local output session_dir old_id proj placed status=0
+    _tp_claude_then_codex written || return 1
+    session_dir=$(_engine_session_dir written)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_CLAUDE_NO_START=1 CS_CLAUDE_EXIT=1 CS_ASSUME_TTY=1 \
+        CS_CLAUDE_WRITES='{"type":"user","message":{"role":"user","content":"KEEP-THIS-TURN"}}' \
+        "$CS_BIN" written --engine claude <<< "y" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a failed Claude run reported success"; return 1; }
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "the binding is unchanged" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    placed=$(find "$proj" -name '*.jsonl')
+    assert_eq 1 "$(printf '%s' "$placed" | grep -c .)" "one carried conversation is placed" || return 1
+    assert_file_contains "$placed" KEEP-THIS-TURN "the conversation Claude wrote to is kept" || return 1
+    assert_output_contains "$output" "claude --resume $(basename "$placed" .jsonl)" "one line says how to continue it" || return 1
+    assert_output_not_contains "$output" "Reopen to be asked again" "it is not offered as lost" || return 1
+}
+
+# Claude opened the carried conversation (SessionStart bound it), then exited
+# with an error: it is the session's conversation now and stays.
+test_claude_carry_over_opened_then_failed_is_kept() {
+    local output session_dir old_id new_id status=0
+    _tp_claude_then_codex opened-failed || return 1
+    session_dir=$(_engine_session_dir opened-failed)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_CLAUDE_EXIT=1 CS_ASSUME_TTY=1 "$CS_BIN" opened-failed --engine claude <<< "y" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a failed Claude run reported success"; return 1; }
+    new_id=$(_tp_claude_id "$session_dir")
+    [ "$new_id" != "$old_id" ] || { echo "  FAIL: SessionStart did not bind the carried conversation"; return 1; }
+    assert_file_contains "$(_tp_project_dir "$session_dir")/$new_id.jsonl" AMBER-FALCON "the bound conversation stays" || return 1
+    assert_output_not_contains "$output" "did not open the carried-over conversation" "nothing is reported lost" || return 1
+}
+
+# A branch name that starts with a dash (an agent can make one with git
+# update-ref and symbolic-ref) reaches the converter as the branch, never as
+# an option that withdraws the offer.
+test_claude_carry_over_keeps_a_dash_led_branch() {
+    local output session_dir new_id
+    _tp_claude_then_codex dash-branch || return 1
+    session_dir=$(_engine_session_dir dash-branch)
+    git -C "$session_dir" update-ref refs/heads/-dash HEAD \
+        && git -C "$session_dir" symbolic-ref HEAD refs/heads/-dash || { echo "  FAIL: could not make the branch"; return 1; }
+    assert_eq -dash "$(git -C "$session_dir" branch --show-current)" "the session is on the dash-led branch" || return 1
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" dash-branch --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "cannot be carried over" "the branch name does not withdraw the offer" || return 1
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the carry-over is offered" || return 1
+    new_id=$(_tp_claude_id "$session_dir")
+    assert_file_contains "$(_tp_project_dir "$session_dir")/$new_id.jsonl" '"gitBranch":"-dash"' "the transcript names the branch" || return 1
+}
+
+test_claude_reopen_n_starts_fresh_without_carrying() {
+    local output session_dir old_id new_id
+    _tp_claude_then_codex fresh-tp || return 1
+    session_dir=$(_engine_session_dir fresh-tp)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" fresh-tp --engine claude <<< "n" 2>&1) || { echo "$output"; return 1; }
+    new_id=$(_tp_claude_id "$session_dir")
+    [ "$new_id" != "$old_id" ] || { echo "  FAIL: n resumed"; return 1; }
+    assert_output_contains "$(tail -1 "$CS_CLAUDE_LOG")" "--session-id $new_id" "n starts a fresh conversation" || return 1
+    [ ! -e "$(_tp_project_dir "$session_dir")/$new_id.jsonl" ] || { echo "  FAIL: n placed a carried transcript"; return 1; }
+    if grep -q '"reason":"transplant"' "$session_dir/.cs/timeline.jsonl"; then
+        echo "  FAIL: n recorded a transplant"; return 1
+    fi
+}
+
+# Staging makes Claude Code's projects dir before the answer, so it must be
+# made the way Claude Code makes it: private, whatever the answer.
+test_claude_staging_makes_the_projects_dir_private() {
+    local output session_dir proj
+    output=$("$CS_BIN" private-proj --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    _tp_write_rollout "$_tp_codex_thread"
+    session_dir=$(_engine_session_dir private-proj)
+    proj=$(_tp_project_dir "$session_dir")
+    [ ! -e "$proj" ] || { echo "  FAIL: the projects dir exists before Claude's first open"; return 1; }
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" private-proj --engine claude <<< "n" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the carry-over was offered" || return 1
+    [ -d "$proj" ] || { echo "  FAIL: staging made no projects dir"; return 1; }
+    assert_eq 700 "$(_file_mode "$proj")" "the projects dir is private" || return 1
+}
+
+test_claude_first_open_after_codex_offers_the_carry_over() {
+    local output session_dir new_id
+    output=$("$CS_BIN" codex-first --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    _tp_write_rollout "$_tp_codex_thread"
+    session_dir=$(_engine_session_dir codex-first)
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" codex-first --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "an engine's first open still offers" || return 1
+    assert_output_not_contains "$output" "earlier" "no e without an earlier conversation" || return 1
+    assert_output_not_contains "$output" "/resume" "no way back is named without an earlier conversation" || return 1
+    new_id=$(_tp_claude_id "$session_dir")
+    _is_uuid_shape "$new_id" || { echo "  FAIL: no binding: $new_id"; return 1; }
+    assert_eq "--name codex-first --resume $new_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "y resumes the carried conversation" || return 1
+    jq -e --arg to "$new_id" 'select(.event == "rotated" and .reason == "transplant" and .from == "" and .to == $to)' \
+        "$session_dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: a first carry-over records its lineage"; return 1; }
+}
+
+test_unreadable_codex_history_falls_back_to_the_usual_question() {
+    local output session_dir old_id
+    output=$("$CS_BIN" no-history --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    output=$("$CS_BIN" no-history --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    session_dir=$(_engine_session_dir no-history)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" no-history --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "the Codex conversation cannot be carried over: Codex keeps no saved history" "the reason is one line" || return 1
+    assert_output_contains "$output" "Continue previous conversation?" "the usual question follows" || return 1
+    assert_eq "--name no-history --resume $old_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "y resumes as before" || return 1
+}
+
+test_unattended_and_explicit_resume_never_carry_over() {
+    local output session_dir old_id
+    _tp_claude_then_codex quiet || return 1
+    session_dir=$(_engine_session_dir quiet)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" quiet --engine claude --resume 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "The newest conversation" "--resume asks nothing" || return 1
+    assert_eq "--name quiet --resume $old_id" "$(tail -1 "$CS_CLAUDE_LOG" | sed 's@ /color.*@@')" "--resume keeps its binding" || return 1
+    output=$("$CS_BIN" quiet --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    output=$("$CS_BIN" quiet --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "The newest conversation" "an unattended open asks nothing" || return 1
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "no carry-over without an answer" || return 1
+}
+
+# Codex first, then Claude with a transcript: the Claude conversation is newer.
+_tp_codex_then_claude() {  # name
+    local output session_dir
+    output=$("$CS_BIN" "$1" --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    output=$("$CS_BIN" "$1" --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    session_dir=$(_engine_session_dir "$1")
+    _tp_write_transcript "$session_dir" "$(_tp_claude_id "$session_dir")"
+}
+
+test_codex_reopen_carries_the_newer_claude_conversation() {
+    local output session_dir claude_id transcript
+    _tp_codex_then_claude to-codex || return 1
+    session_dir=$(_engine_session_dir to-codex)
+    claude_id=$(_tp_claude_id "$session_dir")
+    transcript="$(_tp_project_dir "$session_dir")/$claude_id.jsonl"
+    : > "$CS_HELPER_LOG"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" to-codex --engine codex <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Claude's" "the offer names the newer conversation" || return 1
+    assert_output_contains "$output" "resume the earlier Codex conversation instead" "e is offered beside the earlier thread" || return 1
+    assert_output_contains "$output" "Carried over the Claude conversation" "y says what it carried" || return 1
+    assert_output_contains "$output" "codex resume $_tp_codex_thread" "y names the earlier thread and the way back to it" || return 1
+    assert_file_contains "$CS_HELPER_LOG" "history-from-claude $transcript --history-source $claude_id" "the new thread carries the transcript" || return 1
+    assert_file_not_contains "$CS_HELPER_LOG" "thread-id" "a carry-over starts a new thread" || return 1
+    assert_eq "$_tp_carried_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the carried thread is bound" || return 1
+    assert_file_contains "$CS_CODEX_LOG" "resume $_tp_carried_thread" "Codex opens the carried thread" || return 1
+    jq -e --arg from "$_tp_codex_thread" --arg to "$_tp_carried_thread" --arg src "claude:$claude_id" \
+        'select(.event == "rotated" and .engine == "codex" and .from == $from and .to == $to
+                and .reason == "transplant" and .carried_from == $src)' \
+        "$session_dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no transplant rotation in the timeline"; return 1; }
+    jq -e --arg id "$_tp_carried_thread" 'select(.event == "started" and .engine == "codex" and .session_id == $id
+        and .source == "transplant")' "$session_dir/.cs/timeline.jsonl" >/dev/null \
+        || { echo "  FAIL: the carried thread's start is not recorded"; return 1; }
+    assert_eq "$claude_id" "$(_tp_claude_id "$session_dir")" "the Claude binding is untouched" || return 1
+}
+
+test_codex_first_open_after_claude_names_no_earlier_thread() {
+    local output session_dir
+    output=$("$CS_BIN" claude-first --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    session_dir=$(_engine_session_dir claude-first)
+    _tp_write_transcript "$session_dir" "$(_tp_claude_id "$session_dir")"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" claude-first --engine codex <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Carried over the Claude conversation" "an engine's first open still carries over" || return 1
+    assert_output_not_contains "$output" "earlier" "no e without an earlier thread" || return 1
+    assert_output_not_contains "$output" "codex resume" "no way back is named without an earlier thread" || return 1
+    assert_eq "$_tp_carried_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the carried thread is bound" || return 1
+}
+
+test_codex_reopen_e_and_n_do_not_carry() {
+    local output session_dir
+    _tp_codex_then_claude codex-keys || return 1
+    session_dir=$(_engine_session_dir codex-keys)
+    : > "$CS_HELPER_LOG"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" codex-keys --engine codex <<< "e" 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$CS_HELPER_LOG" "thread-id $_tp_codex_thread" "e refreshes the earlier thread" || return 1
+    assert_file_not_contains "$CS_HELPER_LOG" "history-from-claude" "e carries nothing" || return 1
+    # Back under Claude, then n under Codex: a fresh thread without the history.
+    output=$("$CS_BIN" codex-keys --engine claude </dev/null 2>&1) || { echo "$output"; return 1; }
+    : > "$CS_HELPER_LOG"
+    output=$(CS_HELPER_FRESH_ID=11111111-1111-4111-8111-111111111111 CS_ASSUME_TTY=1 \
+        "$CS_BIN" codex-keys --engine codex <<< "n" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Claude's" "the offer is made again" || return 1
+    assert_file_not_contains "$CS_HELPER_LOG" "history-from-claude" "n carries nothing" || return 1
+    assert_eq 11111111-1111-4111-8111-111111111111 "$(cat "$session_dir/.cs/local/codex-thread-id")" "n binds a fresh thread" || return 1
+}
+
+test_codex_carry_failure_resumes_the_earlier_thread() {
+    local output session_dir
+    _tp_codex_then_claude carry-fails || return 1
+    session_dir=$(_engine_session_dir carry-fails)
+    : > "$CS_HELPER_LOG"
+    output=$(CS_HELPER_FAIL_CARRY=1 CS_ASSUME_TTY=1 "$CS_BIN" carry-fails --engine codex <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "rejected thread/inject_items" "the helper's reason is shown" || return 1
+    assert_output_contains "$output" "could not carry the Claude conversation over; resuming the earlier Codex conversation" "one line says what happens instead" || return 1
+    assert_file_contains "$CS_HELPER_LOG" "thread-id $_tp_codex_thread" "the earlier thread is refreshed" || return 1
+    assert_eq "$_tp_codex_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the binding is unchanged" || return 1
+    if grep -q '"reason":"transplant"' "$session_dir/.cs/timeline.jsonl"; then
+        echo "  FAIL: a failed carry-over recorded a transplant"; return 1
+    fi
+}
+
 run_test test_collision_resume_preserves_explicit_engine
 run_test test_collision_attended_open_preserves_explicit_engine
 run_test test_collision_without_explicit_engine_uses_feature_preference
@@ -514,4 +910,21 @@ run_test test_profile_reopen_refreshes_login_without_overwriting_preferences
 run_test test_profile_launch_without_the_variable_shares_the_default_login
 run_test test_profile_launch_keeps_a_chosen_credential_dir
 run_test test_original_launch_leaves_the_credential_dir_alone
+run_test test_claude_reopen_carries_the_newer_codex_conversation
+run_test test_claude_reopen_e_resumes_the_earlier_conversation
+run_test test_claude_carry_over_is_never_staged_in_the_session
+run_test test_claude_never_places_a_swapped_staged_transcript
+run_test test_claude_carry_over_never_opened_is_removed
+run_test test_claude_carry_over_written_before_a_failure_is_kept
+run_test test_claude_carry_over_opened_then_failed_is_kept
+run_test test_claude_carry_over_keeps_a_dash_led_branch
+run_test test_claude_reopen_n_starts_fresh_without_carrying
+run_test test_claude_staging_makes_the_projects_dir_private
+run_test test_claude_first_open_after_codex_offers_the_carry_over
+run_test test_unreadable_codex_history_falls_back_to_the_usual_question
+run_test test_unattended_and_explicit_resume_never_carry_over
+run_test test_codex_reopen_carries_the_newer_claude_conversation
+run_test test_codex_first_open_after_claude_names_no_earlier_thread
+run_test test_codex_reopen_e_and_n_do_not_carry
+run_test test_codex_carry_failure_resumes_the_earlier_thread
 report_results
