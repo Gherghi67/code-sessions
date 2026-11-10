@@ -60,12 +60,17 @@ done
 # could: cs's marks must never write through it.
 [ -z "${AGY_PLANT_LINK:-}" ] \
     || ln -s "$AGY_PLANT_LINK" "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/seen-$conversation"
+[ -z "${AGY_PLANT_BOUND:-}" ] \
+    || ln -s "$AGY_PLANT_BOUND" "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/bound"
 [ -z "${AGY_PLANT_LOG:-}" ] \
     || { rm -f "$CS_SESSION_META_DIR/local/session.log"; ln -s "$AGY_PLANT_LOG" "$CS_SESSION_META_DIR/local/session.log"; }
 hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
 fire() {  # event, payload
     local cmd
     [ -f "$hooks" ] || return 0
+    # A plugin switched off in agy's config runs no hooks, which is what
+    # doctor and the rotation preflight take enabled=false to mean.
+    [ "$(jq -r '.plugins.cs.enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" != false ] || return 0
     jq -r --arg e "$1" '.[] | (.[$e] // [])[] | (.hooks // [.])[] | .command' "$hooks" \
         | while IFS= read -r cmd; do
             printf '%s' "$2" | (cd "${hooks%/*}" && sh -c "$cmd") >> "$AGY_HOOK_OUT" 2>&1
@@ -110,7 +115,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_RAW_SWITCH
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -124,7 +129,8 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
-    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_RAW_SWITCH
+    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
+    unset CS_TMUX_BIN AGY_TMUX_LOG
 }
 
 # cs's plugin as the installer writes it, in the test's HOME.
@@ -972,11 +978,11 @@ test_capabilities_claim_rotation_but_not_deferred_features() {
     assert_output_contains "$output" 'engine: antigravity' || return 1
     assert_output_contains "$output" "conversation: $AGY_NEW_ID" || return 1
     assert_output_contains "$output" 'capabilities: launch exact_resume startup_context recovery_autosave memory_index' || return 1
-    for capability in launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch; do
+    for capability in launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief; do
         CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" \
             || { echo "  FAIL: $capability should be supported"; return 1; }
     done
-    for capability in spawn_brief mail_delivery feature_finish status_line; do
+    for capability in mail_delivery feature_finish status_line; do
         status=0
         output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" 2>&1) \
             || status=$?
@@ -992,28 +998,206 @@ test_unknown_engine_errors_list_all_three() {
     assert_not_exists "$(_session_dir whichever)"
 }
 
-test_spawn_refuses_a_brief_or_task_it_cannot_deliver() {
-    local output status=0 brief="$TEST_TMPDIR/brief.md"
+# The token a spawn's own tmux window carries, and the kickoff its open sends
+# for a brief from the spawner boss (lib/52-spawn.sh builds both).
+AGY_SPAWN_TOKEN=0123456789abcdef0123456789abcdef
+AGY_SPAWN_KICK='Spawned by boss. Your brief is .cs/brief.md: read it first. Then begin. Send results with: cs -msg boss -k result "..."'
+
+# A seed as cs -spawn stages it: the token, the spawner, any tasks, then the
+# brief marker (SPAWN_BRIEF_MARK) and the brief.
+_stage_seed() {  # session_name, token, [task]
+    local seed="$CS_SESSIONS_ROOT/.spawn/$1.seed"
+    mkdir -p "${seed%/*}"
+    {
+        printf '%s\nboss\n' "$2"
+        [ -z "${3:-}" ] || printf '%s\n' "$3"
+        printf '%s\n%s\n' '--- cs-spawn-brief ---' '# Brief for the test worker'
+    } > "$seed"
+}
+
+# A recording tmux, so cs -spawn opens its window without a tmux server.
+_fake_tmux() {
+    export CS_TMUX_BIN="$TEST_TMPDIR/bin/fake-tmux" AGY_TMUX_LOG="$TEST_TMPDIR/tmux.log"
+    cat > "$CS_TMUX_BIN" <<'TMUX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$AGY_TMUX_LOG"
+[ "$1" != -L ] || shift 2
+case "$1" in
+    has-session) exit 1 ;;
+    new-session|new-window) case "$*" in *" -P "*) echo '@0' ;; esac ;;
+esac
+exit 0
+TMUX
+    chmod +x "$CS_TMUX_BIN"
+}
+
+test_spawn_refuses_a_task_queue_before_staging_anything() {
+    local output status=0
     output=$("$CS_BIN" -spawn worker --engine antigravity --task 'do it' 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: a task under antigravity must be refused"; return 1; }
-    assert_output_contains "$output" 'takes no brief or task' "says why" || return 1
-    printf '# brief\n' > "$brief"
-    status=0
-    output=$("$CS_BIN" -spawn worker --engine antigravity --brief "$brief" 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: a brief under antigravity must be refused"; return 1; }
+    assert_output_contains "$output" 'Antigravity does not host the walk-away task queue; use --brief without --task' "says why" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "no seed is staged"
 }
 
-# A seed cs -spawn staged under another engine (its window died before it
-# launched) stays for the next Claude or Codex open, and the open says so.
-test_a_staged_spawn_seed_is_named_and_left_for_another_engine() {
+# cs -spawn stages a brief and opens its window under agy. The window's open,
+# which carries the spawn's token, writes the brief in and sends the kickoff
+# as agy's first prompt, once: the seed is spent before agy starts.
+test_spawn_delivers_its_brief_as_the_first_prompt_once() {
+    local output dir token seed="$CS_SESSIONS_ROOT/.spawn/worker.seed" brief="$TEST_TMPDIR/brief.md"
+    _fake_tmux
+    printf '# Brief for the test worker\n' > "$brief"
+    output=$(CS_SESSION_NAME=boss "$CS_BIN" -spawn worker --engine antigravity --brief "$brief" 2>&1) \
+        || { echo "  FAIL: the spawn must be staged: $output"; return 1; }
+    assert_file_exists "$seed" "the brief is staged" || return 1
+    assert_file_contains "$AGY_TMUX_LOG" " --engine 'antigravity'" "the window opens under agy" || return 1
+    token=$(head -1 "$seed")
+    assert_file_contains "$AGY_TMUX_LOG" "'CS_SPAWN_TOKEN=$token'" "the window's open carries the seed's token" || return 1
+    output=$(CS_SPAWN_TOKEN=$token "$CS_BIN" worker --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir worker)
+    assert_eq '# Brief for the test worker' "$(cat "$dir/.cs/brief.md")" "the brief is written in" || return 1
+    assert_eq boss "$(cat "$dir/.cs/local/spawned-by")" "the spawner is the report-back address" || return 1
+    assert_eq --prompt-interactive "$(sed -n 1p "$AGY_ARGV")" "the kickoff goes in as agy's first prompt" || return 1
+    assert_eq "$AGY_SPAWN_KICK" "$(sed -n 2p "$AGY_ARGV")" "the kickoff names the brief and the spawner" || return 1
+    assert_eq 2 "$(wc -l < "$AGY_ARGV" | tr -d ' ')" "nothing else on the command line" || return 1
+    assert_not_exists "$seed" "the seed is spent" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding worker)" "the hook binds the conversation the kickoff started" || return 1
+    assert_output_not_contains "$output" 'no turn start' "a run that reached the model raises no doubt" || return 1
+    output=$(CS_SPAWN_TOKEN=$token "$CS_BIN" worker 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "a reopen, even from the same window, sends no kickoff" || return 1
+    output=$("$CS_BIN" worker --fresh 2>&1) || { echo "$output"; return 1; }
+    assert_eq "" "$(_agy_argv)" "nor does a fresh open"
+}
+
+# A run that ended before its first turn may still have done work, so its
+# kickoff is never sent again; the brief stays, and the open says so.
+test_a_spawn_run_left_before_its_first_turn_never_replays_the_kickoff() {
+    local output status=0 dir
+    output=$(AGY_NO_TURN=1 "$CS_BIN" worker --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir worker)
+    _stage_seed worker "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN AGY_NO_TURN=1 AGY_EXIT=1 "$CS_BIN" worker 2>&1) || status=$?
+    assert_eq 1 "$status" "agy's failure reaches the caller" || return 1
+    assert_eq "$AGY_SPAWN_KICK" "$(sed -n 2p "$AGY_ARGV")" "the kickoff was sent" || return 1
+    assert_output_contains "$output" 'no turn start' "the open says the kickoff may not have arrived" || return 1
+    assert_file_exists "$dir/.cs/brief.md" "the brief stays for the agent to read" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "the seed is spent" || return 1
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" worker 2>&1) || { echo "$output"; return 1; }
+    assert_eq "" "$(_agy_argv)" "the next open sends no kickoff"
+}
+
+# The hook reads any bound entry, a dangling link included, as the run being
+# bound, and the open after the run reads it the same way.
+test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt() {
+    local output
+    _stage_seed linked "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN AGY_NO_TURN=1 AGY_PLANT_BOUND="$TEST_TMPDIR/nowhere" \
+        "$CS_BIN" linked --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" "the kickoff was sent" || return 1
+    assert_output_not_contains "$output" 'no turn start' "a bound link reads as bound, as the hook reads it"
+}
+
+# agy hosts no walk-away queue: a seed with tasks (staged under Claude, its
+# window dead) is not taken, nor asked about, at an agy open. The open goes
+# on without it and names the Claude open that takes it.
+test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    output=$("$CS_BIN" worker --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _stage_seed worker "$AGY_SPAWN_TOKEN" 'run the tests'
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" worker 2>&1) \
+        || { echo "  FAIL: the open must go on: $output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "agy starts without a kickoff" || return 1
+    assert_output_contains "$output" 'only Claude runs the walk-away queue' "the open says why" || return 1
+    assert_output_contains "$output" 'cs worker --engine claude' "and names the open that takes it" || return 1
+    assert_file_exists "$seed" "the seed stays staged" || return 1
+    assert_not_exists "$(_session_dir worker)/.cs/brief.md" "nothing is delivered" || return 1
+    _stage_seed foreign "$AGY_SPAWN_TOKEN" 'run the tests'
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" foreign --engine antigravity 2>&1 </dev/null) \
+        || { echo "  FAIL: the open must go on: $output"; return 1; }
+    assert_output_not_contains "$output" 'A spawn seed is staged for this session:' "a seed it cannot take is not offered" || return 1
+    assert_output_contains "$output" 'only Claude runs the walk-away queue' "the open says why" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/foreign.seed" "the foreign seed stays staged"
+}
+
+# A seed without its window's token is shown and asked about on a terminal;
+# with none, it stays staged and the open goes on without it.
+test_a_foreign_spawn_seed_is_left_staged_without_a_terminal() {
     local output seed="$CS_SESSIONS_ROOT/.spawn/seeded.seed"
     output=$("$CS_BIN" seeded --engine antigravity 2>&1) || { echo "$output"; return 1; }
-    mkdir -p "${seed%/*}"
-    printf 'token\ntask: do it\n' > "$seed"
+    _stage_seed seeded "$AGY_SPAWN_TOKEN"
     output=$("$CS_BIN" seeded 2>&1) || { echo "  FAIL: the open must go on: $output"; return 1; }
-    assert_output_contains "$output" 'A spawn seed is staged for seeded' "the open names the seed" || return 1
-    assert_file_exists "$seed" "the seed stays staged"
+    assert_output_contains "$output" 'Spawn seed left staged' "the open names the seed" || return 1
+    assert_file_exists "$seed" "the seed stays staged" || return 1
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "no kickoff without consent" || return 1
+    assert_not_exists "$(_session_dir seeded)/.cs/brief.md" "no brief without consent"
+}
+
+# agy takes one first prompt: a rotation handoff the open carries takes it,
+# and the seed waits for a later open.
+test_a_rotation_open_leaves_a_spawn_seed_staged() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/turning.seed"
+    output=$("$CS_BIN" turning --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _arm_rotation turning
+    _stage_seed turning "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN AGY_NEW_ID=22222222-2222-4222-8222-222222222222 \
+        "$CS_BIN" turning --from-handoff 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$AGY_ARGV" 'Read .cs/handoffs/2026-11-05-rotate.md FIRST' "the handoff takes the first prompt" || return 1
+    assert_file_not_contains "$AGY_ARGV" 'Spawned by' "the kickoff waits" || return 1
+    assert_output_contains "$output" 'stays staged' "the open says so" || return 1
+    assert_file_exists "$seed" "the seed stays staged for a later open" || return 1
+    assert_not_exists "$(_session_dir turning)/.cs/brief.md" "nothing is delivered"
+}
+
+# An agy without --prompt-interactive cannot take the kickoff: the open goes
+# on and the seed stays staged, rather than being spent with nothing sent.
+test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/older.seed"
+    output=$("$CS_BIN" older --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _stage_seed older "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN AGY_HELP_OMIT=--prompt-interactive "$CS_BIN" older 2>&1) \
+        || { echo "  FAIL: the open must go on: $output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "the open goes on without a kickoff" || return 1
+    assert_output_contains "$output" 'does not list --prompt-interactive' "the open says why" || return 1
+    assert_file_exists "$seed" "the seed stays staged" || return 1
+    assert_not_exists "$(_session_dir older)/.cs/brief.md" "nothing is delivered"
+}
+
+# Nobody sits at the spawn's own window: an open there with a conversation
+# to continue resumes it with the kickoff instead of asking.
+test_the_spawns_own_window_resumes_with_the_kickoff_without_asking() {
+    local output
+    output=$("$CS_BIN" bound --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _stage_seed bound "$AGY_SPAWN_TOKEN"
+    output=$(CS_ASSUME_TTY=1 CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" bound 2>&1 </dev/null) \
+        || { echo "  FAIL: the open must not wait for an answer: $output"; return 1; }
+    assert_output_not_contains "$output" 'Continue previous Antigravity conversation' "the window does not ask" || return 1
+    assert_eq "--conversation $AGY_NEW_ID --prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" \
+        "it resumes the conversation with the kickoff"
+}
+
+# A hook switched off in agy's config, or missing, never marks the run, so
+# the brief still goes in but the open neither doubts the kickoff nor
+# promises a reopen. The conversation is not recorded, so the next open
+# starts one that knows nothing of the spawn, and the open names the brief.
+test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt() {
+    local output
+    mkdir -p "$HOME/.gemini/config"
+    printf '{"plugins": {"cs": {"enabled": false}}}\n' > "$HOME/.gemini/config/config.json"
+    _stage_seed off "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" off --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" "a switched-off hook still gets the kickoff" || return 1
+    assert_output_contains "$output" 'is switched off or cannot run cs' "the open names the hook" || return 1
+    assert_output_not_contains "$output" 'a reopen resumes this conversation' "and promises no reopen" || return 1
+    assert_output_not_contains "$output" 'no turn start' "and doubts no kickoff over a mark the hook cannot make" || return 1
+    assert_output_contains "$output" 'the next open starts a new conversation' "it says the spawn is not resumed" || return 1
+    assert_output_contains "$output" 'brief stays in .cs/brief.md' "and points at the brief" || return 1
+    rm -f "$HOME/.gemini/config/config.json"
+    rm -rf "$HOME/.gemini/config/plugins/cs"
+    _stage_seed gone "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" gone --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--prompt-interactive $AGY_SPAWN_KICK" "$(_agy_argv)" "a missing hook still gets the kickoff" || return 1
+    assert_output_contains "$output" 'The cs hook for Antigravity is missing' "the open names the hook" || return 1
+    assert_output_not_contains "$output" 'no turn start' "and doubts no kickoff" || return 1
+    assert_output_contains "$output" 'brief stays in .cs/brief.md' "and points at the brief"
 }
 
 test_finish_and_missing_handoff_are_refused() {
@@ -1366,8 +1550,16 @@ run_test test_a_linked_rules_folder_is_never_written_through
 run_test test_a_rules_folder_swapped_for_a_link_mid_write_gets_nothing
 run_test test_capabilities_claim_rotation_but_not_deferred_features
 run_test test_unknown_engine_errors_list_all_three
-run_test test_spawn_refuses_a_brief_or_task_it_cannot_deliver
-run_test test_a_staged_spawn_seed_is_named_and_left_for_another_engine
+run_test test_spawn_refuses_a_task_queue_before_staging_anything
+run_test test_spawn_delivers_its_brief_as_the_first_prompt_once
+run_test test_a_spawn_run_left_before_its_first_turn_never_replays_the_kickoff
+run_test test_a_spawn_run_marked_bound_by_a_dangling_link_raises_no_doubt
+run_test test_a_spawn_seed_with_tasks_stays_staged_for_a_claude_open
+run_test test_a_foreign_spawn_seed_is_left_staged_without_a_terminal
+run_test test_a_rotation_open_leaves_a_spawn_seed_staged
+run_test test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged
+run_test test_the_spawns_own_window_resumes_with_the_kickoff_without_asking
+run_test test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt
 run_test test_finish_and_missing_handoff_are_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_an_encrypted_session_is_refused_before_its_vault_opens

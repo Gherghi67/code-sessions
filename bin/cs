@@ -11845,6 +11845,16 @@ _spawn_brief_mark_line() {  # seed
     awk -v m="$SPAWN_BRIEF_MARK" 'NR > 2 && $0 == m { print NR; exit }' "$1"
 }
 
+# Whether a staged seed carries a task: a line after the token and the
+# spawner, before any brief marker, with more than whitespace, as the
+# consumer counts them. Read without claiming, for a launch that cannot run
+# tasks to leave the seed alone before it writes anything.
+_spawn_seed_has_tasks() {  # seed
+    awk -v m="$SPAWN_BRIEF_MARK" '
+        NR > 2 { if ($0 == m) exit; if ($0 ~ /[^[:space:]]/) { found = 1; exit } }
+        END { exit !found }' "$1"
+}
+
 # The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
 # session name, and of what the launch sets aside when the seed ages out, one
 # per line. Nothing stages or reads a .brief.md name; a session's removal still
@@ -12104,13 +12114,13 @@ run_spawn() {
     # Explicit selection wins; otherwise inherit the spawning run, then the
     # target preference/default. Do not rely on tmux's ambient environment.
     engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
-    if [ "$engine" = codex ] && [ "${#tasks[@]}" -gt 0 ]; then
-        error "Codex does not host the walk-away task queue; use --brief without --task"
+    if [ "${#tasks[@]}" -gt 0 ]; then
+        _spawn_refuse_queue "$engine" ""
     fi
     # A seed waits for a launch that consumes it, and an adapter without
     # spawn_brief never does: refused here, before anything is staged.
     if { [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; } && ! cs_engine_supports "$engine" spawn_brief; then
-        error "cs -spawn --engine $engine only opens the session: $engine takes no brief or task from cs yet. Drop --brief and --task, or spawn under claude or codex"
+        error "cs -spawn --engine $engine only opens the session: $engine takes no brief or task from cs yet. Drop --brief and --task, or spawn under another engine"
     fi
     _spawn_precheck "$name"
     # One token per spawn, for the window command and the seed alike. The
@@ -12284,8 +12294,8 @@ _spawn_prepare_launch() {  # session_name, session_dir
         fi
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
-            if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ "$_n" -gt 0 ]; then
-                error "Codex does not host the walk-away task queue; use --brief without --task (seed kept)"
+            if [ "$_n" -gt 0 ]; then
+                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)"
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -12382,10 +12392,28 @@ _spawn_prepare_launch() {  # session_name, session_dir
     fi
 }
 
+# The walk-away queue is drained by Claude's hooks; every other engine, an
+# adapter added later included, takes a brief only, and a seed with tasks is
+# refused before anything is staged or written.
+_spawn_refuse_queue() {  # engine, suffix
+    case "$1" in
+        claude) ;;
+        codex) error "Codex does not host the walk-away task queue; use --brief without --task$2" ;;
+        antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
+        *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;
+    esac
+}
+
 # Only an owned, fresh seed or an already accepted receipt bypasses native
 # resume questions. Foreign staged work still needs the seed consent flow.
 _spawn_launch_is_owned() {  # session_name, session_dir
     [ ! -f "$2/.cs/local/spawn-kick.json" ] || return 0
+    _spawn_seed_is_owned "$1"
+}
+
+# The seed staged for this name carries the token of the window this open
+# runs in, and is fresh enough to be consumed unasked.
+_spawn_seed_is_owned() {  # session_name
     [ -n "${SESSIONS_ROOT:-}" ] && [ -n "${_spawn_token:-}" ] || return 1
     local seed="$SESSIONS_ROOT/.spawn/$1.seed" token age
     [ -f "$seed" ] || return 1
@@ -21493,7 +21521,9 @@ _cs_antigravity_adapter_capabilities() {
     # recovery_autosave: the hook hands write_file and edit_file to recovery.
     # rotation: exit and reopen with --from-handoff (or answer r). The launch
     # supplies an interactive prompt; PreInvocation binds and consumes it.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch
+    # spawn_brief: the launch writes a seed's brief in and sends its kickoff
+    # as the first prompt, once; agy hosts no walk-away task queue.
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief
 }
 
 _cs_antigravity_adapter_prepare_workspace() {  # session_dir, mode
@@ -21727,7 +21757,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
             fi
             ;;
         auto)
-            if { [ -n "$recorded" ] || [ -n "$pending_handoff" ]; } && cs_interactive; then
+            # Nobody sits at the spawn's own window to answer: its open
+            # continues the conversation, as Enter would, with the kickoff.
+            if { [ -n "$recorded" ] || [ -n "$pending_handoff" ]; } && cs_interactive \
+                && ! _spawn_seed_is_owned "$session_name"; then
                 if [ -n "$pending_handoff" ]; then
                     local origin=""
                     _handoff_is_local "$pending_handoff" "$session_dir" || origin=" (from another checkout)"
@@ -21808,17 +21841,20 @@ $prompt"
         return 1
     }
 
-    # A seed cs -spawn staged under Claude or Codex, whose window died before
-    # it launched, stays staged: agy takes no prompt to start it with.
-    [ ! -f "${SESSIONS_ROOT:-}/.spawn/$session_name.seed" ] \
-        || warn "A spawn seed is staged for $session_name; it stays staged for the next Claude or Codex open (cs $session_name --engine claude), since Antigravity takes no brief yet."
     # The binding comes from cs's hook, not from here: a run that ends before
     # its conversation reaches the model leaves the binding as it was, so the
-    # next open never continues a conversation of another folder.
-    local reopens="a reopen resumes this conversation, and edits are autosaved for recovery"
+    # next open never continues a conversation of another folder. A plugin
+    # switched off in agy's config, or one whose PreInvocation cannot run cs,
+    # binds nothing either, which the rotation preflight already knows.
+    local reopens="a reopen resumes this conversation, and edits are autosaved for recovery" hooked=1
     if ! _antigravity_plugin_is_cs "$(_antigravity_plugin_dir)"; then
         warn "The cs hook for Antigravity is missing from $(_antigravity_plugin_dir): this run's conversation is not recorded for a reopen, and its edits are not autosaved. Run setup.sh again, with agy installed, to add it."
         reopens="the cs hook is missing"
+        hooked=""
+    elif ! _antigravity_rotation_hook_ready; then
+        warn "The cs hook for Antigravity in $(_antigravity_plugin_dir) is switched off or cannot run cs: this run's conversation is not recorded for a reopen. cs -doctor names the fix."
+        reopens="the cs hook is off"
+        hooked=""
     elif [ ! -r "$(_antigravity_plugin_dir)/scripts/autosave-commits.sh" ]; then
         warn "The cs hook for Antigravity has no recovery consumer in $(_antigravity_plugin_dir)/scripts: this run's edits are not autosaved. Run setup.sh again to add it."
         reopens="a reopen resumes this conversation; edits are not autosaved"
@@ -21843,6 +21879,31 @@ $prompt"
         fi
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
     fi
+    # A seed cs -spawn staged: the shared consumer writes its brief into
+    # .cs/brief.md and builds the kickoff, which goes in as agy's first
+    # prompt. The seed is spent before agy starts, so the kickoff is sent at
+    # most once: a run that ends before its first turn may still have done
+    # work, which cs cannot tell (rotation treats a missing consumer the same
+    # way), and the brief stays for the agent to read. agy takes one first
+    # prompt, so a rotation handoff this open carries keeps the seed staged
+    # for a later open, as does an agy that cannot take the prompt. A seed
+    # with tasks waits for a Claude open, unoffered, since taking it here
+    # could only fail.
+    local spawn_kick="" spawn_wait=""
+    if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
+        if _spawn_seed_has_tasks "$SESSIONS_ROOT/.spawn/$session_name.seed"; then
+            spawn_wait="it carries tasks and only Claude runs the walk-away queue (take it with: cs $session_name --engine claude)"
+        elif [ -n "$rotation_handoff" ]; then
+            spawn_wait="this open carries the rotation handoff"
+        elif ! _antigravity_flags_listed "$agy_bin" --prompt-interactive 2>/dev/null; then
+            spawn_wait="the Antigravity CLI at $agy_bin does not list --prompt-interactive in its --help (update it: agy update)"
+        else
+            _spawn_prepare_launch "$session_name" "$session_dir"
+            [ -z "$spawn_kick" ] || prompt_args=(--prompt-interactive "$spawn_kick")
+        fi
+        [ -z "$spawn_wait" ] \
+            || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
+    fi
     printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. Mail and the task queue are not available under Antigravity yet."
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
@@ -21855,6 +21916,15 @@ $prompt"
         ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
+    fi
+    # The hook marks the run bound at its first model call. Without the mark
+    # the kickoff may not have arrived; it is not sent again either way. Any
+    # entry, a dangling link included, is the mark, as the hook reads it.
+    if [ -n "$spawn_kick" ] && [ -n "$hooked" ] && [ -n "$run_dir" ] \
+        && [ ! -e "$run_dir/bound" ] && [ ! -L "$run_dir/bound" ]; then
+        warn "cs saw no turn start in this run, so the spawn kickoff may not have reached Antigravity. It is not sent again; the brief stays in .cs/brief.md for the agent to read when you reopen: cs $session_name"
+    elif [ -n "$spawn_kick" ] && [ -z "$hooked" ]; then
+        warn "Without the cs hook this conversation was not recorded, so the next open starts a new conversation that knows nothing of the spawn. The brief stays in .cs/brief.md; point that conversation at it."
     fi
     return "$status"
 }
