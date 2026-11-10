@@ -103,10 +103,11 @@ newer conversation (and the other way round): `y` carries it over, `e` resumes
 the engine's own earlier conversation, `n` starts fresh. The carried thread is
 a new one: cs starts it through app-server, adds the session context, then a
 developer note and Claude's messages as user and assistant items, with every
-tool call and each tool result's first 4,000 characters, and binds it. Claude's
-thinking stays behind, and since its last compaction a Claude conversation
-starts from the compact summary. A carry-over Codex refuses leaves one line, and
-the launch resumes the earlier thread, or starts a fresh one when there is none.
+tool call and each tool result's first 4,000 characters (a failed call's
+result marked `[tool error]`), and binds it. Claude's thinking stays behind,
+and since its last compaction a Claude conversation starts from the compact
+summary. A carry-over Codex refuses leaves one line, and the launch resumes the
+earlier thread, or starts a fresh one when there is none.
 The other direction writes the Codex thread as a Claude transcript that Claude
 resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)

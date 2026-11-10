@@ -256,8 +256,8 @@ def tool_call(name, body):
     return ("[tool call: " + label + "]\n" + body).rstrip()
 
 
-def tool_result(text, limit):
-    return "[tool result]\n" + clipped(text, limit)
+def tool_result(text, limit, failed=False):
+    return ("[tool error]\n" if failed else "[tool result]\n") + clipped(text, limit)
 
 
 def history_stats(messages):
@@ -337,6 +337,7 @@ def codex_item(history, item, timestamp, limit):
     elif kind == "custom_tool_call":
         history.add("assistant", tool_call(item.get("name"), item.get("input")), timestamp)
     elif kind in ("function_call_output", "custom_tool_call_output"):
+        # Codex records no failure flag: a failed call's output says so itself.
         history.add("assistant", tool_result(codex_output(item.get("output")), limit), timestamp)
     elif kind == "local_shell_call":
         action = item.get("action")
@@ -538,7 +539,8 @@ def read_claude(path, limit):
                 if kind == "text" and isinstance(block.get("text"), str):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
-                    history.add("assistant", tool_result(claude_result_text(block.get("content")), limit), stamp)
+                    history.add("assistant", tool_result(claude_result_text(block.get("content")), limit,
+                                                         block.get("is_error") is True), stamp)
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
             elif record.get("type") == "assistant":

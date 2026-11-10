@@ -856,6 +856,29 @@ class TransplantTests(HelperFixture):
         methods = [r['method'] for r in requests]
         self.assertLess(methods.index('thread/unsubscribe'), methods.index('thread/resume'))
 
+    def test_a_failed_claude_tool_call_reads_as_an_error(self):
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        path.write_text("\n".join([
+            claude_record("user", "run the build", "u1", None),
+            claude_record("assistant", [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                         "input": {"command": "make"}}], "x1", "u1"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+                                    "content": "Exit code 2\nmake: *** no rule"}], "x2", "x1"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t2", "name": "Bash",
+                                         "input": {"command": "ls"}}], "x3", "x2"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t2", "is_error": False,
+                                    "content": "Makefile.am"}], "x4", "x3"),
+            claude_record("assistant", [{"type": "text", "text": "No Makefile yet."}], "x5", "x4"),
+        ]) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        items = [r['request']['params']['items'] for r in self.requests()
+                 if r['request']['method'] == 'thread/inject_items'][1]
+        agent = items[2]['content'][0]['text']
+        self.assertIn('[tool error]\nExit code 2\nmake: *** no rule', agent)
+        self.assertIn('[tool result]\nMakefile.am', agent)
+        self.assertEqual(agent.count('[tool result]'), 1)
+
     def test_claude_compaction_starts_at_its_summary(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
         path.write_text("\n".join([
