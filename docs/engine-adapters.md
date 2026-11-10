@@ -288,11 +288,17 @@ it took, and nothing is printed.
 Launch intent `handoff` (`--from-handoff`) is the `r` answer taken without the
 prompt on all three adapters, from `_pending_handoff_pick`. Claude and
 Codex's relaunch resume mode spends the handoff in the launch, just before the CLI starts: it marks it
-consumed by the resumed conversation, removes the marker so a later `/clear`
-cannot rotate into it again, and passes a prompt pointing at it (Claude's
-launch prompt, Codex's `codex resume <id> -C <dir> <prompt>`). An encrypted
-session's prompt names `.cs/private/handoffs/` and the `consumed_by` value
-rather than the handoff, whose name is the session's topic.
+consumed by the resumed conversation, removes the marker once that write lands
+so a later `/clear` cannot rotate into it again, and passes a prompt pointing
+at it (Claude's launch prompt, Codex's `codex resume <id> -C <dir> <prompt>`).
+An encrypted session's prompt names `.cs/private/handoffs/` and the
+`consumed_by` value rather than the handoff, whose name is the session's topic.
+A write the handoff store refuses keeps the marker armed, so the next start or
+`/clear` retries it; the terminal names the store's refusal, and the prompt
+carries a warning that says so (with the refusal on a plaintext session; an
+encrypted one's prompt points at the marker instead, since no `consumed_by`
+line was written). Codex's `r` path and its SessionStart hook after `/clear`
+spend a handoff the same way (`_handoff_spend` in `lib/75-launch.sh`).
 
 ## Deferred boundaries
 

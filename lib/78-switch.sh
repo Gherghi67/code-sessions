@@ -608,7 +608,7 @@ _switch_no_handoff_message() {  # session_name
 # is its topic and stays out of argv: the message points at consumed_by instead.
 # The prompt lands in the caller's variable named by the third argument.
 _switch_resume_handoff() {  # session_dir, consumer_id, variable
-    local dir="$1" consumer="$2" handoff handoffs private from prompt
+    local dir="$1" consumer="$2" handoff handoffs private from prompt refusal="" marker
     handoff=$(_rotation_armed_handoff "$dir")
     if [ -z "$handoff" ]; then
         printf "${DIM:-}No armed handoff to carry into the resumed conversation; resuming without it.${NC:-}\n"
@@ -616,15 +616,25 @@ _switch_resume_handoff() {  # session_dir, consumer_id, variable
     fi
     handoffs=$(cs_handoff_dir "$dir/.cs") || return 0
     private=$(cs_private_dir "$dir/.cs") || return 0
+    marker=".cs/${private#"$dir/.cs/"}/pending-handoff"
     _switch_note_spent "$dir" "$handoff" "$consumer"
-    _handoff_set_status "$handoffs/$handoff" consumed "$consumer" || true
-    rm -f "$private/pending-handoff" 2>/dev/null || true
+    # A refused flip keeps the marker for the next start or /clear to retry
+    # (_handoff_spend); the resume still carries the handoff, and the
+    # terminal and the first message name the refusal.
+    refusal=$(_handoff_spend "$handoffs/$handoff" "$private/pending-handoff" "$consumer") || true
     from="${_cs_switched_from:-another engine}"
     if [ "$handoffs" = "$dir/.cs/handoffs" ]; then
         prompt="This conversation resumes after the session ran under $from. Read .cs/handoffs/$handoff first: it carries the work done since you last ran here. Then continue from its next step."
-    else
+        [ -z "$refusal" ] || prompt="$prompt $(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" "$marker")"
+    elif [ -z "$refusal" ]; then
         prompt="This conversation resumes after the session ran under $from. Read the handoff in .cs/private/handoffs/ whose frontmatter says consumed_by: $consumer first: it carries the work done since you last ran here. Then continue from its next step."
+    else
+        # No consumed_by line was written to point at, and the refusal names
+        # the file: the marker stands in, and the reason stays on the terminal.
+        prompt="This conversation resumes after the session ran under $from. Read the handoff $marker names, in .cs/private/handoffs/, first: it carries the work done since you last ran here. Then continue from its next step."
+        prompt="$prompt $(_handoff_refusal_warning "the handoff $marker names" "cs printed the reason in the terminal" "$marker")"
     fi
     printf "${DIM:-}Continuing from handoff:${NC:-} %s\n" "$handoff"
+    [ -z "$refusal" ] || _handoff_refusal_notice ".cs/${handoffs#"$dir/.cs/"}/$handoff" "$refusal" "$marker"
     printf -v "$3" '%s' "$prompt"
 }

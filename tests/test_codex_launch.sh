@@ -816,6 +816,66 @@ test_r_starts_a_thread_from_the_rotation_handoff() {
         "$CS_TEST_SESSION_DIR/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: rotated lineage missing"; return 1; }
 }
 
+# r with a flip the store refuses: the thread still starts from the handoff,
+# but the marker stays armed so the next start or /clear retries it, and the
+# terminal and the kick both name the store's refusal.
+test_r_with_a_refused_flip_keeps_the_marker_and_says_so() {
+    _rotation_fixture unconsumed
+    local output status=0 h="$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" kick
+    chmod 555 "$CS_TEST_SESSION_DIR/.cs/handoffs"
+    output=$(_launch_answering r 2>&1) || status=$?
+    chmod 755 "$CS_TEST_SESSION_DIR/.cs/handoffs"
+    assert_eq 0 "$status" "r launch failed: $output" || return 1
+    assert_file_contains "$h" "^status: unconsumed$" "the handoff stays unconsumed" || return 1
+    assert_file_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" "the marker stays armed" || return 1
+    assert_output_contains "$output" "could not mark .cs/handoffs/$ROTATION_HANDOFF consumed: mktemp: .*Permission denied" \
+        "the terminal names the refusal" || return 1
+    kick=$(sed -n '7,$p' "$CS_CODEX_LOG")
+    assert_output_contains "$kick" "^Continue from the pending rotation handoff: read .cs/handoffs/$ROTATION_HANDOFF first\\. " \
+        "the kick still starts from the handoff" || return 1
+    assert_output_contains "$kick" "could not mark .cs/handoffs/$ROTATION_HANDOFF consumed: mktemp: " \
+        "the kick tells the new thread" || return 1
+    assert_output_contains "$kick" "will load this same handoff again" || return 1
+}
+
+# A switch's --resume spends the armed handoff for the resumed conversation.
+# A flip the store refuses keeps the marker, and the first message says why.
+test_switch_resume_with_a_refused_flip_keeps_the_marker() {
+    _rotation_fixture unconsumed
+    local out h="$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF"
+    chmod 555 "$CS_TEST_SESSION_DIR/.cs/handoffs"
+    out=$(got=""; _cs_switched_from=claude _switch_resume_handoff "$CS_TEST_SESSION_DIR" "$CS_THREAD_ID" got 2>&1
+        printf '\nPROMPT=%s' "$got")
+    chmod 755 "$CS_TEST_SESSION_DIR/.cs/handoffs"
+    assert_file_contains "$h" "^status: unconsumed$" "the handoff stays unconsumed" || return 1
+    assert_file_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" "the marker stays armed" || return 1
+    assert_output_contains "${out%%PROMPT=*}" "could not mark .cs/handoffs/$ROTATION_HANDOFF consumed: mktemp: .*Permission denied" \
+        "the terminal names the refusal" || return 1
+    assert_output_contains "${out#*PROMPT=}" "Read .cs/handoffs/$ROTATION_HANDOFF first" "the resume still carries the handoff" || return 1
+    assert_output_contains "${out#*PROMPT=}" "will load this same handoff again" "the first message says the next start retries" || return 1
+}
+
+# An encrypted session keeps the handoff's name, its topic, out of argv: with
+# no consumed_by line written, the message points at the marker instead.
+test_switch_resume_in_an_encrypted_session_with_a_refused_flip_names_no_handoff() {
+    local private="$CS_TEST_SESSION_DIR/.cs/private" out prompt_text
+    mkdir -p "$private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: next step\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$ROTATION_OLD_THREAD" > "$private/handoffs/$ROTATION_HANDOFF"
+    printf '%s\n' "$ROTATION_HANDOFF" > "$private/pending-handoff"
+    chmod 555 "$private/handoffs"
+    out=$(got=""; _cs_switched_from=claude _switch_resume_handoff "$CS_TEST_SESSION_DIR" "$CS_THREAD_ID" got 2>&1
+        printf '\nPROMPT=%s' "$got")
+    chmod 755 "$private/handoffs"
+    prompt_text=${out#*PROMPT=}
+    assert_file_contains "$private/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" || return 1
+    assert_file_exists "$private/pending-handoff" "the marker stays armed" || return 1
+    assert_output_not_contains "$prompt_text" "next-step" "the topic stays out of argv" || return 1
+    assert_output_not_contains "$prompt_text" "consumed_by: $CS_THREAD_ID" "no consumed_by line exists to point at" || return 1
+    assert_output_contains "$prompt_text" "the handoff .cs/private/pending-handoff names" || return 1
+    assert_output_contains "$prompt_text" "will load this same handoff again" || return 1
+}
+
 # n starts fresh without the handoff, and must disarm the marker, or an
 # unrelated /clear later would load a handoff the user just passed on.
 test_n_starts_fresh_and_leaves_the_handoff_pending() {
@@ -1185,6 +1245,9 @@ run_test test_explicit_fresh_replaces_only_codex_binding
 run_test test_failed_fresh_preserves_codex_binding
 run_test test_resume_without_binding_does_not_create
 run_test test_r_starts_a_thread_from_the_rotation_handoff
+run_test test_r_with_a_refused_flip_keeps_the_marker_and_says_so
+run_test test_switch_resume_with_a_refused_flip_keeps_the_marker
+run_test test_switch_resume_in_an_encrypted_session_with_a_refused_flip_names_no_handoff
 run_test test_n_starts_fresh_and_leaves_the_handoff_pending
 run_test test_d_discards_the_handoff_then_resumes
 run_test test_explicit_fresh_continues_an_armed_rotation
