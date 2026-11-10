@@ -576,6 +576,32 @@ class TransplantTests(HelperFixture):
             self.assertIn(text, whole)
         self.assertNotIn("CONTEXT", whole)
 
+    def test_a_sub_agent_final_answer_crosses_clipped(self):
+        # A sub-agent's final answer reaches the root agent in plain text;
+        # its other messages carry their payload encrypted and stay behind.
+        def agent_message(text, encrypted=None):
+            content = [{"type": "input_text", "text": text}]
+            if encrypted:
+                content.append({"type": "encrypted_content", "encrypted_content": encrypted})
+            return rollout_line("response_item", {"type": "agent_message", "id": "am_1", "author": "/root/worker",
+                                                  "recipient": "/root", "content": content})
+        answer = ("Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker\nPayload:\n"
+                  "WORKER ANSWER " + "y" * 5000)
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "start the worker")),
+            agent_message("Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n\n",
+                          "ENCRYPTED TASK"),
+            agent_message(answer),
+            rollout_line("response_item", codex_message("assistant", "Done.")),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("[agent message]\n" + answer[:4000] + "\n[cs cut the remaining", agent)
+        self.assertTrue(agent.endswith("Done."))
+        for absent in ("NEW_TASK", "ENCRYPTED TASK"):
+            self.assertNotIn(absent, json.dumps(records))
+
     def test_compaction_keeps_only_what_codex_kept(self):
         lines = self.sample_rollout()[:7] + [
             rollout_line("compacted", {"message": "", "replacement_history": [
@@ -727,6 +753,8 @@ class TransplantTests(HelperFixture):
         self.assertIn('[tool call: lookup]\n{"q": "MARK-07"}', texts[1])
         self.assertIn("[tool result]\nMARK-08 found", texts[1])
         self.assertIn("[tool result]\nMARK-10 image\n[image]", texts[1])
+        self.assertIn("[agent message]\nMessage Type: FINAL_ANSWER\nTask name: /root/worker\n"
+                      "Sender: /root/worker\nPayload:\nWORKER ANSWER notes read\n\nVerified: yes", texts[1])
         self.assertEqual(texts[2], "MARK-12 fourth prompt")
         whole = json.dumps(records)
         for absent in ("BEFORE COMPACTION", "ENC", "DEVELOPER TEXT", "AGENTS", "environment_context",

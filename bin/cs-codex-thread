@@ -189,8 +189,9 @@ def exact_id(result, expected=None):
 # conversation (lib/47-transplant.sh). Both native formats are private, so each
 # record is checked as it is read and anything unknown is skipped, never fatal.
 # What crosses: the user's and the agent's text and every tool call, each tool
-# result cut to its first CLIP characters. What stays: Codex's encrypted
-# reasoning, Claude's thinking, and the context each engine injects for itself.
+# result (and a Codex sub-agent's final answer) cut to its first CLIP
+# characters. What stays: Codex's encrypted reasoning and sub-agent messages,
+# Claude's thinking, and the context each engine injects for itself.
 DEFAULT_CLIP = 4000
 # thread/inject_items requests are kept to about this many bytes each.
 INJECT_BATCH = 512 * 1024
@@ -205,6 +206,7 @@ CODEX_CONTEXT = frozenset((
     "environment_context", "user_instructions", "skill", "turn_aborted", "recommended_plugins",
     "guardian_tool_descriptions", "external_codex_apps_open_page", "node_repl_review_evidence"))
 TAG_WRAPPED = re.compile(r"\A\s*<([A-Za-z_][\w-]*)>.*</\1>\s*\Z", re.S)
+CODEX_FINAL_ANSWER = "Message Type: FINAL_ANSWER\n"
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -346,7 +348,16 @@ def codex_item(history, item, timestamp, limit):
         action = item.get("action")
         query = action.get("query") if isinstance(action, dict) else None
         history.add("assistant", tool_call("web_search", query if isinstance(query, str) else None), timestamp)
-    # Reasoning (encrypted), tool lists and item kinds not known here stay behind.
+    elif kind == "agent_message":
+        # A sub-agent's final answer is plain text under a short header. Its
+        # other messages hold only that header; their payload is encrypted.
+        content = item.get("content") if isinstance(item.get("content"), list) else []
+        texts = codex_texts(content)
+        encrypted = any(isinstance(part, dict) and part.get("type") == "encrypted_content" for part in content)
+        if texts and texts[0].startswith(CODEX_FINAL_ANSWER) and not encrypted:
+            history.add("assistant", "[agent message]\n" + clipped("\n".join(texts), limit), timestamp)
+    # Reasoning and the other sub-agent messages (encrypted), tool lists and
+    # item kinds not known here stay behind.
 
 
 def codex_rollout(thread_id):

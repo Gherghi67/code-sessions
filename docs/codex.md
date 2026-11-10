@@ -110,10 +110,11 @@ the launch resumes the earlier thread, or starts a fresh one when there is none.
 The other direction writes the Codex thread as a Claude transcript that Claude
 resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)
-stay behind, while a prompt the user wrapped in a tag crosses. After a Codex
-compaction only the prompts Codex kept cross: its summary is encrypted.
-[Getting started](getting-started.md#resume-and-switch-engines) shows the
-prompt.
+stay behind, while a prompt the user wrapped in a tag crosses. A sub-agent's
+final answer crosses cut like a tool result; its other messages are encrypted
+and stay. After a Codex compaction only the prompts Codex kept cross: its
+summary is encrypted. [Getting
+started](getting-started.md#resume-and-switch-engines) shows the prompt.
 
 To carry the work across in a written handoff instead, ask for
 `$switch` in Codex (or `/switch` in Claude), optionally naming the engine and
