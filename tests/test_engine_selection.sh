@@ -712,6 +712,23 @@ test_claude_carry_over_opened_then_failed_is_kept() {
     assert_output_not_contains "$output" "did not open the carried-over conversation" "nothing is reported lost" || return 1
 }
 
+# A branch name that starts with a dash (an agent can make one with git
+# update-ref and symbolic-ref) reaches the converter as the branch, never as
+# an option that withdraws the offer.
+test_claude_carry_over_keeps_a_dash_led_branch() {
+    local output session_dir new_id
+    _tp_claude_then_codex dash-branch || return 1
+    session_dir=$(_engine_session_dir dash-branch)
+    git -C "$session_dir" update-ref refs/heads/-dash HEAD \
+        && git -C "$session_dir" symbolic-ref HEAD refs/heads/-dash || { echo "  FAIL: could not make the branch"; return 1; }
+    assert_eq -dash "$(git -C "$session_dir" branch --show-current)" "the session is on the dash-led branch" || return 1
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" dash-branch --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "cannot be carried over" "the branch name does not withdraw the offer" || return 1
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the carry-over is offered" || return 1
+    new_id=$(_tp_claude_id "$session_dir")
+    assert_file_contains "$(_tp_project_dir "$session_dir")/$new_id.jsonl" '"gitBranch":"-dash"' "the transcript names the branch" || return 1
+}
+
 test_claude_reopen_n_starts_fresh_without_carrying() {
     local output session_dir old_id new_id
     _tp_claude_then_codex fresh-tp || return 1
@@ -870,6 +887,7 @@ run_test test_claude_never_places_a_swapped_staged_transcript
 run_test test_claude_carry_over_never_opened_is_removed
 run_test test_claude_carry_over_written_before_a_failure_is_kept
 run_test test_claude_carry_over_opened_then_failed_is_kept
+run_test test_claude_carry_over_keeps_a_dash_led_branch
 run_test test_claude_reopen_n_starts_fresh_without_carrying
 run_test test_claude_first_open_after_codex_offers_the_carry_over
 run_test test_unreadable_codex_history_falls_back_to_the_usual_question

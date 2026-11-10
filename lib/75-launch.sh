@@ -699,7 +699,7 @@ _claude_transplant_prepare() {  # session_dir
     file="$proj/.cs-transplant-$uuid"
     if ! stats=$("$helper" --export-claude --thread-id "${source#* }" --session-id "$uuid" \
         --cwd "$cwd" --out "$file" --claude-version "$(_claude_transplant_version)" \
-        --git-branch "$branch" 2>&1); then
+        --git-branch="$branch" 2>&1); then
         rm -f "$file"
         _transplant_unreadable codex "$stats"
         return 0
