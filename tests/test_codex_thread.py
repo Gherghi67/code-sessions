@@ -450,7 +450,7 @@ class TransplantTests(HelperFixture):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
-    def export(self, *extra, hide=()):
+    def export_command(self, *extra, hide=(), zstd=None, setup=""):
         out = self.root / "carried.jsonl"
         if out.exists():
             out.unlink()
@@ -458,20 +458,28 @@ class TransplantTests(HelperFixture):
                      "--cwd", str(self.cwd), "--out", str(out), "--claude-version", "2.1.300",
                      "--git-branch", "cs/x", *extra]
         command, env = [sys.executable, str(HELPER), *arguments], self.env
-        if hide:
+        if hide or setup:
             # The helper without the zstd readers named: "module" (Python's
-            # compression.zstd) and "command" (zstd on PATH).
+            # compression.zstd) and "command" (zstd on PATH, or the one given).
+            # setup runs with the helper's globals as `helper`, before main().
             folder = self.root / "path"
             folder.mkdir(exist_ok=True)
             if (folder / "zstd").is_symlink():
                 (folder / "zstd").unlink()
-            if "command" not in hide and shutil.which("zstd"):
-                (folder / "zstd").symlink_to(shutil.which("zstd"))
+            zstd = zstd or shutil.which("zstd")
+            if "command" not in hide and zstd:
+                (folder / "zstd").symlink_to(zstd)
             block = "sys.modules['compression.zstd'] = None\n" if "module" in hide else ""
-            prelude = ("import runpy, sys\n" + block +
-                       "sys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name='__main__')\n")
+            prelude = ("import sys\n" + block + "sys.argv = sys.argv[1:]\n"
+                       "helper = {'__name__': 'helper', '__file__': sys.argv[0]}\n"
+                       "exec(compile(open(sys.argv[0]).read(), sys.argv[0], 'exec'), helper)\n" +
+                       setup + "sys.exit(helper['main']())\n")
             command = [sys.executable, "-c", prelude, str(HELPER), *arguments]
             env = dict(self.env, PATH=str(folder))
+        return command, env, out
+
+    def export(self, *extra, **options):
+        command, env, out = self.export_command(*extra, **options)
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         records = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
         return result, records
@@ -709,18 +717,30 @@ class TransplantTests(HelperFixture):
             self.skipTest("neither compression.zstd nor the zstd command is here")
         return readers
 
+    def pack(self, data):
+        module = self.zstd_module()
+        if module is not None:
+            return module.compress(data)
+        if shutil.which("zstd"):
+            return subprocess.run([shutil.which("zstd"), "-q", "-c"], input=data, stdout=subprocess.PIPE,
+                                  check=True, timeout=10).stdout
+        self.available_readers()
+
     def compress(self, plain):
         # The rollout as Codex keeps an older one, rollout-...-<id>.jsonl.zst.
         packed = plain.with_name(plain.name + ".zst")
-        module = self.zstd_module()
-        if module is not None:
-            packed.write_bytes(module.compress(plain.read_bytes()))
-        elif shutil.which("zstd"):
-            subprocess.run([shutil.which("zstd"), "-q", "-o", str(packed), str(plain)], check=True, timeout=10)
-        else:
-            self.available_readers()
+        packed.write_bytes(self.pack(plain.read_bytes()))
         plain.unlink()
         return packed
+
+    def stalled_zstd(self):
+        # A compressed rollout and a zstd command that never finishes it.
+        plain = self.write_rollout(self.sample_rollout())
+        plain.rename(plain.with_name(plain.name + ".zst"))
+        fake = self.root / "stalled zstd"
+        fake.write_text('#!/bin/sh\necho $$ >> "$FAKE_ROOT/pids"\nexec /bin/sleep 30\n')
+        fake.chmod(0o755)
+        return fake
 
     def test_compressed_rollouts_are_read(self):
         self.compress(self.write_rollout(self.sample_rollout()))
@@ -742,16 +762,72 @@ class TransplantTests(HelperFixture):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(records, [])
 
-    def test_a_damaged_compressed_rollout_is_named(self):
-        plain = self.write_rollout(self.sample_rollout())
-        plain.rename(plain.with_name(plain.name + ".zst"))
+    def test_a_compressed_rollout_is_read_as_a_stream(self):
+        # A few KB of zstd can unpack to gigabytes: the reader keeps a line at
+        # a time, as it does for a plain rollout, never the whole history.
+        packed = self.compress(self.write_rollout([
+            rollout_line("response_item", codex_message("user", "the last prompt"))]))
+        filler = (rollout_line("event_msg", {"type": "token_count", "info": "x" * 1000}) + "\n") * 1024
+        packed.write_bytes(self.pack(filler.encode()) * 96 + packed.read_bytes())
+        peak = self.root / "peak"
+        setup = ("import atexit, resource\natexit.register(lambda: open(%r, 'w').write("
+                 "str(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)))\n" % str(peak))
+        unit = 1 if sys.platform == "darwin" else 1024
         for reader in self.available_readers():
             with self.subTest(reader=reader):
-                result, records = self.export(hide=[r for r in ("module", "command") if r != reader])
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("could not read Codex's compressed history", result.stderr)
-                self.assertNotIn("Traceback", result.stderr)
-                self.assertEqual(records, [])
+                result, records = self.export(hide=[r for r in ("module", "command") if r != reader],
+                                              setup=setup)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["messages"], 1)
+                self.assertTrue(self.text_of(records[0]).endswith("the last prompt"))
+                # The unpacked rollout is about 100 MB.
+                self.assertLess(int(peak.read_text()) * unit, 48 * 1024 * 1024)
+
+    def test_a_damaged_compressed_rollout_is_named(self):
+        plain = self.write_rollout(self.sample_rollout())
+        text = plain.read_bytes()
+        whole = self.pack(text)
+        packed = plain.with_name(plain.name + ".zst")
+        plain.unlink()
+        for damage, data in (("not zstd", text), ("cut short", whole[:len(whole) // 2])):
+            packed.write_bytes(data)
+            for reader in self.available_readers():
+                with self.subTest(damage=damage, reader=reader):
+                    result, records = self.export(hide=[r for r in ("module", "command") if r != reader])
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("could not read Codex's compressed history", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertEqual(records, [])
+
+    def test_a_stalled_zstd_command_is_stopped_at_its_deadline(self):
+        started = time.monotonic()
+        result, records = self.export(hide=("module",), zstd=self.stalled_zstd(),
+                                      setup="helper['ZSTD_TIMEOUT'] = 0.5\n")
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not read Codex's compressed history", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(records, [])
+        self.assert_cleaned_up()
+
+    def test_an_interrupted_export_stops_the_zstd_command(self):
+        command, env, out = self.export_command(hide=("module",), zstd=self.stalled_zstd())
+        process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 3
+            while not (self.root / "pids").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.root / "pids").exists())
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 130)
+            self.assertIn("interrupted", stderr)
+            self.assertFalse(out.exists())
+            self.assert_cleaned_up()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
 
     def test_a_plain_rollout_wins_over_a_compressed_one(self):
         plain = self.write_rollout([rollout_line("response_item", codex_message("user", "plain copy"))])

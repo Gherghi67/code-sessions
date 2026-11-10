@@ -7,6 +7,7 @@
 """Requires Codex app-server's experimental thread/inject_items API."""
 
 import argparse
+import contextlib
 import io
 import json
 import math
@@ -19,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -380,9 +382,14 @@ def codex_rollout(thread_id):
     return max(found, key=lambda path: (path.suffix == ".jsonl", path.stat().st_mtime))
 
 
+@contextlib.contextmanager
 def open_rollout(path):
+    # The rollout is read a line at a time. A compressed one is unpacked as it
+    # is read: a few KB of zstd can unpack to gigabytes.
     if path.suffix != ".zst":
-        return open(str(path), encoding="utf-8", errors="replace")
+        with open(str(path), encoding="utf-8", errors="replace") as handle:
+            yield handle
+        return
     # Python's own zstd module from 3.14, else the zstd command.
     try:
         from compression import zstd
@@ -395,17 +402,29 @@ def open_rollout(path):
     unreadable = "could not read Codex's compressed history of this thread"
     if zstd is not None:
         try:
-            data = zstd.decompress(path.read_bytes())
-        except zstd.ZstdError as exc:
+            with zstd.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+                yield handle
+        except (zstd.ZstdError, EOFError) as exc:
             raise BootstrapError(unreadable) from exc
-    else:
-        try:
-            data = subprocess.run([command, "-dcq", "--", str(path)], stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                  timeout=ZSTD_TIMEOUT, check=True).stdout
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise BootstrapError(unreadable) from exc
-    return io.StringIO(data.decode("utf-8", errors="replace"))
+        return
+    process = subprocess.Popen([command, "-dcq", "--", str(path)], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    deadline = threading.Timer(ZSTD_TIMEOUT, process.kill)
+    deadline.daemon = True
+    deadline.start()
+    try:
+        with io.TextIOWrapper(process.stdout, encoding="utf-8", errors="replace") as handle:
+            yield handle
+        process.wait()
+    finally:
+        deadline.cancel()
+        # Reading stopped early: an error or an interrupt.
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    # A damaged copy, or one the deadline cut short.
+    if process.returncode != 0:
+        raise BootstrapError(unreadable)
 
 
 def read_codex(path, limit):

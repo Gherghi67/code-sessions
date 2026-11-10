@@ -2081,7 +2081,7 @@ CS_KNOWN_SHA256=(
 CS_PAYLOAD_SHA256=(
     "aa6d9050f625b502030bcce74d11647f04ba635da0c1d57c94d9060d7873dfa3  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
-    "6d6768b900af2fb096fe8080ead326118f9a7372e3b45f5de4c9306e6509d300  bin/cs-codex-thread"
+    "01988a1eedb8376080aa4d324f321137514571ab1a1d4dfcb8cc998c678ab8bf  bin/cs-codex-thread"
     "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
