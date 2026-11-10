@@ -5,6 +5,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -409,6 +410,9 @@ class BootstrapTests(HelperFixture):
 
 CLAUDE_ID = "a0000000-0000-4000-8000-00000000000a"
 NEW_CLAUDE_ID = "b0000000-0000-4000-8000-00000000000b"
+# Record shapes copied from real Claude Code 2.1.319 and Codex 0.160 files,
+# every value in them synthetic.
+SHAPES = Path(__file__).resolve().parent / "fixtures" / "transplant"
 
 
 def rollout_line(kind, payload, stamp="2026-11-06T16:49:50.000Z"):
@@ -594,6 +598,29 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.text_of(records[0]).endswith("archived copy"))
 
+    def test_real_codex_shapes_export(self):
+        # A guard against the reader drifting from what Codex writes.
+        self.write_rollout((SHAPES / "codex-shapes.jsonl").read_text(encoding="utf-8").splitlines())
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([r["type"] for r in records], ["user", "assistant", "user"])
+        texts = [self.text_of(r) for r in records]
+        # A compaction keeps the prompts; its summary is encrypted and stays.
+        self.assertTrue(texts[0].endswith(
+            "MARK-01 first prompt, kept\n\nMARK-02 second prompt, kept\n\nMARK-03 third prompt"))
+        self.assertEqual(re.findall(r"MARK-\d+", "\n".join(texts)), ["MARK-%02d" % n for n in range(1, 13)])
+        self.assertIn("[tool call: exec]\ncat MARK-05.txt", texts[1])
+        self.assertIn("[tool result]\nMARK-06 exit 0\nnotes", texts[1])
+        self.assertIn('[tool call: lookup]\n{"q": "MARK-07"}', texts[1])
+        self.assertIn("[tool result]\nMARK-08 found", texts[1])
+        self.assertIn("[tool result]\nMARK-10 image\n[image]", texts[1])
+        self.assertEqual(texts[2], "MARK-12 fourth prompt")
+        whole = json.dumps(records)
+        for absent in ("BEFORE COMPACTION", "ENC", "DEVELOPER TEXT", "AGENTS", "environment_context",
+                       "EVENT COPY", "TOOL LIST", "WORLD STATE", "BASE INSTRUCTIONS", "AGENT MESSAGE",
+                       "turn_aborted"):
+            self.assertNotIn(absent, whole)
+
     def test_export_arguments_are_checked(self):
         base = [sys.executable, str(HELPER), "--export-claude", "--thread-id", THREAD_ID,
                 "--cwd", str(self.cwd), "--out", str(self.root / "o.jsonl")]
@@ -640,6 +667,22 @@ class TransplantTests(HelperFixture):
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["messages"], 4)
+
+    def test_real_claude_shapes_carry_every_tool_call(self):
+        # Parallel calls hang off one another and each result off its own
+        # call, so the parent walk alone passes one result and drops the rest.
+        result = self.run_helper('', '--history-from-claude', str(SHAPES / 'claude-shapes.jsonl'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        items = [r['request']['params']['items'] for r in self.requests()
+                 if r['request']['method'] == 'thread/inject_items'][1]
+        self.assertEqual([i['role'] for i in items], ['developer', 'user', 'assistant', 'user', 'assistant'])
+        whole = '\n'.join(i['content'][0]['text'] for i in items[1:])
+        self.assertEqual(re.findall(r'MARK-\d+', whole), ['MARK-%02d' % n for n in range(1, 16)])
+        self.assertEqual(whole.count('[tool call: '), 5)
+        self.assertEqual(whole.count('[tool result]'), 5)
+        for absent in ('THINKING SECRET', 'SIG', 'HOOK', 'QUEUED COPY', 'STRUCTURED COPY', 'LAST PROMPT COPY',
+                       'BLOB COPY', 'LOCAL OUTPUT', 'META CAVEAT'):
+            self.assertNotIn(absent, whole)
 
     def test_claude_transcript_starts_a_thread_after_the_context(self):
         path = self.sample_transcript()

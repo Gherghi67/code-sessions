@@ -408,6 +408,18 @@ def claude_user_text(text):
     return text
 
 
+def claude_message_id(record):
+    message = record.get("message")
+    value = message.get("id") if isinstance(message, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def claude_tool_ids(record, kind, key):
+    message = record.get("message")
+    blocks = claude_blocks(message.get("content")) if isinstance(message, dict) else []
+    return {block[key] for block in blocks if block.get("type") == kind and isinstance(block.get(key), str)}
+
+
 def claude_chain(records):
     # The conversation as Claude Code sends it: from the newest message back
     # through its parents. A rewind's abandoned branch is off this path, and a
@@ -427,7 +439,29 @@ def claude_chain(records):
         parent = node.get("parentUuid")
         node = by_id.get(parent) if isinstance(parent, str) else None
     chain.reverse()
-    return chain
+    # Each block of a reply is its own record. Parallel tool calls hang off
+    # one another and each result off its own call, and the reply goes on
+    # from the result written last, so the walk passes that result and only
+    # the calls before it. The rest of the reply and the results answering
+    # its calls go back in, in file order.
+    off = [r for r in records if r.get("type") in ("user", "assistant") and not r.get("isSidechain")
+           and isinstance(r.get("uuid"), str) and r["uuid"] not in seen]
+    replies = {claude_message_id(r) for r in chain if r.get("type") == "assistant"} - {None}
+    spliced = [r for r in off if r.get("type") == "assistant" and claude_message_id(r) in replies]
+    calls = set()
+    for record in chain + spliced:
+        calls |= claude_tool_ids(record, "tool_use", "id")
+    for record in chain:
+        calls -= claude_tool_ids(record, "tool_result", "tool_use_id")
+    for record in off:
+        answered = claude_tool_ids(record, "tool_result", "tool_use_id") & calls
+        if record.get("type") == "user" and answered:
+            spliced.append(record)
+            calls -= answered
+    if not spliced:
+        return chain
+    keep = {id(record) for record in chain + spliced}
+    return [record for record in records if id(record) in keep]
 
 
 def read_claude(path, limit):
