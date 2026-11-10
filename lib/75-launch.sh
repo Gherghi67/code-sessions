@@ -695,7 +695,8 @@ _claude_transplant_prepare() {  # session_dir
     uuid=$(_alloc_uuid) || return 0
     cwd=$(cd -- "$session_dir" 2>/dev/null && pwd -P) || return 0
     branch=$(git -C "$session_dir" branch --show-current 2>/dev/null) || branch=""
-    mkdir -p "$proj" || return 0
+    # Made before the answer, so made the way Claude Code makes it: private.
+    (umask 077 && mkdir -p "$proj") || return 0
     file="$proj/.cs-transplant-$uuid"
     if ! stats=$("$helper" --export-claude --thread-id "${source#* }" --session-id "$uuid" \
         --cwd "$cwd" --out "$file" --claude-version "$(_claude_transplant_version)" \

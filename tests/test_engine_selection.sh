@@ -745,6 +745,21 @@ test_claude_reopen_n_starts_fresh_without_carrying() {
     fi
 }
 
+# Staging makes Claude Code's projects dir before the answer, so it must be
+# made the way Claude Code makes it: private, whatever the answer.
+test_claude_staging_makes_the_projects_dir_private() {
+    local output session_dir proj
+    output=$("$CS_BIN" private-proj --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
+    _tp_write_rollout "$_tp_codex_thread"
+    session_dir=$(_engine_session_dir private-proj)
+    proj=$(_tp_project_dir "$session_dir")
+    [ ! -e "$proj" ] || { echo "  FAIL: the projects dir exists before Claude's first open"; return 1; }
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" private-proj --engine claude <<< "n" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the carry-over was offered" || return 1
+    [ -d "$proj" ] || { echo "  FAIL: staging made no projects dir"; return 1; }
+    assert_eq 700 "$(_file_mode "$proj")" "the projects dir is private" || return 1
+}
+
 test_claude_first_open_after_codex_offers_the_carry_over() {
     local output session_dir new_id
     output=$("$CS_BIN" codex-first --engine codex </dev/null 2>&1) || { echo "$output"; return 1; }
@@ -904,6 +919,7 @@ run_test test_claude_carry_over_written_before_a_failure_is_kept
 run_test test_claude_carry_over_opened_then_failed_is_kept
 run_test test_claude_carry_over_keeps_a_dash_led_branch
 run_test test_claude_reopen_n_starts_fresh_without_carrying
+run_test test_claude_staging_makes_the_projects_dir_private
 run_test test_claude_first_open_after_codex_offers_the_carry_over
 run_test test_unreadable_codex_history_falls_back_to_the_usual_question
 run_test test_unattended_and_explicit_resume_never_carry_over
