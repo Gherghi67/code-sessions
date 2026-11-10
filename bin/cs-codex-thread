@@ -214,6 +214,9 @@ LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<lo
 ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
 # Claude Code's own label for messages no model produced.
 CARRIED_MODEL = "<synthetic>"
+# The note carried_note writes, found again at the start of a prompt when a
+# carried conversation is carried on. Only the newest note goes with it.
+CARRIED_NOTE = re.compile(r"\A\s*\[cs carried this conversation over from [^\]]*\]\s*")
 DEFAULT_CLAUDE_VERSION = "2.1.0"
 
 
@@ -328,7 +331,8 @@ def codex_item(history, item, timestamp, limit):
     if kind == "message":
         texts = codex_texts(item.get("content"))
         if item.get("role") == "user":
-            history.add("user", "\n\n".join(t for t in texts if not codex_injected(t)), timestamp)
+            prompts = [CARRIED_NOTE.sub("", t) for t in texts if not codex_injected(t)]
+            history.add("user", "\n\n".join(p for p in prompts if p), timestamp)
         elif item.get("role") == "assistant":
             history.add("assistant", "\n\n".join(texts), timestamp)
         # Developer and system messages are Codex's own instructions.
@@ -450,7 +454,7 @@ def claude_result_text(content):
 
 
 def claude_user_text(text):
-    text = SYSTEM_REMINDER.sub("", text).strip()
+    text = CARRIED_NOTE.sub("", SYSTEM_REMINDER.sub("", text).strip())
     if text.startswith(LOCAL_COMMAND_OUTPUT):
         return ""
     name = COMMAND_NAME.search(text)

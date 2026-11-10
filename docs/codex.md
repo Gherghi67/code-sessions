@@ -114,8 +114,9 @@ resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 stay behind, while a prompt the user wrapped in a tag crosses. A sub-agent's
 final answer crosses cut like a tool result; its other messages are encrypted
 and stay. After a Codex compaction only the prompts Codex kept cross: its
-summary is encrypted. [Getting
-started](getting-started.md#resume-and-switch-engines) shows the prompt.
+summary is encrypted. A conversation carried on again holds only cs's newest
+note. [Getting started](getting-started.md#resume-and-switch-engines) shows
+the prompt.
 
 To carry the work across in a written handoff instead, ask for
 `$switch` in Codex (or `/switch` in Claude), optionally naming the engine and

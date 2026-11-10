@@ -630,6 +630,31 @@ class TransplantTests(HelperFixture):
         self.assertEqual([r["type"] for r in records], ["user", "assistant"])
         self.assertIn("[Summary of the earlier conversation]\nEarlier: codename work.", self.text_of(records[0]))
 
+    def test_a_round_trip_carries_only_the_newest_note(self):
+        # Codex to Claude puts the note before the first prompt; carried on
+        # to Codex, only the new note goes with it.
+        self.write_rollout(self.sample_rollout())
+        result, _ = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper('', '--history-from-claude', str(self.root / "carried.jsonl"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        items = [r['request']['params']['items'] for r in self.requests()
+                 if r['request']['method'] == 'thread/inject_items'][1]
+        texts = [i['content'][0]['text'] for i in items]
+        self.assertTrue(texts[0].startswith('[cs carried this conversation over from Claude conversation'))
+        self.assertEqual(texts[1], 'what is the codename?')
+        self.assertEqual(sum(t.count('[cs carried') for t in texts), 1)
+        # A thread an earlier carry left the note in starts from the prompt too.
+        note = texts[0]
+        self.write_rollout([rollout_line("response_item", codex_message("user", note + "\n\nfirst prompt")),
+                            rollout_line("response_item", codex_message("assistant", "Hello."))])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.text_of(records[0])
+        self.assertTrue(first.startswith("[cs carried this conversation over from Codex thread"))
+        self.assertTrue(first.endswith("]\n\nfirst prompt"))
+        self.assertEqual(first.count("[cs carried"), 1)
+
     def test_a_thread_that_starts_with_the_agent_gets_a_user_note_first(self):
         self.write_rollout([rollout_line("response_item", codex_message("assistant", "Hello."))])
         result, records = self.export()
