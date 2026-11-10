@@ -923,26 +923,42 @@ class TransplantTests(HelperFixture):
         # Without --history-source the note names the transcript's own ID.
         self.assertIn(CLAUDE_ID, texts[0])
 
-    def test_large_conversations_are_injected_in_order_in_batches(self):
+    def carried_batches(self, prompts):
+        """Carries prompts (user and assistant in turn) and returns the history's batches."""
         path = self.root / (CLAUDE_ID + ".jsonl")
         lines, parent = [], None
-        for n in range(12):
+        for n, text in enumerate(prompts):
             uid = "m%d" % n
             if n % 2 == 0:
-                lines.append(claude_record("user", "prompt %d " % n + "p" * 120000, uid, parent))
+                lines.append(claude_record("user", text, uid, parent))
             else:
-                lines.append(claude_record("assistant", [{"type": "text", "text": "reply %d" % n}], uid, parent))
+                lines.append(claude_record("assistant", [{"type": "text", "text": text}], uid, parent))
             parent = uid
         path.write_text("\n".join(lines) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
         batches = [r['request']['params']['items'] for r in self.requests()
                    if r['request']['method'] == 'thread/inject_items'][1:]
-        self.assertGreater(len(batches), 1)
+        # Only an item larger than a batch on its own makes a batch larger.
         for batch in batches:
-            self.assertLessEqual(len(json.dumps(batch)), 512 * 1024 + 130000)
+            if len(batch) > 1:
+                self.assertLessEqual(sum(len(json.dumps(i)) for i in batch), 512 * 1024)
+        return batches
+
+    def test_large_conversations_are_injected_in_order_in_batches(self):
+        batches = self.carried_batches([("prompt %d " % n + "p" * 120000) if n % 2 == 0 else "reply %d" % n
+                                        for n in range(12)])
+        self.assertGreater(len(batches), 1)
         texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
         self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(12)])
+
+    def test_an_item_larger_than_a_batch_goes_alone_and_whole(self):
+        big = "prompt 2 " + "p" * (600 * 1024)
+        batches = self.carried_batches(["prompt 0", "reply 1", big, "reply 3", "prompt 4", "reply 5"])
+        alone = [batch for batch in batches if any(i['content'][0]['text'] == big for i in batch)]
+        self.assertEqual([len(batch) for batch in alone], [1])
+        texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
+        self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(6)])
 
     def test_nothing_to_carry_starts_no_server(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
