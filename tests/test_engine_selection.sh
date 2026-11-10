@@ -58,7 +58,12 @@ CODEX
 case " $* " in
     *" --export-claude "*|*" --read-claude "*)
         printf '%s\n' "$*" >> "$CS_HELPER_LOG.real"
-        exec python3 "$CS_REAL_THREAD_HELPER" "$@"
+        [ -n "${CS_HELPER_SWAP_STAGED:-}" ] || exec python3 "$CS_REAL_THREAD_HELPER" "$@"
+        # The converted transcript swapped for a link while the question waits.
+        python3 "$CS_REAL_THREAD_HELPER" "$@" || exit
+        while [ "$#" -gt 1 ] && [ "$1" != --out ]; do shift; done
+        [ "$1" != --out ] || ln -sf "$CS_HELPER_SWAP_STAGED" "$2"
+        exit 0
         ;;
 esac
 printf '%s\n' "$*" >> "$CS_HELPER_LOG"
@@ -90,7 +95,7 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN CS_CODEX_THREAD_BIN
     unset CS_CLAUDE_LOG CS_CLAUDE_ENV CS_CODEX_LOG CS_HELPER_LOG CS_DEFAULT_ENGINE
-    unset CS_REAL_THREAD_HELPER CS_HELPER_FAIL_CARRY CS_HELPER_FRESH_ID CS_ASSUME_TTY
+    unset CS_REAL_THREAD_HELPER CS_HELPER_FAIL_CARRY CS_HELPER_FRESH_ID CS_HELPER_SWAP_STAGED CS_ASSUME_TTY
 }
 
 _engine_session_dir() {
@@ -574,7 +579,7 @@ test_claude_reopen_carries_the_newer_codex_conversation() {
     proj=$(_tp_project_dir "$session_dir")
     assert_file_contains "$proj/$new_id.jsonl" 'The codename is AMBER-FALCON' "the transcript holds the Codex conversation" || return 1
     assert_file_contains "$proj/$new_id.jsonl" "\"sessionId\":\"$new_id\"" "the transcript is the new conversation's" || return 1
-    assert_eq 0 "$(find "$session_dir/.cs/local" -name 'transplant-*' | wc -l | tr -d ' ')" "no converted copy is left behind" || return 1
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "no converted copy is left behind" || return 1
     assert_file_not_exists "$session_dir/.cs/local/pending-binding-claude.json" "SessionStart committed the staged binding" || return 1
     assert_eq "$_tp_codex_thread" "$(cat "$session_dir/.cs/local/codex-thread-id")" "the Codex binding is untouched" || return 1
     jq -e --arg from "$old_id" --arg to "$new_id" --arg src "codex:$_tp_codex_thread" \
@@ -605,7 +610,46 @@ test_claude_reopen_e_resumes_the_earlier_conversation() {
     assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "e keeps the binding" || return 1
     assert_eq 0 "$(find "$(_tp_project_dir "$session_dir")" -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')" \
         "e places no carried transcript" || return 1
-    assert_eq 0 "$(find "$session_dir/.cs/local" -name 'transplant-*' | wc -l | tr -d ' ')" "e leaves no converted copy" || return 1
+    assert_eq 0 "$(find "$(_tp_project_dir "$session_dir")" -name '*cs-transplant*' | wc -l | tr -d ' ')" "e leaves no converted copy" || return 1
+}
+
+# The conversion waits for the answer where Claude keeps the session's
+# conversations, outside the session an agent can write, under a name neither
+# Claude nor discovery lists; y renames it in.
+test_claude_carry_over_is_never_staged_in_the_session() {
+    local output session_dir real_dir out proj new_id
+    _tp_claude_then_codex staged || return 1
+    session_dir=$(_engine_session_dir staged)
+    real_dir=$(cd -- "$session_dir" && pwd -P)
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" staged --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    out=$(sed -n 's/.* --out \([^ ]*\) .*/\1/p' "$CS_HELPER_LOG.real" | tail -1)
+    [ -n "$out" ] || { echo "  FAIL: the helper wrote no transcript"; return 1; }
+    case "$out" in
+        "$session_dir"/*|"$real_dir"/*) echo "  FAIL: staged in the session: $out"; return 1 ;;
+        *.jsonl) echo "  FAIL: staged under a name Claude lists: $out"; return 1 ;;
+    esac
+    new_id=$(_tp_claude_id "$session_dir")
+    proj=$(_tp_project_dir "$session_dir")
+    assert_file_contains "$proj/$new_id.jsonl" 'AMBER-FALCON' "y places the converted conversation" || return 1
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "no staged copy is left behind" || return 1
+}
+
+test_claude_never_places_a_swapped_staged_transcript() {
+    local output session_dir old_id proj
+    _tp_claude_then_codex swapped || return 1
+    session_dir=$(_engine_session_dir swapped)
+    old_id=$(_tp_claude_id "$session_dir")
+    jq -nc '{type:"user",message:{role:"user",content:"SWAPPED-IN"}}' > "$TEST_TMPDIR/swapped.jsonl"
+    output=$(CS_HELPER_SWAP_STAGED="$TEST_TMPDIR/swapped.jsonl" CS_ASSUME_TTY=1 \
+        "$CS_BIN" swapped --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "could not carry the Codex conversation over; resuming the earlier Claude conversation" \
+        "a staged copy that is no longer a plain file is refused" || return 1
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "the binding is unchanged" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    if cat "$proj"/*.jsonl 2>/dev/null | grep -qF SWAPPED-IN; then
+        echo "  FAIL: the link's target was placed as a conversation"; return 1
+    fi
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "the refused copy is removed" || return 1
 }
 
 test_claude_reopen_n_starts_fresh_without_carrying() {
@@ -761,6 +805,8 @@ run_test test_profile_launch_keeps_a_chosen_credential_dir
 run_test test_original_launch_leaves_the_credential_dir_alone
 run_test test_claude_reopen_carries_the_newer_codex_conversation
 run_test test_claude_reopen_e_resumes_the_earlier_conversation
+run_test test_claude_carry_over_is_never_staged_in_the_session
+run_test test_claude_never_places_a_swapped_staged_transcript
 run_test test_claude_reopen_n_starts_fresh_without_carrying
 run_test test_claude_first_open_after_codex_offers_the_carry_over
 run_test test_unreadable_codex_history_falls_back_to_the_usual_question

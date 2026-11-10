@@ -128,11 +128,14 @@ A carry-over (`lib/47-transplant.sh`) is offered on an attended reopen under
 Claude or Codex when the session's last run was under the other of the two.
 `cs-codex-thread` converts in both directions: `--export-claude` writes a Codex
 thread's saved rollout as a Claude transcript, and `--history-from-claude`
-starts a new thread carrying a Claude transcript. The launch stages the result
-as an ordinary candidate with reason `transplant` and a `carried_from` field,
-`<engine>:<native id>`, and commits it the usual way, so the `rotated` event
-names the source conversation. It is recorded even when the target engine had
-no conversation before.
+starts a new thread carrying a Claude transcript. A converted Claude transcript
+waits for the answer in Claude Code's projects dir under a dot name without
+`.jsonl`, never in the agent-writable `.cs/local`, and `y` renames it to the
+conversation's name; a staged name that is no longer a plain file is refused.
+The launch stages the result as an ordinary candidate with reason `transplant`
+and a `carried_from` field, `<engine>:<native id>`, and commits it the usual
+way, so the `rotated` event names the source conversation. It is recorded even
+when the target engine had no conversation before.
 
 Engine selection retains this order: an explicit `--engine`, then the saved
 session preference, then `CS_DEFAULT_ENGINE`, then a sole installed Codex adapter, otherwise Claude. The selected engine
