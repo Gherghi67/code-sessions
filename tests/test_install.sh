@@ -4079,7 +4079,9 @@ test_install_stopped_at_the_update_mod_leaves_it_recorded_as_it_stands() {
     assert_eq "the module as the release before shipped it" "$(cat "$module")" "the module on disk is the previous one" || return 1
     assert_file_contains "$record" "^$previous_digest  \.claude/skills/cs-update/hooks/register\.tsx$" "the record still names what is on disk" || return 1
     assert_file_not_contains "$record" "^$payload_digest  \.claude/skills/cs-update/hooks/register\.tsx$" "the record does not claim the release's module" || return 1
-    assert_file_contains "$record" "  \.claude/commands/wrap\.md$" "the rest of the record was written" || return 1
+    # The fork ships wrap as a skill (CS_COMMANDS is empty), not as upstream's
+    # commands/wrap.md.
+    assert_file_contains "$record" "  \.claude/skills/wrap/SKILL\.md$" "the rest of the record was written" || return 1
     assert_eq "true" "$(jq '.hooks | length > 0' "$home/.claude/settings.json")" "settings.json was merged before the mod" || return 1
     assert_eq "$version" "$(cat "$home/.claude/hooks/cs/.version")" "the version stamp was written before the mod" || return 1
     HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/stopped2.out" 2>&1 < /dev/null || { cat "$TEST_TMPDIR/stopped2.out"; echo "  FAIL: the install run again failed"; return 1; }
