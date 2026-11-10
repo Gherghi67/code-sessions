@@ -19173,10 +19173,11 @@ EOF
     # it cannot be placed or staged, one line says so and the launch does what
     # y did before: resume this engine's own conversation, or start fresh.
     if [ -n "${do_transplant:-}" ]; then
-        local _t_label _t_dest
+        local _t_label _t_dest _t_sum
         _t_label=$(_transplant_label "$transplant_from")
         _t_dest="$(_claude_project_dir "$session_dir")/$transplant_uuid.jsonl"
         if _claude_transplant_place "$session_dir" "$transplant_file" "$transplant_uuid"; then
+            _t_sum=$(cksum < "$_t_dest") || _t_sum=""
             if cs_binding_stage "$session_dir" claude "$claude_session_id" "$transplant_uuid" transplant "" \
                 "$transplant_from:$transplant_id"; then
                 printf "${DIM}Carrying over the %s conversation:${NC} %s ${DIM}(%s)${NC}\n" \
@@ -19186,7 +19187,18 @@ EOF
                 # shellcheck disable=SC2086
                 cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$claude_name" --resume "$transplant_uuid" ${launch_prompt:+"$launch_prompt"} || rc=$?
                 if [ "$rc" -ne 0 ] && [ "$(cs_binding_read "$session_dir" claude 2>/dev/null)" != "$transplant_uuid" ]; then
-                    printf 'Claude did not open the carried-over conversation; the binding is unchanged. Reopen to be asked again.\n' >&2
+                    # Claude failed before SessionStart bound it. Left as cs
+                    # placed it, the conversion is removed, or the next open
+                    # would name it as a newer conversation opened outside cs;
+                    # one Claude wrote to holds the user's turns and stays.
+                    if [ -n "$_t_sum" ] && [ "$(cksum 2>/dev/null < "$_t_dest")" = "$_t_sum" ]; then
+                        rm -f "$_t_dest"
+                    fi
+                    if [ -e "$_t_dest" ]; then
+                        printf 'Claude did not open the carried-over conversation; the binding is unchanged. To continue it: claude --resume %s\n' "$transplant_uuid" >&2
+                    else
+                        printf 'Claude did not open the carried-over conversation; the binding is unchanged. Reopen to be asked again.\n' >&2
+                    fi
                 fi
                 return "$rc"
             fi

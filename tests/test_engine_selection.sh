@@ -32,12 +32,16 @@ uuid=""
 while [ "$#" -gt 0 ]; do
     case "$1" in --session-id|--resume) uuid="$2"; shift 2 ;; *) shift ;; esac
 done
-if [ -n "$uuid" ]; then
+if [ -n "$uuid" ] && [ -z "${CS_CLAUDE_NO_START:-}" ]; then
     jq -nc --arg session_id "$uuid" --arg cwd "$CS_SESSION_DIR" \
         '{session_id:$session_id,cwd:$cwd,source:"startup"}' \
         | CLAUDE_PID=$$ bash "$CS_TEST_START_HOOK" >/dev/null
 fi
-exit 0
+# A run that wrote a record to the conversation it opened.
+if [ -n "$uuid" ] && [ -n "${CS_CLAUDE_WRITES:-}" ]; then
+    find "$CS_TRANSCRIPTS_DIR" -name "$uuid.jsonl" -exec sh -c 'printf "%s\n" "$1" >> "$2"' _ "$CS_CLAUDE_WRITES" {} \;
+fi
+exit "${CS_CLAUDE_EXIT:-0}"
 CLAUDE
     cat > "$CODEX_BIN" <<'CODEX'
 #!/usr/bin/env bash
@@ -96,6 +100,7 @@ teardown() {
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN CS_CODEX_THREAD_BIN
     unset CS_CLAUDE_LOG CS_CLAUDE_ENV CS_CODEX_LOG CS_HELPER_LOG CS_DEFAULT_ENGINE
     unset CS_REAL_THREAD_HELPER CS_HELPER_FAIL_CARRY CS_HELPER_FRESH_ID CS_HELPER_SWAP_STAGED CS_ASSUME_TTY
+    unset CS_CLAUDE_NO_START CS_CLAUDE_WRITES CS_CLAUDE_EXIT
 }
 
 _engine_session_dir() {
@@ -652,6 +657,61 @@ test_claude_never_places_a_swapped_staged_transcript() {
     assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "the refused copy is removed" || return 1
 }
 
+# Claude exits with an error before it opens the carried conversation: the
+# conversion it never wrote to is removed, so it is not left behind as the
+# newest conversation here, and the next open asks again.
+test_claude_carry_over_never_opened_is_removed() {
+    local output session_dir old_id proj status=0
+    _tp_claude_then_codex unopened || return 1
+    session_dir=$(_engine_session_dir unopened)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_CLAUDE_NO_START=1 CS_CLAUDE_EXIT=1 CS_ASSUME_TTY=1 \
+        "$CS_BIN" unopened --engine claude <<< "y" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a failed Claude run reported success"; return 1; }
+    assert_output_contains "$output" "Reopen to be asked again" "one line says what to do" || return 1
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "the binding is unchanged" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    assert_eq 0 "$(find "$proj" -name '*.jsonl' | wc -l | tr -d ' ')" "the unopened conversion is removed" || return 1
+    assert_eq 0 "$(find "$proj" -name '*cs-transplant*' | wc -l | tr -d ' ')" "no converted copy is left behind" || return 1
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" unopened --engine claude <<< "e" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "The newest conversation here is Codex's" "the next open asks again" || return 1
+}
+
+# A carried conversation Claude wrote to before it failed holds the user's
+# work: it stays, and one line says how to continue it.
+test_claude_carry_over_written_before_a_failure_is_kept() {
+    local output session_dir old_id proj placed status=0
+    _tp_claude_then_codex written || return 1
+    session_dir=$(_engine_session_dir written)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_CLAUDE_NO_START=1 CS_CLAUDE_EXIT=1 CS_ASSUME_TTY=1 \
+        CS_CLAUDE_WRITES='{"type":"user","message":{"role":"user","content":"KEEP-THIS-TURN"}}' \
+        "$CS_BIN" written --engine claude <<< "y" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a failed Claude run reported success"; return 1; }
+    assert_eq "$old_id" "$(_tp_claude_id "$session_dir")" "the binding is unchanged" || return 1
+    proj=$(_tp_project_dir "$session_dir")
+    placed=$(find "$proj" -name '*.jsonl')
+    assert_eq 1 "$(printf '%s' "$placed" | grep -c .)" "one carried conversation is placed" || return 1
+    assert_file_contains "$placed" KEEP-THIS-TURN "the conversation Claude wrote to is kept" || return 1
+    assert_output_contains "$output" "claude --resume $(basename "$placed" .jsonl)" "one line says how to continue it" || return 1
+    assert_output_not_contains "$output" "Reopen to be asked again" "it is not offered as lost" || return 1
+}
+
+# Claude opened the carried conversation (SessionStart bound it), then exited
+# with an error: it is the session's conversation now and stays.
+test_claude_carry_over_opened_then_failed_is_kept() {
+    local output session_dir old_id new_id status=0
+    _tp_claude_then_codex opened-failed || return 1
+    session_dir=$(_engine_session_dir opened-failed)
+    old_id=$(_tp_claude_id "$session_dir")
+    output=$(CS_CLAUDE_EXIT=1 CS_ASSUME_TTY=1 "$CS_BIN" opened-failed --engine claude <<< "y" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a failed Claude run reported success"; return 1; }
+    new_id=$(_tp_claude_id "$session_dir")
+    [ "$new_id" != "$old_id" ] || { echo "  FAIL: SessionStart did not bind the carried conversation"; return 1; }
+    assert_file_contains "$(_tp_project_dir "$session_dir")/$new_id.jsonl" AMBER-FALCON "the bound conversation stays" || return 1
+    assert_output_not_contains "$output" "did not open the carried-over conversation" "nothing is reported lost" || return 1
+}
+
 test_claude_reopen_n_starts_fresh_without_carrying() {
     local output session_dir old_id new_id
     _tp_claude_then_codex fresh-tp || return 1
@@ -807,6 +867,9 @@ run_test test_claude_reopen_carries_the_newer_codex_conversation
 run_test test_claude_reopen_e_resumes_the_earlier_conversation
 run_test test_claude_carry_over_is_never_staged_in_the_session
 run_test test_claude_never_places_a_swapped_staged_transcript
+run_test test_claude_carry_over_never_opened_is_removed
+run_test test_claude_carry_over_written_before_a_failure_is_kept
+run_test test_claude_carry_over_opened_then_failed_is_kept
 run_test test_claude_reopen_n_starts_fresh_without_carrying
 run_test test_claude_first_open_after_codex_offers_the_carry_over
 run_test test_unreadable_codex_history_falls_back_to_the_usual_question

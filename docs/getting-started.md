@@ -117,7 +117,10 @@ here. With a rotation handoff pending, `r` and `d` join the menu as they do
 on any reopen, and `d` carries over after retiring the handoff. The first turn
 after a carry-over reads the whole carried history uncached, so it costs about
 the token figure shown. A conversation that cannot be read is named in one
-line and the usual prompt follows. `--resume`, a spawned open and an open
+line and the usual prompt follows. If Claude exits with an error before it
+opens the carried-over conversation, cs deletes it and the next reopen asks
+again; if Claude had already written to it, cs keeps it and prints the
+`claude --resume` line that continues it. `--resume`, a spawned open and an open
 without a terminal resume this engine's own conversation as before.
 Antigravity sessions and encrypted sessions are not offered a carry-over.
 `ccs research-notes -conversations` shows a carry-over as `rotated
