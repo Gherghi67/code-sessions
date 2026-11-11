@@ -149,6 +149,28 @@ _cs_git_at() {  # dir, git arguments...
         -u LANGUAGE LC_ALL=C git -c core.fsmonitor= -C "$dir" "$@"
 }
 
+# On a Mac, /usr/bin/git is a stub that asks which Xcode is selected and starts
+# that Xcode's git, about 15 ms more per call than running it directly. A
+# process that makes several git calls (the session-start and autosave hooks,
+# a session's launch) calls this once, before its first git call: it asks
+# xcrun for the selected git and makes `git` run that for the rest of the
+# process, its subshells included. Asked on every run, never saved, so an
+# Xcode updated or switched under a running session is followed. git stays the
+# one on PATH when that is not /usr/bin/git (a git the person or a test put
+# first), when xcrun does not answer, and when its answer is not an executable
+# file. Calls through env, exec, xargs or timeout keep PATH's git. One
+# difference stays, accepted: the stub hands the programs git starts (hooks,
+# filters, aliases) SDKROOT, CPATH, LIBRARY_PATH and MANPATH, and the git run
+# directly hands them none.
+_cs_use_direct_git() {
+    [ "$(command -v git)" = /usr/bin/git ] || return 0
+    local found
+    found=$(xcrun -f git 2>/dev/null) || return 0
+    { [ -n "$found" ] && [ -f "$found" ] && [ -x "$found" ] && [ "$found" != /usr/bin/git ]; } || return 0
+    _CS_GIT="$found"
+    git() { "$_CS_GIT" "$@"; }
+}
+
 # The directory git's own search would take for the repository by its HEAD,
 # looking up from <dir>; fails when the search ends without one. git, asked
 # about a directory, takes the nearest directory at or above it that holds a
@@ -1658,11 +1680,14 @@ _CS_CONFIG_SPEC=(
     'CS_CLARIFY_DISABLE|Prompts|Clarifying questions|flagoff|flag|-|off|now|applies at your next prompt|Asks Claude to question an unclear request instead of guessing; a leading ~ skips one prompt.'
     'CS_NARRATIVE_PROMPT_DISABLE|Prompts|Narrative line|flagoff|flag|-|off|now|applies at your next prompt|Asks Claude, on each prompt, to note a finding in its narrative before it answers.'
     'CS_CTX_WARN_CTX|Rotation|Context warning %|text|num|-|40|now|applies when the next turn ends|Context use at which Claude tells you, once, that the conversation is filling up.'
-    'CS_ROTATE_BUTTON_CTX|Rotation|Rotate button from %|text|num|-|the warn %|now|applies by your next prompt|Context use from which the band above the prompt shows the rotate key, Ctrl+X 1.'
+    'CS_ROTATE_BUTTON_CTX|Rotation|Rotate button from %|text|num|-|the warn %|now|applies by your next prompt|Context use from which the rotate key, Ctrl+X 1, shows under the prompt or on the band above it.'
     'CS_ROTATE_NUDGE_CTX|Rotation|Rotation nudge %|text|num|-|60|now|applies when the next turn ends|Context use at which Claude suggests, once, writing a handoff and going on after /clear.'
     'CS_ROTATE_FORCE_CTX|Rotation|Rotate on its own past %|text|force|-|80|now|applies by your next prompt|Context use past which cs rotates by itself after a 20 second countdown you can stop.'
     'CS_NO_ROTATION_WAKE|Rotation|Wake after /clear|flagoff|flag|-|off|/clear|applies at the next /clear or launch|After /clear on a handoff, the fresh conversation starts its next step without you typing.'
     'CS_ROTATION_KICK_DELAY|Rotation|Wake delay (s)|text|secs|-|2|now|applies at the next rotation|Seconds between tries to wake the fresh conversation after /clear; 0 tries once.'
+    'CS_BAND_PROMPTS|Prompt bars|Prompt bars|flag|flag|-|off|now|applies by your next prompt|Draws a bar per prompt on the band above the prompt; a press on a bar scrolls the transcript to it.'
+    'CS_BAND_PROMPT|Prompt bars|Named prompt|choice|enum|latest,read|latest|now|applies by your next prompt|The prompt the band names and draws thick: latest, the newest, or read, the one at the top of the screen.'
+    'CS_BAND_BARS|Prompt bars|Most bars|text|num|-|10|now|applies by your next prompt|The most prompt bars the band draws; the prompts past them fold into a count at either end.'
     'CS_REWRITE_PROVIDER|Rewriter (ctrl+g)|Provider|choice|enum|claude,claude-api,openai,openai-api,gemini,gemini-api,grok,xai|claude|now|applies at the next ctrl+g|Who rewrites your prompt; an -api choice calls the vendor API in place of its CLI.'
     'CS_REWRITE_MODEL|Rewriter (ctrl+g)|Model|text|model|-|per provider|now|applies at the next ctrl+g|The model that rewrites your prompt, by the provider name for it; unset, the provider picks.'
     'CS_REWRITE_TIMEOUT|Rewriter (ctrl+g)|Timeout (s)|text|secs|-|25|now|applies at the next ctrl+g|Seconds to wait for a rewrite before your prompt is left as you typed it.'
@@ -1672,7 +1697,7 @@ _CS_CONFIG_SPEC=(
     'CS_TERM_BG_RGB|Terminal|Background r;g;b|text|rgb|-|detected|now|applies at the next repaint|Your terminal background colour, which the status line shades its capsules from.'
     'CS_NO_ITERM2|Terminal|iTerm2 features|flagoff|flag|-|off|now+launch|the tab title, the bell bounce and the iTerm reads of the bar: now. The iTerm tmux path of the launch: the next launch.|Uses iTerm2 for the tab title, a dock bounce when a turn ends and the theme of your profile.'
     'CS_NERD_FONTS|Terminal|Nerd Font glyphs|flag|flag|-|off|now|applies at the next cs command|Shows Nerd Font icons in cs banners and session lists; needs a Nerd Font in the terminal.'
-    'CS_FILTER_CHAT|Terminal|Filter chat|flag|flag|-|off|now+launch|/filter-chat and the band key: now. A change here or in a shell: the next launch.|Shows only your prompts and the replies from Claude in this session; the band key or /filter-chat flips it.'
+    'CS_FILTER_CHAT|Terminal|Filter chat|flag|flag|-|off|now+launch|/filter-chat and its key: now. A change here or in a shell: the next launch.|Shows only your prompts and the replies from Claude in this session; its key or /filter-chat flips it.'
     'CS_NO_MAIL_WAKE|Mail|Wake on mail|flagoff|flag|-|off|now|applies when the next turn ends|Unread mail from another session takes a turn, so the exchange goes on without you typing.'
     'CS_MAIL_WAKE_MAX|Mail|Wakes in a row|text|num|-|5|now|applies when the next turn ends|How many turns mail may take in a row before it waits for a prompt from you.'
     'CS_NO_TASK_TOOLS|Launch|Task tools|flagoff|flag|-|off|launch|applies at the next launch|Gives Claude its task list tools on every model, for rotation, the queue and handoffs.'

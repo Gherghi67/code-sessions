@@ -374,7 +374,7 @@ vault is locked: tell the user to mount it and stop.
 11. End your response with the instruction and nothing after it, on its own
    final line, exactly:
 
-   **Run `/clear` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — this conversation is ready to rotate.
+   **Run `/clear` now** (or press the `/clear now` key, under the prompt or on the band above it, or Ctrl+X 1 if you bound it) — this conversation is ready to rotate.
 
    Under Codex the line is, exactly:
 

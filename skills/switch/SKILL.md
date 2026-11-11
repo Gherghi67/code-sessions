@@ -156,8 +156,9 @@ vault is committed. `cs -switch` keeps its record there too,
      (Antigravity uses `--prompt-interactive`), so there is nothing
      to type, not even `go`.
    - Under Claude (`engine: claude`), the `cs` mod counts twenty seconds
-     down once this turn ends and runs `/exit` itself; its key on the capsule
-     reads `/exit to <target>` (Ctrl+X 1, if they bound it). A prompt they send stops the count
+     down once this turn ends and runs `/exit` itself; its key, under the
+     prompt or on the band above it, reads `/exit to <target>` (Ctrl+X 1, if
+     they bound it). A prompt they send stops the count
      (it starts again when that turn ends) and keeps this conversation; the
      switch stays pending for a later exit. Launched with
      `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no countdown: the key or a
@@ -201,7 +202,7 @@ vault is committed. `cs -switch` keeps its record there too,
 5. End your response with the instruction on its own final line, with
    `<target>` replaced by the selected engine. Under Claude:
 
-   **Run `/exit` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — cs reopens this session under <target>.
+   **Run `/exit` now** (or press the `/exit to <target>` key, under the prompt or on the band above it, or Ctrl+X 1 if you bound it) — cs reopens this session under <target>.
 
    Under Codex:
 

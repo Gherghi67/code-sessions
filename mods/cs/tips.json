@@ -2,7 +2,7 @@
   "tips": [
     {
       "id": "cs.band-prompts",
-      "text": "cs can draw a bar per prompt on its band, to scroll back to any prompt: run /config and turn on cs: Band: prompt bars"
+      "text": "cs can draw a bar per prompt on its band, to scroll back to any prompt: run /cs and turn on Prompt bars"
     },
     {
       "id": "cs.settings-pane",
@@ -43,6 +43,10 @@
     {
       "id": "cs.images-pictures",
       "text": "ask Claude to explain something in pictures and the reply draws a diagram and one image beside it; /config's cs: Draw images in replies turns the drawing off"
+    },
+    {
+      "id": "cs.write-as-me-fold",
+      "text": "/write-as-me drafts a long PR description or issue reply as a short opener in your voice, with the full text folded under a Full description summary"
     }
   ]
 }
