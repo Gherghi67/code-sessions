@@ -59,6 +59,21 @@ _cs_antigravity_adapter_skill_dir() {
     printf '%s/skills\n' "$(_antigravity_plugin_dir)"
 }
 
+# The folder of cs's finish skill for a -finish open, once the open can
+# work: the skill is in cs's plugin and agy takes a first prompt. Without
+# either the open would carry a prompt agy cannot act on. main asks before the
+# open migrates, locks or unarchives the session; the launch asks again.
+_antigravity_finish_dir() {
+    local dir
+    dir="$(_cs_antigravity_adapter_skill_dir)/finish"
+    [ -f "$dir/SKILL.md" ] || {
+        _antigravity_launch_error "The cs finish skill for Antigravity is missing from $dir, so -finish has nothing to start. Run setup.sh again, with agy installed, to add it."
+        return 1
+    }
+    _antigravity_flags_listed "${AGY_BIN:-agy}" --prompt-interactive || return 1
+    printf '%s\n' "$dir"
+}
+
 # The first prompt of a -finish open. agy 1.5.2 handed a typed explicit-only
 # skill its text and no folder (one measured run), so the prompt names the
 # skill's own file and the invocation it stands for, and the skill reads its
@@ -254,14 +269,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         return 1
     }
     export CS_BIN
-    # -finish starts agy on the finish skill's own file; without it the open
-    # would carry a prompt agy cannot act on, so it refuses before any change.
+    # -finish starts agy on the finish skill's own file. main has refused
+    # already when that cannot work; this is the check for any other caller.
     if [ -n "$merge_feature" ]; then
-        finish_dir="$(_cs_antigravity_adapter_skill_dir)/finish"
-        [ -f "$finish_dir/SKILL.md" ] || {
-            _antigravity_launch_error "The cs finish skill for Antigravity is missing from $finish_dir, so -finish has nothing to start. Run setup.sh again, with agy installed, to add it."
-            return 1
-        }
+        finish_dir=$(_antigravity_finish_dir) || return 1
     fi
     cs_run_with_lease "$meta_dir" _launch_handoff_recover "$session_dir" antigravity || {
         _antigravity_launch_error "An Antigravity handoff attempt needs recovery. Repair writable state and reopen with --resume. If no consumer was recorded, inspect native agy history before repairing $(_launch_handoff_receipt_dir "$session_dir" antigravity)/intent.json; do not replay it with --from-handoff."
@@ -383,8 +394,7 @@ $prompt"
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options antigravity || return 1
     _antigravity_flags_listed "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} \
-        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${rotation_handoff:+--prompt-interactive} \
-        ${merge_kick:+--prompt-interactive} || return 1
+        ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${rotation_handoff:+--prompt-interactive} || return 1
 
     cd -- "$session_dir" || return 1
     cs_unset_claude_env

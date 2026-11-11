@@ -414,9 +414,10 @@ state and retires the worktree.
   that names the task and that `SKILL.md`, and asks `agy` to follow it as if
   you had typed `/cs:finish <feature>`. It is prose rather than a typed
   `/cs:finish`, since whether `agy` resolves a slash command in that prompt
-  was not measured. The open refuses before anything changes when the plugin
-  has no `finish` skill (run `setup.sh` again) or the `agy` on `PATH` does not
-  list `--prompt-interactive`. A rotation handoff you choose with `r` takes
+  was not measured. When the plugin has no `finish` skill (run `setup.sh`
+  again) or the `agy` on `PATH` does not list `--prompt-interactive`, cs
+  refuses before it migrates, locks or unarchives the base and before it asks
+  about a pending handoff. A rotation handoff you choose with `r` takes
   the open instead, and cs prints the `-finish` command to run again. A staged
   spawn seed waits for a later open.
 - **Approvals.** In Auto mode `agy` asks before a command that leaves its

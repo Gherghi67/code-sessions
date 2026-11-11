@@ -678,6 +678,11 @@ main() {
     cs_config_load "$session_dir"
 
     check_dependencies "$engine"
+    # What -finish needs under Antigravity, refused while nothing has changed:
+    # the open below migrates, locks and unarchives the session first.
+    if [ -n "$merge_feature" ] && [ "$engine" = antigravity ]; then
+        _antigravity_finish_dir > /dev/null || exit 1
+    fi
 
     # Check for updates (non-blocking), then offer one on a terminal before
     # anything below opens or claims the session.

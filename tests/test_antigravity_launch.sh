@@ -1231,20 +1231,31 @@ test_finish_starts_agy_on_the_finish_skill() {
     assert_file_contains "$AGY_ARGV" "Read $skill/SKILL.md" "and the skill's own file" || return 1
 }
 
+# Both refusals come before the open changes anything: an archived base
+# stays archived, and an armed handoff is neither asked about nor spent.
 test_finish_refuses_before_agy_without_the_skill_or_the_prompt_flag() {
-    local output status=0
+    local output status=0 dir
     _finish_base lander || return 1
+    dir=$(_session_dir lander)
     : > "$AGY_LOG"
+    : > "$dir/.cs/archived"
     output=$("$CS_BIN" lander -finish feat 2>&1) || status=$?
     assert_eq 1 "$status" "no finish skill in the plugin, no -finish" || return 1
     assert_output_contains "$output" "The cs finish skill for Antigravity is missing from $HOME/.gemini/config/plugins/cs/skills/finish" || return 1
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    assert_file_exists "$dir/.cs/archived" "the archived base stays archived" || return 1
     _install_finish_skill
+    _arm_rotation lander
     status=0
-    output=$(AGY_HELP_OMIT=--prompt-interactive "$CS_BIN" lander -finish feat 2>&1) || status=$?
+    output=$(printf d | CS_ASSUME_TTY=1 AGY_HELP_OMIT=--prompt-interactive "$CS_BIN" lander -finish feat 2>&1) \
+        || status=$?
     assert_eq 1 "$status" "an agy that cannot take the prompt cannot take the merge" || return 1
     assert_output_contains "$output" 'does not list --prompt-interactive' || return 1
-    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    assert_output_not_contains "$output" 'Continue previous Antigravity conversation' "nothing is asked first" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" '^status: unconsumed$' "the handoff is not discarded" || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff" "and stays armed" || return 1
+    assert_file_exists "$dir/.cs/archived" "the base stays archived"
 }
 
 # r is the user choosing the handoff over the merge armed moments earlier,
