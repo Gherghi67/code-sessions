@@ -2132,7 +2132,7 @@ CS_PAYLOAD_SHA256=(
     "d987b136ff545808fe7275da1c93a0e06cf1d53d010c957c3418e233251c8c82  skills/wrap/SKILL.md"
     "e6f68d4b71897174fb9aa19a2243147607b7afb282f0939572a379a46cc6d88d  skills/write-as-me/scripts/build-corpus.sh"
     "a8a14c22510b49f89557b401730875996064682af719a85322215b61d046b054  skills/write-as-me/scripts/corpus-check.sh"
-    "dcb350dc190557e08c2ec21c4ac5e7ad062e3179b6f7d7a565b427f14864ab9c  skills/finish/scripts/finish.sh"
+    "ec8b57104bc0658c471db8597d3c26b9af1266a287c8c02a8b030d32c6c86449  skills/finish/scripts/finish.sh"
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
