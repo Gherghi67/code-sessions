@@ -1230,6 +1230,7 @@ test_finish_starts_agy_on_the_finish_skill() {
     assert_file_contains "$AGY_ARGV" "^--conversation$" "the base's conversation continues" || return 1
     assert_file_contains "$AGY_ARGV" "as if the user had typed /cs:finish feat" "it names the invocation" || return 1
     assert_file_contains "$AGY_ARGV" "Read $skill/SKILL.md" "and the skill's own file" || return 1
+    assert_file_contains "$AGY_ARGV" "its scripts are in $skill/scripts/" "and the folder its scripts sit in" || return 1
 }
 
 # Both refusals come before the open changes anything: an archived base

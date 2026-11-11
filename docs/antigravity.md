@@ -420,6 +420,11 @@ state and retires the worktree.
   about a pending handoff. A rotation handoff you choose with `r` takes
   the open instead, and cs prints the `-finish` command to run again. A staged
   spawn seed waits for a later open.
+- **Questions.** Where the skill asks you to choose, it uses `agy`'s
+  `ask_question` tool. On 1.5.5, `agy changelog` lists fixes to its prompt,
+  and the instructions built into the binary tell the model to "Use the
+  ask_question tool for asking questions to the user" (`strings` on the
+  binary).
 - **Approvals.** In Auto mode `agy` asks before a command that leaves its
   terminal sandbox or a destructive Git or file command, unless its own
   review clears it. `finish.sh` asks GitHub for the PR state, and the

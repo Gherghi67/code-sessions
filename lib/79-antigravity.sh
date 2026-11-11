@@ -93,8 +93,8 @@ _antigravity_finish_dir() {
 # skill's own file and the invocation it stands for, and the skill reads its
 # task from that, as it reads it from a typed message.
 _antigravity_finish_kick() {  # feature, finish_skill_dir
-    printf 'Finish the feature %s with cs'"'"'s finish skill, as if the user had typed /cs:finish %s. Read %s/SKILL.md and follow it; that folder is the skill'"'"'s own, holding its scripts/.\n' \
-        "$1" "$1" "$2"
+    printf 'Finish the feature %s with cs'"'"'s finish skill, as if the user had typed /cs:finish %s. Read %s/SKILL.md and follow it; its scripts are in %s/scripts/.\n' \
+        "$1" "$1" "$2" "$2"
 }
 
 _cs_antigravity_adapter_prepare_workspace() {  # session_dir, mode
