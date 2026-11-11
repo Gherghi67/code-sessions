@@ -117,6 +117,90 @@ test_engine_verb_supports_answers_without_temp_files() {
     assert_eq "idle_mail_wake is not supported under codex in cs" "$output" "with only its own line" || return 1
 }
 
+# A skill an engine hands over without its folder (agy's typed /cs:finish)
+# asks cs where its install put that skill for the running engine, rather
+# than searching the disk for one that may belong to another install.
+test_engine_verb_skill_dir_names_the_running_engines_install() {
+    local dir output status engine expected
+    dir=$(_engine_verb_session)
+    local claude_skills="$TEST_TMPDIR/home/.claude/skills" codex_home="$TEST_TMPDIR/codex-home"
+    local agy_skills="$TEST_TMPDIR/home/.gemini/config/plugins/cs/skills"
+    _register_agy_plugin "$TEST_TMPDIR/home" || return 1
+    for expected in "$claude_skills" "$codex_home/skills" "$agy_skills"; do
+        mkdir -p "$expected/finish" && printf 'finish\n' > "$expected/finish/SKILL.md"
+    done
+    for engine in claude codex antigravity; do
+        case "$engine" in
+            claude) expected="$claude_skills/finish" ;;
+            codex) expected="$codex_home/skills/finish" ;;
+            antigravity) expected="$agy_skills/finish" ;;
+        esac
+        output=$(env -u CS_SKILLS_DIR HOME="$TEST_TMPDIR/home" CODEX_HOME="$codex_home" \
+            CS_SESSION_DIR="$dir" CS_RUN_ENGINE="$engine" "$CS_BIN" -engine skill-dir finish 2>&1) \
+            || { echo "  FAIL: skill-dir under $engine failed: $output"; return 1; }
+        assert_eq "$expected" "$output" "$engine's installed finish folder, and nothing else" || return 1
+    done
+    # Missing there: a refusal naming the folder, never another install's copy.
+    rm -rf "$agy_skills/finish"
+    status=0
+    output=$(HOME="$TEST_TMPDIR/home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity \
+        "$CS_BIN" -engine skill-dir finish 2>&1) || status=$?
+    assert_eq 1 "$status" "a skill not installed for the engine exits 1" || return 1
+    assert_output_contains "$output" "No finish skill is installed for antigravity at $agy_skills/finish" \
+        "and names where it looked" || return 1
+    local name
+    for name in '../finish' 'Finish' 'a/b' '-x' ''; do
+        status=0
+        output=$(HOME="$TEST_TMPDIR/home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE=claude \
+            "$CS_BIN" -engine skill-dir "$name" 2>&1) || status=$?
+        [ "$status" -ne 0 ] || { echo "  FAIL: skill-dir must refuse the name '$name'"; return 1; }
+        assert_output_contains "$output" "Usage: cs -engine skill-dir <skill>" || return 1
+    done
+    status=0
+    output=$(HOME="$TEST_TMPDIR/home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE=claude \
+        "$CS_BIN" -engine skill-dir finish extra 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: skill-dir must refuse a second argument"; return 1; }
+}
+
+# cs's Antigravity plugin as the installer writes it, under HOME $1.
+_register_agy_plugin() {  # home
+    ( HOME="$1" && source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$CS_BIN" )
+}
+
+# The installer writes a skill only as a folder of its own holding a regular
+# SKILL.md, never through a link, and agy's only into a plugin that is cs's,
+# through a skills/ of its own. Anything else standing there is not this
+# install's, so skill-dir names none of it.
+test_engine_verb_skill_dir_refuses_what_the_installer_never_writes() {
+    local dir output status case engine home="$TEST_TMPDIR/home" other="$TEST_TMPDIR/other"
+    local plugin="$TEST_TMPDIR/home/.gemini/config/plugins/cs"
+    dir=$(_engine_verb_session)
+    mkdir -p "$other/finish" && printf 'not this install\n' > "$other/finish/SKILL.md"
+    for case in claude-linked-skill claude-linked-file agy-user-plugin agy-linked-skills agy-linked-skill; do
+        rm -rf "$home" && mkdir -p "$home/.claude/skills" || return 1
+        engine=claude
+        case "$case" in
+            claude-linked-skill) ln -s "$other/finish" "$home/.claude/skills/finish" ;;
+            claude-linked-file)
+                mkdir -p "$home/.claude/skills/finish" && ln -s "$other/finish/SKILL.md" "$home/.claude/skills/finish/SKILL.md" ;;
+            agy-user-plugin)
+                engine=antigravity
+                mkdir -p "$plugin/skills/finish" && printf 'finish\n' > "$plugin/skills/finish/SKILL.md" ;;
+            agy-linked-skills)
+                engine=antigravity
+                _register_agy_plugin "$home" && ln -s "$other" "$plugin/skills" ;;
+            agy-linked-skill)
+                engine=antigravity
+                _register_agy_plugin "$home" && mkdir -p "$plugin/skills" && ln -s "$other/finish" "$plugin/skills/finish" ;;
+        esac
+        status=0
+        output=$(env -u CS_SKILLS_DIR HOME="$home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE="$engine" \
+            "$CS_BIN" -engine skill-dir finish 2>&1) || status=$?
+        assert_eq 1 "$status" "$case: not this install's skill: $output" || return 1
+        assert_output_contains "$output" "Error:" "$case: says why" || return 1
+    done
+}
+
 test_engine_verb_refuses_outside_a_session() {
     local output status=0
     output=$(env -u CS_RUN_ENGINE -u CS_SESSION_DIR -u CLAUDE_SESSION_DIR "$CS_BIN" -engine 2>&1) || status=$?
@@ -250,6 +334,8 @@ run_test test_engine_verb_reports_the_running_engine
 run_test test_engine_verb_falls_back_to_the_saved_engine
 run_test test_engine_verb_supports_answers_by_exit_status
 run_test test_engine_verb_supports_answers_without_temp_files
+run_test test_engine_verb_skill_dir_names_the_running_engines_install
+run_test test_engine_verb_skill_dir_refuses_what_the_installer_never_writes
 run_test test_engine_verb_refuses_outside_a_session
 run_test test_fake_dependencies_do_not_require_native_runtimes
 run_test test_shared_context_exports_neutral_and_legacy_names

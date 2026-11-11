@@ -1039,13 +1039,13 @@ _session_run_engine() {  # session_dir, [session_name]
 }
 
 # How the user asks for finish, in the engine the session runs under (Claude
-# when none is recorded): Codex names a skill with $, Claude Code with /.
-# Antigravity has no finish yet, so its base is pointed at Claude's. The
-# refusals below are printed to the user verbatim.
+# when none is recorded): Codex names a skill with $, Claude Code with /, and
+# Antigravity offers cs's plugin skills as /cs:<name>. The refusals below are
+# printed to the user verbatim.
 _finish_command() {  # session_dir, [session_name]
     case "$(_session_run_engine "$1" "${2:-}")" in
         codex) printf '%s' '$finish' ;;
-        antigravity) printf 'cs %s --engine claude -finish' "${2:-$(basename "$1")}" ;;
+        antigravity) printf '%s' /cs:finish ;;
         *) printf '%s' /finish ;;
     esac
 }

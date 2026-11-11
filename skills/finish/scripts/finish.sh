@@ -26,11 +26,22 @@ state_get() {  # dir key
         "$1/.cs/local/state" 2>/dev/null || true
 }
 
-# How the user asks for finish, in the engine a session last ran under: Codex
-# names a skill with $, Claude Code with /.
-finish_word() {  # dir
-    case "$(state_get "$1" engine)" in
+# How the user asks for finish, in the engine a session runs under: this
+# run's own when the conversation is that session's, since Claude records its
+# engine only once its run ends; otherwise the one it last ran under (cs's
+# _session_run_engine decides the same). Codex names a skill with $, Claude
+# Code with /, Antigravity with /cs: (the skill ships in cs's agy plugin).
+finish_word() {  # dir name
+    local engine
+    if [ -n "${CS_RUN_ENGINE:-}" ] && [ -n "${2:-}" ] \
+        && [ "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" = "$2" ]; then
+        engine=$CS_RUN_ENGINE
+    else
+        engine=$(state_get "$1" engine)
+    fi
+    case "$engine" in
         codex) echo '$finish' ;;
+        antigravity) echo /cs:finish ;;
         *) echo /finish ;;
     esac
 }
@@ -230,7 +241,7 @@ cmd_prepare() {  # [feature]
         echo "role: feature"
         echo "base: $cs_base"
         echo "task: ${task_branch#cs/}"
-        echo "handoff: run $(finish_word "$sessions_root/$cs_base") ${task_branch#cs/} in session $cs_base"
+        echo "handoff: run $(finish_word "$sessions_root/$cs_base" "$cs_base") ${task_branch#cs/} in session $cs_base"
         return 0
     fi
     echo "role: base"
@@ -343,7 +354,9 @@ cmd_report() {  # base task sha
     # is another /finish first. A branch that is not an ancestor (a squash or
     # rebase landing) is retirable when the base holds every path it changed
     # as it has it, or else only on the PR's own evidence.
-    local not_integrated="retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run /finish $task again before retiring"
+    local not_integrated fin
+    fin=$(finish_word "$session_dir" "$base")
+    not_integrated="retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run $fin $task again before retiring"
     if [ "$landed" = "yes" ]; then
         if git -C "$session_dir" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
             echo "retire: ready"

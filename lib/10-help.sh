@@ -63,7 +63,7 @@ Commands:
   -adopt --worktrees  Register Claude Code's .claude/worktrees/* here as <repo>.<worktree> sessions (--dry-run previews)
   -whoami             Show the current actor (for shared, multi-person sessions)
   -who                Show who contributed to shared memory/narrative (git history)
-  -engine [supports <capability>]  Show this session's engine, conversation and capabilities
+  -engine [supports <capability> | skill-dir <skill>]  Show this session's engine, conversation and capabilities (skill-dir prints where cs installed a skill for that engine)
   -switch [claude|codex|antigravity] [--resume]  From inside a conversation with a handoff armed: on exit, cs reopens the session under the target from it (Antigravity needs a target; --check tests it; -switch cancel drops it)
   -live               List sessions running right now on this machine
   -usage              Per-session token usage over the 5h/weekly rate-limit windows

@@ -53,6 +53,47 @@ test_prepare_hands_off_in_the_bases_engine_words() {
     assert_output_contains "$out" 'handoff: run $finish fix-auth in session myproj' "Codex hand-off line" || return 1
 }
 
+# A base that last ran under Antigravity takes it as /cs:finish, the name agy
+# gives the skill in cs's plugin, and the retire line names the same.
+test_prepare_and_report_name_the_antigravity_skill() {
+    local sha out state="$CS_SESSIONS_ROOT/myproj/.cs/local/state"
+    sha=$(finish_fixture myproj fix-auth)
+    { grep -v '^engine:' "$state" 2>/dev/null || true; echo 'engine: antigravity'; } > "$state.new" && mv "$state.new" "$state"
+    out=$(CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj@fix-auth" CLAUDE_SESSION_NAME="myproj@fix-auth" \
+        bash "$FINISH" prepare 2>&1)
+    assert_output_contains "$out" 'handoff: run /cs:finish fix-auth in session myproj' "Antigravity hand-off line" || return 1
+    stub_gh '[]'
+    "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true > /dev/null 2>&1 || { echo "  FAIL: integrate failed"; return 1; }
+    (cd "$CS_SESSIONS_ROOT/myproj@fix-auth" && git commit -q --allow-empty -m "after capture")
+    out=$(CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME="myproj" \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1)
+    assert_output_contains "$out" "are not integrated; run /cs:finish fix-auth again before retiring" \
+        "the retire line names the base's own command" || return 1
+}
+
+# Claude records its engine only once its run ends, so inside a run of the
+# base under another engine than the saved one, that run's engine decides, as
+# it does for cs's own refusals. A feature's run says nothing about its base.
+test_report_names_the_running_engines_finish() {
+    local sha out saved run expected state="$CS_SESSIONS_ROOT/myproj/.cs/local/state"
+    sha=$(finish_fixture myproj fix-auth)
+    stub_gh '[]'
+    "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true > /dev/null 2>&1 || { echo "  FAIL: integrate failed"; return 1; }
+    (cd "$CS_SESSIONS_ROOT/myproj@fix-auth" && git commit -q --allow-empty -m "after capture")
+    for saved in antigravity:claude:/finish codex:claude:/finish claude:antigravity:/cs:finish claude:codex:'$finish'; do
+        run=${saved#*:}; expected=${run#*:}; run=${run%%:*}; saved=${saved%%:*}
+        { grep -v '^engine:' "$state" 2>/dev/null || true; echo "engine: $saved"; } > "$state.new" && mv "$state.new" "$state"
+        out=$(CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME=myproj CS_SESSION_NAME=myproj \
+            CS_RUN_ENGINE="$run" bash "$FINISH" report myproj fix-auth "$sha" 2>&1)
+        assert_output_contains "$out" "are not integrated; run $expected fix-auth again before retiring" \
+            "a $run run of a base saved as $saved" || return 1
+    done
+    out=$(CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj@fix-auth" CLAUDE_SESSION_NAME="myproj@fix-auth" \
+        CS_SESSION_NAME="myproj@fix-auth" CS_RUN_ENGINE=codex bash "$FINISH" prepare 2>&1)
+    assert_output_contains "$out" 'handoff: run /finish fix-auth in session myproj' \
+        "the hand-off reads the base's own engine, not the feature run's" || return 1
+}
+
 test_prepare_in_feature_session_hands_off() {
     finish_fixture myproj fix-auth > /dev/null
     local out
@@ -764,6 +805,8 @@ test_report_says_error_when_the_content_check_counts_no_paths() {
 
 run_test test_prepare_in_feature_session_hands_off
 run_test test_prepare_hands_off_in_the_bases_engine_words
+run_test test_prepare_and_report_name_the_antigravity_skill
+run_test test_report_names_the_running_engines_finish
 run_test test_prepare_in_base_captures_sha_branch_and_dirt
 run_test test_prepare_in_a_plain_checkout_says_so
 run_test test_prepare_refuses_a_worktree_off_its_branch

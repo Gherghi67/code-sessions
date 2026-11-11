@@ -49,7 +49,52 @@ _cs_antigravity_adapter_capabilities() {
     # supplies an interactive prompt; PreInvocation binds and consumes it.
     # spawn_brief: the launch writes a seed's brief in and sends its kickoff
     # as the first prompt, once; agy hosts no walk-away task queue.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief
+    # feature_finish: -finish sends a first prompt naming the finish skill's
+    # SKILL.md, since agy hands a typed /cs:finish no folder.
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish
+}
+
+# cs's skills ship inside its agy plugin, which offers them as /cs:<name>.
+# The installer deploys them only into a plugin that is cs's, through a
+# skills/ folder of its own; a folder there that is not holds none of them.
+_cs_antigravity_adapter_skill_dir() {
+    local dir
+    dir=$(_antigravity_plugin_dir)
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        printf 'Error: cs'"'"'s Antigravity plugin is not installed at %s, so none of its skills are. Run setup.sh again, with agy installed, to add it.\n' "$dir" >&2
+        return 1
+    fi
+    if ! _antigravity_plugin_is_cs "$dir" || ! _antigravity_plugin_subdir_ok "$dir/skills"; then
+        printf 'Error: %s is not cs'"'"'s Antigravity plugin with a skills folder of its own, so cs installed no skills there. cs -doctor names the fix.\n' "$dir" >&2
+        return 1
+    fi
+    printf '%s/skills\n' "$dir"
+}
+
+# The folder of cs's finish skill for a -finish open, once the open can
+# work: the skill is installed in cs's plugin with the script it runs, and agy
+# takes a first prompt. Without them the open would carry a prompt agy cannot
+# act on. main asks before the open migrates, locks or unarchives the
+# session; the launch asks again.
+_antigravity_finish_dir() {
+    local dir
+    dir=$(cs_engine_skill_dir antigravity finish) || return 1
+    [ ! -L "$dir/scripts" ] && [ ! -L "$dir/scripts/finish.sh" ] && [ -f "$dir/scripts/finish.sh" ] \
+        && [ -x "$dir/scripts/finish.sh" ] || {
+        _antigravity_launch_error "The cs finish skill for Antigravity in $dir has no runnable scripts/finish.sh, so -finish has nothing to start. Run setup.sh again, with agy installed, to restore it."
+        return 1
+    }
+    _antigravity_flags_listed "${AGY_BIN:-agy}" --prompt-interactive || return 1
+    printf '%s\n' "$dir"
+}
+
+# The first prompt of a -finish open. agy 1.5.2 handed a typed explicit-only
+# skill its text and no folder (one measured run), so the prompt names the
+# skill's own file and the invocation it stands for, and the skill reads its
+# task from that, as it reads it from a typed message.
+_antigravity_finish_kick() {  # feature, finish_skill_dir
+    printf 'Finish the feature %s with cs'"'"'s finish skill, as if the user had typed /cs:finish %s. Read %s/SKILL.md and follow it; its scripts are in %s/scripts/.\n' \
+        "$1" "$1" "$2" "$2"
 }
 
 _cs_antigravity_adapter_prepare_workspace() {  # session_dir, mode
@@ -152,12 +197,13 @@ _antigravity_write_rule() {  # session_name, session_dir, actor, cs_bin
 
 # agy stops with its usage on a flag it does not know, by then after cs has
 # written the rule and recorded the engine, so each flag this launch passes
-# must be one its --help lists.
+# must be one its --help lists. agy 1.5.5 prints that usage on stderr, with
+# status 0, so both streams are read.
 _antigravity_flags_listed() {  # agy_bin, args...
     local agy_bin="$1" help arg
     shift
     [ "$#" -gt 0 ] || return 0
-    help=$("$agy_bin" --help 2>/dev/null) || help=""
+    help=$("$agy_bin" --help 2>&1) || help=""
     for arg in "$@"; do
         case "$arg" in --*) ;; *) continue ;; esac
         printf '%s\n' "$help" | grep -E -- "^[[:space:]]*$arg([[:space:]]|$)" >/dev/null || {
@@ -204,7 +250,8 @@ _antigravity_rotation_hook_ready() {
 }
 
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
-    local session_name="$1" session_dir="$2" intent="${6:-auto}"
+    local session_name="$1" session_dir="$2" merge_feature="${5:-}" intent="${6:-auto}"
+    local finish_dir="" merge_kick=""
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
     local binding_file recorded reopen response="" actor run_dir=""
     local pending_handoff rotation_handoff="" rotation_origin="" prompt="" receipt_dir
@@ -237,6 +284,11 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         return 1
     }
     export CS_BIN
+    # -finish starts agy on the finish skill's own file. main has refused
+    # already when that cannot work; this is the check for any other caller.
+    if [ -n "$merge_feature" ]; then
+        finish_dir=$(_antigravity_finish_dir) || return 1
+    fi
     cs_run_with_lease "$meta_dir" _launch_handoff_recover "$session_dir" antigravity || {
         _antigravity_launch_error "An Antigravity handoff attempt needs recovery. Repair writable state and reopen with --resume. If no consumer was recorded, inspect native agy history before repairing $(_launch_handoff_receipt_dir "$session_dir" antigravity)/intent.json; do not replay it with --from-handoff."
         return 1
@@ -342,6 +394,13 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         [ -z "$rotation_origin" ] || prompt="$rotation_origin
 $prompt"
         prompt_args=(--prompt-interactive "$prompt")
+        # r is the user choosing the handoff over the merge armed moments
+        # earlier, as under Claude and Codex; the merge waits for its own launch.
+        [ -z "$merge_feature" ] \
+            || warn "Rotation handoff takes this launch; re-run: cs $session_name -finish $merge_feature"
+    elif [ -n "$merge_feature" ]; then
+        merge_kick=$(_antigravity_finish_kick "$merge_feature" "$finish_dir")
+        prompt_args=(--prompt-interactive "$merge_kick")
     fi
     case "$reopen" in
         '') ;;
@@ -421,6 +480,8 @@ $prompt"
             spawn_wait="it carries tasks and only Claude runs the walk-away queue (take it with: cs $session_name --engine claude)"
         elif [ -n "$rotation_handoff" ]; then
             spawn_wait="this open carries the rotation handoff"
+        elif [ -n "$merge_kick" ]; then
+            spawn_wait="this open carries -finish $merge_feature"
         elif ! _antigravity_flags_listed "$agy_bin" --prompt-interactive 2>/dev/null; then
             spawn_wait="the Antigravity CLI at $agy_bin does not list --prompt-interactive in its --help (update it: agy update)"
         else

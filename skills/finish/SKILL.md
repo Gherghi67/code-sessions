@@ -13,10 +13,10 @@ same ritual. A directory cannot be removed from under a running engine, so
 while the feature conversation is still live the entry stages the retire in
 the base instead, and this session's Stop hook runs it by itself once that
 conversation closes; the user closes it when they are done there and nothing
-else is asked of them. A Codex base has no such hook, so there the skill says
-so plainly and the user closes the feature conversation and runs
-`$finish <task>` again. Abandoning a feature instead is `cs -rm <base>@<task>`,
-the user's own call.
+else is asked of them. A Codex or Antigravity base has no such hook, so there
+the skill says so plainly and the user closes the feature conversation and
+runs `$finish <task>` (`/cs:finish <task>` under Antigravity) again.
+Abandoning a feature instead is `cs -rm <base>@<task>`, the user's own call.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ land and retire a feature: run `cs -engine supports feature_finish`. If it
 exits non-zero, print the line it printed, tell the user to finish the
 feature from the base session under Claude or Codex
 (`cs <base> --engine claude -finish <feature>`), and stop before running
-anything else. The Claude and Codex adapters both declare `feature_finish`.
+anything else. The Claude, Codex and Antigravity adapters all declare `feature_finish`.
 Outside a cs session there is nothing to ask; go on.
 
 ## Detect the context
@@ -34,9 +34,11 @@ Run `scripts/finish.sh prepare [feature]` from the workspace and read its
 `key: value` lines. The script ships with this skill: `scripts/` is relative
 to this skill's directory, the folder this SKILL.md was loaded from. If you
 cannot tell which folder that is (an engine can hand over a skill the user
-typed without naming its folder), say so and stop: never guess a path or
-search the disk for another `finish.sh`, which may belong to another cs
-install.
+typed without naming its folder, as Antigravity does), then
+run `cs -engine skill-dir finish`: it prints the folder this cs install put
+the skill in for the running engine, and `scripts/` is under it. If that
+fails too, print its line and stop: never guess a path or search the disk for
+another `finish.sh`, which may belong to another cs install.
 
 1. **`role: feature`** — this workspace is a cs feature worktree. Print the
    `handoff:` line verbatim (`run /finish <task> in session <base>`) and stop.
@@ -71,6 +73,23 @@ install.
   refused `finish.sh` reads as a PR state it could not learn.
 - Where this skill says AskUserQuestion, ask in plain text and wait for the
   answer.
+
+## Under Antigravity
+
+- The user types `/cs:finish <task>`: agy names the skills cs ships in its
+  plugin `/cs:<name>`. Write it that way in everything you show them; the
+  `handoff:` and `retire:` lines and cs's refusals already do.
+  `cs <base> -finish <task>` opens agy on a first prompt that names this
+  file and the task; read the task from it as from a typed message.
+- agy hands a typed `/cs:finish` this text without its folder, so take the
+  folder from `cs -engine skill-dir finish` ([Detect the context](#detect-the-context)).
+- In agy's Auto mode a command that leaves its terminal sandbox, or a
+  destructive Git or file command, can stop for the user's approval:
+  `finish.sh` asks GitHub for the PR state, and the two entries write the
+  base's `.git` and remove the feature worktree beside this folder. Run
+  them as written and let the user approve; never work around a refusal
+  with another command.
+- Where this skill says AskUserQuestion, use agy's `ask_question`.
 
 ## Gates are opt-in
 

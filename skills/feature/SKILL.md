@@ -119,11 +119,13 @@ tmux; the session is `cs` unless `CS_TMUX_SESSION` names another, and a
 `CS_TMUX_SOCKET` server adds `-L <socket>`). Then tell the
 user, in one or two lines, that the feature session reads its brief at
 `.cs/brief.md` and begins, that its result arrives here as mail from
-`cs -msg`, and that `/finish <feature>` lands it. The mail surfaces in this
+`cs -msg`, and that `/finish <feature>` lands it (`$finish <feature>` under
+Codex, `/cs:finish <feature>` under Antigravity). The mail surfaces in this
 conversation on its next prompt where `cs -engine supports mail_delivery`
 succeeds; elsewhere, say the user reads it with `cs -msg` themselves. Where
 `cs -engine supports feature_finish` fails, say the feature lands from a
 Claude or Codex open of this session: `cs <base> --engine claude -finish <feature>`. This
 session continues with its own work. When the feature is landed, `/finish`
 retires its worktree at once, or by itself once the user closes the feature
-conversation.
+conversation; under Codex and Antigravity the user closes it first and runs
+the finish again.

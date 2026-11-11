@@ -37,7 +37,7 @@ cs_engine_call() {  # engine operation [arguments...]
         return 2
     fi
     case "$operation" in
-        dependencies|capabilities|prepare_workspace|launch|files_changed) ;;
+        dependencies|capabilities|prepare_workspace|launch|files_changed|skill_dir) ;;
         *) printf 'Error: Unknown adapter operation: %s\n' "$operation" >&2; return 2 ;;
     esac
     handler="_cs_${engine}_adapter_${operation}"
@@ -64,6 +64,21 @@ cs_engine_supports() {  # engine capability
     return 1
 }
 
+# The folder this install put a skill in for an engine, or 1 with the reason
+# on stderr. The installer writes a skill only as a folder of its own holding
+# a regular SKILL.md, never through a link (install.sh's _skill_path_real), so
+# anything else standing there is not this install's.
+cs_engine_skill_dir() {  # engine, skill
+    local skills dir
+    skills=$(cs_engine_call "$1" skill_dir) || return 1
+    dir="$skills/$2"
+    if [ -L "$dir" ] || [ ! -d "$dir" ] || [ -L "$dir/SKILL.md" ] || [ ! -f "$dir/SKILL.md" ]; then
+        printf 'Error: No %s skill is installed for %s at %s. Run setup.sh again to install it.\n' "$2" "$1" "$dir" >&2
+        return 1
+    fi
+    printf '%s\n' "$dir"
+}
+
 # The engine this conversation runs under. A launch exports CS_RUN_ENGINE into
 # the native child, so a skill's shell sees the run's own engine. Outside a run
 # the session's saved preference answers, as the next launch would read it.
@@ -82,7 +97,10 @@ _cs_current_engine() {
 # native conversation the session has bound for it, and what it supports.
 # `supports <capability>` answers by exit status alone, so a skill can refuse
 # cleanly under an engine that lacks the feature instead of half-running.
-cmd_engine() {  # [supports <capability>]
+# `skill-dir <skill>` prints the folder this install put that skill in for the
+# engine: a skill handed over without its folder (agy's typed /cs:finish)
+# reaches its scripts from cs's answer, never from a search of the disk.
+cmd_engine() {  # [supports <capability> | skill-dir <skill>]
     local engine conversation="" capabilities
     engine=$(_cs_current_engine) || exit 1
     case "${1:-}" in
@@ -101,7 +119,12 @@ cmd_engine() {  # [supports <capability>]
             printf '%s is not supported under %s in cs\n' "$2" "$engine" >&2
             return 1
             ;;
-        *) error "Usage: cs -engine [supports <capability>]" ;;
+        skill-dir)
+            [ $# -eq 2 ] && [[ "${2:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+                || error "Usage: cs -engine skill-dir <skill>"
+            cs_engine_skill_dir "$engine" "$2" || return 1
+            ;;
+        *) error "Usage: cs -engine [supports <capability> | skill-dir <skill>]" ;;
     esac
 }
 # ABOUTME: Native successful file edits translated into one files_changed event.
