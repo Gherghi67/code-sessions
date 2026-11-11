@@ -117,6 +117,50 @@ test_engine_verb_supports_answers_without_temp_files() {
     assert_eq "idle_mail_wake is not supported under codex in cs" "$output" "with only its own line" || return 1
 }
 
+# A skill an engine hands over without its folder (agy's typed /cs:finish)
+# asks cs where its install put that skill for the running engine, rather
+# than searching the disk for one that may belong to another install.
+test_engine_verb_skill_dir_names_the_running_engines_install() {
+    local dir output status engine expected
+    dir=$(_engine_verb_session)
+    local claude_skills="$TEST_TMPDIR/home/.claude/skills" codex_home="$TEST_TMPDIR/codex-home"
+    local agy_skills="$TEST_TMPDIR/home/.gemini/config/plugins/cs/skills"
+    for expected in "$claude_skills" "$codex_home/skills" "$agy_skills"; do
+        mkdir -p "$expected/finish" && printf 'finish\n' > "$expected/finish/SKILL.md"
+    done
+    for engine in claude codex antigravity; do
+        case "$engine" in
+            claude) expected="$claude_skills/finish" ;;
+            codex) expected="$codex_home/skills/finish" ;;
+            antigravity) expected="$agy_skills/finish" ;;
+        esac
+        output=$(env -u CS_SKILLS_DIR HOME="$TEST_TMPDIR/home" CODEX_HOME="$codex_home" \
+            CS_SESSION_DIR="$dir" CS_RUN_ENGINE="$engine" "$CS_BIN" -engine skill-dir finish 2>&1) \
+            || { echo "  FAIL: skill-dir under $engine failed: $output"; return 1; }
+        assert_eq "$expected" "$output" "$engine's installed finish folder, and nothing else" || return 1
+    done
+    # Missing there: a refusal naming the folder, never another install's copy.
+    rm -rf "$agy_skills/finish"
+    status=0
+    output=$(HOME="$TEST_TMPDIR/home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity \
+        "$CS_BIN" -engine skill-dir finish 2>&1) || status=$?
+    assert_eq 1 "$status" "a skill not installed for the engine exits 1" || return 1
+    assert_output_contains "$output" "No finish skill is installed for antigravity at $agy_skills/finish" \
+        "and names where it looked" || return 1
+    local name
+    for name in '../finish' 'Finish' 'a/b' '-x' ''; do
+        status=0
+        output=$(HOME="$TEST_TMPDIR/home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE=claude \
+            "$CS_BIN" -engine skill-dir "$name" 2>&1) || status=$?
+        [ "$status" -ne 0 ] || { echo "  FAIL: skill-dir must refuse the name '$name'"; return 1; }
+        assert_output_contains "$output" "Usage: cs -engine skill-dir <skill>" || return 1
+    done
+    status=0
+    output=$(HOME="$TEST_TMPDIR/home" CS_SESSION_DIR="$dir" CS_RUN_ENGINE=claude \
+        "$CS_BIN" -engine skill-dir finish extra 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: skill-dir must refuse a second argument"; return 1; }
+}
+
 test_engine_verb_refuses_outside_a_session() {
     local output status=0
     output=$(env -u CS_RUN_ENGINE -u CS_SESSION_DIR -u CLAUDE_SESSION_DIR "$CS_BIN" -engine 2>&1) || status=$?
@@ -250,6 +294,7 @@ run_test test_engine_verb_reports_the_running_engine
 run_test test_engine_verb_falls_back_to_the_saved_engine
 run_test test_engine_verb_supports_answers_by_exit_status
 run_test test_engine_verb_supports_answers_without_temp_files
+run_test test_engine_verb_skill_dir_names_the_running_engines_install
 run_test test_engine_verb_refuses_outside_a_session
 run_test test_fake_dependencies_do_not_require_native_runtimes
 run_test test_shared_context_exports_neutral_and_legacy_names

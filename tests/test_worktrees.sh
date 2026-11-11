@@ -1302,7 +1302,8 @@ test_retire_refusal_names_codex_commands_for_codex_sessions() {
     rm -f "$wt/.cs/session.lock"
 }
 
-# A base that last ran under Antigravity is pointed at Claude for its finish.
+# A base that last ran under Antigravity takes finish as /cs:finish, and,
+# with no Stop hook to run a stage, refuses until the feature is closed.
 # Claude records its engine only once its run ends, so inside that run the
 # state still names Antigravity: the run's own engine decides, and the retire
 # stages for the base's Stop hook as any Claude base's does.
@@ -1319,8 +1320,8 @@ test_retire_under_a_claude_run_of_an_antigravity_base_stages() {
     echo "$$" > "$wt/.cs/session.lock"   # this test process is alive
     output=$("$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "outside a run the base is Antigravity's: $output" || return 1
-    assert_output_contains "$output" "then run cs myproj --engine claude -finish fix-auth here again" \
-        "the refusal points at Claude's finish" || return 1
+    assert_output_contains "$output" "then run /cs:finish fix-auth here again" \
+        "the refusal names Antigravity's own finish" || return 1
     status=0
     output=$(CS_RUN_ENGINE=claude CS_SESSION_NAME=myproj "$cs" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "the Claude run stages the retire: $output" || return 1

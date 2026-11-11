@@ -62,6 +62,11 @@ _cs_codex_adapter_dependencies() {
     return 0
 }
 
+# Where the installer puts cs's skills for Codex.
+_cs_codex_adapter_skill_dir() {
+    printf '%s/skills\n' "${CODEX_HOME:-$HOME/.codex}"
+}
+
 _cs_codex_adapter_capabilities() {
     # rotation: `cs -codex-hook session-start` rebinds after /clear and loads
     # the armed handoff; the launch prompt's r starts a thread from it.

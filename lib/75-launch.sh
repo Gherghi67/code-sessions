@@ -694,6 +694,11 @@ _cs_claude_adapter_capabilities() {
         rotation engine_switch spawn_brief memory_index mail_delivery recovery_autosave
 }
 
+# Where the installer puts cs's skills for Claude Code (doctor reads the same).
+_cs_claude_adapter_skill_dir() {
+    printf '%s\n' "${CS_SKILLS_DIR:-$HOME/.claude/skills}"
+}
+
 _claude_native_id_valid() {  # native conversation ID
     [[ "$1" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]
 }

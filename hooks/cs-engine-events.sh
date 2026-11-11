@@ -37,7 +37,7 @@ cs_engine_call() {  # engine operation [arguments...]
         return 2
     fi
     case "$operation" in
-        dependencies|capabilities|prepare_workspace|launch|files_changed) ;;
+        dependencies|capabilities|prepare_workspace|launch|files_changed|skill_dir) ;;
         *) printf 'Error: Unknown adapter operation: %s\n' "$operation" >&2; return 2 ;;
     esac
     handler="_cs_${engine}_adapter_${operation}"
@@ -82,7 +82,10 @@ _cs_current_engine() {
 # native conversation the session has bound for it, and what it supports.
 # `supports <capability>` answers by exit status alone, so a skill can refuse
 # cleanly under an engine that lacks the feature instead of half-running.
-cmd_engine() {  # [supports <capability>]
+# `skill-dir <skill>` prints the folder this install put that skill in for the
+# engine: a skill handed over without its folder (agy's typed /cs:finish)
+# reaches its scripts from cs's answer, never from a search of the disk.
+cmd_engine() {  # [supports <capability> | skill-dir <skill>]
     local engine conversation="" capabilities
     engine=$(_cs_current_engine) || exit 1
     case "${1:-}" in
@@ -101,7 +104,16 @@ cmd_engine() {  # [supports <capability>]
             printf '%s is not supported under %s in cs\n' "$2" "$engine" >&2
             return 1
             ;;
-        *) error "Usage: cs -engine [supports <capability>]" ;;
+        skill-dir)
+            [ $# -eq 2 ] && [[ "${2:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+                || error "Usage: cs -engine skill-dir <skill>"
+            local skills
+            skills=$(cs_engine_call "$engine" skill_dir) || return 1
+            [ -f "$skills/$2/SKILL.md" ] \
+                || error "No $2 skill is installed for $engine at $skills/$2. Run setup.sh again to install it."
+            printf '%s\n' "$skills/$2"
+            ;;
+        *) error "Usage: cs -engine [supports <capability> | skill-dir <skill>]" ;;
     esac
 }
 # ABOUTME: Native successful file edits translated into one files_changed event.

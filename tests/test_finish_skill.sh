@@ -53,6 +53,17 @@ test_finish_skill_runs_under_codex() {
     assert_file_contains "$SKILL" 'with escalated permissions from the start' "approval before the sandbox refuses" || return 1
 }
 
+# agy hands a typed /cs:finish its text without its folder, so the skill asks
+# cs for its installed folder before it gives up; it still never searches.
+test_finish_skill_runs_under_antigravity() {
+    assert_file_contains "$SKILL" '^## Under Antigravity' "an Antigravity section" || return 1
+    assert_file_contains "$SKILL" 'types `/cs:finish <task>`' "Antigravity's spelling" || return 1
+    assert_file_contains "$SKILL" 'run `cs -engine skill-dir finish`' "the folder comes from cs" || return 1
+    assert_file_contains "$SKILL" 'never guess a path or' "and nothing else is guessed" || return 1
+    assert_file_contains "$SKILL" 'The Claude, Codex and Antigravity adapters all declare `feature_finish`' \
+        "the prerequisites name all three" || return 1
+}
+
 test_finish_skill_teaches_the_ritual() {
     assert_file_contains "$SKILL" "scripts/finish.sh prepare" "runs the capture script" || return 1
     assert_file_contains "$SKILL" "scripts/finish.sh report" "runs the report script" || return 1
@@ -119,5 +130,6 @@ run_test test_finish_skill_keeps_the_plain_branch_context
 run_test test_finish_skill_never_list
 run_test test_finish_kick_arms_the_new_skill
 run_test test_finish_skill_runs_under_codex
+run_test test_finish_skill_runs_under_antigravity
 
 report_results

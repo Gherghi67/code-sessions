@@ -978,11 +978,11 @@ test_capabilities_claim_rotation_but_not_deferred_features() {
     assert_output_contains "$output" 'engine: antigravity' || return 1
     assert_output_contains "$output" "conversation: $AGY_NEW_ID" || return 1
     assert_output_contains "$output" 'capabilities: launch exact_resume startup_context recovery_autosave memory_index' || return 1
-    for capability in launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief; do
+    for capability in launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish; do
         CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" \
             || { echo "  FAIL: $capability should be supported"; return 1; }
     done
-    for capability in mail_delivery feature_finish status_line; do
+    for capability in mail_delivery status_line; do
         status=0
         output=$(CS_SESSION_DIR="$dir" CS_RUN_ENGINE=antigravity "$CS_BIN" -engine supports "$capability" 2>&1) \
             || status=$?
@@ -1200,13 +1200,87 @@ test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt() {
     assert_output_contains "$output" 'brief stays in .cs/brief.md' "and points at the brief"
 }
 
-test_finish_and_missing_handoff_are_refused() {
+# cs's finish skill as the installer leaves it in the plugin, which agy
+# offers as /cs:finish.
+_install_finish_skill() {
+    local skill="$HOME/.gemini/config/plugins/cs/skills/finish"
+    mkdir -p "$skill/scripts" && printf -- '---\nname: finish\n---\n' > "$skill/SKILL.md"
+}
+
+# An Antigravity base with one commit and its feature worktree <base>@feat,
+# which -finish requires before any launch.
+_finish_base() {  # base_name
+    local output
+    output=$("$CS_BIN" "$1" --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    git -C "$(_session_dir "$1")" -c user.name=t -c user.email=t@example.com commit -qm base --allow-empty \
+        >/dev/null 2>&1 || true
+    output=$("$CS_BIN" "$1@feat" --engine antigravity 2>&1) || { echo "$output"; return 1; }
+}
+
+# agy hands a typed /cs:finish its text but not its folder (measured on
+# 1.5.2), so -finish starts the base on a prompt that names the skill's
+# SKILL.md, the way Claude starts on /finish <task> and Codex on $finish.
+test_finish_starts_agy_on_the_finish_skill() {
+    local output skill="$HOME/.gemini/config/plugins/cs/skills/finish"
+    _finish_base lander || return 1
+    _install_finish_skill
+    output=$("$CS_BIN" lander -finish feat 2>&1) || { echo "  FAIL: -finish must open agy: $output"; return 1; }
+    assert_file_contains "$AGY_ARGV" '^--prompt-interactive$' "the merge is the first prompt" || return 1
+    assert_file_contains "$AGY_ARGV" "^--conversation$" "the base's conversation continues" || return 1
+    assert_file_contains "$AGY_ARGV" "as if the user had typed /cs:finish feat" "it names the invocation" || return 1
+    assert_file_contains "$AGY_ARGV" "Read $skill/SKILL.md" "and the skill's own file" || return 1
+}
+
+test_finish_refuses_before_agy_without_the_skill_or_the_prompt_flag() {
+    local output status=0
+    _finish_base lander || return 1
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" lander -finish feat 2>&1) || status=$?
+    assert_eq 1 "$status" "no finish skill in the plugin, no -finish" || return 1
+    assert_output_contains "$output" "The cs finish skill for Antigravity is missing from $HOME/.gemini/config/plugins/cs/skills/finish" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    _install_finish_skill
+    status=0
+    output=$(AGY_HELP_OMIT=--prompt-interactive "$CS_BIN" lander -finish feat 2>&1) || status=$?
+    assert_eq 1 "$status" "an agy that cannot take the prompt cannot take the merge" || return 1
+    assert_output_contains "$output" 'does not list --prompt-interactive' || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+}
+
+# r is the user choosing the handoff over the merge armed moments earlier,
+# as under Claude and Codex; the merge waits for its own launch.
+test_a_rotation_handoff_takes_a_finish_launch() {
+    local output dir second=22222222-2222-4222-8222-222222222222
+    _finish_base turner || return 1
+    dir=$(_session_dir turner)
+    _install_finish_skill
+    _arm_rotation turner
+    output=$(printf r | CS_ASSUME_TTY=1 AGY_NEW_ID=$second "$CS_BIN" turner -finish feat 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_file_contains "$AGY_ARGV" 'Read .cs/handoffs/2026-11-05-rotate.md FIRST' "the handoff takes the first prompt" || return 1
+    assert_file_not_contains "$AGY_ARGV" '/cs:finish' "the merge does not ride along" || return 1
+    assert_output_contains "$output" 'Rotation handoff takes this launch; re-run: cs turner -finish feat' || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-11-05-rotate.md" "^consumed_by: $second$"
+}
+
+# The merge is the action the user took just now; a brief staged earlier
+# keeps for a later open rather than being spent with no prompt to carry it.
+test_a_finish_open_leaves_a_spawn_seed_staged() {
+    local output seed="$CS_SESSIONS_ROOT/.spawn/landing.seed"
+    _finish_base landing || return 1
+    _install_finish_skill
+    _stage_seed landing "$AGY_SPAWN_TOKEN"
+    output=$(CS_SPAWN_TOKEN=$AGY_SPAWN_TOKEN "$CS_BIN" landing -finish feat 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$AGY_ARGV" '/cs:finish feat' "the merge takes the first prompt" || return 1
+    assert_file_not_contains "$AGY_ARGV" 'Spawned by' "the kickoff waits" || return 1
+    assert_output_contains "$output" 'stays staged' "the open says so" || return 1
+    assert_file_exists "$seed" "the seed stays staged for a later open" || return 1
+    assert_not_exists "$(_session_dir landing)/.cs/brief.md" "nothing is delivered"
+}
+
+test_missing_handoff_is_refused() {
     local output status=0
     output=$("$CS_BIN" lander --engine antigravity 2>&1) || { echo "$output"; return 1; }
-    output=$("$CS_BIN" lander -finish feat 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: -finish under antigravity must fail"; return 1; }
-    assert_output_contains "$output" '-finish is not supported under antigravity' || return 1
-    status=0
     : > "$AGY_LOG"
     output=$("$CS_BIN" lander --from-handoff 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: --from-handoff under antigravity must fail"; return 1; }
@@ -1560,7 +1634,11 @@ run_test test_a_rotation_open_leaves_a_spawn_seed_staged
 run_test test_an_agy_without_an_interactive_prompt_leaves_a_spawn_seed_staged
 run_test test_the_spawns_own_window_resumes_with_the_kickoff_without_asking
 run_test test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt
-run_test test_finish_and_missing_handoff_are_refused
+run_test test_finish_starts_agy_on_the_finish_skill
+run_test test_finish_refuses_before_agy_without_the_skill_or_the_prompt_flag
+run_test test_a_rotation_handoff_takes_a_finish_launch
+run_test test_a_finish_open_leaves_a_spawn_seed_staged
+run_test test_missing_handoff_is_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_an_encrypted_session_is_refused_before_its_vault_opens
 run_test test_a_feature_worktree_launches_and_keeps_its_rule_out_of_git

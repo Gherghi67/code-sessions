@@ -160,8 +160,8 @@ the `/` menu and in the list the model reads.
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
 | `rotate` | Writes and arms the shared handoff, then asks you to `/exit` and reopen with `cs <name> --from-handoff`. |
-| `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail is not shown inside `agy`, so read it with `cs -msg`; `-finish` lands the feature only from a Claude or Codex open of the base. |
-| `finish`, `switch` | Run only when you type them. `switch` carries a handoff to Claude or Codex through a managed exit. `finish` checks `feature_finish` and stops in a cs session. Outside one, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from (see [Follow-ups](#follow-ups)). |
+| `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail is not shown inside `agy`, so read it with `cs -msg`; `/cs:finish <feature>` lands it ([Finishing a feature](#finishing-a-feature)). |
+| `finish`, `switch` | Run only when you type them. `switch` carries a handoff to Claude or Codex through a managed exit. `finish` lands and retires a feature ([Finishing a feature](#finishing-a-feature)). Outside a cs session, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from, since `cs -engine skill-dir` needs a session too. |
 
 - **Explicit-only skills.** `finish` and `switch` carry
   `disable-model-invocation: true`, the key Claude Code reads. `agy` reads it
@@ -342,7 +342,7 @@ Codex and Antigravity targets refuse encrypted sessions.
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
 `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-and `spawn_brief`.
+`spawn_brief`, and `feature_finish`.
 `cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly
 ([Skills](#skills)).
@@ -350,7 +350,6 @@ Skills that check before relying on a capability refuse cleanly
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
-| `-finish` (`feature_finish`) | Refused before the session opens. Run it under Claude or Codex. A retire refusal for a feature of an Antigravity base names `cs <base> --engine claude -finish`. |
 | Mail delivery (`mail_delivery`) | `cs -msg` still works from the shell. Nothing surfaces mail inside `agy`. |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
@@ -395,6 +394,40 @@ list `--prompt-interactive`. A seed with tasks, staged for Claude, also stays
 staged, unoffered, for `cs <name> --engine claude`. All three say so. An open
 outside the spawn's window shows any other seed and asks before taking it, as
 under Claude and Codex. Without a terminal, it leaves the seed staged.
+
+## Finishing a feature
+
+Type `/cs:finish <feature>` in the base's `agy`, or open the base with
+`cs <base> --engine antigravity -finish <feature>` (the TUI's merge picker
+arms the same). The finish skill runs as under the other engines: it
+captures the feature's commit, merges it into the base, reports the PR's
+state and retires the worktree.
+
+- **The skill's folder.** `agy` hands a typed explicit-only skill its text but
+  no path: on 1.5.2, a probe skill typed as `/csprobe:where` got "The user has
+  explicitly invoked the (csprobe:where) skill ... Here are its contents:" and
+  could not name its folder. So the skill asks cs: `cs -engine skill-dir finish`
+  prints `~/.gemini/config/plugins/cs/skills/finish`, where the installer put
+  it, and the skill runs `scripts/finish.sh` from there. It never searches the
+  disk for another `finish.sh`.
+- **`-finish`.** The open sends one first prompt (`--prompt-interactive`)
+  that names the task and that `SKILL.md`, and asks `agy` to follow it as if
+  you had typed `/cs:finish <feature>`. It is prose rather than a typed
+  `/cs:finish`, since whether `agy` resolves a slash command in that prompt
+  was not measured. The open refuses before anything changes when the plugin
+  has no `finish` skill (run `setup.sh` again) or the `agy` on `PATH` does not
+  list `--prompt-interactive`. A rotation handoff you choose with `r` takes
+  the open instead, and cs prints the `-finish` command to run again. A staged
+  spawn seed waits for a later open.
+- **Approvals.** In Auto mode `agy` asks before a command that leaves its
+  terminal sandbox or a destructive Git or file command, unless its own
+  review clears it. `finish.sh` asks GitHub for the PR state, and the
+  integrate and retire entries write the base's `.git` and remove the
+  worktree beside it, so expect to approve them.
+- **Retiring while the feature is open.** An Antigravity base has no Stop hook
+  that runs a staged retire. While the feature's own conversation is live, the
+  retire refuses and says so: close that conversation, then run
+  `/cs:finish <feature>` in the base again.
 
 ## Recovery copies
 
@@ -450,13 +483,4 @@ that fires the plugin's hooks with payloads of the measured shape.
 ## Follow-ups
 
 These come later as separate changes: the status line, mail
-delivery, in-place `/clear` rotation, `-finish`, and encrypted sessions.
-
-- When `-finish` comes, the finish skill needs its own folder to reach
-  `scripts/finish.sh`. Whether `agy` gives it that folder is not known. Its
-  prompt template lists the folder of each skill the model may start, and an
-  explicit-only skill is probably left out of that list. Its binary (1.4.12)
-  holds three `<SKILL>` templates for a skill's text, and one of them names
-  the path to the skill file, but which one a typed `/cs:finish` gets was
-  not checked. Until a live run shows it, the finish skill stops when it
-  cannot tell its folder.
+delivery, in-place `/clear` rotation, and encrypted sessions.

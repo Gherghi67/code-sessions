@@ -27,10 +27,12 @@ state_get() {  # dir key
 }
 
 # How the user asks for finish, in the engine a session last ran under: Codex
-# names a skill with $, Claude Code with /.
+# names a skill with $, Claude Code with /, Antigravity with /cs: (the skill
+# ships in cs's agy plugin).
 finish_word() {  # dir
     case "$(state_get "$1" engine)" in
         codex) echo '$finish' ;;
+        antigravity) echo /cs:finish ;;
         *) echo /finish ;;
     esac
 }
@@ -343,7 +345,9 @@ cmd_report() {  # base task sha
     # is another /finish first. A branch that is not an ancestor (a squash or
     # rebase landing) is retirable when the base holds every path it changed
     # as it has it, or else only on the PR's own evidence.
-    local not_integrated="retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run /finish $task again before retiring"
+    local not_integrated fin
+    fin=$(finish_word "$session_dir")
+    not_integrated="retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run $fin $task again before retiring"
     if [ "$landed" = "yes" ]; then
         if git -C "$session_dir" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
             echo "retire: ready"
