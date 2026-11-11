@@ -22553,12 +22553,13 @@ _antigravity_write_rule() {  # session_name, session_dir, actor, cs_bin
 
 # agy stops with its usage on a flag it does not know, by then after cs has
 # written the rule and recorded the engine, so each flag this launch passes
-# must be one its --help lists.
+# must be one its --help lists. agy 1.5.5 prints that usage on stderr, with
+# status 0, so both streams are read.
 _antigravity_flags_listed() {  # agy_bin, args...
     local agy_bin="$1" help arg
     shift
     [ "$#" -gt 0 ] || return 0
-    help=$("$agy_bin" --help 2>/dev/null) || help=""
+    help=$("$agy_bin" --help 2>&1) || help=""
     for arg in "$@"; do
         case "$arg" in --*) ;; *) continue ;; esac
         printf '%s\n' "$help" | grep -E -- "^[[:space:]]*$arg([[:space:]]|$)" >/dev/null || {

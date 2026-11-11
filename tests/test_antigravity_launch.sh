@@ -35,11 +35,12 @@ setup() {
     # (AGY_NO_TURN) fires none. Hook stdout goes to AGY_HOOK_OUT.
     cat > "$TEST_TMPDIR/bin/agy" <<'AGY'
 #!/usr/bin/env bash
-# --help lists the flags cs passes, less any named in AGY_HELP_OMIT.
+# --help lists the flags cs passes, less any named in AGY_HELP_OMIT, on
+# stderr and with status 0, as agy 1.5.5 prints its usage.
 if [ "${1:-}" = --help ]; then
     for flag in --conversation --model --effort --mode --prompt-interactive; do
         case " ${AGY_HELP_OMIT:-} " in *" $flag "*) continue ;; esac
-        printf '  %-30s %s\n' "$flag" "what $flag does"
+        printf '  %-30s %s\n' "$flag" "what $flag does" >&2
     done
     exit 0
 fi

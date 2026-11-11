@@ -372,7 +372,9 @@ handoff is pending too, as Enter would: the window disarms the rotation marker
 and leaves the handoff unconsumed, and the next attended open still offers it
 with `r`. Resuming with the kickoff passes `--conversation <id>` and
 `--prompt-interactive` together. agy 1.5.2's `--help` lists both and states
-no conflict between them, but no live run has combined them yet.
+no conflict between them, but no live run has combined them yet. cs checks
+every flag it passes against that `--help`, which agy 1.5.5 prints on stderr
+with status 0, so cs reads both streams.
 
 The kickoff is sent at most once. The seed is spent before `agy` starts, so no
 reopen sends it again. When a run ends before its first model call, cs cannot
@@ -430,6 +432,17 @@ state and retires the worktree.
   review clears it. `finish.sh` asks GitHub for the PR state, and the
   integrate and retire entries write the base's `.git` and remove the
   worktree beside it, so expect to approve them.
+- **Measured.** On 2026-11-11, agy 1.5.5 (Gemini 4 Argon) landed and retired
+  a feature both ways, on a scratch base with no GitHub remote. Opened with
+  `-finish feat`, it read the named `SKILL.md` outside its workspace without
+  asking. Typed as `/cs:finish feat2` in a new conversation, the skill first
+  ran `cs -engine skill-dir finish` and took `scripts/finish.sh` from the
+  folder it printed. Both times `agy` asked before every command the skill
+  ran (`finish.sh prepare`, `-integrate-feature`, `finish.sh report`,
+  `-retire-feature`), and one approval each was enough. The integrate and
+  retire entries ran from `agy`'s terminal and passed cs's check that the
+  base's lock belongs to that conversation. No question came up, so
+  `ask_question` was not exercised.
 - **Retiring while the feature is open.** An Antigravity base has no Stop hook
   that runs a staged retire. While the feature's own conversation is live, the
   retire refuses and says so: close that conversation, then run
