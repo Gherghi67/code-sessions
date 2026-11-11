@@ -116,7 +116,18 @@ _rotation_armed_handoff() {  # session_dir
 # "status: unconsumed" line flips (the frontmatter's); a body quoting the
 # contract line flush-left stays intact. A consumed handoff names its consumer.
 _handoff_set_status() {  # handoff_file, status, [consumed_by]
-    cs_write_atomic "$1" awk -v status="$2" -v by="${3:-}" '
+    _handoff_status_refusal "$@" >/dev/null
+}
+
+# The same flip for a caller that reports a refusal: silent with status 0 when
+# the write landed, otherwise the store's first stderr line on stdout (a
+# stand-in when it wrote none) and status 1. CS_WRITE_QUIET is lifted for this
+# one write: under it cs_write_atomic drops every message past its link check,
+# and the refusal can be a link out of the session, a directory that cannot be
+# written, or a handoff gone since it was chosen.
+_handoff_status_refusal() {  # handoff_file, status, [consumed_by]
+    local refusal
+    refusal=$(CS_WRITE_QUIET='' cs_write_atomic "$1" awk -v status="$2" -v by="${3:-}" '
         !flipped && $0 == "status: unconsumed" {
             print "status: " status
             if (by != "") print "consumed_by: " by
@@ -124,7 +135,35 @@ _handoff_set_status() {  # handoff_file, status, [consumed_by]
             next
         }
         { print }
-    ' "$1" 2>/dev/null
+    ' "$1" 2>&1 >/dev/null) && return 0
+    refusal=${refusal%%$'\n'*}
+    printf '%s\n' "${refusal:-the write failed without a message}"
+    return 1
+}
+
+# Spend an armed handoff for the conversation that continues from it: flip it
+# consumed, then drop the marker. The marker goes only once the flip landed: a
+# handoff still unconsumed with no marker would be offered at the next launch
+# but never loaded by /clear, and nobody would be told. Kept, the next start
+# or /clear of the session loads the same handoff again and retries the flip
+# (hooks/session-start.sh does the same for Claude). On a refusal it prints
+# the store's reason and returns 1, and the caller passes the reason on.
+_handoff_spend() {  # handoff_file, marker, consumer_id
+    local refusal
+    refusal=$(_handoff_status_refusal "$1" consumed "$3") || { printf '%s\n' "$refusal"; return 1; }
+    rm -f "$2" 2>/dev/null || true
+}
+
+# What the conversation continuing from a handoff is told when the flip that
+# spends it was refused, in the words hooks/session-start.sh gives Claude.
+_handoff_refusal_warning() {  # shown_handoff, refusal, shown_marker
+    printf "WARNING: cs could not mark %s consumed: %s. Its frontmatter still says \`status: unconsumed\` and the marker %s stays armed, so the next startup or /clear of this session will load this same handoff again and retry the flip. Tell the user before anything else, with that reason. To stop the retry instead, set its \`status:\` to \`consumed\` and remove the marker by hand." \
+        "$1" "$2" "$3"
+}
+
+# The terminal's line for the same refusal, before the native CLI starts.
+_handoff_refusal_notice() {  # shown_handoff, refusal, shown_marker
+    warn "cs could not mark $1 consumed: $2. The marker $3 stays armed, so the next start or /clear of this session loads this handoff again and retries; to stop that, set its status: to consumed and remove the marker."
 }
 
 # Shared rotation context for native launch prompts and hooks.
@@ -1105,15 +1144,15 @@ _launch_claude_bound() {
         _seg_secrets="${COMMENT}${ICON_LOCK}${NC} ${YELLOW}$secret_count${NC} ${COMMENT}$secret_word${NC}"
     fi
     if [ -n "$ctx_pct" ]; then
-        # The figure in the status line's inks: bold amber from warn, and from
-        # crit the bar's inverted capsule, bold white on the crit red with a
-        # space each side. The spaces belong to the fill, so a card without
-        # colour reads the same at every level.
+        # The figure in the status line's crit red: bold in the crit ink from
+        # warn, and from crit the bar's inverted capsule, bold white on the
+        # crit red with a space each side. The spaces belong to the fill, so a
+        # card without colour reads the same at every level.
         local _ctx_fig="" _pad=""
         [ -z "$NC" ] || _pad=" "
         case "$ctx_heat" in
             none) _ctx_fig="${YELLOW}${ctx_pct}%${NC}" ;;
-            warn) _ctx_fig="${BOLD}${AMBER}${ctx_pct}%${NC}" ;;
+            warn) _ctx_fig="${BOLD}${CRIT}${ctx_pct}%${NC}" ;;
             crit) _ctx_fig="${BOLD}${CRIT_FILL}${_pad}${ctx_pct}%${_pad}${NC}" ;;
             *) error "context heat '$ctx_heat' is not none, warn or crit" ;;
         esac
@@ -1287,9 +1326,12 @@ EOF
             # conversation here wrote, is the user's to choose: armed by a key
             # they did not mean for it, SessionStart would mark it consumed.
             # And r displaces the merge -finish armed for this launch, which
-            # only a typed r may do; n keeps it. The status line stamps the
-            # figure per session, not per conversation, so the line calls it
-            # the last reading in this session and claims no more.
+            # only a typed r may do; n keeps it. From the warn threshold up
+            # to crit, a line in the same ink gives the reading and points at
+            # n, and the ask, its default and every key keep their meaning.
+            # The status line stamps the figure per session, not per
+            # conversation, so the line calls it the last reading in this
+            # session and claims no more.
             local _resume_default=' · default' _handoff_default='' _fresh_default='' _ask_keys='[Y/n]'
             local _crit_default=n _crit_start='a fresh conversation' _crit_press='Press y to resume.'
             [ -z "$transplant_from" ] \
@@ -1306,6 +1348,8 @@ EOF
                     _fresh_default=' · default'
                 fi
                 printf "${BOLD}${CRIT}%s${NC}\n" "${ICON_CTX} The last context reading in this session was ${ctx_pct}%, so ${_crit_start} is the default. ${_crit_press}"
+            elif [ "$ctx_heat" = warn ]; then
+                printf "${BOLD}${CRIT}%s${NC}\n" "${ICON_CTX} The last context reading in this session was ${ctx_pct}%. Press n for a fresh conversation."
             fi
             if [ -n "$transplant_from" ]; then
                 # The carry-over offer, with the handoff's rows when one waits.

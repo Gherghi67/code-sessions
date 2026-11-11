@@ -330,6 +330,11 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
     cs-mermaid/skills/show-me/SKILL.md
+    cs-images/.claude-plugin/plugin.json
+    cs-images/hooks/hooks.json
+    cs-images/hooks/picture.ts
+    cs-images/hooks/register.tsx
+    cs-images/skills/show-image/SKILL.md
     cs-panel/.claude-plugin/plugin.json
     cs-panel/hooks/hooks.json
     cs-panel/hooks/register.tsx
@@ -1226,6 +1231,7 @@ CS_KNOWN_SHA256=(
     0ee1e60311e2ba12f20af360252e24fb57f5b98ec05869c55ebc6d4c44d10a34
     0ef497b7edec0c278dc410b13762739f84c3d3fa49e8edf01e22f3ba9618530d
     0f1e182b3ac2d0455eca7b4c796cbe8a0e7ff466e6ac72eaaca7b7f17226a445
+    0fd3e92677d367a1a78108acbbe6edea55272646583ccbb9f4ad94d868df58ab
     1047d832a7287d8c719c92c35061b69ba7840469ac8f537ec4b19613bedc4b37
     107fb0561039282fa7c858037a3c368000b35c9e717ed6fc0213949f6c59fb1e
     10aa9a48cf58dcb6982f7dab143fc08b2a48b4ca9b1c655ef90dd25aae1f928c
@@ -1364,6 +1370,7 @@ CS_KNOWN_SHA256=(
     33765ffdfea558eb43dd6130862af86362c2d8bd39643bc470ae2e25ee31d54b
     341545358509061f3ec9906cebfc6e47f0c0fd9ae411c4fcef4c07b666cf14c6
     343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48
+    3449835309c77b8b3cb7f1023401591e38cad230ae124161f1cde2b7bbe6e798
     34f6402e2f786213bbd1c4222e2ef187f215fe2f9fdfd49d28d205467f1abdf7
     3517c4d85ffa8710da326661e65bd3eb46d84f657fb723c0e562bc5c6a33fc08
     3542f04b3400bf34cda2ea3ceaabe135ee36c3c7e4c82bf745f0637ff57c2ebe
@@ -1413,6 +1420,7 @@ CS_KNOWN_SHA256=(
     41ff2ab7567664a5423b8d863292ae2b88d51964636cd80e9172d989f8fbe80d
     4258a64c8eb8a2a172fb0680c578204f90ad97f344e82b25b4ff1ff9be701633
     426b2cc21275aa4e1744dc6aec7637e28252376575888abb75a80f36fd4e1220
+    4294cda40ff089f6cc15058daa1db6e488f93baaf4555478c9cda4a91d652a20
     42a14da239b23981c7d266ec0a263a26b1f718a753609c40cc0ebc3ede323f19
     42c11ba435180ff88af18b4a0b6cb873915e33d2bd730667b8e867b8f049f638
     42e81979965715204eb41428c1a227f170a14ab3919f2a6122cddd688425377f
@@ -1502,6 +1510,7 @@ CS_KNOWN_SHA256=(
     5e275bba3498c648c648132d31efb4481335a2ee5c3cdf38d0af40ada01d680f
     5e3e0f38ff158b53194f7ae4c7fe41461752e2ff62082c6d08bb8578cf5b5a68
     5e3fb3a9b5ba649d0c5b02db87a27bacd73afef1bd1033ddf9ab5da5612f92cf
+    5ebd2dad6ee41950c1a60577b22f459f5b4a1d199afce389498100ea72a76ad6
     5ec4bee955576fe7aa105abcffbf1126e97eee129267edb42d672741e1908f60
     5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f
     5f626af7bd4cf3f0d988e7b2f40c76c706f490fcc9416428c0d90c63fc4f0a7b
@@ -1522,6 +1531,8 @@ CS_KNOWN_SHA256=(
     645f7d6946a9412f7557673e9c432f9a675714e3f70f3e604555dc70b829c318
     646b5213131a39a76e7d469e70a8e891566bd3e2158cb4fba316425f3898d072
     649dc9532cc24255df4cbeb199b070fbd4b2e40aaebcbe5a409189ed6256b18d
+    64a8860cb69fb180f87e0216c9106e846f927978f94dde490216bfbc458e10ae
+    6521b8a09d5c8045010996b76b4990a83c7135b410c2500ad53adb72f6443e00
     652d1f12f5f660731ef1ce6871334f2bcbf493a3324587d725e59a7447fe3441
     655adf28d85f80744c23b900c47ac78c627d611ee3b32651eb0753e42b185a3a
     66b48fdbc0c6dca56dc31d91ad81e6f8e9f2b308e2d6ebdaf262a68f60083e1d
@@ -1566,6 +1577,7 @@ CS_KNOWN_SHA256=(
     730aee4603d037a9850710a1c10b07b03c001453c13665ae1d840e1ba5d5aa95
     73120d77ee7208e5a76e25298862cbb2df2b6da67780636bb774221121eacdbf
     7315781abcbd308221aa92d6ce2ac7d74afb3b29bb99aac4a18dcab41f06c397
+    73733088a8a86b2f7c3b367e0f6fb699dbf428c3421f7cd6d4daa02eac4b60a2
     73a51ada2bc4070c48e5132eae6780c978230391699da80f7a4818dd7a079340
     74603f12ac88925cae9ec2d4d9721d42b6794d8382e012fd99afca06b6544d54
     74e088afb47dac4c03802f66a5dfd04af466ba78c70ac454bfaf77dd778ae26f
@@ -1691,6 +1703,7 @@ CS_KNOWN_SHA256=(
     919de3573a871a679c241f7f34ca32c35eff5650095d8aa9fe8f3fa9142ad744
     91a64d819d4d38b41aec4dcf6bb108722f2d6d079c8b2985daf7671eff3e1b30
     91ad6cd4d3139bdda41b54f9331cd6ea6f7904efe5361e2f0fc7682455519a83
+    92e19eac45e426f101b07cdb0c2f2e1facd9f2581400e48c0be4e3052744a565
     930601dc27024ea0ab22a202ac1df2bc43fd284393ef2de6d064aa592ab955e5
     938985c6dbc9166170d1e0d7e632cd3c4a4089d5cdd5b2cf5f0702600f29110f
     939d047fa7a9f94da1ee23caefea27369b79a3ad9afdefbbb16362792fbbfdb5
@@ -1717,6 +1730,7 @@ CS_KNOWN_SHA256=(
     98b342aad40c47445ed0960b5fb98ec29abe27b2e2cbe80e348f63c521922b40
     9957dd61df1e8f3626a6f0bbd88c4bea0b9f259731d892b5f724d80cd24acc61
     999c28db5e9326be6253fac712fcc0572dd39aea6aca08f487a72a835bdabf26
+    9a704f710da04aa9330b9d4a81a2709eaa096d1e243448c8c9e3d73bea44754d
     9a7775eb1eee0fc3eb4ad602dacc4a2a6e0348e0c03ac33c56abcca37e807216
     9ac64200aaa0baa8adff9ad1e16bc7c356dda3611a5d3c9557fa377c14c9c0fe
     9af25297b0ffbf982b92b27145f2154a2b8a0ce3b2dddba4a465afe2d3fa78dc
@@ -1787,6 +1801,7 @@ CS_KNOWN_SHA256=(
     ac0f559071f5857b5245789a376bd0cdc5a216e1fa9f87d9d35bf541c5df827b
     ac6a6cc5467259b0eb4d502a82b06db930158ab82585c9ded70b7625edf40e61
     ac99da57f8de3f0017a7b6688309b990bef37ce9ba0e0dbc6c1bdab348d37d6a
+    ac9a4c08e13b107f20a5c5a396e6d7aa05e2808d7e183703d4d9d8253e730ced
     ac9e0caccdce1654f92c9f34d73822d6c4ef937460bced6246d4a0ee9a41b057
     acacda49392d2cf9b8ad3db8d7cafa8badf1d6bb1eaa04546a0ed6a7c958cfbc
     adf22f019b086fa63b67226b8622df0f033c4185c79a938e7780e4a0bfb73812
@@ -1993,6 +2008,7 @@ CS_KNOWN_SHA256=(
     ef3141dad7c2adc740f851c50022dc4c2a3a3250162134ff879645978149d6f6
     ef3872904a9f26f79fe86d6ba3f1ecd9ad586ee8c3422667af3f28e15de645e5
     efe726a833564b7d3cf3a0e3f3682ba028e9fae6a845e7167fb4da45d7bd9e96
+    f03ff75abd5a5c2e87411c14a30d192d76a54f866ba3af87d50d4db5f521c504
     f04ad3e570f010f1a72a25abe5d621e20fcb3afd79f113b01137bb160509d0b2
     f0e216306cf0e603fb021ac28afffa50d194c8f0e1ea1e9d87ce2a15076f7812
     f1fac4337e18c5305350f4162bd00a60ed25321ee79c9211a053df9d66ff3f84
@@ -2007,6 +2023,7 @@ CS_KNOWN_SHA256=(
     f4a07c5417c6d966b128cc4faa7c21098e46688d7ab25f8107ab1c06c2e6ac42
     f4eb98dede6b1b704bccc5c57b08c9b6875f3cc4e2a4c53f4cc01224d0ad4142
     f58ee2dfef20f978f286ee12e4723ddc418bb169c541e0691c714479aaa089ef
+    f5df22546ae0a51339d71ab7551cccb45c897cfdb5b769f8e3050aa975d9da7a
     f74fb16d05ddb76fa4911316cc00baa5e5290304e813f494445ab2989494dd45
     f7f7f0a7d02bb3d33ef03a93bda2cbaf4bc1576e98619bd7b423af052c11927b
     f8070db302a21fcc3f76890379ad48a1b1c4b586aa60960e1755b2ec806923f6
@@ -2018,6 +2035,7 @@ CS_KNOWN_SHA256=(
     f8d17475fba1caaee5334e3499bd4ce4c7e02fead896803c3b8220cafefc3922
     f9137ad8a832a14788a49e1c26947d3b31d7d3415c62b69dc529df5684cf419b
     f9676aed5844a47c7236af97dfcc7e0e515bd1dda7927d8ed01579773101b4fd
+    f99cc1fbfb7f3eca9391678ad3ac1aae05196be4db6f08d9b3fda00ab1fc89ab
     f9f8dea356e0e2b5174c91f3997e63df7f2825d06e0237bc2e87768648cd829c
     fa735258afce45203ea9561ce3a515ab6cc976a9860b85c369141f8b337d83b9
     fb0e8187671a15daa8246d3f677adb948b09ea6ce39a2eaf4f21ead6148b307d
@@ -2079,29 +2097,29 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "ad13c0112613dc803f037a66c3bb7a57c78e22620bfb2c55cc829df7524cdaa7  bin/cs"
+    "bf68db1ad9cc17665c4d0c93c7eca580a2604c96ab46a94a2a2ffdda83fca900  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "01988a1eedb8376080aa4d324f321137514571ab1a1d4dfcb8cc998c678ab8bf  bin/cs-codex-thread"
-    "e390146322c06d43a99d790eca95c174f50edd3db4228bf3921454bc1010b505  bin/cs-statusline"
+    "b8eb321ef38ccb5235201f78a0727d20d8b0fcb0d5983dd8347cbf232c9c17f6  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "b71af951a35dd453db2034341d03edeaf656b0060117fc51432de69eeae331fc  hooks/cs-shared.sh"
+    "c3a5bf7268872c43ec45aece34b69ae662d29ad0625d2ca474feb9ca2fed8abf  hooks/cs-shared.sh"
     "d4190dfe1bba3312145072c543d66a6fbbdb82748db0a859cabf9872f4c1ff33  hooks/cs-engine-events.sh"
-    "24b9a4740ab6789810abca0463df531883dd972242f19e47051eb0092c9fc3bd  hooks/cs-config.sh"
+    "af877f484a9acfece51ff267f15ac8bf7e48367b8ced8010bec4ff57c5cfda0a  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "0df470229aed0ca15acdd0ab115d6633dbcd1542e30b64936df5124045f4e6ee  hooks/prompt-rewriter.sh"
     "dd6e555242f0161cdb832249a491a41babe407da745a7ca0b30d9780d045a680  hooks/prompt-rewriter-model.sh"
     "b3704bde599a45a4f2d2a8b0ccd16e01869ef7ba6dcc85e642e306448ded7d44  hooks/prompt-rewriter-vendor.sh"
-    "3c833a9e7be921a1083ac1b338036be4a7afb25e065a297d46a21fd7c110fd9c  hooks/session-start.sh"
+    "de65ec8d35bcf8e7a99e8d4f590299128fa304d36e0938ef4699823a00af568a  hooks/session-start.sh"
     "0c8420c589f8973709b0a62915bf9c7c9e931553e38ee7a0a3bc70834c9103b1  hooks/autosave-commits.sh"
-    "0932277b77a613a6cb75d7bba1aa5a57b88a77e3aa9f15935b218c527427fc23  hooks/stop-blocks.sh"
-    "5ab5da9bd06072cd1e91a4e2059c6aa404f29052f36ba30d345a7d493a1415ea  hooks/stop-notices.sh"
+    "48f1c58efaed6587265164e258dfe5edae14873d5cf6271505ca0231b23373c8  hooks/stop-blocks.sh"
+    "15c2528a466640da5a06b29e00aabfc5a1b96c6405839e3280fc5c57359f6de6  hooks/stop-notices.sh"
     "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "2736fd914673827102dd9e1ec60b1c385d8cfef56bac3b8579fde953d22fdbcb  hooks/session-auto-approve.sh"
     "12a1d214de1fc27b2ad9b7210df72a96e0fddca969f95e569f71356cbf6d40a4  hooks/scope-prompt.sh"
-    "0254497096328ee6b7882ab2cb7177cad137544eb5332df3d1563bb70babb523  skills/store-secret/SKILL.md"
+    "51c551abcbccfe720c35026bfb73abe8acb952a61f5ff9cb242822db2b4208cb  skills/store-secret/SKILL.md"
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
     "972c9bd13588bed5bd03eaea310b65505f715999cd19110da11e65439fe5b32b  skills/rotate/SKILL.md"
     "f9a660d2ffa1086c381b7d15f1a68804836bccac3663bdd67fbc983de4dd48c3  skills/switch/SKILL.md"
@@ -2118,14 +2136,14 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
-    "b71af951a35dd453db2034341d03edeaf656b0060117fc51432de69eeae331fc  skills/sweep/scripts/cs-shared.sh"
+    "c3a5bf7268872c43ec45aece34b69ae662d29ad0625d2ca474feb9ca2fed8abf  skills/sweep/scripts/cs-shared.sh"
     "a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "1d56121c24634bf6ebb65bc0e1ede9e4a64680c8dd4c3ecdcb411bbd4a9f58d4  mods/cs/hooks/register.tsx"
-    "397f71caaa863ec6c1659a24a88f2faa1e824a05ce2a6c386e15586e535ae7de  mods/cs/tips.json"
+    "f03ff75abd5a5c2e87411c14a30d192d76a54f866ba3af87d50d4db5f521c504  mods/cs/tips.json"
     "2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
-    "c21b13a6276835f3366643a6dc00206f803e6b3c18b3e60554fe8fc226038826  mods/cs-update/hooks/register.tsx"
+    "89a78b6a0eda7e4b2018538a5ccb5034fcbf13fd7e7060a366d8d596a33eb777  mods/cs-update/hooks/register.tsx"
     "67c3217e96ce069a27d2f8af84944f1aaf18aeab29f8a570bf0cb0f96fc61519  mods/cs-mermaid/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
     "7581d949b64b3eff85606df1b3e44c82354daf48533e68d10a3a006d3ecf69cc  mods/cs-mermaid/hooks/layout.ts"
@@ -2133,10 +2151,15 @@ CS_PAYLOAD_SHA256=(
     "69b235a1793eacf9a06df13ad9a4125e9d5258fb903d7746ed0739013bb47e72  mods/cs-mermaid/hooks/register.tsx"
     "5e3fb3a9b5ba649d0c5b02db87a27bacd73afef1bd1033ddf9ab5da5612f92cf  mods/cs-mermaid/hooks/text.ts"
     "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
+    "92e19eac45e426f101b07cdb0c2f2e1facd9f2581400e48c0be4e3052744a565  mods/cs-images/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-images/hooks/hooks.json"
+    "9a704f710da04aa9330b9d4a81a2709eaa096d1e243448c8c9e3d73bea44754d  mods/cs-images/hooks/picture.ts"
+    "ac9a4c08e13b107f20a5c5a396e6d7aa05e2808d7e183703d4d9d8253e730ced  mods/cs-images/hooks/register.tsx"
+    "f99cc1fbfb7f3eca9391678ad3ac1aae05196be4db6f08d9b3fda00ab1fc89ab  mods/cs-images/skills/show-image/SKILL.md"
     "8aaadea0975e0ccbeadb995515245a9b3a2651f84626c9ba6806a57da3b5ac53  mods/cs-panel/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-panel/hooks/hooks.json"
     "6909b481962cddcd80bf35f3c2424bedf5861549f7fd490b9791e352ac7c640f  mods/cs-panel/hooks/register.tsx"
-    "336f7d477e1a0bb204b2eac4c460b5e67dc6486e7b6c161f23733b3e8eefb9a6  mods/cs-panel/hooks/settings.ts"
+    "0fd3e92677d367a1a78108acbbe6edea55272646583ccbb9f4ad94d868df58ab  mods/cs-panel/hooks/settings.ts"
     "cc34939c470679a8a9aec93d11a96806c4fdd83a55224cd530c587d9b8b398f1  mods/cs-panel/hooks/draw.tsx"
     "3542f04b3400bf34cda2ea3ceaabe135ee36c3c7e4c82bf745f0637ff57c2ebe  mods/cs-filter-chat/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-filter-chat/hooks/hooks.json"
@@ -2859,7 +2882,9 @@ for retired in "${RETIRED_SKILLS[@]}"; do
 done
 
 _deploy_skills "$SKILLS_DIR"
+# The cs-update mod's own files are placed at the end of this script.
 for mod_file in "${CS_MOD_FILES[@]}"; do
+    case "$mod_file" in cs-update/*) continue ;; esac
     if _mod_path_real "$mod_file"; then
         _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
     fi
@@ -2958,19 +2983,26 @@ if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravi
 fi
 
 # Record what this install wrote under ~/.claude, so the next install, update
-# or uninstall knows those files as cs's by their content.
+# or uninstall knows those files as cs's by their content. The cs-update mod's
+# files are not placed yet, and _deploy at the end of this script asks this
+# record whether each one is cs's, so the lines the last install wrote for them
+# are carried over. That carry decides ownership: a module a checkout install
+# wrote is in no release's known hashes, and without its line _deploy would
+# keep it as the user's file and never update the mod. Each carried line stands
+# until _deploy replaces that file. A file _deploy keeps keeps its line, which
+# names content no longer at that path: the file counts as cs's again only if
+# it comes to hold that content.
 _record_tmp="$STAGE_DIR/installed"
 if [ "${#CS_RECORD_LINES[@]}" -gt 0 ]; then
     printf '%s\n' "${CS_RECORD_LINES[@]}" > "$_record_tmp"
 else
     : > "$_record_tmp"
 fi
-_place_file "$_record_tmp" "$(_cs_install_record)" 644
-if [ "$CS_UNCHANGED" -gt 0 ]; then
-    _done "Placed $CS_PLACED files" "$CS_UNCHANGED unchanged · $CS_DESTINATIONS"
-else
-    _done "Placed $CS_PLACED files" "$CS_DESTINATIONS"
+if [ -f "$(_cs_install_record)" ]; then
+    awk 'index(substr($0, 67), ".claude/skills/cs-update/") == 1' "$(_cs_install_record)" >> "$_record_tmp" \
+        || error "Could not read $(_cs_install_record)"
 fi
+_place_file "$_record_tmp" "$(_cs_install_record)" 644
 if [ -n "$CS_PICKER" ]; then
     _done "Picker cs-tui" "$CS_PICKER"
 fi
@@ -3737,6 +3769,26 @@ case "$_previous_engines" in
 esac
 mkdir -p "$(dirname "$INSTALL_CONFIG")"
 printf '%s\n' "$INSTALL_ENGINES" > "$INSTALL_CONFIG"
+
+# The cs-update mod's files go last, with only the report below them. The mod's
+# update key runs this installer as a child of the Claude Code process that
+# loaded the mod, which reloads a mod soon after its files change (0.4 to 0.7 s
+# measured on 2.1.319, debounced) and can end that child with a SIGTERM to its
+# process tree as the reload unloads the mod. Everything the install does comes
+# first, so a reload lands on a finished install. Mods stay with Claude.
+if _install_has_engine claude; then
+    for mod_file in "${CS_MOD_FILES[@]}"; do
+        case "$mod_file" in cs-update/*) ;; *) continue ;; esac
+        if _mod_path_real "$mod_file"; then
+            _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+        fi
+    done
+fi
+if [ "$CS_UNCHANGED" -gt 0 ]; then
+    _done "Placed $CS_PLACED files" "$CS_UNCHANGED unchanged · $CS_DESTINATIONS"
+else
+    _done "Placed $CS_PLACED files" "$CS_DESTINATIONS"
+fi
 
 if [ "${#CS_KEPT_PATHS[@]}" -gt 0 ]; then
     echo ""

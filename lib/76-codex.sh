@@ -577,7 +577,7 @@ _launch_codex_bound() {
     # The new thread is bound now, so the handoff it continues is spent. The
     # kick is Codex's starting prompt, the counterpart of Claude's positional
     # prompt on the same answer: without it the thread would wait for a message.
-    local kick="" rotation_starts="" spent="" turn_before=""
+    local kick="" rotation_starts="" spent="" turn_before="" refusal=""
     if [ -n "$rotation_handoff" ]; then
         # Spent before Codex starts; failed launches restore it below, or in
         # a switch relaunch's settle, if the conversation never begins.
@@ -588,10 +588,16 @@ _launch_codex_bound() {
             # shellcheck disable=SC2154
             rotation_starts="$_cs_switch_starts"
         fi
-        _handoff_set_status "$session_dir/.cs/handoffs/$rotation_handoff" consumed "$thread_id" || true
-        rm -f "$local_dir/pending-handoff" 2>/dev/null || true
+        # A refused flip keeps the marker for the next start or /clear to
+        # retry (_handoff_spend); the thread still starts from the handoff,
+        # and the terminal and the kick name the refusal.
+        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$rotation_handoff" "$local_dir/pending-handoff" "$thread_id") || true
         kick="Continue from the pending rotation handoff: read .cs/handoffs/$rotation_handoff first."
         printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
+        if [ -n "$refusal" ]; then
+            _handoff_refusal_notice ".cs/handoffs/$rotation_handoff" "$refusal" .cs/local/pending-handoff
+            kick="$kick $(_handoff_refusal_warning ".cs/handoffs/$rotation_handoff" "$refusal" .cs/local/pending-handoff)"
+        fi
         # r is the user choosing the handoff over the merge armed moments
         # earlier, as on Claude; the merge waits for its own launch.
         [ -z "$merge_feature" ] \

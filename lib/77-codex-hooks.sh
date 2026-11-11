@@ -79,10 +79,19 @@ _codex_hook_session_start() {
     cs_run_with_lease "$meta" _codex_hook_rebind "$session_dir" "$session_id" "$handoff" || return 0
     actor=$(cs_actor_slug "$session_dir" 2>/dev/null) || actor=unknown
     if [ -n "$handoff" ]; then
-        _handoff_set_status "$session_dir/.cs/handoffs/$handoff" consumed "$session_id" || true
-        rm -f "$meta/local/pending-handoff" 2>/dev/null || true
+        # A refused flip keeps the marker for the next start or /clear to
+        # retry (_handoff_spend); the rotation still loads, and both the
+        # conversation and the user's line name the refusal.
+        local refusal=""
+        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$meta/local/pending-handoff" "$session_id") || true
         context=$(_rotation_preamble "$handoff" "$actor")
         sysmsg="Rotation loaded from $handoff; this conversation continues from it."
+        if [ -n "$refusal" ]; then
+            context="$context
+
+$(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-handoff)"
+            sysmsg="$sysmsg cs could not mark .cs/handoffs/$handoff consumed: $refusal. The marker stays armed, so the next /clear loads it again."
+        fi
     else
         context=$(_fresh_notice_codex "$actor")
     fi

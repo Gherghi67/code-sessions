@@ -42,18 +42,35 @@ If empty, inform the user that secrets storage requires a cs session and skip st
    - Run `cs -secrets list` first. `set` replaces an existing value silently
      (no diff, no prompt), so if the name you chose already exists, pick a more
      specific name or confirm with the user before overwriting.
-   - Write the raw value to a scratch file with your file-writing tool, not the
-     shell (a heredoc is a shell command and is logged with it). The scratch file
-     MUST live OUTSIDE the session workspace (the harness scratchpad dir, or
-     `mktemp` under `$TMPDIR`), e.g. `<scratchdir>/.secret` — any write inside the
-     session directory is snapshotted into the conversation's
-     `refs/worktree/cs/session/<id>` autosave ref by the autosave-commits hook,
-     and that snapshot survives the later `rm`
-   - Store it by redirecting that file into stdin:
+   - Remove scratch files an interrupted earlier run left behind. Only files
+     older than 60 minutes go: every cs session shares `$TMPDIR`, so a newer
+     file may be another session's store in progress, and a store takes
+     seconds. The trailing slash makes `find` enter macOS's `/tmp`, a
+     symlink to `/private/tmp`:
      ```bash
-     cs -secrets set KEY_NAME < <scratchdir>/.secret
+     find "${TMPDIR:-/tmp}/" -maxdepth 1 -type f -name 'cs-secret.*' -user "$(id -u)" -mmin +60 -delete
      ```
-   - Delete the scratch file: `rm -f <scratchdir>/.secret`
+   - Then, for each secret in turn, three calls:
+     1. Create a fresh scratch file. It prints a new path each time:
+        ```bash
+        mktemp "${TMPDIR:-/tmp}/cs-secret.XXXXXX"
+        ```
+        The scratch file MUST live OUTSIDE the session workspace, as this one
+        does: any write inside the session directory is snapshotted into the
+        conversation's `refs/worktree/cs/session/<id>` autosave ref by the
+        autosave-commits hook, and that snapshot survives the later `rm`.
+     2. Write the raw value to exactly the path it printed with your
+        file-writing tool, not the shell (a heredoc is a shell command and is
+        logged with it).
+     3. Store and delete in **a single** shell command, so the `rm` runs whatever
+        the store does and the command still exits with the store's status.
+        Put the printed path in `f`:
+        ```bash
+        f='<path mktemp printed>'; cs -secrets set KEY_NAME < "$f"; rc=$?; rm -f "$f"; exit $rc
+        ```
+     Never reuse a path for a second secret. If the write failed or you
+     skipped it, the file is empty and `set` refuses it rather than storing a
+     stale value.
 
 5. **Confirm storage** - Only confirm after the `set` command's output reports
    success (it prints `Stored secret: NAME`). If it errored (missing backend,

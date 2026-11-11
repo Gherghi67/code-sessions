@@ -84,6 +84,30 @@ test_clear_with_an_armed_handoff_rebinds_and_loads_it() {
         "the rotate skill finds this conversation's handoffs by this line" || return 1
 }
 
+# A consumed flip the store refuses leaves the handoff unconsumed. The marker
+# stays armed, so the next start or /clear retries the same handoff; the
+# rotation still loads, and the context and the user's line both name the
+# store's refusal (hooks/session-start.sh does the same for Claude).
+test_a_refused_flip_keeps_the_marker_and_says_so() {
+    _handoff unconsumed
+    _arm
+    chmod 555 "$SESSION/.cs/handoffs"
+    local out status=0 context
+    out=$(_hook clear) || status=$?
+    chmod 755 "$SESSION/.cs/handoffs"
+    assert_eq 0 "$status" "the hook never fails a turn" || return 1
+    assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^status: unconsumed$" "the handoff stays unconsumed" || return 1
+    assert_file_exists "$SESSION/.cs/local/pending-handoff" "the marker stays armed so the next start retries" || return 1
+    assert_eq "$NEW_THREAD" "$(cat "$SESSION/.cs/local/codex-thread-id")" "the rebind still lands" || return 1
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" "Read .cs/handoffs/$HANDOFF FIRST" "the rotation still loads" || return 1
+    assert_output_contains "$context" "could not mark .cs/handoffs/$HANDOFF consumed: mktemp: .*Permission denied" \
+        "the context carries the store's refusal" || return 1
+    assert_output_contains "$context" "will load this same handoff again" "the context says the next start retries" || return 1
+    assert_output_contains "$(printf '%s' "$out" | jq -r '.systemMessage')" "could not mark .cs/handoffs/$HANDOFF consumed" \
+        "the user's line says so too" || return 1
+}
+
 test_clear_without_a_handoff_rebinds_as_a_clean_break() {
     local out
     out=$(_hook clear) || return 1
@@ -590,6 +614,7 @@ run_test test_mail_context_is_bounded_and_only_for_the_owning_thread
 run_test test_mail_git_tracks_after_launch_is_not_shown
 
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
+run_test test_a_refused_flip_keeps_the_marker_and_says_so
 run_test test_clear_without_a_handoff_rebinds_as_a_clean_break
 run_test test_a_stale_marker_is_dropped
 run_test test_resume_changes_nothing_but_the_log

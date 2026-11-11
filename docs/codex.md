@@ -230,6 +230,18 @@ Exiting instead and answering `r` at the next launch starts a fresh thread from
 the handoff and runs its first turn on its own. `$switch` does the same across
 engines (see [Switching engines](#switching-engines)).
 
+Taking the handoff, by `/clear`, `r` or a switch's `--resume`, marks it
+`consumed` and then drops the marker, the way the SessionStart hook does under
+Claude. When the handoff store refuses that write (a folder cs cannot write, or
+a store that links out of the session), the marker stays armed and the
+conversation still starts from the handoff. The conversation is told why, with
+the first line the store wrote, and so are you: in the hook's message after
+`/clear`, or on the terminal before the CLI starts. The next start or `/clear`
+loads the same handoff again and retries the write. With the marker armed, the
+automatic `/clear` counts down again at the end of each turn. To stop the
+retry, set the handoff's `status:` to `consumed` and remove
+`.cs/local/pending-handoff`.
+
 You need not type the `/clear` either. As the `cs` mod counts down under
 Claude, cs does it under Codex: when a turn ends with a handoff armed, the Stop
 hook (`cs -codex-hook stop`) shows a line saying what happens in 20 seconds, and
