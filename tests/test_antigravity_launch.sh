@@ -1204,7 +1204,8 @@ test_a_spawn_without_a_usable_hook_sends_the_brief_without_doubt() {
 # offers as /cs:finish.
 _install_finish_skill() {
     local skill="$HOME/.gemini/config/plugins/cs/skills/finish"
-    mkdir -p "$skill/scripts" && printf -- '---\nname: finish\n---\n' > "$skill/SKILL.md"
+    mkdir -p "$skill/scripts" && printf -- '---\nname: finish\n---\n' > "$skill/SKILL.md" \
+        && printf '#!/bin/sh\n' > "$skill/scripts/finish.sh" && chmod +x "$skill/scripts/finish.sh"
 }
 
 # An Antigravity base with one commit and its feature worktree <base>@feat,
@@ -1241,10 +1242,17 @@ test_finish_refuses_before_agy_without_the_skill_or_the_prompt_flag() {
     : > "$dir/.cs/archived"
     output=$("$CS_BIN" lander -finish feat 2>&1) || status=$?
     assert_eq 1 "$status" "no finish skill in the plugin, no -finish" || return 1
-    assert_output_contains "$output" "The cs finish skill for Antigravity is missing from $HOME/.gemini/config/plugins/cs/skills/finish" || return 1
+    assert_output_contains "$output" "No finish skill is installed for antigravity at $HOME/.gemini/config/plugins/cs/skills/finish" || return 1
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
     assert_file_exists "$dir/.cs/archived" "the archived base stays archived" || return 1
     _install_finish_skill
+    chmod -x "$HOME/.gemini/config/plugins/cs/skills/finish/scripts/finish.sh"
+    status=0
+    output=$("$CS_BIN" lander -finish feat 2>&1) || status=$?
+    assert_eq 1 "$status" "a skill without the script it runs cannot finish" || return 1
+    assert_output_contains "$output" 'has no runnable scripts/finish.sh' || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    chmod +x "$HOME/.gemini/config/plugins/cs/skills/finish/scripts/finish.sh"
     _arm_rotation lander
     status=0
     output=$(printf d | CS_ASSUME_TTY=1 AGY_HELP_OMIT=--prompt-interactive "$CS_BIN" lander -finish feat 2>&1) \

@@ -55,19 +55,33 @@ _cs_antigravity_adapter_capabilities() {
 }
 
 # cs's skills ship inside its agy plugin, which offers them as /cs:<name>.
+# The installer deploys them only into a plugin that is cs's, through a
+# skills/ folder of its own; a folder there that is not holds none of them.
 _cs_antigravity_adapter_skill_dir() {
-    printf '%s/skills\n' "$(_antigravity_plugin_dir)"
+    local dir
+    dir=$(_antigravity_plugin_dir)
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        printf 'Error: cs'"'"'s Antigravity plugin is not installed at %s, so none of its skills are. Run setup.sh again, with agy installed, to add it.\n' "$dir" >&2
+        return 1
+    fi
+    if ! _antigravity_plugin_is_cs "$dir" || ! _antigravity_plugin_subdir_ok "$dir/skills"; then
+        printf 'Error: %s is not cs'"'"'s Antigravity plugin with a skills folder of its own, so cs installed no skills there. cs -doctor names the fix.\n' "$dir" >&2
+        return 1
+    fi
+    printf '%s/skills\n' "$dir"
 }
 
 # The folder of cs's finish skill for a -finish open, once the open can
-# work: the skill is in cs's plugin and agy takes a first prompt. Without
-# either the open would carry a prompt agy cannot act on. main asks before the
-# open migrates, locks or unarchives the session; the launch asks again.
+# work: the skill is installed in cs's plugin with the script it runs, and agy
+# takes a first prompt. Without them the open would carry a prompt agy cannot
+# act on. main asks before the open migrates, locks or unarchives the
+# session; the launch asks again.
 _antigravity_finish_dir() {
     local dir
-    dir="$(_cs_antigravity_adapter_skill_dir)/finish"
-    [ -f "$dir/SKILL.md" ] || {
-        _antigravity_launch_error "The cs finish skill for Antigravity is missing from $dir, so -finish has nothing to start. Run setup.sh again, with agy installed, to add it."
+    dir=$(cs_engine_skill_dir antigravity finish) || return 1
+    [ ! -L "$dir/scripts" ] && [ ! -L "$dir/scripts/finish.sh" ] && [ -f "$dir/scripts/finish.sh" ] \
+        && [ -x "$dir/scripts/finish.sh" ] || {
+        _antigravity_launch_error "The cs finish skill for Antigravity in $dir has no runnable scripts/finish.sh, so -finish has nothing to start. Run setup.sh again, with agy installed, to restore it."
         return 1
     }
     _antigravity_flags_listed "${AGY_BIN:-agy}" --prompt-interactive || return 1

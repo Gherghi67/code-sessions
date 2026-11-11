@@ -64,6 +64,21 @@ cs_engine_supports() {  # engine capability
     return 1
 }
 
+# The folder this install put a skill in for an engine, or 1 with the reason
+# on stderr. The installer writes a skill only as a folder of its own holding
+# a regular SKILL.md, never through a link (install.sh's _skill_path_real), so
+# anything else standing there is not this install's.
+cs_engine_skill_dir() {  # engine, skill
+    local skills dir
+    skills=$(cs_engine_call "$1" skill_dir) || return 1
+    dir="$skills/$2"
+    if [ -L "$dir" ] || [ ! -d "$dir" ] || [ -L "$dir/SKILL.md" ] || [ ! -f "$dir/SKILL.md" ]; then
+        printf 'Error: No %s skill is installed for %s at %s. Run setup.sh again to install it.\n' "$2" "$1" "$dir" >&2
+        return 1
+    fi
+    printf '%s\n' "$dir"
+}
+
 # The engine this conversation runs under. A launch exports CS_RUN_ENGINE into
 # the native child, so a skill's shell sees the run's own engine. Outside a run
 # the session's saved preference answers, as the next launch would read it.
@@ -107,11 +122,7 @@ cmd_engine() {  # [supports <capability> | skill-dir <skill>]
         skill-dir)
             [ $# -eq 2 ] && [[ "${2:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
                 || error "Usage: cs -engine skill-dir <skill>"
-            local skills
-            skills=$(cs_engine_call "$engine" skill_dir) || return 1
-            [ -f "$skills/$2/SKILL.md" ] \
-                || error "No $2 skill is installed for $engine at $skills/$2. Run setup.sh again to install it."
-            printf '%s\n' "$skills/$2"
+            cs_engine_skill_dir "$engine" "$2" || return 1
             ;;
         *) error "Usage: cs -engine [supports <capability> | skill-dir <skill>]" ;;
     esac

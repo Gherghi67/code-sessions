@@ -20,7 +20,7 @@ letters, digits, or underscores, and appears in that registry.
 | `prepare_workspace` | Prepare native integration for a session directory and mode (`create`, `migrate_storage`, `migrate`, or `worktree`). Return failure to abort the shared operation. Codex and Antigravity are no-ops; shared storage is already prepared, and their context is written at launch. |
 | `launch` | Start the selected engine with the positional launch arguments supplied by the shared command. |
 | `files_changed` | Read a native successful tool-completion JSON object on stdin; print a `files_changed` JSON event, or nothing for failed, unrelated, or malformed input. |
-| `skill_dir` | Print the folder the installer puts cs's skills in for this engine: `~/.claude/skills` (or `CS_SKILLS_DIR`), `$CODEX_HOME/skills`, and the `skills/` folder of cs's Antigravity plugin. |
+| `skill_dir` | Print the folder the installer puts cs's skills in for this engine: `~/.claude/skills`, `$CODEX_HOME/skills`, and the `skills/` folder of cs's Antigravity plugin. `CS_SKILLS_DIR` replaces Claude's for tests, as it does for `cs -doctor`; the installer never reads it. Antigravity's fails, naming why, unless the plugin folder is cs's and its `skills/` a folder of its own, the only place the installer deploys them. |
 
 Each registered implementation is named
 `_cs_<engine>_adapter_<operation>`. Dispatch validates both the registry entry
@@ -61,8 +61,9 @@ declares the capability, and names both and exits 1 when it does not. The engine
 is the run's own (`CS_RUN_ENGINE`, which every launch exports into the native
 child); outside a run it is the session's saved preference.
 `cs -engine skill-dir <skill>` prints `<skill_dir>/<skill>` for that engine
-when the folder holds a `SKILL.md`, and exits 1 naming the folder when it does
-not. A skill the engine handed over without its folder reaches its helpers
+when it stands as the installer writes a skill, a folder of its own (not a
+link) holding a regular `SKILL.md`, and exits 1 naming the folder otherwise.
+A skill the engine handed over without its folder reaches its helpers
 this way: `agy` gives a typed `/cs:finish` its text but no path, so the
 finish skill asks cs instead of searching the disk for a `finish.sh` that may
 belong to another install.
