@@ -1214,7 +1214,7 @@ _finish_base() {  # base_name
     local output
     output=$("$CS_BIN" "$1" --engine antigravity 2>&1) || { echo "$output"; return 1; }
     git -C "$(_session_dir "$1")" -c user.name=t -c user.email=t@example.com commit -qm base --allow-empty \
-        >/dev/null 2>&1 || true
+        || return 1
     output=$("$CS_BIN" "$1@feat" --engine antigravity 2>&1) || { echo "$output"; return 1; }
 }
 
