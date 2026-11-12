@@ -260,7 +260,7 @@ test_switch_step_numbers_match_rotate() {
 # user must act on, so both lines are pinned exactly.
 test_switch_names_both_final_lines() {
     local skill="$SKILLS_DIR/switch/SKILL.md"
-    grep -qxF '   **Run `/exit` now** (or press the capsule above the prompt, or Ctrl+X 1 if you bound it) — cs reopens this session under <target>.' "$skill" \
+    grep -qxF '   **Run `/exit` now** (or press the `/exit to <target>` key, under the prompt or on the band above it, or Ctrl+X 1 if you bound it) — cs reopens this session under <target>.' "$skill" \
         || { echo "  FAIL: switch must end, under Claude, on the exact /exit line"; return 1; }
     grep -qxF '   **Quit Codex now (`/quit`)** — cs reopens this session under <target>.' "$skill" \
         || { echo "  FAIL: switch must end, under Codex, on the exact /quit line"; return 1; }
@@ -739,6 +739,38 @@ test_release_verifies_ci_workflow() {
         "release.md must describe the signing key override" || return 1
 }
 
+test_release_notes_fold_the_full_list() {
+    assert_file_contains "$RELEASE_MD" "<summary>Full changelog</summary>" \
+        "release.md must fold the grouped list under a Full changelog summary" || return 1
+    assert_file_contains "$RELEASE_MD" "without the opener and the fold" \
+        "release.md must keep the opener and the fold out of CHANGELOG.md" || return 1
+}
+
+test_release_signing_stops_when_a_check_fails() {
+    # The Bash tool runs a command as `eval '...' && pwd`, and a shell ignores
+    # set -e on the left of &&. The block has to stop before signing even there.
+    local block bin rc signed
+    block=$(awk '
+        /^```bash$/ { inside = 1; text = ""; next }
+        /^```$/ { if (inside && text ~ /ssh-keygen -Y sign/) printf "%s", text; inside = 0; next }
+        inside { text = text $0 "\n" }
+    ' "$RELEASE_MD")
+    assert_eq "1" "$(printf '%s' "$block" | grep -c 'ssh-keygen -Y sign')" \
+        "the runbook's signing block must be found" || return 1
+    bin="$TEST_TMPDIR/signing-bin"
+    mkdir -p "$bin"
+    printf '#!/bin/sh\nexit 1\n' > "$bin/git"
+    printf '#!/bin/sh\nexit 0\n' > "$bin/gh"
+    printf '#!/bin/sh\n: > "%s/signed"\n' "$TEST_TMPDIR" > "$bin/ssh-keygen"
+    chmod +x "$bin/git" "$bin/gh" "$bin/ssh-keygen"
+    (cd "$TEST_TMPDIR" && PATH="$bin:$PATH" SHA=expected-sha bash -c 'eval "$1" && :' _ "$block") >/dev/null 2>&1
+    rc=$?
+    signed=no
+    [ ! -e "$TEST_TMPDIR/signed" ] || signed=yes
+    assert_eq "no" "$signed" "a failed git check must stop the block before signing" || return 1
+    assert_eq "1" "$rc" "the block must exit with the failed check's status" || return 1
+}
+
 test_release_uses_ci_wait_for_each_workflow_gate() {
     local calls step line runner mode rc expected_error
     local runners=(bash)
@@ -891,6 +923,8 @@ run_test test_release_handles_empty_prev_tag
 run_test test_release_approval_has_cancel_and_reapproval_loop
 run_test test_release_guards_stray_files_before_add_all
 run_test test_release_verifies_ci_workflow
+run_test test_release_notes_fold_the_full_list
+run_test test_release_signing_stops_when_a_check_fails
 run_test test_release_uses_ci_wait_for_each_workflow_gate
 run_test test_release_has_code_review_gate
 

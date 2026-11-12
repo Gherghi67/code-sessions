@@ -292,6 +292,18 @@ do not run `git log ""..HEAD`, which errors.
 
 - Group the commits into categories: **Features**, **Fixes**, **Docs**, **Other**
 - Draft release notes in markdown format with a `## What's Changed` heading
+- Open with two or three lines that say what changed for someone who uses cs,
+  then fold the grouped list, with blank lines around it so GitHub renders its
+  Markdown:
+
+  ```
+  <details>
+  <summary>Full changelog</summary>
+
+  The grouped list.
+
+  </details>
+  ```
 - Include a `**Full Changelog**` link: `https://github.com/hex/claude-sessions/compare/vPREVIOUS...vNEW`
 
 Show the draft to the user via **AskUserQuestion** with options:
@@ -306,7 +318,7 @@ Step 8.
 
 ### 7. Update Changelog
 
-CHANGELOG.md exists at the repo root. Now that the release notes are approved (Step 6), insert them as a new `## X.Y.Z` section at the top of the file (after the header, before the previous version's section). Use the version number WITHOUT the `v` prefix to match existing entries. Include all the same content as the GitHub Release notes. If a `## Unreleased` section exists, fold its entries into this new version section rather than leaving a duplicate.
+CHANGELOG.md exists at the repo root. Now that the release notes are approved (Step 6), insert them as a new `## X.Y.Z` section at the top of the file (after the header, before the previous version's section). Use the version number WITHOUT the `v` prefix to match existing entries. Include the grouped list from the GitHub Release notes, without the opener and the fold. If a `## Unreleased` section exists, fold its entries into this new version section rather than leaving a duplicate.
 
 The CHANGELOG entry is committed as part of the release commit in Step 8.
 
@@ -480,11 +492,16 @@ RUN_ID=$(gh run list --workflow=release.yml --branch vX.Y.Z --commit "$SHA" --li
 
 Download the assets, verify every manifest digest, and compare the installer
 with the tagged commit. The only permitted difference is `CS_DEFAULT_REF=main`
-replaced by the release tag. Run the following in one shell so a failed check
-stops before signing:
+replaced by the release tag. Run the following from the repo root, with the
+`SHA` placeholder replaced by the full release commit from Step 8. It runs in
+its own bash so a failed check stops before signing: the Bash tool runs a
+command as `eval '...' && pwd`, and a shell ignores `set -e` on the left of
+`&&`. The script comes in on descriptor 3 so that no command in it can read the
+script's own text from stdin.
 
 ```bash
-set -euo pipefail
+bash -euo pipefail /dev/fd/3 3<<'VERIFY'
+SHA='<full release SHA from Step 8>'
 tag=vX.Y.Z
 git fetch origin "refs/tags/${tag}:refs/tags/${tag}"
 test "$(git rev-parse "$tag^{commit}")" = "$SHA"
@@ -510,6 +527,7 @@ diff -u "$release_dir/expected-install.sh" "$release_dir/install.sh"
 )
 gh release upload "$tag" "$release_dir/SHA256SUMS.sig"
 gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF SHA256SUMS.sig
+VERIFY
 ```
 
 The release is not done until `SHA256SUMS.sig` is a release asset.
@@ -537,8 +555,9 @@ only the login keys, so a sign without that override fails with
 `No private key found for public key`. The socket exists only while
 Bitwarden desktop is open and unlocked with its SSH agent on; the sign
 runs from the Bash tool and needs no hand-off to the user. The step's
-tag expansions are braced (`${tag}:...`) because the Bash tool runs zsh,
-where `$tag:lib` reads `:l` as a modifier and corrupts the ref.
+tag expansions stay braced (`${tag}:...`) so a line of it can be rerun by
+hand in the Bash tool's zsh, where `$tag:lib` reads `:l` as a modifier and
+corrupts the ref.
 
 `cs -update` and the installer's picker download require
 `ssh-keygen -Y verify` to authenticate `SHA256SUMS.sig` in the release's own

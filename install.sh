@@ -947,8 +947,7 @@ _codex_status_line_remove() {  # codex_dir
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
 # "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
-# the engine actions the cs mod's band Buttons answer to: they press the
-# band's rotate (or /clear) and wrap keys. KEEP IN SYNC with ROTATE_ACTION and
+# the engine actions behind the cs mod's rotate (or /clear) and wrap Buttons. KEEP IN SYNC with ROTATE_ACTION and
 # WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
 # asks once per machine and binds each in the context block Claude Code wants
 # it in (home, below): the command keys in Chat, the chords in Global, where
@@ -1249,6 +1248,7 @@ CS_KNOWN_SHA256=(
     12fe62d3e76ace5f5fa96cab0abf9c8822159640d0ac8b7d23df77d7f981d168
     138cb03c6210ee1837d6599af471e8a3a179564aeea2c093f0856de524ca08b8
     13910fa0d6ece796a56ece9b9b21a43a41acc4a81c70ce45bd9bd5d4ce80d82b
+    13dfafa0db3d8dde0c3151bda6888b3fbc211226fac8b89d1c74579e92cfc1c0
     13f387cb787f4b66110cad8aca438be122dec035a88dbcfc13e6ae533c596216
     140c660ed4ef21d7891e58bd751d60d3d710f2c5fdda95c05552ad26fff25921
     144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458
@@ -1405,6 +1405,7 @@ CS_KNOWN_SHA256=(
     3d8e2904d6cf437db11191200f442ecc30711aec490924205e57cfd5cc0c4257
     3da261996d10561cae6a12e7a7cdf44ab4cb8a5c6d96b5d7c6de9ea9462f9fed
     3dc17bb99560802f3257932ce64b7c6186f160e53ba884dec52394ca83890f80
+    3dd4d548de914371e709655b353b303c6e290f7c42a99ce19a6ee9f1ea7cf614
     3df2e20f640de9b099a8c5c6801a06260d3916a2b94e55c2519e47ba47b1ee4e
     3e7a61a2fdfd10fbbd9ffe90b283ea62b2c2775c1eea0052697f31a8a74742e1
     3ed00e68ac1111cf0db71f672e97f68b89cf98725e617ba7ba4915bcd866ddd1
@@ -1437,8 +1438,10 @@ CS_KNOWN_SHA256=(
     45ea912f5a8f3f6981e28b9c5a6fe4fb7cbbfc723f31ae71080814072adab6c4
     4612206e98344e6410ef601b440e4fc9ac3096a7aab8b0716fb92c234640953e
     46cefad3fb6cefa6038e857e50391bda8af5f2d5b199c5d039b03d65a1473231
+    470bbdd41fe312195f002bd68ef833b299c0bc2eae8ccb9f6891bfaac07c58c9
     47173c201095a39878c134f43d2c219cfaa7c00145b3346d6d871451b1a2d32b
     47281a709e318983a0e2b1ce9f430a5e0b4cff43debc7a7f91c1f8e8526cabbf
+    474bf684eb9238d9e763e41839b0ed18b0c67f6e1953fedaf7bf6c9afc474734
     47bbc881a190c0c9b1223ea621f49b404e1949cddf230fa9dcc9674a05fbb583
     4827196f19733b35b5d4d1ace00ef9bded98942d119e60207d99c5c81fe408ae
     48e2483fbf45b4931936f6590f4dc0cda60c6ca5ba41d144ba309ebd446601a5
@@ -1490,6 +1493,7 @@ CS_KNOWN_SHA256=(
     5867b448d3d36742bd92f254d5dd15634c326e780683225014f43b26801d1eda
     5892cb01c78b1307e676ab4384ec9648e47f91343f384548477fab7180dda035
     5895f7ecb7586a3315e3f9104653f00d139204f59bf07bd19fd085338770828c
+    58a427956cf4b030c455383610f6d8965a829f92ea145d21c59b33c031664cc1
     58c0c24b30d9696235eb6ff0b9db5e42300aa13724525da344d9412c62f5ae56
     599001046dae37eaca005d9e4dfa451c5e8d14e9523a7660459141bc101ad726
     59a45222ec8106787e9e97c7c48acc32b754831ecdc5247fdc40d992f36ee009
@@ -1738,6 +1742,7 @@ CS_KNOWN_SHA256=(
     9c2ed0d3e031753069e3623744e10dbca6921edcfbb2ba611d047012556047c3
     9c5d46b375c59c3a3bb14fe26004665de7fddf7d21ae12dbd1f9234d32b0f4e3
     9cab3c1d85a5292b5fc9b99e8a703db7bc663f42c57e66ebb83308da0aabeeed
+    9cb8108b4382926d91929703a73cfa07304de0e0f6f8fcc01004010d8cac1fd8
     9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3
     9d79fbf2a3371ea8341940a294d7c5080b5eedf84635c816d2e6e7ee453fc1a4
     9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab
@@ -1787,6 +1792,7 @@ CS_KNOWN_SHA256=(
     a8abe8e196ab085c28a30db08b3a52781d14c14ed1134cea5464a75ef03486b6
     a8dd51579409ffdab6852f5995188114f50d3268294df4e290b5857eca08fda5
     a96c77d8f13d893e46116b7d61e517f72bba7f8e10b790517934004be21ae43a
+    a999b85473187e2d79fa94f8e3f5532a4510939114032f692e2e9003a155f40b
     a99cfc8ef3f705c55287512c8f86d27b89c85e45b6f254a5158f6f8ea46c93c0
     a99e9216b51e87a7abf32b7b7810ab2eedde1333a29ae6104cb9c04d35212234
     a9de31342d33fd17c3783d4af4b2ceaeb1c802e3428685029f64642a1af09102
@@ -1834,6 +1840,7 @@ CS_KNOWN_SHA256=(
     b763bfb586a334212c8cb947b04698faace290bf52bcb0299eec042a5271bbe0
     b769c510f33f6884ac04a14384efa0cf57cfaf523effd2d51fecf5f626b5e368
     b76a8cc421673926685894d73fde0ae97172cb4018777cf2d4b8d4fff4a056e4
+    b7f47c3499f8a4288471c2f53ccbf2b8b2490c6a658f45b668236e4154a43342
     b83fce618bafba3e7bb9bc80949d3ab0c2aace9a78159c12bc776ac9210224bb
     b8a90c9724ae5bab536d306235a0e76292c7a4fb56b0af13a4a2b1217e52e479
     b9545d02cce45b70b9b0d7d1c1975bc0f05d012194350a40d29cadd1909d5aba
@@ -1905,6 +1912,7 @@ CS_KNOWN_SHA256=(
     cbcd3c42df0da913522d06ccf5bdd524adc8d3b36bbd93037dba8a99dc40228a
     cc0f37d6aae70b256fd24b1a2f77d74bc44440131722e9db7ad6764cd6e77e64
     cc34939c470679a8a9aec93d11a96806c4fdd83a55224cd530c587d9b8b398f1
+    cccf3b78360eead88706a93054b4de8535bd6644098e341eea204fb55c056037
     cd41c4d361874cfc167518dbefd4f6fe67a970cc07a351018fe8f398fd19000a
     cd4652ffe78ecf4e307e0acabf37f84cdff59eef9fd7867d0c7c27581ca0d478
     cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112
@@ -1994,6 +2002,7 @@ CS_KNOWN_SHA256=(
     eab92f56f20b68ea7af3abfede47b18776637970e2282ba4fd243ec25866ba4f
     eae5cc7bf6d9e6bd5d6e9a6f28aca87d39f0b2dd4584fc16854cef3ba3a30838
     eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec
+    eb10294a1ea23043b20460606c9b378bfbd657180da55d9e446b29cf116df0dc
     eb759b3997c6d33a521db009c1f14c5c979fde3dfeaa4f8ef3ee986ebacd9dd3
     ec237c913535794b11ba4aac0956ca8eda747d8f282f227bf14f57deb39f9a51
     ed3c9c69ba165c625100ec2ce356907d81638b15df6adae98c64094bb3936481
@@ -2097,21 +2106,21 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "402c421d291e24de79629a5a2a2bee0fbf78b686504a58f79cce1e9c55218727  bin/cs"
+    "5651c31ebe52d7a2d2373afcd7be59987afb21daeeda9f419e29528978203380  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "01988a1eedb8376080aa4d324f321137514571ab1a1d4dfcb8cc998c678ab8bf  bin/cs-codex-thread"
-    "b8eb321ef38ccb5235201f78a0727d20d8b0fcb0d5983dd8347cbf232c9c17f6  bin/cs-statusline"
+    "bd2f929653dfdc84f426d3a5fd1b50de4d2e2229a30c2b31a7e5ad896046d9aa  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "c3a5bf7268872c43ec45aece34b69ae662d29ad0625d2ca474feb9ca2fed8abf  hooks/cs-shared.sh"
+    "37de9b7ccf4e854137d6af1f66840d139efcd686dc1ad53afafbc811948f06c5  hooks/cs-shared.sh"
     "e6d5ae5a6121a17d2935566a0e8c05f60f5d7fa5a2af3266dbe810a3b88c91b7  hooks/cs-engine-events.sh"
-    "af877f484a9acfece51ff267f15ac8bf7e48367b8ced8010bec4ff57c5cfda0a  hooks/cs-config.sh"
+    "08bc37a7312e0098c6e5429e70e3a4ef108ae12f8f89bcfaadb72288f8765d19  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "0df470229aed0ca15acdd0ab115d6633dbcd1542e30b64936df5124045f4e6ee  hooks/prompt-rewriter.sh"
     "dd6e555242f0161cdb832249a491a41babe407da745a7ca0b30d9780d045a680  hooks/prompt-rewriter-model.sh"
     "b3704bde599a45a4f2d2a8b0ccd16e01869ef7ba6dcc85e642e306448ded7d44  hooks/prompt-rewriter-vendor.sh"
-    "de65ec8d35bcf8e7a99e8d4f590299128fa304d36e0938ef4699823a00af568a  hooks/session-start.sh"
-    "0c8420c589f8973709b0a62915bf9c7c9e931553e38ee7a0a3bc70834c9103b1  hooks/autosave-commits.sh"
+    "58f24e574ea776630284d5d7df818267ba29d97bfe9ea16ccd625d5633ef4911  hooks/session-start.sh"
+    "e0a2562432ed9b7b63f73fdb3fd858a3f86b225063c3f62c4ec886a30ecc4c51  hooks/autosave-commits.sh"
     "48f1c58efaed6587265164e258dfe5edae14873d5cf6271505ca0231b23373c8  hooks/stop-blocks.sh"
     "15c2528a466640da5a06b29e00aabfc5a1b96c6405839e3280fc5c57359f6de6  hooks/stop-notices.sh"
     "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
@@ -2121,11 +2130,11 @@ CS_PAYLOAD_SHA256=(
     "12a1d214de1fc27b2ad9b7210df72a96e0fddca969f95e569f71356cbf6d40a4  hooks/scope-prompt.sh"
     "51c551abcbccfe720c35026bfb73abe8acb952a61f5ff9cb242822db2b4208cb  skills/store-secret/SKILL.md"
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
-    "972c9bd13588bed5bd03eaea310b65505f715999cd19110da11e65439fe5b32b  skills/rotate/SKILL.md"
-    "f9a660d2ffa1086c381b7d15f1a68804836bccac3663bdd67fbc983de4dd48c3  skills/switch/SKILL.md"
+    "a95a83d4ca340cd18252e53e1eb4bcd882ae870b26bddf66e19806dd2a309e5f  skills/rotate/SKILL.md"
+    "60d31e44f63ef96e367eb75ae2e367f267fd42480752d645231f803181732bc9  skills/switch/SKILL.md"
     "567e7ac3d7a346edaaf6230cd264f21cd8d2d5febf3da012a98dd2aa779ddf68  skills/finish/SKILL.md"
     "3b3d3cf069960d15cb81213c430e43482fc372c813470598d5371f03e2f5f5fa  skills/feature/SKILL.md"
-    "6da3554cc3215ad0d4c66fe2956f275dbd424fb49d90a23c81ca9a092bf28a6c  skills/write-as-me/SKILL.md"
+    "7b7b64eee722dd9efdf43c3397ce8c13c0fbdb9c328811aa70b145a14e0ee877  skills/write-as-me/SKILL.md"
     "96a5cdb7d563d4360dd58f7ad91ce55dbbe5cde28d141d5e2aeb13ae9483b4ad  skills/checkpoint/SKILL.md"
     "d3573f7c273360ebe4d6e23341f91c36ccab9fe97eac47150119537a611cb4f7  skills/summary/SKILL.md"
     "9ef1c5135bbbbd85838d28d711c7df4028e2bbe7cd6c6723ab3cfdc1cdce95e0  skills/sweep/SKILL.md"
@@ -2136,11 +2145,11 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
-    "c3a5bf7268872c43ec45aece34b69ae662d29ad0625d2ca474feb9ca2fed8abf  skills/sweep/scripts/cs-shared.sh"
-    "a4a0978846dd5f6cca361977b6c8b4b951d475734af234cbe78aae1f3bf8148a  mods/cs/.claude-plugin/plugin.json"
+    "37de9b7ccf4e854137d6af1f66840d139efcd686dc1ad53afafbc811948f06c5  skills/sweep/scripts/cs-shared.sh"
+    "a999b85473187e2d79fa94f8e3f5532a4510939114032f692e2e9003a155f40b  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "1d56121c24634bf6ebb65bc0e1ede9e4a64680c8dd4c3ecdcb411bbd4a9f58d4  mods/cs/hooks/register.tsx"
-    "f03ff75abd5a5c2e87411c14a30d192d76a54f866ba3af87d50d4db5f521c504  mods/cs/tips.json"
+    "20d2cdb0d1e6fc5cf787d5144f1c7b22f0648cbcd296ae55482b5131cdcaf1ca  mods/cs/hooks/register.tsx"
+    "cccf3b78360eead88706a93054b4de8535bd6644098e341eea204fb55c056037  mods/cs/tips.json"
     "2f8d4b45beddd0b27b050f1c2eb08ebb25552b4dea5f33b9398318a2ef636985  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "89a78b6a0eda7e4b2018538a5ccb5034fcbf13fd7e7060a366d8d596a33eb777  mods/cs-update/hooks/register.tsx"
@@ -2163,7 +2172,7 @@ CS_PAYLOAD_SHA256=(
     "cc34939c470679a8a9aec93d11a96806c4fdd83a55224cd530c587d9b8b398f1  mods/cs-panel/hooks/draw.tsx"
     "3542f04b3400bf34cda2ea3ceaabe135ee36c3c7e4c82bf745f0637ff57c2ebe  mods/cs-filter-chat/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-filter-chat/hooks/hooks.json"
-    "271be4bc1607706ea82ca610eacc49d7f527880431a24a2a28d03963f3212c91  mods/cs-filter-chat/hooks/register.tsx"
+    "3dd4d548de914371e709655b353b303c6e290f7c42a99ce19a6ee9f1ea7cf614  mods/cs-filter-chat/hooks/register.tsx"
     "fbafc4d45025e225947bc1ef8215cbaabbffe92aeebb729487b9a1504d911708  mods/cs-filter-chat/hooks/session.ts"
     "50fdaf38780882182c4941e11d66c3f60962f8109c9a401fb825038f2070afc5  mods/cs-filter-chat/hooks/settings.ts"
     "6cca574728693b2fa8072182015e17d9dce47a3ca8118b41ca0e09928546aa41  mods/cs-filter-chat/hooks/verdict.ts"
@@ -3451,7 +3460,7 @@ else
     _tips_name=""
     case "$_tips_record:$_tips_state" in
         *:foreign)
-            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /config) is left out"
+            info "Spinner tips: ~/.claude/settings.json names its own tipsFile ($_current_tips_file), and Claude Code reads one; cs's tip (turn on the band's prompt bars in /cs) is left out"
             ;;
         *:not-object)
             warn "Spinner tips: spinnerTipsOverride in ~/.claude/settings.json is not an object; left as it is, so cs's tip is not in Claude Code's tips"
