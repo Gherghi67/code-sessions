@@ -65,6 +65,12 @@ LABEL=sync-upstream
 # How many days the oldest missing release may be held (by a pull request, a
 # branch or an issue) after it was tagged before the run fails to say so.
 STALL_DAYS="${SYNC_STALL_DAYS:-3}"
+# GitHub refuses a pull request or issue body over 65,536 characters, and
+# upstream decides how long the parts it writes are: the sync report, fences
+# included, gets at most REPORT_CAP bytes of a body, the list of guarded
+# files LIST_CAP. Bytes, since no character is shorter than one.
+REPORT_CAP=20000
+LIST_CAP=4000
 SYNC_PY="$(cd -- "$(dirname -- "$0")" && pwd)/sync-upstream.py"
 
 # The run's outcome, in the log and on the run's summary page.
@@ -338,6 +344,58 @@ open_issue() {
     url=${url##*$'\n'}
 }
 
+# The end of every body: what scripts/sync-upstream.py reported. Upstream
+# writes part of it (the file names, and what its build.sh prints to stderr),
+# so it comes after everything this script has to say, as many whole lines as
+# fit in REPORT_CAP, in a fence longer than any run of backticks among them.
+# A fence closes only on a run at least as long as its own, so no line of the
+# report can end the block and start markup of its own, an HTML comment that
+# hides the rest of the body, say. The report is shown as it is rather than
+# with its backticks replaced: a person looks for those files by name.
+report_section() {
+    local fit kept longest total fence run
+    # The lines that fit, the fence they need counted in, and their longest run of backticks.
+    fit=$(LC_ALL=C awk -v cap="$REPORT_CAP" '
+        {
+            run = longest
+            s = $0
+            while (match(s, /`+/)) {
+                if (RLENGTH > run) run = RLENGTH
+                s = substr(s, RSTART + RLENGTH)
+            }
+            fence = run < 3 ? 3 : run + 1
+            if (n + length($0) + 1 + 2 * fence + 6 > cap) exit
+            n += length($0) + 1
+            longest = run
+            kept = NR
+        }
+        END { print kept + 0, longest + 0 }' "$out/report")
+    kept=${fit% *}
+    longest=${fit#* }
+    total=$(LC_ALL=C awk 'END { print NR }' "$out/report")
+    fence=$(printf '%*s' "$((longest < 3 ? 3 : longest + 1))" '' | tr ' ' '`')
+    printf '`scripts/sync-upstream.py` reported:\n\n%stext\n' "$fence"
+    LC_ALL=C awk -v kept="$kept" 'NR > kept { exit } { print }' "$out/report"
+    printf '%s\n' "$fence"
+    [ "$kept" -lt "$total" ] || return 0
+    run="the merge job's log"
+    if [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+        run="$run in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+    fi
+    printf '\nThe report is cut here, after %s of its %s lines, to keep this within GitHub'"'"'s limit on a body. All of it is in %s.\n' "$kept" "$total" "$run"
+}
+
+# The guarded files the merge changes ($guarded), an item each, as many as
+# fit in LIST_CAP, then how many more: upstream names them. git quotes a name
+# with a newline in it, so each is one item and cannot end the list.
+guarded_list() {
+    printf '%s\n' "$guarded" | LC_ALL=C awk -v cap="$LIST_CAP" '
+        { n += length($0) + 5 }
+        n <= cap { print "- `" $0 "`"; next }
+        { more++ }
+        END { if (more) print "- and " more " more" }'
+}
+
 publish_release() {
     local outcome tag branch head base parents count release have body url id refusal guarded
     outcome=$(cat "$out/outcome")
@@ -354,13 +412,13 @@ publish_release() {
 
     if [ "$outcome" = person ]; then
         {
-            printf 'Upstream release `%s` did not merge cleanly into `%s`. `scripts/sync-upstream.py` reported:\n\n' "$tag" "$BASE_BRANCH"
-            printf '```text\n%s\n```\n\n' "$(cat "$out/report")"
+            printf 'Upstream release `%s` did not merge cleanly into `%s`; its report is below.\n\n' "$tag" "$BASE_BRANCH"
             printf 'To merge it by hand, in a checkout at the head of `%s` (CONTRIBUTING.md, "Merging upstream releases"):\n\n' "$BASE_BRANCH"
             printf '```bash\nscripts/sync-upstream.py start --to %s\n```\n\n' "$tag"
             printf 'Resolve what it lists, run `continue` in the sync worktree, push the result as `%s` and open a pull request. ' "$branch"
             printf 'The workflow leaves this release alone while this issue is open and labelled `%s`, or that branch or pull request exists, and later releases wait behind it. ' "$LABEL"
-            printf 'It closes this issue once `%s` contains %s.\n' "$BASE_BRANCH" "$tag"
+            printf 'It closes this issue once `%s` contains %s.\n\n' "$BASE_BRANCH" "$tag"
+            report_section
         } > "$body"
         open_issue "$tag"
         note "$tag needs a person: $url"
@@ -401,7 +459,7 @@ publish_release() {
         # with the token permissions they declare, before anyone reads them.
         {
             printf 'Upstream release `%s` merges cleanly into `%s`, but it changes what the job holding the sync token runs or is defined by:\n\n' "$tag" "$BASE_BRANCH"
-            printf '%s\n' "$guarded" | sed 's/.*/- `&`/'
+            guarded_list
             printf '\nSo the workflow did not push it. A branch pushed to this repository runs its own workflows at once, with whatever token permissions they declare, before anyone has read them.\n\n'
             case "$UPSTREAM_URL" in
                 https://github.com/*) printf 'Everything the release changes: %s/compare/%s...%s\n\n' "${UPSTREAM_URL%.git}" "$have" "$tag" ;;
@@ -414,7 +472,7 @@ publish_release() {
             printf '```bash\ngh workflow run sync-upstream.yml -f approve=%s -f commit=%s%s\n```\n\n' "$tag" "$release" "${GH_REPO:+ --repo $GH_REPO}"
             printf 'That run merges it again, checks that `%s` still points at that commit, pushes `%s` and opens its pull request, which merges itself or waits as `SYNC_AUTO_MERGE` says. ' "$tag" "$branch"
             printf 'Until then the workflow leaves this release alone, and later releases wait behind it. It closes this issue once `%s` contains %s.\n\n' "$BASE_BRANCH" "$tag"
-            printf '`scripts/sync-upstream.py` reported:\n\n```text\n%s\n```\n' "$(cat "$out/report")"
+            report_section
         } > "$body"
         open_issue "$tag"
         note "$tag changes $(printf '%s' "$guarded" | tr '\n' ' '), so it is not pushed until a person approves it: $url"
@@ -425,7 +483,6 @@ publish_release() {
         case "$UPSTREAM_URL" in
             https://github.com/*) printf 'What upstream changed: %s/compare/%s...%s\n\n' "${UPSTREAM_URL%.git}" "$have" "$tag" ;;
         esac
-        printf '```text\n%s\n```\n\n' "$(cat "$out/report")"
         printf '## Verification\n\nThe workflow built the generated files and ran no tests: the checks on this pull request are the gate.\n\n'
         printf '## Merging\n\nWith a merge commit, never squashed or rebased. The release has to stay an ancestor of `%s`, or the next sync starts again from an older one.\n' "$BASE_BRANCH"
         if [ -n "$guarded" ]; then
@@ -434,8 +491,10 @@ publish_release() {
             else
                 printf '\nIt changes what the job holding the sync token runs or is defined by, and was pushed without approval: `SYNC_AUTO_MERGE` is `all`.\n\n'
             fi
-            printf '%s\n' "$guarded" | sed 's/.*/- `&`/'
+            guarded_list
         fi
+        printf '\n## Report\n\n'
+        report_section
     } > "$body"
     git push --quiet origin "$head:refs/heads/$branch" \
         || fail "Could not push $branch. A release that changes .github/workflows needs a token with the Workflows permission."

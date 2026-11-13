@@ -136,6 +136,37 @@ origin_branches() {
     git -C "$ORIGIN" for-each-ref --format='%(refname:short)' refs/heads
 }
 
+# Fails unless body $1 says $2 (a line of this script's) before the report,
+# and ends with the report in a fence that the first line able to close it,
+# under CommonMark's rule (a run of backticks at least as long), does close.
+# After it only a blank line and the note that the report was cut may follow:
+# anything else came out of the report, past its fence.
+assert_report_last() {  # body, text this script writes ahead of the report
+    local verdict
+    verdict=$(awk -v notice="$2" '
+        !first && index($0, notice) { first = NR }
+        !at && $0 == "`scripts/sync-upstream.py` reported:" { at = NR; next }
+        at && NR == at + 2 { fence = $0; sub(/text$/, "", fence); next }
+        fence != "" && !closed {
+            line = $0
+            gsub(/^ +| +$/, "", line)
+            if (line ~ /^`+$/ && length(line) >= length(fence)) closed = NR
+            if (closed && $0 != fence) wrong = NR
+            next
+        }
+        closed && $0 != "" && $0 !~ /^The report is cut here/ { after = NR }
+        END {
+            if (!at) print "no report"
+            else if (!first || first > at) print "\"" notice "\" is not ahead of the report"
+            else if (fence !~ /^```+$/) print "the report is not fenced"
+            else if (!closed) print "the report fence is never closed"
+            else if (wrong) print "line " wrong " closes the report fence early"
+            else if (after) print "line " after " is past the report fence"
+            else print "ok"
+        }' "$1")
+    [ "$verdict" = ok ] || { echo "  FAIL: $1: $verdict"; cat "$1"; return 1; }
+}
+
 test_up_to_date_changes_nothing() {
     make_fixture || return 1
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
@@ -210,6 +241,8 @@ test_a_release_that_needs_a_person_becomes_an_issue() {
     assert_file_contains "$GH/issue-body" 'README.md .*1 conflict(s)' || return 1
     assert_file_contains "$GH/issue-body" 'scripts/sync-upstream.py start --to v1.1' || return 1
     assert_file_not_contains "$GH/issue-body" "$TEST_TMPDIR/work" || return 1
+    # What to do comes first; the report, which upstream's file names are in, last.
+    assert_report_last "$GH/issue-body" 'scripts/sync-upstream.py start --to v1.1' || return 1
     assert_eq publish=true "$(publish_wanted)" || return 1
     # Nothing half-merged reaches the fork.
     assert_eq fork-main "$(origin_branches)"
@@ -667,6 +700,68 @@ test_a_pull_request_that_cannot_be_opened_takes_its_branch_back() {
     assert_eq fork-main "$(origin_branches)"
 }
 
+# The report is upstream's to write: the file names, and what its build.sh
+# prints to stderr. In a fence of three backticks, a line of three would end
+# the block, and a line opening an HTML comment after it would hide the rest
+# of the body, posted under the token owner's name. So every body says what
+# this script has to say first, and ends with the report, in a fence no line
+# of it can close.
+test_the_report_comes_last_in_a_fence_it_cannot_close() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/workflows"
+    printf 'name: Test\n' > "$UP/.github/workflows/test.yml"
+    cat > "$UP/build.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '```' '<!--' '   ``````' '-->' >&2
+EOF
+    (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
+    # A workflow changed: the issue that asks for the approval.
+    run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$GH/issue-body" '^<!--$' || return 1
+    assert_report_last "$GH/issue-body" 'did not push it' || return 1
+    assert_report_last "$GH/issue-body" 'gh workflow run sync-upstream.yml -f approve=v1.1' || return 1
+    # Pushed all the same: the pull request, and what it says of that.
+    : > "$GH/calls"
+    git -C "$FORK" branch -q -D sync/v1.1
+    run_ci SYNC_AUTO_MERGE=all || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$GH/pr-body" '^<!--$' || return 1
+    assert_report_last "$GH/pr-body" 'was pushed without approval' || return 1
+    assert_report_last "$GH/pr-body" 'With a merge commit, never squashed or rebased'
+}
+
+# GitHub refuses a body over 65,536 characters, so a release with a long
+# enough report would fail every run. The report is cut to fit, and says
+# where all of it is; so is the list of guarded files a release changes.
+test_a_huge_report_is_cut_to_fit_a_body() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/many"
+    local i long size
+    long=$(printf '%0180d' 0)
+    for i in $(seq 1 300); do printf 'x\n' > "$UP/.github/many/$long-$i"; done
+    cat > "$UP/build.sh" <<'EOF'
+#!/usr/bin/env bash
+yes 'build.sh says this, over and over' | head -n 20000 >&2
+EOF
+    (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
+    # Outside a workflow run there is no run to link to.
+    run_ci GITHUB_SERVER_URL= GITHUB_REPOSITORY= GITHUB_RUN_ID= || { tail -n 20 "$TEST_TMPDIR/ci.log"; return 1; }
+    size=$(wc -c < "$GH/issue-body" | tr -d ' ')
+    [ "$size" -lt 65536 ] || { echo "  FAIL: the issue body is $size bytes"; return 1; }
+    assert_report_last "$GH/issue-body" 'did not push it' || return 1
+    assert_file_contains "$GH/issue-body" '^- and [0-9][0-9]* more$' || return 1
+    assert_file_contains "$GH/issue-body" "^The report is cut here, after [0-9][0-9]* of its [0-9][0-9]* lines, .* All of it is in the merge job's log\\.\$" || return 1
+
+    : > "$GH/calls"
+    git -C "$FORK" branch -q -D sync/v1.1
+    run_ci SYNC_AUTO_MERGE=all GITHUB_SERVER_URL=https://github.example GITHUB_REPOSITORY=fork/repo GITHUB_RUN_ID=42 \
+        || { tail -n 20 "$TEST_TMPDIR/ci.log"; return 1; }
+    size=$(wc -c < "$GH/pr-body" | tr -d ' ')
+    [ "$size" -lt 65536 ] || { echo "  FAIL: the pull request body is $size bytes"; return 1; }
+    assert_report_last "$GH/pr-body" 'was pushed without approval' || return 1
+    assert_file_contains "$GH/pr-body" '^- and [0-9][0-9]* more$' || return 1
+    assert_file_contains "$GH/pr-body" "All of it is in the merge job's log in https://github.example/fork/repo/actions/runs/42\\.\$"
+}
+
 # v1 is merged; v1.1 is the release still waiting, v7 is no release at all.
 test_an_issue_is_closed_once_its_release_is_merged() {
     make_fixture || return 1
@@ -845,6 +940,8 @@ run_test test_a_refused_auto_merge_leaves_the_pull_request_open
 run_test test_auto_merge_can_be_switched_off
 run_test test_auto_merge_is_off_for_any_value_but_true_or_all
 run_test test_a_pull_request_that_cannot_be_opened_takes_its_branch_back
+run_test test_the_report_comes_last_in_a_fence_it_cannot_close
+run_test test_a_huge_report_is_cut_to_fit_a_body
 run_test test_an_issue_is_closed_once_its_release_is_merged
 run_test test_an_issue_that_cannot_be_closed_never_holds_a_release_back
 run_test test_publish_refuses_results_that_do_not_add_up
