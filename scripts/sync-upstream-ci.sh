@@ -85,7 +85,11 @@ fail() {
     exit 1
 }
 
-# Without gh's token: start runs the merged tree's build.sh.
+# start runs the merged tree's build.sh, upstream's code. env -u keeps gh's
+# token out of the build's own environment, and no more than that: on the
+# Linux runner the build can read this script's environment, token included,
+# from /proc/<pid>/environ. What keeps that token harmless is the merge job's
+# permissions block in sync-upstream.yml, which lets it only read.
 sync() {
     env -u GH_TOKEN -u GITHUB_TOKEN python3 "$SYNC_PY" --remote "$UPSTREAM_REMOTE" "$@"
 }

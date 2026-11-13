@@ -205,8 +205,8 @@ fork-main' "$(origin_branches)" || return 1
     assert_eq publish=true "$(publish_wanted)" || return 1
     assert_file_not_contains "$GH/pr-body" 'not set to merge itself' || return 1
     # What the merge job hands over is a few small files, never the worktree
-    # it merged in, and the token that can write was not in reach of the build.
-    # What publish can work out for itself (the release main had) is not among them.
+    # it merged in. What publish can work out for itself (the release main
+    # had) is not among them.
     assert_eq 'body.md
 head
 outcome
@@ -220,9 +220,12 @@ tag' "$(ls "$TEST_TMPDIR/work")" || return 1
 }
 
 # Merging runs the merged tree's build.sh: upstream's code, unreviewed. gh's
-# token is not in its environment, and the job that has the one that can
-# write runs no build at all.
-test_the_merged_trees_build_never_sees_a_token() {
+# token is not in the build's own environment. That is all this shows: on the
+# Linux runner the build can still read the CI script's environment under
+# /proc, token included. The merge job's permissions block, which lets that
+# token only read, is what keeps it harmless, and the job with the token that
+# can write runs no build at all.
+test_the_merged_trees_build_has_no_token_in_its_own_environment() {
     make_fixture || return 1
     # shellcheck disable=SC2016  # the fixture's script, not this suite's variables
     printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "build saw: ${GH_TOKEN:-nothing} ${GITHUB_TOKEN:-nothing}" >> "$BUILD_LOG"' > "$UP/build.sh"
@@ -957,7 +960,7 @@ fork-main' "$(origin_branches)" || return 1
 
 run_test test_up_to_date_changes_nothing
 run_test test_a_clean_release_becomes_a_pull_request_set_to_merge_itself
-run_test test_the_merged_trees_build_never_sees_a_token
+run_test test_the_merged_trees_build_has_no_token_in_its_own_environment
 run_test test_a_release_that_needs_a_person_becomes_an_issue
 run_test test_a_repository_with_issues_off_fails_by_name
 run_test test_issues_that_cannot_be_listed_fail_the_run

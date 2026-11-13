@@ -36,7 +36,10 @@ jobs:
   # Merges the oldest release the fork lacks and leaves the result as an
   # artifact. Merging runs build.sh from the merged tree, which is upstream's
   # code before anyone has looked at it, so this job can only read: it gets
-  # no secret, and the token GitHub hands it cannot write.
+  # no secret, and the token GitHub hands it cannot write. The script keeps
+  # that token out of build.sh's own environment, but the build can still
+  # read it from the script's under /proc: these permissions are what keep
+  # it harmless, so grant nothing here that writes.
   merge:
     runs-on: ubuntu-latest
     timeout-minutes: 15
