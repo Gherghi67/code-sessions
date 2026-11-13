@@ -382,7 +382,9 @@ v3' "$(cat "$TEST_TMPDIR/sync.log")" || return 1
 }
 
 # Upstream v1.1 has a hook, and a test that names it. The fork adds a line to
-# the hook and names it in a fragment of its own.
+# the hook and names it in a fragment of its own. The hook is long enough that
+# renaming it with one line changed still scores over SURE_RENAME, as a real
+# rename does: at ten lines, that one line alone cost it 21 points.
 make_hook_fixture() {
     make_upstream || return 1
     mkdir -p "$UP/hooks"
@@ -392,6 +394,12 @@ make_hook_fixture() {
 
 remind() {
     echo "write the narrative"
+    echo "name what changed and why"
+    echo "name what was measured, with its numbers"
+    echo "name what failed, and what was tried instead"
+    echo "name the decisions the user made"
+    echo "name what is left, and who has it"
+    echo "keep it to the session's own work"
     echo "then stop"
 }
 
@@ -407,6 +415,12 @@ EOF
 
 remind() {
     echo "write the narrative"
+    echo "name what changed and why"
+    echo "name what was measured, with its numbers"
+    echo "name what failed, and what was tried instead"
+    echo "name the decisions the user made"
+    echo "name what is left, and who has it"
+    echo "keep it to the session's own work"
     echo "then stop"
     echo "the fork retires staged features"
 }
@@ -502,6 +516,50 @@ test_start_never_writes_through_a_symlink_out_of_its_worktree() {
     assert_file_contains "$TEST_TMPDIR/sync.log" '^Error: Refusing to write hooks/reminder.sh: a symbolic link takes it out of the sync worktree' \
         || { cat "$TEST_TMPDIR/sync.log"; return 1; }
     assert_eq "" "$(ls -A "$TEST_TMPDIR/outside")" "nothing written outside the worktree"
+}
+
+# The first lines of a hook, the same in every one but its ABOUTME ($1).
+hook_head() {
+    # shellcheck disable=SC2016  # the fixture's text, not this suite's variables
+    printf '%s\n' '#!/usr/bin/env bash' "# ABOUTME: $1" 'set -euo pipefail' \
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"' '# shellcheck source=hooks/common.sh' \
+        'source "$SCRIPT_DIR/common.sh"' 'input=$(cat)' '[ -n "$input" ] || exit 0'
+}
+
+# Upstream deletes a hook the fork changed and adds an unrelated one that
+# shares its first lines, enough for git to pair the two as a rename at about
+# 50%. The fork's change would land in the new hook: a person checks first.
+test_a_rename_git_is_unsure_of_waits_for_a_person() {
+    make_upstream || return 1
+    mkdir -p "$UP/hooks"
+    { hook_head 'Reminds the session to write its narrative before it stops.'
+      printf '%s\n' '' 'remind() {' '    echo "write the narrative before you stop"' \
+          '    echo "then read the handoff once more"' '    echo "and say what is left to do"' '}' '' 'remind'
+    } > "$UP/hooks/remind.sh"
+    (cd "$UP" && git add -A && git commit -q -m hook && git tag v1.1) || return 1
+    make_fork || return 1
+    # The fork adds a line among the shared ones, where upstream changes nothing.
+    { head -6 "$UP/hooks/remind.sh"
+      printf '%s\n' "trap 'echo \"the reminder failed\" >&2' ERR"
+      tail -n +7 "$UP/hooks/remind.sh"
+    } > "$FORK/hooks/remind.sh"
+    (cd "$FORK" && git add -A && git commit -q -m "the fork's hook") || return 1
+    (cd "$UP" && git rm -q hooks/remind.sh && mkdir -p hooks) || return 1
+    { hook_head 'Counts the tokens a turn used.'
+      # shellcheck disable=SC2016
+      printf '%s\n' '' 'count_tokens() {' "    jq -r '.usage.input_tokens // 0' <<< \"\$input\"" \
+          "    jq -r '.usage.output_tokens // 0' <<< \"\$input\"" '}' '' 'count_tokens'
+    } > "$UP/hooks/tokens.sh"
+    (cd "$UP" && git add -A && git commit -q -m v2 && git tag v2) || return 1
+    WT="$TEST_TMPDIR/fork-sync-v2"
+    local status=0
+    sync_start || status=$?
+    assert_eq 1 "$status" "a rename git is unsure of waits for a person" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    grep -Eq '^Check by hand, no marker written: hooks/tokens\.sh: git pairs it with hooks/remind\.sh, which upstream deleted, as a rename at [0-9]+% similarity, so the fork.s changes to hooks/remind\.sh are merged into it: make sure it is that file renamed$' \
+        "$TEST_TMPDIR/sync.log" || { cat "$TEST_TMPDIR/sync.log"; echo "  FAIL: the unsure rename is not reported"; return 1; }
+    assert_eq 1 "$(grep -c 'Check by hand' "$TEST_TMPDIR/sync.log")" || return 1
+    assert_file_contains "$TEST_TMPDIR/sync.log" 'Nothing is committed yet' || return 1
+    git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "  FAIL: the merge was committed"; return 1; }
 }
 
 test_a_file_deleted_on_both_sides_needs_nobody() {
@@ -607,6 +665,7 @@ run_test test_a_file_upstream_renamed_keeps_the_forks_changes
 run_test test_a_rename_of_a_file_the_fork_deleted_brings_nothing_back
 run_test test_a_changed_rename_of_a_file_the_fork_deleted_waits_for_a_person
 run_test test_start_never_writes_through_a_symlink_out_of_its_worktree
+run_test test_a_rename_git_is_unsure_of_waits_for_a_person
 run_test test_a_file_deleted_on_both_sides_needs_nobody
 run_test test_start_stops_at_an_expansion_with_no_fork_form
 run_test test_start_stops_at_a_default_that_spans_lines

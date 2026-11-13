@@ -354,33 +354,48 @@ class Tree:
         return text if text is not None else self.raw(path)
 
 
+# A rename is a file one side deleted paired with one it added, at least 30%
+# alike by git's count. That low a threshold finds the fork's own moves
+# (commands/checkpoint.md became skills/checkpoint/SKILL.md with most of its
+# text rewritten), and since only a deleted file can pair, it never
+# misdirects a file both sides still have. Between upstream releases it can
+# also pair a deleted file with an unrelated new one that shares some
+# boilerplate. Following that pairing is harmless while the fork never changed
+# the file; when it did, its changes would land in the new file, so a pairing
+# under SURE_RENAME% goes to a person (upstream_renames).
+SURE_RENAME = 90
+
+
 def renamed_files(repo, old_rev, new_rev):
-    """{path in old_rev: its path in new_rev} for the files renamed between them."""
-    # 30%: commands/checkpoint.md became skills/checkpoint/SKILL.md with most
-    # of its text rewritten. Only a file one side deleted can pair up, so a
-    # low threshold cannot misdirect a file both sides still have.
+    """{path in old_rev: (its path in new_rev, git's similarity score, 0-100)}
+    for the files renamed between them."""
     out = git("diff", "-M30%", "--name-status", "-z", "--diff-filter=R", old_rev, new_rev, cwd=repo)
     fields = [f for f in out.split("\0") if f]
-    return {fields[i + 1]: fields[i + 2] for i in range(0, len(fields) - 2, 3)}
+    return {fields[i + 1]: (fields[i + 2], int(fields[i][1:])) for i in range(0, len(fields) - 2, 3)}
 
 
 def upstream_renames(repo, base_rev, upstream_rev, ours_rev, mapping):
     """What to do about each file upstream renamed in this release: (follow,
-    stay). follow {old: new}: the fork still has the file under the old name,
-    so its copy takes the new one and merges there. stay {new: old}: the fork
-    moved or deleted the file itself, so upstream's renamed file is read under
-    its old name and merges wherever the fork keeps that. Without this the
-    fork's copy is left behind as deleted upstream, and upstream's file
-    arrives under the new name with none of the fork's changes."""
-    ours, follow, stay = Tree(repo, ours_rev), {}, {}
-    for old, new in renamed_files(repo, base_rev, upstream_rev).items():
+    stay, unsure). follow {old: new}: the fork still has the file under the
+    old name, so its copy takes the new one and merges there. stay {new:
+    old}: the fork moved or deleted the file itself, so upstream's renamed
+    file is read under its old name and merges wherever the fork keeps that.
+    Without this the fork's copy is left behind as deleted upstream, and
+    upstream's file arrives under the new name with none of the fork's
+    changes. unsure {new: score}: the renames followed that git scores under
+    SURE_RENAME% in a file the fork changed, which a person checks: the new
+    file may be another file that shares some lines with the old one."""
+    ours, follow, stay, unsure = Tree(repo, ours_rev), {}, {}, {}
+    for old, (new, score) in renamed_files(repo, base_rev, upstream_rev).items():
         if old in GENERATED or new in GENERATED:
             continue
         if old in mapping or not ours.has(old):
             stay[new] = old
         elif not ours.has(new):
             follow[old] = new
-    return follow, stay
+            if score < SURE_RENAME and not git_ok("diff", "--quiet", base_rev, ours_rev, "--", old, cwd=repo):
+                unsure[new] = score
+    return follow, stay, unsure
 
 
 def stale_mentions(repo, ours_rev, old, new, from_upstream, results):
@@ -511,8 +526,8 @@ def plan_merge(repo, base_rev, upstream_rev, ours_rev, scratch):
     A report entry's "check" lists what a person has to look at that no
     conflict marker shows."""
     # Upstream path -> the fork's path, for files the fork moved.
-    mapping = renamed_files(repo, base_rev, ours_rev)
-    follow, stay = upstream_renames(repo, base_rev, upstream_rev, ours_rev, mapping)
+    mapping = {old: new for old, (new, _) in renamed_files(repo, base_rev, ours_rev).items()}
+    follow, stay, unsure = upstream_renames(repo, base_rev, upstream_rev, ours_rev, mapping)
     base, upstream, ours = Tree(repo, base_rev, follow), Tree(repo, upstream_rev, stay), Tree(repo, ours_rev, follow)
     followed = {new: old for old, new in follow.items()}
     reverse = {fork: up for up, fork in mapping.items()}
@@ -530,6 +545,10 @@ def plan_merge(repo, base_rev, upstream_rev, ours_rev, scratch):
         result, count, plain, how = merge_one(path, o, b, u, scratch)
         marker = isinstance(result, str) and count > 0
         check = [] if marker or not count else ["; ".join(how)]
+        if path in unsure:
+            check.append("git pairs it with %s, which upstream deleted, as a rename at %d%% similarity, so the "
+                         "fork's changes to %s are merged into it: make sure it is that file renamed"
+                         % (followed[path], unsure[path], followed[path]))
         if path in reverse:
             how.insert(0, "moved file, upstream %s" % reverse[path])
         if path in followed:

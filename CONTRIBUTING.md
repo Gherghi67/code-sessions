@@ -344,6 +344,7 @@ Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its
 - A line upstream added that reads a session variable through an operator (`${CLAUDE_SESSION_NAME//@/+}`, `${CLAUDE_SESSION_DIR%/}`). Bash applies an operator to one variable, so there is no `CS_`-first form of it; make the statement read one family of variables.
 - A line upstream added or changed with a default that closes on a later line (`${CLAUDE_SESSION_NAME:-$(`, its `)}` on the next line). The renames look for a default's closing brace on the same line, so they leave this one as upstream wrote it; give it the `CS_` form by hand.
 - A line of the fork's own that still names a file upstream renamed.
+- A file upstream renamed, the fork changed, and git scores under 90% alike. git pairs a deleted file with an added one by shared lines, so an unrelated new file with the same boilerplate can pass for the old one renamed; the fork's changes are merged into it, and a person confirms it is that file.
 - A file that is not text and changed on both sides, or was deleted on one side and changed on the other.
 
 `start` exits 0 once the merge is committed, 1 when it waits for a person for either reason, and 2 on an error. `continue` refuses while a conflict marker remains or a function is defined in two fragments, then runs `build.sh` and `tests/run_all.sh` (`--skip-tests` skips them) and commits. Nothing is pushed. When the fork rewrites another upstream form, add the rule to `rename()` in the script so the next merge applies it.
