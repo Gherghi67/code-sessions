@@ -299,7 +299,7 @@ Without the second and third, GitHub refuses auto-merge: the pull request stays 
 
 The token is kept away from upstream's code until a person has read what could reach it:
 
-- The workflow has two jobs. `merge` runs the script, and with it `build.sh` from the merged tree, which is upstream's code before anyone has looked at it; that job gets no secret and a token that can only read. `publish` has the sync token and runs nothing the first job produced: it takes the merge commit out of a git bundle and hands it to `git push` and `gh` (`scripts/sync-upstream-ci.sh` is both jobs' script).
+- The workflow has two jobs. `merge` runs the script, and with it `build.sh` from the merged tree, which is upstream's code before anyone has looked at it; that job gets no secret and a token that can only read. `publish` has the sync token and runs nothing the first job produced: it takes the merge commit out of a git bundle, refuses it unless it merges exactly its own checkout of `main` with the release as it fetches it from upstream, reads what it changes against that checkout, and hands it to `git push` and `gh` (`scripts/sync-upstream-ci.sh` is both jobs' script).
 - A sync branch can carry a workflow upstream changed, and that workflow runs for the pull request. A secret of the repository would be in its reach; one in an environment only `main` may use is not, which is why the token is stored there.
 - Once merged, a workflow runs on `main`, where the environment's secret can be read. That is why a release that changes a file under `.github/`, or the script `publish` runs, is never set to merge itself.
 

@@ -149,8 +149,8 @@ fork-main' "$(origin_branches)" || return 1
     assert_file_not_contains "$GH/pr-body" 'not set to merge itself' || return 1
     # What the merge job hands over is a few small files, never the worktree
     # it merged in, and the token that can write was not in reach of the build.
+    # What publish can work out for itself (the release main had) is not among them.
     assert_eq 'body.md
-have
 head
 outcome
 report
@@ -442,6 +442,82 @@ test_publish_refuses_results_that_do_not_add_up() {
     assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 '
 }
 
+# Puts in work/ what the merge job would leave for a commit with tree $1 and
+# parents $2...: its id, and a bundle holding it as sync/v1.1.
+forge() {
+    local tree="$1" parent commit
+    local parents=()
+    shift
+    for parent in "$@"; do parents+=(-p "$parent"); done
+    commit=$(git -C "$FORK" commit-tree "$tree" "${parents[@]}" -m 'Merge upstream v1.1') || return 1
+    rm -rf "$TEST_TMPDIR/work" && cp -R "$TEST_TMPDIR/work.good" "$TEST_TMPDIR/work"
+    git -C "$FORK" update-ref refs/heads/sync/v1.1 "$commit" || return 1
+    git -C "$FORK" bundle create --quiet "$TEST_TMPDIR/work/sync.bundle" refs/heads/sync/v1.1 || return 1
+    printf '%s\n' "$commit" > "$TEST_TMPDIR/work/head"
+}
+
+# Every upstream commit the fork ever merged is an ancestor of main, and the
+# job that ran upstream's build writes the results. If any ancestor would do
+# as the merge's first parent, that job could pick what the guarded paths are
+# compared with, while GitHub merges the pull request onto main's head.
+# publish takes only a merge of its own checkout with the release as upstream
+# has it.
+test_publish_refuses_a_merge_of_anything_but_main_and_the_release() {
+    make_fixture || return 1
+    # A workflow of the fork's own, which an older fork commit does not have.
+    mkdir -p "$FORK/.github/workflows"
+    printf 'name: Fork\n' > "$FORK/.github/workflows/fork.yml"
+    (cd "$FORK" && git add -A && git commit -q -m "the fork's workflow" && git push -q origin fork-main) || return 1
+    release v1.1 NOTES.md notes || return 1
+    rm -rf "$TEST_TMPDIR/work" "$TEST_TMPDIR/publish"
+    git clone -q -b fork-main "$ORIGIN" "$TEST_TMPDIR/publish" || return 1
+    ci_job "$FORK" merge > "$TEST_TMPDIR/ci.log" 2>&1 || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    cp -R "$TEST_TMPDIR/work" "$TEST_TMPDIR/work.good"
+    local main older v1 v1_1 merged forged status
+    main=$(git -C "$FORK" rev-parse fork-main)
+    older=$(git -C "$FORK" rev-parse fork-main~1)
+    v1=$(git -C "$FORK" rev-parse 'v1^{commit}')
+    v1_1=$(git -C "$FORK" rev-parse 'v1.1^{commit}')
+    merged=$(git -C "$FORK" rev-parse 'sync/v1.1^{tree}')
+    # The release merged as it should, less the fork's workflow.
+    forged=$(cd "$FORK" && export GIT_INDEX_FILE="$TEST_TMPDIR/forged.index" \
+        && git read-tree "$merged" && git rm -q --cached .github/workflows/fork.yml && git write-tree) || return 1
+
+    # First parent an older fork commit, which has no workflow either: compared
+    # with it the guarded paths read unchanged, yet landing it on main deletes one.
+    forge "$forged" "$older" "$v1_1" || return 1
+    assert_eq .github/workflows/fork.yml "$(git -C "$FORK" diff --name-only "$main" "$(cat "$TEST_TMPDIR/work/head")" -- .github)" || return 1
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "first parent an older fork commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::The merge is not based on fork-main as this job checked it out' || return 1
+
+    # Second parent some other upstream commit than the release.
+    forge "$merged" "$main" "$v1" || return 1
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "second parent not the release" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::The merge's second parent is not v1.1 as upstream has it" || return 1
+
+    # A third parent brings in what neither side has.
+    forge "$merged" "$main" "$v1_1" "$older" || return 1
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "three parents" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::The merge job's commit has 3 parents" || return 1
+
+    # None of it pushed or opened anything; the untouched results still publish,
+    # and the release's tag, fetched to check against, stays off the fork.
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)" || return 1
+    rm -rf "$TEST_TMPDIR/work" && cp -R "$TEST_TMPDIR/work.good" "$TEST_TMPDIR/work"
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 ' || return 1
+    assert_eq 'cs/sync-v1.1
+fork-main' "$(origin_branches)" || return 1
+    assert_eq "" "$(git -C "$ORIGIN" tag)"
+}
+
 run_test test_up_to_date_changes_nothing
 run_test test_a_clean_release_becomes_a_pull_request_set_to_merge_itself
 run_test test_the_merged_trees_build_never_sees_a_token
@@ -459,4 +535,5 @@ run_test test_a_pull_request_that_cannot_be_opened_takes_its_branch_back
 run_test test_an_issue_is_closed_once_its_release_is_merged
 run_test test_an_issue_that_cannot_be_closed_never_holds_a_release_back
 run_test test_publish_refuses_results_that_do_not_add_up
+run_test test_publish_refuses_a_merge_of_anything_but_main_and_the_release
 report_results

@@ -12,7 +12,8 @@ set -euo pipefail
 # They are apart because merging runs build.sh from the merged tree, which is
 # upstream's code before anyone has looked at it. That job holds no secret.
 # publish holds one, and runs nothing from the merge: it takes the commit out
-# of a bundle and hands it to git and gh.
+# of a bundle, checks that it merges exactly its own checkout of the branch
+# with the release as upstream has it, and hands it to git and gh.
 #
 # publish needs gh signed in (GH_TOKEN, GH_REPO) as someone whose pushes and
 # pull requests start workflows. The token GitHub hands a workflow does not,
@@ -84,8 +85,8 @@ result() {  # name, value
 
 # The oldest missing release, merged in a worktree of its own. Leaves in <dir>:
 # outcome (none: up to date; skip: someone has it; clean: merged and committed;
-# person: it needs one), and with clean or person the tag, the report, the
-# release the fork had before, and for clean the commit and a bundle holding it.
+# person: it needs one), and with clean or person the tag and the report, and
+# for clean the commit and a bundle holding it.
 merge() {
     require_issues
     merge_release
@@ -149,7 +150,6 @@ merge_release() {
     worktree="$out.worktree"
     log="$out/sync.log"
     result tag "$tag"
-    result have "$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2> /dev/null || true)"
     status=0
     sync start --to "$tag" --no-fetch --skip-tests --worktree "$worktree" > "$log" 2>&1 || status=$?
     cat "$log"
@@ -205,7 +205,7 @@ publish() {
 }
 
 publish_release() {
-    local outcome tag branch head have body url id refusal guarded
+    local outcome tag branch head base parents count release have body url id refusal guarded
     outcome=$(cat "$out/outcome")
     case "$outcome" in
         none | skip) return 0 ;;
@@ -238,18 +238,31 @@ publish_release() {
     [[ $head =~ ^[0-9a-f]{40}$ ]] || fail "The merge job left a commit id that is not one."
     git fetch --quiet --no-tags "$out/sync.bundle" "refs/heads/sync/$tag"
     [ "$(git rev-parse FETCH_HEAD)" = "$head" ] || fail "The bundle does not hold the commit the merge job named."
-    # A sync is this branch's head merged with the release, nothing else.
-    git merge-base --is-ancestor "$head^1" HEAD || fail "The merge is not based on $BASE_BRANCH."
-    have=$(cat "$out/have")
-    # Asked of the commit itself, not of the merge job: that one ran upstream's build.
-    guarded=$(git diff --name-only "$head^1" "$head" -- "${GUARDED[@]}")
+    # A sync is this checkout of the branch merged with the release, nothing
+    # else. Every upstream commit the fork ever merged is an ancestor of the
+    # branch, so a first parent that only had to be one of them would let the
+    # merge job, which ran upstream's build, pick what the guarded paths are
+    # compared with; GitHub merges the pull request onto the branch's head.
+    base=$(git rev-parse HEAD)
+    parents=$(git log -1 --format=%P "$head")
+    count=$(printf '%s\n' "$parents" | wc -w | tr -d ' ')
+    [ "$count" = 2 ] || fail "The merge job's commit has $count parents. A sync is a merge of two: $BASE_BRANCH and the release."
+    [ "${parents% *}" = "$base" ] \
+        || fail "The merge is not based on $BASE_BRANCH as this job checked it out ($base). If $BASE_BRANCH moved since the merge job ran, the next run merges again."
+    # The release as upstream has it, fetched here: into a local tag, never pushed.
+    git fetch --quiet --no-tags "$UPSTREAM_URL" "refs/tags/$tag:refs/tags/$tag" \
+        || fail "Could not fetch $tag from upstream to check the merge against it."
+    release=$(git rev-parse "refs/tags/$tag^{commit}")
+    [ "${parents#* }" = "$release" ] || fail "The merge's second parent is not $tag as upstream has it ($release)."
+    # Where upstream was when the fork last merged it: what the release adds is after it.
+    have=$(git merge-base "$base" "$release") || fail "$BASE_BRANCH and $tag share no history."
+    # Read from the commit against this checkout, never from the merge job:
+    # that one ran upstream's build.
+    guarded=$(git diff --name-only "$base" "$head" -- "${GUARDED[@]}")
     {
         printf 'Upstream release `%s`, merged by `scripts/sync-upstream.py`. It left nothing for a person.\n\n' "$tag"
         case "$UPSTREAM_URL" in
-            https://github.com/*)
-                [[ ! $have =~ ^v[0-9][0-9A-Za-z._-]*$ ]] \
-                    || printf 'What upstream changed: %s/compare/%s...%s\n\n' "${UPSTREAM_URL%.git}" "$have" "$tag"
-                ;;
+            https://github.com/*) printf 'What upstream changed: %s/compare/%s...%s\n\n' "${UPSTREAM_URL%.git}" "$have" "$tag" ;;
         esac
         printf '```text\n%s\n```\n\n' "$(cat "$out/report")"
         printf '## Verification\n\nThe workflow built the generated files and ran no tests: the checks on this pull request are the gate.\n\n'

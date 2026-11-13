@@ -68,9 +68,10 @@ jobs:
 
   # Pushes the merge as cs/sync-<tag> and opens its pull request, or opens an
   # issue for a release that needs a person. It runs nothing the merge job
-  # produced: the commit comes out of a bundle, the rest is read as text. It
-  # starts only when the merge job found one of those to open, or an issue of
-  # this workflow's to close.
+  # produced: the commit comes out of a bundle and must merge exactly this
+  # job's checkout of main with the release as upstream has it; the rest is
+  # read as text. It starts only when the merge job found one of those to
+  # open, or an issue of this workflow's to close.
   #
   # UPSTREAM_SYNC_TOKEN is a fine-grained personal access token for this
   # repository alone: Contents, Pull requests, Issues and Workflows, all read
