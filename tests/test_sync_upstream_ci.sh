@@ -220,20 +220,73 @@ tag' "$(ls "$TEST_TMPDIR/work")" || return 1
 }
 
 # Merging runs the merged tree's build.sh: upstream's code, unreviewed. gh's
-# token is not in the build's own environment. That is all this shows: on the
-# Linux runner the build can still read the CI script's environment under
-# /proc, token included. The merge job's permissions block, which lets that
-# token only read, is what keeps it harmless, and the job with the token that
-# can write runs no build at all.
+# token is not in the build's own environment, and neither is the approval a
+# run was started with, so a build cannot tell an approval run from another.
+# That is all this shows: on the Linux runner the build can still read the CI
+# script's environment under /proc, token included. The merge job's
+# permissions block, which lets that token only read, is what keeps it
+# harmless; the job with the token that can write runs no build at all, and
+# pushes nothing in the guarded paths but git's own merge of the release.
 test_the_merged_trees_build_has_no_token_in_its_own_environment() {
     make_fixture || return 1
     # shellcheck disable=SC2016  # the fixture's script, not this suite's variables
-    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "build saw: ${GH_TOKEN:-nothing} ${GITHUB_TOKEN:-nothing}" >> "$BUILD_LOG"' > "$UP/build.sh"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf "%s\n" "build saw: ${GH_TOKEN:-nothing} ${GITHUB_TOKEN:-nothing} ${SYNC_APPROVE_TAG:-nothing} ${SYNC_APPROVE_COMMIT:-nothing}" >> "$BUILD_LOG"' \
+        > "$UP/build.sh"
     (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
     run_ci GH_TOKEN=secret-token GITHUB_TOKEN=secret-token BUILD_LOG="$TEST_TMPDIR/build.log" \
+        SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$(git -C "$UP" rev-parse 'v1.1^{commit}')" \
         || { cat "$TEST_TMPDIR/ci.log"; return 1; }
-    assert_eq 'build saw: nothing nothing' "$(cat "$TEST_TMPDIR/build.log")" || return 1
+    assert_eq 'build saw: nothing nothing nothing nothing' "$(cat "$TEST_TMPDIR/build.log")" || return 1
     assert_file_contains "$GH/calls" '^pr create '
+}
+
+# The sync commits whatever the merged tree's build.sh writes, and that build
+# is upstream's code. One that writes a workflow the release does not have
+# would put it where nobody was asked to read: the issue that asks for an
+# approval shows only what the release changes there. So publish refuses, by
+# name, a merge whose guarded paths are not git's own merge of main and the
+# release, whatever the run: an ordinary one, one under SYNC_AUTO_MERGE=all,
+# and the one a person started to approve the release. The build writes the
+# file only when INJECT is set: it cannot see the approval.
+test_a_build_that_writes_a_guarded_path_is_refused() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/workflows"
+    printf 'name: Test\n' > "$UP/.github/workflows/test.yml"
+    # shellcheck disable=SC2016  # the fixture's script, not this suite's variables
+    printf '%s\n' '#!/usr/bin/env bash' \
+        '[ -z "${INJECT:-}" ] || { mkdir -p .github/workflows && printf "name: injected\n" > .github/workflows/injected.yml; }' \
+        > "$UP/build.sh"
+    (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
+    local commit status how
+    commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
+    for how in ordinary all approval; do
+        git -C "$FORK" branch -q -D sync/v1.1 2> /dev/null || true
+        status=0
+        case "$how" in
+            ordinary) run_ci INJECT=1 || status=$? ;;
+            all) run_ci INJECT=1 SYNC_AUTO_MERGE=all || status=$? ;;
+            approval)
+                # The issue an ordinary run would have opened asks for this run.
+                printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+                run_ci INJECT=1 SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" || status=$?
+                ;;
+        esac
+        assert_eq 1 "$status" "$how" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+        # The merge job did commit it: what publish refuses.
+        git -C "$FORK" cat-file -e sync/v1.1:.github/workflows/injected.yml \
+            || { echo "  FAIL: $how: the build's file is not in the merge"; return 1; }
+        assert_file_contains "$TEST_TMPDIR/ci.log" \
+            "^::error::The merge job's commit is not git's own merge of fork-main and v1.1 in \\.github/workflows/injected\\.yml" || return 1
+        assert_eq "" "$(calls)" "$how" || return 1
+        assert_eq fork-main "$(origin_branches)" || return 1
+    done
+    # Without the build's file the approval pushes the release, as the issue said.
+    git -C "$FORK" branch -q -D sync/v1.1 || return 1
+    run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_eq 'cs/sync-v1.1
+fork-main' "$(origin_branches)" || return 1
+    assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 '
 }
 
 test_a_release_that_needs_a_person_becomes_an_issue() {
@@ -412,6 +465,33 @@ test_an_approval_of_another_commit_is_refused() {
     assert_eq 1 "$status" "publish, another commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::v1.1 points at $commit, not at the approved $other: the tag moved" || return 1
 
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
+}
+
+# main moved between the two jobs of a run that approves a release. The next
+# scheduled run leaves the release alone while its issue is open, so the run
+# says to approve it again, with the command, rather than wait for that.
+test_an_approval_that_main_moved_under_says_to_approve_again() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/workflows"
+    release v1.1 .github/workflows/test.yml 'name: Test' || return 1
+    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    local commit status
+    commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
+    rm -rf "$TEST_TMPDIR/work" "$TEST_TMPDIR/publish"
+    git clone -q -b fork-main "$ORIGIN" "$TEST_TMPDIR/publish" || return 1
+    ci_job "$FORK" merge SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" > "$TEST_TMPDIR/ci.log" 2>&1 \
+        || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    git -C "$TEST_TMPDIR/publish" commit -q --allow-empty -m "main moved" || return 1
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish GH_REPO=fork/repo SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" \
+        > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::The merge is not based on fork-main as this job checked it out' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" \
+        "^::error::.*approve it again: gh workflow run sync-upstream.yml -f approve=v1.1 -f commit=$commit --repo fork/repo\\. " || return 1
+    assert_file_not_contains "$TEST_TMPDIR/ci.log" 'the next run merges again' || return 1
     assert_eq "" "$(calls)" || return 1
     assert_eq fork-main "$(origin_branches)"
 }
@@ -961,6 +1041,7 @@ fork-main' "$(origin_branches)" || return 1
 run_test test_up_to_date_changes_nothing
 run_test test_a_clean_release_becomes_a_pull_request_set_to_merge_itself
 run_test test_the_merged_trees_build_has_no_token_in_its_own_environment
+run_test test_a_build_that_writes_a_guarded_path_is_refused
 run_test test_a_release_that_needs_a_person_becomes_an_issue
 run_test test_a_repository_with_issues_off_fails_by_name
 run_test test_issues_that_cannot_be_listed_fail_the_run
@@ -968,6 +1049,7 @@ run_test test_a_release_that_changes_a_workflow_is_not_pushed_until_approved
 run_test test_a_merge_that_changes_the_publishing_script_is_not_pushed_until_approved
 run_test test_an_approved_release_is_pushed_and_gets_its_pull_request
 run_test test_an_approval_of_another_commit_is_refused
+run_test test_an_approval_that_main_moved_under_says_to_approve_again
 run_test test_an_approval_of_a_release_that_is_not_next_is_refused
 run_test test_an_approved_release_that_does_not_merge_cleanly_fails_the_run
 run_test test_only_the_oldest_missing_release_is_merged

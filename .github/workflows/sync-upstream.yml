@@ -98,8 +98,10 @@ jobs:
   # Pushes the merge as cs/sync-<tag> and opens its pull request, or opens an
   # issue for a release that needs a person or an approval. It runs nothing
   # the merge job produced: the commit comes out of a bundle and must merge
-  # exactly this job's checkout of main with the release as upstream has it;
-  # the rest is read as text. It starts only when the merge job found one of
+  # exactly this job's checkout of main with the release as upstream has it,
+  # and under .github/ and in the sync script be git's own merge of the two,
+  # so the merge job's build cannot add to what a person approves; the rest
+  # is read as text. It starts only when the merge job found one of
   # those to open, an issue of this workflow's to close, or a release held
   # past SYNC_STALL_DAYS, over which it fails the run once the rest is done.
   #

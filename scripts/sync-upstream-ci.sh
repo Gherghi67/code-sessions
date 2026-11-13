@@ -30,6 +30,13 @@ set -euo pipefail
 # not main, so the token stays out of its reach as long as the secret is kept
 # in an environment only main may use.
 #
+# What a person reads is what lands. In every run, approval or not, publish
+# pushes a merge only if its guarded paths are exactly git's own merge of the
+# branch and the release (git merge-tree, which needs git 2.38): the merge
+# job's build.sh, whose output the sync commits, cannot add to them. So the
+# guarded part of a sync is what the release changes there, which is what the
+# issue tells the person to read with git diff.
+#
 # One release a run, the oldest first, since each is merged onto the one
 # before it. A release that already has a pull request from this
 # repository's cs/sync-<tag> branch, that branch alone, or an open issue
@@ -86,12 +93,16 @@ fail() {
 }
 
 # start runs the merged tree's build.sh, upstream's code. env -u keeps gh's
-# token out of the build's own environment, and no more than that: on the
-# Linux runner the build can read this script's environment, token included,
-# from /proc/<pid>/environ. What keeps that token harmless is the merge job's
-# permissions block in sync-upstream.yml, which lets it only read.
+# token, and the approval the run was started with, out of the build's own
+# environment, and no more than that: on the Linux runner the build can read
+# this script's environment, both included, from /proc/<pid>/environ. What
+# keeps that token harmless is the merge job's permissions block in
+# sync-upstream.yml, which lets it only read; what keeps a build that writes
+# a guarded path from landing it is publish, which compares those paths with
+# git's own merge.
 sync() {
-    env -u GH_TOKEN -u GITHUB_TOKEN python3 "$SYNC_PY" --remote "$UPSTREAM_REMOTE" "$@"
+    env -u GH_TOKEN -u GITHUB_TOKEN -u SYNC_APPROVE_TAG -u SYNC_APPROVE_COMMIT \
+        python3 "$SYNC_PY" --remote "$UPSTREAM_REMOTE" "$@"
 }
 
 # Issues are how the workflow asks for a person. With them switched off every
@@ -401,7 +412,7 @@ guarded_list() {
 }
 
 publish_release() {
-    local outcome tag branch head base parents count release have body url id refusal guarded status why
+    local outcome tag branch head base parents count release have body url id refusal guarded status why merged tree changed
     outcome=$(cat "$out/outcome")
     case "$outcome" in
         none | skip) return 0 ;;
@@ -442,13 +453,44 @@ publish_release() {
     parents=$(git log -1 --format=%P "$head")
     count=$(printf '%s\n' "$parents" | wc -w | tr -d ' ')
     [ "$count" = 2 ] || fail "The merge job's commit has $count parents. A sync is a merge of two: $BASE_BRANCH and the release."
-    [ "${parents% *}" = "$base" ] \
-        || fail "The merge is not based on $BASE_BRANCH as this job checked it out ($base). If $BASE_BRANCH moved since the merge job ran, the next run merges again."
+    if [ "${parents% *}" != "$base" ]; then
+        # The next scheduled run leaves an approved release alone while its
+        # issue is open: only another approval merges it again.
+        [ -z "$APPROVE_TAG" ] \
+            || fail "The merge is not based on $BASE_BRANCH as this job checked it out ($base). If $BASE_BRANCH moved since the merge job ran, approve it again: gh workflow run sync-upstream.yml -f approve=$APPROVE_TAG -f commit=$APPROVE_COMMIT${GH_REPO:+ --repo $GH_REPO}. The scheduled runs leave $APPROVE_TAG alone while its issue is open."
+        fail "The merge is not based on $BASE_BRANCH as this job checked it out ($base). If $BASE_BRANCH moved since the merge job ran, the next run merges again."
+    fi
     # The release as upstream has it, fetched here: into a local tag, never pushed.
     git fetch --quiet --no-tags "$UPSTREAM_URL" "refs/tags/$tag:refs/tags/$tag" \
         || fail "Could not fetch $tag from upstream to check the merge against it."
     release=$(git rev-parse "refs/tags/$tag^{commit}")
     [ "${parents#* }" = "$release" ] || fail "The merge's second parent is not $tag as upstream has it ($release)."
+    # The sync commits whatever the merged tree's build.sh wrote, and that is
+    # upstream's code, run in the merge job. In the guarded paths the merge
+    # must be git's own merge of the two parents: then what lands there is
+    # what the release changes, the part an issue asks a person to read, and
+    # nothing a build added, in an approval run or any other. sync-upstream.py
+    # rewrites no guarded path, so a clean sync matches; a guarded path git's
+    # merge leaves in conflict cannot, and is refused.
+    status=0
+    merged=$(git merge-tree --write-tree --no-messages "$base" "$release") || status=$?
+    case "$status" in
+        0 | 1) ;;
+        *) fail "git merge-tree could not merge $BASE_BRANCH and $tag to check the merge against (exit $status); it needs git 2.38 or later." ;;
+    esac
+    tree=${merged%%$'\n'*}
+    status=0
+    git diff --quiet "$tree" "$head" -- "${GUARDED[@]}" || status=$?
+    case "$status" in
+        0) ;;
+        1)
+            # git quotes a name with a control character in it, so each is one item.
+            changed=$(git diff --name-only "$tree" "$head" -- "${GUARDED[@]}" \
+                | LC_ALL=C awk 'NR <= 10 { printf "%s%s", (NR > 1 ? ", " : ""), $0 } END { if (NR > 10) printf " and %d more", NR - 10 }')
+            fail "The merge job's commit is not git's own merge of $BASE_BRANCH and $tag in $changed. What the job holding the sync token runs or is defined by may change only as the release changes it; the merge job, which ran upstream's build.sh, changed more, so nothing is pushed."
+            ;;
+        *) fail "Could not compare the merge with git's own merge of $BASE_BRANCH and $tag (git diff exited $status)." ;;
+    esac
     # Where upstream was when the fork last merged it: what the release adds is after it.
     have=$(git merge-base "$base" "$release") || fail "$BASE_BRANCH and $tag share no history."
     # Read from the commit against this checkout, never from the merge job:
