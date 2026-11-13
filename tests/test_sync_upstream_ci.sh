@@ -167,6 +167,17 @@ assert_report_last() {  # body, text this script writes ahead of the report
     [ "$verdict" = ok ] || { echo "  FAIL: $1: $verdict"; cat "$1"; return 1; }
 }
 
+# Fails if a line of log $1, split as the runner splits it (at a carriage
+# return too), would be read as the command ::warning::forged: the runner
+# takes a line that starts with ::, after any blanks, as one.
+assert_no_forged_command() {  # log
+    if tr '\r' '\n' < "$1" | grep -E -q '^[[:space:]]*::warning::forged'; then
+        echo "  FAIL: a line of $1 is the command ::warning::forged"
+        cat "$1"
+        return 1
+    fi
+}
+
 test_up_to_date_changes_nothing() {
     make_fixture || return 1
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
@@ -669,14 +680,19 @@ test_a_release_held_too_long_fails_the_run() {
         *) cat "$TEST_TMPDIR/ci.log"; echo "  FAIL: the run did not fail last"; return 1 ;;
     esac
 
-    # Read as data: the merge job ran upstream's build, and a second line
-    # starting with :: would be a command to the runner.
-    printf 'held\n::warning::not from this script\n' > "$TEST_TMPDIR/work/stall"
-    status=0
-    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
-    assert_eq 1 "$status" "a stall of two lines" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
-    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::held$' || return 1
-    assert_file_not_contains "$TEST_TMPDIR/ci.log" '^::warning::not from this script' || return 1
+    # Read as data: the merge job ran upstream's build, and a line of the log
+    # that starts with ::, first or second, after blanks or a carriage return,
+    # would be a command to the runner. Only the first line is the stall.
+    local forged
+    for forged in '::warning::forged' '   ::warning::forged' $'held\r::warning::forged'; do
+        printf '%s\nsecond\n' "$forged" > "$TEST_TMPDIR/work/stall"
+        status=0
+        ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+        assert_eq 1 "$status" "a stall of $forged" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+        assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::.*forged$' || return 1
+        assert_no_forged_command "$TEST_TMPDIR/ci.log" || return 1
+        assert_file_not_contains "$TEST_TMPDIR/ci.log" 'second' || return 1
+    done
 
     # A branch and no pull request: a run that stopped between the push and the pull request.
     : > "$GH/pr-list"
@@ -719,9 +735,12 @@ test_a_release_held_too_long_fails_the_run() {
 test_a_refused_auto_merge_leaves_the_pull_request_open() {
     make_fixture || return 1
     release v1.1 NOTES.md notes || return 1
-    printf 'Pull request is in clean status (enablePullRequestAutoMerge)\n' > "$GH/fail-api-graphql"
+    # GitHub's answer is shown as it is, and may run to more than one line:
+    # a warning's message is flattened to one, and no line is a command.
+    printf 'Pull request is in clean status (enablePullRequestAutoMerge)\n::warning::forged\n' > "$GH/fail-api-graphql"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$TEST_TMPDIR/ci.log" '^::warning::Auto-merge could not be turned on for https://github.com/fork/repo/pull/7: gh: Pull request is in clean status' || return 1
+    assert_no_forged_command "$TEST_TMPDIR/ci.log" || return 1
     assert_file_contains "$GH/calls" '^pr comment https://github.com/fork/repo/pull/7 --body Auto-merge could not be turned on' || return 1
     assert_file_not_contains "$GH/calls" '^pr merge' || return 1
     assert_eq 'cs/sync-v1.1
@@ -953,6 +972,14 @@ test_publish_refuses_results_that_do_not_add_up() {
     status=0
     ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
     assert_eq 1 "$status" "an unknown outcome" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    # An outcome is not repeated: it may be lines, one a command to the runner.
+    printf 'x\n::warning::forged\n' > "$TEST_TMPDIR/work/outcome"
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "an outcome of two lines" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::The merge job left an outcome this script does not know\.$' || return 1
+    assert_no_forged_command "$TEST_TMPDIR/ci.log" || return 1
+    assert_file_not_contains "$TEST_TMPDIR/ci.log" 'forged' || return 1
 
     # None of it pushed or opened anything; the untouched results still publish.
     assert_eq "" "$(calls)" || return 1

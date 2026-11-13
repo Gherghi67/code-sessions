@@ -80,14 +80,25 @@ REPORT_CAP=20000
 LIST_CAP=4000
 SYNC_PY="$(cd -- "$(dirname -- "$0")" && pwd)/sync-upstream.py"
 
-# The run's outcome, in the log and on the run's summary page.
+# The run's outcome, in the log and on the run's summary page. The runner
+# reads the log a line at a time, splitting at a carriage return too, and
+# takes a line that starts with ::, after any blanks, as a command to it
+# (::add-mask::, ::stop-commands::, ::warning::). publish passes on text the
+# merge job left, which upstream's build could write, so the log's copy has
+# no :: in it anywhere. The summary page is not read for commands.
 note() {
-    printf '%s\n' "$*"
+    printf '%s\n' "$*" | tr '\r' '\n' | LC_ALL=C awk '{ while (index($0, "::")) sub(/::/, ": :"); print }'
     [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n\n' "$*" >> "$GITHUB_STEP_SUMMARY"
 }
 
+# A ::warning:: or ::error:: command, its message on one line: past a line
+# break the rest would be a line of its own, read by the runner as such.
+command_line() {  # warning|error, message
+    printf '::%s::%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')"
+}
+
 fail() {
-    printf '::error::%s\n' "$*"
+    command_line error "$*"
     note "$*"
     exit 1
 }
@@ -175,7 +186,7 @@ merge() {
     require_approval_inputs
     if ! [[ $STALL_DAYS =~ ^[0-9]{1,5}$ ]]; then
         # A typo is no reason to have no alarm at all.
-        printf '::warning::SYNC_STALL_DAYS is not a whole number of days, so this run takes 3.\n'
+        command_line warning "SYNC_STALL_DAYS is not a whole number of days, so this run takes 3."
         STALL_DAYS=3
     fi
     require_issues
@@ -313,7 +324,7 @@ close_merged_issues() {
             if gh issue close "$number" --comment "\`$BASE_BRANCH\` contains $merged now."; then
                 note "Closed #$number: $BASE_BRANCH contains $merged."
             else
-                printf '::warning::Could not close #%s, though %s contains %s.\n' "$number" "$BASE_BRANCH" "$merged"
+                command_line warning "Could not close #$number, though $BASE_BRANCH contains $merged."
                 note "Could not close #$number, though $BASE_BRANCH contains $merged; the next run tries again."
             fi
         fi
@@ -322,9 +333,9 @@ close_merged_issues() {
 
 # The release first, then the housekeeping: an issue that will not close
 # never keeps a release from its pull request or its issue. Last, a release
-# the merge job found held too long fails the run. One line of it, read as
-# data: the merge job ran upstream's build, and a line of its own starting
-# with :: would be a command to the runner.
+# the merge job found held too long fails the run. Its first line alone,
+# read as data: the merge job ran upstream's build, and fail keeps the text
+# from starting a line of the log with ::, a command to the runner.
 publish() {
     require_approval_inputs
     read_auto_merge
@@ -340,7 +351,7 @@ read_auto_merge() {
         '') AUTO_MERGE=true ;;
         true | all | false) ;;
         *)
-            printf "::warning::SYNC_AUTO_MERGE is '%s', which is not true, all or false, so auto-merge is off.\n" "$AUTO_MERGE"
+            command_line warning "SYNC_AUTO_MERGE is '$AUTO_MERGE', which is not true, all or false, so auto-merge is off."
             note "SYNC_AUTO_MERGE is '$AUTO_MERGE', which is not true, all or false: auto-merge is off, and every sync pull request waits for a person."
             AUTO_MERGE=false
             ;;
@@ -417,7 +428,8 @@ publish_release() {
     case "$outcome" in
         none | skip) return 0 ;;
         clean | person) ;;
-        *) fail "The merge job left an outcome this script does not know: $outcome" ;;
+        # Not repeated: it is the merge job's to write, and may run to lines.
+        *) fail "The merge job left an outcome this script does not know." ;;
     esac
     # Read as data: these files come from the job that ran upstream's build.
     tag=$(cat "$out/tag")
@@ -578,7 +590,7 @@ publish_release() {
         }' 2>&1 > /dev/null); then
         note "It merges itself, with a merge commit, once its required checks pass."
     else
-        printf '::warning::Auto-merge could not be turned on for %s: %s\n' "$url" "$refusal"
+        command_line warning "Auto-merge could not be turned on for $url: $refusal"
         note "Auto-merge could not be turned on, so it waits for a person. GitHub said: $refusal"
         gh pr comment "$url" --body "Auto-merge could not be turned on for this pull request (\`$refusal\`). It needs the repository's \"Allow auto-merge\" setting and a rule on \`$BASE_BRANCH\` that requires the checks. Until then, merge it by hand once the checks pass: \`gh pr merge --merge --match-head-commit $head\`." > /dev/null || true
     fi
