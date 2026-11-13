@@ -24,9 +24,15 @@ on:
         required: false
         type: string
 
-# A second run waits for the first: two would push the same branch.
+# A second run waits for the first: two would push the same branch. A run
+# that approves a release has a group of its own, sync-upstream-approval:
+# GitHub keeps one waiting run a group and cancels any other, so a scheduled
+# run queued behind an approval would cancel it. An approval and a scheduled
+# run may then overlap, and that is safe: while the release's issue is open a
+# scheduled run leaves it alone, so only the approval run can push it. Two
+# approvals still wait for each other, in their own group.
 concurrency:
-  group: sync-upstream
+  group: "sync-upstream${{ inputs.approve && '-approval' || '' }}"
   cancel-in-progress: false
 
 # Each job names what it may do; nothing is granted here.
