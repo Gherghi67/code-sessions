@@ -84,18 +84,23 @@ SYNC_PY="$(cd -- "$(dirname -- "$0")" && pwd)/sync-upstream.py"
 # The run's outcome, in the log and on the run's summary page. The runner
 # reads the log a line at a time, splitting at a carriage return too, and
 # takes a line that starts with ::, after any blanks, as a command to it
-# (::add-mask::, ::stop-commands::, ::warning::). publish passes on text the
-# merge job left, which upstream's build could write, so the log's copy has
-# no :: in it anywhere. The summary page is not read for commands.
+# (::add-mask::, ::stop-commands::, ::warning::), as it does the older form,
+# ##[warning], anywhere in a line. publish passes on text the merge job left,
+# which upstream's build could write, so the log's copy has neither :: nor ##[
+# in it anywhere. The summary page is not read for commands.
 note() {
-    printf '%s\n' "$*" | tr '\r' '\n' | LC_ALL=C awk '{ while (index($0, "::")) sub(/::/, ": :"); print }'
+    printf '%s\n' "$*" | tr '\r' '\n' | defang
     [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n\n' "$*" >> "$GITHUB_STEP_SUMMARY"
+}
+
+defang() {
+    LC_ALL=C awk '{ while (index($0, "::")) sub(/::/, ": :"); while (index($0, "##[")) sub(/##\[/, "# #["); print }'
 }
 
 # A ::warning:: or ::error:: command, its message on one line: past a line
 # break the rest would be a line of its own, read by the runner as such.
 command_line() {  # warning|error, message
-    printf '::%s::%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')"
+    printf '::%s::%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | defang)"
 }
 
 fail() {

@@ -184,8 +184,9 @@ assert_report_last() {  # body, text this script writes ahead of the report
 # return too), would be read as the command ::warning::forged: the runner
 # takes a line that starts with ::, after any blanks, as one.
 assert_no_forged_command() {  # log
-    if tr '\r' '\n' < "$1" | grep -E -q '^[[:space:]]*::warning::forged'; then
-        echo "  FAIL: a line of $1 is the command ::warning::forged"
+    # The runner also reads the older form, ##[warning], anywhere in a line.
+    if tr '\r' '\n' < "$1" | grep -E -q -e '^[[:space:]]*::warning::forged' -e '##\[warning\]forged'; then
+        echo "  FAIL: a line of $1 holds the command ::warning::forged or ##[warning]forged"
         cat "$1"
         return 1
     fi
@@ -699,9 +700,10 @@ test_a_release_held_too_long_fails_the_run() {
 
     # Read as data: the merge job ran upstream's build, and a line of the log
     # that starts with ::, first or second, after blanks or a carriage return,
-    # would be a command to the runner. Only the first line is the stall.
+    # would be a command to the runner, and so would ##[ anywhere in one.
+    # Only the first line is the stall.
     local forged
-    for forged in '::warning::forged' '   ::warning::forged' $'held\r::warning::forged'; do
+    for forged in '::warning::forged' '   ::warning::forged' $'held\r::warning::forged' 'held ##[warning]forged'; do
         printf '%s\nsecond\n' "$forged" > "$TEST_TMPDIR/work/stall"
         status=0
         ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
