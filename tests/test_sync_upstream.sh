@@ -482,6 +482,28 @@ test_a_changed_rename_of_a_file_the_fork_deleted_waits_for_a_person() {
     assert_not_exists "$WT/hooks/blocks.sh"
 }
 
+# As above, but upstream moves the hook to another directory and puts a
+# symlink where hooks/ was. The renamed file is read under the name the fork
+# knew, hooks/reminder.sh, which now leads through the link: start refuses
+# before it writes anything outside its worktree.
+test_start_never_writes_through_a_symlink_out_of_its_worktree() {
+    make_hook_fixture || return 1
+    (cd "$FORK" && git rm -q hooks/reminder.sh lib/90-fork.sh && bash build.sh && git add -A \
+        && git commit -q -m "the fork drops the hook") || return 1
+    mkdir -p "$TEST_TMPDIR/outside" "$UP/other"
+    (cd "$UP" && git mv hooks/reminder.sh other/blocks.sh) || return 1
+    sed -i.bak 's/write the narrative/write the narrative now/' "$UP/other/blocks.sh" && rm -f "$UP/other/blocks.sh.bak"
+    rmdir "$UP/hooks" 2>/dev/null || true
+    ln -s "$TEST_TMPDIR/outside" "$UP/hooks"
+    (cd "$UP" && bash build.sh && git add -A && git commit -q -m v2 && git tag v2) || return 1
+    local status=0
+    sync_start || status=$?
+    assert_eq 2 "$status" "a path that leads out of the worktree is an error" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" '^Error: Refusing to write hooks/reminder.sh: a symbolic link takes it out of the sync worktree' \
+        || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/outside")" "nothing written outside the worktree"
+}
+
 test_a_file_deleted_on_both_sides_needs_nobody() {
     make_upstream && make_fork || return 1
     (cd "$FORK" && git rm -q bin/cs-statusline && git commit -q -m "the fork drops the companion") || return 1
@@ -563,6 +585,7 @@ run_test test_missing_prints_the_tags_oldest_first_and_nothing_else
 run_test test_a_file_upstream_renamed_keeps_the_forks_changes
 run_test test_a_rename_of_a_file_the_fork_deleted_brings_nothing_back
 run_test test_a_changed_rename_of_a_file_the_fork_deleted_waits_for_a_person
+run_test test_start_never_writes_through_a_symlink_out_of_its_worktree
 run_test test_a_file_deleted_on_both_sides_needs_nobody
 run_test test_start_stops_at_an_expansion_with_no_fork_form
 run_test test_an_upstream_version_bump_merges_into_this_forks_header

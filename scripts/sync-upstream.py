@@ -559,6 +559,13 @@ def git_path(worktree, name):
 
 def write_result(worktree, path, result, executable):
     full = os.path.join(worktree, path)
+    # Upstream can put a symlink where a directory was, and a file upstream
+    # renamed is written under the fork's name for it, which may lie past that
+    # link once it is written. Nothing is written, created or removed there.
+    where, root = os.path.realpath(os.path.dirname(full)), os.path.realpath(worktree)
+    if where != root and not where.startswith(root + os.sep):
+        raise SyncError("Refusing to write %s: a symbolic link takes it out of the sync worktree %s, to %s"
+                        % (path, worktree, where))
     if result is None:
         git("rm", "--quiet", "--", path, cwd=worktree)
         return
