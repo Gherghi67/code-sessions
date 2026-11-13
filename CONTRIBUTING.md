@@ -275,7 +275,7 @@ lists the command files the installer and uninstaller delete.
 
 ## Merging upstream releases
 
-code-sessions follows hex/claude-sessions (`origin`), which often ships several releases a day. Merge them one at a time, as they come:
+code-sessions follows hex/claude-sessions, which often ships several releases a day. Merge them one at a time, as they come. Upstream is the remote named `origin`; `--remote <name>` before the command, or `SYNC_UPSTREAM_REMOTE`, names another.
 
 ```bash
 scripts/sync-upstream.py status       # the releases this branch lacks, oldest first, and what the next one conflicts in
@@ -285,7 +285,7 @@ scripts/sync-upstream.py continue
 scripts/sync-upstream.py catch-up     # back in this checkout: lands that one and goes on with the rest
 ```
 
-`status` fetches, lists the missing releases and dry-runs the next merge without writing anything; it exits 1 while a release is missing, so a script can use it as a check (`--brief` skips the dry run). `catch-up` merges each missing release on its own: one that needs no person is built, tested, committed and fast-forwarded into this branch, and its worktree removed. To merge a single release by hand instead:
+`status` fetches, lists the missing releases and dry-runs the next merge without writing anything; it exits 1 while a release is missing, so a script can use it as a check (`--brief` skips the dry run, and `missing` prints only the tags, oldest first). `catch-up` merges each missing release on its own: one that needs no person is built, tested, committed and fast-forwarded into this branch, and its worktree removed. To merge a single release by hand instead:
 
 ```bash
 scripts/sync-upstream.py start        # newest v* tag on origin/main; --to <tag> for another
@@ -294,14 +294,20 @@ scripts/sync-upstream.py continue
 git merge --ff-only sync/<tag>        # back in this checkout
 ```
 
-Commit your work first: the merge starts from the last commit, and git only recognises a moved file once it is committed. `start` makes a worktree beside this checkout (outside any repository that encloses it) on a `sync/<tag>` branch and records a real merge with both parents. Before merging, it rewrites upstream into this fork's dialect, so the fork's reshaping does not conflict:
+Commit your work first: the merge starts from the last commit, and git only recognises a moved file once it is committed. A cs session's own notes under `.cs/` do not count, since they change while the session is open. `start` makes a worktree beside this checkout (outside any repository that encloses it) on a `sync/<tag>` branch and records a real merge with both parents. Before merging, it rewrites upstream into this fork's dialect, so the fork's reshaping does not conflict:
 
-- Variables: `$CLAUDE_SESSION_*` becomes `${CS_SESSION_*:-${CLAUDE_SESSION_*:-}}`, on the lines the fork rewrote and the lines upstream adds; a line the fork kept stays as upstream wrote it. Command names are upstream's on both sides and need no rewriting.
+- Variables: `$CLAUDE_SESSION_*` becomes `${CS_SESSION_*:-${CLAUDE_SESSION_*:-}}`, on the lines the fork rewrote and the lines upstream adds; a line the fork kept stays as upstream wrote it. A default is kept whatever it nests (`${CLAUDE_SESSION_NAME:-${dir##*/}}` becomes `${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-${dir##*/}}}`). Command names are upstream's on both sides and need no rewriting.
 - Functions: a function the fork keeps in another `lib/` fragment gets upstream's change there.
-- Files: an upstream file the fork moved (`commands/*.md` to `skills/*/SKILL.md`) merges into the moved file.
+- Files: an upstream file the fork moved (`commands/*.md` to `skills/*/SKILL.md`) merges into the moved file. A file upstream renamed takes the new name in the fork, with the fork's changes merged into it.
 - Generated files (`bin/cs`, `hooks/cs-shared.sh`, `install.sh`) are never merged; `continue` rebuilds them.
 
-Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its own. What is left is where both sides changed the same lines. `continue` refuses while a conflict marker remains or a function is defined in two fragments, then runs `build.sh` and `tests/run_all.sh` (`--skip-tests` skips them) and commits. Nothing is pushed. When the fork rewrites another upstream form, add the rule to `rename()` in the script so the next merge applies it.
+Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its own. What is left is where both sides changed the same lines, which get conflict markers, and what no marker can show, which `start` lists under "Check by hand":
+
+- A line upstream added that reads a session variable through an operator (`${CLAUDE_SESSION_NAME//@/+}`, `${CLAUDE_SESSION_DIR%/}`). Bash applies an operator to one variable, so there is no `CS_`-first form of it; make the statement read one family of variables.
+- A line of the fork's own that still names a file upstream renamed.
+- A file that is not text and changed on both sides, or was deleted on one side and changed on the other.
+
+`start` exits 0 once the merge is committed, 1 when it waits for a person for either reason, and 2 on an error. `continue` refuses while a conflict marker remains or a function is defined in two fragments, then runs `build.sh` and `tests/run_all.sh` (`--skip-tests` skips them) and commits. Nothing is pushed. When the fork rewrites another upstream form, add the rule to `rename()` in the script so the next merge applies it.
 
 Land upstream-sync pull requests with a merge commit, preserving the sync commit's upstream parent. Squashing or rebasing loses release ancestry and makes the next sync offer releases already integrated.
 
