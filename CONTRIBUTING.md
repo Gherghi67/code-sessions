@@ -286,11 +286,14 @@ code-sessions follows hex/claude-sessions, which often ships several releases a 
 - One that needs a person gets an issue, `Sync upstream <tag> needs a person`, with the script's report. Merge it by hand (below), push the result as `cs/sync-<tag>` and open a pull request. The workflow closes the issue once `main` contains the release.
 - One that already has a pull request, a `cs/sync-<tag>` branch or an open issue is left to whoever has it, and the later releases wait behind it.
 
-It needs three things set up once in the repository:
+It needs these set up once in the repository:
 
 1. An environment named `upstream-sync`, limited to the `main` branch (Settings, Environments, "Deployment branches and tags"), holding a secret named `UPSTREAM_SYNC_TOKEN`: a fine-grained personal access token for this repository alone, with read and write access to Contents, Pull requests, Issues and Workflows. Store it with `gh secret set UPSTREAM_SYNC_TOKEN --env upstream-sync`, which asks for the value. The token GitHub hands a workflow run cannot do this: a push or a pull request made with it starts no workflow, so `Test` would never run on the sync pull request. Workflows is needed because an upstream release may change a file under `.github/workflows`.
 2. "Allow auto-merge" in the repository's settings.
 3. A ruleset on `main` that requires the eight `Test` checks (`bash` on both systems in two halves each, `build-sync`, `shellcheck`, `rust` on both systems) and allows merge commits only.
+4. Issues switched on (`gh repo edit --enable-issues`, or Settings, General, Features). A release that needs a person is reported as an issue; while Issues are off, every run fails by name before it merges anything.
+5. "Automatically delete head branches" (`gh repo edit --delete-branch-on-merge`), so each merged `cs/sync-<tag>` branch is removed instead of staying behind.
+6. Once the workflow is on `main`, `gh workflow list --all` showing `Sync upstream` as active. GitHub can leave a fork's scheduled workflows switched off; `gh workflow enable sync-upstream.yml` switches it on.
 
 Without the second and third, GitHub refuses auto-merge: the pull request stays open and the workflow comments on it with the command to merge it by hand. The repository variable `SYNC_AUTO_MERGE` changes the rule: `false` has every sync pull request wait for a person, and `all` lets one that changes a workflow merge itself too.
 

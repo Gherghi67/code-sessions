@@ -59,8 +59,22 @@ sync() {
     env -u GH_TOKEN -u GITHUB_TOKEN python3 "$SYNC_PY" --remote "$UPSTREAM_REMOTE" "$@"
 }
 
-open_issues() {  # number<TAB>title, one open issue a line
-    gh issue list --state open --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"'
+# Issues are how the workflow asks for a person. With them switched off every
+# issue command fails, so the run stops here, by name, before it merges anything.
+require_issues() {
+    local enabled
+    enabled=$(gh api 'repos/{owner}/{repo}' --jq .has_issues) \
+        || fail "Could not read whether the repository has Issues switched on; gh said why above."
+    [ "$enabled" = true ] \
+        || fail "The repository has Issues switched off, and this workflow opens an issue for each release that needs a person. Switch them on with gh repo edit --enable-issues, or in Settings, General, Features."
+}
+
+# The open issues in $issues, number<TAB>title a line. A list gh could not
+# read fails the run: taken for no issue, it would merge a release a person
+# already has, or never start the job that closes the workflow's own.
+open_issues() {
+    issues=$(gh issue list --state open --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"') \
+        || fail "Could not list the repository's open issues; gh said why above."
 }
 
 # What the merge job found, for the publish job: one value a file.
@@ -73,13 +87,17 @@ result() {  # name, value
 # person: it needs one), and with clean or person the tag, the report, the
 # release the fork had before, and for clean the commit and a bundle holding it.
 merge() {
+    require_issues
     merge_release
     # The publish job, and with it the token, is only started for a pull
     # request or an issue to open, or for an issue of its own it may close.
     local publish=false
     case "$(cat "$out/outcome")" in
         clean | person) publish=true ;;
-        *) ! open_issues | cut -f2- | grep -x -- "$ISSUE_PREFIX"'v.*'"$ISSUE_SUFFIX" > /dev/null || publish=true ;;
+        *)
+            open_issues
+            ! printf '%s\n' "$issues" | cut -f2- | grep -x -- "$ISSUE_PREFIX"'v.*'"$ISSUE_SUFFIX" > /dev/null || publish=true
+            ;;
     esac
     [ -z "${GITHUB_OUTPUT:-}" ] || printf 'publish=%s\n' "$publish" >> "$GITHUB_OUTPUT"
 }
@@ -119,9 +137,10 @@ merge_release() {
         2) ;;
         *) fail "Could not read the fork's branches (git ls-remote exited $found)." ;;
     esac
-    # Not grep -q: it stops at the first match, and under pipefail the gh it
+    open_issues
+    # Not grep -q: it stops at the first match, and under pipefail what it
     # leaves writing to a closed pipe would turn that match into a failure.
-    if open_issues | cut -f2- | grep -Fx -- "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" > /dev/null; then
+    if printf '%s\n' "$issues" | cut -f2- | grep -Fx -- "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" > /dev/null; then
         note "$tag waits for a person: an issue for it is open."
         return 0
     fi
@@ -156,7 +175,8 @@ merge_release() {
 # An issue this workflow opened for a release that has since been merged.
 close_merged_issues() {
     local number title merged
-    open_issues | while IFS=$'\t' read -r number title; do
+    open_issues
+    printf '%s\n' "$issues" | while IFS=$'\t' read -r number title; do
         case "$title" in
             "$ISSUE_PREFIX"v*"$ISSUE_SUFFIX") ;;
             *) continue ;;
@@ -197,7 +217,8 @@ publish() {
             printf 'The workflow leaves this release alone while this issue is open or that branch or pull request exists, and later releases wait behind it. '
             printf 'It closes this issue once `%s` contains %s.\n' "$BASE_BRANCH" "$tag"
         } > "$body"
-        url=$(gh issue create --title "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" --body-file "$body")
+        url=$(gh issue create --title "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" --body-file "$body") \
+            || fail "Could not open the issue for $tag; gh said why above."
         note "$tag needs a person: ${url##*$'\n'}"
         return 0
     fi

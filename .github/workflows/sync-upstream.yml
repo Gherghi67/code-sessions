@@ -50,7 +50,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # Reads the fork's pull requests, branches and issues to leave alone a
-      # release someone already has.
+      # release someone already has. Fails by name when the repository has
+      # Issues switched off: they are how the workflow asks for a person.
       - name: Merge the next upstream release
         id: merge
         env:

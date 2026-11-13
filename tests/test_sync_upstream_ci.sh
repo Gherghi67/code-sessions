@@ -32,7 +32,9 @@ make_fixture() {
 # gh, as far as the script uses it. Every call is one line of $GH/calls; the
 # lists answer from $GH/pr-list and $GH/issue-list (what --jq would print), a
 # --body-file is kept as $GH/<pr|issue>-body, and a file named after a call
-# ($GH/fail-pr-create, $GH/fail-api-graphql) makes that call fail.
+# ($GH/fail-pr-create, $GH/fail-api-graphql) makes that call fail. The
+# repository has Issues switched on until $GH/issues-off exists; then, as on
+# GitHub, every issue command fails.
 make_gh() {
     mkdir -p "$TEST_TMPDIR/bin"
     cat > "$TEST_TMPDIR/bin/gh" <<'EOF'
@@ -40,6 +42,14 @@ make_gh() {
 dir="$GH_STUB_DIR"
 printf '%s\n' "$*" >> "$dir/calls"
 call="$1-$2"
+case "$call" in
+    issue-*)
+        if [ -e "$dir/issues-off" ]; then
+            echo "the 'fork/repo' repository has disabled issues" >&2
+            exit 1
+        fi
+        ;;
+esac
 if [ -e "$dir/fail-$call" ]; then
     echo "gh: $(cat "$dir/fail-$call")" >&2
     exit 1
@@ -55,6 +65,7 @@ case "$call" in
     pr-create) cp "$body" "$dir/pr-body"; echo "https://github.com/fork/repo/pull/7" ;;
     pr-view) echo "PR_node7" ;;
     issue-create) cp "$body" "$dir/issue-body"; echo "https://github.com/fork/repo/issues/9" ;;
+    api-repos/*) if [ -e "$dir/issues-off" ]; then echo false; else echo true; fi ;;
 esac
 exit 0
 EOF
@@ -92,7 +103,7 @@ publish_wanted() {
 }
 
 calls() {  # the gh calls that change something
-    grep -v -e '^pr list ' -e '^issue list ' -e '^pr view ' "$GH/calls" 2> /dev/null || true
+    grep -v -e '^pr list ' -e '^issue list ' -e '^pr view ' -e '^api repos/' "$GH/calls" 2> /dev/null || true
 }
 
 origin_branches() {
@@ -177,6 +188,58 @@ test_a_release_that_needs_a_person_becomes_an_issue() {
     assert_eq publish=true "$(publish_wanted)" || return 1
     # Nothing half-merged reaches the fork.
     assert_eq fork-main "$(origin_branches)"
+}
+
+# Issues are how the workflow asks for a person, and with them switched off
+# every issue command fails. The run stops by name, before it merges or
+# pushes anything, and says how to switch them on.
+test_a_repository_with_issues_off_fails_by_name() {
+    make_fixture || return 1
+    release v1.1 NOTES.md notes || return 1
+    : > "$GH/issues-off"
+    local status=0
+    run_ci || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::The repository has Issues switched off' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" 'gh repo edit --enable-issues' || return 1
+    # The merge job stops before it hands the publish job anything.
+    assert_not_exists "$TEST_TMPDIR/output.merge" || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
+}
+
+# An issue list gh could not read fails the run wherever it is asked for.
+# Taken for "no issue", it would merge a release a person already has, or
+# never start the job that closes the workflow's own.
+test_issues_that_cannot_be_listed_fail_the_run() {
+    make_fixture || return 1
+    local status
+    printf 'HTTP 502\n' > "$GH/fail-issue-list"
+    # Up to date: asked whether an issue of the workflow's own is open.
+    status=0
+    run_ci || status=$?
+    assert_eq 1 "$status" "up to date" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::Could not list the repository's open issues" || return 1
+
+    # A release to merge: asked whether a person already has it.
+    release v1.1 NOTES.md notes || return 1
+    status=0
+    run_ci || status=$?
+    assert_eq 1 "$status" "a release to merge" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::Could not list the repository's open issues" || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)" || return 1
+
+    # Publishing: asked which of the workflow's issues it may close.
+    rm "$GH/fail-issue-list"
+    rm -rf "$TEST_TMPDIR/work" "$TEST_TMPDIR/publish"
+    git clone -q -b fork-main "$ORIGIN" "$TEST_TMPDIR/publish" || return 1
+    ci_job "$FORK" merge > "$TEST_TMPDIR/ci.log" 2>&1 || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    printf 'HTTP 502\n' > "$GH/fail-issue-list"
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "publishing" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::Could not list the repository's open issues"
 }
 
 # A workflow upstream changed runs for the pull request, and once merged it
@@ -365,6 +428,8 @@ run_test test_up_to_date_changes_nothing
 run_test test_a_clean_release_becomes_a_pull_request_set_to_merge_itself
 run_test test_the_merged_trees_build_never_sees_a_token
 run_test test_a_release_that_needs_a_person_becomes_an_issue
+run_test test_a_repository_with_issues_off_fails_by_name
+run_test test_issues_that_cannot_be_listed_fail_the_run
 run_test test_a_release_that_changes_a_workflow_never_merges_itself
 run_test test_a_merge_that_changes_the_publishing_script_never_merges_itself
 run_test test_only_the_oldest_missing_release_is_merged
