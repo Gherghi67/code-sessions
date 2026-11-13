@@ -20,25 +20,37 @@ set -euo pipefail
 # and a sync pull request no check ran on would be merged untested.
 #
 # A release that changes what runs with the token (a workflow, or this
-# script) still gets its pull request, but is never set to merge itself: a
-# person reads that part first. Until it is merged the token is out of its
-# reach, as long as the secret is kept in an environment only main may use:
-# a changed workflow runs for the pull request, on a ref that is not main.
+# script) is not pushed: a branch pushed to this repository runs its own
+# workflows at once, with whatever token permissions they declare, before
+# anyone has read them. It gets an issue instead, holding the one command
+# that approves it. A run started with approve=<tag> and commit=<id> merges
+# that release again, checks the tag still points at the commit the person
+# read, and pushes it. SYNC_AUTO_MERGE=all pushes such a release unapproved.
+# Once pushed, a changed workflow runs for the pull request, on a ref that is
+# not main, so the token stays out of its reach as long as the secret is kept
+# in an environment only main may use.
 #
 # One release a run, the oldest first, since each is merged onto the one
 # before it. A release that already has a pull request, a cs/sync-<tag>
-# branch or an open issue is left to whoever has it, and the later ones wait
-# behind it. Tags are fetched from upstream and never pushed: a v* tag pushed
-# to the fork would start its release workflow.
+# branch or an open issue is left to whoever has it (the run that approves
+# it goes past its issue), and the later ones wait behind it. Tags are
+# fetched from upstream and never pushed: a v* tag pushed to the fork would
+# start its release workflow.
 
 UPSTREAM_REMOTE="${SYNC_UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_URL="${SYNC_UPSTREAM_URL:-https://github.com/hex/claude-sessions.git}"
 BASE_BRANCH="${SYNC_BASE_BRANCH:-main}"
-# true: a clean merge merges itself, unless it changes a guarded path. false:
-# every pull request waits for a person. all: guarded paths merge themselves too.
+# true: a clean merge's pull request merges itself. false: every pull request
+# waits for a person. Either way a release that changes a guarded path is
+# pushed only once a person approves it. all: such a release is pushed
+# without approval, and merges itself too.
 AUTO_MERGE="${SYNC_AUTO_MERGE:-true}"
 # What the job holding the token runs or is defined by.
 GUARDED=(.github scripts/sync-upstream-ci.sh)
+# Set in a run started from a release's issue: the release a person read the
+# guarded change of, and the commit they read.
+APPROVE_TAG="${SYNC_APPROVE_TAG:-}"
+APPROVE_COMMIT="${SYNC_APPROVE_COMMIT:-}"
 ISSUE_PREFIX="Sync upstream "
 ISSUE_SUFFIX=" needs a person"
 SYNC_PY="$(cd -- "$(dirname -- "$0")" && pwd)/sync-upstream.py"
@@ -78,6 +90,23 @@ open_issues() {
         || fail "Could not list the repository's open issues; gh said why above."
 }
 
+# A bad input is not repeated in the message: whoever started the run typed
+# it, and the runner takes a log line that starts with :: as a command.
+require_approval_inputs() {
+    [ -n "$APPROVE_TAG$APPROVE_COMMIT" ] || return 0
+    [[ $APPROVE_TAG =~ ^v[0-9][0-9A-Za-z._-]*$ ]] \
+        || fail "approve must name a release tag, as the issue that asks for the approval gives it."
+    [[ $APPROVE_COMMIT =~ ^[0-9a-f]{40}$ ]] \
+        || fail "commit must be the release's full commit id, 40 hex digits, as the issue that asks for the approval gives it."
+}
+
+# A person approved the commit they read. A tag that points elsewhere now
+# names something nobody has read.
+require_approved_commit() {  # tag, the commit it points at
+    [ "$2" = "$APPROVE_COMMIT" ] \
+        || fail "$1 points at $2, not at the approved $APPROVE_COMMIT: the tag moved since, or the approval names another commit. Read the change again and approve the commit $1 points at."
+}
+
 # What the merge job found, for the publish job: one value a file.
 result() {  # name, value
     printf '%s\n' "$2" > "$out/$1"
@@ -88,6 +117,7 @@ result() {  # name, value
 # person: it needs one), and with clean or person the tag and the report, and
 # for clean the commit and a bundle holding it.
 merge() {
+    require_approval_inputs
     require_issues
     merge_release
     # The publish job, and with it the token, is only started for a pull
@@ -109,6 +139,7 @@ merge_release() {
     local tags tag branch waiting pr found worktree log status
     tags=$(sync missing)
     if [ -z "$tags" ]; then
+        [ -z "$APPROVE_TAG" ] || fail "This run approves $APPROVE_TAG, but $BASE_BRANCH lacks no upstream release."
         note "Up to date with upstream."
         return 0
     fi
@@ -116,6 +147,12 @@ merge_release() {
     branch="cs/sync-$tag"
     waiting=$(printf '%s\n' "$tags" | wc -l | tr -d ' ')
     [ "$waiting" = 1 ] || note "$waiting releases to merge; this run takes $tag, the oldest."
+    if [ -n "$APPROVE_TAG" ]; then
+        [ "$APPROVE_TAG" = "$tag" ] \
+            || fail "This run approves $APPROVE_TAG, but the oldest release $BASE_BRANCH lacks is $tag, and releases are merged in order."
+        # As upstream has it: sync missing has just fetched its tags.
+        require_approved_commit "$tag" "$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")"
+    fi
 
     result outcome skip
     pr=$(gh pr list --head "$branch" --state all --json state,url --jq '.[0] | select(.) | "\(.state)\t\(.url)"')
@@ -138,12 +175,17 @@ merge_release() {
         2) ;;
         *) fail "Could not read the fork's branches (git ls-remote exited $found)." ;;
     esac
-    open_issues
-    # Not grep -q: it stops at the first match, and under pipefail what it
-    # leaves writing to a closed pipe would turn that match into a failure.
-    if printf '%s\n' "$issues" | cut -f2- | grep -Fx -- "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" > /dev/null; then
-        note "$tag waits for a person: an issue for it is open."
-        return 0
+    if [ -n "$APPROVE_TAG" ]; then
+        # Its issue asked for this run, and stays open until the release lands.
+        note "$tag is approved for commit $APPROVE_COMMIT."
+    else
+        open_issues
+        # Not grep -q: it stops at the first match, and under pipefail what it
+        # leaves writing to a closed pipe would turn that match into a failure.
+        if printf '%s\n' "$issues" | cut -f2- | grep -Fx -- "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" > /dev/null; then
+            note "$tag waits for a person: an issue for it is open."
+            return 0
+        fi
     fi
 
     # Beside the results, not among them: they are uploaded for the publish job.
@@ -170,6 +212,10 @@ merge_release() {
         *) fail "scripts/sync-upstream.py failed on $tag (exit $status); see the log above." ;;
     esac
     git worktree remove --force "$worktree" > /dev/null 2>&1 || true
+    # An approval is for a clean merge. This one needs a person to merge it,
+    # and its issue is open already: a second one would only repeat it.
+    [ -z "$APPROVE_TAG" ] || [ "$status" = 0 ] \
+        || fail "$tag was approved, but it does not merge cleanly onto $BASE_BRANCH as it is now; see the report above. Merge it by hand (scripts/sync-upstream.py start --to $tag); its issue stays open until $BASE_BRANCH contains it."
 }
 
 # An issue this workflow opened for a release that has since been merged.
@@ -200,6 +246,7 @@ close_merged_issues() {
 # The release first, then the housekeeping: an issue that will not close
 # never keeps a release from its pull request or its issue.
 publish() {
+    require_approval_inputs
     publish_release
     close_merged_issues
 }
@@ -259,6 +306,35 @@ publish_release() {
     # Read from the commit against this checkout, never from the merge job:
     # that one ran upstream's build.
     guarded=$(git diff --name-only "$base" "$head" -- "${GUARDED[@]}")
+    if [ -n "$APPROVE_TAG" ]; then
+        [ "$APPROVE_TAG" = "$tag" ] || fail "This run approves $APPROVE_TAG, but the merge job merged $tag."
+        # The tag as this job fetched it, which the merge's second parent is.
+        require_approved_commit "$tag" "$release"
+    elif [ -n "$guarded" ] && [ "$AUTO_MERGE" != all ]; then
+        # Not pushed: a branch pushed here runs its own workflows at once,
+        # with the token permissions they declare, before anyone reads them.
+        {
+            printf 'Upstream release `%s` merges cleanly into `%s`, but it changes what the job holding the sync token runs or is defined by:\n\n' "$tag" "$BASE_BRANCH"
+            printf '%s\n' "$guarded" | sed 's/.*/- `&`/'
+            printf '\nSo the workflow did not push it. A branch pushed to this repository runs its own workflows at once, with whatever token permissions they declare, before anyone has read them.\n\n'
+            case "$UPSTREAM_URL" in
+                https://github.com/*) printf 'Everything the release changes: %s/compare/%s...%s\n\n' "${UPSTREAM_URL%.git}" "$have" "$tag" ;;
+            esac
+            printf 'The guarded part alone, in a checkout of `%s` with upstream'"'"'s tags fetched:\n\n' "$BASE_BRANCH"
+            printf '```bash\ngit diff %s %s -- %s\n```\n\n' "$have" "$tag" "${GUARDED[*]}"
+            printf 'Then approve exactly this release, commit `%s`:\n\n' "$release"
+            # Named, where the job knows it: in a checkout whose origin is
+            # upstream, gh would otherwise start upstream's workflow.
+            printf '```bash\ngh workflow run sync-upstream.yml -f approve=%s -f commit=%s%s\n```\n\n' "$tag" "$release" "${GH_REPO:+ --repo $GH_REPO}"
+            printf 'That run merges it again, checks that `%s` still points at that commit, pushes `%s` and opens its pull request, which merges itself or waits as `SYNC_AUTO_MERGE` says. ' "$tag" "$branch"
+            printf 'Until then the workflow leaves this release alone, and later releases wait behind it. It closes this issue once `%s` contains %s.\n\n' "$BASE_BRANCH" "$tag"
+            printf '`scripts/sync-upstream.py` reported:\n\n```text\n%s\n```\n' "$(cat "$out/report")"
+        } > "$body"
+        url=$(gh issue create --title "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" --body-file "$body") \
+            || fail "Could not open the issue for $tag; gh said why above."
+        note "$tag changes $(printf '%s' "$guarded" | tr '\n' ' '), so it is not pushed until a person approves it: ${url##*$'\n'}"
+        return 0
+    fi
     {
         printf 'Upstream release `%s`, merged by `scripts/sync-upstream.py`. It left nothing for a person.\n\n' "$tag"
         case "$UPSTREAM_URL" in
@@ -267,8 +343,12 @@ publish_release() {
         printf '```text\n%s\n```\n\n' "$(cat "$out/report")"
         printf '## Verification\n\nThe workflow built the generated files and ran no tests: the checks on this pull request are the gate.\n\n'
         printf '## Merging\n\nWith a merge commit, never squashed or rebased. The release has to stay an ancestor of `%s`, or the next sync starts again from an older one.\n' "$BASE_BRANCH"
-        if [ -n "$guarded" ] && [ "$AUTO_MERGE" != all ]; then
-            printf '\nThis one is not set to merge itself. It changes what runs with the repository'"'"'s sync token, so read these before merging it:\n\n'
+        if [ -n "$guarded" ]; then
+            if [ -n "$APPROVE_TAG" ]; then
+                printf '\nIt changes what the job holding the sync token runs or is defined by, and was approved by workflow dispatch for commit `%s` once a person had read that:\n\n' "$release"
+            else
+                printf '\nIt changes what the job holding the sync token runs or is defined by, and was pushed without approval: `SYNC_AUTO_MERGE` is `all`.\n\n'
+            fi
             printf '%s\n' "$guarded" | sed 's/.*/- `&`/'
         fi
     } > "$body"
@@ -283,10 +363,6 @@ publish_release() {
     note "$tag merged cleanly: $url"
     if [ "$AUTO_MERGE" = false ]; then
         note "Auto-merge is off (SYNC_AUTO_MERGE=false): merge it with a merge commit once its checks pass."
-        return 0
-    fi
-    if [ -n "$guarded" ] && [ "$AUTO_MERGE" != all ]; then
-        note "It waits for a person: it changes $(printf '%s' "$guarded" | tr '\n' ' '). Read that, then merge it with a merge commit."
         return 0
     fi
     # Asked of the API, not of gh pr merge --auto: that merges at once a pull

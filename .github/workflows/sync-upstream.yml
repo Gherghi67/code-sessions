@@ -10,7 +10,19 @@ name: Sync upstream
 on:
   schedule:
     - cron: '23 */6 * * *'
+  # By hand, gh workflow run sync-upstream.yml. A release that changes
+  # .github/ or the sync script is not pushed until a person approves it:
+  # its issue gives the run with approve and commit that does.
   workflow_dispatch:
+    inputs:
+      approve:
+        description: 'The release to approve, a tag such as v2026.11.8, as its issue gives it'
+        required: false
+        type: string
+      commit:
+        description: "The release's full commit id, as its issue gives it"
+        required: false
+        type: string
 
 # A second run waits for the first: two would push the same branch.
 concurrency:
@@ -51,12 +63,16 @@ jobs:
 
       # Reads the fork's pull requests, branches and issues to leave alone a
       # release someone already has. Fails by name when the repository has
-      # Issues switched off: they are how the workflow asks for a person.
+      # Issues switched off: they are how the workflow asks for a person. In
+      # a run that approves a release, fails by name unless it is the oldest
+      # one main lacks and its tag still points at the approved commit.
       - name: Merge the next upstream release
         id: merge
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          SYNC_APPROVE_TAG: ${{ inputs.approve }}
+          SYNC_APPROVE_COMMIT: ${{ inputs.commit }}
         run: bash scripts/sync-upstream-ci.sh merge "$RUNNER_TEMP/sync"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -67,25 +83,30 @@ jobs:
           retention-days: 7
 
   # Pushes the merge as cs/sync-<tag> and opens its pull request, or opens an
-  # issue for a release that needs a person. It runs nothing the merge job
-  # produced: the commit comes out of a bundle and must merge exactly this
-  # job's checkout of main with the release as upstream has it; the rest is
-  # read as text. It starts only when the merge job found one of those to
-  # open, or an issue of this workflow's to close.
+  # issue for a release that needs a person or an approval. It runs nothing
+  # the merge job produced: the commit comes out of a bundle and must merge
+  # exactly this job's checkout of main with the release as upstream has it;
+  # the rest is read as text. It starts only when the merge job found one of
+  # those to open, or an issue of this workflow's to close.
   #
   # UPSTREAM_SYNC_TOKEN is a fine-grained personal access token for this
   # repository alone: Contents, Pull requests, Issues and Workflows, all read
-  # and write (Workflows because an upstream release may change a file under
-  # .github/workflows). The token GitHub hands a run cannot stand in for it:
-  # a push or a pull request made with that one starts no workflow, so Test
-  # would never run on the sync pull request.
+  # and write (Workflows because an approved release, or any release under
+  # SYNC_AUTO_MERGE=all, may change a file under .github/workflows). The
+  # token GitHub hands a run cannot stand in for it: a push or a pull request
+  # made with that one starts no workflow, so Test would never run on the
+  # sync pull request.
   #
-  # The secret belongs in the upstream-sync environment, with that
-  # environment limited to the main branch, and not among the repository's
-  # secrets. A sync branch can carry a workflow upstream changed, and it runs
-  # for the pull request before anyone has read it: a repository secret is in
-  # its reach, one in an environment only main may use is not. CONTRIBUTING.md,
-  # "Merging upstream releases", has the setup.
+  # A release that changes .github/ or the sync script is not pushed: a
+  # branch pushed here runs its own workflows at once, with whatever token
+  # permissions they declare, before anyone has read them. It gets an issue
+  # with the command that approves it, which starts this workflow with
+  # approve and commit. An approved sync branch still runs its workflows for
+  # the pull request before it is merged, so the secret belongs in the
+  # upstream-sync environment, limited to the main branch, and not among the
+  # repository's secrets: a repository secret is in their reach, one in an
+  # environment only main may use is not. CONTRIBUTING.md, "Merging upstream
+  # releases", has the setup.
   publish:
     needs: merge
     if: needs.merge.outputs.publish == 'true'
@@ -116,12 +137,17 @@ jobs:
           name: sync
           path: ${{ runner.temp }}/sync
 
-      # SYNC_AUTO_MERGE, a repository variable: false has every sync pull
-      # request wait for a person; all lets one that changes a workflow merge
-      # itself too. Unset, a clean merge merges itself unless it changes one.
+      # SYNC_AUTO_MERGE, a repository variable. Unset, a clean merge merges
+      # itself, and one that changes .github/ or the sync script waits
+      # unpushed for approval. false has every sync pull request wait for a
+      # person too; all pushes those without approval and lets them merge
+      # themselves. The approval is checked again here, against the tag as
+      # this job fetches it.
       - name: Open the pull request or the issue
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           GH_REPO: ${{ github.repository }}
           SYNC_AUTO_MERGE: ${{ vars.SYNC_AUTO_MERGE }}
+          SYNC_APPROVE_TAG: ${{ inputs.approve }}
+          SYNC_APPROVE_COMMIT: ${{ inputs.commit }}
         run: bash scripts/sync-upstream-ci.sh publish "$RUNNER_TEMP/sync"

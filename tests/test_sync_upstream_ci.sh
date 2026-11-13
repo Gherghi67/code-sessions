@@ -242,37 +242,154 @@ test_issues_that_cannot_be_listed_fail_the_run() {
     assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::Could not list the repository's open issues"
 }
 
-# A workflow upstream changed runs for the pull request, and once merged it
-# runs on main, where the sync token is. A person reads it before that.
-test_a_release_that_changes_a_workflow_never_merges_itself() {
+# A branch pushed to this repository runs its own workflows at once, with
+# whatever token permissions they declare, before anyone has read them. So a
+# release that changes one is not pushed: its issue lists what it changes,
+# shows how to read that, and holds the command that approves exactly the
+# release's commit.
+test_a_release_that_changes_a_workflow_is_not_pushed_until_approved() {
     make_fixture || return 1
     mkdir -p "$UP/.github/workflows"
     release v1.1 .github/workflows/test.yml 'name: Test' || return 1
-    run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
-    assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 ' || return 1
-    assert_file_not_contains "$GH/calls" '^api graphql' || return 1
-    assert_file_contains "$GH/pr-body" 'This one is not set to merge itself' || return 1
-    assert_file_contains "$GH/pr-body" '^- `.github/workflows/test.yml`$' || return 1
-    assert_file_contains "$TEST_TMPDIR/ci.log" 'It waits for a person: it changes .github/workflows/test.yml' || return 1
+    run_ci GH_REPO=fork/repo || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_eq 'issue create --title Sync upstream v1.1 needs a person --body-file '"$TEST_TMPDIR/work/body.md" \
+        "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)" || return 1
+    assert_eq "" "$(git -C "$ORIGIN" tag)" || return 1
+    assert_file_contains "$GH/issue-body" '^- `.github/workflows/test.yml`$' || return 1
+    assert_file_contains "$GH/issue-body" 'did not push it' || return 1
+    assert_file_contains "$GH/issue-body" \
+        "^git diff $(git -C "$UP" rev-parse 'v1^{commit}') v1.1 -- .github scripts/sync-upstream-ci.sh\$" || return 1
+    # Named, so it starts this repository's workflow from any checkout.
+    assert_file_contains "$GH/issue-body" \
+        "^gh workflow run sync-upstream.yml -f approve=v1.1 -f commit=$(git -C "$UP" rev-parse 'v1.1^{commit}') --repo fork/repo\$" || return 1
+    assert_file_not_contains "$GH/issue-body" "$TEST_TMPDIR/work" || return 1
+    assert_file_contains "$TEST_TMPDIR/summary" 'v1.1 changes .github/workflows/test.yml' || return 1
+    assert_eq publish=true "$(publish_wanted)" || return 1
     # SYNC_AUTO_MERGE=all is the owner saying upstream's workflows may land unread.
     : > "$GH/calls"
-    git -C "$ORIGIN" update-ref -d refs/heads/cs/sync-v1.1
     git -C "$FORK" branch -q -D sync/v1.1
     run_ci SYNC_AUTO_MERGE=all || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_eq 'cs/sync-v1.1
+fork-main' "$(origin_branches)" || return 1
+    assert_file_not_contains "$GH/calls" '^issue create' || return 1
     assert_file_contains "$GH/calls" '^api graphql' || return 1
-    assert_file_not_contains "$GH/pr-body" 'not set to merge itself'
+    assert_file_contains "$GH/pr-body" '^- `.github/workflows/test.yml`$'
 }
 
-# The script the job with the token runs is guarded like a workflow. Upstream
-# has no such file, so only a merge job gone wrong could produce this.
-test_a_merge_that_changes_the_publishing_script_never_merges_itself() {
+# The script the job with the token runs is guarded like a workflow.
+test_a_merge_that_changes_the_publishing_script_is_not_pushed_until_approved() {
     make_fixture || return 1
     mkdir -p "$UP/scripts"
     release v1.1 scripts/sync-upstream-ci.sh 'echo "not the fork'"'"'s script"' || return 1
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
-    assert_file_contains "$GH/calls" '^pr create ' || return 1
-    assert_file_not_contains "$GH/calls" '^api graphql' || return 1
-    assert_file_contains "$GH/pr-body" '^- `scripts/sync-upstream-ci.sh`$'
+    assert_eq 'issue create --title Sync upstream v1.1 needs a person --body-file '"$TEST_TMPDIR/work/body.md" \
+        "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)" || return 1
+    assert_file_contains "$GH/issue-body" '^- `scripts/sync-upstream-ci.sh`$' || return 1
+    assert_file_contains "$GH/issue-body" '^gh workflow run sync-upstream.yml -f approve=v1.1 -f commit='
+}
+
+# A person read the change and ran the command from the issue. That run goes
+# past the release's open issue, merges it again, pushes it and opens its pull
+# request, which then merges itself like any clean release. The issue stays
+# open until main contains the release.
+test_an_approved_release_is_pushed_and_gets_its_pull_request() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/workflows"
+    release v1.1 .github/workflows/test.yml 'name: Test' || return 1
+    local commit
+    commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
+    printf '9\tSync upstream v1.1 needs a person\n' > "$GH/issue-list"
+    run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_eq 'cs/sync-v1.1
+fork-main' "$(origin_branches)" || return 1
+    assert_eq "$(git -C "$FORK" rev-parse fork-main) $commit" "$(git -C "$ORIGIN" log -1 --format=%P cs/sync-v1.1)" || return 1
+    assert_eq "" "$(git -C "$ORIGIN" tag)" || return 1
+    assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 ' || return 1
+    assert_file_contains "$GH/pr-body" "approved by workflow dispatch for commit \`$commit\`" || return 1
+    assert_file_contains "$GH/pr-body" '^- `.github/workflows/test.yml`$' || return 1
+    assert_file_contains "$GH/calls" '^api graphql ' || return 1
+    assert_eq "" "$(calls | grep '^issue ' || true)"
+}
+
+# An approval is for one commit. A tag upstream has moved since, or an id
+# mistyped, stops the run by name before anything is pushed, in either job.
+test_an_approval_of_another_commit_is_refused() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/workflows"
+    release v1.1 .github/workflows/test.yml 'name: Test' || return 1
+    printf '9\tSync upstream v1.1 needs a person\n' > "$GH/issue-list"
+    local status commit other
+    commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
+    other=$(git -C "$UP" rev-parse 'v1^{commit}')
+    status=0
+    run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$other" || status=$?
+    assert_eq 1 "$status" "another commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::v1.1 points at $commit, not at the approved $other: the tag moved" || return 1
+    assert_not_exists "$TEST_TMPDIR/output.merge" || return 1
+
+    # What is not a release tag and a full commit id is refused before anything runs.
+    status=0
+    run_ci SYNC_APPROVE_TAG=main SYNC_APPROVE_COMMIT="$commit" || status=$?
+    assert_eq 1 "$status" "a branch for a tag" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::approve must name a release tag' || return 1
+    status=0
+    run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="${commit%????}" || status=$?
+    assert_eq 1 "$status" "a short commit id" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::commit must be the release' || return 1
+    status=0
+    run_ci SYNC_APPROVE_TAG=v1.1 || status=$?
+    assert_eq 1 "$status" "no commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::commit must be the release' || return 1
+
+    # publish checks it again, against the tag as it fetches it.
+    rm -rf "$TEST_TMPDIR/work" "$TEST_TMPDIR/publish"
+    git clone -q -b fork-main "$ORIGIN" "$TEST_TMPDIR/publish" || return 1
+    ci_job "$FORK" merge SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" > "$TEST_TMPDIR/ci.log" 2>&1 \
+        || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    status=0
+    ci_job "$TEST_TMPDIR/publish" publish SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$other" > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" "publish, another commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::v1.1 points at $commit, not at the approved $other: the tag moved" || return 1
+
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
+}
+
+# Releases are merged in order, so only the oldest one main lacks can be approved.
+test_an_approval_of_a_release_that_is_not_next_is_refused() {
+    make_fixture || return 1
+    local status
+    status=0
+    run_ci SYNC_APPROVE_TAG=v1 SYNC_APPROVE_COMMIT="$(git -C "$UP" rev-parse 'v1^{commit}')" || status=$?
+    assert_eq 1 "$status" "up to date" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::This run approves v1, but fork-main lacks no upstream release' || return 1
+
+    mkdir -p "$UP/.github/workflows"
+    release v1.1 NOTES.md notes || return 1
+    release v1.2 .github/workflows/test.yml 'name: Test' || return 1
+    status=0
+    run_ci SYNC_APPROVE_TAG=v1.2 SYNC_APPROVE_COMMIT="$(git -C "$UP" rev-parse 'v1.2^{commit}')" || status=$?
+    assert_eq 1 "$status" "not the oldest" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::This run approves v1.2, but the oldest release fork-main lacks is v1.1' || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
+}
+
+# A release that does not merge cleanly onto main as it is now needs a person
+# to merge it by hand, not an approval, and its issue is already open: the
+# run fails by name instead of opening a second one.
+test_an_approved_release_that_does_not_merge_cleanly_fails_the_run() {
+    make_fixture || return 1
+    release v1.1 README.md 'cs is a session manager for Claude Code.' || return 1
+    printf '9\tSync upstream v1.1 needs a person\n' > "$GH/issue-list"
+    local status=0
+    run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$(git -C "$UP" rev-parse 'v1.1^{commit}')" || status=$?
+    assert_eq 1 "$status" "a conflict" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::v1.1 was approved, but it does not merge cleanly' || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
 }
 
 test_only_the_oldest_missing_release_is_merged() {
@@ -524,8 +641,12 @@ run_test test_the_merged_trees_build_never_sees_a_token
 run_test test_a_release_that_needs_a_person_becomes_an_issue
 run_test test_a_repository_with_issues_off_fails_by_name
 run_test test_issues_that_cannot_be_listed_fail_the_run
-run_test test_a_release_that_changes_a_workflow_never_merges_itself
-run_test test_a_merge_that_changes_the_publishing_script_never_merges_itself
+run_test test_a_release_that_changes_a_workflow_is_not_pushed_until_approved
+run_test test_a_merge_that_changes_the_publishing_script_is_not_pushed_until_approved
+run_test test_an_approved_release_is_pushed_and_gets_its_pull_request
+run_test test_an_approval_of_another_commit_is_refused
+run_test test_an_approval_of_a_release_that_is_not_next_is_refused
+run_test test_an_approved_release_that_does_not_merge_cleanly_fails_the_run
 run_test test_only_the_oldest_missing_release_is_merged
 run_test test_a_release_someone_already_has_is_left_alone
 run_test test_a_sync_merged_without_a_merge_commit_fails_the_run
