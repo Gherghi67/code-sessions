@@ -342,6 +342,7 @@ Commit your work first: the merge starts from the last commit, and git only reco
 Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its own. What is left is where both sides changed the same lines, which get conflict markers, and what no marker can show, which `start` lists under "Check by hand":
 
 - A line upstream added that reads a session variable through an operator (`${CLAUDE_SESSION_NAME//@/+}`, `${CLAUDE_SESSION_DIR%/}`). Bash applies an operator to one variable, so there is no `CS_`-first form of it; make the statement read one family of variables.
+- A line upstream added or changed with a default that closes on a later line (`${CLAUDE_SESSION_NAME:-$(`, its `)}` on the next line). The renames look for a default's closing brace on the same line, so they leave this one as upstream wrote it; give it the `CS_` form by hand.
 - A line of the fork's own that still names a file upstream renamed.
 - A file that is not text and changed on both sides, or was deleted on one side and changed on the other.
 

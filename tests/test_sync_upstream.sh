@@ -549,6 +549,27 @@ label="${CLAUDE_SESSION_NAME//@/+}"' "$(cat "$WT/tests/test_mail.sh")" || return
     assert_file_contains "$TEST_TMPDIR/continue.log" "Committed the merge of v1.1"
 }
 
+# A default whose closing brace is on a later line has a fork form, but the
+# renames find a default's end on its own line, so they leave this one as
+# upstream wrote it, and a person gives it the fork's form.
+test_start_stops_at_a_default_that_spans_lines() {
+    make_upstream && make_fork || return 1
+    # shellcheck disable=SC2016  # the fixture's text, not this suite's variables
+    printf '%s\n' 'name="${CLAUDE_SESSION_NAME:-$(' '    basename "$PWD")}"' >> "$UP/tests/test_mail.sh"
+    (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
+    WT="$TEST_TMPDIR/fork-sync-v1.1"
+    local status=0
+    sync_start || status=$?
+    assert_eq 1 "$status" "a default that spans lines waits for a person" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    # shellcheck disable=SC2016
+    grep -Fqx 'Check by hand, no marker written: tests/test_mail.sh: line 3 opens ${CLAUDE_SESSION_NAME:- and closes it on a later line, which the renames do not follow: give it the CS_ form by hand' \
+        "$TEST_TMPDIR/sync.log" || { cat "$TEST_TMPDIR/sync.log"; echo "  FAIL: the default is not reported"; return 1; }
+    assert_eq 1 "$(grep -c 'Check by hand' "$TEST_TMPDIR/sync.log")" || return 1
+    # shellcheck disable=SC2016
+    assert_eq 'name="${CLAUDE_SESSION_NAME:-$(' "$(sed -n 3p "$WT/tests/test_mail.sh")" || return 1
+    git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "  FAIL: the merge was committed"; return 1; }
+}
+
 # This checkout, not a fixture: upstream changes VERSION in lib/00-header.sh in
 # every release, and a line of the fork's touching it made each release a
 # conflict. Merges the fork's header with the last release it merged, bumped.
@@ -588,5 +609,6 @@ run_test test_a_changed_rename_of_a_file_the_fork_deleted_waits_for_a_person
 run_test test_start_never_writes_through_a_symlink_out_of_its_worktree
 run_test test_a_file_deleted_on_both_sides_needs_nobody
 run_test test_start_stops_at_an_expansion_with_no_fork_form
+run_test test_start_stops_at_a_default_that_spans_lines
 run_test test_an_upstream_version_bump_merges_into_this_forks_header
 report_results

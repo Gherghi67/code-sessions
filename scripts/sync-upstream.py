@@ -84,28 +84,51 @@ def git_ok(*args, cwd=None):
 
 # ---- the fork's variable forms --------------------------------------------
 
+def _closing(text, at):
+    """The index just past the brace that closes the expansion whose inside
+    starts at at, found by counting on the one line (${ opens, } closes), or
+    None when the line ends first."""
+    end, depth = at, 1
+    while depth and end < len(text) and text[end] != "\n":
+        if text.startswith("${", end):
+            depth, end = depth + 1, end + 2
+        else:
+            depth, end = depth - (text[end] == "}"), end + 1
+    return None if depth else end
+
+
 def _defaults(text, var, full):
     """${CLAUDE_X:-default} in the fork's form, whatever the default nests
     (${dir##*/}, another expansion with a default of its own). The closing
-    brace is found by counting on the one line: ${ opens, } closes."""
+    brace is looked for on the same line only; a default that closes on a
+    later line is left as it is (unclosed_defaults finds it)."""
     head, guard = "${CLAUDE_%s:-" % var, "${CS_%s:-" % var
     out, at = [], 0
     while True:
         start = text.find(head, at)
         if start < 0:
             return "".join(out) + text[at:]
-        end, depth = start + len(head), 1
-        while depth and end < len(text) and text[end] != "\n":
-            if text.startswith("${", end):
-                depth, end = depth + 1, end + 2
-            else:
-                depth, end = depth - (text[end] == "}"), end + 1
-        if depth or text.endswith(guard, 0, start):  # unclosed, or the fork's form already
+        end = _closing(text, start + len(head))
+        if end is None or text.endswith(guard, 0, start):  # unclosed, or the fork's form already
             out.append(text[at:start + len(head)])
             at = start + len(head)
         else:
             out.append(text[at:start] + full % _defaults(text[start + len(head):end - 1], var, full))
             at = end
+
+
+def unclosed_defaults(text):
+    """Each ${CLAUDE_X:- in text, not in the fork's form yet, whose default
+    closes on a later line: rename() leaves them as they are."""
+    found = []
+    for var in SESSION_VARS:
+        head, guard = "${CLAUDE_%s:-" % var, "${CS_%s:-" % var
+        start = text.find(head)
+        while start >= 0:
+            if _closing(text, start + len(head)) is None and not text.endswith(guard, 0, start):
+                found.append(head)
+            start = text.find(head, start + len(head))
+    return found
 
 
 def _session_var(text, var):
@@ -134,20 +157,38 @@ SKIPPED = re.compile(r"\$\{(?:[#!]CLAUDE_(?:%(vars)s)|CLAUDE_(?:%(vars)s)(?!\}|:
                      % {"vars": "|".join(SESSION_VARS)})
 
 
+def by_hand(line):
+    """What a person has to do about the expansions on this line that
+    rename() leaves as they are: [] when there are none."""
+    why, kept, unclosed = [], SKIPPED.findall(line), unclosed_defaults(line)
+    if kept:
+        why.append("keeps %s, which has no CS_ form: make the statement read one family of variables"
+                   % ", ".join(kept))
+    if unclosed:
+        why.append("opens %s and closes it on a later line, which the renames do not follow: "
+                   "give it the CS_ form by hand" % ", ".join(unclosed))
+    return why
+
+
 def half_renamed(base, upstream, result):
-    """[(line number, the expansions)] in result for the lines upstream
-    changed or added that keep an expansion rename() has no fork form for.
-    Left as they are, a statement reads two families of variables, or cs reads
-    the caller's session where it means the target's."""
-    if not SKIPPED.search(upstream):
+    """[(line number, what to do)] in result for the lines upstream changed or
+    added that keep an expansion rename() left as it is. One it has no fork
+    form for leaves a statement reading two families of variables, or cs
+    reading the caller's session where it means the target's. A default that
+    closes on a later line has a fork form, which a person writes."""
+    if not SKIPPED.search(upstream) and not unclosed_defaults(upstream):
         return []
     upstream_lines, wanted = upstream.split("\n"), set()
     for tag, _, _, j1, j2 in difflib.SequenceMatcher(
             None, base.split("\n"), upstream_lines, autojunk=False).get_opcodes():
         if tag in ("insert", "replace"):
-            wanted.update(rename(line) for line in upstream_lines[j1:j2] if SKIPPED.search(line))
-    return [(n + 1, SKIPPED.findall(line)) for n, line in enumerate(result.split("\n"))
-            if SKIPPED.search(line) and rename(line) in wanted]
+            wanted.update(rename(line) for line in upstream_lines[j1:j2] if by_hand(line))
+    found = []
+    for n, line in enumerate(result.split("\n")):
+        why = by_hand(line)
+        if why and rename(line) in wanted:
+            found += [(n + 1, reason) for reason in why]
+    return found
 
 
 def rename_changed_lines(base, upstream):
@@ -503,9 +544,8 @@ def plan_merge(repo, base_rev, upstream_rev, ours_rev, scratch):
         if path in followed:  # the worktree still holds it under the old name
             results[followed[path]] = (None, False)
         if renames_apply(path) and isinstance(result, str) and isinstance(u, str):
-            check += ["line %d keeps %s, which has no CS_ form: make the statement read one family of variables"
-                      % (number, ", ".join(kept))
-                      for number, kept in half_renamed(b if isinstance(b, str) else "", u, result)]
+            check += ["line %d %s" % (number, why)
+                      for number, why in half_renamed(b if isinstance(b, str) else "", u, result)]
         report.append({"path": path, "conflicts": count, "plain": plain, "how": how, "marker": marker,
                        "check": check})
     by_path = {entry["path"]: entry for entry in report}
