@@ -621,6 +621,40 @@ test_auto_merge_can_be_switched_off() {
     assert_file_contains "$TEST_TMPDIR/ci.log" 'Auto-merge is off'
 }
 
+# A kill switch a typo leaves on is not one. The value is read in any case,
+# and one that is not true, all or false turns auto-merge off and says so.
+test_auto_merge_is_off_for_any_value_but_true_or_all() {
+    make_fixture || return 1
+    release v1.1 NOTES.md notes || return 1
+    run_ci SYNC_AUTO_MERGE=False || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$GH/calls" '^pr create ' || return 1
+    assert_file_not_contains "$GH/calls" '^api graphql' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" 'Auto-merge is off' || return 1
+    assert_file_not_contains "$TEST_TMPDIR/ci.log" '^::warning::' || return 1
+
+    local value
+    for value in off TRUE; do
+        : > "$GH/calls"
+        : > "$TEST_TMPDIR/summary"
+        git -C "$ORIGIN" branch -q -D cs/sync-v1.1 || return 1
+        git -C "$FORK" branch -q -D sync/v1.1 || return 1
+        run_ci SYNC_AUTO_MERGE="$value" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+        assert_file_contains "$GH/calls" '^pr create ' || return 1
+        case "$value" in
+            off)
+                assert_file_not_contains "$GH/calls" '^api graphql' || return 1
+                assert_file_contains "$TEST_TMPDIR/ci.log" \
+                    "^::warning::SYNC_AUTO_MERGE is 'off', which is not true, all or false, so auto-merge is off" || return 1
+                assert_file_contains "$TEST_TMPDIR/summary" 'Auto-merge is off' || return 1
+                ;;
+            TRUE)
+                assert_file_contains "$GH/calls" '^api graphql ' || return 1
+                assert_file_not_contains "$TEST_TMPDIR/ci.log" '^::warning::' || return 1
+                ;;
+        esac
+    done
+}
+
 # A pushed branch with no pull request would make every later run skip the release.
 test_a_pull_request_that_cannot_be_opened_takes_its_branch_back() {
     make_fixture || return 1
@@ -809,6 +843,7 @@ run_test test_only_issues_with_the_workflows_label_count
 run_test test_a_release_held_too_long_fails_the_run
 run_test test_a_refused_auto_merge_leaves_the_pull_request_open
 run_test test_auto_merge_can_be_switched_off
+run_test test_auto_merge_is_off_for_any_value_but_true_or_all
 run_test test_a_pull_request_that_cannot_be_opened_takes_its_branch_back
 run_test test_an_issue_is_closed_once_its_release_is_merged
 run_test test_an_issue_that_cannot_be_closed_never_holds_a_release_back

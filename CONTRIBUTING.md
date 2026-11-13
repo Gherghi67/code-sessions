@@ -297,7 +297,7 @@ It needs these set up once in the repository:
 5. "Automatically delete head branches" (`gh repo edit --delete-branch-on-merge`), so each merged `cs/sync-<tag>` branch is removed instead of staying behind.
 6. Once the workflow is on `main`, `gh workflow list --all` showing `Sync upstream` as active. GitHub can leave a fork's scheduled workflows switched off; `gh workflow enable sync-upstream.yml` switches it on.
 
-Without the second and third, GitHub refuses auto-merge: the pull request stays open and the workflow comments on it with the command to merge it by hand. The repository variable `SYNC_AUTO_MERGE` changes the rule: `false` has every sync pull request wait for a person (one that changes `.github/` or the script still needs the approval before it is pushed), and `all` pushes those without approval and lets them merge themselves too.
+Without the second and third, GitHub refuses auto-merge: the pull request stays open and the workflow comments on it with the command to merge it by hand. The repository variable `SYNC_AUTO_MERGE` changes the rule: `false` has every sync pull request wait for a person (one that changes `.github/` or the script still needs the approval before it is pushed), and `all` pushes those without approval and lets them merge themselves too. Unset or `true` keeps the rule above. Case does not matter, and any other value counts as `false`, with a warning on the run, so a typo never leaves auto-merge on.
 
 The token is kept away from upstream's code until a person has read what could reach it:
 

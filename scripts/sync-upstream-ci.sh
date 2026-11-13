@@ -43,11 +43,13 @@ set -euo pipefail
 UPSTREAM_REMOTE="${SYNC_UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_URL="${SYNC_UPSTREAM_URL:-https://github.com/hex/claude-sessions.git}"
 BASE_BRANCH="${SYNC_BASE_BRANCH:-main}"
-# true: a clean merge's pull request merges itself. false: every pull request
-# waits for a person. Either way a release that changes a guarded path is
-# pushed only once a person approves it. all: such a release is pushed
-# without approval, and merges itself too.
-AUTO_MERGE="${SYNC_AUTO_MERGE:-true}"
+# true (or unset): a clean merge's pull request merges itself. false: every
+# pull request waits for a person. Either way a release that changes a
+# guarded path is pushed only once a person approves it. all: such a release
+# is pushed without approval, and merges itself too. Upper or lower case
+# alike; publish takes any other value as false (read_auto_merge). Control
+# characters are dropped, so the warning that names the value stays one line.
+AUTO_MERGE=$(printf '%s' "${SYNC_AUTO_MERGE:-}" | tr -d '[:cntrl:]' | tr '[:upper:]' '[:lower:]')
 # What the job holding the token runs or is defined by.
 GUARDED=(.github scripts/sync-upstream-ci.sh)
 # Set in a run started from a release's issue: the release a person read the
@@ -304,9 +306,24 @@ close_merged_issues() {
 # with :: would be a command to the runner.
 publish() {
     require_approval_inputs
+    read_auto_merge
     publish_release
     close_merged_issues
     [ ! -s "$out/stall" ] || fail "$(head -n 1 "$out/stall" | cut -c 1-1000)"
+}
+
+# SYNC_AUTO_MERGE is the kill switch, and one a typo leaves on is not one:
+# any value but the three it knows turns auto-merge off, and says so.
+read_auto_merge() {
+    case "$AUTO_MERGE" in
+        '') AUTO_MERGE=true ;;
+        true | all | false) ;;
+        *)
+            printf "::warning::SYNC_AUTO_MERGE is '%s', which is not true, all or false, so auto-merge is off.\n" "$AUTO_MERGE"
+            note "SYNC_AUTO_MERGE is '$AUTO_MERGE', which is not true, all or false: auto-merge is off, and every sync pull request waits for a person."
+            AUTO_MERGE=false
+            ;;
+    esac
 }
 
 # Opens the issue that asks a person about release $1, its body in $body, and
@@ -430,7 +447,7 @@ publish_release() {
     url=${url##*$'\n'}
     note "$tag merged cleanly: $url"
     if [ "$AUTO_MERGE" = false ]; then
-        note "Auto-merge is off (SYNC_AUTO_MERGE=false): merge it with a merge commit once its checks pass."
+        note "Auto-merge is off (SYNC_AUTO_MERGE is not true or all): merge it with a merge commit once its checks pass."
         return 0
     fi
     # Asked of the API, not of gh pr merge --auto: that merges at once a pull
