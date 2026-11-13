@@ -275,7 +275,36 @@ lists the command files the installer and uninstaller delete.
 
 ## Merging upstream releases
 
-code-sessions follows hex/claude-sessions, which often ships several releases a day. Merge them one at a time, as they come. Upstream is the remote named `origin`; `--remote <name>` before the command, or `SYNC_UPSTREAM_REMOTE`, names another.
+code-sessions follows hex/claude-sessions, which often ships several releases a day. They are merged one at a time, each onto the one before it, by `scripts/sync-upstream.py`: on GitHub by a workflow, or by hand.
+
+### The workflow
+
+`Sync upstream` (`.github/workflows/sync-upstream.yml`) runs four times a day, and when started by hand with `gh workflow run sync-upstream.yml`. Each run takes the oldest release `main` lacks:
+
+- One that merges with nothing left for a person is pushed as `cs/sync-<tag>` and gets a pull request, set to merge itself with a merge commit once its required checks pass. The workflow runs no tests: `Test` on the pull request is the gate.
+- One that merges cleanly and changes a file under `.github/` gets its pull request too, but is not set to merge itself: read the workflow changes it lists, then merge it. About one release in three changes a workflow.
+- One that needs a person gets an issue, `Sync upstream <tag> needs a person`, with the script's report. Merge it by hand (below), push the result as `cs/sync-<tag>` and open a pull request. The workflow closes the issue once `main` contains the release.
+- One that already has a pull request, a `cs/sync-<tag>` branch or an open issue is left to whoever has it, and the later releases wait behind it.
+
+It needs three things set up once in the repository:
+
+1. An environment named `upstream-sync`, limited to the `main` branch (Settings, Environments, "Deployment branches and tags"), holding a secret named `UPSTREAM_SYNC_TOKEN`: a fine-grained personal access token for this repository alone, with read and write access to Contents, Pull requests, Issues and Workflows. Store it with `gh secret set UPSTREAM_SYNC_TOKEN --env upstream-sync`, which asks for the value. The token GitHub hands a workflow run cannot do this: a push or a pull request made with it starts no workflow, so `Test` would never run on the sync pull request. Workflows is needed because an upstream release may change a file under `.github/workflows`.
+2. "Allow auto-merge" in the repository's settings.
+3. A ruleset on `main` that requires the eight `Test` checks (`bash` on both systems in two halves each, `build-sync`, `shellcheck`, `rust` on both systems) and allows merge commits only.
+
+Without the second and third, GitHub refuses auto-merge: the pull request stays open and the workflow comments on it with the command to merge it by hand. The repository variable `SYNC_AUTO_MERGE` changes the rule: `false` has every sync pull request wait for a person, and `all` lets one that changes a workflow merge itself too.
+
+The token is kept away from upstream's code until a person has read what could reach it:
+
+- The workflow has two jobs. `merge` runs the script, and with it `build.sh` from the merged tree, which is upstream's code before anyone has looked at it; that job gets no secret and a token that can only read. `publish` has the sync token and runs nothing the first job produced: it takes the merge commit out of a git bundle and hands it to `git push` and `gh` (`scripts/sync-upstream-ci.sh` is both jobs' script).
+- A sync branch can carry a workflow upstream changed, and that workflow runs for the pull request. A secret of the repository would be in its reach; one in an environment only `main` may use is not, which is why the token is stored there.
+- Once merged, a workflow runs on `main`, where the environment's secret can be read. That is why a release that changes a file under `.github/`, or the script `publish` runs, is never set to merge itself.
+
+Upstream's tags are fetched and never pushed: a `v*` tag on the fork would start its release workflow.
+
+### By hand
+
+Upstream is the remote named `origin`; `--remote <name>` before the command, or `SYNC_UPSTREAM_REMOTE`, names another.
 
 ```bash
 scripts/sync-upstream.py status       # the releases this branch lacks, oldest first, and what the next one conflicts in

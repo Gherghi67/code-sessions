@@ -1,0 +1,125 @@
+# ABOUTME: Merges each new hex/claude-sessions release into this fork with scripts/sync-upstream.py
+# ABOUTME: A clean merge becomes a cs/sync-<tag> pull request that merges itself once Test passes; the rest become issues
+
+name: Sync upstream
+
+# Four times a day, off the hour, when GitHub's scheduler is least loaded. A
+# run with nothing to merge takes about a minute. GitHub switches a schedule
+# off after 60 days without a commit to the repository; a sync that lands
+# counts as one.
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+# A second run waits for the first: two would push the same branch.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+# Each job names what it may do; nothing is granted here.
+permissions: {}
+
+jobs:
+  # Merges the oldest release the fork lacks and leaves the result as an
+  # artifact. Merging runs build.sh from the merged tree, which is upstream's
+  # code before anyone has looked at it, so this job can only read: it gets
+  # no secret, and the token GitHub hands it cannot write.
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      publish: ${{ steps.merge.outputs.publish }}
+    steps:
+      # The whole history: the merge base with upstream is found in it.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The merge commit's author. The push and the pull request are the
+      # sync token owner's.
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # Reads the fork's pull requests, branches and issues to leave alone a
+      # release someone already has.
+      - name: Merge the next upstream release
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/sync-upstream-ci.sh merge "$RUNNER_TEMP/sync"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: sync
+          path: ${{ runner.temp }}/sync
+          if-no-files-found: error
+          retention-days: 7
+
+  # Pushes the merge as cs/sync-<tag> and opens its pull request, or opens an
+  # issue for a release that needs a person. It runs nothing the merge job
+  # produced: the commit comes out of a bundle, the rest is read as text. It
+  # starts only when the merge job found one of those to open, or an issue of
+  # this workflow's to close.
+  #
+  # UPSTREAM_SYNC_TOKEN is a fine-grained personal access token for this
+  # repository alone: Contents, Pull requests, Issues and Workflows, all read
+  # and write (Workflows because an upstream release may change a file under
+  # .github/workflows). The token GitHub hands a run cannot stand in for it:
+  # a push or a pull request made with that one starts no workflow, so Test
+  # would never run on the sync pull request.
+  #
+  # The secret belongs in the upstream-sync environment, with that
+  # environment limited to the main branch, and not among the repository's
+  # secrets. A sync branch can carry a workflow upstream changed, and it runs
+  # for the pull request before anyone has read it: a repository secret is in
+  # its reach, one in an environment only main may use is not. CONTRIBUTING.md,
+  # "Merging upstream releases", has the setup.
+  publish:
+    needs: merge
+    if: needs.merge.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: upstream-sync
+    permissions:
+      contents: read
+    steps:
+      # Fails here, by name, where a missing secret would otherwise surface as
+      # a checkout error about an input.
+      - name: Require the sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          [ -n "$SYNC_TOKEN" ] || { echo "::error::The upstream-sync environment has no UPSTREAM_SYNC_TOKEN secret. See CONTRIBUTING.md, Merging upstream releases."; exit 1; }
+
+      # The token stays in the checkout's git configuration, so the push of
+      # the sync branch is made with it.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sync
+          path: ${{ runner.temp }}/sync
+
+      # SYNC_AUTO_MERGE, a repository variable: false has every sync pull
+      # request wait for a person; all lets one that changes a workflow merge
+      # itself too. Unset, a clean merge merges itself unless it changes one.
+      - name: Open the pull request or the issue
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SYNC_AUTO_MERGE: ${{ vars.SYNC_AUTO_MERGE }}
+        run: bash scripts/sync-upstream-ci.sh publish "$RUNNER_TEMP/sync"
