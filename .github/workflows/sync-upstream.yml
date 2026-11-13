@@ -74,10 +74,11 @@ jobs:
       # run that approves a release, fails by name unless it is the oldest one
       # main lacks and its tag still points at the approved commit.
       #
-      # SYNC_STALL_DAYS, a repository variable: how many days after it was
-      # tagged the oldest missing release may be held by a pull request, a
-      # branch or an issue; 3 when unset. Past that, the publish job fails the
-      # run by name once it has done its work.
+      # SYNC_STALL_DAYS, a repository variable: how many days the oldest
+      # missing release may be held by a pull request, a branch or an issue,
+      # counted from when the pull request or issue was opened or the branch's
+      # tip committed, never from the tag; 3 when unset. Past that, the
+      # publish job fails the run by name once it has done its work.
       - name: Merge the next upstream release
         id: merge
         env:

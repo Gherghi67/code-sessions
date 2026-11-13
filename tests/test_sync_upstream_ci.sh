@@ -26,14 +26,19 @@ make_fixture() {
     git -C "$FORK" remote remove origin
     git -C "$FORK" remote add origin "$ORIGIN"
     git -C "$FORK" push -q origin fork-main || return 1
+    # When the test began, for the time a pull request or issue was opened.
+    NOW=$(date +%s)
     make_gh
 }
 
 # gh, as far as the script uses it. Every call is one line of $GH/calls. The
 # pull request list answers from $GH/pr-list, as --jq would print it
-# (isCrossRepository<TAB>state<TAB>url, newest first). The issue list answers
-# from $GH/issue-list, number<TAB>title<TAB>labels (comma-separated), and as on
-# GitHub --label keeps only the issues that carry it. A --body-file is kept as
+# (isCrossRepository<TAB>state<TAB>url<TAB>created, newest first). The issue
+# list answers from $GH/issue-list, number<TAB>title<TAB>labels
+# (comma-separated)<TAB>created, as number<TAB>title<TAB>created, and as on
+# GitHub --label keeps only the issues that carry it. created is when the pull
+# request or issue was opened, in seconds since the epoch, and is answered
+# only when --json asks for createdAt. A --body-file is kept as
 # $GH/<pr|issue>-body, and a file named after a call ($GH/fail-pr-create,
 # $GH/fail-api-graphql) makes that call fail. An issue is opened with a label
 # only once label create has made it, as on GitHub. The repository has Issues
@@ -61,15 +66,23 @@ fi
 name="${3:-}"
 body=""
 label=""
+json=""
 while [ $# -gt 0 ]; do
     [ "$1" != --body-file ] || body="$2"
     [ "$1" != --label ] || label="$2"
+    [ "$1" != --json ] || json="$2"
     shift
 done
+created=0
+case ",$json," in *,createdAt,*) created=1 ;; esac
 case "$call" in
-    pr-list) cat "$dir/pr-list" 2> /dev/null ;;
+    pr-list)
+        awk -F '\t' -v created="$created" '{ print $1 "\t" $2 "\t" $3 (created == 1 ? "\t" $4 : "") }' \
+            "$dir/pr-list" 2> /dev/null
+        ;;
     issue-list)
-        awk -F '\t' -v label="$label" 'label == "" || index("," $3 ",", "," label ",") { print $1 "\t" $2 }' \
+        awk -F '\t' -v label="$label" -v created="$created" \
+            'label == "" || index("," $3 ",", "," label ",") { print $1 "\t" $2 (created == 1 ? "\t" $4 : "") }' \
             "$dir/issue-list" 2> /dev/null
         ;;
     label-create) printf '%s\n' "$name" >> "$dir/labels" ;;
@@ -279,7 +292,7 @@ test_a_build_that_writes_a_guarded_path_is_refused() {
             all) run_ci INJECT=1 SYNC_AUTO_MERGE=all || status=$? ;;
             approval)
                 # The issue an ordinary run would have opened asks for this run.
-                printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+                printf '9\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
                 run_ci INJECT=1 SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" || status=$?
                 ;;
         esac
@@ -423,7 +436,7 @@ test_an_approved_release_is_pushed_and_gets_its_pull_request() {
     release v1.1 .github/workflows/test.yml 'name: Test' || return 1
     local commit
     commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
-    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
     run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$commit" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_eq 'cs/sync-v1.1
 fork-main' "$(origin_branches)" || return 1
@@ -442,7 +455,7 @@ test_an_approval_of_another_commit_is_refused() {
     make_fixture || return 1
     mkdir -p "$UP/.github/workflows"
     release v1.1 .github/workflows/test.yml 'name: Test' || return 1
-    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
     local status commit other
     commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
     other=$(git -C "$UP" rev-parse 'v1^{commit}')
@@ -487,7 +500,7 @@ test_an_approval_that_main_moved_under_says_to_approve_again() {
     make_fixture || return 1
     mkdir -p "$UP/.github/workflows"
     release v1.1 .github/workflows/test.yml 'name: Test' || return 1
-    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
     local commit status
     commit=$(git -C "$UP" rev-parse 'v1.1^{commit}')
     rm -rf "$TEST_TMPDIR/work" "$TEST_TMPDIR/publish"
@@ -533,7 +546,7 @@ test_an_approval_of_a_release_that_is_not_next_is_refused() {
 test_an_approved_release_that_does_not_merge_cleanly_fails_the_run() {
     make_fixture || return 1
     release v1.1 README.md 'cs is a session manager for Claude Code.' || return 1
-    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
     local status=0
     run_ci SYNC_APPROVE_TAG=v1.1 SYNC_APPROVE_COMMIT="$(git -C "$UP" rev-parse 'v1.1^{commit}')" || status=$?
     assert_eq 1 "$status" "a conflict" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
@@ -558,7 +571,7 @@ fork-main' "$(origin_branches)" || return 1
 test_a_release_someone_already_has_is_left_alone() {
     make_fixture || return 1
     release v1.1 NOTES.md notes || return 1
-    printf 'false\tOPEN\thttps://github.com/fork/repo/pull/7\n' > "$GH/pr-list"
+    printf 'false\tOPEN\thttps://github.com/fork/repo/pull/7\t%s\n' "$NOW" > "$GH/pr-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$TEST_TMPDIR/ci.log" 'v1.1 already has a pull request (https://github.com/fork/repo/pull/7)' || return 1
     assert_eq "" "$(calls)" || return 1
@@ -566,7 +579,7 @@ test_a_release_someone_already_has_is_left_alone() {
     assert_eq fork-main "$(origin_branches)" || return 1
 
     : > "$GH/pr-list"
-    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\n4\tSomething else\tbug\n' > "$GH/issue-list"
+    printf '9\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n4\tSomething else\tbug\t%s\n' "$NOW" "$NOW" > "$GH/issue-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$TEST_TMPDIR/ci.log" 'v1.1 waits for a person: an issue for it is open' || return 1
     assert_eq "" "$(calls)" || return 1
@@ -587,7 +600,7 @@ test_a_release_someone_already_has_is_left_alone() {
 test_a_sync_merged_without_a_merge_commit_fails_the_run() {
     make_fixture || return 1
     release v1.1 NOTES.md notes || return 1
-    printf 'false\tMERGED\thttps://github.com/fork/repo/pull/7\n' > "$GH/pr-list"
+    printf 'false\tMERGED\thttps://github.com/fork/repo/pull/7\t%s\n' "$NOW" > "$GH/pr-list"
     local status=0
     run_ci || status=$?
     assert_eq 1 "$status" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
@@ -601,10 +614,10 @@ test_a_sync_merged_without_a_merge_commit_fails_the_run() {
 test_a_pull_request_from_another_repository_never_holds_a_release() {
     make_fixture || return 1
     release v1.1 NOTES.md notes || return 1
-    printf '%s\n' $'true\tOPEN\thttps://github.com/fork/repo/pull/8' \
-        $'true\tCLOSED\thttps://github.com/fork/repo/pull/6' > "$GH/pr-list"
+    printf 'true\tOPEN\thttps://github.com/fork/repo/pull/8\t%s\ntrue\tCLOSED\thttps://github.com/fork/repo/pull/6\t%s\n' \
+        "$NOW" "$NOW" > "$GH/pr-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
-    assert_file_contains "$GH/calls" '^pr list --head cs/sync-v1.1 --state all --json isCrossRepository,state,url ' || return 1
+    assert_file_contains "$GH/calls" '^pr list --head cs/sync-v1.1 --state all --json isCrossRepository,state,url,createdAt ' || return 1
     assert_eq 'cs/sync-v1.1
 fork-main' "$(origin_branches)" || return 1
     assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 '
@@ -617,7 +630,7 @@ fork-main' "$(origin_branches)" || return 1
 test_a_sync_pull_request_closed_without_merging_fails_the_run() {
     make_fixture || return 1
     release v1.1 NOTES.md notes || return 1
-    printf 'false\tCLOSED\thttps://github.com/fork/repo/pull/7\n' > "$GH/pr-list"
+    printf 'false\tCLOSED\thttps://github.com/fork/repo/pull/7\t%s\n' "$NOW" > "$GH/pr-list"
     local status=0
     run_ci || status=$?
     assert_eq 1 "$status" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
@@ -626,8 +639,8 @@ test_a_sync_pull_request_closed_without_merging_fails_the_run() {
     assert_eq "" "$(calls)" || return 1
     assert_eq fork-main "$(origin_branches)" || return 1
     # The newest of this repository's pull requests for the branch is the one that counts.
-    printf '%s\n' $'false\tOPEN\thttps://github.com/fork/repo/pull/8' \
-        $'false\tCLOSED\thttps://github.com/fork/repo/pull/7' > "$GH/pr-list"
+    printf 'false\tOPEN\thttps://github.com/fork/repo/pull/8\t%s\nfalse\tCLOSED\thttps://github.com/fork/repo/pull/7\t%s\n' \
+        "$NOW" "$NOW" > "$GH/pr-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$TEST_TMPDIR/ci.log" 'v1.1 already has a pull request (https://github.com/fork/repo/pull/8)'
 }
@@ -637,46 +650,50 @@ test_a_sync_pull_request_closed_without_merging_fails_the_run() {
 # release back nor starts the job that holds the token, and is never closed.
 test_only_issues_with_the_workflows_label_count() {
     make_fixture || return 1
-    printf '5\tSync upstream v1 needs a person\tbug\n' > "$GH/issue-list"
+    printf '5\tSync upstream v1 needs a person\tbug\t%s\n' "$NOW" > "$GH/issue-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$GH/calls" '^issue list --label sync-upstream ' || return 1
     assert_eq publish=false "$(publish_wanted)" || return 1
     assert_eq "" "$(calls)" || return 1
 
     release v1.1 NOTES.md notes || return 1
-    printf '5\tSync upstream v1.1 needs a person\n' > "$GH/issue-list"
+    printf '5\tSync upstream v1.1 needs a person\t\t%s\n' "$NOW" > "$GH/issue-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_eq 'cs/sync-v1.1
 fork-main' "$(origin_branches)" || return 1
     assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 '
 }
 
-# A release left to someone for longer than SYNC_STALL_DAYS since it was
-# tagged fails the run by name: a stall that stays green is never seen. The
-# publish job fails, once it has done its other work, so the issues it can
-# close are closed and the merge job's outputs stay true.
+# A release left to someone for longer than SYNC_STALL_DAYS fails the run by
+# name: a stall that stays green is never seen. The days are counted from
+# when the hold began (its pull request or issue opened, on GitHub's clock,
+# or its branch's tip committed), never from the tag, whose date upstream
+# sets: a tag dated in the future would never alarm. The publish job fails,
+# once it has done its other work, so the issues it can close are closed and
+# the merge job's outputs stay true.
 test_a_release_held_too_long_fails_the_run() {
     make_fixture || return 1
-    (export GIT_COMMITTER_DATE="$(($(date +%s) - 10 * 86400)) +0000" && release v1.1 NOTES.md notes) || return 1
+    # Tagged ten days from now: the tag's date does not count.
+    (export GIT_COMMITTER_DATE="$((NOW + 10 * 86400)) +0000" && release v1.1 NOTES.md notes) || return 1
     release v1.2 CHANGES.md changes || return 1
-    local status tagged
-    tagged=$(git -C "$UP" for-each-ref --format='%(creatordate:short)' refs/tags/v1.1)
+    local status old tip
+    old=$((NOW - 10 * 86400))
 
-    # Its pull request is open: a check that fails, or auto-merge off.
-    printf 'false\tOPEN\thttps://github.com/fork/repo/pull/7\n' > "$GH/pr-list"
-    printf '9\tSync upstream v1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    # Its pull request, opened ten days ago, is open: a check that fails, or auto-merge off.
+    printf 'false\tOPEN\thttps://github.com/fork/repo/pull/7\t%s\n' "$old" > "$GH/pr-list"
+    printf '9\tSync upstream v1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
     status=0
     run_ci || status=$?
     assert_eq 1 "$status" "held by its pull request" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_eq publish=true "$(publish_wanted)" || return 1
     assert_file_contains "$TEST_TMPDIR/ci.log" \
-        "^::error::v1.1, tagged $tagged, has waited longer than SYNC_STALL_DAYS (3 days) allows: its pull request https://github.com/fork/repo/pull/7 is still open" || return 1
+        "^::error::v1.1 has been held for 10 days, longer than SYNC_STALL_DAYS (3 days) allows: its pull request https://github.com/fork/repo/pull/7 is still open" || return 1
     assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::v1.1.* 1 later release waits behind it\.$' || return 1
     # The issue of a merged release is closed all the same, and the run fails last.
     assert_eq 'issue close 9 --comment `fork-main` contains v1 now.' "$(calls)" || return 1
     assert_file_contains "$TEST_TMPDIR/summary" 'Closed #9' || return 1
     case "$(tail -n 2 "$TEST_TMPDIR/ci.log" | head -n 1)" in
-        '::error::v1.1, tagged '*) ;;
+        '::error::v1.1 has been held '*) ;;
         *) cat "$TEST_TMPDIR/ci.log"; echo "  FAIL: the run did not fail last"; return 1 ;;
     esac
 
@@ -694,26 +711,28 @@ test_a_release_held_too_long_fails_the_run() {
         assert_file_not_contains "$TEST_TMPDIR/ci.log" 'second' || return 1
     done
 
-    # A branch and no pull request: a run that stopped between the push and the pull request.
+    # A branch and no pull request: a run that stopped between the push and
+    # the pull request. Its tip was committed ten days ago.
     : > "$GH/pr-list"
     : > "$GH/issue-list"
     : > "$GH/calls"
-    git -C "$FORK" push -q origin fork-main:refs/heads/cs/sync-v1.1 || return 1
+    tip=$(GIT_COMMITTER_DATE="$old +0000" git -C "$FORK" commit-tree 'fork-main^{tree}' -p fork-main -m "pushed") || return 1
+    git -C "$FORK" push -q origin "$tip:refs/heads/cs/sync-v1.1" || return 1
     status=0
     run_ci || status=$?
     assert_eq 1 "$status" "held by a branch" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_eq publish=true "$(publish_wanted)" || return 1
     assert_file_contains "$TEST_TMPDIR/ci.log" \
-        '^::error::v1.1, .*: the fork has a cs/sync-v1.1 branch and no pull request for it\..*git push origin :cs/sync-v1.1' || return 1
+        '^::error::v1.1 has been held for 10 days, .*: the fork has a cs/sync-v1.1 branch and no pull request for it\..*git push origin :cs/sync-v1.1' || return 1
     assert_eq "" "$(calls)" || return 1
     git -C "$FORK" push -q origin :refs/heads/cs/sync-v1.1 || return 1
 
-    # Its issue is open: nobody has merged it by hand or approved it.
-    printf '3\tSync upstream v1.1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    # Its issue, opened ten days ago, is open: nobody has merged it by hand or approved it.
+    printf '3\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$old" > "$GH/issue-list"
     status=0
     run_ci || status=$?
     assert_eq 1 "$status" "held by its issue" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
-    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::v1.1, .*: issue #3 is still open' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::v1.1 has been held for 10 days, .*: issue #3 is still open' || return 1
 
     # How long is the repository's to say, and a value that is no number of
     # days is the default, not no limit at all.
@@ -725,7 +744,34 @@ test_a_release_held_too_long_fails_the_run() {
     run_ci SYNC_STALL_DAYS=soon || status=$?
     assert_eq 1 "$status" "SYNC_STALL_DAYS=soon" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_file_contains "$TEST_TMPDIR/ci.log" '^::warning::SYNC_STALL_DAYS is not a whole number of days' || return 1
-    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::v1.1, .*SYNC_STALL_DAYS (3 days)' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::v1.1 has been held .*SYNC_STALL_DAYS (3 days)' || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
+}
+
+# A hold that began just now is no stall, however long ago upstream tagged
+# the release: a backlog being caught up, or a pull request that waits for a
+# person under SYNC_AUTO_MERGE=false, holds an old tag from the hour it began.
+test_a_hold_that_just_began_is_no_stall_however_old_the_tag() {
+    make_fixture || return 1
+    (export GIT_COMMITTER_DATE="$((NOW - 10 * 86400)) +0000" && release v1.1 NOTES.md notes) || return 1
+    local how status
+    for how in 'pull request' branch issue; do
+        : > "$GH/pr-list"
+        : > "$GH/issue-list"
+        case "$how" in
+            'pull request') printf 'false\tOPEN\thttps://github.com/fork/repo/pull/7\t%s\n' "$NOW" > "$GH/pr-list" ;;
+            # The fork's head, committed as the test began.
+            branch) git -C "$FORK" push -q origin fork-main:refs/heads/cs/sync-v1.1 || return 1 ;;
+            issue) printf '3\tSync upstream v1.1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list" ;;
+        esac
+        status=0
+        run_ci || status=$?
+        assert_eq 0 "$status" "held by a $how just now" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+        assert_file_not_contains "$TEST_TMPDIR/ci.log" '^::error::' || return 1
+        assert_file_not_contains "$TEST_TMPDIR/ci.log" 'SYNC_STALL_DAYS' || return 1
+        [ "$how" != branch ] || git -C "$FORK" push -q origin :refs/heads/cs/sync-v1.1 || return 1
+    done
     assert_eq "" "$(calls)" || return 1
     assert_eq fork-main "$(origin_branches)"
 }
@@ -906,8 +952,9 @@ EOF
 test_an_issue_is_closed_once_its_release_is_merged() {
     make_fixture || return 1
     release v1.1 README.md 'cs is a session manager for Claude Code.' || return 1
-    printf '%s\n' $'9\tSync upstream v1 needs a person\tsync-upstream' $'3\tSync upstream v1.1 needs a person\tsync-upstream' \
-        $'4\tSync upstream v7 needs a person\tsync-upstream' $'5\tSomething else\tbug' > "$GH/issue-list"
+    printf '%s\t%s\n' $'9\tSync upstream v1 needs a person\tsync-upstream' "$NOW" \
+        $'3\tSync upstream v1.1 needs a person\tsync-upstream' "$NOW" \
+        $'4\tSync upstream v7 needs a person\tsync-upstream' "$NOW" $'5\tSomething else\tbug' "$NOW" > "$GH/issue-list"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_eq 'issue close 9 --comment `fork-main` contains v1 now.' "$(calls)"
 }
@@ -918,7 +965,7 @@ test_an_issue_is_closed_once_its_release_is_merged() {
 test_an_issue_that_cannot_be_closed_never_holds_a_release_back() {
     make_fixture || return 1
     release v1.1 NOTES.md notes || return 1
-    printf '9\tSync upstream v1 needs a person\tsync-upstream\n' > "$GH/issue-list"
+    printf '9\tSync upstream v1 needs a person\tsync-upstream\t%s\n' "$NOW" > "$GH/issue-list"
     printf 'HTTP 403: Issue is locked\n' > "$GH/fail-issue-close"
     run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
     assert_eq 'cs/sync-v1.1
@@ -1086,6 +1133,7 @@ run_test test_a_pull_request_from_another_repository_never_holds_a_release
 run_test test_a_sync_pull_request_closed_without_merging_fails_the_run
 run_test test_only_issues_with_the_workflows_label_count
 run_test test_a_release_held_too_long_fails_the_run
+run_test test_a_hold_that_just_began_is_no_stall_however_old_the_tag
 run_test test_a_refused_auto_merge_leaves_the_pull_request_open
 run_test test_auto_merge_can_be_switched_off
 run_test test_auto_merge_is_off_for_any_value_but_true_or_all

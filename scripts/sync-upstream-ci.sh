@@ -42,7 +42,7 @@ set -euo pipefail
 # repository's cs/sync-<tag> branch, that branch alone, or an open issue
 # carrying the workflow's label is left to whoever has it (the run that
 # approves it goes past its issue), and the later ones wait behind it. Held
-# for longer than SYNC_STALL_DAYS since it was tagged, it fails the run by
+# for longer than SYNC_STALL_DAYS since the hold began, it fails the run by
 # name; so does a sync pull request closed without merging, since a release
 # cannot be skipped. Tags are fetched from upstream and never pushed: a v*
 # tag pushed to the fork would start its release workflow.
@@ -70,7 +70,8 @@ ISSUE_SUFFIX=" needs a person"
 # without it neither holds a release back nor starts the job with the token.
 LABEL=sync-upstream
 # How many days the oldest missing release may be held (by a pull request, a
-# branch or an issue) after it was tagged before the run fails to say so.
+# branch or an issue) before the run fails to say so: counted from when the
+# hold began, never from the tag, whose date is upstream's to set.
 STALL_DAYS="${SYNC_STALL_DAYS:-3}"
 # GitHub refuses a pull request or issue body over 65,536 characters, and
 # upstream decides how long the parts it writes are: the sync report, fences
@@ -126,32 +127,37 @@ require_issues() {
         || fail "The repository has Issues switched off, and this workflow opens an issue for each release that needs a person. Switch them on with gh repo edit --enable-issues, or in Settings, General, Features."
 }
 
-# The workflow's open issues in $issues, number<TAB>title a line: only those
-# with its label. A list gh could not read fails the run: taken for no issue,
-# it would merge a release a person already has, or never start the job that
-# closes the workflow's own.
+# The workflow's open issues in $issues, number<TAB>title<TAB>opened a line,
+# opened in seconds since the epoch: only those with its label. A list gh
+# could not read fails the run: taken for no issue, it would merge a release
+# a person already has, or never start the job that closes the workflow's own.
 open_issues() {
-    issues=$(gh issue list --label "$LABEL" --state open --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"') \
+    issues=$(gh issue list --label "$LABEL" --state open --limit 200 --json number,title,createdAt \
+        --jq '.[] | "\(.number)\t\(.title)\t\(.createdAt | fromdateiso8601)"') \
         || fail "Could not list the repository's open issues; gh said why above."
 }
 
-# The oldest missing release is held by someone. Held for longer than
-# STALL_DAYS since it was tagged, the run has to fail, or a stall stays green
-# and nobody sees it. The merge job only writes that down: failing there would
-# start no publish job, and the workflow's merged issues would stay open. The
-# publish job, started for it, does its usual work and then fails with it.
-stalled() {  # tag, releases missing, what holds it
-    local created behind
-    created=$(git for-each-ref --format='%(creatordate:unix)' "refs/tags/$1")
-    [[ $created =~ ^[0-9]+$ ]] || fail "Could not read when $1 was tagged."
-    [ $(($(date +%s) - created)) -gt $((10#$STALL_DAYS * 86400)) ] || return 0
+# The oldest missing release is held by someone, since $3, in seconds since
+# the epoch: when its pull request or its issue was opened, on GitHub's clock,
+# or when its branch's tip was committed. Not since it was tagged: upstream
+# sets that date, a future one would never alarm, and every release of a
+# backlog has an old one, though its hold began an hour ago. Held for longer
+# than STALL_DAYS, the run has to fail, or a stall stays green and nobody
+# sees it. The merge job only writes that down: failing there would start no
+# publish job, and the workflow's merged issues would stay open. The publish
+# job, started for it, does its usual work and then fails with it.
+stalled() {  # tag, releases missing, held since, what holds it
+    local held behind
+    [[ $3 =~ ^[0-9]{1,12}$ ]] || fail "Could not read when the hold on $1 began."
+    held=$(($(date +%s) - 10#$3))
+    [ "$held" -gt $((10#$STALL_DAYS * 86400)) ] || return 0
     behind=$(($2 - 1))
     case "$behind" in
         0) behind="" ;;
         1) behind=" 1 later release waits behind it." ;;
         *) behind=" $behind later releases wait behind it." ;;
     esac
-    result stall "$1, tagged $(git for-each-ref --format='%(creatordate:short)' "refs/tags/$1"), has waited longer than SYNC_STALL_DAYS ($STALL_DAYS days) allows: $3$behind"
+    result stall "$1 has been held for $((held / 86400)) days, longer than SYNC_STALL_DAYS ($STALL_DAYS days) allows: $4$behind"
     note "That is longer than SYNC_STALL_DAYS ($STALL_DAYS days) allows, so the run fails once it has done the rest of its work."
 }
 
@@ -199,7 +205,7 @@ merge() {
         clean | person) publish=true ;;
         *)
             open_issues
-            ! printf '%s\n' "$issues" | cut -f2- | grep -x -- "$ISSUE_PREFIX"'v.*'"$ISSUE_SUFFIX" > /dev/null || publish=true
+            ! printf '%s\n' "$issues" | cut -f2 | grep -x -- "$ISSUE_PREFIX"'v.*'"$ISSUE_SUFFIX" > /dev/null || publish=true
             ;;
     esac
     [ ! -e "$out/stall" ] || publish=true
@@ -209,7 +215,7 @@ merge() {
 merge_release() {
     result outcome none
     git remote get-url "$UPSTREAM_REMOTE" > /dev/null 2>&1 || git remote add "$UPSTREAM_REMOTE" "$UPSTREAM_URL"
-    local tags tag branch waiting prs pr state url found number worktree log status
+    local tags tag branch waiting prs pr state url since found issue number worktree log status
     tags=$(sync missing)
     if [ -z "$tags" ]; then
         [ -z "$APPROVE_TAG" ] || fail "This run approves $APPROVE_TAG, but $BASE_BRANCH lacks no upstream release."
@@ -228,17 +234,19 @@ merge_release() {
     fi
 
     result outcome skip
-    prs=$(gh pr list --head "$branch" --state all --json isCrossRepository,state,url \
-        --jq '.[] | "\(.isCrossRepository)\t\(.state)\t\(.url)"') \
+    prs=$(gh pr list --head "$branch" --state all --json isCrossRepository,state,url,createdAt \
+        --jq '.[] | "\(.isCrossRepository)\t\(.state)\t\(.url)\t\(.createdAt | fromdateiso8601)"') \
         || fail "Could not list the pull requests for $branch; gh said why above."
     # --head matches a branch of that name in any repository, and anyone can
     # open a pull request from a fork's. Only this repository's own count, the
     # newest first. awk reads to the end: one that stopped at the first match
     # would leave printf writing to a closed pipe, a failure under pipefail.
-    pr=$(printf '%s\n' "$prs" | awk -F '\t' '$1 == "false" && !found { print $2 "\t" $3; found = 1 }')
+    pr=$(printf '%s\n' "$prs" | awk -F '\t' '$1 == "false" && !found { print $2 "\t" $3 "\t" $4; found = 1 }')
     if [ -n "$pr" ]; then
         state=${pr%%$'\t'*}
         url=${pr#*$'\t'}
+        since=${url#*$'\t'}
+        url=${url%%$'\t'*}
         case "$state" in
             # Squashed or rebased, the pull request is merged and the release
             # still is not an ancestor of main: every later sync would start
@@ -249,7 +257,7 @@ merge_release() {
             CLOSED) fail "$url was closed without merging, and $tag cannot be skipped: each sync merges onto the one before it, so every later release waits behind it. Reopen it, or merge $tag by hand (scripts/sync-upstream.py start --to $tag) and land that with a merge commit." ;;
         esac
         note "$tag already has a pull request ($url); nothing to do until it lands."
-        stalled "$tag" "$waiting" "its pull request $url is still open. Find out what keeps it from merging (a failing check, or auto-merge off) and merge it."
+        stalled "$tag" "$waiting" "$since" "its pull request $url is still open. Find out what keeps it from merging (a failing check, or auto-merge off) and merge it."
         return 0
     fi
     found=0
@@ -257,7 +265,10 @@ merge_release() {
     case "$found" in
         0)
             note "$tag: the fork already has a $branch branch and no pull request for it; left to whoever pushed it."
-            stalled "$tag" "$waiting" "the fork has a $branch branch and no pull request for it. Open one, or, if a run stopped between pushing the branch and opening its pull request, delete the branch (git push origin :$branch) and the next run merges $tag again."
+            # Pushed about when its tip was committed: no pull request says when.
+            git fetch --quiet --no-tags origin "refs/heads/$branch" \
+                || fail "Could not fetch $branch to read when it was pushed."
+            stalled "$tag" "$waiting" "$(git log -1 --format=%ct FETCH_HEAD)" "the fork has a $branch branch and no pull request for it. Open one, or, if a run stopped between pushing the branch and opening its pull request, delete the branch (git push origin :$branch) and the next run merges $tag again."
             return 0
             ;;
         2) ;;
@@ -268,10 +279,12 @@ merge_release() {
         note "$tag is approved for commit $APPROVE_COMMIT."
     else
         open_issues
-        number=$(printf '%s\n' "$issues" | awk -F '\t' -v title="$ISSUE_PREFIX$tag$ISSUE_SUFFIX" '$2 == title && number == "" { number = $1 } END { print number }')
-        if [ -n "$number" ]; then
+        issue=$(printf '%s\n' "$issues" | awk -F '\t' -v title="$ISSUE_PREFIX$tag$ISSUE_SUFFIX" \
+            '$2 == title && number == "" { number = $1; opened = $3 } END { if (number != "") print number "\t" opened }')
+        if [ -n "$issue" ]; then
+            number=${issue%%$'\t'*}
             note "$tag waits for a person: an issue for it is open (#$number)."
-            stalled "$tag" "$waiting" "issue #$number is still open. It needs a person, to merge $tag by hand or to approve it as the issue says."
+            stalled "$tag" "$waiting" "${issue#*$'\t'}" "issue #$number is still open. It needs a person, to merge $tag by hand or to approve it as the issue says."
             return 0
         fi
     fi
@@ -311,7 +324,7 @@ merge_release() {
 close_merged_issues() {
     local number title merged
     open_issues
-    printf '%s\n' "$issues" | while IFS=$'\t' read -r number title; do
+    printf '%s\n' "$issues" | while IFS=$'\t' read -r number title _; do
         case "$title" in
             "$ISSUE_PREFIX"v*"$ISSUE_SUFFIX") ;;
             *) continue ;;
