@@ -31,11 +31,14 @@ set -euo pipefail
 # in an environment only main may use.
 #
 # One release a run, the oldest first, since each is merged onto the one
-# before it. A release that already has a pull request, a cs/sync-<tag>
-# branch or an open issue is left to whoever has it (the run that approves
-# it goes past its issue), and the later ones wait behind it. Tags are
-# fetched from upstream and never pushed: a v* tag pushed to the fork would
-# start its release workflow.
+# before it. A release that already has a pull request from this
+# repository's cs/sync-<tag> branch, that branch alone, or an open issue
+# carrying the workflow's label is left to whoever has it (the run that
+# approves it goes past its issue), and the later ones wait behind it. Held
+# for longer than SYNC_STALL_DAYS since it was tagged, it fails the run by
+# name; so does a sync pull request closed without merging, since a release
+# cannot be skipped. Tags are fetched from upstream and never pushed: a v*
+# tag pushed to the fork would start its release workflow.
 
 UPSTREAM_REMOTE="${SYNC_UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_URL="${SYNC_UPSTREAM_URL:-https://github.com/hex/claude-sessions.git}"
@@ -53,6 +56,13 @@ APPROVE_TAG="${SYNC_APPROVE_TAG:-}"
 APPROVE_COMMIT="${SYNC_APPROVE_COMMIT:-}"
 ISSUE_PREFIX="Sync upstream "
 ISSUE_SUFFIX=" needs a person"
+# The workflow's own issues carry it. Anyone can open an issue with any
+# title, but only someone with triage access can label one, so an issue
+# without it neither holds a release back nor starts the job with the token.
+LABEL=sync-upstream
+# How many days the oldest missing release may be held (by a pull request, a
+# branch or an issue) after it was tagged before the run fails to say so.
+STALL_DAYS="${SYNC_STALL_DAYS:-3}"
 SYNC_PY="$(cd -- "$(dirname -- "$0")" && pwd)/sync-upstream.py"
 
 # The run's outcome, in the log and on the run's summary page.
@@ -82,12 +92,33 @@ require_issues() {
         || fail "The repository has Issues switched off, and this workflow opens an issue for each release that needs a person. Switch them on with gh repo edit --enable-issues, or in Settings, General, Features."
 }
 
-# The open issues in $issues, number<TAB>title a line. A list gh could not
-# read fails the run: taken for no issue, it would merge a release a person
-# already has, or never start the job that closes the workflow's own.
+# The workflow's open issues in $issues, number<TAB>title a line: only those
+# with its label. A list gh could not read fails the run: taken for no issue,
+# it would merge a release a person already has, or never start the job that
+# closes the workflow's own.
 open_issues() {
-    issues=$(gh issue list --state open --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"') \
+    issues=$(gh issue list --label "$LABEL" --state open --limit 200 --json number,title --jq '.[] | "\(.number)\t\(.title)"') \
         || fail "Could not list the repository's open issues; gh said why above."
+}
+
+# The oldest missing release is held by someone. Held for longer than
+# STALL_DAYS since it was tagged, the run has to fail, or a stall stays green
+# and nobody sees it. The merge job only writes that down: failing there would
+# start no publish job, and the workflow's merged issues would stay open. The
+# publish job, started for it, does its usual work and then fails with it.
+stalled() {  # tag, releases missing, what holds it
+    local created behind
+    created=$(git for-each-ref --format='%(creatordate:unix)' "refs/tags/$1")
+    [[ $created =~ ^[0-9]+$ ]] || fail "Could not read when $1 was tagged."
+    [ $(($(date +%s) - created)) -gt $((10#$STALL_DAYS * 86400)) ] || return 0
+    behind=$(($2 - 1))
+    case "$behind" in
+        0) behind="" ;;
+        1) behind=" 1 later release waits behind it." ;;
+        *) behind=" $behind later releases wait behind it." ;;
+    esac
+    result stall "$1, tagged $(git for-each-ref --format='%(creatordate:short)' "refs/tags/$1"), has waited longer than SYNC_STALL_DAYS ($STALL_DAYS days) allows: $3$behind"
+    note "That is longer than SYNC_STALL_DAYS ($STALL_DAYS days) allows, so the run fails once it has done the rest of its work."
 }
 
 # A bad input is not repeated in the message: whoever started the run typed
@@ -115,13 +146,20 @@ result() {  # name, value
 # The oldest missing release, merged in a worktree of its own. Leaves in <dir>:
 # outcome (none: up to date; skip: someone has it; clean: merged and committed;
 # person: it needs one), and with clean or person the tag and the report, and
-# for clean the commit and a bundle holding it.
+# for clean the commit and a bundle holding it. With skip, stall when it has
+# been held too long.
 merge() {
     require_approval_inputs
+    if ! [[ $STALL_DAYS =~ ^[0-9]{1,5}$ ]]; then
+        # A typo is no reason to have no alarm at all.
+        printf '::warning::SYNC_STALL_DAYS is not a whole number of days, so this run takes 3.\n'
+        STALL_DAYS=3
+    fi
     require_issues
     merge_release
     # The publish job, and with it the token, is only started for a pull
-    # request or an issue to open, or for an issue of its own it may close.
+    # request or an issue to open, for an issue of its own it may close, or
+    # to fail the run over a release held too long.
     local publish=false
     case "$(cat "$out/outcome")" in
         clean | person) publish=true ;;
@@ -130,13 +168,14 @@ merge() {
             ! printf '%s\n' "$issues" | cut -f2- | grep -x -- "$ISSUE_PREFIX"'v.*'"$ISSUE_SUFFIX" > /dev/null || publish=true
             ;;
     esac
+    [ ! -e "$out/stall" ] || publish=true
     [ -z "${GITHUB_OUTPUT:-}" ] || printf 'publish=%s\n' "$publish" >> "$GITHUB_OUTPUT"
 }
 
 merge_release() {
     result outcome none
     git remote get-url "$UPSTREAM_REMOTE" > /dev/null 2>&1 || git remote add "$UPSTREAM_REMOTE" "$UPSTREAM_URL"
-    local tags tag branch waiting pr found worktree log status
+    local tags tag branch waiting prs pr state url found number worktree log status
     tags=$(sync missing)
     if [ -z "$tags" ]; then
         [ -z "$APPROVE_TAG" ] || fail "This run approves $APPROVE_TAG, but $BASE_BRANCH lacks no upstream release."
@@ -155,14 +194,28 @@ merge_release() {
     fi
 
     result outcome skip
-    pr=$(gh pr list --head "$branch" --state all --json state,url --jq '.[0] | select(.) | "\(.state)\t\(.url)"')
+    prs=$(gh pr list --head "$branch" --state all --json isCrossRepository,state,url \
+        --jq '.[] | "\(.isCrossRepository)\t\(.state)\t\(.url)"') \
+        || fail "Could not list the pull requests for $branch; gh said why above."
+    # --head matches a branch of that name in any repository, and anyone can
+    # open a pull request from a fork's. Only this repository's own count, the
+    # newest first. awk reads to the end: one that stopped at the first match
+    # would leave printf writing to a closed pipe, a failure under pipefail.
+    pr=$(printf '%s\n' "$prs" | awk -F '\t' '$1 == "false" && !found { print $2 "\t" $3; found = 1 }')
     if [ -n "$pr" ]; then
-        # Squashed or rebased, the pull request is merged and the release still
-        # is not an ancestor of main: every later sync would start from an
-        # older one. A green run that skipped it would hide that for good.
-        [ "${pr%%$'\t'*}" != MERGED ] \
-            || fail "${pr#*$'\t'} is merged, but $BASE_BRANCH does not contain $tag: it was not landed with a merge commit. Merge $tag again by hand (scripts/sync-upstream.py start --to $tag) and land that with a merge commit."
-        note "$tag already has a pull request (${pr#*$'\t'}); nothing to do until it lands."
+        state=${pr%%$'\t'*}
+        url=${pr#*$'\t'}
+        case "$state" in
+            # Squashed or rebased, the pull request is merged and the release
+            # still is not an ancestor of main: every later sync would start
+            # from an older one. A green run that skipped it would hide that.
+            MERGED) fail "$url is merged, but $BASE_BRANCH does not contain $tag: it was not landed with a merge commit. Merge $tag again by hand (scripts/sync-upstream.py start --to $tag) and land that with a merge commit." ;;
+            # Taken for someone having it, it would hold every later release
+            # back for good, each run green.
+            CLOSED) fail "$url was closed without merging, and $tag cannot be skipped: each sync merges onto the one before it, so every later release waits behind it. Reopen it, or merge $tag by hand (scripts/sync-upstream.py start --to $tag) and land that with a merge commit." ;;
+        esac
+        note "$tag already has a pull request ($url); nothing to do until it lands."
+        stalled "$tag" "$waiting" "its pull request $url is still open. Find out what keeps it from merging (a failing check, or auto-merge off) and merge it."
         return 0
     fi
     found=0
@@ -170,6 +223,7 @@ merge_release() {
     case "$found" in
         0)
             note "$tag: the fork already has a $branch branch and no pull request for it; left to whoever pushed it."
+            stalled "$tag" "$waiting" "the fork has a $branch branch and no pull request for it. Open one, or, if a run stopped between pushing the branch and opening its pull request, delete the branch (git push origin :$branch) and the next run merges $tag again."
             return 0
             ;;
         2) ;;
@@ -180,10 +234,10 @@ merge_release() {
         note "$tag is approved for commit $APPROVE_COMMIT."
     else
         open_issues
-        # Not grep -q: it stops at the first match, and under pipefail what it
-        # leaves writing to a closed pipe would turn that match into a failure.
-        if printf '%s\n' "$issues" | cut -f2- | grep -Fx -- "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" > /dev/null; then
-            note "$tag waits for a person: an issue for it is open."
+        number=$(printf '%s\n' "$issues" | awk -F '\t' -v title="$ISSUE_PREFIX$tag$ISSUE_SUFFIX" '$2 == title && number == "" { number = $1 } END { print number }')
+        if [ -n "$number" ]; then
+            note "$tag waits for a person: an issue for it is open (#$number)."
+            stalled "$tag" "$waiting" "issue #$number is still open. It needs a person, to merge $tag by hand or to approve it as the issue says."
             return 0
         fi
     fi
@@ -244,11 +298,27 @@ close_merged_issues() {
 }
 
 # The release first, then the housekeeping: an issue that will not close
-# never keeps a release from its pull request or its issue.
+# never keeps a release from its pull request or its issue. Last, a release
+# the merge job found held too long fails the run. One line of it, read as
+# data: the merge job ran upstream's build, and a line of its own starting
+# with :: would be a command to the runner.
 publish() {
     require_approval_inputs
     publish_release
     close_merged_issues
+    [ ! -s "$out/stall" ] || fail "$(head -n 1 "$out/stall" | cut -c 1-1000)"
+}
+
+# Opens the issue that asks a person about release $1, its body in $body, and
+# leaves its address in $url. The label first: gh opens no issue with a label
+# the repository lacks, and --force makes the call one that also succeeds
+# when the label is there (it sets its colour and description again).
+open_issue() {
+    gh label create "$LABEL" --force --color 5319e7 --description "Releases the Sync upstream workflow left for a person" > /dev/null \
+        || fail "Could not create the $LABEL label for the workflow's issues; gh said why above."
+    url=$(gh issue create --title "$ISSUE_PREFIX$1$ISSUE_SUFFIX" --label "$LABEL" --body-file "$body") \
+        || fail "Could not open the issue for $1; gh said why above."
+    url=${url##*$'\n'}
 }
 
 publish_release() {
@@ -272,12 +342,11 @@ publish_release() {
             printf 'To merge it by hand, in a checkout at the head of `%s` (CONTRIBUTING.md, "Merging upstream releases"):\n\n' "$BASE_BRANCH"
             printf '```bash\nscripts/sync-upstream.py start --to %s\n```\n\n' "$tag"
             printf 'Resolve what it lists, run `continue` in the sync worktree, push the result as `%s` and open a pull request. ' "$branch"
-            printf 'The workflow leaves this release alone while this issue is open or that branch or pull request exists, and later releases wait behind it. '
+            printf 'The workflow leaves this release alone while this issue is open and labelled `%s`, or that branch or pull request exists, and later releases wait behind it. ' "$LABEL"
             printf 'It closes this issue once `%s` contains %s.\n' "$BASE_BRANCH" "$tag"
         } > "$body"
-        url=$(gh issue create --title "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" --body-file "$body") \
-            || fail "Could not open the issue for $tag; gh said why above."
-        note "$tag needs a person: ${url##*$'\n'}"
+        open_issue "$tag"
+        note "$tag needs a person: $url"
         return 0
     fi
 
@@ -330,9 +399,8 @@ publish_release() {
             printf 'Until then the workflow leaves this release alone, and later releases wait behind it. It closes this issue once `%s` contains %s.\n\n' "$BASE_BRANCH" "$tag"
             printf '`scripts/sync-upstream.py` reported:\n\n```text\n%s\n```\n' "$(cat "$out/report")"
         } > "$body"
-        url=$(gh issue create --title "$ISSUE_PREFIX$tag$ISSUE_SUFFIX" --body-file "$body") \
-            || fail "Could not open the issue for $tag; gh said why above."
-        note "$tag changes $(printf '%s' "$guarded" | tr '\n' ' '), so it is not pushed until a person approves it: ${url##*$'\n'}"
+        open_issue "$tag"
+        note "$tag changes $(printf '%s' "$guarded" | tr '\n' ' '), so it is not pushed until a person approves it: $url"
         return 0
     fi
     {

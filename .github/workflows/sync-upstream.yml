@@ -62,10 +62,19 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # Reads the fork's pull requests, branches and issues to leave alone a
-      # release someone already has. Fails by name when the repository has
-      # Issues switched off: they are how the workflow asks for a person. In
-      # a run that approves a release, fails by name unless it is the oldest
-      # one main lacks and its tag still points at the approved commit.
+      # release someone already has: only pull requests from this
+      # repository's own branch, and only issues with the sync-upstream
+      # label, which only someone with triage access can put on one. Fails by
+      # name when the repository has Issues switched off, since they are how
+      # the workflow asks for a person, and when the release's pull request
+      # was closed without merging, since a release cannot be skipped. In a
+      # run that approves a release, fails by name unless it is the oldest one
+      # main lacks and its tag still points at the approved commit.
+      #
+      # SYNC_STALL_DAYS, a repository variable: how many days after it was
+      # tagged the oldest missing release may be held by a pull request, a
+      # branch or an issue; 3 when unset. Past that, the publish job fails the
+      # run by name once it has done its work.
       - name: Merge the next upstream release
         id: merge
         env:
@@ -73,6 +82,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SYNC_APPROVE_TAG: ${{ inputs.approve }}
           SYNC_APPROVE_COMMIT: ${{ inputs.commit }}
+          SYNC_STALL_DAYS: ${{ vars.SYNC_STALL_DAYS }}
         run: bash scripts/sync-upstream-ci.sh merge "$RUNNER_TEMP/sync"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -87,15 +97,17 @@ jobs:
   # the merge job produced: the commit comes out of a bundle and must merge
   # exactly this job's checkout of main with the release as upstream has it;
   # the rest is read as text. It starts only when the merge job found one of
-  # those to open, or an issue of this workflow's to close.
+  # those to open, an issue of this workflow's to close, or a release held
+  # past SYNC_STALL_DAYS, over which it fails the run once the rest is done.
   #
   # UPSTREAM_SYNC_TOKEN is a fine-grained personal access token for this
   # repository alone: Contents, Pull requests, Issues and Workflows, all read
-  # and write (Workflows because an approved release, or any release under
-  # SYNC_AUTO_MERGE=all, may change a file under .github/workflows). The
-  # token GitHub hands a run cannot stand in for it: a push or a pull request
-  # made with that one starts no workflow, so Test would never run on the
-  # sync pull request.
+  # and write (Issues also covers the sync-upstream label, which this job
+  # creates before it opens an issue; Workflows because an approved release,
+  # or any release under SYNC_AUTO_MERGE=all, may change a file under
+  # .github/workflows). The token GitHub hands a run cannot stand in for it:
+  # a push or a pull request made with that one starts no workflow, so Test
+  # would never run on the sync pull request.
   #
   # A release that changes .github/ or the sync script is not pushed: a
   # branch pushed here runs its own workflows at once, with whatever token
