@@ -397,7 +397,7 @@ guarded_list() {
 }
 
 publish_release() {
-    local outcome tag branch head base parents count release have body url id refusal guarded
+    local outcome tag branch head base parents count release have body url id refusal guarded status why
     outcome=$(cat "$out/outcome")
     case "$outcome" in
         none | skip) return 0 ;;
@@ -496,8 +496,18 @@ publish_release() {
         printf '\n## Report\n\n'
         report_section
     } > "$body"
-    git push --quiet origin "$head:refs/heads/$branch" \
-        || fail "Could not push $branch. A release that changes .github/workflows needs a token with the Workflows permission."
+    # A push fails for many reasons (a branch someone pushed meanwhile, a
+    # rule, the network), and git prints each one. The Workflows permission
+    # is named only where it can be the reason: GitHub refuses a push that
+    # changes a workflow file to a token without it.
+    status=0
+    git push --quiet origin "$head:refs/heads/$branch" || status=$?
+    if [ "$status" != 0 ]; then
+        why="Could not push $branch: git push exited $status; git said why above."
+        git diff --quiet "$base" "$head" -- .github/workflows \
+            || why="$why The merge changes a file under .github/workflows, which GitHub lets a token push only with the Workflows permission."
+        fail "$why"
+    fi
     # A branch with no pull request would make every later run skip this release.
     url=$(gh pr create --base "$BASE_BRANCH" --head "$branch" --title "Merge upstream $tag" --body-file "$body") || {
         git push --quiet origin ":refs/heads/$branch" || true

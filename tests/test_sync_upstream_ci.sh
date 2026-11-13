@@ -700,6 +700,44 @@ test_a_pull_request_that_cannot_be_opened_takes_its_branch_back() {
     assert_eq fork-main "$(origin_branches)"
 }
 
+# A push fails for more reasons than a missing permission. Here someone
+# pushes cs/sync-v1.1 between the two jobs, so the sync's push is rejected as
+# no fast-forward. The run says the push failed and how git exited, and keeps
+# quiet about the Workflows permission, since the merge changes no workflow.
+test_a_push_that_fails_says_so_with_gits_exit_status() {
+    make_fixture || return 1
+    release v1.1 NOTES.md notes || return 1
+    rm -rf "$TEST_TMPDIR/work" "$TEST_TMPDIR/publish"
+    git clone -q -b fork-main "$ORIGIN" "$TEST_TMPDIR/publish" || return 1
+    ci_job "$FORK" merge > "$TEST_TMPDIR/ci.log" 2>&1 || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    local other status=0
+    other=$(git -C "$FORK" commit-tree 'fork-main^{tree}' -p fork-main -m "someone else's") || return 1
+    git -C "$FORK" push -q origin "$other:refs/heads/cs/sync-v1.1" || return 1
+    ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::Could not push cs/sync-v1.1: git push exited 1; git said why above\.$' || return 1
+    assert_file_not_contains "$TEST_TMPDIR/ci.log" 'Workflows' || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq "$other" "$(git -C "$ORIGIN" rev-parse cs/sync-v1.1)"
+}
+
+# GitHub refuses a push that adds or changes a workflow file unless the token
+# has the Workflows permission. Only then does the run name that permission.
+test_a_push_of_a_workflow_change_that_fails_names_the_workflows_permission() {
+    make_fixture || return 1
+    mkdir -p "$UP/.github/workflows"
+    release v1.1 .github/workflows/test.yml 'name: Test' || return 1
+    printf '%s\n' '#!/bin/sh' 'echo "refusing to update workflow .github/workflows/test.yml" >&2' 'exit 1' > "$ORIGIN/hooks/pre-receive"
+    chmod +x "$ORIGIN/hooks/pre-receive"
+    local status=0
+    run_ci SYNC_AUTO_MERGE=all || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::error::Could not push cs/sync-v1.1: git push exited 1; git said why above\. The merge changes a file under \.github/workflows, .*Workflows permission' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" 'refusing to update workflow' || return 1
+    assert_eq "" "$(calls)" || return 1
+    assert_eq fork-main "$(origin_branches)"
+}
+
 # The report is upstream's to write: the file names, and what its build.sh
 # prints to stderr. In a fence of three backticks, a line of three would end
 # the block, and a line opening an HTML comment after it would hide the rest
@@ -940,6 +978,8 @@ run_test test_a_refused_auto_merge_leaves_the_pull_request_open
 run_test test_auto_merge_can_be_switched_off
 run_test test_auto_merge_is_off_for_any_value_but_true_or_all
 run_test test_a_pull_request_that_cannot_be_opened_takes_its_branch_back
+run_test test_a_push_that_fails_says_so_with_gits_exit_status
+run_test test_a_push_of_a_workflow_change_that_fails_names_the_workflows_permission
 run_test test_the_report_comes_last_in_a_fence_it_cannot_close
 run_test test_a_huge_report_is_cut_to_fit_a_body
 run_test test_an_issue_is_closed_once_its_release_is_merged
