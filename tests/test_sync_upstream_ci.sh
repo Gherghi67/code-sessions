@@ -373,6 +373,24 @@ test_an_issue_is_closed_once_its_release_is_merged() {
     assert_eq 'issue close 9 --comment `fork-main` contains v1 now.' "$(calls)"
 }
 
+# Closing issues is housekeeping, done once the release is seen to. An issue
+# gh cannot close (a locked one, an API blip) is a warning, and the release
+# still gets its pull request.
+test_an_issue_that_cannot_be_closed_never_holds_a_release_back() {
+    make_fixture || return 1
+    release v1.1 NOTES.md notes || return 1
+    printf '9\tSync upstream v1 needs a person\n' > "$GH/issue-list"
+    printf 'HTTP 403: Issue is locked\n' > "$GH/fail-issue-close"
+    run_ci || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+    assert_eq 'cs/sync-v1.1
+fork-main' "$(origin_branches)" || return 1
+    assert_file_contains "$GH/calls" '^pr create --base fork-main --head cs/sync-v1.1 ' || return 1
+    assert_file_contains "$GH/calls" '^api graphql ' || return 1
+    assert_file_contains "$TEST_TMPDIR/ci.log" '^::warning::Could not close #9' || return 1
+    # Tried after the pull request was opened and set to merge itself.
+    assert_eq 'issue close 9 --comment `fork-main` contains v1 now.' "$(calls | tail -n 1)"
+}
+
 # The results directory comes from the job that ran upstream's build, so the
 # job with the token reads it as data and checks it against the bundle.
 test_publish_refuses_results_that_do_not_add_up() {
@@ -439,5 +457,6 @@ run_test test_a_refused_auto_merge_leaves_the_pull_request_open
 run_test test_auto_merge_can_be_switched_off
 run_test test_a_pull_request_that_cannot_be_opened_takes_its_branch_back
 run_test test_an_issue_is_closed_once_its_release_is_merged
+run_test test_an_issue_that_cannot_be_closed_never_holds_a_release_back
 run_test test_publish_refuses_results_that_do_not_add_up
 report_results

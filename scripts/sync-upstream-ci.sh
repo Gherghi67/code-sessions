@@ -173,6 +173,7 @@ merge_release() {
 }
 
 # An issue this workflow opened for a release that has since been merged.
+# Housekeeping: one gh cannot close is a warning, and the next run tries again.
 close_merged_issues() {
     local number title merged
     open_issues
@@ -186,15 +187,25 @@ close_merged_issues() {
         [[ $merged =~ ^v[0-9][0-9A-Za-z._-]*$ ]] || continue
         git fetch --quiet --no-tags "$UPSTREAM_URL" "refs/tags/$merged:refs/tags/$merged" 2> /dev/null || continue
         if git merge-base --is-ancestor "$merged^{commit}" HEAD 2> /dev/null; then
-            gh issue close "$number" --comment "\`$BASE_BRANCH\` contains $merged now."
-            note "Closed #$number: $BASE_BRANCH contains $merged."
+            if gh issue close "$number" --comment "\`$BASE_BRANCH\` contains $merged now."; then
+                note "Closed #$number: $BASE_BRANCH contains $merged."
+            else
+                printf '::warning::Could not close #%s, though %s contains %s.\n' "$number" "$BASE_BRANCH" "$merged"
+                note "Could not close #$number, though $BASE_BRANCH contains $merged; the next run tries again."
+            fi
         fi
     done
 }
 
+# The release first, then the housekeeping: an issue that will not close
+# never keeps a release from its pull request or its issue.
 publish() {
-    local outcome tag branch head have body url id refusal guarded
+    publish_release
     close_merged_issues
+}
+
+publish_release() {
+    local outcome tag branch head have body url id refusal guarded
     outcome=$(cat "$out/outcome")
     case "$outcome" in
         none | skip) return 0 ;;
