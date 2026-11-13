@@ -467,6 +467,16 @@ publish_release() {
 
     head=$(cat "$out/head")
     [[ $head =~ ^[0-9a-f]{40}$ ]] || fail "The merge job left a commit id that is not one."
+    # An artifact keeps its folders, and git fetch takes a directory for a
+    # repository: it would run upload-pack in one the merge job built, with
+    # this job's token in the environment. Only a regular file, and a git
+    # bundle; git's own words are not shown, since the bundle's header is
+    # the merge job's to write.
+    if [ ! -f "$out/sync.bundle" ] || [ -L "$out/sync.bundle" ]; then
+        fail "The merge job's sync.bundle is not a regular file."
+    fi
+    git bundle verify --quiet "$out/sync.bundle" > /dev/null 2>&1 \
+        || fail "The merge job's sync.bundle is not a git bundle this checkout can read."
     git fetch --quiet --no-tags "$out/sync.bundle" "refs/heads/sync/$tag"
     [ "$(git rev-parse FETCH_HEAD)" = "$head" ] || fail "The bundle does not hold the commit the merge job named."
     # A sync is this checkout of the branch merged with the release, nothing

@@ -1028,6 +1028,35 @@ test_publish_refuses_results_that_do_not_add_up() {
     assert_no_forged_command "$TEST_TMPDIR/ci.log" || return 1
     assert_file_not_contains "$TEST_TMPDIR/ci.log" 'forged' || return 1
 
+    # An artifact keeps its folders. A sync.bundle that is a directory, here a
+    # repository holding the very commit, git fetch would take for a
+    # repository and run upload-pack in, with the publish job's token in its
+    # environment. A symlink, even to the real bundle, is no better, and a
+    # file that is no bundle is refused by name too.
+    local how
+    for how in repository symlink 'no bundle'; do
+        rm -rf "$TEST_TMPDIR/work" && cp -R "$TEST_TMPDIR/work.good" "$TEST_TMPDIR/work"
+        case "$how" in
+            repository)
+                rm "$TEST_TMPDIR/work/sync.bundle"
+                git init -q --bare "$TEST_TMPDIR/work/sync.bundle" || return 1
+                git -C "$FORK" push -q "$TEST_TMPDIR/work/sync.bundle" sync/v1.1 || return 1
+                ;;
+            symlink)
+                mv "$TEST_TMPDIR/work/sync.bundle" "$TEST_TMPDIR/real.bundle"
+                ln -s "$TEST_TMPDIR/real.bundle" "$TEST_TMPDIR/work/sync.bundle"
+                ;;
+            'no bundle') printf 'not a bundle\n' > "$TEST_TMPDIR/work/sync.bundle" ;;
+        esac
+        status=0
+        ci_job "$TEST_TMPDIR/publish" publish > "$TEST_TMPDIR/ci.log" 2>&1 || status=$?
+        assert_eq 1 "$status" "a sync.bundle that is a $how" || { cat "$TEST_TMPDIR/ci.log"; return 1; }
+        case "$how" in
+            'no bundle') assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::The merge job's sync.bundle is not a git bundle" || return 1 ;;
+            *) assert_file_contains "$TEST_TMPDIR/ci.log" "^::error::The merge job's sync.bundle is not a regular file" || return 1 ;;
+        esac
+    done
+
     # None of it pushed or opened anything; the untouched results still publish.
     assert_eq "" "$(calls)" || return 1
     assert_eq fork-main "$(origin_branches)" || return 1
