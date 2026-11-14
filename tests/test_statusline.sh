@@ -3735,7 +3735,7 @@ test_feature_session_name_shows_its_at() {
     local out; out=$(run_sl "{\"session_name\":\"$reported\",\"workspace\":{\"current_dir\":\"/none\"}}")
     assert_output_contains "$out" "base@feat enc" "the '@' form, with the feature's lock" || return 1
     [ "$reported" = "base@feat" ] \
-        || assert_output_not_contains "$out" "$reported" "never the name claude was given" || return 1
+        || assert_output_not_contains_f "$out" "$reported" "never the name claude was given" || return 1
 }
 
 # Only the mapped form of this session's own name is rewritten: a name
@@ -3744,7 +3744,7 @@ test_other_reported_name_shows_as_it_is() {
     export NO_COLOR=1 CS_STATUSLINE_CAPS=0 CLAUDE_SESSION_NAME="base@feat"
     make_cs_session "base@feat" 1024 blue
     local out; out=$(run_sl '{"session_name":"my+label","workspace":{"current_dir":"/none"}}')
-    assert_output_contains "$out" "my+label" "a renamed conversation keeps its name" || return 1
+    assert_output_contains_f "$out" "my+label" "a renamed conversation keeps its name" || return 1
 }
 
 # The lock marks the cs session, so it follows CLAUDE_SESSION_NAME, not the
