@@ -788,7 +788,7 @@ run_uninstall() {
     _uninstall_refuse_live_sessions before
 
     warn "This will uninstall cs and all its components:"
-    echo "  - $install_dir/cs, $install_dir/cs-secrets, $install_dir/cs-codex-thread, $install_dir/cs-statusline, $install_dir/cs-subagent-statusline, $install_dir/cs-tui(.exe)"
+    echo "  - $install_dir/cs, $install_dir/cs-secrets, $install_dir/cs-codex-thread, $install_dir/cs-statusline, $install_dir/cs-subagent-statusline, $install_dir/$CS_ANTIGRAVITY_STATUSLINE, $install_dir/cs-tui(.exe)"
     echo "  - Hooks in $hooks_dir/"
     echo "  - Retired cs commands in $commands_dir/"
     echo "  - Skills in $skills_dir/"
@@ -822,12 +822,22 @@ run_uninstall() {
     # Remove the commands. `-L` includes a dangling symlink left by an
     # interrupted install or manual binary removal.
     local command_name
-    for command_name in cs cs-codex-thread; do
+    for command_name in cs cs-codex-thread "$CS_ANTIGRAVITY_STATUSLINE"; do
         if [ -e "$install_dir/$command_name" ] || [ -L "$install_dir/$command_name" ]; then
             rm -f "$install_dir/$command_name"
             info "Removed $install_dir/$command_name"
         fi
     done
+    # Antigravity's status line places cs-statusline on an install without
+    # Claude too; with Claude, the block below takes it. agy's settings hold
+    # nothing of cs's: a launch passes the line for its run only. Its off
+    # switch goes, as the declined marker does.
+    rm -f "$(_statusline_antigravity_off_marker)"
+    if [[ ",$install_engines," != *,claude,* ]] \
+        && { [ -e "$install_dir/cs-statusline" ] || [ -L "$install_dir/cs-statusline" ]; }; then
+        rm -f "$install_dir/cs-statusline"
+        info "Removed $install_dir/cs-statusline"
+    fi
 
     if [[ ",$install_engines," == *,claude,* ]]; then
     for command_name in cs-statusline cs-subagent-statusline; do

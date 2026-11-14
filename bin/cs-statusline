@@ -1330,7 +1330,7 @@ _parse_stdin() {
         # a claude still running after `cs -rm <name> --force` keeps rendering,
         # and making the whole path would build the removed session again. A
         # .cs/local a hook made in between is the directory the stamp wanted.
-        if [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${SL_CTX:-}" ] && ! _session_files_tracked; then
+        if _sl_for_claude && [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${SL_CTX:-}" ] && ! _session_files_tracked; then
             _pctdir="$SL_LOCAL_DIR"
             if [ -d "$_pctdir" ] || mkdir "$_pctdir" 2>/dev/null || [ -d "$_pctdir" ]; then
                 _read_state_key "$_pctdir/state" claude_session_id
@@ -1366,7 +1366,7 @@ $fields
 EOF
     # Stamp rate-limit state for cs -usage window anchoring. Same partition
     # rules as context-pct: machine-local, atomic, best-effort.
-    if [ -n "${CLAUDE_SESSION_NAME:-}" ] && { [ -n "${SL_5H:-}" ] || [ -n "${SL_WK:-}" ]; } && ! _session_files_tracked; then
+    if _sl_for_claude && [ -n "${CLAUDE_SESSION_NAME:-}" ] && { [ -n "${SL_5H:-}" ] || [ -n "${SL_WK:-}" ]; } && ! _session_files_tracked; then
         _limdir="$SL_LOCAL_DIR"
         if [ -d "$_limdir" ] || mkdir "$_limdir" 2>/dev/null || [ -d "$_limdir" ]; then
             _sl_now
@@ -1385,6 +1385,14 @@ EOF
         fi
     fi
     return 0
+}
+
+# Whether this render draws for Claude Code. bin/cs-statusline-agy runs this
+# script for Antigravity with CS_STATUSLINE_ENGINE=antigravity, and there the
+# stamps above and the width record below, which Claude's hooks and the cs mod
+# read for a Claude conversation, are left alone.
+_sl_for_claude() {
+    [ "${CS_STATUSLINE_ENGINE:-claude}" = claude ]
 }
 
 # Whether git tracks this session's control files, as the hooks last found it:
@@ -2751,6 +2759,7 @@ _known_cells() {  # text
 # neither write nor remove one. Same partition rules as context-pct:
 # machine-local, best-effort, nothing while git tracks the control files.
 _width_file() {
+    _sl_for_claude || return 1
     [ -n "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" ] || return 1
     _WIDTH_FILE="$SESSIONS_ROOT/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}/.cs/local/statusline-width"
     [ -d "${_WIDTH_FILE%/*}" ] || return 1

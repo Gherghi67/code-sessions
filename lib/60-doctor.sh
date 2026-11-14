@@ -92,6 +92,31 @@ _doctor_check_antigravity_hook() {
     fi
 }
 
+# cs's status line under Antigravity: whether the next launch passes it to agy
+# (lib/79-antigravity.sh), and why not when it does not. Off by choice, or a
+# status line of the user's own, is healthy.
+_doctor_check_antigravity_statusline() {
+    local agy_bin="" settings
+    settings=$(_antigravity_settings_file)
+    _antigravity_statusline_state
+    case "$_AGY_STATUSLINE" in
+        on)
+            agy_bin=$(command -v "${AGY_BIN:-agy}" 2>/dev/null) || agy_bin=""
+            if [ -n "$agy_bin" ] && ! _antigravity_flags_listed "$agy_bin" --settings 2>/dev/null; then
+                _doctor_warn "Antigravity status line: $agy_bin does not list --settings, so sessions show only agy's own line; update it with: agy update"
+            else
+                _doctor_ok "Antigravity status line: cs's line under agy's own, from $(_antigravity_statusline_path)"
+            fi
+            ;;
+        off) _doctor_info "Antigravity status line: off (cs -statusline enable turns it on)" ;;
+        disabled) _doctor_info "Antigravity status line: off (CS_STATUSLINE_DISABLE)" ;;
+        own) _doctor_info "Antigravity status line: your own, from $settings; cs passes none" ;;
+        missing) _doctor_warn "Antigravity status line: $(_antigravity_statusline_path), or cs-statusline beside it, is not installed; run setup.sh again" ;;
+        unreadable) _doctor_warn "Antigravity status line: $settings is not a JSON object, so cs passes none until it is repaired" ;;
+        no-jq) _doctor_warn "Antigravity status line: jq is not installed, so cs passes none" ;;
+    esac
+}
+
 _doctor_check_keychain() {
     local script
     if ! script=$(find_secrets_script); then
@@ -1385,7 +1410,10 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "$label integration capabilities: ${capabilities//$'\n'/, }"
-        [ "$engine" != antigravity ] || _doctor_check_antigravity_hook
+        if [ "$engine" = antigravity ]; then
+            _doctor_check_antigravity_hook
+            _doctor_check_antigravity_statusline
+        fi
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" "$engine"); then

@@ -8,13 +8,13 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 LINT="$SCRIPT_DIR/lint_shell.sh"
 
-# A throwaway repo shaped like cs: the four assembled binaries the lint names,
+# A throwaway repo shaped like cs: the five binaries without .sh the lint names,
 # and one tracked script carrying exactly one warning (SC2034, unused variable).
 _lint_repo() {  # baseline
     REPO="$TEST_TMPDIR/repo"
     mkdir -p "$REPO/bin" "$REPO/tests"
     local b
-    for b in cs cs-secrets cs-statusline cs-subagent-statusline; do
+    for b in cs cs-secrets cs-statusline cs-subagent-statusline cs-statusline-agy; do
         printf '#!/usr/bin/env bash\ntrue\n' > "$REPO/bin/$b"
     done
     printf '#!/usr/bin/env bash\nunused=1\n' > "$REPO/one.sh"
@@ -118,7 +118,7 @@ test_shellcheck_runs_below_the_caller_priority() {
     caller=$(ps -o nice= -p $$ | tr -d ' ')
     out=$( cd "$REPO" && PATH="$fake:$PATH" bash tests/lint_shell.sh 2>&1 ) || rc=$?
     assert_eq 0 "$rc" "the lint must pass here: $out" || return 1
-    assert_eq 6 "$(wc -l < "$seen" | tr -d ' ')" "the four binaries, one.sh and lint_shell.sh must each reach the fake" || return 1
+    assert_eq 7 "$(wc -l < "$seen" | tr -d ' ')" "the five binaries, one.sh and lint_shell.sh must each reach the fake" || return 1
     local level
     while IFS= read -r level; do
         [ "$level" -gt "$caller" ] || { echo "shellcheck ran at nice $level, the caller is at $caller"; return 1; }
