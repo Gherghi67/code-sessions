@@ -535,18 +535,21 @@ _antigravity_hooks_file_is_cs() {  # hooks.json
     ' "$1" >/dev/null 2>&1
 }
 
-# PreInvocation binds the session to the conversation its run works in, and
-# PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
+# PreInvocation binds the session to the conversation its run works in and
+# gives a prompt the unread mail, PostToolUse hands finished edits to recovery,
+# and Stop wakes a turn that ends with new mail (lib/79-antigravity.sh). Every
 # tool reaches the hook, whose translator keeps the edits: "*" is the matcher
 # agy was measured with. The shapes and the timeout in seconds follow the
-# hooks guide agy 1.4.11 embeds.
+# hooks guide agy 1.4.11 embeds, and 1.5.8's for Stop.
 _antigravity_hooks_document() {  # cs_path
     jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
         --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
-        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" '
+        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" \
+        --arg stop "$(_antigravity_hook_command "$1" stop)" '
         {($name): {
             PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
-            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
+            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}],
+            Stop: [{type: "command", command: $stop, timeout: 10}]}}'
 }
 
 # Write cs's hooks.json, then plugin.json, each to a temp renamed into place.
@@ -15043,10 +15046,12 @@ _doctor_check_settings_valid() {
     fi
 }
 
-# cs's Antigravity plugin carries the hook exact_resume and recovery_autosave
-# stand on: it must be cs's, name a cs that runs, carry the recovery consumer
-# post-tool-use hands edits to, and not be switched off in agy's config.json,
-# which beats the plugin wherever it has an entry.
+# cs's Antigravity plugin carries the hook exact_resume, recovery_autosave and
+# mail_delivery stand on: it must be cs's, name a cs that runs, carry the
+# recovery consumer post-tool-use hands edits to and the Stop entry the mail
+# wake runs from (an install older than the wake has none), and not be
+# switched off in agy's config.json, which beats the plugin wherever it has an
+# entry.
 _doctor_check_antigravity_hook() {
     local dir cs_path
     dir=$(_antigravity_plugin_dir)
@@ -15078,6 +15083,10 @@ _doctor_check_antigravity_hook() {
         _doctor_warn "Antigravity hook in $dir names a cs that is not there (${cs_path:-none}); run setup.sh again"
     elif [ ! -r "$dir/scripts/autosave-commits.sh" ]; then
         _doctor_warn "Antigravity hook in $dir has no recovery consumer (scripts/autosave-commits.sh): edits are not autosaved; run setup.sh again"
+    elif ! jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        '[.[$name].Stop | arrays | .[] | objects | .command | strings | select(endswith(" -antigravity-hook stop"))] | length > 0' \
+        "$dir/hooks.json" >/dev/null 2>&1; then
+        _doctor_warn "Antigravity hook in $dir has no Stop entry: mail that comes during a turn waits for the next prompt; run setup.sh again"
     elif [ "$(jq -r --arg p "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$p].enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" = false ]; then
         _doctor_warn "Antigravity hook is switched off in $HOME/.gemini/config/config.json; turn it on with: agy plugin enable $CS_ANTIGRAVITY_PLUGIN"
     else
@@ -22503,7 +22512,9 @@ _cs_antigravity_adapter_capabilities() {
     # as the first prompt, once; agy hosts no walk-away task queue.
     # feature_finish: -finish sends a first prompt naming the finish skill's
     # SKILL.md, since agy hands a typed /cs:finish no folder.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish
+    # mail_delivery: PreInvocation shows unread mail at each prompt, and Stop
+    # wakes a turn that ends with mail which came while it ran.
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
 }
 
 # cs's skills ship inside its agy plugin, which offers them as /cs:<name>.
@@ -22999,21 +23010,31 @@ _antigravity_run_dir_prepare() {
 }
 
 # The hook agy runs from cs's plugin (lib/01-manifests.sh), measured on agy
-# 1.4.11: every hook gets the run's environment and a JSON payload on stdin
-# whose conversationId names the conversation it ran in. PreInvocation fires
-# before each model call, a resumed conversation's too, and PostToolUse after
-# each tool; a run left before the model is called fires neither. agy reads
-# the hook's stdout as JSON, so every path prints `{}`, which decides nothing,
-# and exits 0: the hook never blocks or fails a turn. It acts only in the run
-# cs launched; any other agy run passes through.
+# 1.4.11 and 1.5.8: every hook gets the run's environment and a JSON payload
+# on stdin whose conversationId names the conversation it ran in.
+# PreInvocation fires before each model call, a resumed conversation's too,
+# PostToolUse after each tool, and Stop when the turn's loop ends; a run left
+# before the model is called fires none of them. agy reads the hook's stdout
+# as JSON: `{}` decides nothing, and it is the answer on every path but the
+# two the mail takes (a digest injected at a prompt, a wake at a Stop). The
+# hook always exits 0, so it never fails a turn. It acts only in the run cs
+# launched; any other agy run passes through.
+#
+# A handler leaves its answer, one JSON object on one line, in
+# ANTIGRAVITY_HOOK_REPLY, and in ANTIGRAVITY_HOOK_AFTER a function to run once
+# the answer is out. The handler's own stdout goes nowhere, so nothing it runs
+# can add to the answer or hold agy's pipe open.
 cmd_antigravity_hook() {  # event
     local handler input
+    ANTIGRAVITY_HOOK_REPLY=""
+    ANTIGRAVITY_HOOK_AFTER=""
     case "${1:-}" in
         pre-invocation) handler=_antigravity_hook_pre_invocation ;;
         post-tool-use) handler=_antigravity_hook_post_tool_use ;;
+        stop) handler=_antigravity_hook_stop ;;
         *)
             if [ -t 0 ]; then
-                printf 'Usage: cs -antigravity-hook pre-invocation|post-tool-use\n' >&2
+                printf 'Usage: cs -antigravity-hook pre-invocation|post-tool-use|stop\n' >&2
                 return 2
             fi
             handler=""
@@ -23026,30 +23047,57 @@ cmd_antigravity_hook() {  # event
         && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
         "$handler" "$input" </dev/null >/dev/null 2>&1 || true
     fi
-    printf '{}\n'
+    if [ -n "$ANTIGRAVITY_HOOK_REPLY" ]; then
+        printf '%s\n' "$ANTIGRAVITY_HOOK_REPLY"
+    else
+        printf '{}\n'
+    fi
+    if [ -n "$ANTIGRAVITY_HOOK_AFTER" ]; then
+        "$ANTIGRAVITY_HOOK_AFTER" </dev/null >/dev/null 2>&1 || true
+    fi
     return 0
 }
 
-# The payload's conversation id, a UUID or nothing: it names a native file and
-# goes onto agy's command line at the next reopen.
-_antigravity_payload_id() {  # payload
-    local id
-    id=$(printf '%s' "$1" | jq -r 'if type == "object" then .conversationId // "" else "" end' 2>/dev/null) || return 1
-    _is_uuid "$id" || return 1
-    printf '%s\n' "$id"
+# The payload fields the handlers read, in one jq: AGY_HOOK_ID, the
+# conversation id, a UUID or the read fails (it names a native file and goes
+# onto agy's command line at the next reopen); AGY_HOOK_INVOCATION,
+# PreInvocation's invocationNum when it is a whole number, else empty; and
+# AGY_HOOK_TERMINATION, Stop's terminationReason when it is a word, else empty.
+_antigravity_payload_read() {  # payload
+    local fields rest
+    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION=""
+    # Each field is kept only when every character in it is one its shape
+    # allows, judged by what is left once those are deleted (a regex "$"
+    # also matches before a newline), so none can carry the separator or a
+    # second line; anything else reads as "".
+    fields=$(printf '%s' "$1" | jq -r 'if type == "object" then
+            [((.conversationId | strings | select(length == 36 and gsub("[0-9A-Fa-f-]"; "") == "")) // ""),
+             ((.invocationNum | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
+             ((.terminationReason | strings | select(length <= 40 and gsub("[A-Z_]"; "") == "")) // "")]
+            | join("|")
+        else "" end' 2>/dev/null) || return 1
+    # Split by expansion, not read with a here-document, which bash 3.2
+    # writes to a temp file a sandbox may refuse.
+    AGY_HOOK_ID=${fields%%"|"*}
+    rest=${fields#*"|"}
+    AGY_HOOK_INVOCATION=${rest%%"|"*}
+    AGY_HOOK_TERMINATION=${rest#*"|"}
+    _is_uuid "$AGY_HOOK_ID" || { AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION=""; return 1; }
 }
 
 # The first conversation to reach the model in a run is the one the run works
 # in: the main conversation's model call comes before anything it starts, and
 # a subagent's conversation has its own id. Each id is weighed once a run, so
-# later model calls stop at a file test.
+# later model calls stop at a file test. The first model call of a turn then
+# carries the unread mail.
 _antigravity_hook_pre_invocation() {  # payload
-    local id run_dir meta="$CS_SESSION_DIR/.cs"
-    id=$(_antigravity_payload_id "$1") || return 0
+    local run_dir meta="$CS_SESSION_DIR/.cs"
+    _antigravity_payload_read "$1" || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
-    [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$id" ] || return 0
-    cs_run_lease_owned "$meta" || return 0
-    cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$id" "$run_dir" || return 0
+    if { [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; } && cs_run_lease_owned "$meta"; then
+        cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" || true
+    fi
+    [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
@@ -23120,6 +23168,109 @@ _antigravity_hook_post_tool_use() {  # payload
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
     [ -r "$script" ] || return 0
     printf '%s' "$event" | bash "$script" --event || true
+}
+
+# Mail, measured on agy 1.5.8. A PreInvocation answer
+# {"injectSteps": [{"systemMessage": {"systemMessage": ...}}]} reaches the
+# model and stays in the conversation for later turns. invocationNum is 0 at
+# the first model call of each turn and counts every later call in it, those a
+# Stop answer adds included, so 0 is the turn's prompt. A Stop answer
+# {"decision": "continue", "reason": ...} runs the loop again with the reason
+# as a system message. continuationActive, which agy documents as the guard
+# against a Stop that keeps continuing, stayed false at every Stop, so the
+# wake guards itself and agy stops it after ten continuations whatever the
+# hook says. agy has no event for a conversation idle at its prompt, so mail
+# that comes then waits for the next prompt.
+
+# The folder that holds the session's mail, printed when the conversation is
+# the one the session is bound to, in the run that holds its lease: a
+# subagent's conversation has an id of its own, and another agy run in the
+# folder holds no lease. Mail git tracks came with a pull, a merge or a
+# checkout, not from a sender on this machine, so none of it is shown then, as
+# under Claude and Codex.
+_antigravity_mail_dir() {  # conversation_id
+    local bound private
+    cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 1
+    bound=$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null) || return 1
+    [ "$bound" = "$1" ] || return 1
+    ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 1
+    private=$(cs_private_dir "$CS_SESSION_DIR/.cs") || return 1
+    printf '%s/mail\n' "$private"
+}
+
+# A prompt gets the unread mail as a system message, every prompt until
+# cs -msg moves it to cur/, as Claude's and Codex's prompt hooks give it.
+# A prompt also clears the wake budget, as scope-prompt.sh does for a typed
+# prompt: a wake continues its turn and never starts one, so invocationNum 0
+# is always a prompt.
+_antigravity_hook_mail_digest() {  # conversation_id
+    local mail MAIL_DIGEST=""
+    mail=$(_antigravity_mail_dir "$1") || return 0
+    rm -f "$mail/wakes" 2>/dev/null || true
+    cs_mail_digest "${mail%/mail}"
+    [ -n "$MAIL_DIGEST" ] || return 0
+    # The shape measured on 1.5.8, terminationBehavior "" (call the model) included.
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$MAIL_DIGEST" \
+        '{injectSteps: [{systemMessage: {systemMessage: $m}}], terminationBehavior: ""}' 2>/dev/null) \
+        || ANTIGRAVITY_HOOK_REPLY=""
+}
+
+# A turn that ends on its own with mail that came after its prompt goes on, so
+# an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL is
+# such an end: a turn the user stopped, one that failed and one agy cut off at
+# a limit end as they are. The rest is hooks/stop-blocks.sh's wake over the
+# same files: mail/woke lists the messages a wake has already announced, so
+# each one wakes once and a continued turn that brings none stops, and
+# mail/wakes counts the wakes since the last prompt against CS_MAIL_WAKE_MAX
+# (5), which ends a volley between two unattended sessions. CS_NO_MAIL_WAKE
+# turns the wake off. The digest names nothing in woke, so mail a prompt
+# showed and the turn left unread still wakes it once.
+_antigravity_hook_stop() {  # payload
+    local mail woke="" f name listed="" from senders="" quoted="" unread=0 fresh=0 seen max reason nl='
+'
+    _antigravity_payload_read "$1" || return 0
+    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] && [ -z "${CS_NO_MAIL_WAKE:-}" ] || return 0
+    mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
+    [ -d "$mail/new" ] || return 0
+    [ ! -f "$mail/woke" ] || woke=$(cat "$mail/woke" 2>/dev/null) || woke=""
+    for f in "$mail"/new/*.json; do
+        [ -f "$f" ] || continue
+        unread=$((unread + 1))
+        name=${f##*/}
+        listed="$listed$name$nl"
+        case "$nl$woke$nl" in *"$nl$name$nl"*) continue ;; esac
+        fresh=1
+        # The sender as the digest shows one: 40 characters at most, and
+        # none outside A-Z a-z 0-9 . _ @ : -.
+        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
+             | if type == "string" then . else tostring end
+             | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null) || from=""
+        [ -n "$from" ] || continue
+        case "$nl$senders$nl" in
+            *"$nl$from$nl"*) ;;
+            *) senders="$senders$nl$from"; quoted="${quoted:+$quoted, }\"$from\"" ;;
+        esac
+    done
+    [ "$fresh" = 1 ] || return 0
+    case "${CS_MAIL_WAKE_MAX:-}" in
+        ''|*[!0-9]*|????????????????*) max=5 ;;
+        *) max=$((10#$CS_MAIL_WAKE_MAX)) ;;
+    esac
+    seen=""
+    [ ! -f "$mail/wakes" ] || seen=$(tr -d '[:space:]' < "$mail/wakes" 2>/dev/null) || seen=""
+    case "$seen" in ''|*[!0-9]*|????????????????*) seen=0 ;; *) seen=$((10#$seen)) ;; esac
+    [ "$seen" -lt "$max" ] || return 0
+    reason="Unread cross-session mail ($unread)${quoted:+, new from $quoted}. Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$reason" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
+    # Recorded once the answer is out: a kill between the two costs one
+    # wake twice, where recording first could lose the wake.
+    AGY_MAIL_WAKE_DIR="$mail" AGY_MAIL_WAKE_NAMES="$listed" AGY_MAIL_WAKE_COUNT=$((seen + 1))
+    ANTIGRAVITY_HOOK_AFTER=_antigravity_mail_wake_record
+}
+
+_antigravity_mail_wake_record() {
+    cs_write_atomic "$AGY_MAIL_WAKE_DIR/wakes" printf '%s\n' "$AGY_MAIL_WAKE_COUNT" || true
+    cs_write_atomic "$AGY_MAIL_WAKE_DIR/woke" printf '%s' "$AGY_MAIL_WAKE_NAMES" || true
 }
 run_secrets() {
     local secrets_script
