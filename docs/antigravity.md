@@ -5,8 +5,9 @@ keeping the session's files, notes, and workspace under the same `.cs/`
 directory that Claude Code and Codex use. cs starts `agy` in the session with
 the session's context handed over, and a hook records the conversation so a
 reopen resumes exactly that one and `agy`'s edits reach recovery. The same
-plugin carries cs's skills, as `/cs:<name>`. cs's status line
-and mail do not reach Antigravity yet. Engine switching uses `/cs:switch <target>`. Rotation uses an exit and a fresh managed launch.
+plugin carries cs's skills, as `/cs:<name>`, and cs's status line shows under
+`agy`'s own ([Status line](#status-line)). Mail does not reach Antigravity yet.
+Engine switching uses `/cs:switch <target>`. Rotation uses an exit and a fresh managed launch.
 
 ## Launching
 
@@ -248,6 +249,69 @@ records nothing.
 As with Claude, Antigravity keeps its native approval default unless you ask
 for automatic approval. In the picker (`cs -tui`, `e` on a session), the Engine
 row cycles Claude, Codex, and Antigravity with Left, Right, or Space.
+
+## Status line
+
+Each launch hands `agy` cs's status line for that run only:
+
+```
+--settings '{"statusLine":{"command":"/Users/you/.local/bin/cs-statusline-agy","stack_with_default":true}}'
+```
+
+`agy` applies `--settings` to the run and never saves it, so
+`~/.gemini/antigravity-cli/settings.json` stays as it was, and an uninstall has
+nothing there to take back. The command is the install folder's
+`cs-statusline-agy` (`CS_INSTALL_DIR`), quoted as one shell word when its path
+needs it, as the hook's is.
+
+`stack_with_default` keeps `agy`'s own line, with its model, effort, quota and
+mode, and draws cs's under it. cs's line shows the session, its notes and
+unread mail, git, and the context once the first turn has run. It is
+`cs-statusline` itself, run by a small adapter, so its layout, colors and
+`CS_STATUSLINE_*` settings are the ones you use under Claude
+([Status line](statusline.md)). The model, limits and cost segments show
+nothing here, since `agy`'s line already carries them.
+
+| `agy` payload field (1.5.9) | What cs's line does with it |
+| --- | --- |
+| `session_id`, `cwd`, `workspace.current_dir` | the same fields Claude Code sends |
+| `context_window.used_percentage` | the ctx gauge, once `context_window_size` and `total_input_tokens` are above 0; before the first turn `agy` reads 0, where Claude Code sends nothing |
+| `terminal_width` | the width the line is laid out in |
+| `model`, `quota`, `cost`, `agent_state`, `plan_tier` and the rest | not used |
+
+A launch passes no status line, and `agy` shows only its own, when:
+
+- the status line is off: `cs -statusline disable` (recorded in
+  `~/.config/cs/statusline-antigravity-off`, which `cs -statusline enable` and
+  `cs -uninstall` remove), or `CS_STATUSLINE_DISABLE=1`;
+- `agy`'s `settings.json` names a `statusLine` of yours, which a run setting
+  would cover, or is not a JSON object cs can read;
+- `cs-statusline-agy`, or the `cs-statusline` beside it, is not installed
+  (setup installs both where `agy` is);
+- the `agy` on `PATH` does not list `--settings` in its `--help`.
+
+`cs -doctor` in an Antigravity session names which. `cs -statusline enable`
+and `disable` report the Antigravity side as well; it takes effect at the next
+launch. The installer's question is only about Claude Code's bar, so a no
+there (`~/.config/cs/statusline-declined`) leaves the line on under `agy`: a
+status line of your own in Claude, such as a bridge that runs
+`cs-statusline`, is the usual reason for that no.
+
+`agy` repaints the line on events: a state change (starting, working, idle)
+or a key. It has no timer, so a mail or git change shows at the next event,
+where Claude Code also repaints once a minute. The adapter tells
+`cs-statusline` it draws for Antigravity, and the render then writes none of
+the files Claude Code's bar keeps in `.cs/local`: `context-pct`, which the
+rotation nudge and the queue's context breaker read, the `limits` stamp, and
+the width record the cs mod reads. `agy` turns a custom line off after a run
+of failures, so the adapter always exits 0 and prints nothing when it has
+nothing to draw.
+
+These facts come from a live `agy` 1.5.9 run with a recording command in
+place of the adapter: the payload before and after one turn, the environment
+the command inherits (cs's session variables reach it), repaints only on
+events, colors and Powerline glyphs passed through, and a 4-second command
+still drawn.
 
 ## Rotation
 
@@ -501,5 +565,5 @@ that fires the plugin's hooks with payloads of the measured shape.
 
 ## Follow-ups
 
-These come later as separate changes: the status line, mail
-delivery, in-place `/clear` rotation, and encrypted sessions.
+These come later as separate changes: mail delivery, in-place `/clear`
+rotation, and encrypted sessions.

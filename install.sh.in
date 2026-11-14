@@ -566,6 +566,12 @@ if _install_has_engine claude; then
     # The subagent status line sources cs-statusline from this directory.
     _bins+=(cs-statusline cs-subagent-statusline)
 fi
+# Antigravity runs on any install, where agy is (see its plugin below), and
+# its status line runs cs-statusline from this directory.
+if command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+    _install_has_engine claude || _bins+=(cs-statusline)
+    _bins+=(cs-statusline-agy)
+fi
 for _bin in "${_bins[@]}"; do
     _place "bin/$_bin" "$INSTALL_DIR/$_bin"
     [ -n "$_PLACE_KEPT" ] || CS_PLACED=$((CS_PLACED + 1))

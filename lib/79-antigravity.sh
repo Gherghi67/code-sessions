@@ -198,12 +198,19 @@ _antigravity_write_rule() {  # session_name, session_dir, actor, cs_bin
 # agy stops with its usage on a flag it does not know, by then after cs has
 # written the rule and recorded the engine, so each flag this launch passes
 # must be one its --help lists. agy 1.5.5 prints that usage on stderr, with
-# status 0, so both streams are read.
+# status 0, so both streams are read. The help is read once per agy binary in
+# a process: it takes agy about 0.3 s, and a launch asks more than once.
+_CS_AGY_HELP_BIN=""
+_CS_AGY_HELP=""
 _antigravity_flags_listed() {  # agy_bin, args...
     local agy_bin="$1" help arg
     shift
     [ "$#" -gt 0 ] || return 0
-    help=$("$agy_bin" --help 2>&1) || help=""
+    if [ "$_CS_AGY_HELP_BIN" != "$agy_bin" ]; then
+        _CS_AGY_HELP=$("$agy_bin" --help 2>&1) || _CS_AGY_HELP=""
+        _CS_AGY_HELP_BIN=$agy_bin
+    fi
+    help=$_CS_AGY_HELP
     for arg in "$@"; do
         case "$arg" in --*) ;; *) continue ;; esac
         printf '%s\n' "$help" | grep -E -- "^[[:space:]]*$arg([[:space:]]|$)" >/dev/null || {
@@ -247,6 +254,60 @@ _antigravity_rotation_hook_ready() {
         [ -f "$cs_path" ] && [ -x "$cs_path" ] && return 0
     done < <(printf '%s\n' "$commands")
     return 1
+}
+
+# cs's status line under agy is bin/cs-statusline-agy, which runs
+# cs-statusline on agy's payload. A launch hands it to agy through --settings,
+# which holds for that run only and is never saved, so agy's settings.json is
+# never written and nothing is left to take back. It stacks under agy's own
+# line, which shows the model, quota and mode that cs's line leaves out.
+CS_ANTIGRAVITY_STATUSLINE=cs-statusline-agy
+
+_antigravity_settings_file() {
+    printf '%s\n' "$HOME/.gemini/antigravity-cli/settings.json"
+}
+
+_antigravity_statusline_path() {
+    printf '%s/%s\n' "${CS_INSTALL_DIR:-$HOME/.local/bin}" "$CS_ANTIGRAVITY_STATUSLINE"
+}
+
+# Whether a launch passes cs's status line, in _AGY_STATUSLINE: on, or the
+# reason it does not. off: cs -statusline disable turned it off
+# (_statusline_antigravity_off_marker); a no to the installer's question about
+# Claude Code's bar does not. disabled: CS_STATUSLINE_DISABLE. missing: the adapter, or cs-statusline beside it, is
+# not installed. no-jq: both need jq. own: agy's settings.json names a status
+# line, which is the user's, and a setting for the run would cover it.
+# unreadable: that file is not a JSON object, so cs cannot tell. Whether agy
+# takes --settings is the launch's question (_antigravity_flags_listed).
+_antigravity_statusline_state() {
+    local bin settings
+    bin=$(_antigravity_statusline_path)
+    settings=$(_antigravity_settings_file)
+    if [ -e "$(_statusline_antigravity_off_marker)" ]; then
+        _AGY_STATUSLINE=off
+    elif [ "${CS_STATUSLINE_DISABLE:-}" = 1 ]; then
+        _AGY_STATUSLINE=disabled
+    elif ! { [ -f "$bin" ] && [ -x "$bin" ] && [ -f "${bin%/*}/cs-statusline" ] && [ -x "${bin%/*}/cs-statusline" ]; }; then
+        _AGY_STATUSLINE=missing
+    elif ! command -v jq >/dev/null 2>&1; then
+        _AGY_STATUSLINE=no-jq
+    elif [ -e "$settings" ] || [ -L "$settings" ]; then
+        if ! jq -e 'type == "object"' "$settings" >/dev/null 2>&1; then
+            _AGY_STATUSLINE=unreadable
+        elif jq -e '.statusLine != null' "$settings" >/dev/null 2>&1; then
+            _AGY_STATUSLINE=own
+        else
+            _AGY_STATUSLINE=on
+        fi
+    else
+        _AGY_STATUSLINE=on
+    fi
+}
+
+# The --settings value that gives a run cs's status line.
+_antigravity_statusline_settings() {
+    jq -cn --arg command "$(_cs_hook_shell_word "$(_antigravity_statusline_path)")" \
+        '{statusLine: {command: $command, stack_with_default: true}}'
 }
 
 _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge, intent, remote_mode
@@ -410,6 +471,16 @@ $prompt"
     _cs_native_launch_options antigravity || return 1
     _antigravity_flags_listed "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} \
         ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${rotation_handoff:+--prompt-interactive} || return 1
+    # cs's status line, for this run only. An agy without --settings, or any
+    # reason _antigravity_statusline_state gives, starts with agy's own line;
+    # cs -doctor says which.
+    local -a statusline_args=()
+    local statusline_json
+    _antigravity_statusline_state
+    if [ "$_AGY_STATUSLINE" = on ] && _antigravity_flags_listed "$agy_bin" --settings 2>/dev/null \
+        && statusline_json=$(_antigravity_statusline_settings); then
+        statusline_args=(--settings "$statusline_json")
+    fi
 
     cd -- "$session_dir" || return 1
     cs_unset_claude_env
@@ -500,7 +571,7 @@ $prompt"
     fi
     local status=0
     cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
-        ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
+        ${statusline_args[@]+"${statusline_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
     fi

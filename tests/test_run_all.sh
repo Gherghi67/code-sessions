@@ -829,7 +829,7 @@ make_lint_checkout() {  # baseline, pinned_version
     LINT_CHECKOUT="$TEST_TMPDIR/checkout"
     mkdir -p "$LINT_CHECKOUT/bin" "$LINT_CHECKOUT/tests" "$LINT_CHECKOUT/.github/workflows"
     local b
-    for b in cs cs-secrets cs-statusline cs-subagent-statusline; do
+    for b in cs cs-secrets cs-statusline cs-subagent-statusline cs-statusline-agy; do
         printf '#!/usr/bin/env bash\ntrue\n' > "$LINT_CHECKOUT/bin/$b"
     done
     printf '#!/usr/bin/env bash\nunused=1\n' > "$LINT_CHECKOUT/one.sh"

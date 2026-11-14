@@ -396,6 +396,10 @@ The installer adds the line only where `config.toml` has no status line, under a
 
 Changing the Codex list requires Python 3.11 or newer with `tomllib`. If neither `python3` on PATH nor `/usr/bin/python3` has it, cs leaves the config alone and reports that it could not change the status line.
 
+## Antigravity
+
+Antigravity's `agy` runs a status line command, fed a JSON payload close to Claude Code's, and can stack its output under its own line. Each cs launch passes it the bar for that run only, through `agy --settings`, which `agy` never saves: `bin/cs-statusline-agy` keeps the session, folder, context and width from `agy`'s payload and runs `cs-statusline` beside it with `CS_STATUSLINE_ENGINE=antigravity`, naming `agy` in `CS_STATUSLINE_PARENT`. The layout, colours and segment settings above apply; the model, limits and cost segments show nothing, since `agy`'s own line carries them. With that engine the render writes no `context-pct`, `limits` or width record. `cs -statusline disable` (which records `~/.config/cs/statusline-antigravity-off`), `CS_STATUSLINE_DISABLE`, or a `statusLine` of your own in `agy`'s `settings.json` keeps it out; a no to the installer's question, which is about Claude Code's bar, does not. [Antigravity sessions](antigravity.md#status-line) has the details.
+
 ## Install, uninstall, doctor
 
 `install.sh` deploys the `cs-statusline` and `cs-subagent-statusline` binaries to `~/.local/bin` unconditionally, but the status bar itself is claimed only with consent: with a terminal attached the installer renders a sample of the bar (a fixed payload, pinned to the segments that need no live session, in the terminal's theme where it publishes one) and then asks before registering (default yes; it also asks before replacing an existing status line), and a non-interactive install registers nothing and prints how to enable later. Consent registers both keys — the bar and the [subagent rows](#subagent-rows) — exactly as `cs -statusline enable` does.

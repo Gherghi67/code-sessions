@@ -322,7 +322,8 @@ its own inside the vault: main checks before the pre-open, and
 (`_codex_encrypted_refusal`). Antigravity refuses them the same way
 (`_antigravity_encrypted_refusal`).
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
-`~/.gemini/config/plugins/cs/`, and no status line or mail. Rotation uses `/exit` then a fresh
+`~/.gemini/config/plugins/cs/`, and cs's status line, which each launch passes with
+`agy --settings` for that run only. It has no mail. Rotation uses `/exit` then a fresh
 managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Antigravity takes a brief but no

@@ -35,10 +35,12 @@ setup() {
     # (AGY_NO_TURN) fires none. Hook stdout goes to AGY_HOOK_OUT.
     cat > "$TEST_TMPDIR/bin/agy" <<'AGY'
 #!/usr/bin/env bash
-# --help lists the flags cs passes, less any named in AGY_HELP_OMIT, on
-# stderr and with status 0, as agy 1.5.5 prints its usage.
+# --help lists the flags cs passes, less any named in AGY_HELP_OMIT and with
+# any in AGY_HELP_EXTRA, on stderr and with status 0, as agy 1.5.5 prints its
+# usage. --settings is listed only when a test asks: it carries cs's status
+# line, which a test's own install folder holds.
 if [ "${1:-}" = --help ]; then
-    for flag in --conversation --model --effort --mode --prompt-interactive; do
+    for flag in --conversation --model --effort --mode --prompt-interactive ${AGY_HELP_EXTRA:-}; do
         case " ${AGY_HELP_OMIT:-} " in *" $flag "*) continue ;; esac
         printf '  %-30s %s\n' "$flag" "what $flag does" >&2
     done
@@ -116,7 +118,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -129,7 +131,8 @@ teardown() {
     unset CS_CACHE_DIR
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
-    unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
+    unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA CS_DEFAULT_ENGINE
+    unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
     unset CS_TMUX_BIN AGY_TMUX_LOG
 }
@@ -1606,6 +1609,121 @@ test_edits_in_a_run_are_autosaved_for_recovery() {
         "agy's write reaches the conversation's recovery ref"
 }
 
+# cs's status line as an install puts it, in an install folder of the test's
+# own (STATUSLINE_DIR, named by $1): the adapter beside cs-statusline.
+_statusline_install() {  # [folder name]
+    STATUSLINE_DIR="$TEST_TMPDIR/${1:-install}"
+    mkdir -p "$STATUSLINE_DIR" "$TEST_TMPDIR/config"
+    cp "$SCRIPT_DIR/../bin/cs-statusline" "$SCRIPT_DIR/../bin/cs-statusline-agy" "$STATUSLINE_DIR/"
+}
+
+# cs with that install, its own config folder and an agy that lists --settings.
+_cs_lined() {
+    CS_INSTALL_DIR="$STATUSLINE_DIR" CS_CONFIG_DIR="$TEST_TMPDIR/config" AGY_HELP_EXTRA=--settings "$CS_BIN" "$@"
+}
+
+# The value agy got with --settings, or nothing.
+_agy_settings() {
+    awk 'prev == "--settings" { print; exit } { prev = $0 }' "$AGY_ARGV"
+}
+
+# The --settings value cs passes for the adapter at $1.
+_lined_settings() {  # command
+    jq -cn --arg c "$1" '{statusLine: {command: $c, stack_with_default: true}}'
+}
+
+# Each launch hands agy cs's status line through --settings, for that run:
+# agy's own settings.json is left as it was, and a reopen carries it too.
+test_a_launch_gives_agy_the_status_line_for_its_run_only() {
+    local output settings="$HOME/.gemini/antigravity-cli/settings.json"
+    _statusline_install
+    mkdir -p "${settings%/*}"
+    printf '{"trustedWorkspaces":[]}\n' > "$settings"
+    cp "$settings" "$TEST_TMPDIR/settings.before"
+    output=$(_cs_lined lined --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "--settings $(_lined_settings "$STATUSLINE_DIR/cs-statusline-agy")" "$(_agy_argv)" \
+        "a new conversation starts with cs's line stacked under agy's" || return 1
+    output=$(_cs_lined lined 2>&1) || { echo "  FAIL: reopen failed: $output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID --settings $(_lined_settings "$STATUSLINE_DIR/cs-statusline-agy")" \
+        "$(_agy_argv)" "a reopen carries it too" || return 1
+    assert_eq "$(cat "$TEST_TMPDIR/settings.before")" "$(cat "$settings")" "agy's settings.json is never written"
+}
+
+# agy runs the command through a shell, as it runs cs's hook: an install
+# folder outside the plain-word alphabet is passed as one quoted word.
+test_the_status_line_command_quotes_an_unusual_install_folder() {
+    local output
+    _statusline_install "install dir's"
+    output=$(_cs_lined quoted --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "$(_lined_settings "'$TEST_TMPDIR/install dir'\\''s/cs-statusline-agy'")" "$(_agy_settings)" \
+        "the path is single-quoted, its quote escaped"
+}
+
+# The launch leaves the line out, and still starts agy, when the status line
+# is off (cs -statusline disable's own marker, or CS_STATUSLINE_DISABLE), when agy's
+# settings.json names a status line of the user's or cannot be read, when the
+# adapter is not installed, and when agy does not list --settings.
+test_the_status_line_is_left_out_when_off_or_not_cs_to_give() {
+    local output settings="$HOME/.gemini/antigravity-cli/settings.json"
+    _statusline_install
+    touch "$TEST_TMPDIR/config/statusline-antigravity-off"
+    output=$(_cs_lined off --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "a status line turned off is not passed" || return 1
+    rm "$TEST_TMPDIR/config/statusline-antigravity-off"
+    # A no to the installer's question is about Claude Code's bar: a bridge of
+    # the user's own that runs cs-statusline is the usual reason for it.
+    touch "$TEST_TMPDIR/config/statusline-declined"
+    output=$(_cs_lined declined --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "$(_lined_settings "$STATUSLINE_DIR/cs-statusline-agy")" "$(_agy_settings)" \
+        "declining Claude Code's bar leaves agy's line on" || return 1
+    output=$(CS_STATUSLINE_DISABLE=1 _cs_lined disabled --engine antigravity 2>&1) \
+        || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "CS_STATUSLINE_DISABLE keeps it out" || return 1
+    mkdir -p "${settings%/*}"
+    printf '{"statusLine":{"command":"my-line"}}\n' > "$settings"
+    cp "$settings" "$TEST_TMPDIR/settings.before"
+    output=$(_cs_lined own --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "a status line of the user's own stands" || return 1
+    assert_eq "$(cat "$TEST_TMPDIR/settings.before")" "$(cat "$settings")" "and is left as it was" || return 1
+    printf '{"statusLine":' > "$settings"
+    output=$(_cs_lined broken --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "a settings.json cs cannot read may hold one" || return 1
+    rm "$settings"
+    output=$(CS_INSTALL_DIR="$STATUSLINE_DIR" CS_CONFIG_DIR="$TEST_TMPDIR/config" "$CS_BIN" older --engine antigravity 2>&1) \
+        || { echo "  FAIL: an agy without --settings must still start: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "an agy without --settings gets none" || return 1
+    rm "$STATUSLINE_DIR/cs-statusline-agy"
+    output=$(_cs_lined missing --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "a missing adapter is not named" || return 1
+    _statusline_install
+    output=$(_cs_lined lined --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "$(_lined_settings "$STATUSLINE_DIR/cs-statusline-agy")" "$(_agy_settings)" "with none of those, it is passed"
+}
+
+# Doctor says what the next launch gives agy, and why it gives none.
+test_doctor_reports_the_antigravity_status_line() {
+    local output dir settings="$HOME/.gemini/antigravity-cli/settings.json"
+    _statusline_install
+    output=$(_cs_lined doc --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir doc)
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity status line: cs's line under agy's own, from $STATUSLINE_DIR/cs-statusline-agy" || return 1
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" CS_INSTALL_DIR="$STATUSLINE_DIR" \
+        CS_CONFIG_DIR="$TEST_TMPDIR/config" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "does not list --settings, so sessions show only agy's own line" || return 1
+    touch "$TEST_TMPDIR/config/statusline-antigravity-off"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity status line: off (cs -statusline enable turns it on)" || return 1
+    rm "$TEST_TMPDIR/config/statusline-antigravity-off"
+    mkdir -p "${settings%/*}"
+    printf '{"statusLine":{"command":"my-line"}}\n' > "$settings"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity status line: your own, from $settings; cs passes none" || return 1
+    rm "$settings" "$STATUSLINE_DIR/cs-statusline"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "or cs-statusline beside it, is not installed; run setup.sh again"
+}
+
 run_test test_handoff_launch_binds_consumes_and_resumes_without_replay
 run_test test_cancelled_handoff_launch_does_not_replay_an_ambiguous_attempt
 run_test test_first_receipt_failure_keeps_the_main_consumer_across_subagents_and_reopens
@@ -1679,4 +1797,8 @@ run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
 run_test test_doctor_sends_a_folder_cs_left_to_setup
+run_test test_a_launch_gives_agy_the_status_line_for_its_run_only
+run_test test_the_status_line_command_quotes_an_unusual_install_folder
+run_test test_the_status_line_is_left_out_when_off_or_not_cs_to_give
+run_test test_doctor_reports_the_antigravity_status_line
 report_results
