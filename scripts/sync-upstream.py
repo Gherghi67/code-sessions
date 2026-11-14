@@ -20,13 +20,21 @@ preference: a file they leave with more conflicts than a plain merge is merged
 plainly.
 
     scripts/sync-upstream.py status          # which releases are missing, what the next one conflicts in
+    scripts/sync-upstream.py missing         # only their tags, oldest first, for a script
     scripts/sync-upstream.py catch-up        # merge them one by one, landing each
     scripts/sync-upstream.py start [--to v2026.10.3]
     scripts/sync-upstream.py continue        # in the sync worktree, once resolved
 
+Upstream is the remote named origin; --remote <name> before the command, or
+SYNC_UPSTREAM_REMOTE, names another (a GitHub Actions checkout has the fork
+as origin). start exits 0 once the merge is committed, 1 when it waits for a
+person (a conflict marker, or something no marker can show: see "Check by
+hand" in its report) and 2 on an error.
+
 Nothing is pushed. The merge commit lands on a sync/<tag> branch; bring it
 into the branch you started from with `git merge --ff-only sync/<tag>`, or let
-catch-up do that.
+catch-up do that. .github/workflows/sync-upstream.yml runs this for each new
+release and opens the pull request.
 """
 
 import argparse
@@ -39,7 +47,7 @@ import subprocess
 import sys
 import tempfile
 
-REMOTE = "origin"
+REMOTE = os.environ.get("SYNC_UPSTREAM_REMOTE") or "origin"
 # Written by build.sh. Never merged: rebuilt once the sources are merged.
 GENERATED = {"bin/cs", "hooks/cs-shared.sh", "skills/sweep/scripts/cs-shared.sh", "install.sh"}
 # Where the fork's variable forms apply. Prose (README, docs, CHANGELOG) is
@@ -52,6 +60,11 @@ UNIT_DIR = "lib/"
 SESSION_VARS = ("SESSION_META_DIR", "SESSION_DIR", "SESSION_NAME")
 LABELS = ("ours", "base", "upstream")
 STATE_NAME = "code-sessions-sync-upstream.json"
+# A cs session's own notes. They change while the session is open and upstream
+# has none, so they neither block a sync nor count as the fork naming a file.
+SESSION_NOTES = ".cs"
+# History and plans: they name files as they were called at the time.
+HISTORY = ("CHANGELOG.md", "docs/superpowers/", "docs/upstream/")
 
 
 class SyncError(Exception):
@@ -71,10 +84,57 @@ def git_ok(*args, cwd=None):
 
 # ---- the fork's variable forms --------------------------------------------
 
+def _closing(text, at):
+    """The index just past the brace that closes the expansion whose inside
+    starts at at, found by counting on the one line (${ opens, } closes), or
+    None when the line ends first."""
+    end, depth = at, 1
+    while depth and end < len(text) and text[end] != "\n":
+        if text.startswith("${", end):
+            depth, end = depth + 1, end + 2
+        else:
+            depth, end = depth - (text[end] == "}"), end + 1
+    return None if depth else end
+
+
+def _defaults(text, var, full):
+    """${CLAUDE_X:-default} in the fork's form, whatever the default nests
+    (${dir##*/}, another expansion with a default of its own). The closing
+    brace is looked for on the same line only; a default that closes on a
+    later line is left as it is (unclosed_defaults finds it)."""
+    head, guard = "${CLAUDE_%s:-" % var, "${CS_%s:-" % var
+    out, at = [], 0
+    while True:
+        start = text.find(head, at)
+        if start < 0:
+            return "".join(out) + text[at:]
+        end = _closing(text, start + len(head))
+        if end is None or text.endswith(guard, 0, start):  # unclosed, or the fork's form already
+            out.append(text[at:start + len(head)])
+            at = start + len(head)
+        else:
+            out.append(text[at:start] + full % _defaults(text[start + len(head):end - 1], var, full))
+            at = end
+
+
+def unclosed_defaults(text):
+    """Each ${CLAUDE_X:- in text, not in the fork's form yet, whose default
+    closes on a later line: rename() leaves them as they are."""
+    found = []
+    for var in SESSION_VARS:
+        head, guard = "${CLAUDE_%s:-" % var, "${CS_%s:-" % var
+        start = text.find(head)
+        while start >= 0:
+            if _closing(text, start + len(head)) is None and not text.endswith(guard, 0, start):
+                found.append(head)
+            start = text.find(head, start + len(head))
+    return found
+
+
 def _session_var(text, var):
     full = "${CS_%s:-${CLAUDE_%s:-%%s}}" % (var, var)
     guard = r"(?<!\$\{CS_%s:-)" % var
-    text = re.sub(guard + r"\$\{CLAUDE_%s:-([^{}]*)\}" % var, lambda m: full % m.group(1), text)
+    text = _defaults(text, var, full)
     text = re.sub(guard + r"\$\{CLAUDE_%s\}" % var, lambda m: full % "", text)
     return re.sub(r"\$CLAUDE_%s(?![A-Za-z0-9_])" % var, lambda m: full % "", text)
 
@@ -88,6 +148,47 @@ def rename(text):
 
 def renames_apply(path):
     return path in RENAME_FILES or path.startswith(RENAME_DIRS)
+
+
+# ${CLAUDE_SESSION_NAME//@/+}, ${CLAUDE_SESSION_DIR%/}, ${#CLAUDE_SESSION_NAME}:
+# bash applies an operator to one variable, so no single expansion reads CS_
+# first and then applies it. rename() leaves these alone, and a person decides.
+SKIPPED = re.compile(r"\$\{(?:[#!]CLAUDE_(?:%(vars)s)|CLAUDE_(?:%(vars)s)(?!\}|:-))(?![A-Za-z0-9_])[^}\n]*\}?"
+                     % {"vars": "|".join(SESSION_VARS)})
+
+
+def by_hand(line):
+    """What a person has to do about the expansions on this line that
+    rename() leaves as they are: [] when there are none."""
+    why, kept, unclosed = [], SKIPPED.findall(line), unclosed_defaults(line)
+    if kept:
+        why.append("keeps %s, which has no CS_ form: make the statement read one family of variables"
+                   % ", ".join(kept))
+    if unclosed:
+        why.append("opens %s and closes it on a later line, which the renames do not follow: "
+                   "give it the CS_ form by hand" % ", ".join(unclosed))
+    return why
+
+
+def half_renamed(base, upstream, result):
+    """[(line number, what to do)] in result for the lines upstream changed or
+    added that keep an expansion rename() left as it is. One it has no fork
+    form for leaves a statement reading two families of variables, or cs
+    reading the caller's session where it means the target's. A default that
+    closes on a later line has a fork form, which a person writes."""
+    if not SKIPPED.search(upstream) and not unclosed_defaults(upstream):
+        return []
+    upstream_lines, wanted = upstream.split("\n"), set()
+    for tag, _, _, j1, j2 in difflib.SequenceMatcher(
+            None, base.split("\n"), upstream_lines, autojunk=False).get_opcodes():
+        if tag in ("insert", "replace"):
+            wanted.update(rename(line) for line in upstream_lines[j1:j2] if by_hand(line))
+    found = []
+    for n, line in enumerate(result.split("\n")):
+        why = by_hand(line)
+        if why and rename(line) in wanted:
+            found += [(n + 1, reason) for reason in why]
+    return found
 
 
 def rename_changed_lines(base, upstream):
@@ -215,11 +316,16 @@ def insert_units(text, moved, ours_order):
 class Tree:
     """The files of one commit, read on demand."""
 
-    def __init__(self, repo, rev):
-        self.repo, self.rev, self._cache, self.modes = repo, rev, {}, {}
+    def __init__(self, repo, rev, shown_as=None):
+        """shown_as: {path in the commit: the path to show that file under}."""
+        self.repo, self.rev, self._cache, self.modes, self._stored = repo, rev, {}, {}, {}
         for entry in filter(None, git("ls-tree", "-r", "-z", rev, cwd=repo).split("\0")):
             meta, path = entry.split("\t", 1)
             self.modes[path] = meta.split()[0]
+        for path, shown in (shown_as or {}).items():
+            if path in self.modes and shown not in self.modes:
+                self.modes[shown] = self.modes.pop(path)
+                self._stored[shown] = path
 
     def has(self, path):
         return path in self.modes
@@ -229,8 +335,9 @@ class Tree:
 
     def raw(self, path):
         if path not in self._cache:
-            self._cache[path] = git("cat-file", "-p", "%s:%s" % (self.rev, path), cwd=self.repo,
-                                    binary=True) if path in self.modes else None
+            stored = "%s:%s" % (self.rev, self._stored.get(path, path))
+            self._cache[path] = (git("cat-file", "-p", stored, cwd=self.repo, binary=True)
+                                 if path in self.modes else None)
         return self._cache[path]
 
     def text(self, path):
@@ -247,17 +354,74 @@ class Tree:
         return text if text is not None else self.raw(path)
 
 
-def path_map(repo, base, ours):
-    """Upstream path -> the fork's path, for files the fork moved."""
-    mapping = {}
-    # 30%: commands/checkpoint.md became skills/checkpoint/SKILL.md with most
-    # of its text rewritten. Only files the fork deleted can pair up, so a
-    # low threshold cannot misdirect a file both sides still have.
-    out = git("diff", "-M30%", "--name-status", "-z", "--diff-filter=R", base.rev, ours.rev, cwd=repo)
+# A rename is a file one side deleted paired with one it added, at least 30%
+# alike by git's count. That low a threshold finds the fork's own moves
+# (commands/checkpoint.md became skills/checkpoint/SKILL.md with most of its
+# text rewritten), and since only a deleted file can pair, it never
+# misdirects a file both sides still have. Between upstream releases it can
+# also pair a deleted file with an unrelated new one that shares some
+# boilerplate. Following that pairing is harmless while the fork never changed
+# the file; when it did, its changes would land in the new file, so a pairing
+# under SURE_RENAME% goes to a person (upstream_renames).
+SURE_RENAME = 90
+
+
+def renamed_files(repo, old_rev, new_rev):
+    """{path in old_rev: (its path in new_rev, git's similarity score, 0-100)}
+    for the files renamed between them."""
+    out = git("diff", "-M30%", "--name-status", "-z", "--diff-filter=R", old_rev, new_rev, cwd=repo)
     fields = [f for f in out.split("\0") if f]
-    for i in range(0, len(fields) - 2, 3):
-        mapping[fields[i + 1]] = fields[i + 2]
-    return mapping
+    return {fields[i + 1]: (fields[i + 2], int(fields[i][1:])) for i in range(0, len(fields) - 2, 3)}
+
+
+def upstream_renames(repo, base_rev, upstream_rev, ours_rev, mapping):
+    """What to do about each file upstream renamed in this release: (follow,
+    stay, unsure). follow {old: new}: the fork still has the file under the
+    old name, so its copy takes the new one and merges there. stay {new:
+    old}: the fork moved or deleted the file itself, so upstream's renamed
+    file is read under its old name and merges wherever the fork keeps that.
+    Without this the fork's copy is left behind as deleted upstream, and
+    upstream's file arrives under the new name with none of the fork's
+    changes. unsure {new: score}: the renames followed that git scores under
+    SURE_RENAME% in a file the fork changed, which a person checks: the new
+    file may be another file that shares some lines with the old one."""
+    ours, follow, stay, unsure = Tree(repo, ours_rev), {}, {}, {}
+    for old, (new, score) in renamed_files(repo, base_rev, upstream_rev).items():
+        if old in GENERATED or new in GENERATED:
+            continue
+        if old in mapping or not ours.has(old):
+            stay[new] = old
+        elif not ours.has(new):
+            follow[old] = new
+            if score < SURE_RENAME and not git_ok("diff", "--quiet", base_rev, ours_rev, "--", old, cwd=repo):
+                unsure[new] = score
+    return follow, stay, unsure
+
+
+def stale_mentions(repo, ours_rev, old, new, from_upstream, results):
+    """[(path, line number, line)]: the fork's own lines that still name a file
+    upstream renamed. Upstream's own mentions (a retired-files list, a
+    comment) come with the merge and are right as they are."""
+    name = os.path.basename(old)
+    needle = old if name == os.path.basename(new) else name
+    proc = subprocess.run(["git", "grep", "-n", "-I", "-F", "-e", needle, ours_rev, "--", ".",
+                           ":(exclude)%s" % SESSION_NOTES], cwd=repo, capture_output=True)
+    found = []
+    for hit in proc.stdout.decode("utf-8", errors="surrogateescape").split("\n"):
+        parts = hit.split(":", 3)
+        if len(parts) < 4 or not parts[2].isdigit():
+            continue
+        if parts[1] in GENERATED or parts[1] == old or parts[1].startswith(HISTORY):
+            continue
+        path, numbers, line = parts[1], [int(parts[2])], parts[3]
+        theirs = from_upstream.get(path)
+        if isinstance(theirs, str) and line in theirs.split("\n"):
+            continue
+        if path in results:  # merged: the line may have moved, or gone
+            merged = results[path][0].split("\n") if isinstance(results[path][0], str) else []
+            numbers = [n + 1 for n, text in enumerate(merged) if text == line]
+        found += [(path, number, line) for number in numbers if (path, number, line) not in found]
+    return found
 
 
 def unit_moves(base, upstream, ours, mapping):
@@ -318,6 +482,8 @@ def merge_file(ours_text, base_text, theirs_text, scratch):
 def merge_one(path, o, b, u, scratch):
     """Merge one fork path. Returns (result, conflicts, plain_conflicts, how)
     where result is str/bytes/("link", target) to write, or None to delete."""
+    if o is None and u is None:
+        return None, 0, 0, []  # deleted on both sides
     texts = all(isinstance(x, str) or x is None for x in (o, b, u))
     renamed = renames_apply(path) and texts
     # Only upstream changed it. In a file the fork never touched the fork made
@@ -356,9 +522,14 @@ def merge_one(path, o, b, u, scratch):
 
 
 def plan_merge(repo, base_rev, upstream_rev, ours_rev, scratch):
-    """Merge every file upstream changed: ({fork path: (result, executable)}, report)."""
-    base, upstream, ours = Tree(repo, base_rev), Tree(repo, upstream_rev), Tree(repo, ours_rev)
-    mapping = path_map(repo, base, ours)
+    """Merge every file upstream changed: ({fork path: (result, executable)}, report).
+    A report entry's "check" lists what a person has to look at that no
+    conflict marker shows."""
+    # Upstream path -> the fork's path, for files the fork moved.
+    mapping = {old: new for old, (new, _) in renamed_files(repo, base_rev, ours_rev).items()}
+    follow, stay, unsure = upstream_renames(repo, base_rev, upstream_rev, ours_rev, mapping)
+    base, upstream, ours = Tree(repo, base_rev, follow), Tree(repo, upstream_rev, stay), Tree(repo, ours_rev, follow)
+    followed = {new: old for old, new in follow.items()}
     reverse = {fork: up for up, fork in mapping.items()}
     moves = unit_moves(base, upstream, ours, mapping)
     changed_moves = {name for name, (source, _) in moves.items()
@@ -368,21 +539,43 @@ def plan_merge(repo, base_rev, upstream_rev, ours_rev, scratch):
     results, report = {}, []
     for path in sorted(set(from_base) | set(from_upstream)):
         b, u = from_base.get(path), from_upstream.get(path)
-        if b == u:
+        if b == u and path not in followed:
             continue
         o = ours.content(path) if ours.has(path) else None
         result, count, plain, how = merge_one(path, o, b, u, scratch)
+        marker = isinstance(result, str) and count > 0
+        check = [] if marker or not count else ["; ".join(how)]
+        if path in unsure:
+            check.append("git pairs it with %s, which upstream deleted, as a rename at %d%% similarity, so the "
+                         "fork's changes to %s are merged into it: make sure it is that file renamed"
+                         % (followed[path], unsure[path], followed[path]))
         if path in reverse:
             how.insert(0, "moved file, upstream %s" % reverse[path])
+        if path in followed:
+            how.insert(0, "renamed upstream, was %s" % followed[path])
         moved_here = sorted(n for n in changed_moves if moves[n][1] == path)
         if moved_here:
             how.insert(0, "moved functions: " + ", ".join(moved_here))
-        if result != o:
+        if result != o or path in followed:
             source = reverse.get(path, path)
             mode = ours.modes.get(path) or upstream.modes.get(source) or "100644"
             results[path] = (result, mode == "100755")
-        report.append({"path": path, "conflicts": count, "plain": plain, "how": how,
-                       "marker": isinstance(result, str) and count > 0})
+        if path in followed:  # the worktree still holds it under the old name
+            results[followed[path]] = (None, False)
+        if renames_apply(path) and isinstance(result, str) and isinstance(u, str):
+            check += ["line %d %s" % (number, why)
+                      for number, why in half_renamed(b if isinstance(b, str) else "", u, result)]
+        report.append({"path": path, "conflicts": count, "plain": plain, "how": how, "marker": marker,
+                       "check": check})
+    by_path = {entry["path"]: entry for entry in report}
+    for old, new in sorted(follow.items()):
+        for path, number, _ in stale_mentions(repo, ours_rev, old, new, from_upstream, results):
+            entry = by_path.get(path)
+            if entry is None:
+                entry = by_path[path] = {"path": path, "conflicts": 0, "plain": 0, "how": [], "marker": False,
+                                         "check": [], "untouched": True}
+                report.append(entry)
+            entry["check"].append("line %d names %s, which upstream renamed to %s" % (number, old, new))
     return results, report
 
 
@@ -425,6 +618,13 @@ def git_path(worktree, name):
 
 def write_result(worktree, path, result, executable):
     full = os.path.join(worktree, path)
+    # Upstream can put a symlink where a directory was, and a file upstream
+    # renamed is written under the fork's name for it, which may lie past that
+    # link once it is written. Nothing is written, created or removed there.
+    where, root = os.path.realpath(os.path.dirname(full)), os.path.realpath(worktree)
+    if where != root and not where.startswith(root + os.sep):
+        raise SyncError("Refusing to write %s: a symbolic link takes it out of the sync worktree %s, to %s"
+                        % (path, worktree, where))
     if result is None:
         git("rm", "--quiet", "--", path, cwd=worktree)
         return
@@ -494,7 +694,7 @@ def default_worktree(repo, target):
 
 
 def require_clean(repo):
-    if git("status", "--porcelain", cwd=repo).strip():
+    if git("status", "--porcelain", "--", ".", ":(exclude)%s" % SESSION_NOTES, cwd=repo).strip():
         raise SyncError("The working tree has uncommitted changes. Commit them first: the merge "
                         "starts from the last commit, and git only recognises a moved file once it is committed.")
 
@@ -568,11 +768,14 @@ def begin(repo, target, worktree=None, branch=None, skip_tests=False, trailers=(
     plain_total = plain_merge_conflicts(repo, ours_rev, upstream_rev)
     conflicts = [entry["path"] for entry in report if entry["marker"]]
     kept = [entry for entry in report if entry["conflicts"] and not entry["marker"]]
+    checks = [(entry["path"], why) for entry in report for why in entry["check"]]
+    report = [entry for entry in report if not entry.get("untouched")]
     plain_text = "?" if plain_total is None else str(plain_total)
     with open(git_path(worktree, "MERGE_MSG"), "w") as handle:
         handle.write("Merge upstream %s into %s\n\nMerged by scripts/sync-upstream.py: %d files changed "
-                     "upstream, %d left in conflict for a person (a plain git merge left %s).\n"
-                     % (target, from_branch, len(report), len(conflicts), plain_text))
+                     "upstream, %d left in conflict for a person (a plain git merge left %s)%s.\n"
+                     % (target, from_branch, len(report), len(conflicts), plain_text,
+                        ", %d place(s) checked by hand" % len(checks) if checks else ""))
     with open(git_path(worktree, STATE_NAME), "w") as handle:
         json.dump({"tag": target, "branch": branch, "from_branch": from_branch,
                    "conflicts": conflicts, "origin_dir": repo}, handle)
@@ -586,10 +789,14 @@ def begin(repo, target, worktree=None, branch=None, skip_tests=False, trailers=(
         print("  %-50s %s%s" % (entry["path"], status, how))
     print("%d files changed upstream; %d left in conflict (a plain git merge leaves %s)."
           % (len(report), len(conflicts) + len(kept), plain_text))
-    for entry in kept:
-        print("Check by hand, no markers written: %s (%s)" % (entry["path"], "; ".join(entry["how"])))
+    for path, why in checks:
+        print("Check by hand, no marker written: %s: %s" % (path, why))
     if conflicts:
         print("Resolve the conflict markers in %s, then run there: scripts/sync-upstream.py continue" % worktree)
+        return 1
+    if checks:
+        print("Nothing is committed yet. Look at each place above in %s, then run there: "
+              "scripts/sync-upstream.py continue" % worktree)
         return 1
     return finish(worktree, skip_tests, trailers)
 
@@ -626,7 +833,7 @@ def status(args):
         _, report = plan_merge(repo, base_rev, upstream_rev, ours_rev, scratch)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    left = [entry["path"] for entry in report if entry["conflicts"]]
+    left = [entry["path"] for entry in report if entry["conflicts"] or entry["check"]]
     plain = plain_merge_conflicts(repo, ours_rev, upstream_rev)
     print("Merging %s next would leave %d file(s) for a person (a plain git merge: %s)%s"
           % (tags[0], len(left), "?" if plain is None else plain, ":" if left else "."))
@@ -634,6 +841,16 @@ def status(args):
         print("  " + path)
     print("Run: scripts/sync-upstream.py catch-up")
     return 1
+
+
+def missing(args):
+    """Print the tag of every missing release, oldest first: for a script."""
+    repo = git("rev-parse", "--show-toplevel").strip()
+    if not args.no_fetch:
+        git("fetch", "--quiet", "--tags", REMOTE, cwd=repo)
+    for tag in missing_releases(repo):
+        print(tag)
+    return 0
 
 
 def catch_up(args):
@@ -677,22 +894,26 @@ def catch_up(args):
 
 
 def main():
+    global REMOTE
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--remote", default=REMOTE, help="the remote that is upstream (default: "
+                        "$SYNC_UPSTREAM_REMOTE, else origin)")
     sub = parser.add_subparsers(dest="command")
     p_start = sub.add_parser("start", help="merge a release in a new sync worktree")
-    p_start.add_argument("--to", help="tag or commit to merge (default: newest v* tag on %s/main)" % REMOTE)
+    p_start.add_argument("--to", help="tag or commit to merge (default: newest v* tag on upstream's main)")
     p_start.add_argument("--worktree", help="where to create the sync worktree")
     p_start.add_argument("--branch", help="branch for the merge (default: sync/<tag>)")
-    p_start.add_argument("--no-fetch", action="store_true", help="do not fetch %s first" % REMOTE)
+    p_start.add_argument("--no-fetch", action="store_true", help="do not fetch upstream first")
     p_cont = sub.add_parser("continue", help="check, build, test and commit a resolved sync")
     p_cont.add_argument("--worktree", default=".", help="the sync worktree (default: here)")
     p_status = sub.add_parser("status", help="list the missing releases and dry-run the next one "
                                              "(exit 1 when one is missing)")
     p_status.add_argument("--brief", action="store_true", help="list only; skip the dry run")
+    p_missing = sub.add_parser("missing", help="print the tags of the missing releases, oldest first")
     p_catch = sub.add_parser("catch-up", help="merge every missing release in order, landing each one "
                                               "that needs no person")
-    for p in (p_status, p_catch):
-        p.add_argument("--no-fetch", action="store_true", help="do not fetch %s first" % REMOTE)
+    for p in (p_status, p_missing, p_catch):
+        p.add_argument("--no-fetch", action="store_true", help="do not fetch upstream first")
     for p in (p_start, p_cont, p_catch):
         p.add_argument("--skip-tests", action="store_true", help="do not run tests/run_all.sh")
         p.add_argument("--trailer", action="append", default=[], help="trailer for the merge commit")
@@ -700,11 +921,14 @@ def main():
     if not args.command:
         parser.print_help()
         return 2
+    REMOTE = args.remote
     try:
         if args.command == "start":
             return start(args)
         if args.command == "status":
             return status(args)
+        if args.command == "missing":
+            return missing(args)
         if args.command == "catch-up":
             return catch_up(args)
         worktree = git("rev-parse", "--show-toplevel", cwd=args.worktree).strip()

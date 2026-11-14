@@ -6,11 +6,6 @@ set -euo pipefail
 
 # Configuration
 VERSION="2026.11.7"
-# This build is code-sessions, a fork of cs, installed with the user's normal
-# engine configuration. install.sh uses this marker to identify the fork;
-# update checks use it to avoid replacing the fork with an upstream release.
-# shellcheck disable=SC2034  # read by cs -version in lib/99-main.sh
-CS_FORK="code-sessions"
 # A relative CS_SESSIONS_ROOT names a directory under the one cs started in.
 # cs moves into a session before it launches claude, and claude's hooks, the
 # status line and cs-secrets read the variable from wherever they run, so it is
@@ -25,6 +20,14 @@ esac
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}"
 CLAUDE_CODE_BIN="${CLAUDE_CODE_BIN:-claude}"
 CODEX_BIN="${CODEX_BIN:-codex}"
+# This build is code-sessions, a fork of cs, installed with the user's normal
+# engine configuration. install.sh uses this marker to identify the fork;
+# update checks use it to avoid replacing the fork with an upstream release.
+# It sits here, in the lines the fork already rewrote, and not under VERSION:
+# upstream changes that line in every release, and a fork line touching it
+# made each of those a merge conflict (tests/test_sync_upstream.sh).
+# shellcheck disable=SC2034  # read by cs -version in lib/99-main.sh
+CS_FORK="code-sessions"
 
 REPO_URL="https://github.com/hex/claude-sessions"
 RELEASES_BASE="https://github.com/hex/claude-sessions/releases"

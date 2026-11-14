@@ -329,6 +329,326 @@ test_catch_up_lands_clean_releases_and_stops_at_the_first_conflict() {
     assert_eq "" "$(git -C "$FORK" status --porcelain)"
 }
 
+# A cs session keeps its notes in .cs/, which change while the session is open.
+test_start_ignores_a_cs_sessions_own_notes() {
+    make_upstream && make_fork || return 1
+    mkdir -p "$FORK/.cs/handoffs"
+    printf 'objective\n' > "$FORK/.cs/README.md"
+    (cd "$FORK" && git add -A && git commit -q -m "session notes") || return 1
+    release v1.1 NOTES.md notes || return 1
+    printf 'outcome\n' >> "$FORK/.cs/README.md"
+    printf 'next step\n' > "$FORK/.cs/handoffs/2026-01-01.md"
+    WT="$TEST_TMPDIR/fork-sync-v1.1"
+    sync_start || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" "Committed the merge of v1.1" || return 1
+    # The notes are as the session left them, and none of it reached the merge.
+    assert_eq ' M .cs/README.md
+?? .cs/handoffs/' "$(git -C "$FORK" status --porcelain)" || return 1
+    assert_eq objective "$(cat "$WT/.cs/README.md")" || return 1
+    assert_not_exists "$WT/.cs/handoffs"
+}
+
+# A GitHub Actions checkout has the fork as origin and upstream beside it.
+test_remote_names_the_upstream() {
+    make_upstream && make_fork || return 1
+    release v1.1 NOTES.md notes || return 1
+    git init -q --bare "$TEST_TMPDIR/fork-origin.git"
+    git -C "$FORK" remote rename origin hex > /dev/null 2>&1 || return 1
+    git -C "$FORK" remote add origin "$TEST_TMPDIR/fork-origin.git"
+    git -C "$FORK" push -q origin rebrand || return 1
+    local status=0
+    run_sync missing || status=$?
+    assert_eq 2 "$status" "origin is not upstream here" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    run_sync --remote hex missing || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_eq v1.1 "$(cat "$TEST_TMPDIR/sync.log")" || return 1
+    WT="$TEST_TMPDIR/fork-sync-v1.1"
+    (cd "$FORK" && SYNC_UPSTREAM_REMOTE=hex python3 "$SYNC" start --skip-tests) > "$TEST_TMPDIR/sync.log" 2>&1 \
+        || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" "Committed the merge of v1.1" || return 1
+    assert_eq notes "$(cat "$WT/NOTES.md")"
+}
+
+test_missing_prints_the_tags_oldest_first_and_nothing_else() {
+    make_fixture || return 1
+    release v3 NOTES.md notes || return 1
+    run_sync missing || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_eq 'v2
+v3' "$(cat "$TEST_TMPDIR/sync.log")" || return 1
+    assert_eq "" "$(git -C "$FORK" status --porcelain)" || return 1
+    # Up to date, it prints nothing and still exits 0.
+    git -C "$FORK" merge -q -s ours --no-edit v3 || return 1
+    run_sync missing || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_eq "" "$(cat "$TEST_TMPDIR/sync.log")"
+}
+
+# Upstream v1.1 has a hook, and a test that names it. The fork adds a line to
+# the hook and names it in a fragment of its own. The hook is long enough that
+# renaming it with one line changed still scores over SURE_RENAME, as a real
+# rename does: at ten lines, that one line alone cost it 21 points.
+make_hook_fixture() {
+    make_upstream || return 1
+    mkdir -p "$UP/hooks"
+    cat > "$UP/hooks/reminder.sh" <<'EOF'
+#!/usr/bin/env bash
+# ABOUTME: Reminds the session to write its narrative before it stops.
+
+remind() {
+    echo "write the narrative"
+    echo "name what changed and why"
+    echo "name what was measured, with its numbers"
+    echo "name what failed, and what was tried instead"
+    echo "name the decisions the user made"
+    echo "name what is left, and who has it"
+    echo "keep it to the session's own work"
+    echo "then stop"
+}
+
+remind
+EOF
+    chmod +x "$UP/hooks/reminder.sh"
+    printf '# hooks/reminder.sh has a suite of its own.\n' >> "$UP/tests/test_mail.sh"
+    (cd "$UP" && bash build.sh && git add -A && git commit -q -m hook && git tag v1.1) || return 1
+    make_fork || return 1
+    cat > "$FORK/hooks/reminder.sh" <<'EOF'
+#!/usr/bin/env bash
+# ABOUTME: Reminds the session to write its narrative before it stops.
+
+remind() {
+    echo "write the narrative"
+    echo "name what changed and why"
+    echo "name what was measured, with its numbers"
+    echo "name what failed, and what was tried instead"
+    echo "name the decisions the user made"
+    echo "name what is left, and who has it"
+    echo "keep it to the session's own work"
+    echo "then stop"
+    echo "the fork retires staged features"
+}
+
+remind
+EOF
+    printf '%s\n' '# ABOUTME: What only the fork runs.' '' 'run_reminder() {' '    bash hooks/reminder.sh' '}' \
+        > "$FORK/lib/90-fork.sh"
+    (cd "$FORK" && bash build.sh && git add -A && git commit -q -m "the fork's hook")
+}
+
+# Upstream v2 renames the hook; with "edit", it changes a line of it too.
+release_renamed_hook() {
+    (cd "$UP" && git mv hooks/reminder.sh hooks/blocks.sh) || return 1
+    if [ "${1:-}" = edit ]; then
+        sed -i.bak 's/write the narrative/write the narrative now/' "$UP/hooks/blocks.sh" && rm -f "$UP/hooks/blocks.sh.bak"
+    fi
+    (cd "$UP" && bash build.sh && git add -A && git commit -q -m v2 && git tag v2)
+}
+
+# The fork's copy takes the new name with its changes; it is not left behind
+# as "deleted upstream" while upstream's file arrives without them.
+test_a_file_upstream_renamed_keeps_the_forks_changes() {
+    make_hook_fixture && release_renamed_hook edit || return 1
+    WT="$TEST_TMPDIR/fork-sync-v2"
+    local status=0
+    sync_start || status=$?
+    assert_file_contains "$TEST_TMPDIR/sync.log" 'hooks/blocks.sh .*merged \[renamed upstream, was hooks/reminder.sh\]' \
+        || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_not_contains "$TEST_TMPDIR/sync.log" 'deleted upstream' || return 1
+    assert_file_contains "$WT/hooks/blocks.sh" 'write the narrative now' || return 1
+    assert_file_contains "$WT/hooks/blocks.sh" 'the fork retires staged features' || return 1
+    assert_file_not_contains "$WT/hooks/blocks.sh" '^<<<<<<<' || return 1
+    [ -x "$WT/hooks/blocks.sh" ] || { echo "  FAIL: the hook lost its executable bit"; return 1; }
+    assert_not_exists "$WT/hooks/reminder.sh" || return 1
+    # The fork's own line still names the old file, which no marker can show:
+    # the sync waits for a person. Upstream's mention (tests/test_mail.sh) and
+    # the built bin/cs are not the fork's to fix.
+    assert_eq 1 "$status" "a line of the fork's names the old file" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_eq 'Check by hand, no marker written: lib/90-fork.sh: line 4 names hooks/reminder.sh, which upstream renamed to hooks/blocks.sh' \
+        "$(grep 'Check by hand' "$TEST_TMPDIR/sync.log")" || return 1
+    git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "  FAIL: the merge was committed"; return 1; }
+    sed -i.bak 's|hooks/reminder.sh|hooks/blocks.sh|' "$WT/lib/90-fork.sh" && rm -f "$WT/lib/90-fork.sh.bak"
+    sync_continue || { cat "$TEST_TMPDIR/continue.log"; return 1; }
+    assert_eq hooks/blocks.sh "$(git -C "$WT" ls-files hooks)"
+}
+
+# The fork deleted the file: upstream renaming it brings nothing back.
+test_a_rename_of_a_file_the_fork_deleted_brings_nothing_back() {
+    make_hook_fixture || return 1
+    (cd "$FORK" && git rm -q hooks/reminder.sh lib/90-fork.sh && bash build.sh && git add -A \
+        && git commit -q -m "the fork drops the hook") || return 1
+    release_renamed_hook || return 1
+    WT="$TEST_TMPDIR/fork-sync-v2"
+    sync_start || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" "Committed the merge of v2" || return 1
+    assert_eq "" "$(git -C "$WT" ls-files hooks)"
+}
+
+# Renamed and changed upstream, it is the fork's deletion against upstream's
+# change, as for any other file, under the name the fork knew.
+test_a_changed_rename_of_a_file_the_fork_deleted_waits_for_a_person() {
+    make_hook_fixture || return 1
+    (cd "$FORK" && git rm -q hooks/reminder.sh lib/90-fork.sh && bash build.sh && git add -A \
+        && git commit -q -m "the fork drops the hook") || return 1
+    release_renamed_hook edit || return 1
+    WT="$TEST_TMPDIR/fork-sync-v2"
+    local status=0
+    sync_start || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$WT/hooks/reminder.sh" '^<<<<<<< deleted in the fork, changed upstream$' || return 1
+    assert_file_contains "$WT/hooks/reminder.sh" 'write the narrative now' || return 1
+    assert_not_exists "$WT/hooks/blocks.sh"
+}
+
+# As above, but upstream moves the hook to another directory and puts a
+# symlink where hooks/ was. The renamed file is read under the name the fork
+# knew, hooks/reminder.sh, which now leads through the link: start refuses
+# before it writes anything outside its worktree.
+test_start_never_writes_through_a_symlink_out_of_its_worktree() {
+    make_hook_fixture || return 1
+    (cd "$FORK" && git rm -q hooks/reminder.sh lib/90-fork.sh && bash build.sh && git add -A \
+        && git commit -q -m "the fork drops the hook") || return 1
+    mkdir -p "$TEST_TMPDIR/outside" "$UP/other"
+    (cd "$UP" && git mv hooks/reminder.sh other/blocks.sh) || return 1
+    sed -i.bak 's/write the narrative/write the narrative now/' "$UP/other/blocks.sh" && rm -f "$UP/other/blocks.sh.bak"
+    rmdir "$UP/hooks" 2>/dev/null || true
+    ln -s "$TEST_TMPDIR/outside" "$UP/hooks"
+    (cd "$UP" && bash build.sh && git add -A && git commit -q -m v2 && git tag v2) || return 1
+    local status=0
+    sync_start || status=$?
+    assert_eq 2 "$status" "a path that leads out of the worktree is an error" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" '^Error: Refusing to write hooks/reminder.sh: a symbolic link takes it out of the sync worktree' \
+        || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/outside")" "nothing written outside the worktree"
+}
+
+# The first lines of a hook, the same in every one but its ABOUTME ($1).
+hook_head() {
+    # shellcheck disable=SC2016  # the fixture's text, not this suite's variables
+    printf '%s\n' '#!/usr/bin/env bash' "# ABOUTME: $1" 'set -euo pipefail' \
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"' '# shellcheck source=hooks/common.sh' \
+        'source "$SCRIPT_DIR/common.sh"' 'input=$(cat)' '[ -n "$input" ] || exit 0'
+}
+
+# Upstream deletes a hook the fork changed and adds an unrelated one that
+# shares its first lines, enough for git to pair the two as a rename at about
+# 50%. The fork's change would land in the new hook: a person checks first.
+test_a_rename_git_is_unsure_of_waits_for_a_person() {
+    make_upstream || return 1
+    mkdir -p "$UP/hooks"
+    { hook_head 'Reminds the session to write its narrative before it stops.'
+      printf '%s\n' '' 'remind() {' '    echo "write the narrative before you stop"' \
+          '    echo "then read the handoff once more"' '    echo "and say what is left to do"' '}' '' 'remind'
+    } > "$UP/hooks/remind.sh"
+    (cd "$UP" && git add -A && git commit -q -m hook && git tag v1.1) || return 1
+    make_fork || return 1
+    # The fork adds a line among the shared ones, where upstream changes nothing.
+    { head -6 "$UP/hooks/remind.sh"
+      printf '%s\n' "trap 'echo \"the reminder failed\" >&2' ERR"
+      tail -n +7 "$UP/hooks/remind.sh"
+    } > "$FORK/hooks/remind.sh"
+    (cd "$FORK" && git add -A && git commit -q -m "the fork's hook") || return 1
+    (cd "$UP" && git rm -q hooks/remind.sh && mkdir -p hooks) || return 1
+    { hook_head 'Counts the tokens a turn used.'
+      # shellcheck disable=SC2016
+      printf '%s\n' '' 'count_tokens() {' "    jq -r '.usage.input_tokens // 0' <<< \"\$input\"" \
+          "    jq -r '.usage.output_tokens // 0' <<< \"\$input\"" '}' '' 'count_tokens'
+    } > "$UP/hooks/tokens.sh"
+    (cd "$UP" && git add -A && git commit -q -m v2 && git tag v2) || return 1
+    WT="$TEST_TMPDIR/fork-sync-v2"
+    local status=0
+    sync_start || status=$?
+    assert_eq 1 "$status" "a rename git is unsure of waits for a person" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    grep -Eq '^Check by hand, no marker written: hooks/tokens\.sh: git pairs it with hooks/remind\.sh, which upstream deleted, as a rename at [0-9]+% similarity, so the fork.s changes to hooks/remind\.sh are merged into it: make sure it is that file renamed$' \
+        "$TEST_TMPDIR/sync.log" || { cat "$TEST_TMPDIR/sync.log"; echo "  FAIL: the unsure rename is not reported"; return 1; }
+    assert_eq 1 "$(grep -c 'Check by hand' "$TEST_TMPDIR/sync.log")" || return 1
+    assert_file_contains "$TEST_TMPDIR/sync.log" 'Nothing is committed yet' || return 1
+    git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "  FAIL: the merge was committed"; return 1; }
+}
+
+test_a_file_deleted_on_both_sides_needs_nobody() {
+    make_upstream && make_fork || return 1
+    (cd "$FORK" && git rm -q bin/cs-statusline && git commit -q -m "the fork drops the companion") || return 1
+    (cd "$UP" && git rm -q bin/cs-statusline && git commit -q -m v1.1 && git tag v1.1) || return 1
+    WT="$TEST_TMPDIR/fork-sync-v1.1"
+    sync_start || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" "Committed the merge of v1.1" || return 1
+    assert_file_not_contains "$TEST_TMPDIR/sync.log" 'Check by hand' || return 1
+    assert_file_contains "$TEST_TMPDIR/sync.log" '0 left in conflict'
+}
+
+# ${CLAUDE_SESSION_NAME:-${dir##*/}} has a fork form; ${CLAUDE_SESSION_NAME//@/+}
+# has none, and a merge that keeps it is not a clean one.
+test_start_stops_at_an_expansion_with_no_fork_form() {
+    make_upstream && make_fork || return 1
+    # shellcheck disable=SC2016  # the fixture's text, not this suite's variables
+    printf '%s\n' 'name="${CLAUDE_SESSION_NAME:-${dir##*/}}"' \
+        'where="${CLAUDE_SESSION_NAME:-$CLAUDE_SESSION_DIR}"' \
+        'label="${CLAUDE_SESSION_NAME//@/+}"' >> "$UP/tests/test_mail.sh"
+    (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
+    WT="$TEST_TMPDIR/fork-sync-v1.1"
+    local status=0
+    run_sync status || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/sync.log" 'Merging v1.1 next would leave 1 file(s)' || return 1
+    status=0
+    sync_start || status=$?
+    assert_eq 1 "$status" "an expansion with no fork form waits for a person" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    # shellcheck disable=SC2016
+    grep -Fq 'Check by hand, no marker written: tests/test_mail.sh: line 5 keeps ${CLAUDE_SESSION_NAME//@/+}, which has no CS_ form' \
+        "$TEST_TMPDIR/sync.log" || { cat "$TEST_TMPDIR/sync.log"; echo "  FAIL: the kept expansion is not reported"; return 1; }
+    assert_eq 1 "$(grep -c 'Check by hand' "$TEST_TMPDIR/sync.log")" || return 1
+    assert_file_contains "$TEST_TMPDIR/sync.log" 'Nothing is committed yet' || return 1
+    # shellcheck disable=SC2016
+    assert_eq '# A test the fork never touches.
+run_mail_tests
+name="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-${dir##*/}}}"
+where="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}}}"
+label="${CLAUDE_SESSION_NAME//@/+}"' "$(cat "$WT/tests/test_mail.sh")" || return 1
+    git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "  FAIL: the merge was committed"; return 1; }
+    # Once a person has looked, continue commits it.
+    sync_continue || { cat "$TEST_TMPDIR/continue.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/continue.log" "Committed the merge of v1.1"
+}
+
+# A default whose closing brace is on a later line has a fork form, but the
+# renames find a default's end on its own line, so they leave this one as
+# upstream wrote it, and a person gives it the fork's form.
+test_start_stops_at_a_default_that_spans_lines() {
+    make_upstream && make_fork || return 1
+    # shellcheck disable=SC2016  # the fixture's text, not this suite's variables
+    printf '%s\n' 'name="${CLAUDE_SESSION_NAME:-$(' '    basename "$PWD")}"' >> "$UP/tests/test_mail.sh"
+    (cd "$UP" && git add -A && git commit -q -m v1.1 && git tag v1.1) || return 1
+    WT="$TEST_TMPDIR/fork-sync-v1.1"
+    local status=0
+    sync_start || status=$?
+    assert_eq 1 "$status" "a default that spans lines waits for a person" || { cat "$TEST_TMPDIR/sync.log"; return 1; }
+    # shellcheck disable=SC2016
+    grep -Fqx 'Check by hand, no marker written: tests/test_mail.sh: line 3 opens ${CLAUDE_SESSION_NAME:- and closes it on a later line, which the renames do not follow: give it the CS_ form by hand' \
+        "$TEST_TMPDIR/sync.log" || { cat "$TEST_TMPDIR/sync.log"; echo "  FAIL: the default is not reported"; return 1; }
+    assert_eq 1 "$(grep -c 'Check by hand' "$TEST_TMPDIR/sync.log")" || return 1
+    # shellcheck disable=SC2016
+    assert_eq 'name="${CLAUDE_SESSION_NAME:-$(' "$(sed -n 3p "$WT/tests/test_mail.sh")" || return 1
+    git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "  FAIL: the merge was committed"; return 1; }
+}
+
+# This checkout, not a fixture: upstream changes VERSION in lib/00-header.sh in
+# every release, and a line of the fork's touching it made each release a
+# conflict. Merges the fork's header with the last release it merged, bumped.
+test_an_upstream_version_bump_merges_into_this_forks_header() {
+    local repo="$SCRIPT_DIR/.." release
+    # By subject: the pull request that lands a sync repeats its title in the
+    # body of its own merge commit, whose second parent is the fork's branch.
+    release=$(git -C "$repo" log --merges --format='%s %P' 2>/dev/null \
+        | awk '/^Merge upstream v[^ ]* into [^ ]* [0-9a-f]+ [0-9a-f]+$/ { print $NF; exit }')
+    if [ -z "$release" ] || ! git -C "$repo" show "$release:lib/00-header.sh" > "$TEST_TMPDIR/base" 2>/dev/null; then
+        echo "  SKIP: this checkout's history holds no merged upstream release"
+        return 77
+    fi
+    sed 's/^VERSION=.*/VERSION="9999.1.1"/' "$TEST_TMPDIR/base" > "$TEST_TMPDIR/upstream"
+    cp "$repo/lib/00-header.sh" "$TEST_TMPDIR/ours"
+    git merge-file -p --zdiff3 "$TEST_TMPDIR/ours" "$TEST_TMPDIR/base" "$TEST_TMPDIR/upstream" > "$TEST_TMPDIR/merged" \
+        || { sed -n '/^<<<<<<< /,/^>>>>>>> /p' "$TEST_TMPDIR/merged"; echo "  FAIL: a version bump conflicts with the fork's header"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/merged" '^VERSION="9999.1.1"$' || return 1
+    assert_file_contains "$TEST_TMPDIR/merged" '^CS_FORK="code-sessions"$'
+}
+
 run_test test_start_translates_upstream_into_the_forks_dialect
 run_test test_status_lists_missing_releases_and_dry_runs_the_next
 run_test test_status_exits_0_when_up_to_date
@@ -338,4 +658,16 @@ run_test test_continue_commits_a_merge_the_fork_can_fast_forward_to
 run_test test_continue_refuses_a_function_defined_in_two_fragments
 run_test test_start_refuses_uncommitted_work
 run_test test_start_merges_an_upstream_that_only_touched_untouched_files
+run_test test_start_ignores_a_cs_sessions_own_notes
+run_test test_remote_names_the_upstream
+run_test test_missing_prints_the_tags_oldest_first_and_nothing_else
+run_test test_a_file_upstream_renamed_keeps_the_forks_changes
+run_test test_a_rename_of_a_file_the_fork_deleted_brings_nothing_back
+run_test test_a_changed_rename_of_a_file_the_fork_deleted_waits_for_a_person
+run_test test_start_never_writes_through_a_symlink_out_of_its_worktree
+run_test test_a_rename_git_is_unsure_of_waits_for_a_person
+run_test test_a_file_deleted_on_both_sides_needs_nobody
+run_test test_start_stops_at_an_expansion_with_no_fork_form
+run_test test_start_stops_at_a_default_that_spans_lines
+run_test test_an_upstream_version_bump_merges_into_this_forks_header
 report_results

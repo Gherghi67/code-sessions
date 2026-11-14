@@ -275,7 +275,46 @@ lists the command files the installer and uninstaller delete.
 
 ## Merging upstream releases
 
-code-sessions follows hex/claude-sessions (`origin`), which often ships several releases a day. Merge them one at a time, as they come:
+code-sessions follows hex/claude-sessions, which often ships several releases a day. They are merged one at a time, each onto the one before it, by `scripts/sync-upstream.py`: on GitHub by a workflow, or by hand.
+
+### The workflow
+
+`Sync upstream` (`.github/workflows/sync-upstream.yml`) runs four times a day, and when started by hand with `gh workflow run sync-upstream.yml`. Each run takes the oldest release `main` lacks:
+
+- One that merges with nothing left for a person is pushed as `cs/sync-<tag>` and gets a pull request, set to merge itself with a merge commit once its required checks pass. The workflow runs no tests: `Test` on the pull request is the gate.
+- One that merges cleanly but changes a file under `.github/`, or `scripts/sync-upstream-ci.sh`, is not pushed: a branch pushed to this repository runs its own workflows at once. It gets an issue, `Sync upstream <tag> needs a person`, that lists those files, shows how to read the change, and gives the one command that approves exactly that release, `gh workflow run sync-upstream.yml -f approve=<tag> -f commit=<id>` (with `--repo` naming this repository, so it works from a checkout whose `origin` is upstream). Read the change, then run it. That run merges the release again, checks that the tag still points at the commit you read, pushes `cs/sync-<tag>` and opens the pull request, which merges itself or waits like any other; the issue closes once `main` contains the release. It fails by name, pushing nothing, if upstream has moved the tag since, or if an older release is still missing; if `main` moved between its two jobs, it says to run the command again, since the scheduled runs leave the release alone while its issue is open. About one release in three changes a workflow.
+- One that needs a person gets an issue, `Sync upstream <tag> needs a person`, with the script's report. Merge it by hand (below), push the result as `cs/sync-<tag>` and open a pull request. The workflow closes the issue once `main` contains the release.
+- One that already has a pull request from this repository's `cs/sync-<tag>` branch, that branch alone, or an open issue labelled `sync-upstream` is left to whoever has it (the run that approves a release goes past its issue), and the later releases wait behind it. The workflow puts that label on each issue it opens. A pull request from a fork's branch of the same name does not count, and neither does an issue without the label: anyone can give an issue that title, but only someone with triage access can label it.
+- One whose sync pull request was closed without merging fails every run by name. A release cannot be skipped, since each sync merges onto the one before it: reopen the pull request, or merge the release by hand and land it with a merge commit.
+- One held like that for longer than `SYNC_STALL_DAYS` days (a repository variable, 3 when unset) fails every run by name, saying what holds it. The days count from when the hold began: its pull request or issue was opened, or its branch's tip committed. Never from the tag, whose date upstream sets, and which is old for every release of a backlog being caught up. What can hold it: an open pull request, an issue nobody has acted on, or a branch with no pull request, which a run that stopped between the push and the pull request leaves behind. The run does the rest of its work first, closing the issues it can.
+
+Each pull request and issue ends with the script's report. Upstream writes part of it (file names, and what its `build.sh` prints to stderr), so it comes after everything the workflow has to say, in a code block none of its lines can close. A report too long for GitHub's limit on a body (65,536 characters) is cut at about 20,000 bytes, with a line that links the run whose log holds all of it.
+
+It needs these set up once in the repository:
+
+1. An environment named `upstream-sync`, limited to the `main` branch (Settings, Environments, "Deployment branches and tags"), holding a secret named `UPSTREAM_SYNC_TOKEN`: a fine-grained personal access token for this repository alone, with read and write access to Contents, Pull requests, Issues and Workflows. Store it with `gh secret set UPSTREAM_SYNC_TOKEN --env upstream-sync`, which asks for the value. The token GitHub hands a workflow run cannot do this: a push or a pull request made with it starts no workflow, so `Test` would never run on the sync pull request. Workflows is needed because an approved release, or any release under `SYNC_AUTO_MERGE=all`, may change a file under `.github/workflows`.
+2. "Allow auto-merge" in the repository's settings.
+3. A ruleset on `main` that requires the eight `Test` checks (`bash` on both systems in two halves each, `build-sync`, `shellcheck`, `rust` on both systems) and allows merge commits only.
+4. Issues switched on (`gh repo edit --enable-issues`, or Settings, General, Features). A release that needs a person is reported as an issue; while Issues are off, every run fails by name before it merges anything. The workflow creates the `sync-upstream` label itself, with the token's Issues permission, before it opens an issue.
+5. "Automatically delete head branches" (`gh repo edit --delete-branch-on-merge`), so each merged `cs/sync-<tag>` branch is removed instead of staying behind.
+6. Once the workflow is on `main`, `gh workflow list --all` showing `Sync upstream` as active. GitHub can leave a fork's scheduled workflows switched off; `gh workflow enable sync-upstream.yml` switches it on.
+
+Without the second and third, GitHub refuses auto-merge: the pull request stays open and the workflow comments on it with the command to merge it by hand. The repository variable `SYNC_AUTO_MERGE` changes the rule: `false` has every sync pull request wait for a person (one that changes `.github/` or the script still needs the approval before it is pushed), and `all` pushes those without approval and lets them merge themselves too. Unset or `true` keeps the rule above. Case does not matter, and any other value counts as `false`, with a warning on the run, so a typo never leaves auto-merge on.
+
+Auto-merge trusts hex's releases up to the eight `Test` checks, which are the only gate. Those checks run the release's own tree, its tests included, so a release whose tests pass, or that tests nothing, merges itself into `main` within about six hours of being tagged without anyone reading it, and from then on it is what `sh ./setup.sh` installs from a checkout of `main`. That is a choice made knowingly, to keep up with upstream without a person on every release. `SYNC_AUTO_MERGE=false` turns it off: every sync pull request then waits for a person to merge it. `Test` gives its jobs a token that can only read and leaves it in no checkout, so a release's tests get nothing that writes to this repository.
+
+The token is kept away from upstream's code until a person has read what could reach it:
+
+- The workflow has two jobs. `merge` runs the script, and with it `build.sh` from the merged tree, which is upstream's code before anyone has looked at it; that job gets no secret and a token that can only read. `publish` has the sync token and runs nothing the first job produced: it takes the merge commit out of a git bundle, refuses it unless it merges exactly its own checkout of `main` with the release as it fetches it from upstream, reads what it changes against that checkout, and hands it to `git push` and `gh` (`scripts/sync-upstream-ci.sh` is both jobs' script).
+- What a person reads is what lands. The sync commits whatever the merged tree's `build.sh` writes, so in every run, approval or not, `publish` also refuses a merge whose files under `.github/` and in the script differ from git's own merge of `main` and the release (`git merge-tree`, git 2.38 or later). The guarded part of a sync is then exactly what the release changes there, which is the `git diff` its issue shows.
+- A branch pushed to this repository runs its own workflows at once, with whatever token permissions they declare, before anyone has read them. That is why a release that changes a file under `.github/`, or the script `publish` runs, is not pushed until a person has read that part and approved it, unless `SYNC_AUTO_MERGE` is `all`.
+- An approved sync branch still runs its workflows for the pull request before it is merged. A secret of the repository would be in their reach; one in an environment only `main` may use is not, which is why the token is stored there. Once merged, a workflow runs on `main`, where the environment's secret can be read; by then the person who approved it has read it.
+
+Upstream's tags are fetched and never pushed: a `v*` tag on the fork would start its release workflow.
+
+### By hand
+
+Upstream is the remote named `origin`; `--remote <name>` before the command, or `SYNC_UPSTREAM_REMOTE`, names another.
 
 ```bash
 scripts/sync-upstream.py status       # the releases this branch lacks, oldest first, and what the next one conflicts in
@@ -285,7 +324,7 @@ scripts/sync-upstream.py continue
 scripts/sync-upstream.py catch-up     # back in this checkout: lands that one and goes on with the rest
 ```
 
-`status` fetches, lists the missing releases and dry-runs the next merge without writing anything; it exits 1 while a release is missing, so a script can use it as a check (`--brief` skips the dry run). `catch-up` merges each missing release on its own: one that needs no person is built, tested, committed and fast-forwarded into this branch, and its worktree removed. To merge a single release by hand instead:
+`status` fetches, lists the missing releases and dry-runs the next merge without writing anything; it exits 1 while a release is missing, so a script can use it as a check (`--brief` skips the dry run, and `missing` prints only the tags, oldest first). `catch-up` merges each missing release on its own: one that needs no person is built, tested, committed and fast-forwarded into this branch, and its worktree removed. To merge a single release by hand instead:
 
 ```bash
 scripts/sync-upstream.py start        # newest v* tag on origin/main; --to <tag> for another
@@ -294,14 +333,22 @@ scripts/sync-upstream.py continue
 git merge --ff-only sync/<tag>        # back in this checkout
 ```
 
-Commit your work first: the merge starts from the last commit, and git only recognises a moved file once it is committed. `start` makes a worktree beside this checkout (outside any repository that encloses it) on a `sync/<tag>` branch and records a real merge with both parents. Before merging, it rewrites upstream into this fork's dialect, so the fork's reshaping does not conflict:
+Commit your work first: the merge starts from the last commit, and git only recognises a moved file once it is committed. A cs session's own notes under `.cs/` do not count, since they change while the session is open. `start` makes a worktree beside this checkout (outside any repository that encloses it) on a `sync/<tag>` branch and records a real merge with both parents. Before merging, it rewrites upstream into this fork's dialect, so the fork's reshaping does not conflict:
 
-- Variables: `$CLAUDE_SESSION_*` becomes `${CS_SESSION_*:-${CLAUDE_SESSION_*:-}}`, on the lines the fork rewrote and the lines upstream adds; a line the fork kept stays as upstream wrote it. Command names are upstream's on both sides and need no rewriting.
+- Variables: `$CLAUDE_SESSION_*` becomes `${CS_SESSION_*:-${CLAUDE_SESSION_*:-}}`, on the lines the fork rewrote and the lines upstream adds; a line the fork kept stays as upstream wrote it. A default is kept whatever it nests (`${CLAUDE_SESSION_NAME:-${dir##*/}}` becomes `${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-${dir##*/}}}`). Command names are upstream's on both sides and need no rewriting.
 - Functions: a function the fork keeps in another `lib/` fragment gets upstream's change there.
-- Files: an upstream file the fork moved (`commands/*.md` to `skills/*/SKILL.md`) merges into the moved file.
+- Files: an upstream file the fork moved (`commands/*.md` to `skills/*/SKILL.md`) merges into the moved file. A file upstream renamed takes the new name in the fork, with the fork's changes merged into it.
 - Generated files (`bin/cs`, `hooks/cs-shared.sh`, `install.sh`) are never merged; `continue` rebuilds them.
 
-Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its own. What is left is where both sides changed the same lines. `continue` refuses while a conflict marker remains or a function is defined in two fragments, then runs `build.sh` and `tests/run_all.sh` (`--skip-tests` skips them) and commits. Nothing is pushed. When the fork rewrites another upstream form, add the rule to `rename()` in the script so the next merge applies it.
+Prose (README, `docs/`, CHANGELOG) merges plainly, since the fork's prose is its own. What is left is where both sides changed the same lines, which get conflict markers, and what no marker can show, which `start` lists under "Check by hand":
+
+- A line upstream added that reads a session variable through an operator (`${CLAUDE_SESSION_NAME//@/+}`, `${CLAUDE_SESSION_DIR%/}`). Bash applies an operator to one variable, so there is no `CS_`-first form of it; make the statement read one family of variables.
+- A line upstream added or changed with a default that closes on a later line (`${CLAUDE_SESSION_NAME:-$(`, its `)}` on the next line). The renames look for a default's closing brace on the same line, so they leave this one as upstream wrote it; give it the `CS_` form by hand.
+- A line of the fork's own that still names a file upstream renamed.
+- A file upstream renamed, the fork changed, and git scores under 90% alike. git pairs a deleted file with an added one by shared lines, so an unrelated new file with the same boilerplate can pass for the old one renamed; the fork's changes are merged into it, and a person confirms it is that file.
+- A file that is not text and changed on both sides, or was deleted on one side and changed on the other.
+
+`start` exits 0 once the merge is committed, 1 when it waits for a person for either reason, and 2 on an error. `continue` refuses while a conflict marker remains or a function is defined in two fragments, then runs `build.sh` and `tests/run_all.sh` (`--skip-tests` skips them) and commits. Nothing is pushed. When the fork rewrites another upstream form, add the rule to `rename()` in the script so the next merge applies it.
 
 Land upstream-sync pull requests with a merge commit, preserving the sync commit's upstream parent. Squashing or rebasing loses release ancestry and makes the next sync offer releases already integrated.
 
