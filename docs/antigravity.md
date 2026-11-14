@@ -5,8 +5,9 @@ keeping the session's files, notes, and workspace under the same `.cs/`
 directory that Claude Code and Codex use. cs starts `agy` in the session with
 the session's context handed over, and a hook records the conversation so a
 reopen resumes exactly that one and `agy`'s edits reach recovery. The same
-plugin carries cs's skills, as `/cs:<name>`. cs's status line
-and mail do not reach Antigravity yet. Engine switching uses `/cs:switch <target>`. Rotation uses an exit and a fresh managed launch.
+plugin carries cs's skills, as `/cs:<name>`, and brings `cs -msg` mail into the
+conversation ([Mail](#mail)). cs's status line does not reach Antigravity yet.
+Engine switching uses `/cs:switch <target>`. Rotation uses an exit and a fresh managed launch.
 
 ## Launching
 
@@ -93,8 +94,9 @@ names it) or `~/.gemini/antigravity-cli`, `agy`'s own folder, exists, whatever
 engines the install chose:
 
 - `plugin.json` and `hooks.json`, with one named hook, `cs-session`:
-  `cs -antigravity-hook pre-invocation` before each model call, and
-  `cs -antigravity-hook post-tool-use` after each tool (matcher `*`).
+  `cs -antigravity-hook pre-invocation` before each model call,
+  `cs -antigravity-hook post-tool-use` after each tool (matcher `*`), and
+  `cs -antigravity-hook stop` when a turn's loop ends ([Mail](#mail)).
 - `scripts/`, holding the recovery consumer (`autosave-commits.sh` and the
   three files it sources), as Codex gets under `$CODEX_HOME/hooks/cs/`.
 - `skills/`, holding cs's skills: the same files `~/.claude/skills/` and
@@ -160,7 +162,7 @@ the `/` menu and in the list the model reads.
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
 | `rotate` | Writes and arms the shared handoff, then asks you to `/exit` and reopen with `cs <name> --from-handoff`. |
-| `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail is not shown inside `agy`, so read it with `cs -msg`; `/cs:finish <feature>` lands it ([Finishing a feature](#finishing-a-feature)). |
+| `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail shows at the next prompt, or keeps a turn going that ends after it came ([Mail](#mail)); `/cs:finish <feature>` lands it ([Finishing a feature](#finishing-a-feature)). |
 | `finish`, `switch` | Run only when you type them. `switch` carries a handoff to Claude or Codex through a managed exit. `finish` lands and retires a feature ([Finishing a feature](#finishing-a-feature)). Outside a cs session, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from, since `cs -engine skill-dir` needs a session too. |
 
 - **Explicit-only skills.** `finish` and `switch` carry
@@ -338,11 +340,51 @@ it under Antigravity, exit and run `cs <name> --engine antigravity --from-handof
 An unsuccessful source exit leaves the handoff armed without relaunching.
 Codex and Antigravity targets refuse encrypted sessions.
 
+## Mail
+
+Mail sent with `cs -msg` reaches the session's conversation through the cs
+hook, as it does under Claude and Codex:
+
+- **At each prompt.** The first model call of a turn gets the unread mail as a
+  system message. It holds at most five messages, each cut at 160 characters and
+  wrapped in `<cs_mail>` tags, with a note that their text is not the user's.
+  The mail comes back at every prompt until `cs -msg` reads it.
+- **At the end of a turn.** A turn that ends on its own, with mail that no wake
+  has announced yet, goes on: Stop answers `continue`, and `agy` gives the
+  model the reason, `Unread cross-session mail (N), new from "<sender>". Run
+  cs -msg to read it.` followed by the same advice Claude's wake gives. Each
+  message wakes once (`mail/woke` lists those announced), a session wakes at
+  most `CS_MAIL_WAKE_MAX` times (5) between prompts (`mail/wakes`), and
+  `CS_NO_MAIL_WAKE=1` turns the wake off. A turn the user stopped, one that
+  failed, and one `agy` cut off at a limit end as they are.
+- Only the session's own conversation, in the run that holds its lease, gets
+  mail. A subagent's conversation has an ID of its own. Mail that git tracks came
+  with a pull, a merge or a checkout, so it is neither shown nor woken for.
+
+`agy` has no event for a conversation sitting idle at its prompt, so mail that
+comes then waits for the next prompt. Claude's idle wake (FileChanged) has no
+counterpart here. An install made before the wake existed has no Stop entry:
+`cs -doctor` says so, and running `setup.sh` again adds it.
+
+Checked against `agy` 1.5.8 on 2026-11-14, with a temporary plugin and two
+headless turns:
+
+- A PreInvocation answer `{"injectSteps": [{"systemMessage": {"systemMessage":
+  "..."}}]}` reached the model, and the next turn (a `--conversation` resume)
+  still had it.
+- `invocationNum` was 0 at the first model call of each turn and counted every
+  later call, Stop continuations included. cs shows the mail at 0.
+- A Stop answer `{"decision": "continue", "reason": "..."}` ran the loop again
+  with the reason as a system message. `continuationActive`, which the hooks
+  guide documents as the guard against a Stop hook that keeps continuing,
+  stayed false at every Stop, so cs's wake guards itself. `agy` stopped after
+  ten continuations on its own.
+
 ## Capabilities and limits
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
 `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, and `feature_finish`.
+`spawn_brief`, `feature_finish`, and `mail_delivery`.
 `cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly
 ([Skills](#skills)).
@@ -350,7 +392,7 @@ Skills that check before relying on a capability refuse cleanly
 | Not available under Antigravity yet | What cs does instead |
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
-| Mail delivery (`mail_delivery`) | `cs -msg` still works from the shell. Nothing surfaces mail inside `agy`. |
+| A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
@@ -489,8 +531,9 @@ confirmed that an always-on rule in `.agents/rules/` reaches the model and that
 
 The `hooks.json` shapes come from the hooks guide built into `agy` 1.4.11
 (`strings` on the binary, section "Lifecycle Hooks"), not from a live run:
-PreInvocation takes a flat list of handlers, PostToolUse groups them under a
-`matcher`, and `timeout` is in seconds, 30 by default (cs sets 10).
+PreInvocation and Stop (the latter from 1.5.8's guide) take a flat list of
+handlers, PostToolUse groups them under a `matcher`, and `timeout` is in
+seconds, 30 by default (cs sets 10).
 `agy plugin validate --strict` accepts the file cs writes, and the test suite
 runs that check whenever `agy` is on `PATH`.
 
@@ -501,5 +544,5 @@ that fires the plugin's hooks with payloads of the measured shape.
 
 ## Follow-ups
 
-These come later as separate changes: the status line, mail
-delivery, in-place `/clear` rotation, and encrypted sessions.
+These come later as separate changes: the status line, in-place `/clear`
+rotation, and encrypted sessions.

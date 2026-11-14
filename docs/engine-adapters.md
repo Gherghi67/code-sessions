@@ -37,7 +37,7 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, and `feature_finish` ([Antigravity sessions](antigravity.md)). These
+`spawn_brief`, `feature_finish`, and `mail_delivery` ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish

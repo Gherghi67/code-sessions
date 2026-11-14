@@ -641,18 +641,21 @@ _antigravity_hooks_file_is_cs() {  # hooks.json
     ' "$1" >/dev/null 2>&1
 }
 
-# PreInvocation binds the session to the conversation its run works in, and
-# PostToolUse hands finished edits to recovery (lib/79-antigravity.sh). Every
+# PreInvocation binds the session to the conversation its run works in and
+# gives a prompt the unread mail, PostToolUse hands finished edits to recovery,
+# and Stop wakes a turn that ends with new mail (lib/79-antigravity.sh). Every
 # tool reaches the hook, whose translator keeps the edits: "*" is the matcher
 # agy was measured with. The shapes and the timeout in seconds follow the
-# hooks guide agy 1.4.11 embeds.
+# hooks guide agy 1.4.11 embeds, and 1.5.8's for Stop.
 _antigravity_hooks_document() {  # cs_path
     jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
         --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
-        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" '
+        --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" \
+        --arg stop "$(_antigravity_hook_command "$1" stop)" '
         {($name): {
             PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
-            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}]}}'
+            PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}],
+            Stop: [{type: "command", command: $stop, timeout: 10}]}}'
 }
 
 # Write cs's hooks.json, then plugin.json, each to a temp renamed into place.
@@ -2106,7 +2109,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "513cf86a75aaeccfe504222bd83b983e6df75365565a925fb11aec8d796eea05  bin/cs"
+    "bf717122f3a465c349e5c371cdb302602772b986b8343209cd853a15ab9ee499  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "01988a1eedb8376080aa4d324f321137514571ab1a1d4dfcb8cc998c678ab8bf  bin/cs-codex-thread"
     "bd2f929653dfdc84f426d3a5fd1b50de4d2e2229a30c2b31a7e5ad896046d9aa  bin/cs-statusline"
