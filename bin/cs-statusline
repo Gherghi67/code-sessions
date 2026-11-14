@@ -2400,9 +2400,15 @@ _seg_logo() {
     _role chip
 }
 
-# The session name, bold, in primary ink.
+# The session name, bold, in primary ink. Claude Code reports the name claude
+# was given, where a feature session's '@' is a '+' (cs_claude_name in
+# lib/02-shared.sh), so that form of this session's own name shows as cs
+# spells it, and the lock below reads the right directory. Any other name
+# Claude Code reports, such as one /rename set, shows as it is.
 _seg_session() {
     local name="$SL_SESSION"
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ "$name" = "${CLAUDE_SESSION_NAME//@/+}" ] \
+        && name="$CLAUDE_SESSION_NAME"
     [ -n "$name" ] || name="${CLAUDE_SESSION_NAME:-}"
     if [ -z "$name" ]; then
         local dir="${SL_DIR:-$PWD}"

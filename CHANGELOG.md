@@ -4,6 +4,11 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
+## Unreleased
+
+### Fixes
+- The status line shows a feature session's name as cs spells it, `base@feature`, where it showed `base+feature`, the name cs has given that session's claude since 2026.11.1. An encrypted feature session's lock shows again: the status line looked for the session under the `+` name and found none. A conversation renamed with `/rename` keeps the name you gave it.
+
 ## 2026.11.7
 
 ### Features

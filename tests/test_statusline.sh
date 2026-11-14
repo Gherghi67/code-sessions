@@ -3717,6 +3717,27 @@ test_untagged_or_lookalike_tag_shows_no_lock() {
     assert_output_contains "$out" "vsess" "the name still renders" || return 1
 }
 
+# Claude Code reports a feature session's name as claude was given it, with a
+# '+' for the '@' (cs_claude_name); the bar shows cs's spelling, and the lock
+# reads the feature's own directory.
+test_feature_session_name_shows_its_at() {
+    export NO_COLOR=1 CS_STATUSLINE_CAPS=0 CLAUDE_SESSION_NAME="base@feat"
+    make_cs_session "base@feat" 1024 blue
+    tag_session "base@feat" 'encrypted'
+    local out; out=$(run_sl '{"session_name":"base+feat","workspace":{"current_dir":"/none"}}')
+    assert_output_contains "$out" "base@feat enc" "the '@' form, with the feature's lock" || return 1
+    assert_output_not_contains "$out" "base+feat" "never the name claude was given" || return 1
+}
+
+# Only the mapped form of this session's own name is rewritten: a name
+# Claude Code reports for another reason (a /rename) shows as it is.
+test_other_reported_name_shows_as_it_is() {
+    export NO_COLOR=1 CS_STATUSLINE_CAPS=0 CLAUDE_SESSION_NAME="base@feat"
+    make_cs_session "base@feat" 1024 blue
+    local out; out=$(run_sl '{"session_name":"my+label","workspace":{"current_dir":"/none"}}')
+    assert_output_contains "$out" "my+label" "a renamed conversation keeps its name" || return 1
+}
+
 test_notes_and_mail_are_amber_ink_after_the_session() {
     export COLORTERM=truecolor
     export CS_TERM_BG_RGB="253;246;227"
@@ -3755,6 +3776,8 @@ run_test test_notes_and_mail_are_amber_ink_after_the_session
 run_test test_encrypted_session_shows_a_lock_after_its_name
 run_test test_encrypted_lock_falls_back_to_text_without_the_patched_font
 run_test test_untagged_or_lookalike_tag_shows_no_lock
+run_test test_feature_session_name_shows_its_at
+run_test test_other_reported_name_shows_as_it_is
 
 # ============================================================================
 # Limits: hidden until hot, tightest first, at most two, fable folded in
