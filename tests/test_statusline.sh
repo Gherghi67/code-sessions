@@ -3717,6 +3717,13 @@ test_untagged_or_lookalike_tag_shows_no_lock() {
     assert_output_contains "$out" "vsess" "the name still renders" || return 1
 }
 
+# The name cs gives a session's claude, from cs's own rule (cs_claude_name),
+# so a change to that rule fails the test below rather than leaving it pinned
+# to the spelling the bar copied.
+claude_name_of() {  # session_name
+    ( source "$SCRIPT_DIR/../lib/02-shared.sh" && cs_claude_name "$1" )
+}
+
 # Claude Code reports a feature session's name as claude was given it, with a
 # '+' for the '@' (cs_claude_name); the bar shows cs's spelling, and the lock
 # reads the feature's own directory.
@@ -3724,9 +3731,11 @@ test_feature_session_name_shows_its_at() {
     export NO_COLOR=1 CS_STATUSLINE_CAPS=0 CLAUDE_SESSION_NAME="base@feat"
     make_cs_session "base@feat" 1024 blue
     tag_session "base@feat" 'encrypted'
-    local out; out=$(run_sl '{"session_name":"base+feat","workspace":{"current_dir":"/none"}}')
+    local reported; reported=$(claude_name_of "base@feat")
+    local out; out=$(run_sl "{\"session_name\":\"$reported\",\"workspace\":{\"current_dir\":\"/none\"}}")
     assert_output_contains "$out" "base@feat enc" "the '@' form, with the feature's lock" || return 1
-    assert_output_not_contains "$out" "base+feat" "never the name claude was given" || return 1
+    [ "$reported" = "base@feat" ] \
+        || assert_output_not_contains "$out" "$reported" "never the name claude was given" || return 1
 }
 
 # Only the mapped form of this session's own name is rewritten: a name
