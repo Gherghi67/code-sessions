@@ -238,6 +238,19 @@ test_band_width_uses_the_engine_frame_and_explicit_overrides() {
     assert_eq 67 "$(_ascii_band_cells "$out")" "an explicit final width takes precedence over the frame"
 }
 
+test_piped_antigravity_renders_do_not_accumulate_tty_cache_entries() {
+    local out parent
+    export CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_SEGMENTS=session CS_TERM_THEME_AUTO=1
+    for parent in 4242 4343; do
+        out=$(printf '%s' '{}' | CS_STATUSLINE_ENGINE=antigravity CS_STATUSLINE_PARENT="$parent" \
+            "$BASH" "$SL") || return 1
+        assert_output_contains "$out" "agysess" "the piped render still draws for parent $parent" || return 1
+    done
+    out=$(printf '%s' "$AGY_AFTER_TURN" | "$BASH" "$ADAPTER") || return 1
+    assert_output_contains "$out" "agysess" "the adapter also draws normally" || return 1
+    assert_not_exists "$HOME/.cache/cs/tty" "piped input cannot name a tty, so no per-process cache is needed"
+}
+
 test_antigravity_switch_leaves_other_engines_untouched() {
     local out action
     export CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CODEX_HOME="$TEST_TMPDIR/codex" CS_CONFIG_DIR="$TEST_TMPDIR/config"
@@ -294,6 +307,7 @@ run_test test_statusline_command_reports_antigravity
 run_test test_antigravity_renderer_does_not_stamp_supplied_rate_limits
 run_test test_antigravity_omits_the_claude_mark_even_with_attention
 run_test test_band_width_uses_the_engine_frame_and_explicit_overrides
+run_test test_piped_antigravity_renders_do_not_accumulate_tty_cache_entries
 run_test test_antigravity_switch_leaves_other_engines_untouched
 run_test test_antigravity_switch_ignores_broken_claude_settings
 run_test test_statusline_rejects_an_unknown_engine_before_writing
