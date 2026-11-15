@@ -1710,6 +1710,25 @@ test_the_status_line_is_left_out_when_off_or_not_cs_to_give() {
     assert_eq "$(_lined_settings "$STATUSLINE_DIR/cs-statusline-agy")" "$(_agy_settings)" "with none of those, it is passed"
 }
 
+test_doctor_keeps_user_settings_ahead_of_a_missing_status_line() {
+    local output dir settings="$HOME/.gemini/antigravity-cli/settings.json"
+    _statusline_install
+    output=$(_cs_lined ownline --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir ownline)
+    rm "$STATUSLINE_DIR/cs-statusline-agy" "$STATUSLINE_DIR/cs-statusline"
+    mkdir -p "${settings%/*}"
+    printf '{"statusLine":{"command":"my-line"}}\n' > "$settings"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity status line: your own, from $settings; cs passes none" || return 1
+    assert_output_not_contains "$output" "or cs-statusline beside it, is not installed" "a missing unused adapter needs no repair" || return 1
+    printf '{"statusLine":' > "$settings"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "$settings is not a JSON object" "unreadable settings may hold the user's line" || return 1
+    printf '{}\n' > "$settings"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "or cs-statusline beside it, is not installed" "a missing adapter still needs repair when cs would use it"
+}
+
 # Doctor says what the next launch gives agy, and why it gives none.
 test_doctor_reports_the_antigravity_status_line() {
     local output dir settings="$HOME/.gemini/antigravity-cli/settings.json"
@@ -1811,5 +1830,6 @@ run_test test_a_launch_gives_agy_the_status_line_for_its_run_only
 run_test test_the_status_line_command_quotes_an_unusual_install_folder
 run_test test_the_status_line_rejects_a_relative_install_folder
 run_test test_the_status_line_is_left_out_when_off_or_not_cs_to_give
+run_test test_doctor_keeps_user_settings_ahead_of_a_missing_status_line
 run_test test_doctor_reports_the_antigravity_status_line
 report_results
