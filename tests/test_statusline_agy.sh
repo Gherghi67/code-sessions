@@ -163,6 +163,9 @@ test_statusline_command_reports_antigravity() {
     local out settings="$HOME/.gemini/antigravity-cli/settings.json"
     export CS_INSTALL_DIR="$TEST_TMPDIR/install" CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CS_CONFIG_DIR="$TEST_TMPDIR/config"
     mkdir -p "$CS_INSTALL_DIR" "${settings%/*}"
+    export AGY_BIN="$TEST_TMPDIR/agy"
+    printf '#!/bin/sh\nprintf "  --settings  Session settings\\n"\n' > "$AGY_BIN"
+    chmod +x "$AGY_BIN"
     cp "$ADAPTER" "$SL" "$CS_INSTALL_DIR/"
     printf '{"trustedWorkspaces":[]}\n' > "$settings"
     cp "$settings" "$TEST_TMPDIR/settings.before"
@@ -185,6 +188,22 @@ test_statusline_command_reports_antigravity() {
     out=$("$CS_BIN" -statusline enable 2>&1) || { echo "  FAIL: enable failed: $out"; return 1; }
     assert_output_not_contains "$out" "Antigravity" "nor on enable" || return 1
     assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "and enable clears it there too" || return 1
+}
+
+test_antigravity_enable_reports_an_old_or_missing_agy() {
+    local out
+    export CS_INSTALL_DIR="$TEST_TMPDIR/install" CS_CONFIG_DIR="$TEST_TMPDIR/config" AGY_BIN="$TEST_TMPDIR/agy"
+    mkdir -p "$CS_INSTALL_DIR" "$HOME/.gemini/antigravity-cli"
+    cp "$ADAPTER" "$SL" "$CS_INSTALL_DIR/"
+    printf '#!/bin/sh\nexit 0\n' > "$AGY_BIN"
+    chmod +x "$AGY_BIN"
+    out=$("$CS_BIN" -statusline enable antigravity 2>&1) || return 1
+    assert_output_contains "$out" "does not list --settings" "an old agy is reported" || return 1
+    assert_output_not_contains "$out" "show it under agy's own line" "an old agy is not promised a line" || return 1
+    rm "$AGY_BIN"
+    out=$("$CS_BIN" -statusline enable antigravity 2>&1) || return 1
+    assert_output_contains "$out" "Antigravity CLI not found" "leftover config does not imply an installed agy" || return 1
+    assert_output_not_contains "$out" "show it under agy's own line" "a missing agy is not promised a line"
 }
 
 # Exercise the renderer directly: the adapter drops rate_limits, so passing
@@ -304,6 +323,7 @@ run_test test_the_context_waits_for_the_first_turn
 run_test test_the_adapter_never_fails_agy
 run_test test_the_real_render_shows_the_session_and_stamps_nothing
 run_test test_statusline_command_reports_antigravity
+run_test test_antigravity_enable_reports_an_old_or_missing_agy
 run_test test_antigravity_renderer_does_not_stamp_supplied_rate_limits
 run_test test_antigravity_omits_the_claude_mark_even_with_attention
 run_test test_band_width_uses_the_engine_frame_and_explicit_overrides

@@ -18049,7 +18049,7 @@ _statusline_codex() {  # enable|disable
 # agy is or is not, so an agy installed later follows the choice; what it
 # means is said only where agy is, as the installer gives it the line there.
 _statusline_antigravity() {  # enable|disable
-    local marker here=""
+    local marker here="" agy_bin=""
     marker="$(_statusline_antigravity_off_marker)"
     { command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; } && here=1
     case "$1" in
@@ -18058,7 +18058,16 @@ _statusline_antigravity() {  # enable|disable
             [ -n "$here" ] || return 0
             _antigravity_statusline_state
             case "$_AGY_STATUSLINE" in
-                on) info "Antigravity sessions cs starts show it under agy's own line, from their next launch." ;;
+                on)
+                    agy_bin=$(command -v "${AGY_BIN:-agy}" 2>/dev/null) || agy_bin=""
+                    if [ -z "$agy_bin" ]; then
+                        warn "Antigravity CLI not found: ${AGY_BIN:-agy}; install it before starting an Antigravity session."
+                    elif ! _antigravity_flags_listed "$agy_bin" --settings 2>/dev/null; then
+                        warn "Antigravity status line: $agy_bin does not list --settings, so sessions show only agy's own line; update it with: agy update"
+                    else
+                        info "Antigravity sessions cs starts show it under agy's own line, from their next launch."
+                    fi
+                    ;;
                 own) info "Antigravity has a status line of your own in $(_antigravity_settings_file); cs's launches leave it as it is." ;;
                 disabled) info "CS_STATUSLINE_DISABLE is on, so Antigravity sessions start without it." ;;
                 missing) warn "Antigravity's status line is not installed in ${CS_INSTALL_DIR:-$HOME/.local/bin}: run setup.sh again to add $CS_ANTIGRAVITY_STATUSLINE." ;;
