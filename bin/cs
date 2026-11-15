@@ -22813,7 +22813,9 @@ _antigravity_statusline_state() {
         _AGY_STATUSLINE=off
     elif [ "${CS_STATUSLINE_DISABLE:-}" = 1 ]; then
         _AGY_STATUSLINE=disabled
-    elif ! { [ -f "$bin" ] && [ -x "$bin" ] && [ -f "${bin%/*}/cs-statusline" ] && [ -x "${bin%/*}/cs-statusline" ]; }; then
+    # agy resolves its command after the launch enters the session folder;
+    # a relative path could then name an executable the agent wrote there.
+    elif [[ "$bin" != /* ]] || ! { [ -f "$bin" ] && [ -x "$bin" ] && [ -f "${bin%/*}/cs-statusline" ] && [ -x "${bin%/*}/cs-statusline" ]; }; then
         _AGY_STATUSLINE=missing
     elif ! command -v jq >/dev/null 2>&1; then
         _AGY_STATUSLINE=no-jq

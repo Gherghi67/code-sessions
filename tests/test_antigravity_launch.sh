@@ -1659,6 +1659,16 @@ test_the_status_line_command_quotes_an_unusual_install_folder() {
         "the path is single-quoted, its quote escaped"
 }
 
+# A relative install path is checked before cs enters the session, but agy
+# would resolve it after that change of folder, where the agent can write.
+test_the_status_line_rejects_a_relative_install_folder() {
+    local output
+    _statusline_install
+    output=$(cd "$TEST_TMPDIR" && STATUSLINE_DIR=install _cs_lined relative --engine antigravity 2>&1) \
+        || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_eq "" "$(_agy_settings)" "a relative adapter path is never handed to agy"
+}
+
 # The launch leaves the line out, and still starts agy, when the status line
 # is off (cs -statusline disable's own marker, or CS_STATUSLINE_DISABLE), when agy's
 # settings.json names a status line of the user's or cannot be read, when the
@@ -1799,6 +1809,7 @@ run_test test_the_hook_never_writes_through_a_link
 run_test test_doctor_sends_a_folder_cs_left_to_setup
 run_test test_a_launch_gives_agy_the_status_line_for_its_run_only
 run_test test_the_status_line_command_quotes_an_unusual_install_folder
+run_test test_the_status_line_rejects_a_relative_install_folder
 run_test test_the_status_line_is_left_out_when_off_or_not_cs_to_give
 run_test test_doctor_reports_the_antigravity_status_line
 report_results
