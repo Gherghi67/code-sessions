@@ -782,7 +782,11 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_file_not_contains "$AGY_ENV" '^CLAUDE_CODE_SESSION_ID=' "Claude's conversation id does not leak" || return 1
     assert_not_exists "$dir/CLAUDE.local.md" "Antigravity does not prepare Claude" || return 1
     assert_not_exists "$dir/.claude" "Antigravity does not configure Claude" || return 1
-    assert_output_contains "$output" 'Antigravity via cs' "the launch says what it supports"
+    assert_output_contains "$output" 'Antigravity via cs' "the launch says what it supports" || return 1
+    assert_output_not_contains "$output" 'Mail and the task queue are not available' \
+        "mail works under Antigravity, so the launch no longer calls it unavailable" || return 1
+    assert_output_contains "$output" 'The task queue is not available under Antigravity yet' \
+        "the task queue alone is still named unavailable"
 }
 
 test_reopen_resumes_by_id_and_fresh_and_resume_choose_explicitly() {
