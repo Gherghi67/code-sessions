@@ -43,6 +43,7 @@ class AppServer:
         self.deadline = deadline
         self.buffer = b""
         self.counter = 0
+        self.max_message = MAX_MESSAGE
         self.selector = selectors.DefaultSelector()
         try:
             self.process = subprocess.Popen(
@@ -97,10 +98,17 @@ class AppServer:
             suffix = " (exit status {})".format(status) if type(status) is int else ""
             raise BootstrapError("codex app-server exited before completing bootstrap" + suffix)
         self.buffer += data
-        if len(self.buffer) > MAX_MESSAGE:
+        if len(self.buffer) > self.max_message:
             raise BootstrapError("codex app-server output exceeded the protocol limit")
 
-    def request(self, method, params):
+    def request(self, method, params, *, max_message=MAX_MESSAGE):
+        self.max_message = max_message
+        try:
+            return self._request(method, params)
+        finally:
+            self.max_message = MAX_MESSAGE
+
+    def _request(self, method, params):
         self.counter += 1
         request_id = "cs-bootstrap-" + str(self.counter)
         self.send({"id": request_id, "method": method, "params": params})
@@ -735,15 +743,17 @@ def persist_carried_display(rollout_path, thread_id, messages):
 
 
 def verify_carried_display(server, thread_id, expected, messages):
-    # One item per page keeps large conversations below the RPC response
-    # limit. Verify text as well as turns: a changed native item format can
+    # One item per page bounds each response by the expected serialized text
+    # plus the normal protocol allowance for its envelope and notifications.
+    # Verify text as well as turns: a changed native item format can
     # otherwise leave valid but empty turns and falsely report success again.
     seen, cursor, cursors, index = set(), None, set(), 0
     while True:
         params = {'threadId': thread_id, 'sortDirection': 'asc', 'limit': 1}
         if cursor is not None:
             params['cursor'] = cursor
-        result = server.request('thread/items/list', params)
+        text_size = len(json.dumps(messages[index]['text']).encode('utf-8')) if index < len(messages) else 0
+        result = server.request('thread/items/list', params, max_message=MAX_MESSAGE + text_size)
         data = result.get('data')
         if not isinstance(data, list) or any(not isinstance(t, dict) for t in data):
             raise BootstrapError("Codex could not verify the carried transcript's display")

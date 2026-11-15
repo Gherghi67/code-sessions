@@ -89,6 +89,7 @@ for line in sys.stdin:
                 else:
                     item = {'type':'agentMessage','id':item['id'],'text':item['content'][0]['text']}
                 if mode == 'display_corrupt': item['text'] = 'wrong'
+                if mode == 'display_oversize': item['text'] = 'x' * (5 * 1024 * 1024)
                 items.append({'turnId':event['turn_id'],'item':item})
         start = int(request['params'].get('cursor', '0'))
         end = start + request['params']['limit']
@@ -1102,6 +1103,10 @@ class TransplantTests(HelperFixture):
             with self.subTest(mode=mode):
                 self.assert_failure(mode, 'visible', '--history-from-claude', str(path))
 
+    def test_unexpected_large_display_output_is_still_bounded(self):
+        source = self.sample_transcript()
+        self.assert_failure('display_oversize', 'protocol limit', '--history-from-claude', str(source))
+
     def test_carry_over_refuses_a_rollout_for_another_thread(self):
         path = self.sample_transcript()
         self.assert_failure('wrong_rollout', 'unsupported format', '--history-from-claude', str(path))
@@ -1212,6 +1217,30 @@ class TransplantTests(HelperFixture):
         texts = [i['content'][0]['text'] for i in items]
         self.assertEqual(texts[2], big)
         self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(6)])
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_carry_verifies_messages_larger_than_four_mib(self):
+        prompt = 'p' * (5 * 1024 * 1024)
+        # Consecutive assistant records are one visible message. Escaped and
+        # multibyte text must be budgeted by serialized bytes, not characters.
+        reply = '\n"雪😀' * (700 * 1024)
+        source = self.root / (CLAUDE_ID + '.jsonl')
+        source.write_text('\n'.join([
+            claude_record('user', prompt, 'u1', None),
+            claude_record('assistant', reply, 'a1', 'u1'),
+            claude_record('assistant', reply, 'a2', 'a1'),
+        ]) + '\n')
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', os.environ['CS_CODEX_REAL_BIN'],
+            '--cwd', str(self.cwd), '--instructions-file', str(self.instructions),
+            '--history-from-claude', str(source), '--timeout', '60',
+        ], env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = [json.loads(line) for line in
+                   next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
+        messages = [r['payload']['content'][0]['text'] for r in records
+                    if r['type'] == 'response_item' and r['payload'].get('role') in ('user', 'assistant')]
+        self.assertEqual(messages[-2:], [prompt, reply + '\n\n' + reply])
 
     def test_nothing_to_carry_starts_no_server(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
