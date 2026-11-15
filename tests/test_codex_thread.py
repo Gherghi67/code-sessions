@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,9 @@ FAKE = r'''#!/usr/bin/env python3
 import json, os, signal, sys, time
 from pathlib import Path
 root = Path(os.environ['FAKE_ROOT'])
+rollout = root / 'bootstrap-rollout.jsonl'
+if os.environ.get('CODEX_HOME'):
+    rollout = Path(os.environ['CODEX_HOME']) / 'sessions' / 'bootstrap-rollout.jsonl'
 mode = os.environ.get('FAKE_MODE', '')
 count_file = root / 'count'
 count = int(count_file.read_text()) + 1 if count_file.exists() else 1
@@ -64,7 +68,28 @@ for line in sys.stdin:
     if mode == 'invalid_result':
         reply({'result':[]});continue
     if method == 'thread/turns/list':
-        reply({'result':{'data':json.loads(os.environ.get('FAKE_TURNS', '[]')),'nextCursor':None}});continue
+        turns = json.loads(os.environ.get('FAKE_TURNS', '[]'))
+        if rollout.exists() and 'FAKE_TURNS' not in os.environ and mode != 'display_lost':
+            turns = [{'id':r['payload']['turn_id']} for r in
+                     (json.loads(line) for line in rollout.read_text().splitlines())
+                     if r.get('type') == 'event_msg' and r['payload'].get('type') == 'task_started']
+        reply({'result':{'data':turns,'nextCursor':None}});continue
+    if method == 'thread/items/list':
+        items = []
+        if mode not in ('display_lost', 'display_items_lost'):
+            for line in rollout.read_text().splitlines():
+                r = json.loads(line)
+                if r['type'] != 'event_msg' or r['payload'].get('type') != 'item_completed': continue
+                event = r['payload']; item = event['item']
+                if item['type'] == 'UserMessage':
+                    item = dict(item, type='userMessage')
+                else:
+                    item = {'type':'agentMessage','id':item['id'],'text':item['content'][0]['text']}
+                if mode == 'display_corrupt': item['text'] = 'wrong'
+                items.append({'turnId':event['turn_id'],'item':item})
+        start = int(request['params'].get('cursor', '0'))
+        end = start + request['params']['limit']
+        reply({'result':{'data':items[start:end],'nextCursor':str(end) if end < len(items) else None}});continue
     if method == 'config/read':
         reply({'result':json.loads(os.environ.get('FAKE_CONFIG', '{}'))});continue
     if method in ('thread/start','thread/resume'):
@@ -72,7 +97,12 @@ for line in sys.stdin:
         if mode == 'mismatch' and method == 'thread/resume':
             tid = '01900000-0000-7000-8000-000000000002'
         if mode == 'bad_id': tid = 'malicious\n--last'
-        thread = {'id':tid,'ephemeral':mode == 'ephemeral'}
+        thread = {'id':tid,'ephemeral':mode == 'ephemeral','path':str(rollout)}
+        if method == 'thread/start':
+            rollout.parent.mkdir(parents=True, exist_ok=True)
+            rollout.write_text(json.dumps({'ordinal':0,'type':'session_meta','payload':{'id':tid}}) + '\n')
+            if mode == 'wrong_rollout':
+                rollout.write_text(json.dumps({'ordinal':0,'type':'session_meta','payload':{'id':'wrong'}}) + '\n')
         if mode == 'large_history' and method == 'thread/resume':
             # Real resume responses include history unless explicitly excluded.
             thread['turns'] = [] if request['params'].get('excludeTurns') is True else [
@@ -80,7 +110,13 @@ for line in sys.stdin:
                     {'type':'agentMessage','id':'large-message','text':'x' * (5 * 1024 * 1024)}]}]
         reply({'result':{'thread':thread}})
         if mode == 'write_timeout': time.sleep(60)
-    else: reply({'result':{}})
+    else:
+        if method == 'thread/inject_items' and rollout.exists():
+            count_records = len(rollout.read_text().splitlines())
+            with rollout.open('a') as f:
+                for n, item in enumerate(request['params']['items']):
+                    f.write(json.dumps({'ordinal':count_records+n,'type':'response_item','payload':item})+'\n')
+        reply({'result':{}})
 if mode == 'cleanup':
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(60)
@@ -449,6 +485,41 @@ class TransplantTests(HelperFixture):
         path = folder / ("rollout-2026-11-06T18-49-45-" + thread + ".jsonl")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_carry_over_has_visible_turns_without_duplicating_model_history(self):
+        source = self.sample_transcript()
+        executable = os.environ['CS_CODEX_REAL_BIN']
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+            '--instructions-file', str(self.instructions), '--history-from-claude', str(source),
+        ], env=self.env, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        # Read through a separate server, as the TUI does on its next resume.
+        previous = os.environ.get('CODEX_HOME')
+        os.environ['CODEX_HOME'] = str(self.codex_home)
+        try:
+            with helper['AppServer'](executable, str(self.cwd), time.monotonic() + 20) as server:
+                server.initialize()
+                turns = server.request('thread/turns/list', {
+                    'threadId': result.stdout.strip(), 'itemsView': 'full', 'sortDirection': 'asc',
+                })['data']
+        finally:
+            if previous is None:
+                del os.environ['CODEX_HOME']
+            else:
+                os.environ['CODEX_HOME'] = previous
+        items = [item for turn in turns for item in turn['items']]
+        self.assertEqual([i['type'] for i in items],
+                         ['userMessage', 'agentMessage', 'userMessage', 'agentMessage'])
+        self.assertEqual(items[0]['content'][0]['text'], '/color blue\n\nfind the budget')
+        self.assertEqual(items[-1]['text'], 'Answer two.')
+        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        records = [json.loads(line) for line in rollout.read_text().splitlines()]
+        model = [r['payload'] for r in records if r['type'] == 'response_item']
+        self.assertEqual(sum(i.get('role') == 'assistant' for i in model), 2)
+        self.assertFalse(any(r.get('payload', {}).get('type') == 'token_count' for r in records))
 
     def export_command(self, *extra, hide=(), zstd=None, setup=""):
         out = self.root / "carried.jsonl"
@@ -956,6 +1027,53 @@ class TransplantTests(HelperFixture):
         # Injection precedes the durability check in a fresh process.
         methods = [r['method'] for r in requests]
         self.assertLess(methods.index('thread/unsubscribe'), methods.index('thread/resume'))
+
+    def test_carry_over_checks_visible_turns_before_reporting_success(self):
+        path = self.sample_transcript()
+        self.assert_failure('display_lost', 'visible turns', '--history-from-claude', str(path))
+
+    def test_empty_or_corrupt_display_items_cannot_report_success(self):
+        path = self.sample_transcript()
+        for mode in ('display_items_lost', 'display_corrupt'):
+            with self.subTest(mode=mode):
+                self.assert_failure(mode, 'visible', '--history-from-claude', str(path))
+
+    def test_carry_over_refuses_a_rollout_for_another_thread(self):
+        path = self.sample_transcript()
+        self.assert_failure('wrong_rollout', 'unsupported format', '--history-from-claude', str(path))
+        records = [json.loads(line) for line in
+                   (self.codex_home / 'sessions/bootstrap-rollout.jsonl').read_text().splitlines()]
+        self.assertFalse(any(r['type'] == 'event_msg' for r in records))
+
+    def test_display_writer_refuses_links_existing_turns_and_truncated_records(self):
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        previous = os.environ.get('CODEX_HOME')
+        os.environ['CODEX_HOME'] = str(self.codex_home)
+        try:
+            for case in ('link', 'turns', 'truncated'):
+                with self.subTest(case=case):
+                    records = [json.dumps({'ordinal': 0, 'type': 'session_meta',
+                                           'payload': {'id': THREAD_ID}})]
+                    if case == 'turns':
+                        records.append(json.dumps({'ordinal': 1, 'type': 'event_msg',
+                                                   'payload': {'type': 'task_started'}}))
+                    path = self.write_rollout(records)
+                    if case == 'truncated':
+                        path.write_text(path.read_text().rstrip('\n'))
+                    target = path
+                    if case == 'link':
+                        target = path.with_name('link.jsonl')
+                        target.symlink_to(path)
+                    before = path.read_bytes()
+                    with self.assertRaises(helper['BootstrapError']):
+                        helper['persist_carried_display'](str(target), THREAD_ID,
+                                                          [{'role': 'user', 'text': 'hello'}])
+                    self.assertEqual(path.read_bytes(), before)
+        finally:
+            if previous is None:
+                del os.environ['CODEX_HOME']
+            else:
+                os.environ['CODEX_HOME'] = previous
 
     def test_a_failed_claude_tool_call_reads_as_an_error(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
