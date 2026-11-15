@@ -2418,6 +2418,7 @@ EOF
 # blink would freeze on whichever phase it last drew. Plain mode has no colour,
 # so no mark.
 _seg_logo() {
+    _sl_for_claude || return 0
     [ "$LEVEL" = "plain" ] && return 0
     local ink=brand
     if [ -n "${CLAUDE_SESSION_NAME:-}" ] \

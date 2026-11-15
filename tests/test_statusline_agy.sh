@@ -187,6 +187,21 @@ test_statusline_command_reports_antigravity() {
     assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "and enable clears it there too" || return 1
 }
 
+test_antigravity_omits_the_claude_mark_even_with_attention() {
+    local dir="$CS_SESSIONS_ROOT/agysess/.cs/local" out
+    mkdir -p "$dir"
+    touch "$dir/attention"
+    out=$(printf '%s' "$AGY_AFTER_TURN" | CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_SEGMENTS=logo,session \
+        "$BASH" "$ADAPTER") || return 1
+    assert_output_contains "$out" $'\033' "the render is coloured, so the plain-mode logo rule cannot hide a regression" || return 1
+    assert_output_contains "$out" "agysess" "the session still draws" || return 1
+    assert_output_not_contains "$out" "✳" "Antigravity never draws Claude's mark or attention shade" || return 1
+    out=$(printf '%s' '{}' | CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_SEGMENTS=logo,session \
+        "$BASH" "$SL") || return 1
+    assert_output_contains "$out" "✳" "Claude retains its mark" || return 1
+    assert_output_contains "$out" "agysess" "and its session"
+}
+
 test_antigravity_switch_leaves_other_engines_untouched() {
     local out action
     export CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CODEX_HOME="$TEST_TMPDIR/codex" CS_CONFIG_DIR="$TEST_TMPDIR/config"
@@ -240,6 +255,7 @@ run_test test_the_context_waits_for_the_first_turn
 run_test test_the_adapter_never_fails_agy
 run_test test_the_real_render_shows_the_session_and_stamps_nothing
 run_test test_statusline_command_reports_antigravity
+run_test test_antigravity_omits_the_claude_mark_even_with_attention
 run_test test_antigravity_switch_leaves_other_engines_untouched
 run_test test_antigravity_switch_ignores_broken_claude_settings
 run_test test_statusline_rejects_an_unknown_engine_before_writing

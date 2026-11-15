@@ -272,6 +272,11 @@ unread mail, git, and the context once the first turn has run. It is
 ([Status line](statusline.md)). The model, limits and cost segments show
 nothing here, since `agy`'s line already carries them.
 
+Claude's logo and attention shade are omitted under Antigravity. Mail and
+queue counts describe stored cs state: unread messages and pending queue
+items. They do not mean agy delivers those messages or runs that queue;
+read mail with `cs -msg` and manage the queue with `cs -queue`.
+
 | `agy` payload field (1.5.9) | What cs's line does with it |
 | --- | --- |
 | `session_id`, `cwd`, `workspace.current_dir` | the same fields Claude Code sends |
