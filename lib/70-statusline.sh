@@ -145,6 +145,18 @@ _statusline_antigravity() {  # enable|disable
 # disable strips only a cs-statusline registration, never a foreign one.
 run_statusline_cmd() {
     local action="${1:-}"
+    case "$action" in
+        enable|disable)
+            [ "$#" -le 2 ] || error "Usage: cs -statusline enable|disable [antigravity]"
+            if [ -n "${2:-}" ]; then
+                [ "$2" = antigravity ] || error "Unknown status-line engine: $2 (expected antigravity)"
+                # This switch belongs to agy alone; even invalid Claude
+                # settings must not prevent recording its independent choice.
+                _statusline_antigravity "$action"
+                return 0
+            fi
+            ;;
+    esac
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
     local declined
     declined="$(_statusline_declined_marker)"
@@ -232,7 +244,7 @@ run_statusline_cmd() {
             fi
             ;;
         *)
-            error "Usage: cs -statusline enable|disable|caps on|off|ask"
+            error "Usage: cs -statusline enable|disable [antigravity], or caps on|off|ask"
             ;;
     esac
 }

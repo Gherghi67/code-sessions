@@ -409,6 +409,8 @@ A "no" is remembered in `~/.config/cs/statusline-declined` (under `$XDG_CONFIG_H
 ```bash
 cs -statusline enable    # register bar + subagent rows (overwrites the current status line; the command is your consent), and Codex's list where it has none
 cs -statusline disable   # remove both registrations, each only if it points at the cs binary, and cs's Codex list
+cs -statusline enable antigravity   # enable only Antigravity's line
+cs -statusline disable antigravity  # disable only Antigravity's line
 ```
 
 Claude Code reads both registrations at startup, so `enable` takes effect after the next restart — the command says so when it runs.

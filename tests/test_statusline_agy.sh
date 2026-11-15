@@ -43,7 +43,7 @@ setup() {
 teardown() {
     [ -z "${TEST_TMPDIR:-}" ] || rm -rf "$TEST_TMPDIR"
     unset CS_SESSIONS_ROOT CS_TERM_THEME CS_SECURITY_BIN CLAUDE_CONFIG_DIR CLAUDE_SESSION_NAME \
-        CS_INSTALL_DIR CS_CLAUDE_DIR CS_CONFIG_DIR AGY_BIN NO_COLOR STUB_ENV STUB_IN STUB_DIR 2>/dev/null || true
+        CS_INSTALL_DIR CS_CLAUDE_DIR CS_CONFIG_DIR CODEX_HOME AGY_BIN NO_COLOR STUB_ENV STUB_IN STUB_DIR 2>/dev/null || true
 }
 
 # A copy of the adapter beside a stub renderer that records the environment
@@ -187,9 +187,60 @@ test_statusline_command_reports_antigravity() {
     assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "and enable clears it there too" || return 1
 }
 
+test_antigravity_switch_leaves_other_engines_untouched() {
+    local out action
+    export CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CODEX_HOME="$TEST_TMPDIR/codex" CS_CONFIG_DIR="$TEST_TMPDIR/config"
+    export AGY_BIN="$TEST_TMPDIR/no-agy"
+    mkdir -p "$CS_CLAUDE_DIR" "$CODEX_HOME" "$CS_CONFIG_DIR"
+    printf '{"statusLine":{"command":"my-claude-bridge"}}\n' > "$CS_CLAUDE_DIR/settings.json"
+    printf '[tui]\nstatus_line = ["model-name"]\n' > "$CODEX_HOME/config.toml"
+    touch "$CS_CONFIG_DIR/statusline-declined" "$CS_CONFIG_DIR/statusline-antigravity-off"
+    cp "$CS_CLAUDE_DIR/settings.json" "$TEST_TMPDIR/claude.before"
+    cp "$CODEX_HOME/config.toml" "$TEST_TMPDIR/codex.before"
+    for action in enable disable; do
+        out=$("$CS_BIN" -statusline "$action" antigravity 2>&1) \
+            || { echo "  FAIL: scoped $action failed: $out"; return 1; }
+        assert_eq "$(cat "$TEST_TMPDIR/claude.before")" "$(cat "$CS_CLAUDE_DIR/settings.json")" "Claude's bridge survives $action" || return 1
+        assert_eq "$(cat "$TEST_TMPDIR/codex.before")" "$(cat "$CODEX_HOME/config.toml")" "Codex's line survives $action" || return 1
+        assert_exists "$CS_CONFIG_DIR/statusline-declined" "Claude's installer decline survives $action" || return 1
+        case "$action" in
+            enable) assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "only Antigravity is enabled" || return 1 ;;
+            disable) assert_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "only Antigravity is disabled" || return 1 ;;
+        esac
+    done
+}
+
+test_antigravity_switch_ignores_broken_claude_settings() {
+    local out
+    export CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CS_CONFIG_DIR="$TEST_TMPDIR/config"
+    export AGY_BIN="$TEST_TMPDIR/no-agy"
+    mkdir -p "$CS_CLAUDE_DIR"
+    printf 'broken JSON\n' > "$CS_CLAUDE_DIR/settings.json"
+    out=$("$CS_BIN" -statusline disable antigravity 2>&1) \
+        || { echo "  FAIL: broken Claude settings blocked disable: $out"; return 1; }
+    assert_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "disable records the Antigravity choice" || return 1
+    assert_not_exists "$CS_CONFIG_DIR/statusline-declined" "disable does not decline Claude's line" || return 1
+    out=$("$CS_BIN" -statusline enable antigravity 2>&1) \
+        || { echo "  FAIL: broken Claude settings blocked enable: $out"; return 1; }
+    assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "enable clears the Antigravity choice" || return 1
+    assert_eq "broken JSON" "$(cat "$CS_CLAUDE_DIR/settings.json")" "the broken file stays untouched"
+}
+
+test_statusline_rejects_an_unknown_engine_before_writing() {
+    local out status=0
+    export CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CS_CONFIG_DIR="$TEST_TMPDIR/config"
+    out=$("$CS_BIN" -statusline enable antigravty 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: an unknown engine was accepted: $out"; return 1; }
+    assert_not_exists "$CS_CLAUDE_DIR/settings.json" "a mistyped engine never changes Claude's registration" || return 1
+    assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "nor Antigravity's choice"
+}
+
 run_test test_the_adapter_maps_agy_payload_onto_cs_statusline_input
 run_test test_the_context_waits_for_the_first_turn
 run_test test_the_adapter_never_fails_agy
 run_test test_the_real_render_shows_the_session_and_stamps_nothing
 run_test test_statusline_command_reports_antigravity
+run_test test_antigravity_switch_leaves_other_engines_untouched
+run_test test_antigravity_switch_ignores_broken_claude_settings
+run_test test_statusline_rejects_an_unknown_engine_before_writing
 report_results

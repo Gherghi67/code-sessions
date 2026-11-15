@@ -292,7 +292,12 @@ A launch passes no status line, and `agy` shows only its own, when:
 
 `cs -doctor` in an Antigravity session names which. `cs -statusline enable`
 and `disable` report the Antigravity side as well; it takes effect at the next
-launch. The installer's question is only about Claude Code's bar, so a no
+launch. Use `cs -statusline enable antigravity` or
+`cs -statusline disable antigravity` to change only Antigravity's line,
+leaving Claude's registration, Codex's configuration and the installer's
+decline marker untouched. These scoped commands also work when Claude's
+settings file cannot be read. The installer's question is only about Claude
+Code's bar, so a no
 there (`~/.config/cs/statusline-declined`) leaves the line on under `agy`: a
 status line of your own in Claude, such as a bridge that runs
 `cs-statusline`, is the usual reason for that no.
