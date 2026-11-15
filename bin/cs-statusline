@@ -3041,11 +3041,11 @@ _sl_tty_cols() {
 # The band's width in cells, in _BAND_W, never under 20: CS_STATUSLINE_COLS
 # as given, since a caller that sets it already knows the cells it may use;
 # else a measured width, stdin's .columns, the pane's width inside a tmux this
-# process is really in, the terminal's, or 120, less the frame Claude Code
-# draws around the status line (CS_STATUSLINE_FRAME, default 4: two columns
-# each side, more with statusLine.padding).
+# process is really in, the terminal's, or 120, less the host's frame.
+# CS_STATUSLINE_FRAME defaults to 4 for Claude Code (two columns each side,
+# more with statusLine.padding) and 0 for Antigravity, which uses every cell.
 _band_width() {
-    local cols=""
+    local cols="" frame=4
     if _is_cols "${CS_STATUSLINE_COLS:-}"; then
         _BAND_W="$CS_STATUSLINE_COLS"
     else
@@ -3059,7 +3059,8 @@ _band_width() {
             _sl_tty_cols
             cols="${_TTY_COLS:-120}"
         fi
-        _num_or "${CS_STATUSLINE_FRAME:-}" 4
+        [ "${CS_STATUSLINE_ENGINE:-claude}" != antigravity ] || frame=0
+        _num_or "${CS_STATUSLINE_FRAME:-}" "$frame"
         _BAND_W=$(( 10#$cols - 10#$_NUM ))
     fi
     [ "$_BAND_W" -ge 20 ] || _BAND_W=20

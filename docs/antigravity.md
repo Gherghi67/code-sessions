@@ -281,8 +281,13 @@ read mail with `cs -msg` and manage the queue with `cs -queue`.
 | --- | --- |
 | `session_id`, `cwd`, `workspace.current_dir` | the same fields Claude Code sends |
 | `context_window.used_percentage` | the ctx gauge, once `context_window_size` and `total_input_tokens` are above 0; before the first turn `agy` reads 0, where Claude Code sends nothing |
-| `terminal_width` | the width the line is laid out in |
+| `terminal_width` | the band layout's width; the default quiet layout does not use it |
 | `model`, `quota`, `cost`, `agent_state`, `plan_tier` and the rest | not used |
+
+The band uses all reported terminal columns under Antigravity, whose frame
+defaults to zero rather than Claude Code's four columns. A live agy 1.5.9
+render used all 80 reported cells without an inset. `CS_STATUSLINE_FRAME`
+overrides that default; `CS_STATUSLINE_COLS` sets the final width directly.
 
 A launch passes no status line, and `agy` shows only its own, when:
 

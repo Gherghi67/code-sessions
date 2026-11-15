@@ -218,6 +218,26 @@ test_antigravity_omits_the_claude_mark_even_with_attention() {
     assert_output_contains "$out" "agysess" "and its session"
 }
 
+# These renders contain only the ASCII session name and band padding, so
+# bytes after SGR removal are terminal cells, independent of renderer code.
+_ascii_band_cells() {
+    printf '%s' "$1" | sed "s/$(printf '\033')\[[0-9;]*m//g" | LC_ALL=C wc -c | tr -d ' '
+}
+
+test_band_width_uses_the_engine_frame_and_explicit_overrides() {
+    local out payload='{"session_id":"agysess","terminal_width":80}'
+    export CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_SEGMENTS=session CS_STATUSLINE_LAYOUT=band \
+        CS_TERM_THEME=dark CS_TERM_BG_RGB='21;24;40' COLORTERM=truecolor
+    out=$(printf '%s' "$payload" | "$BASH" "$ADAPTER") || return 1
+    assert_eq 80 "$(_ascii_band_cells "$out")" "agy draws across all 80 reported cells" || return 1
+    out=$(printf '%s' '{"columns":80}' | "$BASH" "$SL") || return 1
+    assert_eq 76 "$(_ascii_band_cells "$out")" "Claude still reserves its four frame cells" || return 1
+    out=$(printf '%s' "$payload" | CS_STATUSLINE_FRAME=6 "$BASH" "$ADAPTER") || return 1
+    assert_eq 74 "$(_ascii_band_cells "$out")" "an explicit frame overrides agy's default" || return 1
+    out=$(printf '%s' "$payload" | CS_STATUSLINE_FRAME=6 CS_STATUSLINE_COLS=67 "$BASH" "$ADAPTER") || return 1
+    assert_eq 67 "$(_ascii_band_cells "$out")" "an explicit final width takes precedence over the frame"
+}
+
 test_antigravity_switch_leaves_other_engines_untouched() {
     local out action
     export CS_CLAUDE_DIR="$TEST_TMPDIR/claude" CODEX_HOME="$TEST_TMPDIR/codex" CS_CONFIG_DIR="$TEST_TMPDIR/config"
@@ -273,6 +293,7 @@ run_test test_the_real_render_shows_the_session_and_stamps_nothing
 run_test test_statusline_command_reports_antigravity
 run_test test_antigravity_renderer_does_not_stamp_supplied_rate_limits
 run_test test_antigravity_omits_the_claude_mark_even_with_attention
+run_test test_band_width_uses_the_engine_frame_and_explicit_overrides
 run_test test_antigravity_switch_leaves_other_engines_untouched
 run_test test_antigravity_switch_ignores_broken_claude_settings
 run_test test_statusline_rejects_an_unknown_engine_before_writing

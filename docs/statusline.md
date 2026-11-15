@@ -349,8 +349,8 @@ export CS_STATUSLINE_BAND="periwinkle"
 # .columns, the tmux pane, the terminal, else 120, each less the frame)
 export CS_STATUSLINE_COLS=160
 
-# Columns Claude Code's prompt frame takes from a measured width (default 4;
-# add 2 x statusLine.padding when you set it)
+# Columns the host frame takes from a measured width (default 4 for Claude
+# Code, 0 for Antigravity; add 2 x statusLine.padding when you set it)
 export CS_STATUSLINE_FRAME=4
 
 # Force the Powerline rounded caps (U+E0B6/U+E0B4) on (1) or off (0),
