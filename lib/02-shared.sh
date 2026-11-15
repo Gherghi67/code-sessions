@@ -1646,3 +1646,136 @@ cs_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypted se
     ' 2>/dev/null) || MAIL_DIGEST=""
     MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | env LC_ALL=C tr -d '\000-\010\013-\037\177')
 }
+
+# --- Mail wake ----------------------------------------------------------------
+# Unread cross-session mail takes a turn, so an exchange between sessions moves
+# without a keystroke. Claude's wake (hooks/stop-blocks.sh, at Stop and at
+# FileChanged) and Antigravity's (its Stop hook, lib/79-antigravity.sh) share
+# the scan, the silencers and the reason below; each engine keeps only its
+# delivery and the writes that follow it, since each keeps the snapshot (woke)
+# and the count (wakes) where it can trust them.
+
+# Fill MAIL_UNREAD (every unread document), MAIL_NAMES (their file names, one
+# per line: the snapshot a delivered wake records), MAIL_FRESH (1 when one of
+# them is not in the snapshot yet) and MAIL_FROM (the distinct senders of
+# those, one per line). The re-wake guard is a snapshot of the filenames
+# already discharged, not a count and not a high-water mark: unread drops to
+# zero whenever cs -msg moves files to cur/, and filenames are not ordered by
+# arrival (same-second order is by unpadded pid). Set membership needs neither
+# property.
+cs_mail_wake_scan() {  # maildir, woke file
+    local f name from woke="" nl='
+'
+    MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM=""
+    # Read the snapshot ONCE and match in-shell. A fork per unread message is
+    # paid on every turn end for as long as the mail stays unread, and Claude's
+    # idle wake re-scans all of new/ per arrival — so a burst of N deliveries
+    # would cost N(N+1)/2 forks. The ceiling makes that state ordinary rather
+    # than rare: past it mail piles up in new/ while turns keep ending.
+    # Only a regular file is read, never through a link. || woke="": an
+    # unreadable snapshot must degrade to "nothing discharged" (which
+    # over-wakes) rather than abort a hook under errexit.
+    if [ -f "$2" ] && [ ! -L "$2" ]; then woke=$(<"$2") || woke=""; fi
+    for f in "$1"/new/*.json; do
+        [ -f "$f" ] || continue
+        MAIL_UNREAD=$((MAIL_UNREAD + 1))
+        name=${f##*/}
+        MAIL_NAMES="$MAIL_NAMES$name$nl"
+        # Newlines on both sides so one name cannot match inside another.
+        case "$nl$woke$nl" in
+            *"$nl$name$nl"*) continue ;;
+        esac
+        # Every kind wakes, a task included: it waits in the mailbox for the
+        # user's accept (cs -queue accept), and nothing else tells the
+        # recipient it is there. One jq per document for the sender: a count
+        # says mail arrived but not whose, and the recipient would otherwise
+        # spend a turn on `cs -msg` just to learn whether it can wait.
+        # Cut to 40 characters and every character outside A-Z a-z 0-9 . _ @
+        # : - replaced inside jq, as the prompt digest renders a sender, so a
+        # forged or hand-written document cannot smuggle a newline, a comma,
+        # a quote or a control byte into the rendered line; coerced to a
+        # string so a numeric field cannot error the read. An unreadable
+        # document still wakes, nameless.
+        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
+             | if type == "string" then . else tostring end
+             | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null || printf '')
+        # Distinct senders only: two messages from one session is one name, and
+        # repeating it answers nothing the count has not already said.
+        case "$from" in
+            "") ;;
+            *) case "$nl$MAIL_FROM$nl" in
+                   *"$nl$from$nl"*) ;;
+                   *) MAIL_FROM="${MAIL_FROM:+$MAIL_FROM$nl}$from" ;;
+               esac ;;
+        esac
+        MAIL_FRESH=1
+    done
+}
+
+# Apply the two silencers to a scan, given the file that counts the wakes
+# since the last prompt: CS_NO_MAIL_WAKE, and the ceiling of CS_MAIL_WAKE_MAX
+# wakes (5). MAIL_WAKES is set to the count, for the caller's own write once it
+# delivers, and MAIL_FRESH is cleared when either silences. A silenced run
+# discharges nothing, so it records nothing: recording would mark the arrival
+# considered for every reader of the snapshot, not just the wake that was
+# silenced, and the message would then wait for a keystroke — the gap the wake
+# exists to close.
+#
+# Nothing else bounds a volley under Claude: the drain's breakers gate drains,
+# and Claude Code's consecutive-Stop-block cap does not count a turn a wake
+# itself started (lib/79-antigravity.sh says why Antigravity needs it too).
+# Past the ceiling the prompt digest carries the backlog until a prompt clears
+# the count.
+cs_mail_wake_silence() {  # wakes file
+    # Nothing below is observable when there is nothing to silence, and this is
+    # the majority of turn ends. MAIL_WAKES is only ever read by the count's
+    # writer, which runs only when a wake is about to be delivered.
+    [ "${MAIL_FRESH:-0}" = 1 ] || return 0
+    [ -z "${CS_NO_MAIL_WAKE:-}" ] || { MAIL_FRESH=0; return 0; }
+    local max seen=""
+    # Read as decimal: a leading zero would reach the comparison as an octal
+    # literal, and `08` aborts it. Sixteen digits or more take the default, as
+    # anything else that is not digits does: bash arithmetic wraps past 64
+    # bits, so such a value would arrive silently wrong.
+    case "${CS_MAIL_WAKE_MAX:-}" in
+        ''|*[!0-9]*|????????????????*) max=5 ;;
+        *) max=$((10#$CS_MAIL_WAKE_MAX)) ;;
+    esac
+    # The count is read only from a regular file, never through a link.
+    if [ -f "$1" ] && [ ! -L "$1" ]; then seen=$(<"$1") || seen=""; fi
+    seen=${seen//[[:space:]]/}
+    case "$seen" in
+        ''|*[!0-9]*|????????????????*) seen=0 ;;
+        *) seen=$((10#$seen)) ;;
+    esac
+    if [ "$seen" -ge "$max" ]; then
+        MAIL_FRESH=0
+    fi
+    # shellcheck disable=SC2034  # read by the callers in hooks/stop-blocks.sh and lib/79-antigravity.sh
+    MAIL_WAKES="$seen"
+}
+
+# Render the distinct senders as a clause, or nothing when no document named
+# one.
+#
+# "new from", not "from": the count beside this clause covers every unread
+# document, while these names come only from the ones the wake is announcing —
+# the discharge skip in cs_mail_wake_scan runs ahead of the read that would
+# learn a sender. Naming the narrower set is the deliberate half of that trade.
+# Naming every unread sender instead would cost one jq per unread document on
+# every turn end, which is the expense the scan is built to avoid, and which
+# the wake ceiling makes an ordinary state rather than a rare one.
+#
+# Each name is quoted, so one that reads as words cannot run on into the
+# instruction beside it; the scan leaves no quote or comma inside a name.
+cs_mail_wake_from_clause() {
+    [ -n "${MAIL_FROM:-}" ] || { printf ''; return 0; }
+    printf ', new from %s' "$(printf '%s\n' "$MAIL_FROM" | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+}
+
+# The reason a wake gives the agent, the one text both engines deliver:
+# Claude blocks its Stop with it or rewakes an idle session with it, and
+# Antigravity continues the turn with it.
+cs_mail_wake_reason() {
+    printf '%s' "Unread cross-session mail (${MAIL_UNREAD:-0})$(cs_mail_wake_from_clause). Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
+}

@@ -761,12 +761,6 @@ _antigravity_mail_state_dir() {  # [make]
     printf '%s\n' "$dir"
 }
 
-# A record is read only from a regular file, never through a link.
-_antigravity_mail_state_read() {  # file
-    [ -f "$1" ] && [ ! -L "$1" ] || return 1
-    cat "$1" 2>/dev/null
-}
-
 # A record is written without following a link (cs_write_atomic follows
 # one): a temp file in its directory, renamed over the name. A link at the
 # name goes first, since BSD mv onto a link to a directory moves the file into
@@ -806,7 +800,9 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # A turn that ends on its own with mail that came after its prompt goes on, so
 # an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL is
 # such an end: a turn the user stopped, one that failed and one agy cut off at
-# a limit end as they are. The rest is hooks/stop-blocks.sh's wake, with its
+# a limit end as they are. The rest is the wake Claude's hook runs too
+# (cs_mail_wake_scan and cs_mail_wake_silence, lib/02-shared.sh, which read
+# each record only from a regular file, never through a link), with its
 # records in cs's cache rather than in the mail folder, where the agent could
 # plant them (_antigravity_mail_state_dir): woke lists the messages a wake has
 # already announced, so each one wakes once and a continued turn that brings
@@ -816,50 +812,27 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # digest names nothing in woke, so mail a prompt showed and the turn left
 # unread still wakes it once.
 _antigravity_hook_stop() {  # payload
-    local mail state woke f name listed="" from senders="" quoted="" unread=0 fresh=0 seen max reason answer nl='
+    local mail state answer nl='
 '
+    # shellcheck disable=SC2034  # set and read by cs_mail_wake_* (lib/02-shared.sh)
+    local MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM="" MAIL_WAKES=0
     _antigravity_payload_read "$1" || return 0
-    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] && [ -z "${CS_NO_MAIL_WAKE:-}" ] || return 0
+    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 0
     mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
     [ -d "$mail/new" ] || return 0
     state=$(_antigravity_mail_state_dir make) || return 0
-    woke=$(_antigravity_mail_state_read "$state/woke") || woke=""
-    for f in "$mail"/new/*.json; do
-        [ -f "$f" ] || continue
-        unread=$((unread + 1))
-        name=${f##*/}
-        listed="$listed$name$nl"
-        case "$nl$woke$nl" in *"$nl$name$nl"*) continue ;; esac
-        fresh=1
-        # The sender as the digest shows one: 40 characters at most, and
-        # none outside A-Z a-z 0-9 . _ @ : -.
-        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
-             | if type == "string" then . else tostring end
-             | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null) || from=""
-        [ -n "$from" ] || continue
-        case "$nl$senders$nl" in
-            *"$nl$from$nl"*) ;;
-            *) senders="$senders$nl$from"; quoted="${quoted:+$quoted, }\"$from\"" ;;
-        esac
-    done
-    [ "$fresh" = 1 ] || return 0
-    case "${CS_MAIL_WAKE_MAX:-}" in
-        ''|*[!0-9]*|????????????????*) max=5 ;;
-        *) max=$((10#$CS_MAIL_WAKE_MAX)) ;;
-    esac
-    seen=$(_antigravity_mail_state_read "$state/wakes" | tr -d '[:space:]') || seen=""
-    case "$seen" in ''|*[!0-9]*|????????????????*) seen=0 ;; *) seen=$((10#$seen)) ;; esac
-    [ "$seen" -lt "$max" ] || return 0
-    reason="Unread cross-session mail ($unread)${quoted:+, new from $quoted}. Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
-    answer=$(jq -nc --arg r "$reason" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
+    cs_mail_wake_scan "$mail" "$state/woke"
+    cs_mail_wake_silence "$state/wakes"
+    [ "$MAIL_FRESH" = 1 ] || return 0
+    answer=$(jq -nc --arg r "$(cs_mail_wake_reason)" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
     # The count is written in the cache directory before the answer, and a
     # wake it cannot count is not sent, so the ceiling holds whatever stands
     # at the name. A kill after the count costs one unit of the budget: the
     # message stays unannounced and wakes at a later Stop. woke is written once
     # the answer is out, since writing it first could lose the wake.
-    _antigravity_mail_state_write "$state/wakes" "$((seen + 1))$nl" || return 0
+    _antigravity_mail_state_write "$state/wakes" "$((MAIL_WAKES + 1))$nl" || return 0
     ANTIGRAVITY_HOOK_REPLY=$answer
-    AGY_MAIL_WAKE_DIR="$state" AGY_MAIL_WAKE_NAMES="$listed"
+    AGY_MAIL_WAKE_DIR="$state" AGY_MAIL_WAKE_NAMES="$MAIL_NAMES"
     ANTIGRAVITY_HOOK_AFTER=_antigravity_mail_wake_record
 }
 

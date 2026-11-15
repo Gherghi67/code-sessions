@@ -2109,13 +2109,13 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "b214da6b4550a892854499ec5de4d2427b34e72d2a428ac31559b15a60d5eca6  bin/cs"
+    "86c4f0d89ad65ba5ab6f6587794f497f8c99719488ee4bbef68cc6ae1d8e720d  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "01988a1eedb8376080aa4d324f321137514571ab1a1d4dfcb8cc998c678ab8bf  bin/cs-codex-thread"
     "bd2f929653dfdc84f426d3a5fd1b50de4d2e2229a30c2b31a7e5ad896046d9aa  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "37de9b7ccf4e854137d6af1f66840d139efcd686dc1ad53afafbc811948f06c5  hooks/cs-shared.sh"
+    "273cb6049e7d124c816e0746c1cb4012925edd155a7f410f6a1985c1ef3064f6  hooks/cs-shared.sh"
     "e6d5ae5a6121a17d2935566a0e8c05f60f5d7fa5a2af3266dbe810a3b88c91b7  hooks/cs-engine-events.sh"
     "08bc37a7312e0098c6e5429e70e3a4ef108ae12f8f89bcfaadb72288f8765d19  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
@@ -2124,7 +2124,7 @@ CS_PAYLOAD_SHA256=(
     "b3704bde599a45a4f2d2a8b0ccd16e01869ef7ba6dcc85e642e306448ded7d44  hooks/prompt-rewriter-vendor.sh"
     "58f24e574ea776630284d5d7df818267ba29d97bfe9ea16ccd625d5633ef4911  hooks/session-start.sh"
     "e0a2562432ed9b7b63f73fdb3fd858a3f86b225063c3f62c4ec886a30ecc4c51  hooks/autosave-commits.sh"
-    "48f1c58efaed6587265164e258dfe5edae14873d5cf6271505ca0231b23373c8  hooks/stop-blocks.sh"
+    "d468aed0e3534a3bf03d3f2c715264ed52ddc292af6ece99eb26e364e2db1490  hooks/stop-blocks.sh"
     "15c2528a466640da5a06b29e00aabfc5a1b96c6405839e3280fc5c57359f6de6  hooks/stop-notices.sh"
     "b0cc3236f9a28e21510af4a69a34f275e4b9fe53f8630772bcfba4c1127e55c0  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
@@ -2148,7 +2148,7 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
-    "37de9b7ccf4e854137d6af1f66840d139efcd686dc1ad53afafbc811948f06c5  skills/sweep/scripts/cs-shared.sh"
+    "273cb6049e7d124c816e0746c1cb4012925edd155a7f410f6a1985c1ef3064f6  skills/sweep/scripts/cs-shared.sh"
     "a999b85473187e2d79fa94f8e3f5532a4510939114032f692e2e9003a155f40b  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "20d2cdb0d1e6fc5cf787d5144f1c7b22f0648cbcd296ae55482b5131cdcaf1ca  mods/cs/hooks/register.tsx"
