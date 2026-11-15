@@ -3,6 +3,7 @@
 # ABOUTME: Uses an isolated fake server and an optional real Codex no-model smoke test.
 
 import json
+import http.server
 import os
 from pathlib import Path
 import re
@@ -12,8 +13,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 
 HELPER = Path(__file__).resolve().parents[1] / "bin/cs-codex-thread"
@@ -487,6 +490,68 @@ class TransplantTests(HelperFixture):
         return path
 
     @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_revert_removes_carried_turn_from_next_model_input(self):
+        captured, received = [], threading.Event()
+
+        class Provider(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"error":{"message":"test capture only"}}')
+                received.set()
+
+            def log_message(self, *_):
+                pass
+
+        with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider) as provider:
+            listener = threading.Thread(target=provider.serve_forever, daemon=True)
+            listener.start()
+            self.addCleanup(listener.join, 2)
+            self.addCleanup(provider.shutdown)
+            (self.codex_home / 'config.toml').write_text(
+                'model = "gpt-5.5"\nmodel_provider = "capture"\n'
+                '[analytics]\nenabled = false\n[model_providers.capture]\n'
+                'name = "Local test capture"\nwire_api = "responses"\n'
+                'base_url = "http://127.0.0.1:{}/v1"\nrequest_max_retries = 0\n'
+                'stream_max_retries = 0\n'.format(provider.server_port))
+            executable = os.environ['CS_CODEX_REAL_BIN']
+            source = self.sample_transcript()
+            result = subprocess.run([
+                sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+                '--instructions-file', str(self.instructions), '--history-from-claude', str(source),
+            ], env=self.env, capture_output=True, text=True, timeout=40)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            thread_id = result.stdout.strip()
+            helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+            with patch.dict(os.environ, CODEX_HOME=str(self.codex_home)):
+                with helper['AppServer'](executable, str(self.cwd), time.monotonic() + 30) as server:
+                    server.initialize()
+                    turns = server.request('thread/turns/list', {
+                        'threadId': thread_id, 'sortDirection': 'asc', 'itemsView': 'notLoaded',
+                    })['data']
+                    self.assertEqual(len(turns), 2)
+                    server.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                    server.request('thread/revert', {'threadId': thread_id, 'beforeTurnId': turns[1]['id']})
+                # Reopen after revert so both disk persistence and the next model input are checked.
+                with helper['AppServer'](executable, str(self.cwd), time.monotonic() + 30) as server:
+                    server.initialize()
+                    server.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                    visible = server.request('thread/items/list', {
+                        'threadId': thread_id, 'sortDirection': 'asc',
+                    })['data']
+                    self.assertEqual(len(visible), 2)
+                    server.request('turn/start', {'threadId': thread_id, 'input': [
+                        {'type': 'text', 'text': 'NEW_PROMPT_MARKER', 'text_elements': []}]})
+                    self.assertTrue(received.wait(20), 'native Codex never reached the local provider')
+            model_input = json.dumps(captured[0]['input'])
+            self.assertIn('find the budget', model_input)
+            self.assertIn('The budget is 42.', model_input)
+            self.assertIn('NEW_PROMPT_MARKER', model_input)
+            self.assertFalse('follow-up v2' in model_input, 'reverted prompt still reaches the model')
+            self.assertFalse('Answer two.' in model_input, 'reverted answer still reaches the model')
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
     def test_real_carry_over_has_visible_turns_without_duplicating_model_history(self):
         source = self.sample_transcript()
         executable = os.environ['CS_CODEX_REAL_BIN']
@@ -717,8 +782,7 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.run_helper('', '--history-from-claude', str(self.root / "carried.jsonl"))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         texts = [i['content'][0]['text'] for i in items]
         self.assertTrue(texts[0].startswith('[cs carried this conversation over from Claude conversation'))
         self.assertEqual(texts[1], 'what is the codename?')
@@ -986,8 +1050,7 @@ class TransplantTests(HelperFixture):
         # call, so the parent walk alone passes one result and drops the rest.
         result = self.run_helper('', '--history-from-claude', str(SHAPES / 'claude-shapes.jsonl'))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         self.assertEqual([i['role'] for i in items], ['developer', 'user', 'assistant', 'user', 'assistant'])
         whole = '\n'.join(i['content'][0]['text'] for i in items[1:])
         self.assertEqual(re.findall(r'MARK-\d+', whole), ['MARK-%02d' % n for n in range(1, 16)])
@@ -1006,7 +1069,8 @@ class TransplantTests(HelperFixture):
         injections = [r['params']['items'] for r in requests if r['method'] == 'thread/inject_items']
         self.assertEqual(len(injections), 2)
         self.assertEqual(injections[0][0]['content'][0]['text'], self.instructions.read_text())
-        items = injections[1]
+        self.assertEqual(len(injections[1]), 1, 'only provenance is injected outside turns')
+        items = self.carried_model_items()
         self.assertEqual([(i['role'], i['content'][0]['type']) for i in items], [
             ('developer', 'input_text'), ('user', 'input_text'), ('assistant', 'output_text'),
             ('user', 'input_text'), ('assistant', 'output_text')])
@@ -1091,8 +1155,7 @@ class TransplantTests(HelperFixture):
         ]) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         agent = items[2]['content'][0]['text']
         self.assertIn('[tool error]\nExit code 2\nmake: *** no rule', agent)
         self.assertIn('[tool result]\nMakefile.am', agent)
@@ -1110,15 +1173,19 @@ class TransplantTests(HelperFixture):
         ]) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         texts = [i['content'][0]['text'] for i in items]
         self.assertEqual(texts[1:], ['This session is being continued. Summary: budget 42.', 'Continuing.'])
         # Without --history-source the note names the transcript's own ID.
         self.assertIn(CLAUDE_ID, texts[0])
 
-    def carried_batches(self, prompts):
-        """Carries prompts (user and assistant in turn) and returns the history's batches."""
+    def carried_model_items(self):
+        records = [json.loads(line) for line in
+                   (self.codex_home / 'sessions/bootstrap-rollout.jsonl').read_text().splitlines()]
+        return [r['payload'] for r in records if r['type'] == 'response_item'][1:]
+
+    def carry_prompts(self, prompts):
+        """Carry alternating user/assistant prompts and read their persisted model items."""
         path = self.root / (CLAUDE_ID + ".jsonl")
         lines, parent = [], None
         for n, text in enumerate(prompts):
@@ -1131,27 +1198,19 @@ class TransplantTests(HelperFixture):
         path.write_text("\n".join(lines) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        batches = [r['request']['params']['items'] for r in self.requests()
-                   if r['request']['method'] == 'thread/inject_items'][1:]
-        # Only an item larger than a batch on its own makes a batch larger.
-        for batch in batches:
-            if len(batch) > 1:
-                self.assertLessEqual(sum(len(json.dumps(i)) for i in batch), 512 * 1024)
-        return batches
+        return self.carried_model_items()[1:]
 
-    def test_large_conversations_are_injected_in_order_in_batches(self):
-        batches = self.carried_batches([("prompt %d " % n + "p" * 120000) if n % 2 == 0 else "reply %d" % n
-                                        for n in range(12)])
-        self.assertGreater(len(batches), 1)
-        texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
+    def test_large_conversations_are_persisted_in_order(self):
+        items = self.carry_prompts([("prompt %d " % n + "p" * 120000) if n % 2 == 0 else "reply %d" % n
+                                   for n in range(12)])
+        texts = [i['content'][0]['text'] for i in items]
         self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(12)])
 
-    def test_an_item_larger_than_a_batch_goes_alone_and_whole(self):
+    def test_a_large_item_is_persisted_whole(self):
         big = "prompt 2 " + "p" * (600 * 1024)
-        batches = self.carried_batches(["prompt 0", "reply 1", big, "reply 3", "prompt 4", "reply 5"])
-        alone = [batch for batch in batches if any(i['content'][0]['text'] == big for i in batch)]
-        self.assertEqual([len(batch) for batch in alone], [1])
-        texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
+        items = self.carry_prompts(["prompt 0", "reply 1", big, "reply 3", "prompt 4", "reply 5"])
+        texts = [i['content'][0]['text'] for i in items]
+        self.assertEqual(texts[2], big)
         self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(6)])
 
     def test_nothing_to_carry_starts_no_server(self):

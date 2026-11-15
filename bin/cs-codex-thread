@@ -197,8 +197,6 @@ def exact_id(result, expected=None):
 # characters. What stays: Codex's encrypted reasoning and sub-agent messages,
 # Claude's thinking, and the context each engine injects for itself.
 DEFAULT_CLIP = 4000
-# thread/inject_items requests are kept to about this many bytes each.
-INJECT_BATCH = 512 * 1024
 # Seconds the zstd command gets to unpack a compressed rollout.
 ZSTD_TIMEOUT = 60
 # Context Codex adds as user messages: the AGENTS.md text, and items it wraps
@@ -635,19 +633,6 @@ def carried_items(messages, note):
     return items
 
 
-def item_batches(items):
-    batch, size = [], 0
-    for item in items:
-        length = len(json.dumps(item))
-        if batch and size + length > INJECT_BATCH:
-            yield batch
-            batch, size = [], 0
-        batch.append(item)
-        size += length
-    if batch:
-        yield batch
-
-
 def carried_display_events(thread_id, messages):
     """Native rollout events for the TUI, separate from model-visible items.
 
@@ -730,8 +715,15 @@ def persist_carried_display(rollout_path, thread_id, messages):
             raise BootstrapError("Carry-over rollout does not identify the new thread")
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         turns = set()
+        items = iter(carried_items(messages, '')[1:])
         handle.seek(0, os.SEEK_END)
         for event in carried_display_events(thread_id, messages):
+            if event['type'] == 'item_completed':
+                ordinal += 1
+                item = next(items)
+                item['id'] = 'msg_' + str(uuid.uuid4())
+                handle.write(json.dumps({'timestamp': timestamp, 'ordinal': ordinal,
+                                         'type': 'response_item', 'payload': item}) + '\n')
             ordinal += 1
             if event['type'] == 'task_started':
                 turns.add(event['turn_id'])
@@ -827,9 +819,11 @@ def bootstrap(args):
                 {"type": "input_text", "text": instructions},
             ]}],
         })
-        # The carried conversation follows the context, a batch at a time.
-        for batch in item_batches(carried):
-            server.request("thread/inject_items", {"threadId": thread_id, "items": batch})
+        # Only the provenance note belongs outside turns. The conversation
+        # is persisted with its display events after this writer has exited,
+        # so native revert removes both views at the same turn boundary.
+        if carried:
+            server.request("thread/inject_items", {"threadId": thread_id, "items": carried[:1]})
         server.request("thread/unsubscribe", {"threadId": thread_id})
     visible_turns = persist_carried_display(rollout_path, thread_id, messages) if carried else set()
     # A successful start/injection response is insufficient proof of durability.
