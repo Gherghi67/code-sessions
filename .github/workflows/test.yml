@@ -99,6 +99,38 @@ jobs:
           CS_TEST_SUITE_TIMEOUT: 1800
         run: bash tests/run_all.sh
 
+  codex-native:
+    name: codex-native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      CODEX_NATIVE_VERSION: 0.167.0-alpha.3.2
+      CS_CODEX_REAL_BIN: ${{ runner.temp }}/codex-native/node_modules/.bin/codex
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install the pinned native Codex
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-native" --ignore-scripts --no-audit --no-fund \
+            "@openai/codex@$CODEX_NATIVE_VERSION"
+          test "$("$CS_CODEX_REAL_BIN" --version)" = "codex-cli $CODEX_NATIVE_VERSION"
+      # Every native case uses a temporary CODEX_HOME without credentials.
+      # The revert test captures synthetic model input at a loopback server;
+      # it never calls a hosted model. A missing binary fails, not skips.
+      - name: Verify native persistence, display, revert and large messages
+        run: python3 tests/test_codex_thread.py
+
   build-sync:
     runs-on: ubuntu-latest
     steps:
