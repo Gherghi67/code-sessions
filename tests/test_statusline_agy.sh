@@ -187,6 +187,22 @@ test_statusline_command_reports_antigravity() {
     assert_not_exists "$CS_CONFIG_DIR/statusline-antigravity-off" "and enable clears it there too" || return 1
 }
 
+# Exercise the renderer directly: the adapter drops rate_limits, so passing
+# through it cannot prove the engine gate protects Claude's limits stamp.
+test_antigravity_renderer_does_not_stamp_supplied_rate_limits() {
+    local dir="$CS_SESSIONS_ROOT/agysess/.cs/local"
+    local payload='{"session_id":"6778f9f7-33fb-4aa5-8194-f0142b7a86ea","rate_limits":{"five_hour":{"used_percentage":10}}}'
+    mkdir -p "$dir"
+    printf 'claude_session_id: 6778f9f7-33fb-4aa5-8194-f0142b7a86ea\n' > "$dir/state"
+    printf '%s' "$payload" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_ENGINE=antigravity \
+        "$BASH" "$SL" > /dev/null
+    assert_not_exists "$dir/limits" "an Antigravity render never stamps supplied rate limits" || return 1
+    printf '%s' "$payload" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_ENGINE=claude \
+        "$BASH" "$SL" > /dev/null
+    assert_exists "$dir/limits" "the same payload from Claude does stamp limits" || return 1
+    assert_output_contains "$(cat "$dir/limits")" "five_hour_used_pct: 10" "the positive control consumes the supplied reading"
+}
+
 test_antigravity_omits_the_claude_mark_even_with_attention() {
     local dir="$CS_SESSIONS_ROOT/agysess/.cs/local" out
     mkdir -p "$dir"
@@ -255,6 +271,7 @@ run_test test_the_context_waits_for_the_first_turn
 run_test test_the_adapter_never_fails_agy
 run_test test_the_real_render_shows_the_session_and_stamps_nothing
 run_test test_statusline_command_reports_antigravity
+run_test test_antigravity_renderer_does_not_stamp_supplied_rate_limits
 run_test test_antigravity_omits_the_claude_mark_even_with_attention
 run_test test_antigravity_switch_leaves_other_engines_untouched
 run_test test_antigravity_switch_ignores_broken_claude_settings
