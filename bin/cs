@@ -23178,11 +23178,12 @@ _antigravity_hook_post_tool_use() {  # payload
 # {"decision": "continue", "reason": ...} runs the loop again with the reason
 # as a system message. continuationActive, which agy documents as the guard
 # against a Stop that keeps continuing, stayed false at every Stop, so the
-# wake guards itself and agy stops it after ten continuations whatever the
-# hook says. agy has no event for a conversation idle at its prompt, so mail
-# that comes then waits for the next prompt. The wake's own records live in
-# cs's cache, not beside the mail (_antigravity_mail_state_dir): cs acts on
-# them, and the agent can write anywhere in the session.
+# wake keeps its own count, written before each wake goes out, and agy stops
+# it after ten continuations whatever the hook says. agy has no event for a
+# conversation idle at its prompt, so mail that comes then waits for the next
+# prompt. The wake's own records live in cs's cache, not beside the mail
+# (_antigravity_mail_state_dir): cs acts on them, and the agent can write
+# anywhere in the session.
 
 # The folder that holds the session's mail, printed when the conversation is
 # the one the session is bound to, in the run that holds its lease: a
@@ -23276,7 +23277,7 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # digest names nothing in woke, so mail a prompt showed and the turn left
 # unread still wakes it once.
 _antigravity_hook_stop() {  # payload
-    local mail state woke f name listed="" from senders="" quoted="" unread=0 fresh=0 seen max reason nl='
+    local mail state woke f name listed="" from senders="" quoted="" unread=0 fresh=0 seen max reason answer nl='
 '
     _antigravity_payload_read "$1" || return 0
     [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] && [ -z "${CS_NO_MAIL_WAKE:-}" ] || return 0
@@ -23311,15 +23312,19 @@ _antigravity_hook_stop() {  # payload
     case "$seen" in ''|*[!0-9]*|????????????????*) seen=0 ;; *) seen=$((10#$seen)) ;; esac
     [ "$seen" -lt "$max" ] || return 0
     reason="Unread cross-session mail ($unread)${quoted:+, new from $quoted}. Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$reason" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
-    # Recorded in the cache directory once the answer is out: a kill between
-    # the two costs one wake twice, where recording first could lose the wake.
-    AGY_MAIL_WAKE_DIR="$state" AGY_MAIL_WAKE_NAMES="$listed" AGY_MAIL_WAKE_COUNT="$((seen + 1))$nl"
+    answer=$(jq -nc --arg r "$reason" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
+    # The count is written in the cache directory before the answer, and a
+    # wake it cannot count is not sent, so the ceiling holds whatever stands
+    # at the name. A kill after the count costs one unit of the budget: the
+    # message stays unannounced and wakes at a later Stop. woke is written once
+    # the answer is out, since writing it first could lose the wake.
+    _antigravity_mail_state_write "$state/wakes" "$((seen + 1))$nl" || return 0
+    ANTIGRAVITY_HOOK_REPLY=$answer
+    AGY_MAIL_WAKE_DIR="$state" AGY_MAIL_WAKE_NAMES="$listed"
     ANTIGRAVITY_HOOK_AFTER=_antigravity_mail_wake_record
 }
 
 _antigravity_mail_wake_record() {
-    _antigravity_mail_state_write "$AGY_MAIL_WAKE_DIR/wakes" "$AGY_MAIL_WAKE_COUNT" || true
     _antigravity_mail_state_write "$AGY_MAIL_WAKE_DIR/woke" "$AGY_MAIL_WAKE_NAMES" || true
 }
 run_secrets() {

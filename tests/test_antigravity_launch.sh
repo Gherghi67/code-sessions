@@ -78,6 +78,9 @@ done
 # makes cs's writes take the link for a vault set up by hand.
 [ -z "${AGY_PLANT_VAULT:-}" ] \
     || { ln -s "$AGY_PLANT_VAULT" "$CS_SESSION_META_DIR/private"; printf 'x\n' > "$CS_SESSION_META_DIR/local/pre-open"; }
+# A directory planted at the path AGY_PLANT_DIR names, its missing parents
+# made 0700, as cs makes its own cache directories.
+[ -z "${AGY_PLANT_DIR:-}" ] || ( umask 077 && mkdir -p "$AGY_PLANT_DIR" )
 hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
 # The answers of the event fired last, for the Stop loop to read.
 last="$AGY_HOOK_OUT.last"
@@ -152,7 +155,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_RAW_SWITCH
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
@@ -167,7 +170,7 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
-    unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_RAW_SWITCH
+    unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset CS_TMUX_BIN AGY_TMUX_LOG
 }
@@ -1669,6 +1672,21 @@ test_the_wake_stops_at_its_ceiling_until_the_next_prompt() {
     assert_eq 1 "$(_continued | grep -c 'cross-session mail')" "after a prompt it wakes for what the ceiling held back" || return 1
 }
 
+# The wake's count is written before its answer goes out, so a wake that
+# cannot be counted is never sent: here a directory stands at the count's
+# name in cs's cache when mail comes during the turn.
+test_a_wake_that_cannot_be_counted_is_never_sent() {
+    local output state
+    output=$("$CS_BIN" uncounted --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    state=$(_mail_state uncounted)
+    _mail_doc "$AGY_MAIL_DROP/u1.json" peer 'mid-turn'
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_PLANT_DIR="$state/wakes" AGY_MAIL_DURING_TURN=u1.json "$CS_BIN" uncounted 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "" "$(_continued)" "no Stop answers continue" || return 1
+    assert_not_exists "$state/woke" "and nothing is marked announced"
+}
+
 # Only a turn that ended on its own goes on: never one the user stopped, one
 # that failed or one agy cut off at a limit, and none with CS_NO_MAIL_WAKE.
 test_a_turn_that_did_not_end_on_its_own_is_never_woken() {
@@ -1923,6 +1941,7 @@ run_test test_the_hook_acts_only_in_the_run_cs_launched
 run_test test_unread_mail_reaches_each_prompt_of_the_bound_conversation
 run_test test_mail_that_comes_during_a_turn_wakes_it_once
 run_test test_the_wake_stops_at_its_ceiling_until_the_next_prompt
+run_test test_a_wake_that_cannot_be_counted_is_never_sent
 run_test test_a_turn_that_did_not_end_on_its_own_is_never_woken
 run_test test_mail_git_tracks_is_neither_shown_nor_woken_for
 run_test test_conversations_lists_the_antigravity_conversations
