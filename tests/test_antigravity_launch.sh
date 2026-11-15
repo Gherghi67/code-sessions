@@ -73,6 +73,11 @@ done
     || ln -s "$AGY_PLANT_BOUND" "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/bound"
 [ -z "${AGY_PLANT_LOG:-}" ] \
     || { rm -f "$CS_SESSION_META_DIR/local/session.log"; ln -s "$AGY_PLANT_LOG" "$CS_SESSION_META_DIR/local/session.log"; }
+# A vault planted mid-run: .cs/private as a link to the folder
+# AGY_PLANT_VAULT names, beside a plain .cs/local/pre-open, the file that
+# makes cs's writes take the link for a vault set up by hand.
+[ -z "${AGY_PLANT_VAULT:-}" ] \
+    || { ln -s "$AGY_PLANT_VAULT" "$CS_SESSION_META_DIR/private"; printf 'x\n' > "$CS_SESSION_META_DIR/local/pre-open"; }
 hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
 # The answers of the event fired last, for the Stop loop to read.
 last="$AGY_HOOK_OUT.last"
@@ -147,7 +152,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
@@ -162,7 +167,7 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
-    unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
+    unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset CS_TMUX_BIN AGY_TMUX_LOG
 }
@@ -1537,7 +1542,7 @@ test_the_hook_acts_only_in_the_run_cs_launched() {
     output=$(printf '%s' "$payload" | CS_RUN_ENGINE=antigravity CS_SESSION_DIR="$dir" \
         CS_RUN_ID=66666666-6666-4666-8666-666666666666 "$CS_BIN" -antigravity-hook stop) || return 1
     assert_eq '{}' "$output" "as does a Stop in a run without the lease" || return 1
-    assert_not_exists "$dir/.cs/local/mail/woke" "which marks nothing announced" || return 1
+    assert_not_exists "$(_mail_state guarded)/woke" "which marks nothing announced" || return 1
     rm -rf "$dir/.cs/local/mail"
     status=0
     output=$(printf '{}' | "$CS_BIN" -antigravity-hook from-a-newer-cs) || status=$?
@@ -1564,6 +1569,15 @@ _mail_doc() {  # path, from, body
 
 _mailbox() {  # session_name
     printf '%s/.cs/local/mail\n' "$(_session_dir "$1")"
+}
+
+# Where the wake keeps its records, woke and wakes: cs's cache, per session,
+# named by the session folder's identity, <device>-<inode>.
+_mail_state() {  # session_name
+    local dir id
+    dir=$(_session_dir "$1")
+    id=$(stat -L -c '%d-%i' "$dir" 2>/dev/null || stat -L -f '%d-%i' "$dir") || return 1
+    printf '%s/antigravity-mail/%s\n' "$CS_CACHE_DIR" "$id"
 }
 
 # What the hooks answered with, read from AGY_HOOK_OUT: the system messages
@@ -1608,9 +1622,10 @@ test_unread_mail_reaches_each_prompt_of_the_bound_conversation() {
 # the sender, and the wake is not repeated for the same message. Mail a
 # prompt showed and the turn left unread wakes it once too, as under Claude.
 test_mail_that_comes_during_a_turn_wakes_it_once() {
-    local output mail woken
+    local output mail state woken
     output=$("$CS_BIN" waking --engine antigravity 2>&1) || { echo "$output"; return 1; }
     mail=$(_mailbox waking)
+    state=$(_mail_state waking)
     _mail_doc "$AGY_MAIL_DROP/m2.json" 'peer-a' 'done, see the PR'
     : > "$AGY_HOOK_OUT"
     output=$(AGY_MAIL_DURING_TURN=m2.json "$CS_BIN" waking 2>&1) || { echo "$output"; return 1; }
@@ -1619,13 +1634,14 @@ test_mail_that_comes_during_a_turn_wakes_it_once() {
     assert_eq 'Unread cross-session mail (1), new from "peer-a". Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees.' \
         "$woken" "the wake names the sender, as Claude's does" || return 1
     assert_eq "" "$(_injected)" "the prompt came before the mail" || return 1
-    assert_eq 1 "$(cat "$mail/wakes")" "the wake is counted" || return 1
-    assert_eq m2.json "$(cat "$mail/woke")" "and the message marked as announced" || return 1
+    assert_eq 1 "$(cat "$state/wakes")" "the wake is counted" || return 1
+    assert_eq m2.json "$(cat "$state/woke")" "and the message marked as announced" || return 1
+    assert_not_exists "$mail/woke" "in cs's cache, not in the session, where the agent could plant it" || return 1
     : > "$AGY_HOOK_OUT"
     output=$("$CS_BIN" waking 2>&1) || { echo "$output"; return 1; }
     assert_eq 1 "$(_injected | grep -c 'done, see the PR')" "the next prompt shows it" || return 1
     assert_eq "" "$(_continued)" "and its end does not wake for it again" || return 1
-    assert_not_exists "$mail/wakes" "a prompt clears the wake count" || return 1
+    assert_not_exists "$state/wakes" "a prompt clears the wake count" || return 1
     _mail_doc "$mail/new/m3.json" 'peer-b' 'shown at the prompt'
     : > "$AGY_HOOK_OUT"
     output=$("$CS_BIN" waking 2>&1) || { echo "$output"; return 1; }
@@ -1636,9 +1652,9 @@ test_mail_that_comes_during_a_turn_wakes_it_once() {
 # Mail that keeps coming during a continued turn wakes it at most
 # CS_MAIL_WAKE_MAX times between prompts; the next prompt restores the budget.
 test_the_wake_stops_at_its_ceiling_until_the_next_prompt() {
-    local output mail
+    local output state
     output=$("$CS_BIN" volley --engine antigravity 2>&1) || { echo "$output"; return 1; }
-    mail=$(_mailbox volley)
+    state=$(_mail_state volley)
     _mail_doc "$AGY_MAIL_DROP/v1.json" peer one
     _mail_doc "$AGY_MAIL_DROP/v2.json" peer two
     _mail_doc "$AGY_MAIL_DROP/v3.json" peer three
@@ -1646,8 +1662,8 @@ test_the_wake_stops_at_its_ceiling_until_the_next_prompt() {
     output=$(CS_MAIL_WAKE_MAX=2 AGY_MAIL_DURING_TURN="v1.json v2.json v3.json" \
         "$CS_BIN" volley 2>&1) || { echo "$output"; return 1; }
     assert_eq 2 "$(_continued | grep -c 'cross-session mail')" "two wakes, then the ceiling" || return 1
-    assert_eq 2 "$(cat "$mail/wakes")" || return 1
-    assert_file_not_contains "$mail/woke" v3.json "the message past the ceiling is not marked announced" || return 1
+    assert_eq 2 "$(cat "$state/wakes")" || return 1
+    assert_file_not_contains "$state/woke" v3.json "the message past the ceiling is not marked announced" || return 1
     : > "$AGY_HOOK_OUT"
     output=$(CS_MAIL_WAKE_MAX=2 "$CS_BIN" volley 2>&1) || { echo "$output"; return 1; }
     assert_eq 1 "$(_continued | grep -c 'cross-session mail')" "after a prompt it wakes for what the ceiling held back" || return 1
@@ -1656,9 +1672,10 @@ test_the_wake_stops_at_its_ceiling_until_the_next_prompt() {
 # Only a turn that ended on its own goes on: never one the user stopped, one
 # that failed or one agy cut off at a limit, and none with CS_NO_MAIL_WAKE.
 test_a_turn_that_did_not_end_on_its_own_is_never_woken() {
-    local output reason mail
+    local output reason mail state
     output=$("$CS_BIN" halted --engine antigravity 2>&1) || { echo "$output"; return 1; }
     mail=$(_mailbox halted)
+    state=$(_mail_state halted)
     for reason in USER_CANCELED ERROR MAX_INVOCATIONS MAX_FORCED_INVOCATIONS TERMINAL_STEP_TYPE; do
         rm -rf "$mail"
         _mail_doc "$AGY_MAIL_DROP/h.json" peer 'mid-turn'
@@ -1666,7 +1683,7 @@ test_a_turn_that_did_not_end_on_its_own_is_never_woken() {
         output=$(AGY_STOP_REASON=$reason AGY_MAIL_DURING_TURN=h.json "$CS_BIN" halted 2>&1) \
             || { echo "$output"; return 1; }
         assert_eq "" "$(_continued)" "a turn that ended $reason is not woken" || return 1
-        assert_not_exists "$mail/woke" "and nothing is marked announced" || return 1
+        assert_not_exists "$state/woke" "and nothing is marked announced" || return 1
     done
     rm -rf "$mail"
     : > "$AGY_HOOK_OUT"
@@ -1791,6 +1808,30 @@ test_the_hook_never_writes_through_a_link() {
     assert_eq 44444444-4444-4444-8444-444444444444 "$(_binding linked)" "the binding is still made"
 }
 
+# The launch refuses an encrypted session, so a .cs/private that comes
+# mid-run was planted: here a link to a folder holding mail, with woke and
+# wakes there linked to files outside the session, beside the pre-open that
+# has cs's writes take the link for a vault set up by hand. No prompt shows
+# that mail, no Stop wakes for it, and nothing is written through the links.
+test_a_vault_planted_mid_run_is_neither_read_nor_written_through() {
+    local output vault="$TEST_TMPDIR/planted"
+    local woke_victim="$TEST_TMPDIR/woke-victim" wakes_victim="$TEST_TMPDIR/wakes-victim"
+    output=$("$CS_BIN" vaulted --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding vaulted)" "the session is bound to its conversation" || return 1
+    _mail_doc "$vault/mail/new/planted-1.json" peer 'planted one'
+    _mail_doc "$vault/mail/new/planted-2.json" peer 'planted two'
+    printf 'theirs\n' > "$woke_victim"
+    printf 'theirs\n' > "$wakes_victim"
+    ln -s "$woke_victim" "$vault/mail/woke"
+    ln -s "$wakes_victim" "$vault/mail/wakes"
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_PLANT_VAULT="$vault" "$CS_BIN" vaulted 2>&1) || true
+    assert_eq theirs "$(cat "$woke_victim")" "woke is not written through a link in the planted folder" || return 1
+    assert_eq theirs "$(cat "$wakes_victim")" "nor is wakes" || return 1
+    assert_eq "" "$(_continued)" "no Stop wakes for the planted mail" || return 1
+    assert_eq "" "$(_injected)" "and no prompt shows it"
+}
+
 # The installer quotes a cs path the shell would split; doctor reads it back.
 test_doctor_reads_back_a_quoted_cs_path() {
     local output dir odd="$TEST_TMPDIR/it's here"
@@ -1891,5 +1932,6 @@ run_test test_a_hook_older_than_the_mail_wake_is_named_by_doctor
 run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
+run_test test_a_vault_planted_mid_run_is_neither_read_nor_written_through
 run_test test_doctor_sends_a_folder_cs_left_to_setup
 report_results

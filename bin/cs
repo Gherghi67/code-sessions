@@ -23180,22 +23180,68 @@ _antigravity_hook_post_tool_use() {  # payload
 # against a Stop that keeps continuing, stayed false at every Stop, so the
 # wake guards itself and agy stops it after ten continuations whatever the
 # hook says. agy has no event for a conversation idle at its prompt, so mail
-# that comes then waits for the next prompt.
+# that comes then waits for the next prompt. The wake's own records live in
+# cs's cache, not beside the mail (_antigravity_mail_state_dir): cs acts on
+# them, and the agent can write anywhere in the session.
 
 # The folder that holds the session's mail, printed when the conversation is
 # the one the session is bound to, in the run that holds its lease: a
 # subagent's conversation has an id of its own, and another agy run in the
 # folder holds no lease. Mail git tracks came with a pull, a merge or a
 # checkout, not from a sender on this machine, so none of it is shown then, as
-# under Claude and Codex.
+# under Claude and Codex. The launch refuses an encrypted session, so a
+# .cs/private there came mid-run, maybe as a link out of the session, and no
+# mail is read through it.
 _antigravity_mail_dir() {  # conversation_id
     local bound private
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 1
+    ! _switch_session_encrypted "$CS_SESSION_DIR" || return 1
     bound=$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null) || return 1
     [ "$bound" = "$1" ] || return 1
     ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 1
     private=$(cs_private_dir "$CS_SESSION_DIR/.cs") || return 1
     printf '%s/mail\n' "$private"
+}
+
+# The wake's records, woke and wakes, in cs's cache: a 0700 directory named
+# by the session directory's identity (cs_retire_cache_dir), so they last
+# across runs as Claude's mail/woke does, and kept outside every root an
+# agent's sandbox may write, as the handoff receipts are
+# (_launch_handoff_receipt_dir_ok). In the session the agent could plant them
+# as links that send cs's writes out of it, or as a count that silences the
+# wake. With "make" a missing directory is made; fails when no such
+# directory is there.
+_antigravity_mail_state_dir() {  # [make]
+    local dir
+    dir=$(cs_retire_cache_dir antigravity-mail "$CS_SESSION_DIR") || return 1
+    [ -z "${1:-}" ] || cs_cache_dir_make_private "$dir" || return 1
+    cs_cache_dir_private "$dir" \
+        && ! _codex_run_dir_in_sandbox_root "$dir" "$CS_SESSION_DIR" \
+        && ! _codex_run_dir_in_config_root "$dir" "$CS_SESSION_DIR" || return 1
+    printf '%s\n' "$dir"
+}
+
+# A record is read only from a regular file, never through a link.
+_antigravity_mail_state_read() {  # file
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    cat "$1" 2>/dev/null
+}
+
+# A record is written without following a link (cs_write_atomic follows
+# one): a temp file in its directory, renamed over the name. A link at the
+# name goes first, since BSD mv onto a link to a directory moves the file into
+# that directory; anything else there but a regular file, a directory above
+# all, refuses the write.
+_antigravity_mail_state_write() {  # file, text
+    local tmp
+    if [ -L "$1" ]; then rm -f "$1" 2>/dev/null || return 1; fi
+    [ ! -e "$1" ] || [ -f "$1" ] || return 1
+    tmp=$(mktemp "${1%/*}/.cs-tmp.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s' "$2" > "$tmp" && mv -f "$tmp" "$1" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
 }
 
 # A prompt gets the unread mail as a system message, every prompt until
@@ -23204,9 +23250,11 @@ _antigravity_mail_dir() {  # conversation_id
 # prompt: a wake continues its turn and never starts one, so invocationNum 0
 # is always a prompt.
 _antigravity_hook_mail_digest() {  # conversation_id
-    local mail MAIL_DIGEST=""
+    local mail state MAIL_DIGEST=""
     mail=$(_antigravity_mail_dir "$1") || return 0
-    rm -f "$mail/wakes" 2>/dev/null || true
+    if state=$(_antigravity_mail_state_dir); then
+        rm -f "$state/wakes" 2>/dev/null || true
+    fi
     cs_mail_digest "${mail%/mail}"
     [ -n "$MAIL_DIGEST" ] || return 0
     # The shape measured on 1.5.8, terminationBehavior "" (call the model) included.
@@ -23218,21 +23266,24 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # A turn that ends on its own with mail that came after its prompt goes on, so
 # an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL is
 # such an end: a turn the user stopped, one that failed and one agy cut off at
-# a limit end as they are. The rest is hooks/stop-blocks.sh's wake over the
-# same files: mail/woke lists the messages a wake has already announced, so
-# each one wakes once and a continued turn that brings none stops, and
-# mail/wakes counts the wakes since the last prompt against CS_MAIL_WAKE_MAX
-# (5), which ends a volley between two unattended sessions. CS_NO_MAIL_WAKE
-# turns the wake off. The digest names nothing in woke, so mail a prompt
-# showed and the turn left unread still wakes it once.
+# a limit end as they are. The rest is hooks/stop-blocks.sh's wake, with its
+# records in cs's cache rather than in the mail folder, where the agent could
+# plant them (_antigravity_mail_state_dir): woke lists the messages a wake has
+# already announced, so each one wakes once and a continued turn that brings
+# none stops, and wakes counts the wakes since the last prompt against
+# CS_MAIL_WAKE_MAX (5), which ends a volley between two unattended sessions.
+# No usable directory there, no wake. CS_NO_MAIL_WAKE turns the wake off. The
+# digest names nothing in woke, so mail a prompt showed and the turn left
+# unread still wakes it once.
 _antigravity_hook_stop() {  # payload
-    local mail woke="" f name listed="" from senders="" quoted="" unread=0 fresh=0 seen max reason nl='
+    local mail state woke f name listed="" from senders="" quoted="" unread=0 fresh=0 seen max reason nl='
 '
     _antigravity_payload_read "$1" || return 0
     [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] && [ -z "${CS_NO_MAIL_WAKE:-}" ] || return 0
     mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
     [ -d "$mail/new" ] || return 0
-    [ ! -f "$mail/woke" ] || woke=$(cat "$mail/woke" 2>/dev/null) || woke=""
+    state=$(_antigravity_mail_state_dir make) || return 0
+    woke=$(_antigravity_mail_state_read "$state/woke") || woke=""
     for f in "$mail"/new/*.json; do
         [ -f "$f" ] || continue
         unread=$((unread + 1))
@@ -23256,21 +23307,20 @@ _antigravity_hook_stop() {  # payload
         ''|*[!0-9]*|????????????????*) max=5 ;;
         *) max=$((10#$CS_MAIL_WAKE_MAX)) ;;
     esac
-    seen=""
-    [ ! -f "$mail/wakes" ] || seen=$(tr -d '[:space:]' < "$mail/wakes" 2>/dev/null) || seen=""
+    seen=$(_antigravity_mail_state_read "$state/wakes" | tr -d '[:space:]') || seen=""
     case "$seen" in ''|*[!0-9]*|????????????????*) seen=0 ;; *) seen=$((10#$seen)) ;; esac
     [ "$seen" -lt "$max" ] || return 0
     reason="Unread cross-session mail ($unread)${quoted:+, new from $quoted}. Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
     ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$reason" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
-    # Recorded once the answer is out: a kill between the two costs one
-    # wake twice, where recording first could lose the wake.
-    AGY_MAIL_WAKE_DIR="$mail" AGY_MAIL_WAKE_NAMES="$listed" AGY_MAIL_WAKE_COUNT=$((seen + 1))
+    # Recorded in the cache directory once the answer is out: a kill between
+    # the two costs one wake twice, where recording first could lose the wake.
+    AGY_MAIL_WAKE_DIR="$state" AGY_MAIL_WAKE_NAMES="$listed" AGY_MAIL_WAKE_COUNT="$((seen + 1))$nl"
     ANTIGRAVITY_HOOK_AFTER=_antigravity_mail_wake_record
 }
 
 _antigravity_mail_wake_record() {
-    cs_write_atomic "$AGY_MAIL_WAKE_DIR/wakes" printf '%s\n' "$AGY_MAIL_WAKE_COUNT" || true
-    cs_write_atomic "$AGY_MAIL_WAKE_DIR/woke" printf '%s' "$AGY_MAIL_WAKE_NAMES" || true
+    _antigravity_mail_state_write "$AGY_MAIL_WAKE_DIR/wakes" "$AGY_MAIL_WAKE_COUNT" || true
+    _antigravity_mail_state_write "$AGY_MAIL_WAKE_DIR/woke" "$AGY_MAIL_WAKE_NAMES" || true
 }
 run_secrets() {
     local secrets_script

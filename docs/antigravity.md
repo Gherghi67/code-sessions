@@ -353,10 +353,12 @@ hook, as it does under Claude and Codex:
   has announced yet, goes on: Stop answers `continue`, and `agy` gives the
   model the reason, `Unread cross-session mail (N), new from "<sender>". Run
   cs -msg to read it.` followed by the same advice Claude's wake gives. Each
-  message wakes once (`mail/woke` lists those announced), a session wakes at
-  most `CS_MAIL_WAKE_MAX` times (5) between prompts (`mail/wakes`), and
-  `CS_NO_MAIL_WAKE=1` turns the wake off. A turn the user stopped, one that
-  failed, and one `agy` cut off at a limit end as they are.
+  message wakes once (`woke` lists those announced), a session wakes at most
+  `CS_MAIL_WAKE_MAX` times (5) between prompts (`wakes` counts them), and
+  `CS_NO_MAIL_WAKE=1` turns the wake off. `woke` and `wakes` live in cs's
+  cache, one directory per session (`~/.cache/cs/antigravity-mail/`), outside
+  the session folder, which the agent can write. A turn the user stopped, one
+  that failed, and one `agy` cut off at a limit end as they are.
 - Only the session's own conversation, in the run that holds its lease, gets
   mail. A subagent's conversation has an ID of its own. Mail that git tracks came
   with a pull, a merge or a checkout, so it is neither shown nor woken for.
