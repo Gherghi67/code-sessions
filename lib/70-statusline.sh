@@ -34,9 +34,8 @@ _statusline_declined_marker() {
 
 # Antigravity's line has its own off switch: cs -statusline disable writes it,
 # enable and cs -uninstall remove it. The installer's question is about Claude
-# Code's bar, so a no there, recorded in the declined marker, leaves agy's line
-# on: a status line of your own in Claude, such as a bridge that runs
-# cs-statusline, is the usual reason for that no.
+# Code's bar. Antigravity deliberately keeps an independent choice, so that
+# declined marker does not turn its line off.
 _statusline_antigravity_off_marker() {
     echo "${CS_CONFIG_DIR:-$HOME/.config/cs}/statusline-antigravity-off"
 }

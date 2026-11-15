@@ -379,6 +379,10 @@ export NO_COLOR=1
 
 Each `CS_*` key above except `CS_STATUSLINE_CAPS`, `CS_USAGE_DIR` and `CS_STATUSLINE_PARENT` can live in a settings file instead of your shell, and so can `CS_TERM_BG_RGB` from [Pinning the background](#pinning-the-background): `cs -config set CS_STATUSLINE_LAYOUT band` keeps it on this machine, `cs <name> -config set` in one session, and the next repaint reads it. A value your shell exports still wins. See [Settings file](configuration.md#settings-file).
 
+If `CS_STATUSLINE_DISABLE` was on when Antigravity started, cs passed no
+status-line command. Turning it back off then needs a relaunch; a command
+already running reads configuration changes at its next repaint.
+
 `CS_SESSIONS_ROOT` is honored the same way the rest of cs honors it.
 
 ## Codex

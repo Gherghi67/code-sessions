@@ -306,11 +306,19 @@ launch. Use `cs -statusline enable antigravity` or
 `cs -statusline disable antigravity` to change only Antigravity's line,
 leaving Claude's registration, Codex's configuration and the installer's
 decline marker untouched. These scoped commands also work when Claude's
-settings file cannot be read. The installer's question is only about Claude
-Code's bar, so a no
-there (`~/.config/cs/statusline-declined`) leaves the line on under `agy`: a
-status line of your own in Claude, such as a bridge that runs
-`cs-statusline`, is the usual reason for that no.
+settings file cannot be read. Antigravity deliberately keeps an independent
+choice: a no to the installer's Claude status-line question
+(`~/.config/cs/statusline-declined`) leaves the line on under `agy`.
+
+Changing `CS_STATUSLINE_DISABLE` in a cs configuration file takes effect at
+the next repaint if that run already has the command. If the setting was
+on when agy started, cs passed no command; re-enabling then needs a relaunch.
+
+The run override itself is not saved. Explicit agy `/statusline` commands
+can still change its settings: on agy 1.5.9, `disable` saves a disabled
+status line, which cs respects on later launches, and `delete` clears it.
+After deletion, a later cs launch can supply cs's line again. Use
+`cs -statusline disable antigravity` to keep cs from supplying it.
 
 `agy` repaints the line on events: a state change (starting, working, idle)
 or a key. It has no timer, so a mail or git change shows at the next event,

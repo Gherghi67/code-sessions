@@ -1,9 +1,9 @@
-CS_STATUSLINE_DISABLE	Status line	Status line	flagoff	-	off	now	applies at the next repaint	-	default	-	Draws the line under the prompt with the session, branch, model, context and usage limits.
+CS_STATUSLINE_DISABLE	Status line	Status line	flagoff	-	off	now+launch	applies at the next repaint; Antigravity needs a relaunch if disabled at startup	-	default	-	Draws the line under the prompt with the session, branch, model, context and usage limits.
 CS_STATUSLINE_LAYOUT	Status line	Layout	choice	quiet,band,capsules	quiet	now	applies at the next repaint	band	machine	-	How the status line looks: plain text, one full-width band of colour, or capsules.
 CS_STATUSLINE_SEGMENTS	Status line	Segments	text	-	logo,session,notes,mail,git,model,ctx,limits	now	applies at the next repaint	-	default	-	Which items the status line shows, in order, as a comma-separated list.
 CS_STATUSLINE_BAND	Status line	Band colour	text	-	session	now	applies at the next repaint	-	default	machine line 4: CS_STATUSLINE_BAND=magenta: not a palette name, brand, periwinkle, session, none or r;g;b	The colour of the band and the session chip; session gives each session its own colour.
 CS_STATUSLINE_COLS	Status line	Width in columns	text	-	measured	now	applies at the next repaint	-	default	-	A fixed width for the status line; unset, it fits the terminal.
-CS_STATUSLINE_FRAME	Status line	Frame columns	text	-	4	now	applies at the next repaint	6	shell	-	Columns the prompt frame takes from the measured width, so the line is not cut short.
+CS_STATUSLINE_FRAME	Status line	Frame columns	text	-	engine	now	applies at the next repaint	6	shell	-	Columns the host frame takes from the measured width; defaults to 4 for Claude Code and 0 for Antigravity.
 CS_STATUSLINE_CTX_WARN	Status line	Context warn %	text	-	40	now	applies at the next repaint	50	session	-	Context use at which the gauge turns to its warning colour.
 CS_STATUSLINE_CTX_CRIT	Status line	Context critical %	text	-	60	now	applies at the next repaint	-	default	-	Context use at which the gauge turns to its critical colour.
 CS_USAGE_NO_REFRESH	Status line	Usage refresh	flagoff	-	off	now	applies at the next repaint	-	default	-	Fetches your Fable usage for the status line; off, it shows only what is already cached.
