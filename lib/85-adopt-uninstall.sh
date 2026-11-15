@@ -832,7 +832,7 @@ run_uninstall() {
     # Claude too; with Claude, the block below takes it. agy's settings hold
     # nothing of cs's: a launch passes the line for its run only. Its off
     # switch goes, as the declined marker does.
-    rm -f "$(_statusline_antigravity_off_marker)"
+    rm -f "$(_statusline_antigravity_off_marker)" 2>/dev/null || true
     if [[ ",$install_engines," != *,claude,* ]] \
         && { [ -e "$install_dir/cs-statusline" ] || [ -L "$install_dir/cs-statusline" ]; }; then
         rm -f "$install_dir/cs-statusline"
