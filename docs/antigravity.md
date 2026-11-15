@@ -352,8 +352,10 @@ hook, as it does under Claude and Codex:
 - **At the end of a turn.** A turn that ends on its own, with mail that no wake
   has announced yet, goes on: Stop answers `continue`, and `agy` gives the
   model the reason, `Unread cross-session mail (N), new from "<sender>". Run
-  cs -msg to read it.` followed by the same advice Claude's wake gives. Each
-  message wakes once (`woke` lists those announced), a session wakes at most
+  cs -msg to read it.` followed by the same advice Claude's wake gives. It
+  names five senders at most, one per message, from the first JSON object of
+  its file, as Claude's wake does. Each message wakes once (`woke` lists
+  those announced), a session wakes at most
   `CS_MAIL_WAKE_MAX` times (5) between prompts (`wakes` counts them), and
   `CS_NO_MAIL_WAKE=1` turns the wake off. `woke` and `wakes` live in cs's
   cache, one directory per session (`~/.cache/cs/antigravity-mail/`), outside

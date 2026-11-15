@@ -1664,7 +1664,7 @@ cs_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypted se
 # arrival (same-second order is by unpadded pid). Set membership needs neither
 # property.
 cs_mail_wake_scan() {  # maildir, woke file
-    local f name from woke="" nl='
+    local f name from woke="" held=0 nl='
 '
     MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM=""
     # Read the snapshot ONCE and match in-shell. A fork per unread message is
@@ -1687,16 +1687,24 @@ cs_mail_wake_scan() {  # maildir, woke file
         esac
         # Every kind wakes, a task included: it waits in the mailbox for the
         # user's accept (cs -queue accept), and nothing else tells the
-        # recipient it is there. One jq per document for the sender: a count
-        # says mail arrived but not whose, and the recipient would otherwise
-        # spend a turn on `cs -msg` just to learn whether it can wait.
-        # Cut to 40 characters and every character outside A-Z a-z 0-9 . _ @
-        # : - replaced inside jq, as the prompt digest renders a sender, so a
-        # forged or hand-written document cannot smuggle a newline, a comma,
-        # a quote or a control byte into the rendered line; coerced to a
-        # string so a numeric field cannot error the read. An unreadable
-        # document still wakes, nameless.
-        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
+        # recipient it is there.
+        MAIL_FRESH=1
+        # One jq per mail file for the sender: a count says mail arrived but
+        # not whose, and the recipient would otherwise spend a turn on
+        # `cs -msg` just to learn whether it can wait. The clause is bounded
+        # whatever new/ holds: at most five names of at most 40 characters
+        # each. Once five are held the rest go unread, the count still
+        # covering them, and only a file's first JSON object is read, since jq
+        # runs a filter once per document and a file holding many would
+        # otherwise name a sender for each. Every character outside A-Z a-z
+        # 0-9 . _ @ : - is replaced inside jq, as the prompt digest renders a
+        # sender, so a forged or hand-written document cannot smuggle a
+        # newline, a comma, a quote or a control byte into the rendered line;
+        # coerced to a string so a numeric field cannot error the read. An
+        # unreadable document still wakes, nameless.
+        [ "$held" -lt 5 ] || continue
+        from=$(jq -rn 'first(inputs | objects)
+             | ((if (.from // "") == "" then .actor else .from end) // "")
              | if type == "string" then . else tostring end
              | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null || printf '')
         # Distinct senders only: two messages from one session is one name, and
@@ -1705,10 +1713,9 @@ cs_mail_wake_scan() {  # maildir, woke file
             "") ;;
             *) case "$nl$MAIL_FROM$nl" in
                    *"$nl$from$nl"*) ;;
-                   *) MAIL_FROM="${MAIL_FROM:+$MAIL_FROM$nl}$from" ;;
+                   *) MAIL_FROM="${MAIL_FROM:+$MAIL_FROM$nl}$from"; held=$((held + 1)) ;;
                esac ;;
         esac
-        MAIL_FRESH=1
     done
 }
 
