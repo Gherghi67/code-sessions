@@ -23,9 +23,9 @@ setup() {
     export CODEX_BIN="$TEST_TMPDIR/bin/no-codex"
     export AGY_LOG="$TEST_TMPDIR/agy.log" AGY_ARGV="$TEST_TMPDIR/agy-argv"
     export AGY_PWD="$TEST_TMPDIR/agy-pwd" AGY_ENV="$TEST_TMPDIR/agy-env" AGY_STATE="$TEST_TMPDIR/agy-state"
-    export AGY_HOOK_OUT="$TEST_TMPDIR/agy-hook-out"
+    export AGY_HOOK_OUT="$TEST_TMPDIR/agy-hook-out" AGY_MAIL_DROP="$TEST_TMPDIR/drop"
     export AGY_NEW_ID=11111111-1111-4111-8111-111111111111
-    mkdir -p "$HOME" "$CS_SESSIONS_ROOT" "$CS_TRANSCRIPTS_DIR" "$TEST_TMPDIR/bin"
+    mkdir -p "$HOME" "$CS_SESSIONS_ROOT" "$CS_TRANSCRIPTS_DIR" "$TEST_TMPDIR/bin" "$AGY_MAIL_DROP"
     use_fake_keychain
     # The fake records how cs started it, then runs the hooks a real turn
     # would from cs's plugin, the way agy 1.4.11 and 1.5.8 were measured to: a
@@ -34,8 +34,10 @@ setup() {
     # PreInvocation for each subagent id in AGY_SUBAGENTS, then Stop with
     # AGY_STOP_REASON (NO_TOOL_CALL), run again after a model call while it
     # answers continue, ten continuations at most. Each mail document named
-    # in AGY_MAIL_DURING_TURN comes into the mailbox in turn: the first after
-    # the prompt's model call, each later one during a continuation.
+    # in AGY_MAIL_DURING_TURN, a file name in AGY_MAIL_DROP (names, not paths,
+    # so a TMPDIR with a space in it splits nothing), comes into the mailbox
+    # in turn: the first after the prompt's model call, each later one during
+    # a continuation.
     # AGY_TRACK_MAIL has git track the mailbox once the run is going, as a
     # pull could. A run left before any turn (AGY_NO_TURN) fires none. Hook
     # stdout goes to AGY_HOOK_OUT.
@@ -90,7 +92,7 @@ set -- ${AGY_MAIL_DURING_TURN:-}
 mail_comes() {
     [ $# -gt 0 ] || return 0
     mkdir -p "$CS_SESSION_META_DIR/local/mail/new"
-    cp "$1" "$CS_SESSION_META_DIR/local/mail/new/${1##*/}"
+    cp "$AGY_MAIL_DROP/$1" "$CS_SESSION_META_DIR/local/mail/new/$1"
 }
 payload() {  # id, [extra JSON]
     local extra="${2:-}"
@@ -160,7 +162,7 @@ teardown() {
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
-    unset AGY_HOOK_OUT AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
+    unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset CS_TMUX_BIN AGY_TMUX_LOG
 }
@@ -1609,9 +1611,9 @@ test_mail_that_comes_during_a_turn_wakes_it_once() {
     local output mail woken
     output=$("$CS_BIN" waking --engine antigravity 2>&1) || { echo "$output"; return 1; }
     mail=$(_mailbox waking)
-    _mail_doc "$TEST_TMPDIR/drop/m2.json" 'peer-a' 'done, see the PR'
+    _mail_doc "$AGY_MAIL_DROP/m2.json" 'peer-a' 'done, see the PR'
     : > "$AGY_HOOK_OUT"
-    output=$(AGY_MAIL_DURING_TURN="$TEST_TMPDIR/drop/m2.json" "$CS_BIN" waking 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_MAIL_DURING_TURN=m2.json "$CS_BIN" waking 2>&1) || { echo "$output"; return 1; }
     woken=$(_continued)
     assert_eq 1 "$(printf '%s\n' "$woken" | grep -c 'cross-session mail')" "one wake for one message" || return 1
     assert_eq 'Unread cross-session mail (1), new from "peer-a". Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees.' \
@@ -1637,11 +1639,11 @@ test_the_wake_stops_at_its_ceiling_until_the_next_prompt() {
     local output mail
     output=$("$CS_BIN" volley --engine antigravity 2>&1) || { echo "$output"; return 1; }
     mail=$(_mailbox volley)
-    _mail_doc "$TEST_TMPDIR/drop/v1.json" peer one
-    _mail_doc "$TEST_TMPDIR/drop/v2.json" peer two
-    _mail_doc "$TEST_TMPDIR/drop/v3.json" peer three
+    _mail_doc "$AGY_MAIL_DROP/v1.json" peer one
+    _mail_doc "$AGY_MAIL_DROP/v2.json" peer two
+    _mail_doc "$AGY_MAIL_DROP/v3.json" peer three
     : > "$AGY_HOOK_OUT"
-    output=$(CS_MAIL_WAKE_MAX=2 AGY_MAIL_DURING_TURN="$TEST_TMPDIR/drop/v1.json $TEST_TMPDIR/drop/v2.json $TEST_TMPDIR/drop/v3.json" \
+    output=$(CS_MAIL_WAKE_MAX=2 AGY_MAIL_DURING_TURN="v1.json v2.json v3.json" \
         "$CS_BIN" volley 2>&1) || { echo "$output"; return 1; }
     assert_eq 2 "$(_continued | grep -c 'cross-session mail')" "two wakes, then the ceiling" || return 1
     assert_eq 2 "$(cat "$mail/wakes")" || return 1
@@ -1659,16 +1661,16 @@ test_a_turn_that_did_not_end_on_its_own_is_never_woken() {
     mail=$(_mailbox halted)
     for reason in USER_CANCELED ERROR MAX_INVOCATIONS MAX_FORCED_INVOCATIONS TERMINAL_STEP_TYPE; do
         rm -rf "$mail"
-        _mail_doc "$TEST_TMPDIR/drop/h.json" peer 'mid-turn'
+        _mail_doc "$AGY_MAIL_DROP/h.json" peer 'mid-turn'
         : > "$AGY_HOOK_OUT"
-        output=$(AGY_STOP_REASON=$reason AGY_MAIL_DURING_TURN="$TEST_TMPDIR/drop/h.json" "$CS_BIN" halted 2>&1) \
+        output=$(AGY_STOP_REASON=$reason AGY_MAIL_DURING_TURN=h.json "$CS_BIN" halted 2>&1) \
             || { echo "$output"; return 1; }
         assert_eq "" "$(_continued)" "a turn that ended $reason is not woken" || return 1
         assert_not_exists "$mail/woke" "and nothing is marked announced" || return 1
     done
     rm -rf "$mail"
     : > "$AGY_HOOK_OUT"
-    output=$(CS_NO_MAIL_WAKE=1 AGY_MAIL_DURING_TURN="$TEST_TMPDIR/drop/h.json" "$CS_BIN" halted 2>&1) \
+    output=$(CS_NO_MAIL_WAKE=1 AGY_MAIL_DURING_TURN=h.json "$CS_BIN" halted 2>&1) \
         || { echo "$output"; return 1; }
     assert_eq "" "$(_continued)" "CS_NO_MAIL_WAKE turns the wake off" || return 1
     : > "$AGY_HOOK_OUT"
