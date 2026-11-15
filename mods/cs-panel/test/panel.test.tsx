@@ -430,8 +430,8 @@ test('the golden porcelain and the mod rows draw under the masthead, the search 
   // With no mod rows, the first group follows the column header's rule.
   const bare = (await draw(viewOf({ rows: [] }))).lines.map(line => line.trimEnd())
   expect([bare.slice(3, 9), cardIn(bare)]).toEqual([[...field(58), ...HEAD_AT_58, group('Status line')],
-    ['▍ selected · Status line', '▍ Draws the line under the prompt with the session,', '▍ branch, model, context and usage limits.',
-      '▍ ● on · default · applies at the next repaint', '▍ CS_STATUSLINE_DISABLE', hint('Enter flip'), scopeLine()]])
+    ['▍ selected · Status line', '▍ Draws the line under the prompt with the session,…',
+      '▍ ● on · default · applies at the next repaint;', '▍ Antigravity needs a relaunch if disabled at startup', '▍ CS_STATUSLINE_DISABLE', hint('Enter flip'), scopeLine()]])
   // Under a two-line description and a one-line value the chrome above the
   // rows is eight lines, the masthead's three, the search box's three, the
   // column header and its rule, and below them eight, the footer's rule, the
@@ -452,7 +452,7 @@ test('the footer says why Enter changes nothing on a row, and its keys\' line na
   const card = async (selected: RowId, over: Partial<PanelView> & { hasSelf?: boolean; rows?: ConfigRow[] } = {}) => cardIn((await draw(viewOf({ selected, ...over }))).lines)
   expect(await card('cs:CS_STATUSLINE_BAND')).toEqual(['▍ selected · Band colour', '▍ The colour of the band and the session chip; session…',
     '▍ session · default · machine line 4:', '▍ CS_STATUSLINE_BAND=magenta: not a palette name, brand,…', '▍ CS_STATUSLINE_BAND', hint(), scopeLine()])
-  expect(await card('cs:CS_STATUSLINE_FRAME')).toEqual(['▍ selected · Frame columns', '▍ Columns the prompt frame takes from the measured width,…',
+  expect(await card('cs:CS_STATUSLINE_FRAME')).toEqual(['▍ selected · Frame columns', '▍ Columns the host frame takes from the measured width;…',
     '▍ 6 · shell · CS_STATUSLINE_FRAME=6 in your environment', '▍ wins; unset it there to change it here', '▍ CS_STATUSLINE_FRAME', hint('shell sets it'), scopeLine()])
   expect(await card('cs:CS_NO_FUNCTION_HOOKS')).toEqual(['▍ selected · Mods', '▍ Lets a launch load mods, the cs band and settings pane…',
     '▍ ● on · default · change it from a shell: cs -config set', '▍ CS_NO_FUNCTION_HOOKS 1 loads no mod from the next…', '▍ CS_NO_FUNCTION_HOOKS', hint('shell only'), scopeLine()])
@@ -651,8 +651,8 @@ test('filtered, the masthead keeps its counts, the column header says how many r
     group('Status line'),
     at58('Status line', '● on', true),
     '+9 below',
-    soft(58), '▍ selected · Status line', '▍ Draws the line under the prompt with the session,', '▍ branch, model, context and usage limits.',
-    '▍ ● on · default · applies at the next repaint', '▍ CS_STATUSLINE_DISABLE', hint('Enter flip'), scopeLine(),
+    soft(58), '▍ selected · Status line', '▍ Draws the line under the prompt with the session,…',
+    '▍ ● on · default · applies at the next repaint;', '▍ Antigravity needs a relaunch if disabled at startup', '▍ CS_STATUSLINE_DISABLE', hint('Enter flip'), scopeLine(),
   ])
   expect(await lines('zzz')).toEqual([...MASTHEAD_AT_58, ...field(58, 'zzz'), counted(58, HEAD_AT_58[0] ?? '', '0 of 51'), soft(58), 'no setting matches zzz'])
   expect((await lines('context', 24))[6]).toBe('  Setting    Va… 4 of 51')
@@ -887,7 +887,10 @@ test('the footer sits under a soft rule the body wide, each line of the selected
   ])
   // The value line: the fourth line from the end, over the key, the keys and the scope line.
   const value = async (selected: RowId) => (await card(selected)).at(-4)
-  expect(await value('cs:CS_STATUSLINE_DISABLE')).toEqual([edge, ['●', COLOURS.green], [' on', COLOURS.ink], dot, ['default', COLOURS.mut], dot, ['applies at the next repaint', COLOURS.mut]])
+  expect((await card('cs:CS_STATUSLINE_DISABLE')).slice(-5, -3)).toEqual([
+    [edge, ['●', COLOURS.green], [' on', COLOURS.ink], dot, ['default', COLOURS.mut], dot, ['applies at the next repaint;', COLOURS.mut]],
+    [edge, ['Antigravity needs a relaunch if disabled at startup', COLOURS.mut]],
+  ])
   expect(await value('cs:CS_SCOPE_DISABLE')).toEqual([edge, ['○ off', COLOURS.ink], dot, ['session', COLOURS.teal], dot, ['applies at your next prompt', COLOURS.mut]])
   expect(await value('cs:CS_NERD_FONTS')).toEqual([edge, ['○ off', COLOURS.ink], dot, ['default', COLOURS.mut], dot, ['applies at the next cs command', COLOURS.mut]])
   expect(await value('cs:CS_STATUSLINE_CTX_WARN')).toEqual([edge, ['50%', COLOURS.ink], dot, ['session', COLOURS.teal], dot, ['applies at the next repaint', COLOURS.mut]])
@@ -1293,8 +1296,8 @@ test('an arrow, the wheel or a page key moves the selection by its rows, held to
     '+5 above',
     at58('Status line', '● on', true),
     '+45 below',
-    soft(58), '▍ selected · Status line', '▍ Draws the line under the prompt with the session,', '▍ branch, model, context and usage limits.',
-    '▍ ● on · default · applies at the next repaint', '▍ CS_STATUSLINE_DISABLE', hint('Enter flip'), scopeLine(),
+    soft(58), '▍ selected · Status line', '▍ Draws the line under the prompt with the session,…',
+    '▍ ● on · default · applies at the next repaint;', '▍ Antigravity needs a relaunch if disabled at startup', '▍ CS_STATUSLINE_DISABLE', hint('Enter flip'), scopeLine(),
   ])
   const last ={ card: '▍ selected · Tail kept (bytes)', selected: [at58('Tail kept (bytes)', '65536', true)], ring: ['cs:CS_NARRATIVE_KEEP_BYTES'] }
   expect([await scroll(1000), await shown()]).toEqual([{}, last])
