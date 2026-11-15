@@ -1729,6 +1729,16 @@ test_doctor_keeps_user_settings_ahead_of_a_missing_status_line() {
     assert_output_contains "$output" "or cs-statusline beside it, is not installed" "a missing adapter still needs repair when cs would use it"
 }
 
+test_doctor_warns_when_agy_is_missing_despite_an_installed_status_line() {
+    local output dir
+    _statusline_install
+    output=$(_cs_lined noagy --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir noagy)
+    output=$(AGY_BIN="$TEST_TMPDIR/no-agy" CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity status line: agy not found" "an installed adapter cannot draw without agy" || return 1
+    assert_output_not_contains "$output" "Antigravity status line: cs's line under agy's own" "doctor never marks the unavailable line OK"
+}
+
 # Doctor says what the next launch gives agy, and why it gives none.
 test_doctor_reports_the_antigravity_status_line() {
     local output dir settings="$HOME/.gemini/antigravity-cli/settings.json"
@@ -1742,7 +1752,7 @@ test_doctor_reports_the_antigravity_status_line() {
     assert_output_contains "$output" "does not list --settings, so sessions show only agy's own line" || return 1
     touch "$TEST_TMPDIR/config/statusline-antigravity-off"
     output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" _cs_lined -doctor 2>&1) || true
-    assert_output_contains "$output" "Antigravity status line: off (cs -statusline enable turns it on)" || return 1
+    assert_output_contains "$output" "Antigravity status line: off (cs -statusline enable antigravity turns it on)" || return 1
     rm "$TEST_TMPDIR/config/statusline-antigravity-off"
     mkdir -p "${settings%/*}"
     printf '{"statusLine":{"command":"my-line"}}\n' > "$settings"
@@ -1831,5 +1841,6 @@ run_test test_the_status_line_command_quotes_an_unusual_install_folder
 run_test test_the_status_line_rejects_a_relative_install_folder
 run_test test_the_status_line_is_left_out_when_off_or_not_cs_to_give
 run_test test_doctor_keeps_user_settings_ahead_of_a_missing_status_line
+run_test test_doctor_warns_when_agy_is_missing_despite_an_installed_status_line
 run_test test_doctor_reports_the_antigravity_status_line
 report_results
