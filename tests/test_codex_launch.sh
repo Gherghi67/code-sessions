@@ -466,6 +466,23 @@ test_a_locked_vault_stops_the_codex_open() {
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
 }
 
+# A codex-home planted as a link (the agent can write .cs/private) is refused
+# before cs makes, chmods or links anything: cs never follows it.
+test_a_linked_vault_home_stops_the_open() {
+    _vault_fixture
+    local victim="$TEST_TMPDIR/victim" output status=0
+    mkdir "$victim"
+    chmod 755 "$victim"
+    ln -s "$victim" "$CS_TEST_SESSION_DIR/.cs/vault-mnt/private/codex-home"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a linked vault home must stop the open" || return 1
+    assert_output_contains "$output" "codex-home is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home." || return 1
+    assert_eq 755 "$(_file_mode "$victim")" "the link's target keeps its mode" || return 1
+    assert_eq "" "$(ls -A "$victim")" "nothing is linked into the link's target" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
 # The profile replaces [sandbox_workspace_write], so the settings Codex
 # resolved from it are carried into cs's profile.
 test_the_vault_profile_keeps_the_users_workspace_settings() {
@@ -1631,6 +1648,7 @@ run_test test_encrypted_session_runs_codex_on_its_vault_home
 run_test test_the_vault_home_is_refreshed_at_every_open
 run_test test_a_login_saved_inside_the_vault_stops_the_open
 run_test test_a_locked_vault_stops_the_codex_open
+run_test test_a_linked_vault_home_stops_the_open
 run_test test_the_vault_profile_keeps_the_users_workspace_settings
 run_test test_native_approval_follows_the_users_sandbox
 run_test test_the_vault_check_refuses_what_cs_cannot_confine

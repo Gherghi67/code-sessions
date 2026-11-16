@@ -2494,6 +2494,24 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
 }
 run_test test_doctor_checks_an_encrypted_sessions_codex_home
 
+# A codex-home that is a link is named, never inspected through: what it
+# points at is not the vault home, and the open refuses it.
+test_doctor_names_a_linked_codex_vault_home() {
+    local sess="$TEST_TMPDIR/sess-vault-link" shared="$TEST_TMPDIR/shared codex" victim="$TEST_TMPDIR/victim" home output
+    mkdir -p "$sess/.cs/memory" "$sess/.cs/vault-mnt/private" "$shared" "$victim"
+    ln -s vault-mnt/private "$sess/.cs/private"
+    git -C "$sess" init -q
+    ln -s "$victim" "$sess/.cs/vault-mnt/private/codex-home"
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-vl" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Codex vault home: $home is a link or not a directory; cs does not follow a link there. Move it aside" \
+        "the link is named, with the way out" || return 1
+    assert_output_not_contains "$output" "auth.json is missing" "what the link points at is not inspected" || return 1
+    assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK for a linked home" || return 1
+}
+run_test test_doctor_names_a_linked_codex_vault_home
+
 
 # Stamp the setup session the way a clean open would for alice: the merge
 # driver set, the probe files it has (CLAUDE.md, .cs/README.md) at a fixed old

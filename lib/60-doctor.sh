@@ -1158,7 +1158,13 @@ _doctor_check_codex_vault_home() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found problems=""
     [ -n "$dir" ] || return 0
     _switch_session_encrypted "$dir" || return 0
-    home=$(_codex_vault_home_path "$dir") && [ -d "$home" ] || return 0
+    home=$(_codex_vault_home_path "$dir") || return 0
+    # Never inspected through a link: the open refuses one, and so names it.
+    if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
+        _doctor_warn "Codex vault home: $home is a link or not a directory; cs does not follow a link there. Move it aside; the next Codex open makes the vault Codex home"
+        return 0
+    fi
+    [ -d "$home" ] || return 0
     shared=$(_codex_shared_home)
     _codex_is_vault_home "$shared" && shared="$HOME/.codex"
     for name in $CS_CODEX_VAULT_LINK_FILES $CS_CODEX_VAULT_LINK_DIRS; do

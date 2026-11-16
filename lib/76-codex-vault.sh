@@ -62,6 +62,12 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
         _codex_launch_error "$1 is encrypted, but its vault is not mounted; cs makes its Codex home there."
         return 1
     }
+    # The agent can write .cs/private: a codex-home it planted as a link would
+    # have cs chmod and link wherever it points.
+    if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
+        _codex_launch_error "$home is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home."
+        return 1
+    fi
     (umask 077 && mkdir -p "$home") && chmod 700 "$home" || {
         _codex_launch_error "Could not make the vault Codex home $home."
         return 1
