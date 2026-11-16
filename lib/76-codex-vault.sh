@@ -89,7 +89,7 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
             esac
             if [ -e "$home/$name" ]; then
                 if [ "$name" = auth.json ]; then
-                    _codex_launch_error "$home/auth.json is a file, not cs's link to $target: Codex saved a login inside the vault. Keep the newer of the two: mv \"$home/auth.json\" \"$target\" if this one is newer, else rm \"$home/auth.json\". cs then links it again."
+                    _codex_launch_error "$home/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$home/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$home/auth.json\". The next open links the shared login again."
                 else
                     _codex_launch_error "$home/$name is not cs's link to $target. Move it aside; cs links it at the next open."
                 fi

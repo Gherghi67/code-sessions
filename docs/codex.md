@@ -198,9 +198,13 @@ home: when the shared home keeps it, the next open starts the session's first
 conversation in the vault and says so, and `--resume` refuses. A bound
 conversation that neither home keeps is refreshed as in any session, and that
 refresh fails with the binding left in place; a lookup that cannot run stops the
-open the same way. If Codex ever saves a login inside the vault (a
-real `auth.json` where cs's link was), the open stops and says how to keep the
-newer one. Handoffs and the launch context live in `.cs/private`, and switching
+open the same way. If the vault home holds a real `auth.json` where cs's link
+was, the open stops: cs cannot tell who wrote it (Codex after a `codex logout`
+and `codex login` inside the session, or anything else that can write to the
+session). Inspect it before you use it, and move it over the shared
+`auth.json` only if it is a login you made yourself; otherwise remove it, and
+the next open links the shared login again. Handoffs and the launch context
+live in `.cs/private`, and switching
 or carrying a conversation between Claude and Codex works as in any other
 session. `cs -doctor` checks the vault home's links. `cs -update` or
 `install.sh` run inside an encrypted session installs into the shared home.

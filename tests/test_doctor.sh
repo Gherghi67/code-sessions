@@ -2464,8 +2464,9 @@ run_test test_doctor_warns_when_the_session_clone_lacks_the_merge_driver
 run_test test_doctor_is_quiet_when_the_session_clone_has_the_merge_driver
 
 # An encrypted session's Codex home (lib/76-codex-vault.sh): a sound one is
-# OK; a login saved inside the vault, a link that leads elsewhere and hook trust
-# still keyed by the shared home are named. Both homes are scratch directories.
+# OK; an auth.json that is not cs's link (cs cannot tell who wrote it), a link
+# that leads elsewhere and hook trust still keyed by the shared home are named.
+# Both homes are scratch directories.
 test_doctor_checks_an_encrypted_sessions_codex_home() {
     local sess="$TEST_TMPDIR/sess-vault" shared="$TEST_TMPDIR/shared codex" home name output
     mkdir -p "$sess/.cs/memory" "$sess/.cs/vault-mnt/private/codex-home" "$shared"
@@ -2487,7 +2488,10 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
     printf '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "x"\n' "$shared" > "$home/config.toml"
     output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
         CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" "auth.json is a login saved inside the vault" || return 1
+    assert_output_contains "$output" "auth.json is a file, not a link to $shared/auth.json, and cs cannot tell who wrote it" \
+        "names the file without naming an author" || return 1
+    assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
+    assert_output_not_contains "$output" "login saved inside the vault" "does not claim Codex wrote it" || return 1
     assert_output_contains "$output" "skills links to $TEST_TMPDIR/elsewhere, not $shared/skills" || return 1
     assert_output_contains "$output" "config.toml still keys hook trust by $shared" || return 1
     assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK beside the warnings" || return 1

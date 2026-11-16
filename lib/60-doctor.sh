@@ -1151,9 +1151,10 @@ _doctor_check_hook_authority() {
 # so a clone cs has not launched in is out of reach; this names the one it can see.
 # An encrypted session's Codex home (lib/76-codex-vault.sh), when its vault is
 # mounted and Codex has run there. Each shared name must link into the shared
-# home; a login saved inside the vault, a link that leads elsewhere or dangles,
-# and a copied config.toml whose hook trust still names the shared home are
-# named. The next Codex open repairs links and the copy, never a login.
+# home; an auth.json that is a file (cs cannot tell who wrote it), a link that
+# leads elsewhere or dangles, and a copied config.toml whose hook trust still
+# names the shared home are named. The next Codex open repairs links and the
+# copy, never an auth.json.
 _doctor_check_codex_vault_home() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found problems=""
     [ -n "$dir" ] || return 0
@@ -1177,7 +1178,7 @@ _doctor_check_codex_vault_home() {
                 problems="$problems; $name links to $target, which is missing"
             fi
         elif [ "$name" = auth.json ] && [ -e "$home/$name" ]; then
-            _doctor_warn "Codex vault home: $home/auth.json is a login saved inside the vault, not a link to $target. Keep the newer one (mv it over $target, or remove it); the next Codex open links it again"
+            _doctor_warn "Codex vault home: $home/auth.json is a file, not a link to $target, and cs cannot tell who wrote it (Codex after a logout and login inside this session, or anything else that can write to the session). Inspect it (which account, when it was written) before you use it: only if it is a login you made yourself, mv it over $target; otherwise remove it or move it aside. The next Codex open links the shared login again"
         elif [ -e "$home/$name" ]; then
             problems="$problems; $name is not a link to $target"
         else

@@ -437,8 +437,10 @@ test_the_vault_home_is_refreshed_at_every_open() {
     assert_eq "$CODEX_HOME/auth.lock" "$(readlink "$VAULT_HOME/auth.lock")" "the empty lock is replaced by the link" || return 1
 }
 
-# Codex saved a login inside the vault (a write replaced cs's link): the only
-# copy of a refreshed token may be there, so cs neither deletes nor uses it.
+# A real auth.json where cs's link was: Codex after a logout and login inside
+# the session, or anything else that can write there, may have put it. It may
+# be the only copy of a login, or a planted one, so cs neither deletes nor uses
+# it, and does not say who wrote it.
 test_a_login_saved_inside_the_vault_stops_the_open() {
     _vault_fixture
     local output status=0
@@ -447,7 +449,11 @@ test_a_login_saved_inside_the_vault_stops_the_open() {
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
     assert_eq 1 "$status" "a real auth.json must stop the open" || return 1
     assert_output_contains "$output" "auth.json is a file, not cs's link" || return 1
+    assert_output_contains "$output" "cs cannot tell who wrote it" "names no author" || return 1
+    assert_output_not_contains "$output" "Codex saved a login" "does not claim Codex wrote it" || return 1
+    assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
     assert_output_contains "$output" "mv \"$VAULT_HOME/auth.json\" \"$CODEX_HOME/auth.json\"" "names the fix" || return 1
+    assert_output_contains "$output" "rm \"$VAULT_HOME/auth.json\"" "names the other way out" || return 1
     assert_eq '{"tokens":"vault"}' "$(cat "$VAULT_HOME/auth.json")" "the login is kept" || return 1
     assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
