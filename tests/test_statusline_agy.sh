@@ -19,10 +19,11 @@ AGY_AFTER_TURN='{"cwd":"/work/agysess","session_id":"6778f9f7-33fb-4aa5-8194-f01
 AGY_BEFORE_TURN='{"cwd":"/work/agysess","session_id":"","conversation_id":"","model":{"id":"Gemini 4 Argon (Medium)","display_name":"Gemini 4 Argon (Medium)","effort":"medium"},"workspace":{"current_dir":"/work/agysess","project_dir":"/work/agysess"},"context_window":{"total_input_tokens":0,"total_output_tokens":0,"context_window_size":1048576,"used_percentage":0,"remaining_percentage":100,"current_usage":null},"agent_state":"idle","terminal_width":160}'
 # While agy authenticates: no model, and a window of size 0.
 AGY_STARTING='{"cwd":"/work/agysess","session_id":"","model":null,"workspace":{"current_dir":"/work/agysess"},"context_window":{"total_input_tokens":0,"context_window_size":0,"used_percentage":0},"agent_state":"authenticating","terminal_width":80}'
-# The quota a Google AI Pro account reported on 2026-11-16 (agy 1.5.9): a
-# 5-hour and a weekly bucket for Gemini models, a weekly one for Argon alone,
-# and a pair for the third-party models. agy's own line drew none of it.
-AGY_QUOTA='{"3p-5h":{"remaining_fraction":1,"reset_time":"2026-11-16T16:44:09Z","reset_in_seconds":17999},"3p-weekly":{"remaining_fraction":0.25,"reset_time":"2026-11-23T11:44:09Z","reset_in_seconds":604799},"gemini-5h":{"remaining_fraction":0.97945833,"reset_time":"2026-11-16T15:37:12Z","reset_in_seconds":13982},"gemini-argon-wtu-weekly":{"remaining_fraction":0.8842949,"reset_time":"2026-11-21T15:41:11Z","reset_in_seconds":446221},"gemini-weekly":{"remaining_fraction":0.9794862,"reset_time":"2026-11-22T22:20:09Z","reset_in_seconds":556559}}'
+# The quota a Google AI Pro account reported on 2026-11-16 (agy 1.5.9),
+# verbatim: a 5-hour and a weekly bucket for Gemini models, a weekly one
+# named for Argon, and an unused pair for the third-party models. agy's own
+# line drew none of it.
+AGY_QUOTA='{"3p-5h":{"remaining_fraction":1,"reset_time":"2026-11-16T16:44:09Z","reset_in_seconds":17999},"3p-weekly":{"remaining_fraction":1,"reset_time":"2026-11-23T11:44:09Z","reset_in_seconds":604799},"gemini-5h":{"remaining_fraction":0.97945833,"reset_time":"2026-11-16T15:37:12Z","reset_in_seconds":13982},"gemini-argon-wtu-weekly":{"remaining_fraction":0.8842949,"reset_time":"2026-11-21T15:41:11Z","reset_in_seconds":446221},"gemini-weekly":{"remaining_fraction":0.9794862,"reset_time":"2026-11-22T22:20:09Z","reset_in_seconds":556559}}'
 
 # The rate_limits the adapter hands over for payload $1 with model $2 (a
 # display name, or null) and quota $3. The previous call's payload is removed
@@ -117,10 +118,10 @@ test_the_quota_maps_onto_rate_limits_for_the_running_model() {
     assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795386009,"used_percentage":2}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Flash"' "$AGY_QUOTA")" \
         "another Gemini model skips Argon's bucket" || return 1
-    assert_eq '{"five_hour":{"resets_at":1794847449,"used_percentage":0},"seven_day":{"resets_at":1795434249,"used_percentage":75}}' \
+    assert_eq '{"five_hour":{"resets_at":1794847449,"used_percentage":0},"seven_day":{"resets_at":1795434249,"used_percentage":0}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Claude Sonnet 5.5 (Thinking)"' "$AGY_QUOTA")" \
         "a third-party model counts the 3p buckets" || return 1
-    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795434249,"used_percentage":75}}' \
+    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795275671,"used_percentage":12}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" null "$AGY_QUOTA")" \
         "with no model yet, the most-used bucket of each window counts" || return 1
 }
