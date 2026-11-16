@@ -52,10 +52,11 @@ _mapped=$(jq -c '
     def obj: if type == "object" then . else {} end;
     def clamp: if . < 0 then 0 elif . > 100 then 100 else . end;
     def epoch($bucket):
-        (($bucket.reset_time | text | sub("\\.[0-9]+Z$"; "Z")) as $t
-         | try ($t | fromdateiso8601) catch null)
+        def near: if . != null and . <= now + 31 * 86400 then . else null end;
+        ((($bucket.reset_time | text | sub("\\.[0-9]+Z$"; "Z")) as $t
+          | try ($t | fromdateiso8601) catch null) | near)
         // (($bucket.reset_in_seconds | num) as $s
-            | if $s == null then null else (now + $s | floor) end);
+            | if $s == null then null else (now + $s | floor | near) end);
     (.context_window | obj) as $ctx
     | (.model | obj | [(.display_name, .id) | text | select(. != "")]
        | .[0] // "" | ascii_downcase) as $model

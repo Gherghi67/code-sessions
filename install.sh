@@ -2112,7 +2112,7 @@ CS_PAYLOAD_SHA256=(
     "83a4dc6661a2ddc394464c7ab56fb97d26a82af30b71deeb1f9d39ebf6959ed3  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
-    "5715e5938c2dcd7bd021410af7f1a5ec30153ed2792ce533f274d62f98931ce9  bin/cs-statusline-agy"
+    "e70e9ac79e6aad4effbdef4889044a6b7ba013775934370d8436216df873e47c  bin/cs-statusline-agy"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
     "3328484584fa39fe8d9d77fb47a32457836e4dd5fb16d60902d929e7cab023ae  hooks/cs-shared.sh"
     "e6d5ae5a6121a17d2935566a0e8c05f60f5d7fa5a2af3266dbe810a3b88c91b7  hooks/cs-engine-events.sh"
