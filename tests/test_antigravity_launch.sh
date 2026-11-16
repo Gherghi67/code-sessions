@@ -1752,14 +1752,18 @@ test_a_wake_that_cannot_be_counted_is_never_sent() {
     assert_not_exists "$state/woke" "and nothing is marked announced"
 }
 
-# Only a turn that ended on its own goes on: never one the user stopped, one
-# that failed or one agy cut off at a limit, and none with CS_NO_MAIL_WAKE.
+# Only a turn that ended on its own (NO_TOOL_CALL) goes on: never one the user
+# stopped, one that failed, one agy cut off at a limit, one that stopped on a
+# step that waits for the user, one a hook ended or an injected response, nor
+# the ends agy 1.5.9's enum has beyond the hooks guide's list, and none with
+# CS_NO_MAIL_WAKE.
 test_a_turn_that_did_not_end_on_its_own_is_never_woken() {
     local output reason mail state
     output=$("$CS_BIN" halted --engine antigravity 2>&1) || { echo "$output"; return 1; }
     mail=$(_mailbox halted)
     state=$(_mail_state halted)
-    for reason in USER_CANCELED ERROR MAX_INVOCATIONS MAX_FORCED_INVOCATIONS TERMINAL_STEP_TYPE; do
+    for reason in USER_CANCELED ERROR MAX_INVOCATIONS MAX_FORCED_INVOCATIONS TERMINAL_STEP_TYPE \
+        TERMINAL_CUSTOM_HOOK INJECTED_RESPONSE MAX_TOKEN_BUDGET_EXCEEDED EARLY_CONTINUE CHAINED HALTED_STEP; do
         rm -rf "$mail"
         _mail_doc "$AGY_MAIL_DROP/h.json" peer 'mid-turn'
         : > "$AGY_HOOK_OUT"

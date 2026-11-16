@@ -359,8 +359,12 @@ hook, as it does under Claude and Codex:
   `CS_MAIL_WAKE_MAX` times (5) between prompts (`wakes` counts them), and
   `CS_NO_MAIL_WAKE=1` turns the wake off. `woke` and `wakes` live in cs's
   cache, one directory per session (`~/.cache/cs/antigravity-mail/`), outside
-  the session folder, which the agent can write. A turn the user stopped, one
-  that failed, and one `agy` cut off at a limit end as they are.
+  the session folder, which the agent can write. Only a turn that ends
+  `NO_TOOL_CALL`, the model's own normal end, wakes; any other end stays as it
+  is: a turn the user stopped, one that failed, one `agy` cut off at a limit,
+  one that stopped on a step that waits for the user (`TERMINAL_STEP_TYPE`,
+  such as a question, so a question is never answered for the user), one a
+  hook ended, and an injected response.
 - Only the session's own conversation, in the run that holds its lease, gets
   mail. A subagent's conversation has an ID of its own, and so does one started
   mid-run with `/clear` or `/new`, or opened with `/resume` after the first

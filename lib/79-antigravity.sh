@@ -799,9 +799,12 @@ _antigravity_hook_mail_digest() {  # conversation_id
 }
 
 # A turn that ends on its own with mail that came after its prompt goes on, so
-# an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL is
-# such an end: a turn the user stopped, one that failed and one agy cut off at
-# a limit end as they are. The rest is the wake Claude's hook runs too
+# an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL,
+# the model's own normal end, is such an end, and any other ends as it is: a
+# turn the user stopped, one that failed, one agy cut off at a limit, one that
+# stopped on a step that waits for the user (TERMINAL_STEP_TYPE, such as a
+# question, which a wake would answer for the user), one a hook ended and an
+# injected response. The rest is the wake Claude's hook runs too
 # (cs_mail_wake_scan and cs_mail_wake_silence, lib/02-shared.sh, which read
 # each record only from a regular file, never through a link), with its
 # records in cs's cache rather than in the mail folder, where the agent could
