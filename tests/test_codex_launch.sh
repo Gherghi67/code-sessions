@@ -584,9 +584,58 @@ test_r_in_an_encrypted_session_reads_the_vault_handoff() {
     assert_eq "Continue from the pending rotation handoff: read .cs/private/handoffs/$ROTATION_HANDOFF first." \
         "$(tail -n 1 "$CS_CODEX_LOG")" "the kick names the vault path" || return 1
     assert_file_contains "$private/codex-instructions.md" "Read .cs/private/handoffs/$ROTATION_HANDOFF FIRST" || return 1
+    [ -f "$private/codex-instructions.md" ] && [ ! -L "$private/codex-instructions.md" ] \
+        || { echo "  FAIL: the context with its rotation preamble is not a regular file"; return 1; }
+    assert_file_contains "$private/codex-instructions.md" 'Agent-sessions executable:' "the file holds the context as well as the preamble" || return 1
     assert_file_contains "$private/handoffs/$ROTATION_HANDOFF" "^status: consumed$" "spent" || return 1
     assert_not_exists "$private/pending-handoff" "the vault's marker is disarmed" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/handoffs" "nothing written outside the vault" || return 1
+}
+
+# The agent can write .cs/private, where an encrypted session's context lives.
+# A link planted at the temp name cs once wrote the context through is never
+# followed: the context is written to a fresh temp file and moved into place.
+test_the_context_write_ignores_a_planted_temp_link() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    printf 'precious' > "$TEST_TMPDIR/victim"
+    # launch_codex runs in a subshell of this shell, where bash's $$ is still
+    # this shell's pid: the name the old "$output_file.tmp.$$" would take.
+    ln -s "$TEST_TMPDIR/victim" "$private/codex-instructions.md.tmp.$$"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the file outside the session is untouched" || return 1
+    [ -f "$private/codex-instructions.md" ] && [ ! -L "$private/codex-instructions.md" ] \
+        || { echo "  FAIL: the context is not a regular file"; return 1; }
+    assert_file_contains "$private/codex-instructions.md" 'Agent-sessions executable:' "the context is written" || return 1
+}
+
+# A link at the context's own name stops the open: cs writes nothing through
+# it and names it, so the user can remove it.
+test_a_linked_context_file_stops_the_open() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    printf 'precious' > "$TEST_TMPDIR/victim"
+    ln -s "$TEST_TMPDIR/victim" "$private/codex-instructions.md"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a linked context file must stop the open" || return 1
+    assert_output_contains "$output" "$private/codex-instructions.md is a link or not a regular file" "names the path" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the link's target is untouched" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
+}
+
+# The same with the link pointing at a directory outside the session: nothing
+# is moved into it.
+test_a_context_link_to_a_directory_stops_the_open() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    mkdir "$TEST_TMPDIR/outside"
+    ln -s "$TEST_TMPDIR/outside" "$private/codex-instructions.md"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a context link to a directory must stop the open" || return 1
+    assert_output_contains "$output" "$private/codex-instructions.md is a link or not a regular file" "names the path" || return 1
+    assert_eq '' "$(ls -A "$TEST_TMPDIR/outside")" "nothing lands in the directory" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
 }
 
 test_mismatched_refresh_rejected() {
@@ -1492,6 +1541,9 @@ run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_binding_from_before_the_vault_starts_a_vault_thread
 run_test test_r_in_an_encrypted_session_reads_the_vault_handoff
+run_test test_the_context_write_ignores_a_planted_temp_link
+run_test test_a_linked_context_file_stops_the_open
+run_test test_a_context_link_to_a_directory_stops_the_open
 run_test test_mismatched_refresh_rejected
 run_test test_cli_status_and_lock_cleanup
 run_test test_claude_runtime_binding_isolation

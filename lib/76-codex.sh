@@ -133,16 +133,30 @@ _codex_emit_context() {  # cs_bin
     cs_emit_engine_context "$@"
 }
 
-_codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin
+# The agent can write the folder the context lives in (.cs/private, for an
+# encrypted session), so nothing is written through a name it could plant: a
+# link or a non-file at the context's own name stops the launch, and the
+# context, with the rotation preamble when one is given, goes into a fresh temp
+# file that is then moved into place.
+_codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin, [rotation_handoff]
     local session_name="$1" session_dir="$2" output_file="$3"
-    local actor="$4" cs_bin="$5"
-    local temp_file="$output_file.tmp.$$"
-    if ! cs_session_context "$session_name" "$session_dir" "$actor" \
-        _codex_emit_context "$cs_bin" > "$temp_file"; then
-        rm -f "$temp_file" 2>/dev/null || true
+    local actor="$4" cs_bin="$5" rotation_handoff="${6:-}"
+    local temp_file write_status=0
+    if [ -L "$output_file" ] || { [ -e "$output_file" ] && [ ! -f "$output_file" ]; }; then
+        _codex_launch_error "$output_file is a link or not a regular file; cs does not write the Codex context through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
-    if ! mv "$temp_file" "$output_file"; then
+    temp_file=$(mktemp "$(dirname -- "$output_file")/.codex-instructions.XXXXXX") || return 1
+    {
+        cs_session_context "$session_name" "$session_dir" "$actor" \
+            _codex_emit_context "$cs_bin" || write_status=1
+        if [ "$write_status" = 0 ] && [ -n "$rotation_handoff" ]; then
+            printf '\n'
+            _rotation_preamble "$rotation_handoff" "$actor" "$(_codex_handoffs_shown "$session_dir")" \
+                || write_status=1
+        fi
+    } > "$temp_file" || write_status=1
+    if [ "$write_status" != 0 ] || ! mv -f "$temp_file" "$output_file"; then
         rm -f "$temp_file" 2>/dev/null || true
         return 1
     fi
@@ -498,16 +512,11 @@ _launch_codex_bound() {
 
     local actor
     actor=$(cs_actor_slug "$session_dir") || return 1
-    _codex_write_context "$session_name" "$session_dir" "$context_file" "$actor" "$CS_BIN" || {
+    _codex_write_context "$session_name" "$session_dir" "$context_file" "$actor" "$CS_BIN" \
+        "$rotation_handoff" || {
         _codex_launch_error "Could not write Codex context: $context_file"
         return 1
     }
-    if [ -n "$rotation_handoff" ]; then
-        { printf '\n'; _rotation_preamble "$rotation_handoff" "$actor" "$(_codex_handoffs_shown "$session_dir")"; } >> "$context_file" || {
-            _codex_launch_error "Could not add the rotation handoff to the Codex context: $context_file"
-            return 1
-        }
-    fi
 
     # The helper uses app-server to create or refresh a *persistent* thread and
     # injects context without starting a user/model turn. A failed refresh must
