@@ -3,16 +3,20 @@
 # ABOUTME: Uses an isolated fake server and an optional real Codex no-model smoke test.
 
 import json
+import http.server
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 
 HELPER = Path(__file__).resolve().parents[1] / "bin/cs-codex-thread"
@@ -22,6 +26,9 @@ FAKE = r'''#!/usr/bin/env python3
 import json, os, signal, sys, time
 from pathlib import Path
 root = Path(os.environ['FAKE_ROOT'])
+rollout = root / 'bootstrap-rollout.jsonl'
+if os.environ.get('CODEX_HOME'):
+    rollout = Path(os.environ['CODEX_HOME']) / 'sessions' / 'bootstrap-rollout.jsonl'
 mode = os.environ.get('FAKE_MODE', '')
 count_file = root / 'count'
 count = int(count_file.read_text()) + 1 if count_file.exists() else 1
@@ -64,7 +71,29 @@ for line in sys.stdin:
     if mode == 'invalid_result':
         reply({'result':[]});continue
     if method == 'thread/turns/list':
-        reply({'result':{'data':json.loads(os.environ.get('FAKE_TURNS', '[]')),'nextCursor':None}});continue
+        turns = json.loads(os.environ.get('FAKE_TURNS', '[]'))
+        if rollout.exists() and 'FAKE_TURNS' not in os.environ and mode != 'display_lost':
+            turns = [{'id':r['payload']['turn_id']} for r in
+                     (json.loads(line) for line in rollout.read_text().splitlines())
+                     if r.get('type') == 'event_msg' and r['payload'].get('type') == 'task_started']
+        reply({'result':{'data':turns,'nextCursor':None}});continue
+    if method == 'thread/items/list':
+        items = []
+        if mode not in ('display_lost', 'display_items_lost'):
+            for line in rollout.read_text().splitlines():
+                r = json.loads(line)
+                if r['type'] != 'event_msg' or r['payload'].get('type') != 'item_completed': continue
+                event = r['payload']; item = event['item']
+                if item['type'] == 'UserMessage':
+                    item = dict(item, type='userMessage')
+                else:
+                    item = {'type':'agentMessage','id':item['id'],'text':item['content'][0]['text']}
+                if mode == 'display_corrupt': item['text'] = 'wrong'
+                if mode == 'display_oversize': item['text'] = 'x' * (5 * 1024 * 1024)
+                items.append({'turnId':event['turn_id'],'item':item})
+        start = int(request['params'].get('cursor', '0'))
+        end = start + request['params']['limit']
+        reply({'result':{'data':items[start:end],'nextCursor':str(end) if end < len(items) else None}});continue
     if method == 'config/read':
         reply({'result':json.loads(os.environ.get('FAKE_CONFIG', '{}'))});continue
     if method in ('thread/start','thread/resume'):
@@ -72,7 +101,12 @@ for line in sys.stdin:
         if mode == 'mismatch' and method == 'thread/resume':
             tid = '01900000-0000-7000-8000-000000000002'
         if mode == 'bad_id': tid = 'malicious\n--last'
-        thread = {'id':tid,'ephemeral':mode == 'ephemeral'}
+        thread = {'id':tid,'ephemeral':mode == 'ephemeral','path':str(rollout)}
+        if method == 'thread/start':
+            rollout.parent.mkdir(parents=True, exist_ok=True)
+            rollout.write_text(json.dumps({'ordinal':0,'type':'session_meta','payload':{'id':tid}}) + '\n')
+            if mode == 'wrong_rollout':
+                rollout.write_text(json.dumps({'ordinal':0,'type':'session_meta','payload':{'id':'wrong'}}) + '\n')
         if mode == 'large_history' and method == 'thread/resume':
             # Real resume responses include history unless explicitly excluded.
             thread['turns'] = [] if request['params'].get('excludeTurns') is True else [
@@ -80,7 +114,13 @@ for line in sys.stdin:
                     {'type':'agentMessage','id':'large-message','text':'x' * (5 * 1024 * 1024)}]}]
         reply({'result':{'thread':thread}})
         if mode == 'write_timeout': time.sleep(60)
-    else: reply({'result':{}})
+    else:
+        if method == 'thread/inject_items' and rollout.exists():
+            count_records = len(rollout.read_text().splitlines())
+            with rollout.open('a') as f:
+                for n, item in enumerate(request['params']['items']):
+                    f.write(json.dumps({'ordinal':count_records+n,'type':'response_item','payload':item})+'\n')
+        reply({'result':{}})
 if mode == 'cleanup':
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(60)
@@ -250,6 +290,40 @@ class BootstrapTests(HelperFixture):
     def test_cleanup_after_success_can_kill_a_stubborn_server(self):
         result = self.run_helper('cleanup')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cleanup_retries_a_disappearing_group_after_launcher_exit(self):
+        helper = runpy.run_path(str(HELPER))
+        server = helper['AppServer'].__new__(helper['AppServer'])
+        server.selector = Mock()
+        server.process = Mock(pid=12345)
+        server.process.poll.return_value = 0
+        with patch('os.killpg', side_effect=[None, PermissionError(), ProcessLookupError()]) as killpg:
+            server.close()
+        self.assertEqual(killpg.call_count, 3)
+        server.process.stdout.close.assert_called_once()
+
+    def test_cleanup_does_not_hide_a_live_group_permission_failure(self):
+        helper = runpy.run_path(str(HELPER))
+        server = helper['AppServer'].__new__(helper['AppServer'])
+        server.selector = Mock()
+        server.process = Mock(pid=12345)
+        server.process.poll.return_value = None
+        with patch('os.killpg', side_effect=PermissionError()) as killpg:
+            with self.assertRaises(PermissionError):
+                server.close()
+        killpg.assert_called_once()
+
+    def test_cleanup_bounds_retries_for_a_persistent_permission_failure(self):
+        helper = runpy.run_path(str(HELPER))
+        server = helper['AppServer'].__new__(helper['AppServer'])
+        server.selector = Mock()
+        server.process = Mock(pid=12345)
+        server.process.poll.return_value = 0
+        with patch('os.killpg', side_effect=PermissionError()) as killpg, \
+                patch('time.monotonic', side_effect=[0, 0, 1]), patch('time.sleep'):
+            with self.assertRaises(PermissionError):
+                server.close()
+        self.assertEqual(killpg.call_count, 2)
 
     def test_interrupt_cleans_up_server(self):
         process = subprocess.Popen(self.command(), env=dict(self.env, FAKE_MODE='timeout'),
@@ -450,6 +524,103 @@ class TransplantTests(HelperFixture):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_revert_removes_carried_turn_from_next_model_input(self):
+        captured, received = [], threading.Event()
+
+        class Provider(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"error":{"message":"test capture only"}}')
+                received.set()
+
+            def log_message(self, *_):
+                pass
+
+        with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider) as provider:
+            listener = threading.Thread(target=provider.serve_forever, daemon=True)
+            listener.start()
+            self.addCleanup(listener.join, 2)
+            self.addCleanup(provider.shutdown)
+            (self.codex_home / 'config.toml').write_text(
+                'model = "gpt-5.5"\nmodel_provider = "capture"\n'
+                '[analytics]\nenabled = false\n[model_providers.capture]\n'
+                'name = "Local test capture"\nwire_api = "responses"\n'
+                'base_url = "http://127.0.0.1:{}/v1"\nrequest_max_retries = 0\n'
+                'stream_max_retries = 0\n'.format(provider.server_port))
+            executable = os.environ['CS_CODEX_REAL_BIN']
+            source = self.sample_transcript()
+            result = subprocess.run([
+                sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+                '--instructions-file', str(self.instructions), '--history-from-claude', str(source),
+            ], env=self.env, capture_output=True, text=True, timeout=40)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            thread_id = result.stdout.strip()
+            helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+            with patch.dict(os.environ, CODEX_HOME=str(self.codex_home)):
+                with helper['AppServer'](executable, str(self.cwd), time.monotonic() + 30) as server:
+                    server.initialize()
+                    turns = server.request('thread/turns/list', {
+                        'threadId': thread_id, 'sortDirection': 'asc', 'itemsView': 'notLoaded',
+                    })['data']
+                    self.assertEqual(len(turns), 2)
+                    server.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                    server.request('thread/revert', {'threadId': thread_id, 'beforeTurnId': turns[1]['id']})
+                # Reopen after revert so both disk persistence and the next model input are checked.
+                with helper['AppServer'](executable, str(self.cwd), time.monotonic() + 30) as server:
+                    server.initialize()
+                    server.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                    visible = server.request('thread/items/list', {
+                        'threadId': thread_id, 'sortDirection': 'asc',
+                    })['data']
+                    self.assertEqual(len(visible), 2)
+                    server.request('turn/start', {'threadId': thread_id, 'input': [
+                        {'type': 'text', 'text': 'NEW_PROMPT_MARKER', 'text_elements': []}]})
+                    self.assertTrue(received.wait(20), 'native Codex never reached the local provider')
+            model_input = json.dumps(captured[0]['input'])
+            self.assertIn('find the budget', model_input)
+            self.assertIn('The budget is 42.', model_input)
+            self.assertIn('NEW_PROMPT_MARKER', model_input)
+            self.assertFalse('follow-up v2' in model_input, 'reverted prompt still reaches the model')
+            self.assertFalse('Answer two.' in model_input, 'reverted answer still reaches the model')
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_carry_over_has_visible_turns_without_duplicating_model_history(self):
+        source = self.sample_transcript()
+        executable = os.environ['CS_CODEX_REAL_BIN']
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+            '--instructions-file', str(self.instructions), '--history-from-claude', str(source),
+        ], env=self.env, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        # Read through a separate server, as the TUI does on its next resume.
+        previous = os.environ.get('CODEX_HOME')
+        os.environ['CODEX_HOME'] = str(self.codex_home)
+        try:
+            with helper['AppServer'](executable, str(self.cwd), time.monotonic() + 20) as server:
+                server.initialize()
+                turns = server.request('thread/turns/list', {
+                    'threadId': result.stdout.strip(), 'itemsView': 'full', 'sortDirection': 'asc',
+                })['data']
+        finally:
+            if previous is None:
+                del os.environ['CODEX_HOME']
+            else:
+                os.environ['CODEX_HOME'] = previous
+        items = [item for turn in turns for item in turn['items']]
+        self.assertEqual([i['type'] for i in items],
+                         ['userMessage', 'agentMessage', 'userMessage', 'agentMessage'])
+        self.assertEqual(items[0]['content'][0]['text'], '/color blue\n\nfind the budget')
+        self.assertEqual(items[-1]['text'], 'Answer two.')
+        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        records = [json.loads(line) for line in rollout.read_text().splitlines()]
+        model = [r['payload'] for r in records if r['type'] == 'response_item']
+        self.assertEqual(sum(i.get('role') == 'assistant' for i in model), 2)
+        self.assertFalse(any(r.get('payload', {}).get('type') == 'token_count' for r in records))
+
     def export_command(self, *extra, hide=(), zstd=None, setup=""):
         out = self.root / "carried.jsonl"
         if out.exists():
@@ -646,8 +817,7 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.run_helper('', '--history-from-claude', str(self.root / "carried.jsonl"))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         texts = [i['content'][0]['text'] for i in items]
         self.assertTrue(texts[0].startswith('[cs carried this conversation over from Claude conversation'))
         self.assertEqual(texts[1], 'what is the codename?')
@@ -915,8 +1085,7 @@ class TransplantTests(HelperFixture):
         # call, so the parent walk alone passes one result and drops the rest.
         result = self.run_helper('', '--history-from-claude', str(SHAPES / 'claude-shapes.jsonl'))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         self.assertEqual([i['role'] for i in items], ['developer', 'user', 'assistant', 'user', 'assistant'])
         whole = '\n'.join(i['content'][0]['text'] for i in items[1:])
         self.assertEqual(re.findall(r'MARK-\d+', whole), ['MARK-%02d' % n for n in range(1, 16)])
@@ -935,7 +1104,8 @@ class TransplantTests(HelperFixture):
         injections = [r['params']['items'] for r in requests if r['method'] == 'thread/inject_items']
         self.assertEqual(len(injections), 2)
         self.assertEqual(injections[0][0]['content'][0]['text'], self.instructions.read_text())
-        items = injections[1]
+        self.assertEqual(len(injections[1]), 1, 'only provenance is injected outside turns')
+        items = self.carried_model_items()
         self.assertEqual([(i['role'], i['content'][0]['type']) for i in items], [
             ('developer', 'input_text'), ('user', 'input_text'), ('assistant', 'output_text'),
             ('user', 'input_text'), ('assistant', 'output_text')])
@@ -957,6 +1127,57 @@ class TransplantTests(HelperFixture):
         methods = [r['method'] for r in requests]
         self.assertLess(methods.index('thread/unsubscribe'), methods.index('thread/resume'))
 
+    def test_carry_over_checks_visible_turns_before_reporting_success(self):
+        path = self.sample_transcript()
+        self.assert_failure('display_lost', 'visible turns', '--history-from-claude', str(path))
+
+    def test_empty_or_corrupt_display_items_cannot_report_success(self):
+        path = self.sample_transcript()
+        for mode in ('display_items_lost', 'display_corrupt'):
+            with self.subTest(mode=mode):
+                self.assert_failure(mode, 'visible', '--history-from-claude', str(path))
+
+    def test_unexpected_large_display_output_is_still_bounded(self):
+        source = self.sample_transcript()
+        self.assert_failure('display_oversize', 'protocol limit', '--history-from-claude', str(source))
+
+    def test_carry_over_refuses_a_rollout_for_another_thread(self):
+        path = self.sample_transcript()
+        self.assert_failure('wrong_rollout', 'unsupported format', '--history-from-claude', str(path))
+        records = [json.loads(line) for line in
+                   (self.codex_home / 'sessions/bootstrap-rollout.jsonl').read_text().splitlines()]
+        self.assertFalse(any(r['type'] == 'event_msg' for r in records))
+
+    def test_display_writer_refuses_links_existing_turns_and_truncated_records(self):
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        previous = os.environ.get('CODEX_HOME')
+        os.environ['CODEX_HOME'] = str(self.codex_home)
+        try:
+            for case in ('link', 'turns', 'truncated'):
+                with self.subTest(case=case):
+                    records = [json.dumps({'ordinal': 0, 'type': 'session_meta',
+                                           'payload': {'id': THREAD_ID}})]
+                    if case == 'turns':
+                        records.append(json.dumps({'ordinal': 1, 'type': 'event_msg',
+                                                   'payload': {'type': 'task_started'}}))
+                    path = self.write_rollout(records)
+                    if case == 'truncated':
+                        path.write_text(path.read_text().rstrip('\n'))
+                    target = path
+                    if case == 'link':
+                        target = path.with_name('link.jsonl')
+                        target.symlink_to(path)
+                    before = path.read_bytes()
+                    with self.assertRaises(helper['BootstrapError']):
+                        helper['persist_carried_display'](str(target), THREAD_ID,
+                                                          [{'role': 'user', 'text': 'hello'}])
+                    self.assertEqual(path.read_bytes(), before)
+        finally:
+            if previous is None:
+                del os.environ['CODEX_HOME']
+            else:
+                os.environ['CODEX_HOME'] = previous
+
     def test_a_failed_claude_tool_call_reads_as_an_error(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
         path.write_text("\n".join([
@@ -973,8 +1194,7 @@ class TransplantTests(HelperFixture):
         ]) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         agent = items[2]['content'][0]['text']
         self.assertIn('[tool error]\nExit code 2\nmake: *** no rule', agent)
         self.assertIn('[tool result]\nMakefile.am', agent)
@@ -992,15 +1212,19 @@ class TransplantTests(HelperFixture):
         ]) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        items = [r['request']['params']['items'] for r in self.requests()
-                 if r['request']['method'] == 'thread/inject_items'][1]
+        items = self.carried_model_items()
         texts = [i['content'][0]['text'] for i in items]
         self.assertEqual(texts[1:], ['This session is being continued. Summary: budget 42.', 'Continuing.'])
         # Without --history-source the note names the transcript's own ID.
         self.assertIn(CLAUDE_ID, texts[0])
 
-    def carried_batches(self, prompts):
-        """Carries prompts (user and assistant in turn) and returns the history's batches."""
+    def carried_model_items(self):
+        records = [json.loads(line) for line in
+                   (self.codex_home / 'sessions/bootstrap-rollout.jsonl').read_text().splitlines()]
+        return [r['payload'] for r in records if r['type'] == 'response_item'][1:]
+
+    def carry_prompts(self, prompts):
+        """Carry alternating user/assistant prompts and read their persisted model items."""
         path = self.root / (CLAUDE_ID + ".jsonl")
         lines, parent = [], None
         for n, text in enumerate(prompts):
@@ -1013,28 +1237,44 @@ class TransplantTests(HelperFixture):
         path.write_text("\n".join(lines) + "\n")
         result = self.run_helper('', '--history-from-claude', str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
-        batches = [r['request']['params']['items'] for r in self.requests()
-                   if r['request']['method'] == 'thread/inject_items'][1:]
-        # Only an item larger than a batch on its own makes a batch larger.
-        for batch in batches:
-            if len(batch) > 1:
-                self.assertLessEqual(sum(len(json.dumps(i)) for i in batch), 512 * 1024)
-        return batches
+        return self.carried_model_items()[1:]
 
-    def test_large_conversations_are_injected_in_order_in_batches(self):
-        batches = self.carried_batches([("prompt %d " % n + "p" * 120000) if n % 2 == 0 else "reply %d" % n
-                                        for n in range(12)])
-        self.assertGreater(len(batches), 1)
-        texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
+    def test_large_conversations_are_persisted_in_order(self):
+        items = self.carry_prompts([("prompt %d " % n + "p" * 120000) if n % 2 == 0 else "reply %d" % n
+                                   for n in range(12)])
+        texts = [i['content'][0]['text'] for i in items]
         self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(12)])
 
-    def test_an_item_larger_than_a_batch_goes_alone_and_whole(self):
+    def test_a_large_item_is_persisted_whole(self):
         big = "prompt 2 " + "p" * (600 * 1024)
-        batches = self.carried_batches(["prompt 0", "reply 1", big, "reply 3", "prompt 4", "reply 5"])
-        alone = [batch for batch in batches if any(i['content'][0]['text'] == big for i in batch)]
-        self.assertEqual([len(batch) for batch in alone], [1])
-        texts = [i['content'][0]['text'] for batch in batches for i in batch][1:]
+        items = self.carry_prompts(["prompt 0", "reply 1", big, "reply 3", "prompt 4", "reply 5"])
+        texts = [i['content'][0]['text'] for i in items]
+        self.assertEqual(texts[2], big)
         self.assertEqual([t.split(' ')[1] for t in texts], [str(n) for n in range(6)])
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_carry_verifies_messages_larger_than_four_mib(self):
+        prompt = 'p' * (5 * 1024 * 1024)
+        # Consecutive assistant records are one visible message. Escaped and
+        # multibyte text must be budgeted by serialized bytes, not characters.
+        reply = '\n"雪😀' * (700 * 1024)
+        source = self.root / (CLAUDE_ID + '.jsonl')
+        source.write_text('\n'.join([
+            claude_record('user', prompt, 'u1', None),
+            claude_record('assistant', reply, 'a1', 'u1'),
+            claude_record('assistant', reply, 'a2', 'a1'),
+        ]) + '\n')
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', os.environ['CS_CODEX_REAL_BIN'],
+            '--cwd', str(self.cwd), '--instructions-file', str(self.instructions),
+            '--history-from-claude', str(source), '--timeout', '60',
+        ], env=self.env, capture_output=True, text=True, timeout=70)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = [json.loads(line) for line in
+                   next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
+        messages = [r['payload']['content'][0]['text'] for r in records
+                    if r['type'] == 'response_item' and r['payload'].get('role') in ('user', 'assistant')]
+        self.assertEqual(messages[-2:], [prompt, reply + '\n\n' + reply])
 
     def test_nothing_to_carry_starts_no_server(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
