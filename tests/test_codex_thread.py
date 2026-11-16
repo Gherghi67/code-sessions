@@ -883,15 +883,12 @@ class TransplantTests(HelperFixture):
             lines.append(rollout_line("response_item", {
                 "type": "custom_tool_call_output", "call_id": "c%d" % n,
                 "output": [header, {"type": "input_text", "text": json.dumps(value, separators=(",", ":"))}]}))
-        # The script's own JSON, holding no command result, and a plain
-        # function call's output cross as written.
+        # The script's own JSON, holding no command result, crosses as written.
         own = '{"task":"a23","done":false}'
         lines.append(rollout_line("response_item", {"type": "custom_tool_call", "name": "exec",
                                                     "call_id": "c9", "input": "own()"}))
         lines.append(rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "c9",
                                                     "output": [header, {"type": "input_text", "text": own}]}))
-        lines.append(rollout_line("response_item", {"type": "function_call_output", "call_id": "c10",
-                                                    "output": json.dumps(command("ok", exit_code=0))}))
         self.write_rollout(lines)
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -905,7 +902,6 @@ class TransplantTests(HelperFixture):
                             "- i: 1\n  status: rejected\n  reason: no such file", agent)
         self.assertIn(top + '{"task": "a23", "title": "Wrap WaW bot session"}', agent)
         self.assertIn(top + own, agent)
-        self.assertIn("[tool result]\nok", agent)
         for absent in ("chunk_id", "ca48b8", "wall_time_seconds", "original_token_count", "\\n"):
             self.assertNotIn(absent, agent)
 
@@ -967,6 +963,38 @@ class TransplantTests(HelperFixture):
         self.assertIn("[still running, session 38456]\nWarning: still going", agent)
         self.assertIn("Output:\n\ndone", agent)
         self.assertNotIn("session None", agent)
+
+    def test_only_code_mode_results_are_converted(self):
+        # Only code mode's exec and wait answer with a script's header and
+        # then what it printed; another tool's output crosses as written.
+        top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
+        printed = json.dumps(command_result("ok", exit_code=0))
+        raw = json.dumps(command_result("raw", exit_code=0))
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run it")),
+            # A compaction keeps an output whose call came before it.
+            rollout_line("response_item", exec_call("d0")),
+            rollout_line("compacted", {"message": "", "replacement_history": [
+                codex_message("user", "kept prompt"),
+                exec_output("d0", json.dumps(command_result("kept", exit_code=0)))]}),
+            rollout_line("response_item", {"type": "function_call", "name": "js", "call_id": "f1",
+                                           "arguments": "{}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "f1", "output": printed}),
+            rollout_line("response_item", {"type": "function_call", "name": "wait", "call_id": "w1",
+                                           "arguments": "{}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "w1", "output": [
+                SCRIPT_HEADER, {"type": "input_text", "text": json.dumps(command_result("waited", exit_code=0))}]}),
+            rollout_line("response_item", exec_call("e1")),
+            rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "e1",
+                                           "output": [{"type": "input_text", "text": raw}]}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("[tool result]\n" + printed + "\n\n", agent)
+        self.assertIn(top + "waited", agent)
+        self.assertTrue(agent.endswith("[tool result]\n" + raw), agent)
+        self.assertTrue(agent.startswith(top + "kept"), agent)
 
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())

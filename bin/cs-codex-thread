@@ -234,6 +234,9 @@ CODEX_FINAL_ANSWER = "Message Type: FINAL_ANSWER\n"
 # The keys of exec_command's result, as code mode prints it.
 CODEX_COMMAND_RESULT = frozenset((
     "chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count", "output"))
+# Code mode's tools, whose output starts with how the script ended, then what it printed.
+CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell ID [^\n]*)\nWall time [^\n]*\nOutput:\n\Z")
+CODEX_CODE_MODE = frozenset(("exec", "wait"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
@@ -254,6 +257,9 @@ class History:
 
     def __init__(self):
         self.messages = []
+        # Tool names by call id. A reset keeps them: a compaction replays
+        # outputs whose calls came before it.
+        self.calls = {}
 
     def add(self, role, text, timestamp=None):
         if not isinstance(text, str) or not text.strip():
@@ -416,13 +422,18 @@ def codex_tool_text(text):
         return text
 
 
-def codex_output(output):
+def codex_output(output, code_mode):
     if isinstance(output, str):
-        return codex_tool_text(output)
+        return output
     if isinstance(output, list):
-        return "\n".join(codex_tool_text(text) for text in codex_texts(output))
+        texts = codex_texts(output)
+        if code_mode and texts and CODEX_SCRIPT_HEADER.match(texts[0]):
+            # A script printing a command's stdout that is itself a result-shaped object is still
+            # converted: nothing tells it apart from text(result).
+            return "\n".join(texts[:1] + [codex_tool_text(text) for text in texts[1:]])
+        return "\n".join(texts)
     if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
-        return codex_output(output["content"])
+        return codex_output(output["content"], code_mode)
     return "" if output is None else json.dumps(output, ensure_ascii=False)
 
 
@@ -430,6 +441,9 @@ def codex_item(history, item, timestamp, limit):
     if not isinstance(item, dict):
         return
     kind = item.get("type")
+    if kind in ("function_call", "custom_tool_call") and isinstance(item.get("call_id"), str) \
+            and isinstance(item.get("name"), str):
+        history.calls[item["call_id"]] = item["name"]
     if kind == "message":
         texts = codex_texts(item.get("content"))
         if item.get("role") == "user":
@@ -444,7 +458,9 @@ def codex_item(history, item, timestamp, limit):
         history.add("assistant", tool_call(item.get("name"), item.get("input")), timestamp)
     elif kind in ("function_call_output", "custom_tool_call_output"):
         # Codex records no failure flag: a failed call's output says so itself.
-        history.add("assistant", tool_result(codex_output(item.get("output")), limit), timestamp)
+        call_id = item.get("call_id")
+        code_mode = isinstance(call_id, str) and history.calls.get(call_id) in CODEX_CODE_MODE
+        history.add("assistant", tool_result(codex_output(item.get("output"), code_mode), limit), timestamp)
     elif kind == "local_shell_call":
         action = item.get("action")
         command = action.get("command") if isinstance(action, dict) else None
