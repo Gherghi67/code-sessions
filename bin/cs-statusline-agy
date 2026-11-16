@@ -69,7 +69,7 @@ _mapped=$(jq -c '
         [$buckets[] | select(.key | endswith($suffix))]
         | min_by(.value.remaining_fraction)
         | if . == null then null
-          else {used_percentage: ((1 - .value.remaining_fraction) * 100 | round | clamp),
+          else {used_percentage: ((1 - .value.remaining_fraction) * 100 | clamp | round),
                 resets_at: epoch(.value)}
           end;
       ({five_hour: window("-5h"), seven_day: window("-weekly")}

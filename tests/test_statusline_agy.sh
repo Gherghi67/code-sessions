@@ -160,10 +160,11 @@ test_the_quota_reads_the_model_from_either_name() {
         "any other id is a third-party model" || return 1
 }
 
-# A bucket agy sends in another shape is skipped, not guessed at: no
-# fraction, a fraction out of range, a reset that is not a time. A fraction
-# past either end is held to it; a reset agy gives only as seconds is counted
-# from now. No usable bucket, or no quota at all, sends no rate_limits.
+# A bucket agy sends in another shape is not guessed at: one with no
+# fraction is skipped, a fraction past either end is held to it, even just
+# past full, and a reset that is not a time leaves the window without one. A
+# reset agy gives only as seconds is counted from now. No usable bucket, or
+# no quota at all, sends no rate_limits.
 test_the_quota_tolerates_what_agy_may_send() {
     local before after got
     _stub_install
@@ -174,6 +175,9 @@ test_the_quota_tolerates_what_agy_may_send() {
     assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":100},"seven_day":{"resets_at":null,"used_percentage":0}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '{"gemini-5h":{"remaining_fraction":-0.2,"reset_time":"2026-11-16T15:37:12.250Z"},"gemini-weekly":{"remaining_fraction":1.5,"reset_time":"soon"}}')" \
         "a fraction past either end is held to it; a fractional second still parses" || return 1
+    assert_eq '{"five_hour":{"resets_at":null,"used_percentage":0}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '{"gemini-5h":{"remaining_fraction":1.004}}')" \
+        "a fraction just past full reads 0, not -0" || return 1
     before=$(date +%s)
     got=$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":600}}')
     after=$(date +%s)
