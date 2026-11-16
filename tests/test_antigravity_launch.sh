@@ -1864,7 +1864,13 @@ test_a_hook_older_than_the_mail_wake_is_named_by_doctor() {
     assert_eq 1 "$(_injected | grep -c 'still shown')" "the prompt shows the mail" || return 1
     output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" 'has no Stop entry' "doctor names the missing wake" || return 1
-    assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed"
+    assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed" || return 1
+    # Switched off as well, no hook runs at all, so the switch is what doctor
+    # names: running setup.sh again would leave the plugin off.
+    printf '{"plugins": {"cs": {"enabled": false}}}\n' > "$HOME/.gemini/config/config.json"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'agy plugin enable cs' "a plugin switched off is named first" || return 1
+    assert_output_not_contains "$output" 'has no Stop entry' "not the Stop entry no hook would run"
 }
 
 # What an install or a removal of cs left is cs's to finish: doctor sends the
