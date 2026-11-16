@@ -22808,7 +22808,8 @@ _antigravity_rotation_hook_ready() {
 # cs-statusline on agy's payload. A launch hands it to agy through --settings,
 # which holds for that run only and is never saved, so agy's settings.json is
 # never written and nothing is left to take back. It stacks under agy's own
-# line, which shows the model, quota and mode that cs's line leaves out.
+# line, which shows the model and mode that cs's line leaves out; the quota
+# is cs's.
 CS_ANTIGRAVITY_STATUSLINE=cs-statusline-agy
 
 _antigravity_settings_file() {

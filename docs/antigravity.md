@@ -274,14 +274,17 @@ here, since `agy`'s line already carries the model.
 
 The quota reads as Claude's limits do: `5h` always, `wk` from 50% used, amber
 at 70 and red at 90, with the time to reset once a window is tight. `agy`
-reports a fraction left per bucket, and its own line showed none of them in a
-live 1.5.9 run with 2 to 12% used. On a Google AI Pro account the buckets were
-`gemini-5h`, `gemini-weekly`, `gemini-argon-wtu-weekly`, `3p-5h` and
-`3p-weekly`. Each window takes the most-used bucket ending in `-5h` or
-`-weekly` that meters the running model: the `gemini-` buckets for a Gemini
-model, the `3p-` buckets for any other. A bucket naming a model, such as
-`gemini-argon-…`, counts only when the model's name has that word. Before the
-model is known, or when no bucket names its family, every bucket counts.
+reports a fraction left per bucket. Its own line showed none of them in a live
+1.5.9 run with up to 12% used; it was not watched nearer a limit. On a Google
+AI Pro account the buckets were `gemini-5h`, `gemini-weekly`,
+`gemini-argon-wtu-weekly`, `3p-5h` and `3p-weekly`, names `agy` does not
+document. Each window takes the most-used bucket ending in `-5h` or `-weekly`
+of the running model's family: the `gemini-` buckets for a Gemini model, the
+`3p-` buckets for any other. A bucket named for one model, such as
+`gemini-argon-…`, counts for every model of its family, so a window can read
+higher than the running model has used, never lower. A family with no bucket
+for a window leaves that window out, buckets for any other window (a daily
+one, say) are not drawn, and no quota shows until `agy` names the model.
 
 Claude's logo and attention shade are omitted under Antigravity. Mail and
 queue counts describe stored cs state: unread messages and pending queue

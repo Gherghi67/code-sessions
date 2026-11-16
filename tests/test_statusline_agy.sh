@@ -107,23 +107,35 @@ test_the_adapter_maps_agy_payload_onto_cs_statusline_input() {
 
 # agy's quota is a fraction left per bucket; Claude Code's rate_limits are
 # the percentage used per window, with the reset as an epoch. The 5-hour and
-# weekly windows each take the most-used bucket that meters the running
-# model: Gemini's own buckets, and one named for its model (gemini-argon-...)
-# only under that model; any other model spends the third-party buckets.
+# weekly windows each take the most-used bucket of the running model's
+# family: gemini-* for a Gemini model, 3p-* for any other. A bucket named for
+# one model (gemini-argon-...) counts for its whole family, since agy
+# documents none of the names. No model yet, no quota.
 test_the_quota_maps_onto_rate_limits_for_the_running_model() {
     _stub_install
     assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795275671,"used_percentage":12}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon (High)"' "$AGY_QUOTA")" \
-        "Argon counts Gemini's 5h and its own, most-used weekly bucket" || return 1
-    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795386009,"used_percentage":2}}' \
+        "Argon counts Gemini's 5h and the most-used Gemini weekly bucket" || return 1
+    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795275671,"used_percentage":12}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Flash"' "$AGY_QUOTA")" \
-        "another Gemini model skips Argon's bucket" || return 1
+        "every Gemini model counts the same buckets, Argon's included" || return 1
     assert_eq '{"five_hour":{"resets_at":1794847449,"used_percentage":0},"seven_day":{"resets_at":1795434249,"used_percentage":0}}' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Claude Sonnet 5.5 (Thinking)"' "$AGY_QUOTA")" \
         "a third-party model counts the 3p buckets" || return 1
-    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795275671,"used_percentage":12}}' \
-        "$(_quota_rate_limits "$AGY_AFTER_TURN" null "$AGY_QUOTA")" \
-        "with no model yet, the most-used bucket of each window counts" || return 1
+    assert_eq 'null' "$(_quota_rate_limits "$AGY_AFTER_TURN" null "$AGY_QUOTA")" \
+        "with no model yet, no quota goes over" || return 1
+}
+
+# A window the running model's family has no usable bucket for is left out;
+# another family's bucket never stands in for it.
+test_the_quota_never_borrows_another_familys_bucket() {
+    _stub_install
+    assert_eq '{"five_hour":{"resets_at":null,"used_percentage":10}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Flash"' '{"gemini-5h":{"remaining_fraction":0.9},"gemini-weekly":{"remaining_fraction":null},"3p-weekly":{"remaining_fraction":0.05}}')" \
+        "a Gemini model whose weekly bucket has no fraction shows no wk" || return 1
+    assert_eq 'null' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Claude Sonnet 5.5"' '{"gemini-5h":{"remaining_fraction":0.1},"gemini-weekly":{"remaining_fraction":0.1}}')" \
+        "a third-party model with only Gemini buckets shows no quota" || return 1
 }
 
 # A bucket agy sends in another shape is skipped, not guessed at: no
@@ -398,6 +410,7 @@ test_statusline_rejects_an_unknown_engine_before_writing() {
 
 run_test test_the_adapter_maps_agy_payload_onto_cs_statusline_input
 run_test test_the_quota_maps_onto_rate_limits_for_the_running_model
+run_test test_the_quota_never_borrows_another_familys_bucket
 run_test test_the_quota_tolerates_what_agy_may_send
 run_test test_the_real_render_shows_the_quota
 run_test test_the_context_waits_for_the_first_turn

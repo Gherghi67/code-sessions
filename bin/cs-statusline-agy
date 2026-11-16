@@ -6,20 +6,22 @@
 # the bar shows: session_id, cwd, workspace.current_dir and
 # context_window.used_percentage. It also carries a model, which agy's
 # default line, stacked above this one, already shows, the terminal's width
-# as terminal_width, and agy's quota, which that line does not show (a live
-# 1.5.9 run with 2 to 12% used drew none). context_window_size is 0 until the
+# as terminal_width, and agy's quota, which that line did not show in a live
+# 1.5.9 run with up to 12% used. context_window_size is 0 until the
 # model is known, and used_percentage reads 0 before the first turn, where
 # Claude Code sends none; the context shows once the model has read input.
 #
 # The quota is a table of buckets, each a fraction left with a reset:
-# gemini-5h, gemini-weekly, gemini-argon-wtu-weekly (one model's own),
-# 3p-5h and 3p-weekly (the third-party models) on a Google AI Pro account.
-# Claude Code sends the percentage used of a five_hour and a seven_day
-# window with the reset as an epoch, so each window here takes the most-used
-# bucket ending in -5h or -weekly that meters the running model: gemini-*
-# for a Gemini model, 3p-* for any other, and a bucket naming a model
-# (gemini-argon-...) only when the model's name has that word. Before the
-# model is known, or when no bucket names its family, every bucket counts.
+# gemini-5h, gemini-weekly, gemini-argon-wtu-weekly, 3p-5h and 3p-weekly
+# (the third-party models) on a Google AI Pro account. agy documents none of
+# these names. Claude Code sends the percentage used of a five_hour and a
+# seven_day window with the reset as an epoch, so each window here takes the
+# most-used bucket ending in -5h or -weekly of the running model's family:
+# gemini-* for a Gemini model, 3p-* for any other. A bucket named for one
+# model counts for its whole family, so a window may read higher than the
+# running model has used, never lower. A family with no usable bucket for a
+# window leaves that window out, other windows are not drawn, and until the
+# model is known no quota goes over.
 #
 # So the payload cs-statusline gets keeps the session, the folder, the
 # context and the quota, takes terminal_width as its columns, and leaves out
@@ -55,19 +57,14 @@ _mapped=$(jq -c '
             | if $s == null then null else (now + $s | floor) end);
     (.context_window | obj) as $ctx
     | ((.model | obj) | (.display_name // .id) | text | ascii_downcase) as $model
-    | ($model | [scan("[a-z0-9]+")]) as $words
-    | (if $model == "" then "" elif ($model | startswith("gemini")) then "gemini" else "3p" end) as $family
-    | [(.quota | obj) | to_entries[]
+    | (if $model == "" then null
+       elif ($model | startswith("gemini")) then "gemini-"
+       else "3p-" end) as $family
+    | [if $family == null then empty
+       else (.quota | obj) | to_entries[] | select(.key | startswith($family)) end
        | select((.value | obj | .remaining_fraction | num) != null)] as $buckets
     | def window($suffix):
-        [$buckets[] | select(.key | endswith($suffix))] as $all
-        | [$all[] | (.key | rtrimstr($suffix)) as $rest
-           | select($family != ""
-                    and ($rest == $family
-                         or (($rest | startswith($family + "-"))
-                             and ($rest | ltrimstr($family + "-") | split("-")[0]) as $w
-                             | $words | index([$w]) != null)))] as $own
-        | (if ($own | length) > 0 then $own else $all end)
+        [$buckets[] | select(.key | endswith($suffix))]
         | min_by(.value.remaining_fraction)
         | if . == null then null
           else {used_percentage: ((1 - .value.remaining_fraction) * 100 | round | clamp),
