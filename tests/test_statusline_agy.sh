@@ -12,14 +12,27 @@ unset CS_BIN
 CS_BIN="$SCRIPT_DIR/../bin/cs"
 
 # agy 1.5.9's payload after one turn, as a live probe recorded it (email and
-# paths changed). The model and quota are agy's own line's; cost and title
-# stayed null.
+# paths changed). The model is agy's own line's; cost and title stayed null.
 AGY_AFTER_TURN='{"cwd":"/work/agysess","session_id":"6778f9f7-33fb-4aa5-8194-f0142b7a86ea","conversation_id":"6778f9f7-33fb-4aa5-8194-f0142b7a86ea","transcript_path":"/x/transcript.jsonl","model":{"id":"Gemini 4 Argon (Medium)","display_name":"Gemini 4 Argon (Medium)","effort":"medium"},"workspace":{"current_dir":"/work/agysess","project_dir":"/work/agysess"},"version":"1.5.9","context_window":{"total_input_tokens":14891,"total_output_tokens":5,"context_window_size":1048576,"used_percentage":1.4201164245605469,"remaining_percentage":98.57988357543945,"current_usage":{"input_tokens":10458,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"exceeds_200k_tokens":false,"product":"antigravity","quota":{"gemini-5h":{"remaining_fraction":0.4,"reset_time":"2026-11-14T20:42:16Z","reset_in_seconds":17960}},"agent_state":"idle","cycle_mode":"auto","sandbox":{"enabled":false},"plan_tier":"Google AI Pro","terminal_width":160}'
 # The same run idle before its first turn: the model is known, and the
 # context reads 0 of a window agy has sized.
 AGY_BEFORE_TURN='{"cwd":"/work/agysess","session_id":"","conversation_id":"","model":{"id":"Gemini 4 Argon (Medium)","display_name":"Gemini 4 Argon (Medium)","effort":"medium"},"workspace":{"current_dir":"/work/agysess","project_dir":"/work/agysess"},"context_window":{"total_input_tokens":0,"total_output_tokens":0,"context_window_size":1048576,"used_percentage":0,"remaining_percentage":100,"current_usage":null},"agent_state":"idle","terminal_width":160}'
 # While agy authenticates: no model, and a window of size 0.
 AGY_STARTING='{"cwd":"/work/agysess","session_id":"","model":null,"workspace":{"current_dir":"/work/agysess"},"context_window":{"total_input_tokens":0,"context_window_size":0,"used_percentage":0},"agent_state":"authenticating","terminal_width":80}'
+# The quota a Google AI Pro account reported on 2026-11-16 (agy 1.5.9): a
+# 5-hour and a weekly bucket for Gemini models, a weekly one for Argon alone,
+# and a pair for the third-party models. agy's own line drew none of it.
+AGY_QUOTA='{"3p-5h":{"remaining_fraction":1,"reset_time":"2026-11-16T16:44:09Z","reset_in_seconds":17999},"3p-weekly":{"remaining_fraction":0.25,"reset_time":"2026-11-23T11:44:09Z","reset_in_seconds":604799},"gemini-5h":{"remaining_fraction":0.97945833,"reset_time":"2026-11-16T15:37:12Z","reset_in_seconds":13982},"gemini-argon-wtu-weekly":{"remaining_fraction":0.8842949,"reset_time":"2026-11-21T15:41:11Z","reset_in_seconds":446221},"gemini-weekly":{"remaining_fraction":0.9794862,"reset_time":"2026-11-22T22:20:09Z","reset_in_seconds":556559}}'
+
+# The rate_limits the adapter hands over for payload $1 with model $2 (a
+# display name, or null) and quota $3.
+_quota_rate_limits() {
+    local payload
+    payload=$(jq -c --argjson model "$2" --argjson quota "$3" \
+        '.model = (if $model == null then null else {id: $model, display_name: $model} end) | .quota = $quota' <<< "$1")
+    printf '%s' "$payload" | "$STUB_DIR/cs-statusline-agy" > /dev/null
+    jq -cS '.rate_limits // null' "$STUB_IN"
+}
 
 setup() {
     TEST_TMPDIR="$(mktemp -d)"
@@ -65,8 +78,8 @@ STUB
     STUB_DIR=$dir
 }
 
-# The adapter hands cs-statusline the session, folder, context and width,
-# under Claude Code's names, and nothing of the model, quota or cost, which
+# The adapter hands cs-statusline the session, folder, context, quota and
+# width, under Claude Code's names, and nothing of the model or cost, which
 # agy's own line shows. It names the engine, and agy as the parent every
 # repaint shares: the shell that runs the adapter stands in for agy.
 test_the_adapter_maps_agy_payload_onto_cs_statusline_input() {
@@ -80,8 +93,64 @@ test_the_adapter_maps_agy_payload_onto_cs_statusline_input() {
     assert_eq "stub line" "$out" "the renderer's line is the adapter's" || return 1
     assert_eq "antigravity $(cat "$TEST_TMPDIR/agy-pid")" "$(cat "$STUB_ENV")" \
         "the renderer is told the engine, and agy's pid as its parent" || return 1
-    assert_eq '{"columns":160,"context_window":{"used_percentage":1.4201164245605469},"cwd":"/work/agysess","session_id":"6778f9f7-33fb-4aa5-8194-f0142b7a86ea","workspace":{"current_dir":"/work/agysess"}}' \
-        "$(jq -cS . "$STUB_IN")" "only the session, folder, context and width go over" || return 1
+    assert_eq '{"columns":160,"context_window":{"used_percentage":1.4201164245605469},"cwd":"/work/agysess","rate_limits":{"five_hour":{"resets_at":1794688936,"used_percentage":60}},"session_id":"6778f9f7-33fb-4aa5-8194-f0142b7a86ea","workspace":{"current_dir":"/work/agysess"}}' \
+        "$(jq -cS . "$STUB_IN")" "only the session, folder, context, quota and width go over" || return 1
+}
+
+# agy's quota is a fraction left per bucket; Claude Code's rate_limits are
+# the percentage used per window, with the reset as an epoch. The 5-hour and
+# weekly windows each take the most-used bucket that meters the running
+# model: Gemini's own buckets, and one named for its model (gemini-argon-...)
+# only under that model; any other model spends the third-party buckets.
+test_the_quota_maps_onto_rate_limits_for_the_running_model() {
+    _stub_install
+    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795275671,"used_percentage":12}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon (High)"' "$AGY_QUOTA")" \
+        "Argon counts Gemini's 5h and its own, most-used weekly bucket" || return 1
+    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795386009,"used_percentage":2}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Flash"' "$AGY_QUOTA")" \
+        "another Gemini model skips Argon's bucket" || return 1
+    assert_eq '{"five_hour":{"resets_at":1794847449,"used_percentage":0},"seven_day":{"resets_at":1795434249,"used_percentage":75}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Claude Sonnet 5.5 (Thinking)"' "$AGY_QUOTA")" \
+        "a third-party model counts the 3p buckets" || return 1
+    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":2},"seven_day":{"resets_at":1795434249,"used_percentage":75}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" null "$AGY_QUOTA")" \
+        "with no model yet, the most-used bucket of each window counts" || return 1
+}
+
+# A bucket agy sends in another shape is skipped, not guessed at: no
+# fraction, a fraction out of range, a reset that is not a time. A fraction
+# past either end is held to it; a reset agy gives only as seconds is counted
+# from now. No usable bucket, or no quota at all, sends no rate_limits.
+test_the_quota_tolerates_what_agy_may_send() {
+    local before after got
+    _stub_install
+    assert_eq 'null' "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' null)" "no quota, no rate_limits" || return 1
+    assert_eq 'null' "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '"full"')" "a quota that is not an object" || return 1
+    assert_eq 'null' "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '{"gemini-5h":{"reset_time":"2026-11-16T15:37:12Z"},"gemini-daily":{"remaining_fraction":0.5}}')" \
+        "a bucket with no fraction, or a window cs does not draw" || return 1
+    assert_eq '{"five_hour":{"resets_at":1794843432,"used_percentage":100},"seven_day":{"resets_at":null,"used_percentage":0}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '{"gemini-5h":{"remaining_fraction":-0.2,"reset_time":"2026-11-16T15:37:12.250Z"},"gemini-weekly":{"remaining_fraction":1.5,"reset_time":"soon"}}')" \
+        "a fraction past either end is held to it; a fractional second still parses" || return 1
+    before=$(date +%s)
+    got=$(_quota_rate_limits "$AGY_AFTER_TURN" '"Gemini 4 Argon"' '{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":600}}')
+    after=$(date +%s)
+    assert_eq '50' "$(jq -r .five_hour.used_percentage <<< "$got")" "half left is half used" || return 1
+    [ "$(jq -r .five_hour.resets_at <<< "$got")" -ge $((before + 600)) ] \
+        && [ "$(jq -r .five_hour.resets_at <<< "$got")" -le $((after + 600)) ] \
+        || { echo "  FAIL: a reset given in seconds counts from now: $got"; return 1; }
+}
+
+# Through the real renderer, the quota draws as Claude's does: 5h always, wk
+# from 50, and the countdown once a window is tight.
+test_the_real_render_shows_the_quota() {
+    local out payload
+    payload=$(jq -c --argjson quota "$AGY_QUOTA" '.model.display_name = "Gemini 4 Argon (High)" | .quota = $quota' <<< "$AGY_AFTER_TURN")
+    out=$(printf '%s' "$payload" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess "$BASH" "$ADAPTER") || return 1
+    assert_eq "agysess > ○ ctx 1% > ◷ 5h 2%" "$out" "the 5-hour window shows, the weekly waits for 50" || return 1
+    payload=$(jq -c '.model.display_name = "Claude Sonnet 5.5" | .quota = {"3p-5h":{"remaining_fraction":0.1},"3p-weekly":{"remaining_fraction":0.4}}' <<< "$AGY_AFTER_TURN")
+    out=$(printf '%s' "$payload" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess "$BASH" "$ADAPTER") || return 1
+    assert_eq "agysess > ○ ctx 1% > ◷ 5h 90% ⋮ ◶ wk 60%" "$out" "both windows once the weekly passes 50" || return 1
 }
 
 # agy reads the context as 0 before the first turn, and sizes the window only
@@ -130,11 +199,11 @@ test_the_adapter_never_fails_agy() {
     assert_eq "0:" "$status:$out" "a missing renderer prints nothing" || return 1
 }
 
-# Through the real renderer, in a session cs launched: the session name and
-# the context show, agy's model and quota do not. The context-pct and limits
-# stamps Claude's hooks read, and the width record the cs mod reads, stay
-# unwritten; the same reading from Claude Code writes them, so it is the
-# engine that keeps them out.
+# Through the real renderer, in a session cs launched: the session name, the
+# context and the quota show, agy's model does not. The context-pct and
+# limits stamps Claude's hooks read, and the width record the cs mod reads,
+# stay unwritten though the quota went over; the same reading from Claude
+# Code writes them, so it is the engine that keeps them out.
 test_the_real_render_shows_the_session_and_stamps_nothing() {
     local dir="$CS_SESSIONS_ROOT/agysess/.cs/local" out
     mkdir -p "$dir"
@@ -143,7 +212,7 @@ test_the_real_render_shows_the_session_and_stamps_nothing() {
     printf 'claude_session_id: 6778f9f7-33fb-4aa5-8194-f0142b7a86ea\n' > "$dir/state"
     out=$(printf '%s' "$AGY_AFTER_TURN" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess CS_STATUSLINE_PARENT=4242 \
         "$BASH" "$ADAPTER") || { echo "  FAIL: the render failed"; return 1; }
-    assert_eq "agysess > ○ ctx 1%" "$out" "the session and its context" || return 1
+    assert_eq "agysess > ○ ctx 1% > ◷ 5h 60%" "$out" "the session, its context and the quota" || return 1
     assert_not_exists "$dir/context-pct" "no context-pct for Claude's gates" || return 1
     assert_not_exists "$dir/statusline-width" "no width record for the cs mod" || return 1
     assert_not_exists "$dir/limits" "no limits stamp" || return 1
@@ -206,8 +275,9 @@ test_antigravity_enable_reports_an_old_or_missing_agy() {
     assert_output_not_contains "$out" "show it under agy's own line" "a missing agy is not promised a line"
 }
 
-# Exercise the renderer directly: the adapter drops rate_limits, so passing
-# through it cannot prove the engine gate protects Claude's limits stamp.
+# Exercise the renderer directly, with a positive control: the same payload
+# from Claude stamps limits, so it is the engine gate alone that keeps
+# Claude's limits stamp out of an Antigravity render.
 test_antigravity_renderer_does_not_stamp_supplied_rate_limits() {
     local dir="$CS_SESSIONS_ROOT/agysess/.cs/local"
     local payload='{"session_id":"6778f9f7-33fb-4aa5-8194-f0142b7a86ea","rate_limits":{"five_hour":{"used_percentage":10}}}'
@@ -319,6 +389,9 @@ test_statusline_rejects_an_unknown_engine_before_writing() {
 }
 
 run_test test_the_adapter_maps_agy_payload_onto_cs_statusline_input
+run_test test_the_quota_maps_onto_rate_limits_for_the_running_model
+run_test test_the_quota_tolerates_what_agy_may_send
+run_test test_the_real_render_shows_the_quota
 run_test test_the_context_waits_for_the_first_turn
 run_test test_the_adapter_never_fails_agy
 run_test test_the_real_render_shows_the_session_and_stamps_nothing
