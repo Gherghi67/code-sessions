@@ -1217,6 +1217,9 @@ class TransplantTests(HelperFixture):
         top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
         printed = json.dumps(command_result("ok", exit_code=0))
         raw = json.dumps(command_result("raw", exit_code=0))
+        # Another tool's output with a script's header, and exec's without one.
+        headed = json.dumps(command_result("ok", exit_code=0), separators=(",", ":"))
+        unheaded = json.dumps(command_result("raw2", exit_code=0), separators=(",", ":"))
         self.write_rollout([
             rollout_line("response_item", codex_message("user", "run it")),
             # A compaction keeps an output whose call came before it.
@@ -1231,6 +1234,13 @@ class TransplantTests(HelperFixture):
                                            "arguments": "{}"}),
             rollout_line("response_item", {"type": "function_call_output", "call_id": "w1", "output": [
                 SCRIPT_HEADER, {"type": "input_text", "text": json.dumps(command_result("waited", exit_code=0))}]}),
+            rollout_line("response_item", {"type": "function_call", "name": "js", "call_id": "f2",
+                                           "arguments": "{}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "f2", "output": [
+                SCRIPT_HEADER, {"type": "input_text", "text": headed}]}),
+            rollout_line("response_item", exec_call("e2")),
+            rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "e2", "output": [
+                {"type": "input_text", "text": "hello"}, {"type": "input_text", "text": unheaded}]}),
             rollout_line("response_item", exec_call("e1")),
             rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "e1",
                                            "output": [{"type": "input_text", "text": raw}]}),
@@ -1240,6 +1250,8 @@ class TransplantTests(HelperFixture):
         agent = self.text_of(records[1])
         self.assertIn("[tool result]\n" + printed + "\n\n", agent)
         self.assertIn(top + "waited", agent)
+        self.assertIn("[tool result]\n" + SCRIPT_HEADER["text"] + "\n" + headed + "\n\n", agent)
+        self.assertIn("[tool result]\nhello\n" + unheaded + "\n\n", agent)
         self.assertTrue(agent.endswith("[tool result]\n" + raw), agent)
         self.assertTrue(agent.startswith(top + "kept"), agent)
 
