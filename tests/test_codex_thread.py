@@ -1070,6 +1070,46 @@ class TransplantTests(HelperFixture):
                   "[output 1, exit code 0]\nok\n\n[output 2, exit code 1]\nbad\n",
         ])
 
+    def test_real_code_mode_result_shapes_cross_whole(self):
+        # More shapes from real rollouts (2026-11): a result part that is not
+        # the last, and an empty one still running; failed and running
+        # results inside a structure; a result with both an exit code and a
+        # session, which ended; and an output longer than the cut, which
+        # counts the converted text, not the escaped JSON.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        long_output = "".join("line %04d\n" % n for n in range(500))
+        printed = [
+            [compact(command_result("one\n", exit_code=0)), compact(command_result("", session_id=7)),
+             compact(command_result("two", exit_code=0))],
+            [compact([{"status": "fulfilled", "value": command_result("bad", exit_code=2)},
+                      {"status": "fulfilled", "value": command_result("", session_id=9)}])],
+            [compact(command_result("done\n", exit_code=0, session_id=5))],
+            [compact(command_result(long_output, exit_code=0))],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, texts in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, *texts))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(len(long_output), 5000)
+        self.assertEqual(crossed, [
+            top + "[output 1, exit code 0]\none\n\n[output 2, still running in Codex, session 7, no output]\n\n"
+                  "[output 3, exit code 0]\ntwo\n",
+            top + '[{"status":"fulfilled","value":<output 1, exit code 2>},\n'
+                  ' {"status":"fulfilled","value":<output 2, still running in Codex, session 9>}]\n'
+                  "[output 1, exit code 2]\nbad\n\n[output 2, still running in Codex, session 9, no output]\n",
+            top + "done\n",
+            # The default cut, 4,000 of the 5,048 converted characters: the
+            # 48 of the header, then the output's first 3,952.
+            top + long_output[:3952] + "\n[cs cut the remaining 1,048 characters]",
+        ])
+
     def test_deep_nesting_costs_no_more_than_its_size(self):
         # Rendering a structure once re-split and re-indented everything
         # beneath each level; its skeleton and blocks now grow with the part.
