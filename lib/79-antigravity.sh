@@ -56,10 +56,12 @@ _cs_antigravity_adapter_capabilities() {
     printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
 }
 
-# The oldest agy the mail hooks were measured on: headless on 1.5.8 on
-# 2026-11-14, interactive on 1.5.9 on 2026-11-15.
+# The oldest agy on which invocationNum was measured going back to 0 at each
+# prompt typed into one interactive run, which the mail at each prompt stands
+# on: 1.5.9, on 2026-11-15. 1.5.8 was measured headless only (2026-11-14),
+# where each turn is a process of its own and the reset proves nothing.
 # shellcheck disable=SC2034  # read by cs -doctor in lib/60-doctor.sh
-CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.8
+CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.9
 
 # The installed agy's version: the first run of three dot-separated numbers
 # its --version prints (1.5.9 prints the number alone). Fails when agy exits

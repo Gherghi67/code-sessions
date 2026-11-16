@@ -100,10 +100,10 @@ _doctor_check_antigravity_hook() {
 }
 
 # The mail at each prompt stands on agy setting invocationNum back to 0 at
-# every prompt, measured on agy 1.5.8 and 1.5.9; an older agy may keep
-# counting across prompts, and then no prompt shows the mail. Checked apart
-# from the hook, so it is named whatever the hook check found. A missing agy
-# is the dependency check's to name.
+# every prompt, measured in one interactive run on agy 1.5.9 (1.5.8 only
+# headless); an older agy may keep counting across prompts, and then no
+# prompt shows the mail. Checked apart from the hook, so it is named whatever
+# the hook check found. A missing agy is the dependency check's to name.
 _doctor_check_antigravity_version() {
     local version
     command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || return 0

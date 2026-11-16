@@ -405,7 +405,7 @@ the prompts typed into the TUI:
 - `/clear` started a new conversation, with an ID of its own, and fired
   SessionStart for it. No hook payload told it from the run's first.
 
-Mail delivery needs `agy` 1.5.8 or later; `cs -doctor` warns below it.
+Mail delivery needs `agy` 1.5.9 or later; `cs -doctor` warns below it.
 
 ## Capabilities and limits
 

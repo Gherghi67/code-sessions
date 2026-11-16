@@ -1878,19 +1878,21 @@ test_a_hook_older_than_the_mail_wake_is_named_by_doctor() {
     assert_output_not_contains "$output" 'has no Stop entry' "not the Stop entry no hook would run"
 }
 
-# Mail at each prompt stands on invocationNum going back to 0 there, which was
-# measured on agy 1.5.8 and 1.5.9 (review R3): doctor names an older agy, the
-# oldest measured and the fix, and has no warning for 1.5.8 itself.
+# Mail at each prompt stands on invocationNum going back to 0 at each prompt
+# typed into one interactive run, which was measured on agy 1.5.9 (review R3);
+# 1.5.8 was measured only across separate headless runs. Doctor names an older
+# agy, 1.5.8 included, with the oldest measured and the fix, and has no
+# warning for 1.5.9 itself.
 test_doctor_names_an_agy_older_than_the_mail_was_checked_on() {
     local output dir
     output=$(AGY_NO_TURN=1 "$CS_BIN" aged --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir aged)
-    output=$(AGY_VERSION=1.5.7 CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" '\[WARN\].*Antigravity CLI 1\.5\.7 is older than 1\.5\.8.*agy update' \
-        "an older agy is named with the oldest measured and the fix" || return 1
     output=$(AGY_VERSION=1.5.8 CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_not_contains "$output" 'is older than' "1.5.8 is not warned about" || return 1
-    assert_output_contains "$output" '\[ OK \].*Antigravity CLI 1\.5\.8' "and its version is named"
+    assert_output_contains "$output" '\[WARN\].*Antigravity CLI 1\.5\.8 is older than 1\.5\.9.*agy update' \
+        "an older agy is named with the oldest measured and the fix" || return 1
+    output=$(AGY_VERSION=1.5.9 CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" 'is older than' "1.5.9 is not warned about" || return 1
+    assert_output_contains "$output" '\[ OK \].*Antigravity CLI 1\.5\.9' "and its version is named"
 }
 
 # An agy whose --version names no version is a warning, not a failure: doctor
