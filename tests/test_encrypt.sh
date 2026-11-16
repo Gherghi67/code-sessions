@@ -279,6 +279,27 @@ detach $s/vault-mnt" "$(cat "$FAKE_HDIUTIL_LOG")" "create, attach, then detach" 
     assert_output_contains "$out" "Codex keeps them in the vault, under .cs/private/codex-home" || return 1
 }
 
+# Run from a shell that inherited another encrypted session's launch, the list
+# of copies to remove by hand names the shell's Codex home, never that other
+# session's vault home.
+test_encrypt_names_the_shared_codex_home_from_inside_a_vault() {
+    _stubs
+    _populated_session enc
+    local out rc=0
+    out=$(CS_CODEX_SHARED_HOME="$TEST_TMPDIR/shell codex" \
+        CODEX_HOME="$TEST_TMPDIR/other/.cs/vault-mnt/private/codex-home" _encrypt enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_output_contains "$out" "its Codex conversations in $TEST_TMPDIR/shell codex: rollouts" \
+        "names the shell's Codex home" || return 1
+    assert_output_not_contains "$out" "other/.cs/vault-mnt" "never the other session's vault home" || return 1
+    _populated_session enc2
+    rc=0
+    out=$(CODEX_HOME="$TEST_TMPDIR/other/.cs/private/codex-home" _encrypt enc2 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_output_contains "$out" "its Codex conversations in $HOME/.codex: rollouts" \
+        "a vault home alone falls back to Codex's default home" || return 1
+}
+
 # The Codex launch's context is a copy of memory and the narrative, written in
 # plaintext before the session was encrypted: removed, never moved or kept.
 test_encrypt_removes_the_plaintext_codex_context() {
@@ -1053,6 +1074,7 @@ run_test test_encrypt_refuses_an_existing_container
 run_test test_encrypt_refuses_an_existing_container_under_cs_data_dir
 run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
+run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine

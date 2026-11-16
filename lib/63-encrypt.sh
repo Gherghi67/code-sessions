@@ -254,11 +254,16 @@ run_encrypt() {
     hdiutil detach "$mnt" \
         || error "$name: encrypted, but the vault would not detach; run hdiutil detach $mnt before opening it."
     info "$name is encrypted. Every open asks for the vault password; the vault detaches when the last conversation ends."
+    # The shell's Codex home, never a vault home inherited from another
+    # encrypted session's launch, as cs -doctor names it.
+    local codex_shared
+    codex_shared=$(_codex_shared_home)
+    _codex_is_vault_home "$codex_shared" && codex_shared="$HOME/.codex"
     echo "cs could not move copies made before today; remove them by hand if they matter:"
     echo "  - this session's transcripts in ~/.claude/projects/"
     echo "  - its lines in ~/.claude/history.jsonl"
     echo "  - its project entries in ~/.claude.json and that file's backups"
-    echo "  - its Codex conversations in ${CODEX_HOME:-$HOME/.codex}: rollouts under sessions/ and archived_sessions/,"
+    echo "  - its Codex conversations in $codex_shared: rollouts under sessions/ and archived_sessions/,"
     echo "    lines in history.jsonl and session_index.jsonl, rows in its state databases, and its"
     echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
