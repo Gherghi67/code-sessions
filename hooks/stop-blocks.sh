@@ -231,10 +231,13 @@ _mail_scan() {
 # name carries the pid because both wakes write this file and the idle one
 # overlaps itself: two writers sharing one tmp name splice each other, and the
 # rename then publishes the splice. The scan reads the snapshot only from a
-# regular file, never through a link, so the write must not follow one either:
-# a link standing at the name is removed first, or the record would land where
-# no reader looks and every Stop would wake again. One that cannot be removed
-# leaves the record unwritten.
+# regular file, never through a link, so a link standing at the name is
+# removed first, or the record would land where no reader looks and each Stop
+# would wake again for the same mail. One that cannot be removed leaves the
+# record unwritten. cs_write_atomic still follows a link planted between the
+# removal and the write; the Stops after it then wake for that mail again only
+# up to the ceiling, which nothing done to the count can lift
+# (cs_mail_wake_silence).
 _mail_record() {
     [ ! -L "$MAIL_WOKE" ] || rm -f "$MAIL_WOKE" 2>/dev/null || return 0
     cs_write_atomic "$MAIL_WOKE" printf '%s' "$MAIL_NAMES" || true
@@ -247,8 +250,11 @@ _mail_apply_silencers() {
     cs_mail_wake_silence "$MAILDIR/wakes"
 }
 
-# The silencer reads the count only from a regular file too, so a link at its
-# name goes first, as at the snapshot's.
+# The silencer reads the count only from a regular file too, and anything else
+# at its name as the ceiling, so a link there goes first, as at the
+# snapshot's, or the next Stop would read the ceiling and stay silent. One
+# planted after the removal is written through, but then reads as the ceiling
+# itself, so the race can silence the wake but never loop it.
 _mail_count_wake() {
     [ ! -L "$MAILDIR/wakes" ] || rm -f "$MAILDIR/wakes" 2>/dev/null || return 0
     cs_write_atomic "$MAILDIR/wakes" printf '%s\n' "$((MAIL_WAKES + 1))" || true

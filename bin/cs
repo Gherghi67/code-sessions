@@ -3742,8 +3742,22 @@ cs_mail_wake_silence() {  # wakes file
         ''|*[!0-9]*|????????????????*) max=5 ;;
         *) max=$((10#$CS_MAIL_WAKE_MAX)) ;;
     esac
-    # The count is read only from a regular file, never through a link.
-    if [ -f "$1" ] && [ ! -L "$1" ]; then seen=$(<"$1") || seen=""; fi
+    # The count is read only from a regular file, never through a link, and a
+    # count the hook cannot read counts as the ceiling. A missing one is the
+    # fresh state a prompt leaves and counts none; anything else standing at
+    # the name that is not a readable regular file (a link, one that leads
+    # nowhere included, a directory, a file the hook may not read) counts as
+    # CS_MAIL_WAKE_MAX. Read as none, it would wake every Stop again: nothing
+    # replaces a directory, cs_write_atomic keeps a mode-000 file's mode, and
+    # a process in the session can put a link back after each write. Failing
+    # closed bounds every loop by the ceiling whatever happens to the two
+    # records, so a snapshot cs_mail_wake_scan cannot read costs at most that
+    # many wakes between prompts.
+    if [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; then
+        seen=$(<"$1") || seen=$max
+    elif [ -e "$1" ] || [ -L "$1" ]; then
+        seen=$max
+    fi
     seen=${seen//[[:space:]]/}
     case "$seen" in
         ''|*[!0-9]*|????????????????*) seen=0 ;;

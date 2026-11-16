@@ -2367,37 +2367,105 @@ test_stop_wake_stops_at_the_ceiling() {
         "a human prompt resets the ceiling" || return 1
 }
 
-# The snapshot and the count are read only from a regular file, never through
-# a link, so a process in the session that links mail/woke and mail/wakes to
-# files elsewhere in it would have every Stop read both as empty, wake again
-# past the ceiling, and write through the links each time. The writers replace
-# a link instead: the first Stop wakes, and the records it writes are the ones
-# the next Stop reads.
+# How many of seven Stops block, with the ceiling at two: one unread message
+# wakes at most once, and a ceiling that holds stops any loop at two.
+_blocks_of_seven_stops() {
+    local n out blocks=0
+    for n in 1 2 3 4 5 6 7; do
+        out=$(CS_MAIL_WAKE_MAX=2 wake)
+        case "$out" in *'"block"'*) blocks=$((blocks + 1)) ;; esac
+    done
+    printf '%s' "$blocks"
+}
+
+# The snapshot is read only from a regular file, never through a link, so a
+# process in the session that links mail/woke to a file elsewhere in it would
+# have every Stop read it as empty and write through the link each time. The
+# writer replaces the link instead: the first Stop wakes, and the snapshot it
+# writes is the one the next Stop reads.
 test_stop_wake_replaces_linked_records() {
     "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
-    local session="$CS_SESSIONS_ROOT/receiver" mail n out blocks=0
+    local session="$CS_SESSIONS_ROOT/receiver" mail name
+    mail=$(MAILDIR)
+    name=$(FIRST_MSG) || return 1
+    name=${name##*/}
+    printf 'woke target\n' > "$session/woke-target.txt"
+    ln -s "$session/woke-target.txt" "$mail/woke" || return 1
+    assert_eq "1" "$(_blocks_of_seven_stops)" "one unread message wakes one of seven Stops" || return 1
+    assert_eq "woke target" "$(cat "$session/woke-target.txt")" \
+        "the snapshot is not written through its link" || return 1
+    [ -f "$mail/woke" ] && [ ! -L "$mail/woke" ] || { echo "  FAIL: woke is not a regular file"; return 1; }
+    assert_eq "$name" "$(cat "$mail/woke")" "the snapshot written in its place names the message" || return 1
+}
+
+# The count is read only from a regular file that is not a link, and anything
+# else at its name reads as the ceiling, so nothing done to the two records
+# can loop the wake past CS_MAIL_WAKE_MAX. Read as no wakes, links at both
+# names that a process in the session put back after each write would wake
+# every Stop for one message. Here no Stop wakes, the writers never run, and
+# nothing is written through either link.
+test_stop_wake_linked_count_reads_as_the_ceiling() {
+    "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
+    local session="$CS_SESSIONS_ROOT/receiver" mail
     mail=$(MAILDIR)
     printf 'woke target\n' > "$session/woke-target.txt"
     printf 'wakes target\n' > "$session/wakes-target.txt"
     ln -s "$session/woke-target.txt" "$mail/woke" || return 1
     ln -s "$session/wakes-target.txt" "$mail/wakes" || return 1
-    for n in 1 2 3 4 5 6 7; do
-        out=$(CS_MAIL_WAKE_MAX=2 wake)
-        case "$out" in *'"block"'*) blocks=$((blocks + 1)) ;; esac
-    done
-    assert_eq "1" "$blocks" "one unread message wakes one of seven Stops" || return 1
+    assert_eq "0" "$(_blocks_of_seven_stops)" "a linked count silences the wake" || return 1
     assert_eq "woke target" "$(cat "$session/woke-target.txt")" \
         "the snapshot is not written through its link" || return 1
     assert_eq "wakes target" "$(cat "$session/wakes-target.txt")" \
         "the count is not written through its link" || return 1
-    [ -f "$mail/woke" ] && [ ! -L "$mail/woke" ] || { echo "  FAIL: woke is not a regular file"; return 1; }
-    [ -f "$mail/wakes" ] && [ ! -L "$mail/wakes" ] || { echo "  FAIL: wakes is not a regular file"; return 1; }
+}
+
+# A count the hook cannot read reads as the ceiling, not as no wakes: with an
+# unreadable snapshot beside it, which counts nothing as announced, every Stop
+# would otherwise wake for one message, and cs_write_atomic copies the old
+# mode, so a chmod 000 outlasts each write.
+test_stop_wake_unreadable_count_reads_as_the_ceiling() {
+    "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
+    local mail
+    mail=$(MAILDIR)
+    : > "$mail/woke"
+    printf '0\n' > "$mail/wakes"
+    chmod 000 "$mail/woke" "$mail/wakes" || return 1
+    # Root, or a filesystem that ignores mode bits, still reads a mode-000 file.
+    if { : < "$mail/wakes"; } 2>/dev/null; then
+        echo "    SKIP (mode 000 does not deny this user reads)"
+        SKIP_REASON="mode 000 does not deny this user reads"
+        return 77
+    fi
+    assert_eq "0" "$(_blocks_of_seven_stops)" "an unreadable count silences the wake" || return 1
+}
+
+# A directory at the count's name is no count either, and cs_write_atomic
+# refuses to write over one, so read as no wakes it would never change.
+test_stop_wake_directory_count_reads_as_the_ceiling() {
+    "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
+    local mail
+    mail=$(MAILDIR)
+    mkdir "$mail/woke" "$mail/wakes" || return 1
+    assert_eq "0" "$(_blocks_of_seven_stops)" "a directory at the count silences the wake" || return 1
+}
+
+# A link that leads nowhere is still something standing at the count's name.
+test_stop_wake_dangling_count_link_reads_as_the_ceiling() {
+    "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
+    local mail
+    mail=$(MAILDIR)
+    ln -s "$CS_SESSIONS_ROOT/receiver/no-such-file" "$mail/wakes" || return 1
+    assert_eq "0" "$(_blocks_of_seven_stops)" "a dangling link at the count silences the wake" || return 1
 }
 
 run_test test_stop_wake_only_the_lead_wakes
 run_test test_wake_turn_does_not_reset_the_ceiling
 run_test test_stop_wake_stops_at_the_ceiling
 run_test test_stop_wake_replaces_linked_records
+run_test test_stop_wake_linked_count_reads_as_the_ceiling
+run_test test_stop_wake_unreadable_count_reads_as_the_ceiling
+run_test test_stop_wake_directory_count_reads_as_the_ceiling
+run_test test_stop_wake_dangling_count_link_reads_as_the_ceiling
 run_test test_cwd_change_rearms_the_maildir_watch
 run_test test_cwd_change_creates_the_maildir_before_arming
 run_test test_cwd_change_never_reaches_the_drain
