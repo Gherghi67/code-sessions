@@ -37,7 +37,7 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
 `mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, and `feature_finish` ([Antigravity sessions](antigravity.md)). These
+`spawn_brief`, `feature_finish`, and `mail_delivery` ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -323,7 +323,8 @@ its own inside the vault: main checks before the pre-open, and
 (`_antigravity_encrypted_refusal`).
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 `~/.gemini/config/plugins/cs/`, and cs's status line, which each launch passes with
-`agy --settings` for that run only. It has no mail. Rotation uses `/exit` then a fresh
+`agy --settings` for that run only. The same hook brings `cs -msg` mail into the
+session's conversation (see `docs/antigravity.md`, Mail). Rotation uses `/exit` then a fresh
 managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Antigravity takes a brief but no

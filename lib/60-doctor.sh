@@ -50,10 +50,13 @@ _doctor_check_settings_valid() {
     fi
 }
 
-# cs's Antigravity plugin carries the hook exact_resume and recovery_autosave
-# stand on: it must be cs's, name a cs that runs, carry the recovery consumer
-# post-tool-use hands edits to, and not be switched off in agy's config.json,
-# which beats the plugin wherever it has an entry.
+# cs's Antigravity plugin carries the hook exact_resume, recovery_autosave and
+# mail_delivery stand on: it must be cs's, name a cs that runs, carry the
+# recovery consumer post-tool-use hands edits to, not be switched off in agy's
+# config.json, which beats the plugin wherever it has an entry, and carry the
+# Stop entry the mail wake runs from (an install older than the wake has
+# none). A plugin switched off runs no hook at all, and setup.sh, which adds
+# the Stop entry, leaves it off, so the switch is named first.
 _doctor_check_antigravity_hook() {
     local dir cs_path
     dir=$(_antigravity_plugin_dir)
@@ -87,8 +90,29 @@ _doctor_check_antigravity_hook() {
         _doctor_warn "Antigravity hook in $dir has no recovery consumer (scripts/autosave-commits.sh): edits are not autosaved; run setup.sh again"
     elif [ "$(jq -r --arg p "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$p].enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" = false ]; then
         _doctor_warn "Antigravity hook is switched off in $HOME/.gemini/config/config.json; turn it on with: agy plugin enable $CS_ANTIGRAVITY_PLUGIN"
+    elif ! jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        '[.[$name].Stop | arrays | .[] | objects | .command | strings | select(endswith(" -antigravity-hook stop"))] | length > 0' \
+        "$dir/hooks.json" >/dev/null 2>&1; then
+        _doctor_warn "Antigravity hook in $dir has no Stop entry: mail that comes during a turn waits for the next prompt; run setup.sh again"
     else
         _doctor_ok "Antigravity hook installed: $dir"
+    fi
+}
+
+# The mail at each prompt stands on agy setting invocationNum back to 0 at
+# every prompt, measured in one interactive run on agy 1.5.9 (1.5.8 only
+# headless); an older agy may keep counting across prompts, and then no
+# prompt shows the mail. Checked apart from the hook, so it is named whatever
+# the hook check found. A missing agy is the dependency check's to name.
+_doctor_check_antigravity_version() {
+    local version
+    command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || return 0
+    if ! version=$(_antigravity_version); then
+        _doctor_warn "Antigravity CLI version cannot be read from ${AGY_BIN:-agy} --version, so cs cannot tell whether mail reaches each prompt, which needs agy $CS_ANTIGRAVITY_MAIL_MIN_VERSION or later"
+    elif ! _version_at_least "$version" "$CS_ANTIGRAVITY_MAIL_MIN_VERSION"; then
+        _doctor_warn "Antigravity CLI $version is older than $CS_ANTIGRAVITY_MAIL_MIN_VERSION, the oldest agy cs's mail was checked on: mail may not reach each prompt. Update it with: agy update"
+    else
+        _doctor_ok "Antigravity CLI $version (mail delivery needs $CS_ANTIGRAVITY_MAIL_MIN_VERSION or later)"
     fi
 }
 
@@ -1414,6 +1438,7 @@ run_doctor() {
         _doctor_ok "$label integration capabilities: ${capabilities//$'\n'/, }"
         if [ "$engine" = antigravity ]; then
             _doctor_check_antigravity_hook
+            _doctor_check_antigravity_version
             _doctor_check_antigravity_statusline
         fi
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."

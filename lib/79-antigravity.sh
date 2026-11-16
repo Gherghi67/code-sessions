@@ -51,7 +51,26 @@ _cs_antigravity_adapter_capabilities() {
     # as the first prompt, once; agy hosts no walk-away task queue.
     # feature_finish: -finish sends a first prompt naming the finish skill's
     # SKILL.md, since agy hands a typed /cs:finish no folder.
-    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish
+    # mail_delivery: PreInvocation shows unread mail at each prompt, and Stop
+    # wakes a turn that ends with mail which came while it ran.
+    printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
+}
+
+# The oldest agy on which invocationNum was measured going back to 0 at each
+# prompt typed into one interactive run, which the mail at each prompt stands
+# on: 1.5.9, on 2026-11-15. 1.5.8 was measured headless only (2026-11-14),
+# where each turn is a process of its own and the reset proves nothing.
+# shellcheck disable=SC2034  # read by cs -doctor in lib/60-doctor.sh
+CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.9
+
+# The installed agy's version: the first run of three dot-separated numbers
+# its --version prints (1.5.9 prints the number alone). Fails when agy exits
+# with an error or names no version, so doctor can say it cannot tell.
+_antigravity_version() {
+    local out
+    out=$("${AGY_BIN:-agy}" --version 2>&1) || return 1
+    [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
 # cs's skills ship inside its agy plugin, which offers them as /cs:<name>.
@@ -568,7 +587,7 @@ $prompt"
         [ -z "$spawn_wait" ] \
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
     fi
-    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. Mail and the task queue are not available under Antigravity yet."
+    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
             _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."
@@ -624,21 +643,31 @@ _antigravity_run_dir_prepare() {
 }
 
 # The hook agy runs from cs's plugin (lib/01-manifests.sh), measured on agy
-# 1.4.11: every hook gets the run's environment and a JSON payload on stdin
-# whose conversationId names the conversation it ran in. PreInvocation fires
-# before each model call, a resumed conversation's too, and PostToolUse after
-# each tool; a run left before the model is called fires neither. agy reads
-# the hook's stdout as JSON, so every path prints `{}`, which decides nothing,
-# and exits 0: the hook never blocks or fails a turn. It acts only in the run
-# cs launched; any other agy run passes through.
+# 1.4.11 and 1.5.8: every hook gets the run's environment and a JSON payload
+# on stdin whose conversationId names the conversation it ran in.
+# PreInvocation fires before each model call, a resumed conversation's too,
+# PostToolUse after each tool, and Stop when the turn's loop ends; a run left
+# before the model is called fires none of them. agy reads the hook's stdout
+# as JSON: `{}` decides nothing, and it is the answer on every path but the
+# two the mail takes (a digest injected at a prompt, a wake at a Stop). The
+# hook always exits 0, so it never fails a turn. It acts only in the run cs
+# launched; any other agy run passes through.
+#
+# A handler leaves its answer, one JSON object on one line, in
+# ANTIGRAVITY_HOOK_REPLY, and in ANTIGRAVITY_HOOK_AFTER a function to run once
+# the answer is out. The handler's own stdout goes nowhere, so nothing it runs
+# can add to the answer or hold agy's pipe open.
 cmd_antigravity_hook() {  # event
     local handler input
+    ANTIGRAVITY_HOOK_REPLY=""
+    ANTIGRAVITY_HOOK_AFTER=""
     case "${1:-}" in
         pre-invocation) handler=_antigravity_hook_pre_invocation ;;
         post-tool-use) handler=_antigravity_hook_post_tool_use ;;
+        stop) handler=_antigravity_hook_stop ;;
         *)
             if [ -t 0 ]; then
-                printf 'Usage: cs -antigravity-hook pre-invocation|post-tool-use\n' >&2
+                printf 'Usage: cs -antigravity-hook pre-invocation|post-tool-use|stop\n' >&2
                 return 2
             fi
             handler=""
@@ -651,30 +680,57 @@ cmd_antigravity_hook() {  # event
         && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
         "$handler" "$input" </dev/null >/dev/null 2>&1 || true
     fi
-    printf '{}\n'
+    if [ -n "$ANTIGRAVITY_HOOK_REPLY" ]; then
+        printf '%s\n' "$ANTIGRAVITY_HOOK_REPLY"
+    else
+        printf '{}\n'
+    fi
+    if [ -n "$ANTIGRAVITY_HOOK_AFTER" ]; then
+        "$ANTIGRAVITY_HOOK_AFTER" </dev/null >/dev/null 2>&1 || true
+    fi
     return 0
 }
 
-# The payload's conversation id, a UUID or nothing: it names a native file and
-# goes onto agy's command line at the next reopen.
-_antigravity_payload_id() {  # payload
-    local id
-    id=$(printf '%s' "$1" | jq -r 'if type == "object" then .conversationId // "" else "" end' 2>/dev/null) || return 1
-    _is_uuid "$id" || return 1
-    printf '%s\n' "$id"
+# The payload fields the handlers read, in one jq: AGY_HOOK_ID, the
+# conversation id, a UUID or the read fails (it names a native file and goes
+# onto agy's command line at the next reopen); AGY_HOOK_INVOCATION,
+# PreInvocation's invocationNum when it is a whole number, else empty; and
+# AGY_HOOK_TERMINATION, Stop's terminationReason when it is a word, else empty.
+_antigravity_payload_read() {  # payload
+    local fields rest
+    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION=""
+    # Each field is kept only when every character in it is one its shape
+    # allows, judged by what is left once those are deleted (a regex "$"
+    # also matches before a newline), so none can carry the separator or a
+    # second line; anything else reads as "".
+    fields=$(printf '%s' "$1" | jq -r 'if type == "object" then
+            [((.conversationId | strings | select(length == 36 and gsub("[0-9A-Fa-f-]"; "") == "")) // ""),
+             ((.invocationNum | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
+             ((.terminationReason | strings | select(length <= 40 and gsub("[A-Z_]"; "") == "")) // "")]
+            | join("|")
+        else "" end' 2>/dev/null) || return 1
+    # Split by expansion, not read with a here-document, which bash 3.2
+    # writes to a temp file a sandbox may refuse.
+    AGY_HOOK_ID=${fields%%"|"*}
+    rest=${fields#*"|"}
+    AGY_HOOK_INVOCATION=${rest%%"|"*}
+    AGY_HOOK_TERMINATION=${rest#*"|"}
+    _is_uuid "$AGY_HOOK_ID" || { AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION=""; return 1; }
 }
 
 # The first conversation to reach the model in a run is the one the run works
 # in: the main conversation's model call comes before anything it starts, and
 # a subagent's conversation has its own id. Each id is weighed once a run, so
-# later model calls stop at a file test.
+# later model calls stop at a file test. The first model call of a turn then
+# carries the unread mail.
 _antigravity_hook_pre_invocation() {  # payload
-    local id run_dir meta="$CS_SESSION_DIR/.cs"
-    id=$(_antigravity_payload_id "$1") || return 0
+    local run_dir meta="$CS_SESSION_DIR/.cs"
+    _antigravity_payload_read "$1" || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
-    [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$id" ] || return 0
-    cs_run_lease_owned "$meta" || return 0
-    cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$id" "$run_dir" || return 0
+    if { [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; } && cs_run_lease_owned "$meta"; then
+        cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" || true
+    fi
+    [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
@@ -716,8 +772,12 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
         fi
     fi
+    # Both log lines go to .cs/local (cs_local_dir), never through
+    # cs_private_dir: the launch refuses an encrypted session, so a
+    # .cs/private here came mid-run, maybe as a link out of the session, as
+    # _antigravity_mail_dir says.
     if [ "$previous" != "$id" ]; then
-        if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+        if log_dir=$(cs_local_dir "$session_dir/.cs"); then
             CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
                 "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         fi
@@ -727,7 +787,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     fi
     # The rotate skill reads which conversations this checkout ran from this
     # line, as hooks/session-start.sh writes it for Claude.
-    if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: %s, ID: %s)\n' \
             "$(date '+%Y-%m-%d %H:%M:%S')" "$source" "$id" || true
     fi
@@ -745,4 +805,144 @@ _antigravity_hook_post_tool_use() {  # payload
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
     [ -r "$script" ] || return 0
     printf '%s' "$event" | bash "$script" --event || true
+}
+
+# Mail, measured on agy 1.5.8. A PreInvocation answer
+# {"injectSteps": [{"systemMessage": {"systemMessage": ...}}]} reaches the
+# model and stays in the conversation for later turns. invocationNum is 0 at
+# the first model call of each turn and counts every later call in it, those a
+# Stop answer adds included, so 0 is the turn's prompt. A Stop answer
+# {"decision": "continue", "reason": ...} runs the loop again with the reason
+# as a system message. continuationActive, which agy documents as the guard
+# against a Stop that keeps continuing, stayed false at every Stop, so the
+# wake keeps its own count, written before each wake goes out, and agy stops
+# it after ten continuations whatever the hook says. agy has no event for a
+# conversation idle at its prompt, so mail that comes then waits for the next
+# prompt. The wake's own records live in cs's cache, not beside the mail
+# (_antigravity_mail_state_dir): cs acts on them, and the agent can write
+# anywhere in the session.
+
+# The folder that holds the session's mail, printed when the conversation is
+# the one the session is bound to, in the run that holds its lease: a
+# subagent's conversation has an id of its own, as does one started mid-run
+# with /clear or /new, which no hook payload tells from a subagent's, and
+# another agy run in the folder holds no lease. Mail git tracks came with a
+# pull, a merge or a checkout, not from a sender on this machine, so none of
+# it is shown then, as under Claude and Codex. The launch refuses an
+# encrypted session, so a .cs/private there came mid-run, maybe as a link out
+# of the session, and no mail is read through it.
+_antigravity_mail_dir() {  # conversation_id
+    local bound private
+    cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 1
+    ! _switch_session_encrypted "$CS_SESSION_DIR" || return 1
+    bound=$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null) || return 1
+    [ "$bound" = "$1" ] || return 1
+    ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 1
+    private=$(cs_private_dir "$CS_SESSION_DIR/.cs") || return 1
+    printf '%s/mail\n' "$private"
+}
+
+# The wake's records, woke and wakes, in cs's cache: a 0700 directory named
+# by the session directory's identity (cs_retire_cache_dir), so they last
+# across runs as Claude's mail/woke does, and kept outside every root an
+# agent's sandbox may write, as the handoff receipts are
+# (_launch_handoff_receipt_dir_ok). In the session the agent could plant them
+# as links that send cs's writes out of it, or as a count that silences the
+# wake. With "make" a missing directory is made; fails when no such
+# directory is there.
+_antigravity_mail_state_dir() {  # [make]
+    local dir
+    dir=$(cs_retire_cache_dir antigravity-mail "$CS_SESSION_DIR") || return 1
+    [ -z "${1:-}" ] || cs_cache_dir_make_private "$dir" || return 1
+    cs_cache_dir_private "$dir" \
+        && ! _codex_run_dir_in_sandbox_root "$dir" "$CS_SESSION_DIR" \
+        && ! _codex_run_dir_in_config_root "$dir" "$CS_SESSION_DIR" || return 1
+    printf '%s\n' "$dir"
+}
+
+# A record is written without following a link (cs_write_atomic follows
+# one): a temp file in its directory, renamed over the name. A link at the
+# name goes first, since BSD mv onto a link to a directory moves the file into
+# that directory; anything else there but a regular file, a directory above
+# all, refuses the write.
+_antigravity_mail_state_write() {  # file, text
+    local tmp
+    if [ -L "$1" ]; then rm -f "$1" 2>/dev/null || return 1; fi
+    [ ! -e "$1" ] || [ -f "$1" ] || return 1
+    tmp=$(mktemp "${1%/*}/.cs-tmp.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s' "$2" > "$tmp" && mv -f "$tmp" "$1" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
+}
+
+# A prompt gets the unread mail as a system message, every prompt until
+# cs -msg moves it to cur/, as Claude's and Codex's prompt hooks give it.
+# A prompt also clears the wake budget, as scope-prompt.sh does for a typed
+# prompt: a wake continues its turn and never starts one, so invocationNum 0
+# is always a prompt.
+_antigravity_hook_mail_digest() {  # conversation_id
+    local mail state MAIL_DIGEST=""
+    mail=$(_antigravity_mail_dir "$1") || return 0
+    if state=$(_antigravity_mail_state_dir); then
+        rm -f "$state/wakes" 2>/dev/null || true
+    fi
+    cs_mail_digest "${mail%/mail}"
+    [ -n "$MAIL_DIGEST" ] || return 0
+    # The shape measured on 1.5.8, terminationBehavior "" (call the model) included.
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$MAIL_DIGEST" \
+        '{injectSteps: [{systemMessage: {systemMessage: $m}}], terminationBehavior: ""}' 2>/dev/null) \
+        || ANTIGRAVITY_HOOK_REPLY=""
+}
+
+# A turn that ends on its own with mail that came after its prompt goes on, so
+# an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL
+# wakes: it is the only end known to be the model's own normal one. A headless
+# agy 1.5.8 turn that used a tool (read_file) ended so on 2026-11-14, and so
+# did every turn typed into an interactive 1.5.9 run on 2026-11-15, none of
+# which used a tool. Any other end stays as it is: a turn the user stopped,
+# one that failed, one agy cut off at a limit, one a hook ended, an injected
+# response, and TERMINAL_STEP_TYPE, a stop on a step type agy treats as
+# terminal, whose list agy does not document and which may hand control back
+# to the user. If an interactive turn that uses tools turns out to end that
+# way, mail that came during it waits for the next prompt. The rest is the
+# wake Claude's hook runs too
+# (cs_mail_wake_scan and cs_mail_wake_silence, lib/02-shared.sh, which read
+# each record only from a regular file, never through a link), with its
+# records in cs's cache rather than in the mail folder, where the agent could
+# plant them (_antigravity_mail_state_dir): woke lists the messages a wake has
+# already announced, so each one wakes once and a continued turn that brings
+# none stops, and wakes counts the wakes since the last prompt against
+# CS_MAIL_WAKE_MAX (5), which ends a volley between two unattended sessions.
+# No usable directory there, no wake. CS_NO_MAIL_WAKE turns the wake off. The
+# digest names nothing in woke, so mail a prompt showed and the turn left
+# unread still wakes it once.
+_antigravity_hook_stop() {  # payload
+    local mail state answer nl='
+'
+    # shellcheck disable=SC2034  # set and read by cs_mail_wake_* (lib/02-shared.sh)
+    local MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM="" MAIL_WAKES=0
+    _antigravity_payload_read "$1" || return 0
+    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 0
+    mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
+    [ -d "$mail/new" ] || return 0
+    state=$(_antigravity_mail_state_dir make) || return 0
+    cs_mail_wake_scan "$mail" "$state/woke"
+    cs_mail_wake_silence "$state/wakes"
+    [ "$MAIL_FRESH" = 1 ] || return 0
+    answer=$(jq -nc --arg r "$(cs_mail_wake_reason)" '{decision: "continue", reason: $r}' 2>/dev/null) || return 0
+    # The count is written in the cache directory before the answer, and a
+    # wake it cannot count is not sent, so the ceiling holds whatever stands
+    # at the name. A kill after the count costs one unit of the budget: the
+    # message stays unannounced and wakes at a later Stop. woke is written once
+    # the answer is out, since writing it first could lose the wake.
+    _antigravity_mail_state_write "$state/wakes" "$((MAIL_WAKES + 1))$nl" || return 0
+    ANTIGRAVITY_HOOK_REPLY=$answer
+    AGY_MAIL_WAKE_DIR="$state" AGY_MAIL_WAKE_NAMES="$MAIL_NAMES"
+    ANTIGRAVITY_HOOK_AFTER=_antigravity_mail_wake_record
+}
+
+_antigravity_mail_wake_record() {
+    _antigravity_mail_state_write "$AGY_MAIL_WAKE_DIR/woke" "$AGY_MAIL_WAKE_NAMES" || true
 }

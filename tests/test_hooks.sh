@@ -475,6 +475,25 @@ test_stop_hooks_key_a_stop_alike() {
     assert_eq "$lib" "$b" "stop-notices.sh's copy is the library's" || return 1
 }
 
+# The mail wake's scan, silencers and reason live once, in cs-shared.sh, for
+# Claude's hook and Antigravity's alike. A scan or a wording kept in either
+# engine drifts from the other's: one would then name a sender, or silence a
+# wake, the other does not.
+test_mail_wake_scan_and_reason_live_in_the_library() {
+    local filter='| .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' tail='never reply merely to acknowledge' file loop
+    grep -q -F "$filter" "$HOOKS_DIR/cs-shared.sh" || { echo "  FAIL: no sender filter in cs-shared.sh"; return 1; }
+    grep -q -F "$tail" "$HOOKS_DIR/cs-shared.sh" || { echo "  FAIL: no wake reason in cs-shared.sh"; return 1; }
+    for file in "$HOOKS_DIR/stop-blocks.sh" "$SCRIPT_DIR/../lib/79-antigravity.sh"; do
+        # A loop over new/*.json whose body runs jq is a scan of its own.
+        loop=$(awk '/for [A-Za-z_]+ in .*\/new\/\*\.json/ { inloop = 1 }
+            inloop && /(^|[^A-Za-z_])jq( |$)/ { print FNR; exit }
+            inloop && /^[[:space:]]*done/ { inloop = 0 }' "$file")
+        assert_eq "" "$loop" "${file##*/} runs no scan of its own" || return 1
+        ! grep -q -F "$filter" "$file" || { echo "  FAIL: ${file##*/} holds a sender filter"; return 1; }
+        ! grep -q -F "$tail" "$file" || { echo "  FAIL: ${file##*/} holds the wake's reason"; return 1; }
+    done
+}
+
 # ============================================================================
 # session-auto-approve.sh
 # ============================================================================
@@ -3990,6 +4009,7 @@ run_test test_stop_hooks_parse_a_library_again_once_it_changes
 run_test test_path_helpers_print_what_dirname_and_basename_print
 run_test test_dir_lock_claim_survives_a_mkdir_that_lies
 run_test test_stop_hooks_key_a_stop_alike
+run_test test_mail_wake_scan_and_reason_live_in_the_library
 
 # --- The verdict handshake between the two Stop hooks -----------------------
 # stop-blocks.sh posts its verdict for the Stop to .cs/local/stop-verdict

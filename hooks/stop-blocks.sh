@@ -158,15 +158,12 @@ if _cs_files=$(cs_private_dir "$META_DIR"); then CS_FILES="$_cs_files"; fi
 MAILDIR=""
 [ -z "$CS_FILES" ] || MAILDIR="$CS_FILES/mail"
 MAIL_WOKE="$MAILDIR/woke"
-MAIL_UNREAD=0
+# The scan (cs_mail_wake_scan) sets MAIL_UNREAD, MAIL_NAMES and MAIL_FROM
+# beside MAIL_FRESH; a run that never scans reads only MAIL_FRESH.
 MAIL_FRESH=0
-MAIL_NAMES=""
-MAIL_FROM=""
 # Initialised here rather than inside the silencers: an unset counter would be
 # seeded by any same-named variable inherited from the environment.
 MAIL_WAKES=0
-NL='
-'
 
 # Printed as decimal: a leading zero would reach the callers' arithmetic as
 # an octal literal, and `08` aborts it. Sixteen digits or more take the default:
@@ -220,115 +217,43 @@ _mail_is_lead() {
     command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead
 }
 
-# Populate the MAIL_* globals. The re-wake guard is a snapshot of the filenames
-# already discharged, not a count and not a high-water mark: unread drops to
-# zero whenever cs -msg moves files to cur/, and filenames are not ordered by
-# arrival (same-second order is by unpadded pid). Set membership needs neither
-# property.
+# The scan, the silencers and the reason's text are cs-shared.sh's
+# (cs_mail_wake_*), which Antigravity's Stop wake runs too; this hook keeps
+# its delivery and its two records, both in the session's mailbox. Without the
+# library nothing wakes: MAIL_FRESH stays 0.
 _mail_scan() {
-    local f name from woke=""
-    # Read the snapshot ONCE and match in-shell. A fork per unread message is
-    # paid on every turn end for as long as the mail stays unread, and the idle
-    # wake re-scans all of new/ per arrival — so a burst of N deliveries would
-    # cost N(N+1)/2 forks. The ceiling makes that state ordinary rather than
-    # rare: past it mail piles up in new/ while turns keep ending.
-    # || true: an unreadable snapshot must degrade to "nothing discharged"
-    # (which over-wakes) rather than abort the hook under errexit.
-    [ ! -f "$MAIL_WOKE" ] || woke=$(<"$MAIL_WOKE") || woke=""
-    for f in "$MAILDIR"/new/*.json; do
-        [ -f "$f" ] || continue
-        MAIL_UNREAD=$((MAIL_UNREAD + 1))
-        name=${f##*/}
-        MAIL_NAMES="$MAIL_NAMES$name
-"
-        # Newlines on both sides so one name cannot match inside another.
-        case "$NL$woke$NL" in
-            *"$NL$name$NL"*) continue ;;
-        esac
-        # Every kind wakes, a task included: it waits in the mailbox for the
-        # user's accept (cs -queue accept), and nothing else tells the
-        # recipient it is there. One jq per document for the sender: a count
-        # says mail arrived but not whose, and the recipient would otherwise
-        # spend a turn on `cs -msg` just to learn whether it can wait.
-        # Cut to 40 characters and every character outside A-Z a-z 0-9 . _ @
-        # : - replaced inside jq, as the prompt digest renders a sender, so a
-        # forged or hand-written document cannot smuggle a newline, a comma,
-        # a quote or a control byte into the rendered line; coerced to a
-        # string so a numeric field cannot error the read. An unreadable
-        # document still wakes, nameless.
-        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
-             | if type == "string" then . else tostring end
-             | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null || printf '')
-        # Distinct senders only: two messages from one session is one name, and
-        # repeating it answers nothing the count has not already said.
-        case "$from" in
-            "") ;;
-            *) case "$NL$MAIL_FROM$NL" in
-                   *"$NL$from$NL"*) ;;
-                   *) MAIL_FROM="${MAIL_FROM:+$MAIL_FROM$NL}$from" ;;
-               esac ;;
-        esac
-        MAIL_FRESH=1
-    done
-}
-
-# Render the distinct senders as a clause, or nothing when no document named
-# one. Kept separate from the scan so both wakes compose the same line.
-#
-# "new from", not "from": the count beside this clause covers every unread
-# document, while these names come only from the ones the wake is announcing —
-# the discharge skip in _mail_scan runs ahead of the read that would learn a
-# sender. Naming the narrower set is the deliberate half of that trade. Naming
-# every unread sender instead would cost one jq per unread document on every
-# turn end, which is the expense _mail_scan is built to avoid, and which the
-# wake ceiling makes an ordinary state rather than a rare one.
-#
-# Each name is quoted, so one that reads as words cannot run on into the
-# instruction beside it; _mail_scan leaves no quote or comma inside a name.
-_mail_from_clause() {
-    [ -n "${MAIL_FROM:-}" ] || { printf ''; return 0; }
-    printf ', new from %s' "$(printf '%s\n' "$MAIL_FROM" | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+    command -v cs_mail_wake_scan >/dev/null 2>&1 || return 0
+    cs_mail_wake_scan "$MAILDIR" "$MAIL_WOKE"
 }
 
 # Record the snapshot as the whole of new/, which is sound only when everything
 # in it has been discharged — every caller checks that before calling. The tmp
 # name carries the pid because both wakes write this file and the idle one
 # overlaps itself: two writers sharing one tmp name splice each other, and the
-# rename then publishes the splice.
+# rename then publishes the splice. The scan reads the snapshot only from a
+# regular file, never through a link, but the writer leaves a link it finds
+# there in place: cs_write_atomic refuses one that leads out of the session,
+# and removing it first would let a link planted after that check be followed
+# out of the session, with file names the agent chose as the content. A link
+# that stays inside the session is written through, the scan then reads the
+# snapshot as empty, and that mail wakes again, up to the ceiling.
 _mail_record() {
     cs_write_atomic "$MAIL_WOKE" printf '%s' "$MAIL_NAMES" || true
 }
 
-# Apply the two silencers. A silenced run discharges nothing, so it records
-# nothing: recording would mark the arrival considered for every reader of the
-# snapshot, not just the wake that was silenced, and the message would then wait
-# for a keystroke — the gap this whole change exists to close.
-#
-# Nothing else bounds a volley: the drain's breakers gate drains, and Claude
-# Code's consecutive-Stop-block cap does not count a turn a wake itself started.
 # Past the ceiling the digest carries the backlog until a prompt clears the
 # counter (scope-prompt.sh).
 _mail_apply_silencers() {
-    # Nothing below is observable when there is nothing to silence, and this is
-    # the majority of turn ends. MAIL_WAKES is only ever read by the counter,
-    # which runs only when a wake is about to be delivered.
-    [ "$MAIL_FRESH" = 1 ] || return 0
-    [ -z "${CS_NO_MAIL_WAKE:-}" ] || { MAIL_FRESH=0; return 0; }
-    local max seen=""
-    max=$(_num_or "${CS_MAIL_WAKE_MAX:-}" 5)
-    [ ! -f "$MAILDIR/wakes" ] || seen=$(<"$MAILDIR/wakes") || seen=""
-    seen=$(_num_or "${seen//[[:space:]]/}" 0)
-    if [ "$seen" -ge "$max" ]; then
-        MAIL_FRESH=0
-    fi
-    MAIL_WAKES="$seen"
+    command -v cs_mail_wake_silence >/dev/null 2>&1 || { MAIL_FRESH=0; return 0; }
+    cs_mail_wake_silence "$MAILDIR/wakes"
 }
 
+# The count is written the same way, for the same reason. A link at its name
+# reads as the ceiling (cs_mail_wake_silence), so a linked count silences the
+# wake rather than looping it.
 _mail_count_wake() {
     cs_write_atomic "$MAILDIR/wakes" printf '%s\n' "$((MAIL_WAKES + 1))" || true
 }
-
-MAIL_REASON_TAIL="Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
 
 # --- CwdChanged: re-arm the maildir watch -------------------------------------
 # A cwd change REPLACES the session's dynamic watch list with whatever the
@@ -477,7 +402,7 @@ if [ "$HOOK_EVENT" = "FileChanged" ]; then
     # costs a duplicate wake, while recording first costs a silent strand — and
     # a strand is unrecoverable for an idle session, which submits no prompt and
     # ends no turn. Only the exit itself has to come last.
-    printf '%s\n' "Unread cross-session mail ($MAIL_UNREAD)$(_mail_from_clause). $MAIL_REASON_TAIL" >&2
+    printf '%s\n' "$(cs_mail_wake_reason)" >&2
     _mail_count_wake
     _mail_record
     exit 2
@@ -1205,7 +1130,7 @@ _mail_apply_silencers
 if [ "$MAIL_FRESH" = 1 ]; then
     # Not _stop_block, which exits: the two records below follow the print.
     # The verdict turns to block only once the block line exists, as there.
-    MAIL_BLOCK=$(jq -nc --arg r "Unread cross-session mail ($MAIL_UNREAD)$(_mail_from_clause). $MAIL_REASON_TAIL" \
+    MAIL_BLOCK=$(jq -nc --arg r "$(cs_mail_wake_reason)" \
         '{decision: "block", reason: $r}') || exit 1
     STOP_VERDICT=block
     printf '%s\n' "$MAIL_BLOCK"
