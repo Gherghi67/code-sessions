@@ -351,6 +351,9 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         _antigravity_launch_error "$(_antigravity_encrypted_refusal "$session_name")"
         return 1
     fi
+    # A vault home inherited from another encrypted session's launch is never
+    # this session's (lib/76-codex-vault.sh); a codex the agent starts gets the shell's.
+    _codex_drop_inherited_vault_home
     # Both paths are made absolute before the launch changes into the
     # session folder, where a relative one would name another file.
     agy_bin=$(command -v "$agy_bin" 2>/dev/null) || {
