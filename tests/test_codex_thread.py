@@ -894,19 +894,23 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
-        self.assertIn(top + "A  one.md\nA  two.md\n\n", agent)
-        self.assertIn(top + "[exit code 2]\nboom", agent)
-        self.assertIn(top + "[still running in Codex, session 38455]\nWarning: added host\r\n", agent)
-        self.assertIn(top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
-                            "[output 1, exit code 0]\n## cs/bots\nA  three.md\n", agent)
-        self.assertIn(top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
-                            ' {"i":1,"status":"rejected","reason":"no such file"}]\n'
-                            "[output 1, exit code 0, no output]\n", agent)
-        self.assertIn(top + '{"task": "a23", "title": "Wrap WaW bot session"}', agent)
-        self.assertIn(top + own, agent)
+        # Each tool result whole, so nothing can follow an output unseen.
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = "Script completed\nWall time 0.7 seconds\nOutput:\n\n"
+        self.assertEqual(crossed, [
+            top + "A  one.md\nA  two.md\n",
+            top + "[exit code 2]\nboom",
+            top + "[still running in Codex, session 38455]\nWarning: added host\r\n",
+            top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                  "[output 1, exit code 0]\n## cs/bots\nA  three.md\n",
+            top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
+                  ' {"i":1,"status":"rejected","reason":"no such file"}]\n'
+                  "[output 1, exit code 0, no output]\n",
+            top + '{"task": "a23", "title": "Wrap WaW bot session"}',
+            top + own,
+        ])
         for absent in ("chunk_id", "ca48b8", "wall_time_seconds", "original_token_count", "\\n"):
-            self.assertNotIn(absent, agent)
+            self.assertNotIn(absent, "".join(crossed))
 
     def test_a_lone_surrogate_in_a_command_result_never_stops_the_export(self):
         # JSON.stringify writes a string cut through an emoji with a \ud83d
