@@ -193,6 +193,9 @@ test_the_real_render_shows_the_quota() {
     payload=$(jq -c '.model.display_name = "Claude Sonnet 5.5" | .quota = {"3p-5h":{"remaining_fraction":0.1},"3p-weekly":{"remaining_fraction":0.4}}' <<< "$AGY_AFTER_TURN")
     out=$(printf '%s' "$payload" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess "$BASH" "$ADAPTER") || return 1
     assert_eq "agysess > ○ ctx 1% > ◷ 5h 90% ⋮ ◶ wk 60%" "$out" "both windows once the weekly passes 50" || return 1
+    payload=$(jq -c '.model.display_name = "Gemini 4 Flash" | .quota = {"gemini-5h":{"remaining_fraction":0.2,"reset_in_seconds":3630},"gemini-weekly":{"remaining_fraction":0.1,"reset_in_seconds":174600}}' <<< "$AGY_AFTER_TURN")
+    out=$(printf '%s' "$payload" | NO_COLOR=1 CLAUDE_SESSION_NAME=agysess "$BASH" "$ADAPTER") || return 1
+    assert_eq "agysess > ○ ctx 1% > ◷ 5h 80% · 1h0m ⋮ ◶ wk 90% · 2d0h" "$out" "the time to reset once a window is tight" || return 1
 }
 
 # agy reads the context as 0 before the first turn, and sizes the window only
