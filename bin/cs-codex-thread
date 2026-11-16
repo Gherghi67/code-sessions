@@ -234,6 +234,7 @@ CODEX_FINAL_ANSWER = "Message Type: FINAL_ANSWER\n"
 # The keys of exec_command's result, as code mode prints it.
 CODEX_COMMAND_RESULT = frozenset((
     "chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count", "output"))
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -401,7 +402,8 @@ def codex_tool_text(text):
         return text
     try:
         value = json.loads(stripped)
-        return readable(value) if holds_command(value) else text
+        # Decoded again, an unpaired escape is a lone surrogate no rollout line holds; the transcript is strict UTF-8.
+        return LONE_SURROGATE.sub("\ufffd", readable(value)) if holds_command(value) else text
     except (ValueError, RecursionError):
         return text
 

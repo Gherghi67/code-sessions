@@ -499,6 +499,25 @@ def codex_message(role, text, kind=None):
     return {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}
 
 
+# Code mode's exec: exec_command's result as a script prints it, and the call
+# and its output, the header part first (shapes from real rollouts, 2026-11).
+SCRIPT_HEADER = {"type": "input_text", "text": "Script completed\nWall time 0.7 seconds\nOutput:\n"}
+
+
+def command_result(output, **extra):
+    return dict({"chunk_id": "ca48b8", "wall_time_seconds": 0.000005834}, **extra,
+                original_token_count=219, output=output)
+
+
+def exec_call(call_id):
+    return {"type": "custom_tool_call", "name": "exec", "call_id": call_id, "input": "run()"}
+
+
+def exec_output(call_id, *printed):
+    return {"type": "custom_tool_call_output", "call_id": call_id,
+            "output": [SCRIPT_HEADER] + [{"type": "input_text", "text": text} for text in printed]}
+
+
 def claude_record(kind, content, uid, parent, **extra):
     record = {"type": kind, "uuid": uid, "parentUuid": parent, "sessionId": CLAUDE_ID,
               "timestamp": "2026-11-07T10:00:00.000Z",
@@ -889,6 +908,24 @@ class TransplantTests(HelperFixture):
         self.assertIn("[tool result]\nok", agent)
         for absent in ("chunk_id", "ca48b8", "wall_time_seconds", "original_token_count", "\\n"):
             self.assertNotIn(absent, agent)
+
+    def test_a_lone_surrogate_in_a_command_result_never_stops_the_export(self):
+        # JSON.stringify writes a string cut through an emoji with a \ud83d
+        # escape; decoded, that half is a character UTF-8 cannot hold.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", json.dumps(command_result("ok \ud83d", exit_code=0)))),
+            rollout_line("response_item", exec_call("c1")),
+            rollout_line("response_item", exec_output("c1", json.dumps({
+                "status": "fulfilled", "note": "x\udc00", "value": command_result("fine", exit_code=0)}))),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("ok \ufffd", agent)
+        self.assertIn("x\ufffd", agent)
+        self.assertFalse([ch for ch in agent if "\ud800" <= ch <= "\udfff"])
 
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())
