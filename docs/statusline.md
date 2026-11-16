@@ -349,8 +349,8 @@ export CS_STATUSLINE_BAND="periwinkle"
 # .columns, the tmux pane, the terminal, else 120, each less the frame)
 export CS_STATUSLINE_COLS=160
 
-# Columns Claude Code's prompt frame takes from a measured width (default 4;
-# add 2 x statusLine.padding when you set it)
+# Columns the host frame takes from a measured width (default 4 for Claude
+# Code, 0 for Antigravity; add 2 x statusLine.padding when you set it)
 export CS_STATUSLINE_FRAME=4
 
 # Force the Powerline rounded caps (U+E0B6/U+E0B4) on (1) or off (0),
@@ -379,6 +379,10 @@ export NO_COLOR=1
 
 Each `CS_*` key above except `CS_STATUSLINE_CAPS`, `CS_USAGE_DIR` and `CS_STATUSLINE_PARENT` can live in a settings file instead of your shell, and so can `CS_TERM_BG_RGB` from [Pinning the background](#pinning-the-background): `cs -config set CS_STATUSLINE_LAYOUT band` keeps it on this machine, `cs <name> -config set` in one session, and the next repaint reads it. A value your shell exports still wins. See [Settings file](configuration.md#settings-file).
 
+If `CS_STATUSLINE_DISABLE` was on when Antigravity started, cs passed no
+status-line command. Turning it back off then needs a relaunch; a command
+already running reads configuration changes at its next repaint.
+
 `CS_SESSIONS_ROOT` is honored the same way the rest of cs honors it.
 
 ## Codex
@@ -396,6 +400,10 @@ The installer adds the line only where `config.toml` has no status line, under a
 
 Changing the Codex list requires Python 3.11 or newer with `tomllib`. If neither `python3` on PATH nor `/usr/bin/python3` has it, cs leaves the config alone and reports that it could not change the status line.
 
+## Antigravity
+
+Antigravity's `agy` runs a status line command, fed a JSON payload close to Claude Code's, and can stack its output under its own line. Each cs launch passes it the bar for that run only, through `agy --settings`, which `agy` never saves: `bin/cs-statusline-agy` keeps the session, folder, context and width from `agy`'s payload and runs `cs-statusline` beside it with `CS_STATUSLINE_ENGINE=antigravity`, naming `agy` in `CS_STATUSLINE_PARENT`. The layout, colours and segment settings above apply; the model, limits and cost segments show nothing, since `agy`'s own line carries them. With that engine the render writes no `context-pct`, `limits` or width record. `cs -statusline disable` (which records `~/.config/cs/statusline-antigravity-off`), `CS_STATUSLINE_DISABLE`, or a `statusLine` of your own in `agy`'s `settings.json` keeps it out; a no to the installer's question, which is about Claude Code's bar, does not. [Antigravity sessions](antigravity.md#status-line) has the details.
+
 ## Install, uninstall, doctor
 
 `install.sh` deploys the `cs-statusline` and `cs-subagent-statusline` binaries to `~/.local/bin` unconditionally, but the status bar itself is claimed only with consent: with a terminal attached the installer renders a sample of the bar (a fixed payload, pinned to the segments that need no live session, in the terminal's theme where it publishes one) and then asks before registering (default yes; it also asks before replacing an existing status line), and a non-interactive install registers nothing and prints how to enable later. Consent registers both keys — the bar and the [subagent rows](#subagent-rows) — exactly as `cs -statusline enable` does.
@@ -405,6 +413,8 @@ A "no" is remembered in `~/.config/cs/statusline-declined` (under `$XDG_CONFIG_H
 ```bash
 cs -statusline enable    # register bar + subagent rows (overwrites the current status line; the command is your consent), and Codex's list where it has none
 cs -statusline disable   # remove both registrations, each only if it points at the cs binary, and cs's Codex list
+cs -statusline enable antigravity   # enable only Antigravity's line
+cs -statusline disable antigravity  # disable only Antigravity's line
 ```
 
 Claude Code reads both registrations at startup, so `enable` takes effect after the next restart — the command says so when it runs.

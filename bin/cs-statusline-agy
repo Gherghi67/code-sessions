@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ABOUTME: Antigravity CLI (agy) statusLine command — maps agy's JSON onto what cs-statusline reads, then runs it
+# ABOUTME: A cs launch hands it to agy through --settings; agy pipes its payload on stdin at each repaint
+
+# agy's payload, measured on agy 1.5.9, keeps Claude Code's paths for what
+# the bar shows: session_id, cwd, workspace.current_dir and
+# context_window.used_percentage. It also carries a model and agy's own quota,
+# which agy's default line, stacked above this one, already shows, and the
+# terminal's width as terminal_width. context_window_size is 0 until the
+# model is known, and used_percentage reads 0 before the first turn, where
+# Claude Code sends none; the context shows once the model has read input.
+#
+# So the payload cs-statusline gets keeps the session, the folder and the
+# context, takes terminal_width as its columns, and leaves out the model, the
+# limits and the cost. CS_STATUSLINE_ENGINE tells cs-statusline the bar is not
+# Claude Code's, so it writes none of the stamps Claude's hooks and the cs mod
+# read. CS_STATUSLINE_PARENT names agy, the process every repaint shares,
+# since this script is a new process each time and cs-statusline keys its
+# caches on its parent.
+#
+# agy turns a custom status line off after a run of failures, so every path
+# exits 0, and a missing renderer or jq prints nothing.
+
+set -uo pipefail
+
+_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
+_renderer="$_dir/cs-statusline"
+[ -f "$_renderer" ] && [ -x "$_renderer" ] || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+
+_input=""
+[ -t 0 ] || IFS= read -r -d '' _input 2>/dev/null || true
+[ -n "$_input" ] || exit 0
+
+_mapped=$(jq -c '
+    def num: if type == "number" then . else null end;
+    def text: if type == "string" then . else "" end;
+    def obj: if type == "object" then . else {} end;
+    (.context_window | obj) as $ctx
+    | {
+        session_id: (.session_id | text),
+        cwd: (.cwd | text),
+        workspace: {current_dir: ((.workspace | obj).current_dir // .cwd | text)},
+        context_window: {
+            used_percentage: (if (($ctx.context_window_size | num) // 0) > 0
+                                 and (($ctx.total_input_tokens | num) // 0) > 0
+                              then ($ctx.used_percentage | num) else null end)
+        },
+        columns: (.terminal_width | num)
+    }' <<< "$_input" 2>/dev/null) || exit 0
+
+CS_STATUSLINE_ENGINE=antigravity CS_STATUSLINE_PARENT="$PPID" "$_renderer" <<< "$_mapped" 2>/dev/null
+exit 0

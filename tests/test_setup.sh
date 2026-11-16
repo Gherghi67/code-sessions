@@ -14,7 +14,7 @@ stage_checkout() {
     for payload in lib hooks skills mods completions scripts; do
         cp -R "$REPO/$payload" "$CHECKOUT/"
     done
-    for payload in cs-secrets cs-codex-thread cs-statusline cs-subagent-statusline; do
+    for payload in cs-secrets cs-codex-thread cs-statusline cs-subagent-statusline cs-statusline-agy; do
         cp "$REPO/bin/$payload" "$CHECKOUT/bin/"
     done
     cp "$REPO/tui/Cargo.toml" "$REPO/tui/Cargo.lock" "$CHECKOUT/tui/"

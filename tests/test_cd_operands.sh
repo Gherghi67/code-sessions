@@ -37,7 +37,7 @@ _cd_without_end_of_options() {  # file...
 # standalone binaries, the installer's template and the build script.
 _shipped_shell_files() {
     (cd "$REPO_ROOT" && printf '%s\n' lib/*.sh hooks/*.sh skills/*/scripts/*.sh \
-        bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline install.sh.in build.sh)
+        bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline bin/cs-statusline-agy install.sh.in build.sh)
 }
 
 test_shipped_shell_puts_end_of_options_before_a_variable_cd_operand() {
@@ -54,7 +54,7 @@ test_the_scanned_files_include_each_kind_of_shipped_shell() {
     local listed f
     listed=$(_shipped_shell_files)
     for f in lib/02-shared.sh hooks/cs-shared.sh skills/finish/scripts/finish.sh \
-        bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline install.sh.in build.sh; do
+        bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline bin/cs-statusline-agy install.sh.in build.sh; do
         case $'\n'"$listed"$'\n' in
             *$'\n'"$f"$'\n'*) ;;
             *) echo "  FAIL: $f is not among the scanned files"; return 1 ;;

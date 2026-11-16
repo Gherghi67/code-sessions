@@ -695,7 +695,8 @@ make_picker_checkout() {  # repo
     done
     cp "$real/install.sh" "$repo/install.sh"
     cp "$real/bin/cs" "$real/bin/cs-secrets" "$real/bin/cs-statusline" \
-       "$real/bin/cs-subagent-statusline" "$real/bin/cs-codex-thread" "$repo/bin/" 2>/dev/null || true
+       "$real/bin/cs-subagent-statusline" "$real/bin/cs-codex-thread" "$real/bin/cs-statusline-agy" \
+       "$repo/bin/" 2>/dev/null || true
 }
 
 test_codex_only_install_with_a_local_picker_leaves_claude_absent() {
@@ -790,7 +791,8 @@ _copy_build_inputs() {  # dir
     for d in hooks skills mods completions; do
         cp -R "$real/$d" "$repo/$d"
     done
-    cp -p "$real/bin/cs-secrets" "$real/bin/cs-codex-thread" "$real/bin/cs-statusline" "$real/bin/cs-subagent-statusline" "$repo/bin/"
+    cp -p "$real/bin/cs-secrets" "$real/bin/cs-codex-thread" "$real/bin/cs-statusline" "$real/bin/cs-subagent-statusline" \
+        "$real/bin/cs-statusline-agy" "$repo/bin/"
     rm -f "$repo/hooks/cs-shared.sh"
 }
 
@@ -3740,7 +3742,7 @@ test_build_embeds_the_sha256_of_every_payload_file() {
     expected=$(
         {
             printf '%s\n' bin/cs bin/cs-secrets bin/cs-codex-thread bin/cs-statusline bin/cs-subagent-statusline \
-                completions/cs.bash completions/_cs
+                bin/cs-statusline-agy completions/cs.bash completions/_cs
             for entry in $(extract_array "$real/install.sh" CS_HOOK_LIBS) $(extract_array "$real/install.sh" CS_HOOKS); do
                 echo "hooks/$entry"
             done
@@ -5344,7 +5346,8 @@ run_test test_rotate_wrap_keys_misplaced_key_the_user_also_binds_stays_a_conflic
 run_test test_rotate_wrap_keys_move_never_doubles_a_key_its_context_holds
 run_test test_rotate_wrap_keys_move_never_doubles_a_key_a_later_block_holds
 # Antigravity's hook goes where agy is, whatever engines the install chose,
-# and an uninstall takes it back.
+# and an uninstall takes it back. So does its status line: the adapter, and
+# the cs-statusline it runs, which a Codex-only install has no other use for.
 test_install_registers_the_antigravity_hook_where_agy_is() {
     local fake_home="$TEST_TMPDIR/agy-hook" fake_agy="$TEST_TMPDIR/bin/agy" plugin script before rc=0
     mkdir -p "$fake_home" "$TEST_TMPDIR/bin"
@@ -5361,12 +5364,19 @@ test_install_registers_the_antigravity_hook_where_agy_is() {
     done
     _assert_antigravity_skills_deployed "$plugin" || return 1
     assert_not_exists "$fake_home/.gemini/config/skills" "nothing is written into the user's global skills folder" || return 1
+    for script in cs-statusline cs-statusline-agy; do
+        [ -x "$fake_home/.local/bin/$script" ] && cmp -s "$SCRIPT_DIR/../bin/$script" "$fake_home/.local/bin/$script" \
+            || { echo "  FAIL: $script is not deployed executable for Antigravity's status line"; return 1; }
+    done
+    assert_not_exists "$fake_home/.gemini/antigravity-cli/settings.json" "agy's settings are not written" || return 1
     before=$(_antigravity_plugin_state "$plugin")
     HOME="$fake_home" AGY_BIN="$fake_agy" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
     assert_eq "$before" "$(_antigravity_plugin_state "$plugin")" "a reinstall changes nothing" || return 1
     printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/agy-uninstall.out" 2>&1 || rc=$?
     assert_eq 0 "$rc" "the uninstall finishes" || { cat "$TEST_TMPDIR/agy-uninstall.out"; return 1; }
     assert_not_exists "$plugin" "an uninstall removes cs's plugin, skills and all" || return 1
+    assert_not_exists "$fake_home/.local/bin/cs-statusline-agy" "an uninstall removes the status line adapter" || return 1
+    assert_not_exists "$fake_home/.local/bin/cs-statusline" "and the cs-statusline it ran" || return 1
     assert_file_contains "$TEST_TMPDIR/agy-uninstall.out" "Removed the cs hook and skills for Antigravity"
 }
 

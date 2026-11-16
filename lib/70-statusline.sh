@@ -32,6 +32,14 @@ _statusline_declined_marker() {
     echo "${CS_CONFIG_DIR:-$HOME/.config/cs}/statusline-declined"
 }
 
+# Antigravity's line has its own off switch: cs -statusline disable writes it,
+# enable and cs -uninstall remove it. The installer's question is about Claude
+# Code's bar. Antigravity deliberately keeps an independent choice, so that
+# declined marker does not turn its line off.
+_statusline_antigravity_off_marker() {
+    echo "${CS_CONFIG_DIR:-$HOME/.config/cs}/statusline-antigravity-off"
+}
+
 # The rounded capsule caps are the bar's one private-use glyph, so nothing
 # draws them until this machine has said its font has them. The answer lives
 # here, per machine; bin/cs-statusline reads it before every render (KEEP THE
@@ -96,12 +104,67 @@ _statusline_codex() {  # enable|disable
     esac
 }
 
+# The Antigravity side writes nothing of agy's: each launch passes agy the line
+# for that run (_antigravity_statusline_state, lib/79-antigravity.sh), and the
+# off marker is what the launch reads. The marker is set or cleared wherever
+# agy is or is not, so an agy installed later follows the choice; what it
+# means is said only where agy is, as the installer gives it the line there.
+_statusline_antigravity() {  # enable|disable
+    local marker here="" agy_bin=""
+    marker="$(_statusline_antigravity_off_marker)"
+    { command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; } && here=1
+    case "$1" in
+        enable)
+            rm -f "$marker" 2>/dev/null || true
+            [ -n "$here" ] || return 0
+            _antigravity_statusline_state
+            case "$_AGY_STATUSLINE" in
+                on)
+                    agy_bin=$(command -v "${AGY_BIN:-agy}" 2>/dev/null) || agy_bin=""
+                    if [ -z "$agy_bin" ]; then
+                        warn "Antigravity CLI not found: ${AGY_BIN:-agy}; install it before starting an Antigravity session."
+                    elif ! _antigravity_flags_listed "$agy_bin" --settings 2>/dev/null; then
+                        warn "Antigravity status line: $agy_bin does not list --settings, so sessions show only agy's own line; update it with: agy update"
+                    else
+                        info "Antigravity sessions cs starts show it under agy's own line, from their next launch."
+                    fi
+                    ;;
+                own) info "Antigravity has a status line of your own in $(_antigravity_settings_file); cs's launches leave it as it is." ;;
+                disabled) info "CS_STATUSLINE_DISABLE is on, so Antigravity sessions start without it." ;;
+                missing) warn "Antigravity's status line is not installed in ${CS_INSTALL_DIR:-$HOME/.local/bin}: run setup.sh again to add $CS_ANTIGRAVITY_STATUSLINE." ;;
+                unreadable) warn "$(_antigravity_settings_file) is not a JSON object agy can read, so cs passes Antigravity no status line until it is." ;;
+                no-jq) warn "Antigravity's status line needs jq, which is not installed." ;;
+                *) warn "Antigravity sessions still start without it: $marker could not be removed." ;;
+            esac
+            ;;
+        disable)
+            if mkdir -p "$(dirname "$marker")" 2>/dev/null && touch "$marker" 2>/dev/null; then
+                [ -z "$here" ] || info "Antigravity sessions cs starts no longer show it, from their next launch."
+            elif [ -n "$here" ]; then
+                warn "Antigravity sessions cs starts still show it: the choice could not be recorded in $marker"
+            fi
+            ;;
+    esac
+}
+
 # disable strips only an cs-statusline registration, never a foreign one.
 # Register or remove the cs-statusline entry in Claude Code's settings.json.
 # enable overwrites whatever is registered (the command is explicit consent);
 # disable strips only a cs-statusline registration, never a foreign one.
 run_statusline_cmd() {
     local action="${1:-}"
+    case "$action" in
+        enable|disable)
+            [ "$#" -le 2 ] || error "Usage: cs -statusline enable|disable [antigravity]"
+            if [ -n "${2:-}" ]; then
+                [ "$2" = antigravity ] || error "Unknown status-line engine: $2 (expected antigravity)"
+                # This switch belongs to agy alone; even invalid Claude
+                # settings must not prevent recording its independent choice.
+                _statusline_antigravity "$action"
+                return 0
+            fi
+            ;;
+    esac
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
     local declined
     declined="$(_statusline_declined_marker)"
@@ -129,6 +192,7 @@ run_statusline_cmd() {
                 error "$CS_SETTINGS_ERROR"
             fi
             _statusline_codex enable
+            _statusline_antigravity enable
             ;;
         disable)
             # A file jq cannot parse would read below as "not cs-statusline";
@@ -155,6 +219,7 @@ run_statusline_cmd() {
                 esac
             fi
             _statusline_codex disable
+            _statusline_antigravity disable
             # Guarded for the reason install.sh documents: this runs under
             # errexit, so an unwritable config dir would abort after the
             # registration was already stripped, leaving the command half done
@@ -187,7 +252,7 @@ run_statusline_cmd() {
             fi
             ;;
         *)
-            error "Usage: cs -statusline enable|disable|caps on|off|ask"
+            error "Usage: cs -statusline enable|disable [antigravity], or caps on|off|ask"
             ;;
     esac
 }

@@ -18,12 +18,12 @@ set -uo pipefail
 # on what the setting does for you. Walked with parameter expansion only, so
 # loading forks nothing.
 _CS_CONFIG_SPEC=(
-    'CS_STATUSLINE_DISABLE|Status line|Status line|flagoff|flag|-|off|now|applies at the next repaint|Draws the line under the prompt with the session, branch, model, context and usage limits.'
+    'CS_STATUSLINE_DISABLE|Status line|Status line|flagoff|flag|-|off|now+launch|applies at the next repaint; Antigravity needs a relaunch if disabled at startup|Draws the line under the prompt with the session, branch, model, context and usage limits.'
     'CS_STATUSLINE_LAYOUT|Status line|Layout|choice|enum|quiet,band,capsules|quiet|now|applies at the next repaint|How the status line looks: plain text, one full-width band of colour, or capsules.'
     'CS_STATUSLINE_SEGMENTS|Status line|Segments|text|segments|-|logo,session,notes,mail,git,model,ctx,limits|now|applies at the next repaint|Which items the status line shows, in order, as a comma-separated list.'
     'CS_STATUSLINE_BAND|Status line|Band colour|text|band|-|session|now|applies at the next repaint|The colour of the band and the session chip; session gives each session its own colour.'
     'CS_STATUSLINE_COLS|Status line|Width in columns|text|cols|-|measured|now|applies at the next repaint|A fixed width for the status line; unset, it fits the terminal.'
-    'CS_STATUSLINE_FRAME|Status line|Frame columns|text|num|-|4|now|applies at the next repaint|Columns the prompt frame takes from the measured width, so the line is not cut short.'
+    'CS_STATUSLINE_FRAME|Status line|Frame columns|text|num|-|engine|now|applies at the next repaint|Columns the host frame takes from the measured width; defaults to 4 for Claude Code and 0 for Antigravity.'
     'CS_STATUSLINE_CTX_WARN|Status line|Context warn %|text|num|-|40|now|applies at the next repaint|Context use at which the gauge turns to its warning colour.'
     'CS_STATUSLINE_CTX_CRIT|Status line|Context critical %|text|num|-|60|now|applies at the next repaint|Context use at which the gauge turns to its critical colour.'
     'CS_USAGE_NO_REFRESH|Status line|Usage refresh|flagoff|flag|-|off|now|applies at the next repaint|Fetches your Fable usage for the status line; off, it shows only what is already cached.'
@@ -630,16 +630,16 @@ _sl_parent_pid() {
 
 # This render's own terminal device, in _OWN_TTY, empty when it has none.
 # `tty` names the terminal on stdin, and Claude Code runs the render with the
-# JSON payload piped to stdin, so under Claude Code the answer is always empty
-# (`not a tty`) and only a render started from a shell gets a device. The
-# answer is the same for every render of a conversation either way, and `tty`
-# is a program, so asking it on every render costs a process per render in every
-# open session: it is cached by the same parent identity the tmux caches use. An entry expires with the pid it is
+# JSON payload piped to stdin, as does Antigravity. A builtin test answers that
+# case without a process or a cache entry for every conversation. Only a
+# render started with terminal input needs tty(1); its answer is cached by the
+# same parent identity the tmux caches use. An entry expires with the pid it is
 # keyed on becoming plausibly reusable, not with the terminal, which is why the
 # age is the tmux ancestry cache's rather than a terminal session's.
 OWN_TTY_MAX_AGE=300
 _sl_own_tty() {
     _OWN_TTY=""
+    [ -t 0 ] || return 0
     _sl_parent_pid
     if _cache_read tty "$_PARENT" "$OWN_TTY_MAX_AGE"; then
         _OWN_TTY="$_CACHE_TEXT"
@@ -1330,7 +1330,7 @@ _parse_stdin() {
         # a claude still running after `cs -rm <name> --force` keeps rendering,
         # and making the whole path would build the removed session again. A
         # .cs/local a hook made in between is the directory the stamp wanted.
-        if [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${SL_CTX:-}" ] && ! _session_files_tracked; then
+        if _sl_for_claude && [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${SL_CTX:-}" ] && ! _session_files_tracked; then
             _pctdir="$SL_LOCAL_DIR"
             if [ -d "$_pctdir" ] || mkdir "$_pctdir" 2>/dev/null || [ -d "$_pctdir" ]; then
                 _read_state_key "$_pctdir/state" claude_session_id
@@ -1366,7 +1366,7 @@ $fields
 EOF
     # Stamp rate-limit state for cs -usage window anchoring. Same partition
     # rules as context-pct: machine-local, atomic, best-effort.
-    if [ -n "${CLAUDE_SESSION_NAME:-}" ] && { [ -n "${SL_5H:-}" ] || [ -n "${SL_WK:-}" ]; } && ! _session_files_tracked; then
+    if _sl_for_claude && [ -n "${CLAUDE_SESSION_NAME:-}" ] && { [ -n "${SL_5H:-}" ] || [ -n "${SL_WK:-}" ]; } && ! _session_files_tracked; then
         _limdir="$SL_LOCAL_DIR"
         if [ -d "$_limdir" ] || mkdir "$_limdir" 2>/dev/null || [ -d "$_limdir" ]; then
             _sl_now
@@ -1385,6 +1385,14 @@ EOF
         fi
     fi
     return 0
+}
+
+# Whether this render draws for Claude Code. bin/cs-statusline-agy runs this
+# script for Antigravity with CS_STATUSLINE_ENGINE=antigravity, and there the
+# stamps above and the width record below, which Claude's hooks and the cs mod
+# read for a Claude conversation, are left alone.
+_sl_for_claude() {
+    [ "${CS_STATUSLINE_ENGINE:-claude}" = claude ]
 }
 
 # Whether git tracks this session's control files, as the hooks last found it:
@@ -2410,6 +2418,7 @@ EOF
 # blink would freeze on whichever phase it last drew. Plain mode has no colour,
 # so no mark.
 _seg_logo() {
+    _sl_for_claude || return 0
     [ "$LEVEL" = "plain" ] && return 0
     local ink=brand
     if [ -n "${CLAUDE_SESSION_NAME:-}" ] \
@@ -2751,6 +2760,7 @@ _known_cells() {  # text
 # neither write nor remove one. Same partition rules as context-pct:
 # machine-local, best-effort, nothing while git tracks the control files.
 _width_file() {
+    _sl_for_claude || return 1
     [ -n "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" ] || return 1
     _WIDTH_FILE="$SESSIONS_ROOT/${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}/.cs/local/statusline-width"
     [ -d "${_WIDTH_FILE%/*}" ] || return 1
@@ -3031,11 +3041,11 @@ _sl_tty_cols() {
 # The band's width in cells, in _BAND_W, never under 20: CS_STATUSLINE_COLS
 # as given, since a caller that sets it already knows the cells it may use;
 # else a measured width, stdin's .columns, the pane's width inside a tmux this
-# process is really in, the terminal's, or 120, less the frame Claude Code
-# draws around the status line (CS_STATUSLINE_FRAME, default 4: two columns
-# each side, more with statusLine.padding).
+# process is really in, the terminal's, or 120, less the host's frame.
+# CS_STATUSLINE_FRAME defaults to 4 for Claude Code (two columns each side,
+# more with statusLine.padding) and 0 for Antigravity, which uses every cell.
 _band_width() {
-    local cols=""
+    local cols="" frame=4
     if _is_cols "${CS_STATUSLINE_COLS:-}"; then
         _BAND_W="$CS_STATUSLINE_COLS"
     else
@@ -3049,7 +3059,8 @@ _band_width() {
             _sl_tty_cols
             cols="${_TTY_COLS:-120}"
         fi
-        _num_or "${CS_STATUSLINE_FRAME:-}" 4
+        [ "${CS_STATUSLINE_ENGINE:-claude}" != antigravity ] || frame=0
+        _num_or "${CS_STATUSLINE_FRAME:-}" "$frame"
         _BAND_W=$(( 10#$cols - 10#$_NUM ))
     fi
     [ "$_BAND_W" -ge 20 ] || _BAND_W=20

@@ -49,7 +49,7 @@ Commands:
   -spawn <name> [--engine claude|codex|antigravity]  Open a session in the session manager’s tmux session (--brief <file> hands it a brief; --task "..." seeds and arms its queue)
   -conversations      Show the session's conversation chain (rotations, lineage)
   -doctor, -diag      Run health checks (Keychain, hooks, memory, audit, tokens)
-  -statusline <cmd>   enable|disable the cs status line; caps on|off|ask records whether your font has the rounded caps
+  -statusline <cmd>   enable|disable [antigravity] the cs status line; caps on|off|ask records whether your font has the rounded caps
   -config list        Every cs setting: its value, where it comes from and when a change applies, then the lines the files skip (--porcelain prints tab-separated records for tools)
   -config get <KEY>   The value readers see now; empty when nothing sets it
   -config set <KEY> <value>  Keep a setting in this machine's ~/.config/cs/config (your environment still wins)
