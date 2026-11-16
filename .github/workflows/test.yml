@@ -91,12 +91,16 @@ jobs:
       # 1200 s watchdog on the macOS runners. It took 738 s at 1c4b3af3 (187
       # tests), 1128 s once v2026.10.11 merged (212), and the next run was cut
       # at 181 of 213 with no failure; alone on a Mac it takes 1317 s.
-      # Upstream's own runs it in about 600 s.
+      # Upstream's own runs it in about 600 s. At 233 tests it reached the
+      # 1800 s limit: 1149 to 1661 s on main's macOS runs in November 2026,
+      # then cut at 1800 s in two of three attempts on PR #38. Run side by side
+      # on one Mac, main took 1781 s and that PR's head 1782 s, so the suite
+      # had outgrown the limit, not the PR. 2700 s is 1.5 times the old limit.
       - name: Run bash test suites
         env:
           CS_TEST_SHARD: ${{ matrix.shard }}/2
           CS_TEST_REQUIRE_TOOLS: age age-keygen jq bun
-          CS_TEST_SUITE_TIMEOUT: 1800
+          CS_TEST_SUITE_TIMEOUT: 2700
         run: bash tests/run_all.sh
 
   build-sync:
