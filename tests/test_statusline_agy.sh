@@ -26,13 +26,15 @@ AGY_STARTING='{"cwd":"/work/agysess","session_id":"","model":null,"workspace":{"
 AGY_QUOTA='{"3p-5h":{"remaining_fraction":1,"reset_time":"2026-11-16T16:44:09Z","reset_in_seconds":17999},"3p-weekly":{"remaining_fraction":1,"reset_time":"2026-11-23T11:44:09Z","reset_in_seconds":604799},"gemini-5h":{"remaining_fraction":0.97945833,"reset_time":"2026-11-16T15:37:12Z","reset_in_seconds":13982},"gemini-argon-wtu-weekly":{"remaining_fraction":0.8842949,"reset_time":"2026-11-21T15:41:11Z","reset_in_seconds":446221},"gemini-weekly":{"remaining_fraction":0.9794862,"reset_time":"2026-11-22T22:20:09Z","reset_in_seconds":556559}}'
 
 # The rate_limits the adapter hands over for payload $1 with model $2 (a
-# display name, or null) and quota $3. The previous call's payload is removed
+# display name, a whole model object, or null) and quota $3. The previous call's payload is removed
 # first, so an adapter that dies before the renderer runs reads as that, not
 # as the null the call before it left.
 _quota_rate_limits() {
     local payload
     payload=$(jq -c --argjson model "$2" --argjson quota "$3" \
-        '.model = (if $model == null then null else {id: $model, display_name: $model} end) | .quota = $quota' <<< "$1")
+        '.model = (if $model == null or ($model | type) == "object" then $model
+                   else {id: $model, display_name: $model} end)
+         | .quota = $quota' <<< "$1")
     rm -f "$STUB_IN"
     printf '%s' "$payload" | "$STUB_DIR/cs-statusline-agy" > /dev/null
     if [ -f "$STUB_IN" ]; then
@@ -136,6 +138,26 @@ test_the_quota_never_borrows_another_familys_bucket() {
     assert_eq 'null' \
         "$(_quota_rate_limits "$AGY_AFTER_TURN" '"Claude Sonnet 5.5"' '{"gemini-5h":{"remaining_fraction":0.1},"gemini-weekly":{"remaining_fraction":0.1}}')" \
         "a third-party model with only Gemini buckets shows no quota" || return 1
+}
+
+# agy names the model twice, as display_name and id. An empty or missing
+# display name falls through to the id, and a Gemini model given as a slug
+# still spends the Gemini buckets.
+test_the_quota_reads_the_model_from_either_name() {
+    local quota='{"gemini-5h":{"remaining_fraction":0.9},"3p-5h":{"remaining_fraction":0.1}}'
+    _stub_install
+    assert_eq '{"five_hour":{"resets_at":null,"used_percentage":10}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '{"id":"Gemini 4 Flash"}' "$quota")" \
+        "the id alone names the model" || return 1
+    assert_eq '{"five_hour":{"resets_at":null,"used_percentage":10}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '{"display_name":"","id":"Gemini 4 Flash"}' "$quota")" \
+        "an empty display name falls through to the id" || return 1
+    assert_eq '{"five_hour":{"resets_at":null,"used_percentage":10}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '{"id":"models/gemini-4-flash"}' "$quota")" \
+        "a Gemini slug is a Gemini model" || return 1
+    assert_eq '{"five_hour":{"resets_at":null,"used_percentage":90}}' \
+        "$(_quota_rate_limits "$AGY_AFTER_TURN" '{"display_name":"","id":"claude-sonnet-5-5"}' "$quota")" \
+        "any other id is a third-party model" || return 1
 }
 
 # A bucket agy sends in another shape is skipped, not guessed at: no
@@ -411,6 +433,7 @@ test_statusline_rejects_an_unknown_engine_before_writing() {
 run_test test_the_adapter_maps_agy_payload_onto_cs_statusline_input
 run_test test_the_quota_maps_onto_rate_limits_for_the_running_model
 run_test test_the_quota_never_borrows_another_familys_bucket
+run_test test_the_quota_reads_the_model_from_either_name
 run_test test_the_quota_tolerates_what_agy_may_send
 run_test test_the_real_render_shows_the_quota
 run_test test_the_context_waits_for_the_first_turn

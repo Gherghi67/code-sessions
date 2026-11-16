@@ -17,7 +17,8 @@
 # these names. Claude Code sends the percentage used of a five_hour and a
 # seven_day window with the reset as an epoch, so each window here takes the
 # most-used bucket ending in -5h or -weekly of the running model's family:
-# gemini-* for a Gemini model, 3p-* for any other. A bucket named for one
+# gemini-* for a model whose display name (else id) has "gemini" in it,
+# 3p-* for any other. A bucket named for one
 # model counts for its whole family, so a window may read higher than the
 # running model has used, never lower. A family with no usable bucket for a
 # window leaves that window out, other windows are not drawn, and until the
@@ -56,9 +57,10 @@ _mapped=$(jq -c '
         // (($bucket.reset_in_seconds | num) as $s
             | if $s == null then null else (now + $s | floor) end);
     (.context_window | obj) as $ctx
-    | ((.model | obj) | (.display_name // .id) | text | ascii_downcase) as $model
+    | (.model | obj | [(.display_name, .id) | text | select(. != "")]
+       | .[0] // "" | ascii_downcase) as $model
     | (if $model == "" then null
-       elif ($model | startswith("gemini")) then "gemini-"
+       elif ($model | contains("gemini")) then "gemini-"
        else "3p-" end) as $family
     | [if $family == null then empty
        else (.quota | obj) | to_entries[] | select(.key | startswith($family)) end
