@@ -1086,6 +1086,25 @@ class TransplantTests(HelperFixture):
             top + "[output 1, exit code 0]\nboom\n\nall checks passed",
         ])
 
+    def test_a_long_result_lists_every_status_before_the_cut(self):
+        # Printed by separate text() calls, a long first output would push
+        # the second result's head, and its failure, past the cut.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", compact(command_result("y" * 5000, exit_code=0)),
+                                                      compact(command_result("fatal", exit_code=1)))),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertTrue(crossed.startswith(
+            SCRIPT_HEADER["text"] + "\n[results: output 1, exit code 0; output 2, exit code 1]\n\n"
+            "[output 1, exit code 0]\nyyy"), crossed[:300])
+        self.assertIn("exit code 1", crossed[:4000])
+
     def test_a_script_s_own_keys_stay_beside_its_command_result(self):
         # A script that spreads a result into its own object ({...r, label})
         # keeps its keys: they stay in the skeleton beside the placeholder,

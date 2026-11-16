@@ -460,7 +460,8 @@ def codex_script_output(texts):
     Otherwise each printed value holding results crosses as its structure's
     skeleton, each result in it a placeholder numbered across the tool
     result, then each output as its own block. Text around those values
-    crosses as written."""
+    crosses as written. Each result's status comes back too, in number
+    order."""
     sentinel = "\x00cs-output-{}-" + uuid.uuid4().hex + "\x00"
     found = []
     parts = [(text, codex_tool_text(text, found, sentinel)) for text in texts]
@@ -491,10 +492,10 @@ def codex_script_output(texts):
 
     return [text if pieces is None else "".join(piece if isinstance(piece, str) else crossed(*piece)
                                                 for piece in pieces)
-            for text, pieces in parts]
+            for text, pieces in parts], [status for _, status in found]
 
 
-def codex_output(output, code_mode):
+def codex_output(output, code_mode, limit):
     if isinstance(output, str):
         return output
     if isinstance(output, list):
@@ -502,10 +503,17 @@ def codex_output(output, code_mode):
         if code_mode and texts and CODEX_SCRIPT_HEADER.match(texts[0]):
             # A script printing a command's stdout that is itself a result-shaped object is still
             # converted: nothing tells it apart from text(result).
-            return "\n".join(texts[:1] + codex_script_output(texts[1:]))
+            printed, statuses = codex_script_output(texts[1:])
+            text = "\n".join(texts[:1] + printed)
+            if len(statuses) > 1 and limit and len(text) > limit:
+                # The cut could hide a later result's head, and its failure: every status comes first.
+                index = "[results: " + "; ".join("output {}".format(number) + (", " + status if status else "")
+                                                 for number, status in enumerate(statuses, 1)) + "]\n"
+                text = "\n".join(texts[:1] + [index] + printed)
+            return text
         return "\n".join(texts)
     if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
-        return codex_output(output["content"], code_mode)
+        return codex_output(output["content"], code_mode, limit)
     return "" if output is None else json.dumps(output, ensure_ascii=False)
 
 
@@ -532,7 +540,7 @@ def codex_item(history, item, timestamp, limit):
         # Codex records no failure flag: a failed call's output says so itself.
         call_id = item.get("call_id")
         code_mode = isinstance(call_id, str) and history.calls.get(call_id) in CODEX_CODE_MODE
-        history.add("assistant", tool_result(codex_output(item.get("output"), code_mode), limit), timestamp)
+        history.add("assistant", tool_result(codex_output(item.get("output"), code_mode, limit), limit), timestamp)
     elif kind == "local_shell_call":
         action = item.get("action")
         command = action.get("command") if isinstance(action, dict) else None

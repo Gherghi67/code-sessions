@@ -125,25 +125,27 @@ The other direction writes the Codex thread as a Claude transcript that Claude
 resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)
 stay behind, while a prompt the user wrapped in a tag crosses. In code mode,
-Codex's `exec` and `wait` tools record what a script passes to `text()`, as
-JSON when it is not a string, so a command run from a script arrives as
-`exec_command`'s result object. cs carries a single such result as the
-command's own output, marked `[exit code N]` when not 0 or
-`[still running in Codex, session N]`. When a tool result holds several
+Codex's `exec` and `wait` tools record what a script passes to `text()`, as JSON
+when it is not a string, so a command run from a script arrives as
+`exec_command`'s result object. cs carries a single such result, when nothing is
+printed after it, as the command's own output, marked `[exit code N]` when not 0
+or `[still running in Codex, session N]`. When a tool result holds several
 results, or a structure around one (`Promise.allSettled`'s array, say), the
 structure crosses as compact JSON with each result replaced by
 `<output k, status>` (keys a script added to a result stay in the JSON beside
-its placeholder, so such a result crosses this way even alone), followed by
-each output under its own `[output k, status]` line. Results that follow other text in a part, such as
-Codex's truncation warning, convert the same way, and that text stays. The
-result's chunk ID, wall time and token count stay behind, and all of this
-happens before the tool-result cut; other tools'
-output, and JSON holding no command result, cross as written. A sub-agent's
-final answer crosses cut like a tool result; its other messages are encrypted
-and stay. After a Codex compaction only the prompts Codex kept cross: its
-summary is encrypted. A conversation carried on again holds only cs's newest
-note. [Getting started](getting-started.md#resume-and-switch-engines) shows
-the prompt.
+its placeholder, so such a result crosses this way even alone), followed by each
+output under its own `[output k, status]` line, which a single result with text
+printed after it gets too. A result that starts a line after other text, such as
+Codex's truncation warning, converts the same way, and that text stays. When a
+tool result holding several results would be cut, a line after the script's
+header lists every result's status first. The result's chunk ID, wall time and
+token count stay behind, and all of this happens before the tool-result cut;
+other tools' output, and JSON holding no command result, cross as written. A
+sub-agent's final answer crosses cut like a tool result; its other messages are
+encrypted and stay. After a Codex compaction only the prompts Codex kept cross:
+its summary is encrypted. A conversation carried on again holds only cs's newest
+note. [Getting started](getting-started.md#resume-and-switch-engines) shows the
+prompt.
 
 To carry the work across in a written handoff instead, ask for
 `$switch` in Codex (or `/switch` in Claude), optionally naming the engine and
