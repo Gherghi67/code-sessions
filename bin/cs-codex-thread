@@ -157,6 +157,22 @@ class AppServer:
         })
         self.send({"method": "initialized"})
 
+    def signal_group(self, sig):
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                os.killpg(self.process.pid, sig)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # macOS can report EPERM while an exited launcher's group is
+                # disappearing. Retry only after the launcher exits, and keep
+                # persistent permission failures visible.
+                if self.process.poll() is None or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+
     def close(self):
         self.selector.close()
         self.process.stdin.close()
@@ -166,9 +182,7 @@ class AppServer:
             pass
         # Terminate the private process group, including children a launcher left.
         for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(self.process.pid, sig)
-            except ProcessLookupError:
+            if not self.signal_group(sig):
                 break
             if sig == signal.SIGTERM:
                 try:

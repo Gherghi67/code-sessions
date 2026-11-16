@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 HELPER = Path(__file__).resolve().parents[1] / "bin/cs-codex-thread"
@@ -290,6 +290,40 @@ class BootstrapTests(HelperFixture):
     def test_cleanup_after_success_can_kill_a_stubborn_server(self):
         result = self.run_helper('cleanup')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cleanup_retries_a_disappearing_group_after_launcher_exit(self):
+        helper = runpy.run_path(str(HELPER))
+        server = helper['AppServer'].__new__(helper['AppServer'])
+        server.selector = Mock()
+        server.process = Mock(pid=12345)
+        server.process.poll.return_value = 0
+        with patch('os.killpg', side_effect=[None, PermissionError(), ProcessLookupError()]) as killpg:
+            server.close()
+        self.assertEqual(killpg.call_count, 3)
+        server.process.stdout.close.assert_called_once()
+
+    def test_cleanup_does_not_hide_a_live_group_permission_failure(self):
+        helper = runpy.run_path(str(HELPER))
+        server = helper['AppServer'].__new__(helper['AppServer'])
+        server.selector = Mock()
+        server.process = Mock(pid=12345)
+        server.process.poll.return_value = None
+        with patch('os.killpg', side_effect=PermissionError()) as killpg:
+            with self.assertRaises(PermissionError):
+                server.close()
+        killpg.assert_called_once()
+
+    def test_cleanup_bounds_retries_for_a_persistent_permission_failure(self):
+        helper = runpy.run_path(str(HELPER))
+        server = helper['AppServer'].__new__(helper['AppServer'])
+        server.selector = Mock()
+        server.process = Mock(pid=12345)
+        server.process.poll.return_value = 0
+        with patch('os.killpg', side_effect=PermissionError()) as killpg, \
+                patch('time.monotonic', side_effect=[0, 0, 1]), patch('time.sleep'):
+            with self.assertRaises(PermissionError):
+                server.close()
+        self.assertEqual(killpg.call_count, 2)
 
     def test_interrupt_cleans_up_server(self):
         process = subprocess.Popen(self.command(), env=dict(self.env, FAKE_MODE='timeout'),
