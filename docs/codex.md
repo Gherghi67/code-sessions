@@ -124,12 +124,18 @@ the launch resumes the earlier thread, or starts a fresh one when there is none.
 The other direction writes the Codex thread as a Claude transcript that Claude
 resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)
-stay behind, while a prompt the user wrapped in a tag crosses. Code mode prints
-what its script returns as JSON, so a command run from a script reaches Codex
-as `exec_command`'s result object: that crosses as the command's own output,
-marked `[exit code N]` when not 0 or `[still running, session N]`, and a
-structure holding such results (`Promise.allSettled`'s, say) crosses as
-`key: value` lines with each output indented under its key. A sub-agent's
+stay behind, while a prompt the user wrapped in a tag crosses. In code mode,
+Codex's `exec` and `wait` tools record what a script passes to `text()`, as
+JSON when it is not a string, so a command run from a script arrives as
+`exec_command`'s result object. cs carries a single such result as the
+command's own output, marked `[exit code N]` when not 0 or
+`[still running in Codex, session N]`. When a tool result holds several
+results, or a structure around one (`Promise.allSettled`'s array, say), the
+structure crosses as compact JSON with each result replaced by
+`<output k, status>`, followed by each output under its own
+`[output k, status]` line. The result's chunk ID, wall time and token count
+stay behind, and all of this happens before the tool-result cut; other tools'
+output, and JSON holding no command result, cross as written. A sub-agent's
 final answer crosses cut like a tool result; its other messages are encrypted
 and stay. After a Codex compaction only the prompts Codex kept cross: its
 summary is encrypted. A conversation carried on again holds only cs's newest

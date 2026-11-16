@@ -860,9 +860,10 @@ class TransplantTests(HelperFixture):
         self.assertTrue(self.text_of(records[0]).startswith("[cs carried"))
 
     def test_a_command_run_from_code_mode_crosses_as_its_output(self):
-        # Code mode prints a script's return value as JSON, so a command's
-        # result arrives as exec_command's object, its output one escaped
-        # string (shapes from real rollouts, 2026-11).
+        # Code mode prints what a script passes to text(), as JSON when it is
+        # not a string, each call its own part, so a command's result arrives
+        # as exec_command's object, its output one escaped string (shapes
+        # from real rollouts, 2026-11).
         def command(output, **extra):
             return dict({"chunk_id": "ca48b8", "wall_time_seconds": 0.000005834}, **extra,
                         original_token_count=219, output=output)
@@ -896,10 +897,12 @@ class TransplantTests(HelperFixture):
         top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
         self.assertIn(top + "A  one.md\nA  two.md\n\n", agent)
         self.assertIn(top + "[exit code 2]\nboom", agent)
-        self.assertIn(top + "[still running, session 38455]\nWarning: added host\r\n", agent)
-        self.assertIn(top + "status: fulfilled\nvalue:\n  ## cs/bots\n  A  three.md", agent)
-        self.assertIn(top + "- i: 0\n  status: fulfilled\n  value:\n"
-                            "- i: 1\n  status: rejected\n  reason: no such file", agent)
+        self.assertIn(top + "[still running in Codex, session 38455]\nWarning: added host\r\n", agent)
+        self.assertIn(top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                            "[output 1, exit code 0]\n## cs/bots\nA  three.md\n", agent)
+        self.assertIn(top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
+                            ' {"i":1,"status":"rejected","reason":"no such file"}]\n'
+                            "[output 1, exit code 0, no output]\n", agent)
         self.assertIn(top + '{"task": "a23", "title": "Wrap WaW bot session"}', agent)
         self.assertIn(top + own, agent)
         for absent in ("chunk_id", "ca48b8", "wall_time_seconds", "original_token_count", "\\n"):
@@ -960,9 +963,70 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        self.assertIn("[still running, session 38456]\nWarning: still going", agent)
+        self.assertIn("[still running in Codex, session 38456]\nWarning: still going", agent)
         self.assertIn("Output:\n\ndone", agent)
         self.assertNotIn("session None", agent)
+
+    def test_several_results_cross_as_a_skeleton_and_one_block_each(self):
+        # Several command results in one tool result, or one inside a
+        # structure, cross as the structure in compact JSON with a placeholder
+        # for each result, then each output under its own head, unindented: a
+        # failure's mark never sits on the next output, and an output that
+        # reads like key: value lines still reads as output.
+        printed = [
+            [json.dumps(command_result("alpha\n", exit_code=0)), json.dumps(command_result("", exit_code=1)),
+             json.dumps(command_result("beta\n", exit_code=0))],
+            [json.dumps([{"i": 0, "status": "fulfilled",
+                          "value": command_result("A  one.md\nA  two.md\n", exit_code=0)},
+                         {"i": 1, "status": "fulfilled", "value": command_result("fatal: x", exit_code=1)},
+                         {"i": 2, "status": "rejected", "reason": "no such file"}], separators=(",", ":"))],
+            [json.dumps({"status": "fulfilled", "value": command_result("## cs/bots\nA  three.md\n", exit_code=0)},
+                        separators=(",", ":"))],
+            [json.dumps({"status": "fulfilled",
+                         "value": command_result("status: rejected\nreason: boom", exit_code=0)})],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, texts in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, *texts))]
+        self.write_rollout(lines)
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed, [
+            top + "[output 1, exit code 0]\nalpha\n\n[output 2, exit code 1, no output]\n\n"
+                  "[output 3, exit code 0]\nbeta\n",
+            top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
+                  ' {"i":1,"status":"fulfilled","value":<output 2, exit code 1>},\n'
+                  ' {"i":2,"status":"rejected","reason":"no such file"}]\n'
+                  "[output 1, exit code 0]\nA  one.md\nA  two.md\n\n[output 2, exit code 1]\nfatal: x\n",
+            top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                  "[output 1, exit code 0]\n## cs/bots\nA  three.md\n",
+            top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                  "[output 1, exit code 0]\nstatus: rejected\nreason: boom\n",
+        ])
+        self.assertNotRegex(agent, r"(?m)^[ \t]+$")
+
+    def test_deep_nesting_costs_no_more_than_its_size(self):
+        # Rendering a structure once re-split and re-indented everything
+        # beneath each level; its skeleton and blocks now grow with the part.
+        value = command_result("x\n" * 200, exit_code=0)
+        for _ in range(300):
+            value = {"a": value}
+        printed = json.dumps(value, separators=(",", ":"))
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run it")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", printed)),
+        ])
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertLess(len(crossed), 3 * len(printed))
+        self.assertIn("<output 1, exit code 0>", crossed)
+        self.assertIn("[output 1, exit code 0]\n", crossed)
 
     def test_only_code_mode_results_are_converted(self):
         # Only code mode's exec and wait answer with a script's header and

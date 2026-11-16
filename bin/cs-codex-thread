@@ -216,8 +216,9 @@ def exact_id(result, expected=None):
 # record is checked as it is read and anything unknown is skipped, never fatal.
 # What crosses: the user's and the agent's text and every tool call, each tool
 # result (and a Codex sub-agent's final answer) cut to its first CLIP
-# characters. What stays: Codex's encrypted reasoning and sub-agent messages,
-# Claude's thinking, and the context each engine injects for itself.
+# characters. A command a Codex code-mode script ran crosses as its output,
+# before the cut. What stays: Codex's encrypted reasoning and sub-agent
+# messages, Claude's thinking, and the context each engine injects for itself.
 DEFAULT_CLIP = 4000
 # Seconds the zstd command gets to unpack a compressed rollout.
 ZSTD_TIMEOUT = 60
@@ -352,9 +353,9 @@ def json_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def codex_command(value):
-    """A command's output, under its exit code when not 0 or its session while
-    it still runs, when value is exec_command's result; else None."""
+def command_status(value):
+    """The status of exec_command's result when value is one: its exit code,
+    else its session while it still runs, else ""; None for any other value."""
     # Typed as every real result is: a numeric wall time, an integer exit code and session.
     if not (isinstance(value, dict) and "chunk_id" in value and isinstance(value.get("output"), str)
             and set(value) <= CODEX_COMMAND_RESULT
@@ -362,64 +363,99 @@ def codex_command(value):
             and all(value.get(key) is None or json_int(value[key]) for key in ("exit_code", "session_id"))):
         return None
     code, session = value.get("exit_code"), value.get("session_id")
-    if code is not None and code != 0:
-        mark = "[exit code {}]".format(code)
-    elif code is None and session is not None:
-        mark = "[still running, session {}]".format(session)
-    else:
-        return value["output"]
-    return mark + ("\n" + value["output"] if value["output"] else "")
+    if code is not None:
+        return "exit code {}".format(code)
+    if session is not None:
+        return "still running in Codex, session {}".format(session)
+    return ""
 
 
-def holds_command(value):
-    if codex_command(value) is not None:
-        return True
-    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
-    return any(holds_command(item) for item in items)
+def lifted(value, found, sentinel):
+    """value with each command result in it, depth first, appended to found as
+    its output and status and replaced by sentinel holding its number there."""
+    status = command_status(value)
+    if status is not None:
+        found.append((value["output"], status))
+        return sentinel.format(len(found))
+    if isinstance(value, dict):
+        return {key: lifted(item, found, sentinel) for key, item in value.items()}
+    if isinstance(value, list):
+        return [lifted(item, found, sentinel) for item in value]
+    return value
 
 
-def readable(value):
-    """A JSON value as text: a command result as its output, a string as
-    itself, a mapping as key: value lines and a list as - items, with a
-    value of several lines indented under its key or dash."""
-    command = codex_command(value)
-    if command is not None:
-        return command
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict) and value:
-        rows = [(str(key) + ":", item) for key, item in value.items()]
-    elif isinstance(value, list) and value:
-        rows = [("-", item) for item in value]
-    else:
-        return json.dumps(value, ensure_ascii=False)
-    lines = []
-    for label, item in rows:
-        text = readable(item)
-        if "\n" not in text:
-            lines.append(label + " " + text if text else label)
-        elif label == "-":
-            first, rest = text.split("\n", 1)
-            lines.append("- " + first + "\n" + "\n".join("  " + line for line in rest.split("\n")))
-        else:
-            lines.append(label + "\n" + "\n".join("  " + line for line in text.split("\n")))
-    return "\n".join(lines)
+def compact_json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def codex_tool_text(text):
-    # Code mode prints what a script returns as JSON, so a command run from a
-    # script arrives as exec_command's result, its output one escaped string.
-    # That crosses as the output itself; other text, and JSON holding no
-    # command result, crosses as written.
+def codex_tool_text(text, found, sentinel):
+    # Code mode prints what a script passes to text(), as JSON when it is not
+    # a string, each call its own part, so a command run from a script arrives
+    # as exec_command's result, its output one escaped string. The results in
+    # a part go to found, and a structure around them comes back as compact
+    # JSON with sentinel in place of each. A part that is one result, other
+    # text, JSON holding none and a value too deep to walk give None, and
+    # found keeps no result of the last three: they cross as written.
     stripped = text.strip()
     if stripped[:1] not in ("{", "["):
-        return text
+        return None
+    start = len(found)
     try:
-        value = json.loads(stripped)
-        # Decoded again, an unpaired escape is a lone surrogate no rollout line holds; the transcript is strict UTF-8.
-        return LONE_SURROGATE.sub("\ufffd", readable(value)) if holds_command(value) else text
+        value = lifted(json.loads(stripped), found, sentinel)
+        if len(found) == start or isinstance(value, str):
+            return None
+        if isinstance(value, list):
+            # Promise.allSettled's array, say: an entry a line.
+            return "[" + ",\n ".join(compact_json(item) for item in value) + "]"
+        return compact_json(value)
     except (ValueError, RecursionError):
-        return text
+        del found[start:]
+        return None
+
+
+def output_block(number, output, status):
+    body = output[:-1] if output.endswith("\n") else output
+    head = "[output {}".format(number) + (", " + status if status else "") + ("" if body else ", no output") + "]"
+    return head + ("\n" + body if body else "") + "\n"
+
+
+def codex_script_output(texts):
+    """The parts a code-mode script printed, each command result in them
+    carried as its output. One result printed on its own crosses as just its
+    output, marked unless it exited 0. Otherwise each part holding results
+    crosses as its structure's skeleton, each result in it a placeholder
+    numbered across the tool result, then each output as its own block."""
+    sentinel = "\x00cs-output-{}-" + uuid.uuid4().hex + "\x00"
+    found, parts = [], []
+    for text in texts:
+        start = len(found)
+        skeleton = codex_tool_text(text, found, sentinel)
+        parts.append((text, start, len(found), skeleton))
+    head, tail = json.dumps(sentinel, ensure_ascii=False).split("{}")
+    placed = re.compile(re.escape(head) + r"(\d+)" + re.escape(tail))
+
+    def placeholder(match):
+        number = int(match.group(1))
+        status = found[number - 1][1]
+        return "<output {}".format(number) + (", " + status if status else "") + ">"
+
+    converted = []
+    for text, start, end, skeleton in parts:
+        if start == end:
+            converted.append(text)
+            continue
+        if len(found) == 1 and skeleton is None:
+            output, status = found[0]
+            if status in ("", "exit code 0"):
+                result = output
+            else:
+                result = "[" + status + "]" + ("\n" + output if output else "")
+        else:
+            blocks = "\n".join(output_block(number + 1, *found[number]) for number in range(start, end))
+            result = blocks if skeleton is None else placed.sub(placeholder, skeleton) + "\n" + blocks
+        # Decoded again, an unpaired escape is a lone surrogate no rollout line holds; the transcript is strict UTF-8.
+        converted.append(LONE_SURROGATE.sub("\ufffd", result))
+    return converted
 
 
 def codex_output(output, code_mode):
@@ -430,7 +466,7 @@ def codex_output(output, code_mode):
         if code_mode and texts and CODEX_SCRIPT_HEADER.match(texts[0]):
             # A script printing a command's stdout that is itself a result-shaped object is still
             # converted: nothing tells it apart from text(result).
-            return "\n".join(texts[:1] + [codex_tool_text(text) for text in texts[1:]])
+            return "\n".join(texts[:1] + codex_script_output(texts[1:]))
         return "\n".join(texts)
     if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
         return codex_output(output["content"], code_mode)
