@@ -273,11 +273,12 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 
 # The cs content files a plain session keeps in .cs/local and an encrypted one
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
-# and cs -encrypt moves each into the vault.
+# and cs -encrypt moves each into the vault, except the Codex context
+# (codex-instructions.md), a copy it deletes first.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot memory-archive.snapshot mail
     queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
-    pending-switch finish-progress.json"
+    pending-switch finish-progress.json codex-instructions.md"
 
 # Once .cs/private holds a session's cs content files, a copy still in
 # .cs/local is plaintext the vault was meant to hold: an unmigrated log, or one

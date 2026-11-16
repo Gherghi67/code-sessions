@@ -522,6 +522,8 @@ test_codex_from_handoff_starts_an_encrypted_session_from_the_vault() {
     dir=$(_dir cenc)
     mkdir -p "$dir/.cs/private" "$HOME/.codex"
     [ ! -f "$dir/.cs/local/session.log" ] || mv "$dir/.cs/local/session.log" "$dir/.cs/private/"
+    # cs -encrypt deletes the plaintext Codex context the first open wrote.
+    rm -f "$dir/.cs/local/codex-instructions.md"
     CS_SESSION_DIR="$dir" _arm
     out=$("$CS_BIN" cenc --from-handoff </dev/null 2>&1) || status=$?
     assert_eq 0 "$status" "the encrypted handoff launch failed: $out" || return 1
@@ -811,9 +813,11 @@ test_encrypted_codex_session_leaves_the_vault_handoff_to_claude() {
     _new_codex_session swe
     dir=$(_dir swe)
     # Encrypted: .cs/private holds what .cs/local would (a real directory
-    # stands in for the mounted vault).
+    # stands in for the mounted vault), and cs -encrypt deleted the plaintext
+    # Codex context the first open wrote.
     mkdir -p "$dir/.cs/private"
     [ ! -f "$dir/.cs/local/session.log" ] || mv "$dir/.cs/local/session.log" "$dir/.cs/private/"
+    rm -f "$dir/.cs/local/codex-instructions.md"
     CS_SESSION_DIR="$dir" _arm
     rm -rf "$HOME/.codex"
     out=$("$CS_BIN" swe </dev/null 2>&1) || status=$?

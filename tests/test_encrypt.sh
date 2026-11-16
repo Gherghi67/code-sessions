@@ -292,6 +292,22 @@ test_encrypt_removes_the_plaintext_codex_context() {
     assert_not_exists "$s/vault-mnt/private/codex-instructions.md" "nothing carried: the next Codex open writes it" || return 1
 }
 
+# Anything but a file at that name would stop its removal halfway: refused
+# before the container is made or anything moves.
+test_encrypt_refuses_a_codex_context_that_is_not_a_file() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    mkdir "$s/local/codex-instructions.md"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "non-zero exit" || return 1
+    assert_output_contains "$out" "enc: .cs/local/codex-instructions.md is not a regular file" "names the path" || return 1
+    assert_output_contains "$out" "Move it aside first." "says what to do" || return 1
+    _assert_nothing_written enc || return 1
+    assert_eq "narrative" "$(cat "$s/memory/narrative.alice.md")" "memory stays in place" || return 1
+    assert_eq "log" "$(cat "$s/local/session.log")" "session.log stays in place" || return 1
+}
+
 # A session cloned or synced here and never opened has no .cs/local: it is
 # gitignored and born on the first open, and the pre-open hook lives in it.
 test_encrypt_builds_a_session_never_opened_on_this_machine() {
@@ -672,6 +688,19 @@ test_open_that_stops_detaches_the_vault_it_mounted() {
 detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
+# A Codex context left in .cs/local is a plaintext copy of memory and the
+# narrative: the open names it, as it names session.log.
+test_open_refuses_a_plaintext_codex_context_beside_the_vault() {
+    _encrypted_session enc || return 1
+    echo "memory excerpt" > "$CS_SESSIONS_ROOT/enc/.cs/local/codex-instructions.md"
+    local out rc=0
+    out=$(_open enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open stops" || return 1
+    assert_output_contains "$out" "still holds codex-instructions.md in plaintext" "names the leftover" || return 1
+    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
+detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
+}
+
 test_open_that_stops_leaves_a_running_session_vault_mounted() {
     _encrypted_session enc || return 1
     : > "$TEST_TMPDIR/mounted"
@@ -1025,6 +1054,7 @@ run_test test_encrypt_refuses_an_existing_container_under_cs_data_dir
 run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_removes_the_plaintext_codex_context
+run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_builds_the_container_under_cs_data_dir
 run_test test_encrypt_holds_the_session_lock_while_it_works
@@ -1047,6 +1077,7 @@ run_test test_pre_open_refuses_without_a_terminal
 run_test test_pre_open_attaches_with_a_prompt
 run_test test_pre_open_attaches_the_recorded_container_whatever_cs_data_dir_says
 run_test test_open_that_stops_detaches_the_vault_it_mounted
+run_test test_open_refuses_a_plaintext_codex_context_beside_the_vault
 run_test test_open_that_stops_leaves_a_running_session_vault_mounted
 run_test test_open_that_stops_reads_the_lock_by_the_one_lock_rule
 run_test test_open_over_a_mounted_vault_reads_the_lock_by_the_one_lock_rule

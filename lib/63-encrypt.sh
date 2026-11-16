@@ -31,6 +31,12 @@ _encrypt_refuse() {  # session_name
         [ -e "$meta/$sub" ] && error "$name: .cs/$sub already exists and is not a link; cs -encrypt links it into the vault. Move it aside first."
     done
     [ -e "$meta/local/pre-open" ] && error "$name: .cs/local/pre-open already exists; cs -encrypt writes its own. Move yours aside first."
+    # The Codex launch's plaintext context is deleted before anything moves;
+    # anything but a file there would stop that delete with the work half done.
+    if { [ -e "$meta/local/codex-instructions.md" ] || [ -L "$meta/local/codex-instructions.md" ]; } \
+        && [ ! -f "$meta/local/codex-instructions.md" ]; then
+        error "$name: .cs/local/codex-instructions.md is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+    fi
     container=$(_encrypt_container_path "$name")
     # pre-open records this path and attaches it from the session directory.
     case "$container" in /*) ;; *) error "CS_DATA_DIR=$CS_DATA_DIR: cs -encrypt needs an absolute path; every open attaches the container from the session directory." ;; esac
@@ -215,6 +221,13 @@ run_encrypt() {
     mnt="$meta/vault-mnt"
     container=$(_encrypt_container_path "$name")
 
+    # The Codex launch's context, built from memory and the narrative: nothing
+    # but a copy, written again inside the vault at the next Codex open.
+    # Deleted, not carried, and before the container is made, so a failure
+    # leaves the session as it was.
+    rm -f "$meta/local/codex-instructions.md" \
+        || error "$name: could not delete $meta/local/codex-instructions.md, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."
     hdiutil create -size 50g -type SPARSEBUNDLE -fs APFS -encryption AES-256 \
@@ -230,9 +243,6 @@ run_encrypt() {
     touch "$mnt/.metadata_never_index"
 
     _encrypt_move_content "$name" "$meta"
-    # The Codex launch's context, built from memory and the narrative: nothing
-    # but a copy, written again inside the vault at the next Codex open.
-    rm -f "$meta/local/codex-instructions.md"
     for sub in $CS_VAULT_LINKS; do
         ln -s "vault-mnt/$sub" "$meta/$sub"
     done
