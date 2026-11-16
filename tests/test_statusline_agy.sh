@@ -25,13 +25,20 @@ AGY_STARTING='{"cwd":"/work/agysess","session_id":"","model":null,"workspace":{"
 AGY_QUOTA='{"3p-5h":{"remaining_fraction":1,"reset_time":"2026-11-16T16:44:09Z","reset_in_seconds":17999},"3p-weekly":{"remaining_fraction":0.25,"reset_time":"2026-11-23T11:44:09Z","reset_in_seconds":604799},"gemini-5h":{"remaining_fraction":0.97945833,"reset_time":"2026-11-16T15:37:12Z","reset_in_seconds":13982},"gemini-argon-wtu-weekly":{"remaining_fraction":0.8842949,"reset_time":"2026-11-21T15:41:11Z","reset_in_seconds":446221},"gemini-weekly":{"remaining_fraction":0.9794862,"reset_time":"2026-11-22T22:20:09Z","reset_in_seconds":556559}}'
 
 # The rate_limits the adapter hands over for payload $1 with model $2 (a
-# display name, or null) and quota $3.
+# display name, or null) and quota $3. The previous call's payload is removed
+# first, so an adapter that dies before the renderer runs reads as that, not
+# as the null the call before it left.
 _quota_rate_limits() {
     local payload
     payload=$(jq -c --argjson model "$2" --argjson quota "$3" \
         '.model = (if $model == null then null else {id: $model, display_name: $model} end) | .quota = $quota' <<< "$1")
+    rm -f "$STUB_IN"
     printf '%s' "$payload" | "$STUB_DIR/cs-statusline-agy" > /dev/null
-    jq -cS '.rate_limits // null' "$STUB_IN"
+    if [ -f "$STUB_IN" ]; then
+        jq -cS '.rate_limits // null' "$STUB_IN"
+    else
+        printf 'the renderer never ran'
+    fi
 }
 
 setup() {
