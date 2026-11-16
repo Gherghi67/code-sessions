@@ -33,7 +33,8 @@
 # caches on its parent.
 #
 # agy turns a custom status line off after a run of failures, so every path
-# exits 0, and a missing renderer or jq prints nothing.
+# exits 0, and a missing renderer or jq prints nothing. The mapping calls no
+# regex builtin, so a jq built without Oniguruma still draws the line.
 
 set -uo pipefail
 
@@ -53,7 +54,10 @@ _mapped=$(jq -c '
     def clamp: if . < 0 then 0 elif . > 100 then 100 else . end;
     def epoch($bucket):
         def near: if . != null and . <= now + 31 * 86400 then . else null end;
-        ((($bucket.reset_time | text | sub("\\.[0-9]+Z$"; "Z")) as $t
+        def whole_seconds:
+            split(".") as $p
+            | if ($p | length) == 2 and ($p[1] | endswith("Z")) then $p[0] + "Z" else . end;
+        ((($bucket.reset_time | text | whole_seconds) as $t
           | try ($t | fromdateiso8601) catch null) | near)
         // (($bucket.reset_in_seconds | num) as $s
             | if $s == null then null else (now + $s | floor | near) end);
