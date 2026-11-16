@@ -29,7 +29,7 @@ setup() {
 
 teardown() {
     rm -rf "$TEST_TMPDIR" "$HOME/.gemini"
-    unset CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR CS_TEST_SYNC CODEX_HOME CS_RUN_ENGINE
+    unset CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR CS_TEST_SYNC CODEX_HOME CS_RUN_ENGINE CS_CODEX_SHARED_HOME
     unset CS_RUN_ID CS_RUN_OWNER_PID
 }
 
@@ -138,6 +138,22 @@ test_codex_batch_snapshots_both_files_and_preserves_index_and_head() {
     assert_eq "$head" "$(git -C "$CS_SESSION_DIR" rev-parse HEAD)" || return 1
     assert_eq "$index" "$(git -C "$CS_SESSION_DIR" write-tree)" || return 1
     assert_output_contains "$(git -C "$CS_SESSION_DIR" show -s --format=%B "$REF")" "cs-base: $head"
+}
+
+# During an encrypted run CODEX_HOME is the session's vault home, which the
+# agent can rewrite once it runs outside cs's profile. cs runs its own
+# recovery script, unsandboxed, from the shell's home only.
+test_codex_hook_runs_the_recovery_script_from_the_shared_home() {
+    local decoy="$TEST_TMPDIR/vault/.cs/private/codex-home" marker="$TEST_TMPDIR/decoy-ran"
+    export CS_CODEX_SHARED_HOME="$CODEX_HOME"
+    mkdir -p "$decoy/hooks/cs"
+    printf '#!/bin/bash\ntouch %q\n' "$marker" > "$decoy/hooks/cs/autosave-commits.sh"
+    printf 'changed\n' > "$CS_SESSION_DIR/login.ts"
+    printf 'changed\n' > "$CS_SESSION_DIR/users.ts"
+    _codex_payload "$_patch" | CODEX_HOME="$decoy" "$CS_BIN" -codex-hook files-changed || return 1
+    assert_not_exists "$marker" "the vault home's script never runs" || return 1
+    assert_eq changed "$(git -C "$CS_SESSION_DIR" show "$REF:login.ts")" "cs's own script saves the edit" || return 1
+    assert_eq changed "$(git -C "$CS_SESSION_DIR" show "$REF:users.ts")"
 }
 
 test_claude_separate_edits_snapshot_the_same_final_tree() {
@@ -293,6 +309,7 @@ run_test test_native_crlf_patch_is_saved_without_carriage_returns_in_paths
 run_test test_native_patch_heredoc_wrappers_are_saved
 run_test test_failed_unrelated_and_pre_tool_events_emit_nothing
 run_test test_codex_batch_snapshots_both_files_and_preserves_index_and_head
+run_test test_codex_hook_runs_the_recovery_script_from_the_shared_home
 run_test test_claude_separate_edits_snapshot_the_same_final_tree
 run_test test_codex_deletion_and_rename_are_saved
 run_test test_failed_and_duplicate_events_do_not_advance_snapshot

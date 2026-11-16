@@ -42,7 +42,7 @@ _codex_hook_files_changed() {
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     event=$(cs_engine_call codex files_changed) || return 0
     [ -n "$event" ] || return 0
-    hook="${CODEX_HOME:-$HOME/.codex}/hooks/cs/autosave-commits.sh"
+    hook="$(_codex_shared_home)/hooks/cs/autosave-commits.sh"
     [ -r "$hook" ] || return 0
     printf '%s' "$event" | bash "$hook" --event || true
 }

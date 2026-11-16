@@ -22,8 +22,11 @@ returns successfully.
 
 Codex launches use the `codex` executable by default. Set `CODEX_BIN` to its
 path when it is installed elsewhere. The Codex adapter uses Python 3 for its
-startup/bootstrap helper. Codex CLI must be installed and authenticated for
-the current user; CS does not configure Codex credentials.
+startup/bootstrap helper. Opening an [encrypted session](#encrypted-sessions)
+under Codex needs Python 3.11 or later (`tomllib`) as `python3` on `PATH`;
+macOS's `/usr/bin/python3` is 3.9, and a Homebrew or python.org Python works.
+Codex CLI must be installed and authenticated for the current user; CS does
+not configure Codex credentials.
 
 The startup helper uses Codex's experimental app-server `thread/inject_items`
 API to create or resume a thread and append startup context without starting a
@@ -177,11 +180,18 @@ state databases and logs never reach the shared home (`$CODEX_HOME`, else
   `default_permissions` profile of your own is refused. A config file that
   defines a profile named `cs-vault-home` is refused too.
 
+cs reads and copies `config.toml` with Python's `tomllib`, so the open needs
+Python 3.11 or later as `python3` on `PATH`. macOS's `/usr/bin/python3` is
+3.9; a Homebrew or python.org Python works.
+
 Settings Codex saves to `config.toml` during an encrypted run (a hook trusted in
 `/hooks`, a dismissed notice) last until the next open, which copies the shared
 file again, except this session's project trust; make lasting changes in the
 shared `config.toml`. Relative paths in it resolve from the copy. Choosing other
-permissions in Codex's `/permissions` drops the read-only rule for that run.
+permissions in Codex's `/permissions` drops the read-only rule for that run:
+outside cs's profile the agent can rewrite the vault home's configuration,
+hooks and links for that run, and a hook it trusts there runs outside the
+sandbox. cs still runs its own hook scripts from the shared home.
 
 A Codex conversation bound before the session was encrypted stays in the shared
 home: when the shared home keeps it, the next open starts the session's first
