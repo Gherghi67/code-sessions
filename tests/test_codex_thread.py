@@ -927,6 +927,31 @@ class TransplantTests(HelperFixture):
         self.assertIn("x\ufffd", agent)
         self.assertFalse([ch for ch in agent if "\ud800" <= ch <= "\udfff"])
 
+    def test_only_a_well_typed_command_result_is_converted(self):
+        # exec_command's result has a numeric wall time and an integer exit
+        # code or session; other objects with a chunk_id and an output, a
+        # retrieval tool's passages say, cross as written.
+        printed = [
+            [{"chunk_id": "doc-12#3", "output": "retrieved passage"}, {"chunk_id": "doc-13#1", "output": "another"}],
+            command_result("x", exit_code=True),
+            command_result("x", exit_code="0"),
+            command_result("x", session_id="7"),
+            {"chunk_id": "c", "wall_time_seconds": "0.1", "exit_code": 0, "output": "x"},
+        ]
+        texts = [json.dumps(value, separators=(",", ":")) for value in printed]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, text in enumerate(texts):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, text))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        for text in texts:
+            self.assertIn(text, agent)
+        self.assertNotIn("[exit code True]", agent)
+        self.assertNotIn("retrieved passage\n- another", agent)
+
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())
         result, records = self.export("--clip", "5")
