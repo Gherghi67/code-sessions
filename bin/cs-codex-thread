@@ -455,14 +455,20 @@ def output_block(number, output, status):
 
 def codex_script_output(texts):
     """The parts a code-mode script printed, each command result in them
-    carried as its output. One result printed on its own crosses as just its
-    output, marked unless it exited 0. Otherwise each printed value holding
-    results crosses as its structure's skeleton, each result in it a
-    placeholder numbered across the tool result, then each output as its own
-    block. Text around those values crosses as written."""
+    carried as its output. One result printed on its own, with nothing printed
+    after it, crosses as just its output, marked unless it exited 0.
+    Otherwise each printed value holding results crosses as its structure's
+    skeleton, each result in it a placeholder numbered across the tool
+    result, then each output as its own block. Text around those values
+    crosses as written."""
     sentinel = "\x00cs-output-{}-" + uuid.uuid4().hex + "\x00"
     found = []
     parts = [(text, codex_tool_text(text, found, sentinel)) for text in texts]
+    single = False
+    if len(found) == 1:
+        # Text after a bare output, or a bare mark, would read as the command's.
+        holding = next(n for n, (_, pieces) in enumerate(parts) if pieces is not None)
+        single = not (parts[holding][1][-1] + "".join(text for text, _ in parts[holding + 1:])).strip()
     head, tail = json.dumps(sentinel, ensure_ascii=False).split("{}")
     placed = re.compile(re.escape(head) + r"(\d+)" + re.escape(tail))
 
@@ -472,7 +478,7 @@ def codex_script_output(texts):
         return "<output {}".format(number) + (", " + status if status else "") + ">"
 
     def crossed(start, end, skeleton):
-        if len(found) == 1 and skeleton is None:
+        if single and skeleton is None:
             output, status = found[0]
             if status in ("", "exit code 0"):
                 result = output

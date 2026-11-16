@@ -1057,10 +1057,34 @@ class TransplantTests(HelperFixture):
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed[:2], [
             top + warning + "[output 1, exit code 0]\nfirst\n\n[output 2, exit code 2]\nboom\n\n",
-            top + "x\ndone",
+            top + "[output 1, exit code 0]\nx\n\ndone",
         ])
         self.assertTrue(crossed[2].startswith(top + long_warning + "L" * 100), crossed[2][:300])
         self.assertNotIn("chunk_id", agent)
+
+    def test_a_result_with_text_printed_after_it_gets_its_head(self):
+        # Without its head a result's output, or a failure's bare mark, would
+        # run on into what the script printed next.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        printed = [
+            [compact(command_result("", exit_code=1)), "done"],
+            [compact(command_result("boom", exit_code=0)), "all checks passed"],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, texts in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, *texts))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed, [
+            top + "[output 1, exit code 1, no output]\n\ndone",
+            top + "[output 1, exit code 0]\nboom\n\nall checks passed",
+        ])
 
     def test_a_script_s_own_keys_stay_beside_its_command_result(self):
         # A script that spreads a result into its own object ({...r, label})
