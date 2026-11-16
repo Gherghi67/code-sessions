@@ -132,8 +132,9 @@ command's own output, marked `[exit code N]` when not 0 or
 `[still running in Codex, session N]`. When a tool result holds several
 results, or a structure around one (`Promise.allSettled`'s array, say), the
 structure crosses as compact JSON with each result replaced by
-`<output k, status>`, followed by each output under its own
-`[output k, status]` line. Results that follow other text in a part, such as
+`<output k, status>` (keys a script added to a result stay in the JSON beside
+its placeholder, so such a result crosses this way even alone), followed by
+each output under its own `[output k, status]` line. Results that follow other text in a part, such as
 Codex's truncation warning, convert the same way, and that text stays. The
 result's chunk ID, wall time and token count stay behind, and all of this
 happens before the tool-result cut; other tools'

@@ -1042,6 +1042,30 @@ class TransplantTests(HelperFixture):
         self.assertTrue(crossed[2].startswith(top + long_warning + "L" * 100), crossed[2][:300])
         self.assertNotIn("chunk_id", agent)
 
+    def test_a_script_s_own_keys_stay_beside_its_command_result(self):
+        # A script that spreads a result into its own object ({...r, label})
+        # keeps its keys: they stay in the skeleton beside the placeholder,
+        # and the result still converts.
+        printed = [
+            dict(command_result("x", exit_code=3), label="lint"),
+            [command_result("ok\n", exit_code=0), dict(command_result("bad", exit_code=1), gate="lint")],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, value in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, json.dumps(value, separators=(",", ":"))))]
+        self.write_rollout(lines)
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed, [
+            top + '{"label":"lint","output":<output 1, exit code 3>}\n[output 1, exit code 3]\nx\n',
+            top + '[<output 1, exit code 0>,\n {"gate":"lint","output":<output 2, exit code 1>}]\n'
+                  "[output 1, exit code 0]\nok\n\n[output 2, exit code 1]\nbad\n",
+        ])
+
     def test_deep_nesting_costs_no_more_than_its_size(self):
         # Rendering a structure once re-split and re-indented everything
         # beneath each level; its skeleton and blocks now grow with the part.

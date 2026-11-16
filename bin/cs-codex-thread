@@ -357,8 +357,8 @@ def command_status(value):
     """The status of exec_command's result when value is one: its exit code,
     else its session while it still runs, else ""; None for any other value."""
     # Typed as every real result is: a numeric wall time, an integer exit code and session.
+    # Other keys, a script's own ({...r, label}) or ones Codex adds later, do not matter.
     if not (isinstance(value, dict) and "chunk_id" in value and isinstance(value.get("output"), str)
-            and set(value) <= CODEX_COMMAND_RESULT
             and (json_int(value.get("wall_time_seconds")) or isinstance(value.get("wall_time_seconds"), float))
             and all(value.get(key) is None or json_int(value[key]) for key in ("exit_code", "session_id"))):
         return None
@@ -372,11 +372,18 @@ def command_status(value):
 
 def lifted(value, found, sentinel):
     """value with each command result in it, depth first, appended to found as
-    its output and status and replaced by sentinel holding its number there."""
+    its output and status and replaced by sentinel holding its number there.
+    A result with keys exec_command's has not becomes a dict of those keys,
+    then "output" holding the sentinel."""
     status = command_status(value)
     if status is not None:
+        extra = {key: lifted(item, found, sentinel) for key, item in value.items()
+                 if key not in CODEX_COMMAND_RESULT}
         found.append((value["output"], status))
-        return sentinel.format(len(found))
+        if not extra:
+            return sentinel.format(len(found))
+        extra["output"] = sentinel.format(len(found))
+        return extra
     if isinstance(value, dict):
         return {key: lifted(item, found, sentinel) for key, item in value.items()}
     if isinstance(value, list):
