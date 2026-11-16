@@ -199,6 +199,22 @@ test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private() {
     assert_not_exists "$SESSION/.cs/local/session.log" || return 1
 }
 
+# A /clear into a handoff kept in the vault: the plaintext timeline records
+# that a handoff rotated, never which, since its name is the session's topic.
+test_a_clear_in_an_encrypted_session_keeps_the_handoff_name_out_of_the_timeline() {
+    mkdir -p "$SESSION/.cs/private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: continue the plan\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$OLD_THREAD" > "$SESSION/.cs/private/handoffs/$HANDOFF"
+    printf '%s\n' "$HANDOFF" > "$SESSION/.cs/private/pending-handoff"
+    _hook clear >/dev/null || return 1
+    assert_file_contains "$SESSION/.cs/private/handoffs/$HANDOFF" "^consumed_by: $NEW_THREAD$" "the handoff is spent" || return 1
+    jq -e --arg from "$OLD_THREAD" --arg to "$NEW_THREAD" \
+        'select(.event == "rotated") | .engine == "codex" and .from == $from and .to == $to
+         and .reason == "handoff" and (has("handoff") | not)' \
+        "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no rotated event for the handoff without its name"; return 1; }
+    assert_eq "" "$(grep -F "$HANDOFF" "$SESSION/.cs/timeline.jsonl")" "the timeline keeps the handoff's name out" || return 1
+}
+
 # A locked vault drops the line, as the Claude hooks do.
 test_a_locked_vault_drops_the_log_line() {
     ln -s "$TEST_TMPDIR/not-mounted" "$SESSION/.cs/private"
@@ -623,6 +639,7 @@ run_test test_a_run_without_the_lease_leaves_a_stale_marker
 run_test test_outside_a_cs_codex_run_the_hook_is_inert
 run_test test_an_encrypted_session_logs_the_start_behind_private
 run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
+run_test test_a_clear_in_an_encrypted_session_keeps_the_handoff_name_out_of_the_timeline
 run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
 run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count

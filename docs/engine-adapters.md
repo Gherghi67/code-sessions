@@ -306,7 +306,13 @@ A write the handoff store refuses keeps the marker armed, so the next start or
 carries a warning that says so (with the refusal on a plaintext session; an
 encrypted one's prompt points at the marker instead, since no `consumed_by`
 line was written). Codex's `r` path and its SessionStart hook after `/clear`
-spend a handoff the same way (`_handoff_spend` in `lib/75-launch.sh`).
+spend a handoff the same way (`_handoff_spend` in `lib/75-launch.sh`). In an
+encrypted session the `r` path's prompt, Codex's argv, is worded as the resume
+prompt is: `.cs/private/handoffs/` and the `consumed_by` value, or the marker
+after a refused write. The `rotated` event the `r` path or a `/clear` records
+there carries reason `handoff` and no handoff name, as Claude's does; the
+context the `/clear` hook returns may name the file, since Codex keeps it in
+the vault home.
 
 ## Deferred boundaries
 
@@ -367,7 +373,10 @@ owns the other way in: `r` at the `[Y/n/r/d]` prompt (or `--from-handoff`, or an
 explicit `--fresh` with a rotation armed) adds the handoff to the new thread's
 context, consumes it, and starts the thread with `codex resume <id> <prompt>`.
 In an encrypted session these paths are `.cs/private/handoffs` and
-`.cs/private/pending-handoff`, as `cs_handoff_dir` and `cs_private_dir` decide.
+`.cs/private/pending-handoff`, as `cs_handoff_dir` and `cs_private_dir` decide,
+and the handoff's name, the session's topic, stays out of the plaintext: the
+`r` prompt names `.cs/private/handoffs/` and `consumed_by` instead of the file,
+and the `rotated` event either path records leaves the name out.
 
 ## Completed file changes and recovery copies
 

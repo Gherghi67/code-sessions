@@ -367,9 +367,11 @@ With `.cs/private` present, the session protocol changes too:
   opt out.
 - The rotate skill writes the handoff into `.cs/private/handoffs/`; like
   every rotation, it commits nothing.
-- The launch prompt after answering `r` does not name the handoff file, and
-  the `rotated` event in `timeline.jsonl` records the rotation without the
-  file name. A handoff's name is its topic, and both of those are plaintext.
+- Under Claude and Codex alike, the launch prompt after answering `r` (or
+  `--from-handoff`) does not name the handoff file, and the `rotated` event in
+  `timeline.jsonl`, from a launch or a `/clear`, records the rotation without
+  the file name. A handoff's name is its topic, and both of those are
+  plaintext: the prompt is the engine's command line, which `ps` shows.
 - `/checkpoint` saves into `.cs/private/checkpoints/`, and its `timeline.jsonl`
   event carries no label or file name.
 

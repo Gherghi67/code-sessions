@@ -571,18 +571,33 @@ test_a_binding_from_before_the_vault_starts_a_vault_thread() {
 }
 
 # r in an encrypted session: the handoff and its marker live in the vault, and
-# the new thread is told the path it can read them at.
+# the new thread is told where to read them. The handoff's name is the
+# session's topic: it stays out of Codex's argv and the plaintext timeline.
 test_r_in_an_encrypted_session_reads_the_vault_handoff() {
     _vault_fixture
-    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0 kick
+    # The thread the rotation leaves, kept in the vault.
+    printf '%s\n' "$ROTATION_OLD_THREAD" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    mkdir -p "$VAULT_HOME/sessions/2026/11/16"
+    : > "$VAULT_HOME/sessions/2026/11/16/rollout-2026-11-16T10-00-00-$ROTATION_OLD_THREAD.jsonl"
     mkdir -p "$private/handoffs"
     printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: next step\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
         "$ROTATION_OLD_THREAD" > "$private/handoffs/$ROTATION_HANDOFF"
     printf '%s\n' "$ROTATION_HANDOFF" > "$private/pending-handoff"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
     assert_eq 0 "$status" "handoff launch failed: $output" || return 1
-    assert_eq "Continue from the pending rotation handoff: read .cs/private/handoffs/$ROTATION_HANDOFF first." \
-        "$(tail -n 1 "$CS_CODEX_LOG")" "the kick names the vault path" || return 1
+    kick=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_output_not_contains "$kick" "$ROTATION_HANDOFF" "the topic stays out of argv" || return 1
+    assert_output_contains "$kick" "^Continue from the pending rotation handoff: read the handoff in \\.cs/private/handoffs/ " \
+        "the kick names the vault path" || return 1
+    assert_output_contains "$kick" "consumed_by: $CS_THREAD_ID first\\.\$" "and the consumed_by line to find it by" || return 1
+    jq -e --arg from "$ROTATION_OLD_THREAD" --arg to "$CS_THREAD_ID" \
+        'select(.event == "rotated") | .engine == "codex" and .from == $from and .to == $to
+         and .reason == "handoff" and (has("handoff") | not)' \
+        "$CS_TEST_SESSION_DIR/.cs/timeline.jsonl" >/dev/null \
+        || { echo "  FAIL: no rotated event for the handoff without its name"; return 1; }
+    assert_eq "" "$(grep -rF "$ROTATION_HANDOFF" "$CS_TEST_SESSION_DIR/.cs/timeline.jsonl" "$CS_TEST_SESSION_DIR/.cs/local")" \
+        "the handoff's name stays out of the plaintext files" || return 1
     assert_file_contains "$private/codex-instructions.md" "Read .cs/private/handoffs/$ROTATION_HANDOFF FIRST" || return 1
     [ -f "$private/codex-instructions.md" ] && [ ! -L "$private/codex-instructions.md" ] \
         || { echo "  FAIL: the context with its rotation preamble is not a regular file"; return 1; }
@@ -590,6 +605,28 @@ test_r_in_an_encrypted_session_reads_the_vault_handoff() {
     assert_file_contains "$private/handoffs/$ROTATION_HANDOFF" "^status: consumed$" "spent" || return 1
     assert_not_exists "$private/pending-handoff" "the vault's marker is disarmed" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/handoffs" "nothing written outside the vault" || return 1
+}
+
+# The same with a flip the vault's handoff store refuses: no consumed_by line
+# was written to point at, so the kick names the marker, never the file.
+test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0 kick
+    mkdir -p "$private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: next step\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$ROTATION_OLD_THREAD" > "$private/handoffs/$ROTATION_HANDOFF"
+    printf '%s\n' "$ROTATION_HANDOFF" > "$private/pending-handoff"
+    chmod 555 "$private/handoffs"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    chmod 755 "$private/handoffs"
+    assert_eq 0 "$status" "handoff launch failed: $output" || return 1
+    assert_file_contains "$private/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" "the flip is refused" || return 1
+    assert_file_exists "$private/pending-handoff" "the marker stays armed" || return 1
+    kick=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_output_not_contains "$kick" "$ROTATION_HANDOFF" "the topic stays out of argv" || return 1
+    assert_output_contains "$kick" "^Continue from the pending rotation handoff: read the handoff \\.cs/private/pending-handoff names, in \\.cs/private/handoffs/, first\\. " \
+        "the kick names the marker" || return 1
+    assert_output_contains "$kick" "will load this same handoff again" "and says the next start retries" || return 1
 }
 
 # The agent can write .cs/private, where an encrypted session's context lives.
@@ -1541,6 +1578,7 @@ run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_binding_from_before_the_vault_starts_a_vault_thread
 run_test test_r_in_an_encrypted_session_reads_the_vault_handoff
+run_test test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff
 run_test test_the_context_write_ignores_a_planted_temp_link
 run_test test_a_linked_context_file_stops_the_open
 run_test test_a_context_link_to_a_directory_stops_the_open

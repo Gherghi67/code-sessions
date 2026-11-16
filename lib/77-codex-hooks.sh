@@ -118,6 +118,9 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
         { printf '%s - Rebound codex thread: %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
             "${previous:-none}" "$thread_id" >> "$log_dir/session.log"; } 2>/dev/null || true
     fi
+    # An encrypted session's handoff name is its topic: the plaintext timeline
+    # records that a handoff rotated, never which (hooks/session-start.sh).
+    ! _switch_session_encrypted "$session_dir" || handoff=""
     if [ -n "$previous" ]; then
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi

@@ -21150,7 +21150,12 @@ _launch_codex_bound() {
             carried_from="claude:$transplant_id"
             start_source=transplant
         fi
-        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$rotation_handoff" \
+        # An encrypted session's handoff name is its topic, so it stays out of
+        # the plaintext pending record and timeline, as on Claude: the
+        # rotation is recorded with its reason and without the name.
+        local public_handoff="$rotation_handoff"
+        ! _switch_session_encrypted "$session_dir" || public_handoff=""
+        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$public_handoff" \
             "$carried_from"; then
             _codex_launch_error "Could not stage Codex thread binding: $binding_file"
             return 1
@@ -21193,12 +21198,22 @@ _launch_codex_bound() {
         shown_handoff="$(_codex_handoffs_shown "$session_dir")/$rotation_handoff"
         shown_marker="$(_codex_marker_shown "$session_dir")"
         refusal=$(_handoff_spend "$session_dir/$shown_handoff" "$session_dir/$shown_marker" "$thread_id") || true
-        kick="Continue from the pending rotation handoff: read $shown_handoff first."
-        printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
-        if [ -n "$refusal" ]; then
-            _handoff_refusal_notice "$shown_handoff" "$refusal" "$shown_marker"
-            kick="$kick $(_handoff_refusal_warning "$shown_handoff" "$refusal" "$shown_marker")"
+        # The kick is codex's argv, visible to ps: an encrypted session's
+        # handoff name, its topic, stays out of it, as in a switch's resume
+        # (_switch_resume_handoff). The terminal still names the file.
+        if ! _switch_session_encrypted "$session_dir"; then
+            kick="Continue from the pending rotation handoff: read $shown_handoff first."
+            [ -z "$refusal" ] || kick="$kick $(_handoff_refusal_warning "$shown_handoff" "$refusal" "$shown_marker")"
+        elif [ -z "$refusal" ]; then
+            kick="Continue from the pending rotation handoff: read the handoff in .cs/private/handoffs/ whose frontmatter says consumed_by: $thread_id first."
+        else
+            # No consumed_by line was written to point at: the marker stands
+            # in, and the reason stays on the terminal.
+            kick="Continue from the pending rotation handoff: read the handoff $shown_marker names, in .cs/private/handoffs/, first."
+            kick="$kick $(_handoff_refusal_warning "the handoff $shown_marker names" "cs printed the reason in the terminal" "$shown_marker")"
         fi
+        printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
+        [ -z "$refusal" ] || _handoff_refusal_notice "$shown_handoff" "$refusal" "$shown_marker"
         # r is the user choosing the handoff over the merge armed moments
         # earlier, as on Claude; the merge waits for its own launch.
         [ -z "$merge_feature" ] \
@@ -21688,6 +21703,9 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
         { printf '%s - Rebound codex thread: %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
             "${previous:-none}" "$thread_id" >> "$log_dir/session.log"; } 2>/dev/null || true
     fi
+    # An encrypted session's handoff name is its topic: the plaintext timeline
+    # records that a handoff rotated, never which (hooks/session-start.sh).
+    ! _switch_session_encrypted "$session_dir" || handoff=""
     if [ -n "$previous" ]; then
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi

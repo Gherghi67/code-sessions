@@ -531,9 +531,13 @@ test_codex_from_handoff_starts_an_encrypted_session_from_the_vault() {
     thread=$(cat "$dir/.cs/local/codex-thread-id")
     home="$(cd -P "$dir/.cs/private" && pwd -P)/codex-home"
     assert_eq "$home" "$(_envv codex 2 CODEX_HOME)" "Codex runs on the vault home" || return 1
-    assert_eq "Continue from the pending rotation handoff: read .cs/private/handoffs/$HANDOFF first." \
-        "$(_args codex 2 | tail -n 1)" "the kick names the vault path" || return 1
+    assert_eq "Continue from the pending rotation handoff: read the handoff in .cs/private/handoffs/ whose frontmatter says consumed_by: $thread first." \
+        "$(_args codex 2 | tail -n 1)" "the kick names the vault path, not the handoff" || return 1
     _has "$dir/.cs/private/handoffs/$HANDOFF" "consumed_by: $thread" || return 1
+    jq -e --arg to "$thread" 'select(.event == "rotated" and .to == $to)
+        | .engine == "codex" and .reason == "handoff" and (has("handoff") | not)' \
+        "$dir/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no rotated event for the handoff without its name"; return 1; }
+    _lacks "$dir/.cs/timeline.jsonl" "$HANDOFF" "the timeline keeps the handoff's name out" || return 1
     assert_not_exists "$dir/.cs/private/pending-handoff" "the marker is spent" || return 1
     assert_not_exists "$dir/.cs/local/codex-instructions.md" "no plaintext context" || return 1
     assert_file_exists "$dir/.cs/private/codex-instructions.md" "the context is in the vault" || return 1
