@@ -820,12 +820,17 @@ _antigravity_hook_mail_digest() {  # conversation_id
 }
 
 # A turn that ends on its own with mail that came after its prompt goes on, so
-# an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL,
-# the model's own normal end, is such an end, and any other ends as it is: a
-# turn the user stopped, one that failed, one agy cut off at a limit, one that
-# stopped on a step that waits for the user (TERMINAL_STEP_TYPE, such as a
-# question, which a wake would answer for the user), one a hook ended and an
-# injected response. The rest is the wake Claude's hook runs too
+# an exchange between sessions moves without a keystroke. Only NO_TOOL_CALL
+# wakes: it is the only end known to be the model's own normal one. A headless
+# agy 1.5.8 turn that used a tool (read_file) ended so on 2026-11-14, and so
+# did every turn typed into an interactive 1.5.9 run on 2026-11-15, none of
+# which used a tool. Any other end stays as it is: a turn the user stopped,
+# one that failed, one agy cut off at a limit, one a hook ended, an injected
+# response, and TERMINAL_STEP_TYPE, a stop on a step type agy treats as
+# terminal, whose list agy does not document and which may hand control back
+# to the user. If an interactive turn that uses tools turns out to end that
+# way, mail that came during it waits for the next prompt. The rest is the
+# wake Claude's hook runs too
 # (cs_mail_wake_scan and cs_mail_wake_silence, lib/02-shared.sh, which read
 # each record only from a regular file, never through a link), with its
 # records in cs's cache rather than in the mail folder, where the agent could

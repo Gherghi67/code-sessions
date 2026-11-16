@@ -360,11 +360,15 @@ hook, as it does under Claude and Codex:
   `CS_NO_MAIL_WAKE=1` turns the wake off. `woke` and `wakes` live in cs's
   cache, one directory per session (`~/.cache/cs/antigravity-mail/`), outside
   the session folder, which the agent can write. Only a turn that ends
-  `NO_TOOL_CALL`, the model's own normal end, wakes; any other end stays as it
-  is: a turn the user stopped, one that failed, one `agy` cut off at a limit,
-  one that stopped on a step that waits for the user (`TERMINAL_STEP_TYPE`,
-  such as a question, so a question is never answered for the user), one a
-  hook ended, and an injected response.
+  `NO_TOOL_CALL` wakes: it is the only end known to be the model's own normal
+  one. A headless `agy` 1.5.8 turn that used a tool (`read_file`) ended so on
+  2026-11-14, and so did every turn typed into an interactive 1.5.9 run on
+  2026-11-15, none of which used a tool. Any other end stays as it is: a turn
+  the user stopped, one that failed, one `agy` cut off at a limit, one a hook
+  ended, an injected response, and `TERMINAL_STEP_TYPE`, a stop on a step type
+  `agy` treats as terminal, whose list `agy` does not document and which may
+  hand control back to the user. If an interactive turn that uses tools turns
+  out to end that way, mail that came during it waits for the next prompt.
 - Only the session's own conversation, in the run that holds its lease, gets
   mail. A subagent's conversation has an ID of its own, and so does one started
   mid-run with `/clear` or `/new`, or opened with `/resume` after the first

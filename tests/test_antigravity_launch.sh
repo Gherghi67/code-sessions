@@ -1759,9 +1759,9 @@ test_a_wake_that_cannot_be_counted_is_never_sent() {
 
 # Only a turn that ended on its own (NO_TOOL_CALL) goes on: never one the user
 # stopped, one that failed, one agy cut off at a limit, one that stopped on a
-# step that waits for the user, one a hook ended or an injected response, nor
-# the ends agy 1.5.9's enum has beyond the hooks guide's list, and none with
-# CS_NO_MAIL_WAKE.
+# step type agy treats as terminal, one a hook ended or an injected response,
+# nor the ends agy 1.5.9's enum has beyond the hooks guide's list, and none
+# with CS_NO_MAIL_WAKE.
 test_a_turn_that_did_not_end_on_its_own_is_never_woken() {
     local output reason mail state
     output=$("$CS_BIN" halted --engine antigravity 2>&1) || { echo "$output"; return 1; }
