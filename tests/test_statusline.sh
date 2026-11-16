@@ -1656,7 +1656,9 @@ test_client_cache_is_read_outside_tmux_too() {
       export HOME="$TEST_TMPDIR/home"; mkdir -p "$HOME/.cache/cs/term"
       printf 'light 252;247;229 %s\n' "$(date +%s)" > "$HOME/.cache/cs/term/ttys009"
       unset TMUX CS_TERM_THEME CS_TERM_THEME_AUTO CS_TERM_BG_RGB 2>/dev/null || true
-      tty() { printf '/dev/ttys009\n'; }
+      # Model terminal identity at the helper boundary: this test's own
+      # stdin is a pipe, for which a real tty(1) would correctly find none.
+      _sl_own_tty() { _OWN_TTY=/dev/ttys009; }
       _sl_theme_from_client_cache || { echo "    cache unreadable outside tmux"; return 1; }
       assert_eq "light" "$SL_THEME" "the plain-tty entry must be found" || return 1 )
 }

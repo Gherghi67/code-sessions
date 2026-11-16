@@ -12,12 +12,12 @@
 # on what the setting does for you. Walked with parameter expansion only, so
 # loading forks nothing.
 _CS_CONFIG_SPEC=(
-    'CS_STATUSLINE_DISABLE|Status line|Status line|flagoff|flag|-|off|now|applies at the next repaint|Draws the line under the prompt with the session, branch, model, context and usage limits.'
+    'CS_STATUSLINE_DISABLE|Status line|Status line|flagoff|flag|-|off|now+launch|applies at the next repaint; Antigravity needs a relaunch if disabled at startup|Draws the line under the prompt with the session, branch, model, context and usage limits.'
     'CS_STATUSLINE_LAYOUT|Status line|Layout|choice|enum|quiet,band,capsules|quiet|now|applies at the next repaint|How the status line looks: plain text, one full-width band of colour, or capsules.'
     'CS_STATUSLINE_SEGMENTS|Status line|Segments|text|segments|-|logo,session,notes,mail,git,model,ctx,limits|now|applies at the next repaint|Which items the status line shows, in order, as a comma-separated list.'
     'CS_STATUSLINE_BAND|Status line|Band colour|text|band|-|session|now|applies at the next repaint|The colour of the band and the session chip; session gives each session its own colour.'
     'CS_STATUSLINE_COLS|Status line|Width in columns|text|cols|-|measured|now|applies at the next repaint|A fixed width for the status line; unset, it fits the terminal.'
-    'CS_STATUSLINE_FRAME|Status line|Frame columns|text|num|-|4|now|applies at the next repaint|Columns the prompt frame takes from the measured width, so the line is not cut short.'
+    'CS_STATUSLINE_FRAME|Status line|Frame columns|text|num|-|engine|now|applies at the next repaint|Columns the host frame takes from the measured width; defaults to 4 for Claude Code and 0 for Antigravity.'
     'CS_STATUSLINE_CTX_WARN|Status line|Context warn %|text|num|-|40|now|applies at the next repaint|Context use at which the gauge turns to its warning colour.'
     'CS_STATUSLINE_CTX_CRIT|Status line|Context critical %|text|num|-|60|now|applies at the next repaint|Context use at which the gauge turns to its critical colour.'
     'CS_USAGE_NO_REFRESH|Status line|Usage refresh|flagoff|flag|-|off|now|applies at the next repaint|Fetches your Fable usage for the status line; off, it shows only what is already cached.'

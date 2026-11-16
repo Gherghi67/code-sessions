@@ -216,7 +216,8 @@ _cs_tips_record_file() {
 # binaries, then the files deployed under ~/.claude. The web install
 # downloads exactly these.
 _cs_payload_files() {
-    printf '%s\n' bin/cs bin/cs-secrets bin/cs-codex-thread bin/cs-statusline bin/cs-subagent-statusline
+    printf '%s\n' bin/cs bin/cs-secrets bin/cs-codex-thread bin/cs-statusline bin/cs-subagent-statusline \
+        bin/cs-statusline-agy
     _cs_claude_payload_files
 }
 

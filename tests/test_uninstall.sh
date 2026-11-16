@@ -271,6 +271,35 @@ test_uninstall_says_what_it_kept_of_the_antigravity_plugin() {
     assert_output_not_contains "$out" "Removed the cs hook and skills for Antigravity" "never that the whole plugin went" || return 1
 }
 
+test_uninstall_continues_when_the_antigravity_off_marker_cannot_be_removed() {
+    local home="$TEST_TMPDIR/marker-home" stub="$TEST_TMPDIR/mount-stub-marker" out digest rc=0
+    _stage_install "$home"
+    mkdir -p "$home/.config/cs" "$home/.claude/hooks/cs"
+    touch "$home/.config/cs/statusline-antigravity-off"
+    cp "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh"
+    digest=$(shasum -a 256 "$home/.claude/hooks/cs/session-start.sh")
+    printf '%s  .claude/hooks/cs/session-start.sh\n' "${digest%% *}" > "$home/.claude/hooks/cs/.installed"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    cat > "$stub/rm" <<'STUB'
+#!/bin/sh
+for arg do
+    case "$arg" in
+        "$HOME/.config/cs/statusline-antigravity-off") exit 1 ;;
+    esac
+done
+exec /bin/rm "$@"
+STUB
+    chmod +x "$stub/rm"
+    printf 'y' | HOME="$home" CS_SESSIONS_ROOT="$TEST_TMPDIR/no-marker-sessions" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/marker.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/marker.out")
+    assert_eq 0 "$rc" "a failed marker removal does not abort uninstall: $out" || return 1
+    assert_file_exists "$home/.config/cs/statusline-antigravity-off" "the unremovable marker remains" || return 1
+    assert_not_exists "$home/.local/bin/cs-statusline" "later binary cleanup still runs" || return 1
+    assert_not_exists "$home/.claude/hooks/cs/session-start.sh" "later hook cleanup still runs" || return 1
+    assert_output_contains "$out" "Uninstall complete!" "uninstall reaches completion"
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -284,5 +313,6 @@ run_test test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings
 run_test test_uninstall_names_each_session_whose_secrets_it_kept
 run_test test_uninstall_lists_the_antigravity_plugin_only_when_it_is_cs
 run_test test_uninstall_says_what_it_kept_of_the_antigravity_plugin
+run_test test_uninstall_continues_when_the_antigravity_off_marker_cannot_be_removed
 
 report_results
