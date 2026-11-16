@@ -23312,8 +23312,12 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
         fi
     fi
+    # Both log lines go to .cs/local (cs_local_dir), never through
+    # cs_private_dir: the launch refuses an encrypted session, so a
+    # .cs/private here came mid-run, maybe as a link out of the session, as
+    # _antigravity_mail_dir says.
     if [ "$previous" != "$id" ]; then
-        if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+        if log_dir=$(cs_local_dir "$session_dir/.cs"); then
             CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
                 "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         fi
@@ -23323,7 +23327,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     fi
     # The rotate skill reads which conversations this checkout ran from this
     # line, as hooks/session-start.sh writes it for Claude.
-    if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: %s, ID: %s)\n' \
             "$(date '+%Y-%m-%d %H:%M:%S')" "$source" "$id" || true
     fi

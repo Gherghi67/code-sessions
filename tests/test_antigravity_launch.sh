@@ -1960,6 +1960,23 @@ test_a_vault_planted_mid_run_is_neither_read_nor_written_through() {
     assert_eq "" "$(_injected)" "and no prompt shows it"
 }
 
+# The bind's log lines do not go through a vault planted mid-run either: with
+# session.log there linked to a file outside the session, a fresh open leaves
+# that file as it was and logs to .cs/local, as an unencrypted session does.
+test_a_vault_planted_mid_run_takes_no_log_line() {
+    local output vault="$TEST_TMPDIR/planted" log_victim="$TEST_TMPDIR/log-victim"
+    local fresh=55555555-5555-4555-8555-555555555555
+    output=$("$CS_BIN" vaulted --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    mkdir -p "$vault"
+    printf 'theirs\n' > "$log_victim"
+    ln -s "$log_victim" "$vault/session.log"
+    output=$(AGY_PLANT_VAULT="$vault" AGY_NEW_ID=$fresh "$CS_BIN" vaulted --fresh 2>&1) || true
+    assert_eq theirs "$(cat "$log_victim")" "no log line is appended through the planted folder" || return 1
+    assert_eq "$fresh" "$(_binding vaulted)" "the fresh conversation is still bound" || return 1
+    grep -F -q -- "Session started (source: startup, ID: $fresh)" "$(_session_dir vaulted)/.cs/local/session.log" \
+        || { echo "  FAIL: the line goes to the session's own log"; return 1; }
+}
+
 # The installer quotes a cs path the shell would split; doctor reads it back.
 test_doctor_reads_back_a_quoted_cs_path() {
     local output dir odd="$TEST_TMPDIR/it's here"
@@ -2067,5 +2084,6 @@ run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link
 run_test test_a_vault_planted_mid_run_is_neither_read_nor_written_through
+run_test test_a_vault_planted_mid_run_takes_no_log_line
 run_test test_doctor_sends_a_folder_cs_left_to_setup
 report_results
