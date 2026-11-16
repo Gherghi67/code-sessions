@@ -130,12 +130,12 @@ when it is not a string, so a command run from a script arrives as
 `exec_command`'s result object. cs carries a single such result, when nothing is
 printed after it, as the command's own output, marked `[exit code N]` when not 0
 or `[still running in Codex, session N]`. When a tool result holds several
-results, or a structure around one (`Promise.allSettled`'s array, say), the
-structure crosses as compact JSON with each result replaced by
-`<output k, status>` (keys a script added to a result stay in the JSON beside
-its placeholder, so such a result crosses this way even alone), followed by each
-output under its own `[output k, status]` line, which a single result with text
-printed after it gets too. A result that starts a line after other text, such as
+results, each output crosses under its own `[output k, status]` line, as does a
+single result with text printed after it. A printed structure around results
+(`Promise.allSettled`'s array, say) first crosses as compact JSON with each
+result replaced by `<output k, status>`, and keys a script added to a result
+stay in that JSON beside its placeholder, so such a result crosses this way even
+alone. A result that starts a line after other text, such as
 Codex's truncation warning, converts the same way, and that text stays. When a
 tool result holding several results would be cut, a line after the script's
 header lists every result's status first. The result's chunk ID, wall time and

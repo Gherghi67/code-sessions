@@ -1192,24 +1192,53 @@ class TransplantTests(HelperFixture):
         # A decode starts at each line that opens a bracket, and a failed one
         # reads on to where the value broke, so a value that never closes
         # would be read again from every later line. Python 3.9 stops a deep
-        # value with RecursionError, 3.12 and later read it to the end.
+        # value with RecursionError, 3.12 and later read it to the end. What
+        # every failed decode was handed, to the end of the part or of its
+        # line, adds up to a few times the part.
         loader = importlib.machinery.SourceFileLoader("cs_codex_thread_under_test", str(HELPER))
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
         loader.exec_module(module)
-        failures = []
+        handed = []
 
         class Counting(json.JSONDecoder):
-            def raw_decode(self, *args, **kwargs):
+            def raw_decode(self, s, idx=0):
                 try:
-                    return super().raw_decode(*args, **kwargs)
+                    return super().raw_decode(s, idx)
                 except (json.JSONDecodeError, RecursionError):
-                    failures.append(1)
+                    handed.append(len(s) - idx)
                     raise
 
         text = "[\n" * 5000 + json.dumps(command_result("ok", exit_code=0), separators=(",", ":")) + "\n"
         with patch.object(module.json, "JSONDecoder", Counting):
             module.codex_tool_text(text, [], "\x00s-{}-x\x00")
-        self.assertLessEqual(len(failures), 10)
+        self.assertLessEqual(sum(handed), 5 * len(text))
+
+    def test_a_result_after_a_part_that_never_closes_still_converts(self):
+        # Codex merges what a script printed into one part when it cuts the
+        # output, so a printed file of "[" lines can come before a result:
+        # once failed decodes spend their budget, a value is still read
+        # within its own line, and the result after them converts.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        part = ("Warning: truncated output (original token count: 12000)\n"
+                + compact(command_result("a" * 5000, exit_code=0)) + "\n"
+                + compact(command_result("ok", exit_code=0)) + "\n" + "[\n" * 300
+                + compact(command_result("fatal: 3 tests failed", exit_code=1)) + "\n")
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", part)),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertIn("output 3, exit code 1", crossed[:4000])
+        # Its block lies past the default cut.
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertIn("[output 3, exit code 1]\nfatal: 3 tests failed", crossed)
+        self.assertNotIn('"exit_code":1', crossed)
 
     def test_only_code_mode_results_are_converted(self):
         # Only code mode's exec and wait answer with a script's header and

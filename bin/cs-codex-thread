@@ -409,18 +409,24 @@ def codex_tool_text(text, found, sentinel):
     # too deep to walk, leave found as it was and stay in the text.
     decoder, pieces, done = json.JSONDecoder(), [], 0
     # A value that never closes is read again from each later line: failed decodes share a budget.
+    # Once it is spent, a value is decoded within its own line only, where a failure costs that line.
     budget = 2 * len(text)
     at = len(text) - len(text.lstrip())
     while at < len(text):
         if text[at] in "{[":
             start = len(found)
+            bounded = budget < 0
             try:
-                value, end = decoder.raw_decode(text, at)
+                if bounded:
+                    line_end = text.find("\n", at)
+                    value, end = decoder.raw_decode(text[at:line_end if line_end >= 0 else len(text)])
+                    end += at
+                else:
+                    value, end = decoder.raw_decode(text, at)
             except (ValueError, RecursionError) as exc:
                 end = None
-                budget -= (exc.pos if isinstance(exc, json.JSONDecodeError) else len(text)) - at
-                if budget < 0:
-                    break
+                if not bounded:
+                    budget -= (exc.pos if isinstance(exc, json.JSONDecodeError) else len(text)) - at
             if end is not None:
                 try:
                     value = lifted(value, found, sentinel)
