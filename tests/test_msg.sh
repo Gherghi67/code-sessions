@@ -2367,9 +2367,37 @@ test_stop_wake_stops_at_the_ceiling() {
         "a human prompt resets the ceiling" || return 1
 }
 
+# The snapshot and the count are read only from a regular file, never through
+# a link, so a process in the session that links mail/woke and mail/wakes to
+# files elsewhere in it would have every Stop read both as empty, wake again
+# past the ceiling, and write through the links each time. The writers replace
+# a link instead: the first Stop wakes, and the records it writes are the ones
+# the next Stop reads.
+test_stop_wake_replaces_linked_records() {
+    "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
+    local session="$CS_SESSIONS_ROOT/receiver" mail n out blocks=0
+    mail=$(MAILDIR)
+    printf 'woke target\n' > "$session/woke-target.txt"
+    printf 'wakes target\n' > "$session/wakes-target.txt"
+    ln -s "$session/woke-target.txt" "$mail/woke" || return 1
+    ln -s "$session/wakes-target.txt" "$mail/wakes" || return 1
+    for n in 1 2 3 4 5 6 7; do
+        out=$(CS_MAIL_WAKE_MAX=2 wake)
+        case "$out" in *'"block"'*) blocks=$((blocks + 1)) ;; esac
+    done
+    assert_eq "1" "$blocks" "one unread message wakes one of seven Stops" || return 1
+    assert_eq "woke target" "$(cat "$session/woke-target.txt")" \
+        "the snapshot is not written through its link" || return 1
+    assert_eq "wakes target" "$(cat "$session/wakes-target.txt")" \
+        "the count is not written through its link" || return 1
+    [ -f "$mail/woke" ] && [ ! -L "$mail/woke" ] || { echo "  FAIL: woke is not a regular file"; return 1; }
+    [ -f "$mail/wakes" ] && [ ! -L "$mail/wakes" ] || { echo "  FAIL: wakes is not a regular file"; return 1; }
+}
+
 run_test test_stop_wake_only_the_lead_wakes
 run_test test_wake_turn_does_not_reset_the_ceiling
 run_test test_stop_wake_stops_at_the_ceiling
+run_test test_stop_wake_replaces_linked_records
 run_test test_cwd_change_rearms_the_maildir_watch
 run_test test_cwd_change_creates_the_maildir_before_arming
 run_test test_cwd_change_never_reaches_the_drain

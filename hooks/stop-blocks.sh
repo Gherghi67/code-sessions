@@ -230,8 +230,13 @@ _mail_scan() {
 # in it has been discharged — every caller checks that before calling. The tmp
 # name carries the pid because both wakes write this file and the idle one
 # overlaps itself: two writers sharing one tmp name splice each other, and the
-# rename then publishes the splice.
+# rename then publishes the splice. The scan reads the snapshot only from a
+# regular file, never through a link, so the write must not follow one either:
+# a link standing at the name is removed first, or the record would land where
+# no reader looks and every Stop would wake again. One that cannot be removed
+# leaves the record unwritten.
 _mail_record() {
+    [ ! -L "$MAIL_WOKE" ] || rm -f "$MAIL_WOKE" 2>/dev/null || return 0
     cs_write_atomic "$MAIL_WOKE" printf '%s' "$MAIL_NAMES" || true
 }
 
@@ -242,7 +247,10 @@ _mail_apply_silencers() {
     cs_mail_wake_silence "$MAILDIR/wakes"
 }
 
+# The silencer reads the count only from a regular file too, so a link at its
+# name goes first, as at the snapshot's.
 _mail_count_wake() {
+    [ ! -L "$MAILDIR/wakes" ] || rm -f "$MAILDIR/wakes" 2>/dev/null || return 0
     cs_write_atomic "$MAILDIR/wakes" printf '%s\n' "$((MAIL_WAKES + 1))" || true
 }
 
