@@ -395,6 +395,16 @@ def compact_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def unique_keys(pairs):
+    # JSON.stringify never repeats a key, so an object that does is printed
+    # text. Read whole it keeps only the key's last value: text around a real
+    # result could put a forged one in its place. It fails to decode instead.
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("a repeated key")
+    return value
+
+
 def codex_tool_text(text, found, sentinel):
     # Code mode prints what a script passes to text(), as JSON when it is not
     # a string, each call its own part, so a command run from a script arrives
@@ -407,7 +417,7 @@ def codex_tool_text(text, found, sentinel):
     # part comes back as those and the text between them, kept as written;
     # with no such value it gives None. JSON holding no result, and a value
     # too deep to walk, leave found as it was and stay in the text.
-    decoder, pieces, done = json.JSONDecoder(), [], 0
+    decoder, pieces, done = json.JSONDecoder(object_pairs_hook=unique_keys), [], 0
     # A value that never closes is read again from each later line: failed decodes share a budget.
     # Once it is spent, a value is decoded within its own line only, where a failure costs that line.
     budget = 2 * len(text)
