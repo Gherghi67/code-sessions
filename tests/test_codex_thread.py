@@ -932,6 +932,20 @@ class TransplantTests(HelperFixture):
         self.assertIn("x\ufffd", agent)
         self.assertFalse([ch for ch in agent if "\ud800" <= ch <= "\udfff"])
 
+    def test_a_lone_surrogate_anywhere_in_a_rollout_never_stops_the_export(self):
+        # Codex writes no unpaired escape, but a rollout line holding one
+        # decodes to a lone surrogate at the first json.loads.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "hi \ud83d")),
+            rollout_line("response_item", codex_message("assistant", "Hello.")),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("hi \ufffd", self.text_of(records[0]))
+        written = (self.root / "carried.jsonl").read_text(encoding="utf-8")
+        self.assertFalse([ch for ch in written + json.dumps(records, ensure_ascii=False)
+                          if "\ud800" <= ch <= "\udfff"])
+
     def test_only_a_well_typed_command_result_is_converted(self):
         # exec_command's result has a numeric wall time and an integer exit
         # code or session; other objects with a chunk_id and an output, a

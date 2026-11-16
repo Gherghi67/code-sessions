@@ -481,8 +481,7 @@ def codex_script_output(texts):
         else:
             blocks = "\n".join(output_block(number + 1, *found[number]) for number in range(start, end))
             result = blocks if skeleton is None else placed.sub(placeholder, skeleton) + "\n" + blocks
-        # Decoded again, an unpaired escape is a lone surrogate no rollout line holds; the transcript is strict UTF-8.
-        return LONE_SURROGATE.sub("\ufffd", result)
+        return result
 
     return [text if pieces is None else "".join(piece if isinstance(piece, str) else crossed(*piece)
                                                 for piece in pieces)
@@ -794,9 +793,11 @@ def export_claude(args):
     if messages:
         cwd = str(Path(args.cwd).resolve(strict=True))
         note = carried_note("codex", args.thread_id, args.clip)
-        write_private(args.out, claude_transcript(
+        # An unpaired escape, in a rollout line or in a command result decoded again, is a lone
+        # surrogate once decoded; the transcript is strict UTF-8.
+        write_private(args.out, LONE_SURROGATE.sub("\ufffd", claude_transcript(
             messages, args.session_id, cwd, args.claude_version or DEFAULT_CLAUDE_VERSION,
-            args.git_branch or "", note))
+            args.git_branch or "", note)))
     return history_stats(messages)
 
 
