@@ -1141,7 +1141,9 @@ function world(on: On, opts: { env?: Record<string, string>; answer?: (argv: rea
   })
   on('ui.panes', () => ({ value: w.isOpen ? [{ id: 'cs-panel', title: 'cs', isShown: true, isFocused: true, isPlaced: true }] : [] }))
   on('ui.close', () => { w.isOpen = false; return { value: undefined } })
-  on('ui.focus', () => ({}))
+  // Person events target cs-panel, outside the test plugin's default matcher.
+  // Keep programmatic focus unimplemented so its error path stays covered.
+  on('ui.focus', { plugin: '*', component: '*' }, ($, e, next) => e.origin?.kind === 'person' ? {} : next())
   on('ui.scroll', () => { w.scrolls++; return {} })
   on('turn.complete', () => ({ text: '' }))
   return { w, clock }

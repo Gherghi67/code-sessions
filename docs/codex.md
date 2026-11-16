@@ -105,6 +105,17 @@ fresh. The carried thread is a new one: cs starts it through app-server, adds
 the session context, then a developer note and Claude's messages as user and
 assistant items, with every tool call and each tool result's first 4,000
 characters (a failed call's result marked `[tool error]`), and binds it.
+The helper records the carried model messages and transcript display events
+inside matching turn boundaries after the new thread's writer exits, so native
+revert removes both views of an exchange. It then resumes the thread in a
+separate process and checks the visible turns before reporting success. This makes the imported messages visible in the CLI;
+injecting model context alone leaves the transcript blank. The display format is
+verified with Codex `0.167.0-alpha.3.2`. CI pins that version on macOS and Linux
+and checks native display, revert's next model input, and messages above 4 MiB
+using temporary homes and a local mock provider. Existing open threads are not
+rewritten.
+Imported turns use the import time and do not claim token usage; the context
+meter can still read zero until the first Codex model turn.
 Claude's thinking stays behind, and since its last compaction a Claude
 conversation starts from the compact summary. After `y`, cs names the earlier
 thread's full id: `codex resume <id>` opens it outside cs, and the binding

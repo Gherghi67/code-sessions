@@ -87,21 +87,49 @@ jobs:
       # package ships age-keygen). tests/test_lib.sh's require_tool fails a
       # test whose listed tool is missing; any other missing tool skips, and
       # run_all.sh names every skip at the end of the log.
-      # CS_TEST_SUITE_TIMEOUT: the fork's test_install outgrew run_all.sh's
-      # 1200 s watchdog on the macOS runners. It took 738 s at 1c4b3af3 (187
-      # tests), 1128 s once v2026.10.11 merged (212), and the next run was cut
-      # at 181 of 213 with no failure; alone on a Mac it takes 1317 s.
-      # Upstream's own runs it in about 600 s. At 233 tests it reached the
-      # 1800 s limit: 1149 to 1661 s on main's macOS runs in November 2026,
-      # then cut at 1800 s in two of three attempts on PR #38. Run side by side
-      # on one Mac, main took 1781 s and that PR's head 1782 s, so the suite
-      # had outgrown the limit, not the PR. 2700 s is 1.5 times the old limit.
+      # The 233-case installer suite reached case 225 without an assertion
+      # failure before macOS's 1800 s watchdog stopped it. Its standalone
+      # run passes all cases; allow 2400 s under the parallel CI workload.
+      # Linux retains its existing 1800 s watchdog.
       - name: Run bash test suites
         env:
           CS_TEST_SHARD: ${{ matrix.shard }}/2
           CS_TEST_REQUIRE_TOOLS: age age-keygen jq bun
-          CS_TEST_SUITE_TIMEOUT: 2700
+          CS_TEST_SUITE_TIMEOUT: ${{ runner.os == 'macOS' && '2400' || '1800' }}
         run: bash tests/run_all.sh
+
+  codex-native:
+    name: codex-native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      CODEX_NATIVE_VERSION: 0.167.0-alpha.3.2
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install the pinned native Codex
+        run: |
+          npm install --prefix "$RUNNER_TEMP/codex-native" --ignore-scripts --no-audit --no-fund \
+            "@openai/codex@$CODEX_NATIVE_VERSION"
+          test "$("$RUNNER_TEMP/codex-native/node_modules/.bin/codex" --version)" = "codex-cli $CODEX_NATIVE_VERSION"
+      # Every native case uses a temporary CODEX_HOME without credentials.
+      # The revert test captures synthetic model input at a loopback server;
+      # it never calls a hosted model. A missing binary fails, not skips.
+      - name: Verify native persistence, display, revert and large messages
+        env:
+          CS_CODEX_REAL_BIN: ${{ runner.temp }}/codex-native/node_modules/.bin/codex
+        run: python3 tests/test_codex_thread.py
 
   build-sync:
     runs-on: ubuntu-latest
