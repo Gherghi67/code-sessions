@@ -8,6 +8,7 @@
 
 import argparse
 import contextlib
+import datetime
 import io
 import json
 import math
@@ -17,6 +18,7 @@ import re
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,7 @@ class AppServer:
         self.deadline = deadline
         self.buffer = b""
         self.counter = 0
+        self.max_message = MAX_MESSAGE
         self.selector = selectors.DefaultSelector()
         try:
             self.process = subprocess.Popen(
@@ -95,10 +98,17 @@ class AppServer:
             suffix = " (exit status {})".format(status) if type(status) is int else ""
             raise BootstrapError("codex app-server exited before completing bootstrap" + suffix)
         self.buffer += data
-        if len(self.buffer) > MAX_MESSAGE:
+        if len(self.buffer) > self.max_message:
             raise BootstrapError("codex app-server output exceeded the protocol limit")
 
-    def request(self, method, params):
+    def request(self, method, params, *, max_message=MAX_MESSAGE):
+        self.max_message = max_message
+        try:
+            return self._request(method, params)
+        finally:
+            self.max_message = MAX_MESSAGE
+
+    def _request(self, method, params):
         self.counter += 1
         request_id = "cs-bootstrap-" + str(self.counter)
         self.send({"id": request_id, "method": method, "params": params})
@@ -147,6 +157,22 @@ class AppServer:
         })
         self.send({"method": "initialized"})
 
+    def signal_group(self, sig):
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                os.killpg(self.process.pid, sig)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # macOS can report EPERM while an exited launcher's group is
+                # disappearing. Retry only after the launcher exits, and keep
+                # persistent permission failures visible.
+                if self.process.poll() is None or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+
     def close(self):
         self.selector.close()
         self.process.stdin.close()
@@ -156,9 +182,7 @@ class AppServer:
             pass
         # Terminate the private process group, including children a launcher left.
         for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(self.process.pid, sig)
-            except ProcessLookupError:
+            if not self.signal_group(sig):
                 break
             if sig == signal.SIGTERM:
                 try:
@@ -195,8 +219,6 @@ def exact_id(result, expected=None):
 # characters. What stays: Codex's encrypted reasoning and sub-agent messages,
 # Claude's thinking, and the context each engine injects for itself.
 DEFAULT_CLIP = 4000
-# thread/inject_items requests are kept to about this many bytes each.
-INJECT_BATCH = 512 * 1024
 # Seconds the zstd command gets to unpack a compressed rollout.
 ZSTD_TIMEOUT = 60
 # Context Codex adds as user messages: the AGENTS.md text, and items it wraps
@@ -633,17 +655,147 @@ def carried_items(messages, note):
     return items
 
 
-def item_batches(items):
-    batch, size = [], 0
-    for item in items:
-        length = len(json.dumps(item))
-        if batch and size + length > INJECT_BATCH:
-            yield batch
-            batch, size = [], 0
-        batch.append(item)
-        size += length
-    if batch:
-        yield batch
+def carried_display_events(thread_id, messages):
+    """Native rollout events for the TUI, separate from model-visible items.
+
+    thread/inject_items only writes ResponseItems. Since Codex's paginated
+    transcript reads completed items inside turns, those alone render blank.
+    These are the on-disk enum names (UserMessage/Text), not the app-server
+    response names (userMessage/text). Verified with Codex 0.167.0-alpha.3.2.
+    """
+    turn = None
+    last_reply = None
+    imported_at = int(time.time())
+
+    def finished():
+        return {"type": "task_complete", "turn_id": turn, "root_turn_id": turn,
+                "last_agent_message": last_reply, "started_at": imported_at, "completed_at": imported_at,
+                "duration_ms": 0, "time_to_first_token_ms": 0}
+
+    for message in messages:
+        if turn is None or message["role"] == "user":
+            if turn is not None:
+                yield finished()
+            turn, last_reply = str(uuid.uuid4()), None
+            yield {"type": "task_started", "turn_id": turn, "root_turn_id": turn,
+                   "turn_attribution": {"turn_id": turn, "root_turn_id": turn,
+                                        "turn_trigger": "user", "parent_turn_id": None,
+                                        "initiating_agent_path": None},
+                   "started_at": imported_at, "model_context_window": 0,
+                   "collaboration_mode_kind": "default"}
+        if message["role"] == "user":
+            item = {"type": "UserMessage", "id": str(uuid.uuid4()), "client_id": None,
+                    "content": [{"type": "text", "text": message["text"], "text_elements": []}]}
+        else:
+            last_reply = message["text"]
+            item = {"type": "AgentMessage", "id": str(uuid.uuid4()), "phase": "final_answer",
+                    "content": [{"type": "Text", "text": last_reply}]}
+        yield {"type": "item_completed", "thread_id": thread_id, "turn_id": turn,
+               "item": item, "started_at_ms": imported_at * 1000, "completed_at_ms": imported_at * 1000}
+    if turn is not None:
+        yield finished()
+
+
+def persist_carried_display(rollout_path, thread_id, messages):
+    # Only a newly created, not-yet-bound thread is eligible. Its sole writer
+    # has exited before we open it, and the verification server has not yet
+    # indexed it. Never use this to patch a running or already indexed thread.
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").resolve()
+    if not isinstance(rollout_path, str):
+        raise BootstrapError("Codex did not return the new thread's rollout path")
+    path = Path(rollout_path)
+    if (path.is_symlink() or path.suffix != '.jsonl'
+            or home / 'sessions' not in path.resolve().parents):
+        raise BootstrapError("Codex returned an unsafe carry-over rollout path")
+    fd = os.open(str(path), os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'r+', encoding='utf-8') as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise BootstrapError("Carry-over rollout is not a regular file")
+        ordinal, matched = -1, False
+        try:
+            for line in handle:
+                if not line.endswith('\n'):
+                    raise ValueError()
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError()
+                payload = record.get('payload', {})
+                if record.get('type') == 'session_meta':
+                    if matched or payload.get('id') != thread_id:
+                        raise ValueError()
+                    matched = True
+                if record.get('type') == 'event_msg' and payload.get('type') in (
+                        'task_started', 'item_completed', 'task_complete'):
+                    raise BootstrapError("Carry-over rollout already contains conversation turns")
+                value = record.get('ordinal')
+                if type(value) is not int or value <= ordinal:
+                    raise ValueError()
+                ordinal = value
+        except (ValueError, AttributeError) as exc:
+            raise BootstrapError("Codex carry-over rollout has an unsupported format") from exc
+        if not matched:
+            raise BootstrapError("Carry-over rollout does not identify the new thread")
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        turns = set()
+        items = iter(carried_items(messages, '')[1:])
+        handle.seek(0, os.SEEK_END)
+        for event in carried_display_events(thread_id, messages):
+            if event['type'] == 'item_completed':
+                ordinal += 1
+                item = next(items)
+                item['id'] = 'msg_' + str(uuid.uuid4())
+                handle.write(json.dumps({'timestamp': timestamp, 'ordinal': ordinal,
+                                         'type': 'response_item', 'payload': item}) + '\n')
+            ordinal += 1
+            if event['type'] == 'task_started':
+                turns.add(event['turn_id'])
+            handle.write(json.dumps({'timestamp': timestamp, 'ordinal': ordinal,
+                                     'type': 'event_msg', 'payload': event}) + '\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    return turns
+
+
+def verify_carried_display(server, thread_id, expected, messages):
+    # One item per page bounds each response by the expected serialized text
+    # plus the normal protocol allowance for its envelope and notifications.
+    # Verify text as well as turns: a changed native item format can
+    # otherwise leave valid but empty turns and falsely report success again.
+    seen, cursor, cursors, index = set(), None, set(), 0
+    while True:
+        params = {'threadId': thread_id, 'sortDirection': 'asc', 'limit': 1}
+        if cursor is not None:
+            params['cursor'] = cursor
+        text_size = len(json.dumps(messages[index]['text']).encode('utf-8')) if index < len(messages) else 0
+        result = server.request('thread/items/list', params, max_message=MAX_MESSAGE + text_size)
+        data = result.get('data')
+        if not isinstance(data, list) or any(not isinstance(t, dict) for t in data):
+            raise BootstrapError("Codex could not verify the carried transcript's display")
+        for entry in data:
+            item = entry.get('item', {})
+            if not isinstance(item, dict) or index >= len(messages):
+                raise BootstrapError("Codex returned unexpected carried transcript items")
+            message = messages[index]
+            expected_type = 'userMessage' if message['role'] == 'user' else 'agentMessage'
+            content = item.get('content')
+            text = item.get('text') if expected_type == 'agentMessage' else (
+                content[0].get('text') if isinstance(content, list) and len(content) == 1
+                and isinstance(content[0], dict) else None)
+            if item.get('type') != expected_type or text != message['text']:
+                raise BootstrapError("Codex did not retain the carried transcript's visible messages")
+            turn_id = entry.get('turnId')
+            if not isinstance(turn_id, str):
+                raise BootstrapError("Codex returned an invalid carried transcript turn")
+            seen.add(turn_id)
+            index += 1
+        cursor = result.get('nextCursor')
+        if cursor is None:
+            break
+        if not isinstance(cursor, str) or cursor in cursors or not data:
+            raise BootstrapError("Codex returned invalid carry-over pagination")
+        cursors.add(cursor)
+    if seen != expected or index != len(messages):
+        raise BootstrapError("Codex did not retain the carried transcript's visible turns and messages")
 
 
 def bootstrap(args):
@@ -681,6 +833,7 @@ def bootstrap(args):
         else:
             result = server.request("thread/start", {"cwd": cwd, "ephemeral": False})
         thread_id = exact_id(result, args.thread_id)
+        rollout_path = result['thread'].get('path')
         # thread/start alone is lazy: its returned path may not exist on disk.
         # Appending developer context materializes history without a user turn.
         # Do not override developerInstructions: preserve the user's configuration.
@@ -690,16 +843,21 @@ def bootstrap(args):
                 {"type": "input_text", "text": instructions},
             ]}],
         })
-        # The carried conversation follows the context, a batch at a time.
-        for batch in item_batches(carried):
-            server.request("thread/inject_items", {"threadId": thread_id, "items": batch})
+        # Only the provenance note belongs outside turns. The conversation
+        # is persisted with its display events after this writer has exited,
+        # so native revert removes both views at the same turn boundary.
+        if carried:
+            server.request("thread/inject_items", {"threadId": thread_id, "items": carried[:1]})
         server.request("thread/unsubscribe", {"threadId": thread_id})
+    visible_turns = persist_carried_display(rollout_path, thread_id, messages) if carried else set()
     # A successful start/injection response is insufficient proof of durability.
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
         exact_id(server.request("thread/resume", {
             "threadId": thread_id, "cwd": cwd, "excludeTurns": True,
         }), thread_id)
+        if visible_turns:
+            verify_carried_display(server, thread_id, visible_turns, messages)
         server.request("thread/unsubscribe", {"threadId": thread_id})
     return thread_id
 

@@ -74,7 +74,7 @@ test_mod_validate_inventories_the_one_shape() {
         return 77
     fi
     local line
-    line="$(grep -F './register.tsx hooks:' <<< "$out" | sed 's/^[^.]*//')"
+    line="$(grep -F './register.tsx hooks:' <<< "$out" | sed 's/^[^.]*//; s/ (default matcher key: [^)]*)//g')"
     assert_eq "$HOOKS_LINE" "$line" "the exact hooks inventory" || return 1
 }
 
