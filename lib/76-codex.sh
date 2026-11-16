@@ -353,9 +353,28 @@ _launch_codex_bound() {
     # A binding made before the session's Codex home moved into its vault names
     # a thread the shared home keeps: it stays there, and this launch starts the
     # session's first conversation in the vault. An explicit resume refuses.
-    local outside_id=""
-    if [ -n "$vault_home" ] && [ -n "$recorded_id" ] \
-        && [ "$(cs_run_child "$helper" --has-thread --thread-id "$recorded_id" 2>/dev/null)" != yes ]; then
+    # Only the shared home's yes says so; a thread neither home keeps takes the
+    # ordinary refresh, which fails as in a plain session, and a probe that
+    # fails stops the launch with the helper's reason on the terminal.
+    local outside_id="" in_vault="" in_shared="" probe_status
+    if [ -n "$vault_home" ] && [ -n "$recorded_id" ]; then
+        probe_status=0
+        in_vault=$(cs_run_child "$helper" --has-thread --thread-id "$recorded_id") || probe_status=$?
+        if [ "$probe_status" -ne 0 ]; then
+            _codex_launch_error "Could not look for Codex conversation $recorded_id in the vault's Codex home; the binding is unchanged."
+            return 1
+        fi
+        if [ "$in_vault" = no ]; then
+            probe_status=0
+            in_shared=$(CODEX_HOME="$CS_CODEX_SHARED_HOME" cs_run_child "$helper" --has-thread --thread-id "$recorded_id") \
+                || probe_status=$?
+            if [ "$probe_status" -ne 0 ]; then
+                _codex_launch_error "Could not look for Codex conversation $recorded_id in the shared Codex home $CS_CODEX_SHARED_HOME; the binding is unchanged."
+                return 1
+            fi
+        fi
+    fi
+    if [ "$in_shared" = yes ]; then
         if [ "$intent" = resume ]; then
             _codex_launch_error "Cannot resume: the recorded Codex conversation $recorded_id is kept in $CS_CODEX_SHARED_HOME, outside the vault. Start one in the vault with --fresh."
             return 1

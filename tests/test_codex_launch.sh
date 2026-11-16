@@ -49,6 +49,7 @@ setup() {
     export CS_HELPER_PROJECT_CONFIG='{}' CS_HELPER_PROJECT_EXIT=0
     export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
     export CS_HELPER_VAULT_EXIT=0 CS_HELPER_VAULT_CALLS="$TEST_TMPDIR/helper-vault-calls"
+    export CS_HELPER_HAS_THREAD_EXIT=0 CS_HELPER_HAS_THREAD_HOME=""
     # The helper's file-only verbs run for real: no Codex is involved.
     export CS_REAL_THREAD_BIN="$SCRIPT_DIR/../bin/cs-codex-thread"
     export CODEX_BIN="$TEST_TMPDIR/codex with spaces"
@@ -107,7 +108,16 @@ case " $* " in
         printf '%s\n' "$CS_HELPER_VAULT_CHECK"
         exit 0
         ;;
-    *' --seed-config '*|*' --has-thread '*)
+    *' --has-thread '*)
+        # A probe that fails, everywhere or only under CS_HELPER_HAS_THREAD_HOME.
+        if [ "${CS_HELPER_HAS_THREAD_EXIT:-0}" -ne 0 ] \
+            && { [ -z "${CS_HELPER_HAS_THREAD_HOME:-}" ] || [ "${CODEX_HOME:-}" = "$CS_HELPER_HAS_THREAD_HOME" ]; }; then
+            echo 'simulated has-thread failure' >&2
+            exit "$CS_HELPER_HAS_THREAD_EXIT"
+        fi
+        exec python3 -I "$CS_REAL_THREAD_BIN" "$@"
+        ;;
+    *' --seed-config '*)
         exec python3 -I "$CS_REAL_THREAD_BIN" "$@"
         ;;
 esac
@@ -131,6 +141,7 @@ teardown() {
     unset CS_HELPER_TURN_FAIL_ONCE
     unset CS_HELPER_PROJECT_CONFIG CS_HELPER_PROJECT_EXIT
     unset CS_HELPER_VAULT_CHECK CS_HELPER_VAULT_EXIT CS_HELPER_VAULT_CALLS CS_REAL_THREAD_BIN CS_CODEX_SHARED_HOME
+    unset CS_HELPER_HAS_THREAD_EXIT CS_HELPER_HAS_THREAD_HOME
     unset CS_TEST_PROBE SESSIONS_ROOT CS_SPAWN_TOKEN
 }
 
@@ -550,6 +561,9 @@ test_a_binding_from_before_the_vault_starts_a_vault_thread() {
     _vault_fixture
     local old=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status=0
     printf '%s\n' "$old" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    # The old conversation's history, in the shared home.
+    mkdir -p "$CODEX_HOME/sessions/2026/11/16"
+    : > "$CODEX_HOME/sessions/2026/11/16/rollout-2026-11-16T09-00-00-$old.jsonl"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" resume 2>&1) || status=$?
     assert_eq 1 "$status" "an explicit resume must refuse" || return 1
     assert_output_contains "$output" "Cannot resume: the recorded Codex conversation $old is kept in $CODEX_HOME, outside the vault" || return 1
@@ -568,6 +582,51 @@ test_a_binding_from_before_the_vault_starts_a_vault_thread() {
     assert_eq 0 "$status" "resume failed: $output" || return 1
     assert_output_contains "$(cat "$CS_HELPER_ARGS")" "$CS_THREAD_ID" "the vault thread is resumed" || return 1
     assert_output_not_contains "$output" "outside the vault" || return 1
+}
+
+# A bound conversation neither the vault nor the shared home keeps is not one
+# from before the vault: the open refreshes it as in a plain session, and a
+# refresh that fails keeps the binding.
+test_a_binding_found_in_neither_home_fails_its_refresh() {
+    _vault_fixture
+    local old=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status=0
+    printf '%s\n' "$old" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    export CS_HELPER_EXIT=1
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a failed refresh must stop the open" || return 1
+    assert_output_not_contains "$output" "stays in" "nothing is said to stay outside the vault" || return 1
+    assert_output_contains "$(cat "$CS_HELPER_ARGS")" "^--thread-id\$" "the bound thread is refreshed" || return 1
+    assert_output_contains "$(cat "$CS_HELPER_ARGS")" "^$old\$" "the bound thread is refreshed" || return 1
+    assert_output_contains "$output" "Could not refresh Codex thread $old\\. The binding remains" || return 1
+    assert_eq "$old" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "the binding is unchanged" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# A probe for the bound conversation that fails says nothing about where it
+# is kept: the open stops with the helper's reason and the binding as it was,
+# whether the vault's probe failed or the shared home's.
+test_a_failed_thread_probe_stops_the_open() {
+    _vault_fixture
+    local old=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status
+    printf '%s\n' "$old" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    export CS_HELPER_HAS_THREAD_EXIT=1
+    for CS_HELPER_HAS_THREAD_HOME in "" "$CODEX_HOME"; do
+        export CS_HELPER_HAS_THREAD_HOME
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 1 "$status" "a failed probe must stop the open (${CS_HELPER_HAS_THREAD_HOME:-vault})" || return 1
+        if [ -z "$CS_HELPER_HAS_THREAD_HOME" ]; then
+            assert_output_contains "$output" "Could not look for Codex conversation $old in the vault's Codex home; the binding is unchanged\\." || return 1
+        else
+            assert_output_contains "$output" "Could not look for Codex conversation $old in the shared Codex home $CODEX_HOME; the binding is unchanged\\." || return 1
+        fi
+        assert_output_contains "$output" "simulated has-thread failure" "the helper's reason reaches the terminal" || return 1
+        assert_output_not_contains "$output" "stays in" "nothing is said to stay outside the vault" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+        assert_eq "$old" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "the binding is unchanged" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "lock released" || return 1
+    done
 }
 
 # r in an encrypted session: the handoff and its marker live in the vault, and
@@ -1577,6 +1636,8 @@ run_test test_native_approval_follows_the_users_sandbox
 run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_binding_from_before_the_vault_starts_a_vault_thread
+run_test test_a_binding_found_in_neither_home_fails_its_refresh
+run_test test_a_failed_thread_probe_stops_the_open
 run_test test_r_in_an_encrypted_session_reads_the_vault_handoff
 run_test test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff
 run_test test_the_context_write_ignores_a_planted_temp_link

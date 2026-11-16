@@ -184,8 +184,11 @@ shared `config.toml`. Relative paths in it resolve from the copy. Choosing other
 permissions in Codex's `/permissions` drops the read-only rule for that run.
 
 A Codex conversation bound before the session was encrypted stays in the shared
-home: the next open starts the session's first conversation in the vault and
-says so, and `--resume` refuses. If Codex ever saves a login inside the vault (a
+home: when the shared home keeps it, the next open starts the session's first
+conversation in the vault and says so, and `--resume` refuses. A bound
+conversation that neither home keeps is refreshed as in any session, and that
+refresh fails with the binding left in place; a lookup that cannot run stops the
+open the same way. If Codex ever saves a login inside the vault (a
 real `auth.json` where cs's link was), the open stops and says how to keep the
 newer one. Handoffs and the launch context live in `.cs/private`, and switching
 or carrying a conversation between Claude and Codex works as in any other
