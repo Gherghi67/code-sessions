@@ -952,6 +952,22 @@ class TransplantTests(HelperFixture):
         self.assertNotIn("[exit code True]", agent)
         self.assertNotIn("retrieved passage\n- another", agent)
 
+    def test_a_null_exit_code_or_session_counts_as_absent(self):
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", json.dumps(
+                command_result("Warning: still going\n", exit_code=None, session_id=38456)))),
+            rollout_line("response_item", exec_call("c1")),
+            rollout_line("response_item", exec_output("c1", json.dumps(command_result("done", session_id=None)))),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("[still running, session 38456]\nWarning: still going", agent)
+        self.assertIn("Output:\n\ndone", agent)
+        self.assertNotIn("session None", agent)
+
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())
         result, records = self.export("--clip", "5")

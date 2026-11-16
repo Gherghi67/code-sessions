@@ -355,10 +355,11 @@ def codex_command(value):
             and (json_int(value.get("wall_time_seconds")) or isinstance(value.get("wall_time_seconds"), float))
             and all(value.get(key) is None or json_int(value[key]) for key in ("exit_code", "session_id"))):
         return None
-    if value.get("exit_code") not in (None, 0):
-        mark = "[exit code {}]".format(value["exit_code"])
-    elif "exit_code" not in value and "session_id" in value:
-        mark = "[still running, session {}]".format(value["session_id"])
+    code, session = value.get("exit_code"), value.get("session_id")
+    if code is not None and code != 0:
+        mark = "[exit code {}]".format(code)
+    elif code is None and session is not None:
+        mark = "[still running, session {}]".format(session)
     else:
         return value["output"]
     return mark + ("\n" + value["output"] if value["output"] else "")
