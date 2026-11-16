@@ -28,8 +28,10 @@ test_register_writes_one_named_hook_for_the_installed_cs() {
     assert_eq '*' "$(jq -r '."cs-session".PostToolUse[0].matcher' "$PLUGIN/hooks.json")" "every tool reaches the hook" || return 1
     assert_eq '/opt/cs/bin/cs -antigravity-hook post-tool-use' \
         "$(jq -r '."cs-session".PostToolUse[0].hooks[0].command' "$PLUGIN/hooks.json")" || return 1
-    assert_eq '["PostToolUse","PreInvocation"]' "$(jq -c '."cs-session" | keys' "$PLUGIN/hooks.json")" \
-        "only the two events cs uses" || return 1
+    assert_eq '/opt/cs/bin/cs -antigravity-hook stop' \
+        "$(jq -r '."cs-session".Stop[0].command' "$PLUGIN/hooks.json")" "Stop is flat, as PreInvocation is" || return 1
+    assert_eq '["PostToolUse","PreInvocation","Stop"]' "$(jq -c '."cs-session" | keys' "$PLUGIN/hooks.json")" \
+        "only the three events cs uses" || return 1
     # agy skips the whole file when a handler's type is not "command" or its
     # timeout (seconds) is not an integer. Pinned here as well as validated
     # below, since CI has no agy.
