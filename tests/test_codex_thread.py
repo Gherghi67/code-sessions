@@ -96,6 +96,8 @@ for line in sys.stdin:
         reply({'result':{'data':items[start:end],'nextCursor':str(end) if end < len(items) else None}});continue
     if method == 'config/read':
         reply({'result':json.loads(os.environ.get('FAKE_CONFIG', '{}'))});continue
+    if method == 'hooks/list':
+        reply({'result':json.loads(os.environ.get('FAKE_HOOKS', '{"data": []}'))});continue
     if method in ('thread/start','thread/resume'):
         tid = '01900000-0000-7000-8000-000000000001'
         if mode == 'mismatch' and method == 'thread/resume':
@@ -1297,6 +1299,148 @@ class TransplantTests(HelperFixture):
                                 env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 1)
         self.assertIn("could not read the Claude transcript", result.stderr)
+
+
+class VaultHomeTests(HelperFixture):
+    """An encrypted session's Codex home: the copied config and the launch's check."""
+
+    def setUp(self):
+        super().setUp()
+        self.shared = self.root / 'shared codex'
+        self.shared.mkdir()
+        self.home = self.root / 'vault' / 'codex-home'
+        self.home.mkdir(parents=True)
+
+    def helper(self, *args, env=None, mode=''):
+        result = subprocess.run([sys.executable, str(HELPER), *args, '--timeout', '5'],
+                                env=dict(env or self.env, FAKE_MODE=mode), capture_output=True, text=True, timeout=10)
+        self.assert_cleaned_up()
+        return result
+
+    def seed(self):
+        return self.helper('--seed-config', '--shared-home', str(self.shared), '--home', str(self.home),
+                           '--cwd', str(self.cwd))
+
+    def load(self, path):
+        import tomllib
+        return tomllib.loads(path.read_text(encoding='utf-8'))
+
+    def test_seed_config_rekeys_the_shared_homes_hook_trust_and_nothing_else(self):
+        shared, home = str(self.shared), str(self.home)
+        (self.shared / 'config.toml').write_text(
+            'model = "m"\n[tui]\nstatus_line = ["a"]\n\n'
+            '[hooks.state."%s/hooks.json:session_start:0:0"]\ntrusted_hash = "sha256:one"\n\n'
+            '[hooks.state."%s/hooks.json:pre_tool_use:1:0"]\ntrusted_hash = "sha256:two"\n\n'
+            '[hooks.state."%s/config.toml:stop:0:0"]\ntrusted_hash = "sha256:three"\n\n'
+            '[hooks.state."plugin@market:hooks/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:four"\n\n'
+            '[hooks.state."/elsewhere/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:five"\n' % (shared, shared, shared))
+        result = self.seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        seeded = self.load(self.home / 'config.toml')
+        self.assertEqual(seeded['model'], 'm')
+        self.assertEqual(seeded['tui'], {'status_line': ['a']})
+        self.assertEqual(seeded['hooks']['state'], {
+            home + '/hooks.json:session_start:0:0': {'trusted_hash': 'sha256:one'},
+            home + '/hooks.json:pre_tool_use:1:0': {'trusted_hash': 'sha256:two'},
+            home + '/config.toml:stop:0:0': {'trusted_hash': 'sha256:three'},
+            'plugin@market:hooks/hooks.json:stop:0:0': {'trusted_hash': 'sha256:four'},
+            '/elsewhere/hooks.json:stop:0:0': {'trusted_hash': 'sha256:five'},
+        })
+        self.assertEqual((self.home / 'config.toml').stat().st_mode & 0o777, 0o600)
+        # The shared home's resolved spelling is re-keyed too.
+        real = os.path.realpath(shared)
+        link = self.root / 'link to shared'
+        link.symlink_to(self.shared)
+        self.shared = link
+        (Path(real) / 'config.toml').write_text(
+            '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:six"\n' % real)
+        self.assertEqual(self.seed().returncode, 0)
+        self.assertEqual(self.load(self.home / 'config.toml')['hooks']['state'],
+                         {home + '/hooks.json:stop:0:0': {'trusted_hash': 'sha256:six'}})
+
+    def test_seed_config_keeps_this_sessions_project_trust_from_the_previous_copy(self):
+        cwd = str(self.cwd)
+        (self.home / 'config.toml').write_text(
+            '[projects.%s]\ntrust_level = "trusted"\n\n[projects."/another"]\ntrust_level = "trusted"\n'
+            % json.dumps(cwd))
+        (self.shared / 'config.toml').write_text('model = "m"\n')
+        self.assertEqual(self.seed().returncode, 0)
+        seeded = self.load(self.home / 'config.toml')
+        self.assertEqual(seeded['projects'], {cwd: {'trust_level': 'trusted'}})
+        self.assertEqual(seeded['model'], 'm')
+        # The shared home's own answer wins over the copy's.
+        (self.shared / 'config.toml').write_text('[projects.%s]\ntrust_level = "untrusted"\n' % json.dumps(cwd))
+        self.assertEqual(self.seed().returncode, 0)
+        self.assertEqual(self.load(self.home / 'config.toml')['projects'], {cwd: {'trust_level': 'untrusted'}})
+
+    def test_seed_config_refuses_a_config_that_is_not_toml(self):
+        (self.home / 'config.toml').write_text('model = "previous"\n')
+        (self.shared / 'config.toml').write_text('model = \n')
+        result = self.seed()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('is not valid TOML', result.stderr)
+        self.assertEqual((self.home / 'config.toml').read_text(), 'model = "previous"\n')
+        self.assertEqual([p.name for p in self.home.iterdir()], ['config.toml'], 'no temporary file is left')
+
+    def test_seed_config_without_a_shared_config_writes_an_empty_one(self):
+        self.assertEqual(self.seed().returncode, 0)
+        self.assertEqual((self.home / 'config.toml').read_text(), '')
+
+    def vault_check(self, config, hooks, mode=''):
+        env = dict(self.env, CODEX_HOME=str(self.home), FAKE_CONFIG=json.dumps(config), FAKE_HOOKS=json.dumps(hooks))
+        return self.helper('--vault-check', '--codex-bin', str(self.fake), '--cwd', str(self.cwd),
+                           '--shared-home', str(self.shared), env=env, mode=mode)
+
+    def test_vault_check_names_hooks_the_shared_home_trusts_but_the_vault_does_not(self):
+        shared, home = str(self.shared), str(self.home)
+        (self.shared / 'config.toml').write_text(
+            '[hooks.state."%s/hooks.json:pre_tool_use:0:0"]\ntrusted_hash = "sha256:guard"\n\n'
+            '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "sha256:ok"\n\n'
+            '[hooks.state."%s/hooks.json:stop:1:0"]\ntrusted_hash = "sha256:stale"\n' % (shared, shared, shared))
+        hooks = {'data': [{'cwd': str(self.cwd), 'hooks': [
+            {'key': home + '/hooks.json:pre_tool_use:0:0', 'command': 'aws-readonly-guard',
+             'currentHash': 'sha256:guard', 'trustStatus': 'untrusted'},
+            {'key': home + '/hooks.json:stop:0:0', 'command': 'ok', 'currentHash': 'sha256:ok', 'trustStatus': 'trusted'},
+            {'key': home + '/hooks.json:stop:1:0', 'command': 'edited since', 'currentHash': 'sha256:new',
+             'trustStatus': 'modified'},
+        ]}]}
+        config = {'config': {'sandbox_mode': 'workspace-write', 'default_permissions': None,
+                             'sandbox_workspace_write': {'writable_roots': ['/w']},
+                             'permissions': {'mine': {}}}, 'origins': {}}
+        result = self.vault_check(config, hooks)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            'sandbox_mode': 'workspace-write', 'default_permissions': None,
+            'sandbox_workspace_write': {'writable_roots': ['/w']}, 'profile_defined': False,
+            'untrusted': ['aws-readonly-guard']})
+        requests = [r['request'] for r in self.requests()]
+        self.assertEqual([r['method'] for r in requests], ['initialize', 'initialized', 'config/read', 'hooks/list'])
+        self.assertEqual(requests[3]['params'], {'cwds': [str(self.cwd.resolve())]})
+        # A hook the vault cannot list at all is missing too.
+        hooks['data'][0]['hooks'] = hooks['data'][0]['hooks'][1:]
+        self.assertEqual(json.loads(self.vault_check(config, hooks).stdout)['untrusted'], [])
+        config['config']['permissions'] = {'cs-vault-home': {'extends': ':workspace'}}
+        self.assertTrue(json.loads(self.vault_check(config, hooks).stdout)['profile_defined'])
+
+    def test_vault_check_needs_the_vault_home_and_a_readable_answer(self):
+        result = self.helper('--vault-check', '--codex-bin', str(self.fake), '--cwd', str(self.cwd),
+                             '--shared-home', str(self.shared), env={k: v for k, v in self.env.items() if k != 'CODEX_HOME'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('needs CODEX_HOME', result.stderr)
+        self.assertFalse((self.root / 'pids').exists())
+        result = self.vault_check({'config': []}, {'data': []})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+
+    def test_has_thread_looks_only_in_codex_home(self):
+        env = dict(self.env, CODEX_HOME=str(self.home))
+        self.assertEqual(self.helper('--has-thread', '--thread-id', THREAD_ID, env=env).stdout, 'no\n')
+        archived = self.home / 'archived_sessions'
+        archived.mkdir()
+        (archived / ('rollout-2026-01-01T00-00-00-' + THREAD_ID + '.jsonl.zst')).write_bytes(b'')
+        self.assertEqual(self.helper('--has-thread', '--thread-id', THREAD_ID, env=env).stdout, 'yes\n')
+        self.assertEqual(self.helper('--has-thread', '--thread-id', OTHER_ID, env=env).stdout, 'no\n')
+        self.assertNotEqual(self.helper('--has-thread', env=env).returncode, 0)
 
 
 if __name__ == '__main__':

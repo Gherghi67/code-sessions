@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/../lib/02-shared.sh"
 source "$SCRIPT_DIR/../lib/35-claudemd.sh"
 source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
+source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 
 # A consumer independent of either native runtime: identity and file inventory
 # suffice, without inspecting bindings, native instructions, or workspace prose.

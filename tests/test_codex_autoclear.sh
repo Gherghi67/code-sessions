@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/../lib/40-state.sh"
 source "$SCRIPT_DIR/../lib/41-bindings.sh"
 source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
+source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
 source "$SCRIPT_DIR/../lib/78-switch.sh"
 

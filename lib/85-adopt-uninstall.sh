@@ -764,7 +764,7 @@ run_uninstall() {
     local hooks_dir="$hooks_parent_dir/cs"
     local commands_dir="$HOME/.claude/commands"
     local skills_dir="$HOME/.claude/skills"
-    local codex_skills_dir="${CODEX_HOME:-$HOME/.codex}/skills"
+    local codex_skills_dir="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}/skills"
     local settings_file="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
     local bash_completion_dir="$HOME/.bash_completion.d"
     # install.sh picks the zsh completion dir from the user's fpath line: its

@@ -372,7 +372,7 @@ _doctor_check_hook_drift() {
 
     # Codex gets the same skills in its own home. A machine where Codex never
     # ran has no such home, and nothing there to compare.
-    local engines codex_dir="${CODEX_HOME:-$HOME/.codex}"
+    local engines codex_dir="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}"
     engines=$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null) || engines=claude,codex
     if [[ ",$engines," == *,codex,* ]] && [ -d "$codex_dir" ]; then
         _drift_scan "Codex skill" "$codex_dir/skills" "${skill_sources[@]}"
@@ -1149,6 +1149,45 @@ _doctor_check_hook_authority() {
 # nothing behind it, and MEMORY.md text-merges on the next pull. The driver is
 # deliberately per-clone and never global — cs does not write to ~/.gitconfig —
 # so a clone cs has not launched in is out of reach; this names the one it can see.
+# An encrypted session's Codex home (lib/76-codex-vault.sh), when its vault is
+# mounted and Codex has run there. Each shared name must link into the shared
+# home; a login saved inside the vault, a link that leads elsewhere or dangles,
+# and a copied config.toml whose hook trust still names the shared home are
+# named. The next Codex open repairs links and the copy, never a login.
+_doctor_check_codex_vault_home() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found problems=""
+    [ -n "$dir" ] || return 0
+    _switch_session_encrypted "$dir" || return 0
+    home=$(_codex_vault_home_path "$dir") && [ -d "$home" ] || return 0
+    shared=$(_codex_shared_home)
+    _codex_is_vault_home "$shared" && shared="$HOME/.codex"
+    for name in $CS_CODEX_VAULT_LINK_FILES $CS_CODEX_VAULT_LINK_DIRS; do
+        target="$shared/$name"
+        if [ -L "$home/$name" ]; then
+            found=$(readlink "$home/$name")
+            if [ "$found" != "$target" ]; then
+                problems="$problems; $name links to $found, not $target"
+            elif [ ! -e "$home/$name" ] && case " $CS_CODEX_VAULT_LINK_DIRS " in *" $name "*) true ;; *) false ;; esac; then
+                problems="$problems; $name links to $target, which is missing"
+            fi
+        elif [ "$name" = auth.json ] && [ -e "$home/$name" ]; then
+            _doctor_warn "Codex vault home: $home/auth.json is a login saved inside the vault, not a link to $target. Keep the newer one (mv it over $target, or remove it); the next Codex open links it again"
+        elif [ -e "$home/$name" ]; then
+            problems="$problems; $name is not a link to $target"
+        else
+            problems="$problems; $name is missing"
+        fi
+    done
+    if [ -f "$home/config.toml" ] && grep -F "[hooks.state.\"$shared/" "$home/config.toml" >/dev/null 2>&1; then
+        problems="$problems; config.toml still keys hook trust by $shared, so those hooks would not run"
+    fi
+    if [ -n "$problems" ]; then
+        _doctor_warn "Codex vault home $home:${problems#;}. The next Codex open of this session repairs it"
+    else
+        _doctor_ok "Codex vault home: inside the vault, sharing the login and extensions of $shared"
+    fi
+}
+
 _doctor_check_merge_driver() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
     [ -n "$dir" ] || return 0
@@ -1404,6 +1443,7 @@ run_doctor() {
     if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then
         _doctor_check_shadow_ref
         _doctor_check_merge_driver
+        _doctor_check_codex_vault_home
         _doctor_check_migration_stamp
         _doctor_check_integrate_lock
         _doctor_check_finish_progress
@@ -1459,6 +1499,7 @@ run_doctor() {
             _doctor_check_integrate_lock
             _doctor_check_worktrees
             _doctor_check_narrative_size
+            _doctor_check_codex_vault_home
         fi
     fi
 

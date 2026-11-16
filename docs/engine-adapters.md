@@ -237,7 +237,7 @@ refuses, naming the fix, outside a session or a live run of it (its
 `CS_RUN_ID` must match `.cs/local/run-lease.json`), for an unknown engine or the
 current one, for a target the install did not set up or whose CLI is missing,
 for a source or target adapter without `engine_switch` or `rotation`, for a switch already pending, for an
-encrypted session whose vault is locked, whose target is Codex or Antigravity,
+encrypted session whose vault is locked, whose target is Antigravity,
 or whose open would refuse the relaunch
 (`_refuse_unmounted_meta`, for example a plaintext `.cs/local/session.log` an
 older Codex run left there), and when no unconsumed handoff is armed.
@@ -316,11 +316,14 @@ core event bus yet. A full move to
 `core/` and `adapters/` directories should follow these behavior boundaries.
 Codex has native session, prompt and stop hooks; its walk-away queue and idle
 mail wake remain separate work.
-Codex refuses encrypted sessions, a stopgap until it keeps a `CODEX_HOME` of
-its own inside the vault: main checks before the pre-open, and
-`_launch_codex_bound` checks again for any other caller
-(`_codex_encrypted_refusal`). Antigravity refuses them the same way
-(`_antigravity_encrypted_refusal`).
+Codex runs an encrypted session on a `CODEX_HOME` inside its vault
+(lib/76-codex-vault.sh): `_export_session_codex_home` links and seeds it and
+exports it for the run, `_codex_vault_check` refuses what cs cannot confine, and
+`_codex_vault_profile_args` adds the permissions profile that keeps the agent
+out of it ([Codex: encrypted sessions](codex.md#encrypted-sessions)).
+Antigravity refuses encrypted sessions before the pre-open
+(`_antigravity_encrypted_refusal`): agy resolves everything from `$HOME`, with
+no setting that moves its state.
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 `~/.gemini/config/plugins/cs/`, and cs's status line, which each launch passes with
 `agy --settings` for that run only. The same hook brings `cs -msg` mail into the
@@ -363,8 +366,8 @@ armed handoff and returns the rotation context; on every source it logs the
 owns the other way in: `r` at the `[Y/n/r/d]` prompt (or `--from-handoff`, or an
 explicit `--fresh` with a rotation armed) adds the handoff to the new thread's
 context, consumes it, and starts the thread with `codex resume <id> <prompt>`.
-These paths read `.cs/handoffs` and `.cs/local/pending-handoff` only, so Codex
-rotation does not yet work in an encrypted session.
+In an encrypted session these paths are `.cs/private/handoffs` and
+`.cs/private/pending-handoff`, as `cs_handoff_dir` and `cs_private_dir` decide.
 
 ## Completed file changes and recovery copies
 

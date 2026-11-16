@@ -77,7 +77,9 @@ _statusline_caps_ask() {
 # CS_CODEX_STATUS_LINE), wherever Codex has a home. A status line the user
 # wrote is theirs: enable never replaces it, disable never removes it.
 _statusline_codex() {  # enable|disable
-    local dir="${CODEX_HOME:-$HOME/.codex}" rc=0 state
+    # The shared home, also from inside an encrypted session, whose vault home
+    # copies its config.toml at every open.
+    local dir="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}" rc=0 state
     [ -d "$dir" ] || return 0
     case "$1" in
         enable)

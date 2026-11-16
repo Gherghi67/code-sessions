@@ -230,6 +230,9 @@ run_encrypt() {
     touch "$mnt/.metadata_never_index"
 
     _encrypt_move_content "$name" "$meta"
+    # The Codex launch's context, built from memory and the narrative: nothing
+    # but a copy, written again inside the vault at the next Codex open.
+    rm -f "$meta/local/codex-instructions.md"
     for sub in $CS_VAULT_LINKS; do
         ln -s "vault-mnt/$sub" "$meta/$sub"
     done
@@ -245,6 +248,9 @@ run_encrypt() {
     echo "  - this session's transcripts in ~/.claude/projects/"
     echo "  - its lines in ~/.claude/history.jsonl"
     echo "  - its project entries in ~/.claude.json and that file's backups"
+    echo "  - its Codex conversations in ${CODEX_HOME:-$HOME/.codex}: rollouts under sessions/ and archived_sessions/,"
+    echo "    lines in history.jsonl and session_index.jsonl, rows in its state databases, and its"
+    echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
     echo "  - git history of anything committed before, and backups or snapshots"
 }

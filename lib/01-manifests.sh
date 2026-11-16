@@ -946,7 +946,7 @@ _cs_keybindings_strip() {  # bindings-json
 # install.sh last wrote under ~/.claude, beside the hooks' .version stamp.
 _cs_install_record() {
     if [ "${CS_INSTALL_ENGINES:-$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null)}" = codex ]; then
-        printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/hooks/cs/.installed"
+        printf '%s\n' "${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}/hooks/cs/.installed"
     else
         printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
     fi

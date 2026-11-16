@@ -160,7 +160,7 @@ _spawn_window() {  # name, token, engine
     # the caller's configuration, including unsets, without copying credentials.
     # env options must precede its assignments on both BSD and GNU env.
     for selector in HOME PATH XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME \
-        CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME \
+        CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME CS_CODEX_SHARED_HOME \
         CODE_SESSIONS_HOME CODE_SESSIONS_ORIGINAL_ROOT CS_BIN CS_INSTALL_DIR \
         CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_CLAUDE_DIR CS_HOOKS_DIR \
         CS_COMMANDS_DIR CS_SKILLS_DIR CS_TRANSCRIPTS_DIR CS_SESSIONS_ROOT \

@@ -2463,6 +2463,37 @@ test_doctor_is_quiet_when_the_session_clone_has_the_merge_driver() {
 run_test test_doctor_warns_when_the_session_clone_lacks_the_merge_driver
 run_test test_doctor_is_quiet_when_the_session_clone_has_the_merge_driver
 
+# An encrypted session's Codex home (lib/76-codex-vault.sh): a sound one is
+# OK; a login saved inside the vault, a link that leads elsewhere and hook trust
+# still keyed by the shared home are named. Both homes are scratch directories.
+test_doctor_checks_an_encrypted_sessions_codex_home() {
+    local sess="$TEST_TMPDIR/sess-vault" shared="$TEST_TMPDIR/shared codex" home name output
+    mkdir -p "$sess/.cs/memory" "$sess/.cs/vault-mnt/private/codex-home" "$shared"
+    ln -s vault-mnt/private "$sess/.cs/private"
+    git -C "$sess" init -q
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    for name in auth.json auth.json.lock auth.lock AGENTS.md hooks.json skills agents plugins rules hooks; do
+        ln -s "$shared/$name" "$home/$name"
+    done
+    mkdir -p "$shared/skills" "$shared/agents" "$shared/plugins" "$shared/rules" "$shared/hooks"
+    printf 'model = "m"\n' > "$home/config.toml"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Codex vault home: inside the vault, sharing the login and extensions of $shared" \
+        "a sound home is OK" || return 1
+    rm "$home/auth.json"
+    printf '{}\n' > "$home/auth.json"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$home/skills"
+    printf '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "x"\n' "$shared" > "$home/config.toml"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "auth.json is a login saved inside the vault" || return 1
+    assert_output_contains "$output" "skills links to $TEST_TMPDIR/elsewhere, not $shared/skills" || return 1
+    assert_output_contains "$output" "config.toml still keys hook trust by $shared" || return 1
+    assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK beside the warnings" || return 1
+}
+run_test test_doctor_checks_an_encrypted_sessions_codex_home
+
 
 # Stamp the setup session the way a clean open would for alice: the merge
 # driver set, the probe files it has (CLAUDE.md, .cs/README.md) at a fixed old

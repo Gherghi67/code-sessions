@@ -255,7 +255,7 @@ there.
 | `.cs/memory` | Auto-memory and the narratives. |
 | `.cs/plans` | Plans and specs. |
 | `.cs/claude-config` | Claude Code's config dir for this session. cs launches Claude Code with `CLAUDE_CONFIG_DIR` pointing here, so transcripts, prompt history, `.claude.json` and its backups never reach `~/.claude`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the shell's login (empty selects the default keychain entry). On every launch cs links the shell's `settings.json`, `settings.local.json`, `CLAUDE.md`, `AGENTS.md`, `rules/`, `skills/`, `commands/`, `agents/`, `hooks/`, `plugins/`, `output-styles/`, `keybindings.json` and `vale/` into it, skipping any name the session already has. A setting you change inside the session (`/model`, `/config`) writes through the link into the shell's `settings.json`. The first launch seeds `.claude.json` from the shell's copy with `projects` emptied, since each project entry keeps that project's last prompt. cs reads the session's transcripts from `projects/` here, and the picker does not rename such a session, because its links and transcripts name its path. |
-| `.cs/private` | cs's own content files, which a plain session keeps in `.cs/local/`: `session.log`, `scope-prompt.trace`, `memory-index.snapshot`, `memory-archive.snapshot`, `mail/`, the queue files (`queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.done`, `queue.current`, `queue.accepted`, `queue.failed`, `queue.migrating`), `notifications.jsonl`, `notifications.seen`, `failures`, `rewrite.trace`, `finish-progress.json`, the rotation handoffs (`handoffs/`), `pending-handoff`, `pending-switch`, checkpoints (`checkpoints/`), the task archive (`task-archive/`) and, when `.cs/memory` is a link, the rotated narrative sections (`narrative-archive/`). Numbers the status line writes (`context-pct`, `limits`, `statusline-width`) and ids (`state`, `spawned-by`, `rotate-nudged`, `ctx-warned`) stay in `.cs/local/`. |
+| `.cs/private` | cs's own content files, which a plain session keeps in `.cs/local/`: `session.log`, `scope-prompt.trace`, `memory-index.snapshot`, `memory-archive.snapshot`, `mail/`, the queue files (`queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.done`, `queue.current`, `queue.accepted`, `queue.failed`, `queue.migrating`), `notifications.jsonl`, `notifications.seen`, `failures`, `rewrite.trace`, `finish-progress.json`, the rotation handoffs (`handoffs/`), `pending-handoff`, `pending-switch`, checkpoints (`checkpoints/`), the task archive (`task-archive/`), Codex's home for the session (`codex-home/`, see [Codex: encrypted sessions](codex.md#encrypted-sessions)) and its launch context (`codex-instructions.md`) and, when `.cs/memory` is a link, the rotated narrative sections (`narrative-archive/`). Numbers the status line writes (`context-pct`, `limits`, `statusline-width`) and ids (`state`, `spawned-by`, `rotate-nudged`, `ctx-warned`) stay in `.cs/local/`. |
 
 ### Encrypting a session with `cs -encrypt`
 
@@ -272,6 +272,8 @@ from a terminal, with the session closed. It:
 3. Moves `.cs/memory`, `.cs/plans`, the `.cs/local/` files listed under
    `.cs/private` above, and `.cs/handoffs`, `.cs/checkpoints` and
    `.cs/narrative-archive` into the volume, then links the four names into it.
+   It deletes `.cs/local/codex-instructions.md`, a plaintext copy of memory the
+   next Codex open writes again inside the vault.
 4. Writes `.cs/local/pre-open` and `.cs/local/vault` (the bundle's path, which
    every later open attaches whatever `CS_DATA_DIR` says), tags
    the session `encrypted`, and unmounts the volume.
@@ -317,7 +319,7 @@ leaves the volume mounted so you can finish by hand; until you unmount it,
 the copies it cannot reach: the session's transcripts in `projects/` and its
 lines in `history.jsonl` under your Claude Code config dir (`$CLAUDE_CONFIG_DIR`,
 else `~/.claude`), its entries in `.claude.json` (inside `$CLAUDE_CONFIG_DIR`
-when you set it, else `~/.claude.json`) and that file's backups, `.cs/summary.md` and `.cs/brief.md`, git history, and backups.
+when you set it, else `~/.claude.json`) and that file's backups, the session's Codex conversations in the shared Codex home (rollouts, `history.jsonl` and `session_index.jsonl` lines, state-database rows and its `cs-rotation-*.config.toml`), `.cs/summary.md` and `.cs/brief.md`, git history, and backups.
 
 ### Setting it up by hand
 

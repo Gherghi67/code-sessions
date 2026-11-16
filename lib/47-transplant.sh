@@ -22,16 +22,16 @@ _transplant_label() {  # engine
 # The other engine's conversation, when it is the newer one: the session's
 # last run was under that engine. cs_launch_session records a run's engine as
 # the run ends, so during a launch the state still names the previous run's.
-# Prints "<engine> <native id>". Nothing is offered on a same-engine open, from
-# or to Antigravity (its format is not probed yet), or in an encrypted session:
-# Codex keeps its threads outside the vault, so none ever ran there to carry.
+# Prints "<engine> <native id>". Nothing is offered on a same-engine open, or
+# from or to Antigravity (its format is not probed yet). An encrypted session
+# keeps both engines' conversations in its vault (.cs/claude-config and
+# .cs/private/codex-home), and a carry reads one and writes the other there.
 _transplant_source() {  # session_dir, target engine
     local session_dir="$1" target="$2" last id
     case "$target" in claude|codex) ;; *) return 1 ;; esac
     last=$(_read_local_state "$session_dir/.cs/local/state" engine)
     case "$last" in claude|codex) ;; *) return 1 ;; esac
     [ "$last" != "$target" ] || return 1
-    ! _switch_session_encrypted "$session_dir" || return 1
     id=$(cs_binding_read "$session_dir" "$last" 2>/dev/null) || return 1
     case "$last" in
         claude) _is_uuid "$id" || return 1 ;;

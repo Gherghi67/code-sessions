@@ -5,6 +5,7 @@ source "$SCRIPT_DIR/test_lib.sh"
 # The helper lookup resolves the running cs through cs_running_binary.
 source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
+source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 # The statusline cleanup rewrites settings through cs_write_atomic.
 source "$SCRIPT_DIR/../lib/02-shared.sh"
 source "$SCRIPT_DIR/../lib/70-statusline.sh"

@@ -152,11 +152,45 @@ that cannot start, leaves the handoff armed and prints both ways back:
 <current>`. When the target exits with an error before its conversation
 starts, cs also puts back a handoff its launch had already marked consumed.
 
-Codex does not open an [encrypted session](session-layout.md#encrypted-sessions)
-yet: it keeps its conversations in `CODEX_HOME`, outside the vault. Every Codex
-launch of one refuses before the vault's password is asked for, `--engine codex
---from-handoff` included, and names `cs <name> --engine claude`; a switch into
-Codex refuses there as well.
+## Encrypted sessions
+
+An [encrypted session](session-layout.md#encrypted-sessions) runs Codex on a
+Codex home inside its vault, `.cs/private/codex-home`, so its rollouts, history,
+state databases and logs never reach the shared home (`$CODEX_HOME`, else
+`~/.codex`). At every open, cs:
+
+- links `auth.json`, its two lock files, `AGENTS.md`, `hooks.json` and the
+  `skills/`, `agents/`, `plugins/`, `rules/` and `hooks/` folders to the shared
+  home, so the login, instructions and extensions are the shell's. Everything
+  else Codex writes is born in the vault.
+- copies the shared `config.toml` in, with each `[hooks.state]` trust entry
+  renamed to the vault home's path, since Codex keys hook trust by the path it
+  read the hook from. Before Codex starts, cs asks it which hooks it trusts
+  there, and refuses to start when a hook trusted in the shared home would not
+  run (a guard hook would otherwise stop silently).
+- starts Codex with cs's permissions profile, `cs-vault-home`, on the command
+  line: Codex's workspace sandbox with the vault home read-only, so the agent
+  cannot rewrite its own configuration, hooks or rules. The profile carries
+  your `[sandbox_workspace_write]` writable roots, network access and
+  temp-directory settings. Under `--native-approval` it is added only to the
+  workspace sandbox, never to read-only or full access, and a
+  `default_permissions` profile of your own is refused. A config file that
+  defines a profile named `cs-vault-home` is refused too.
+
+Settings Codex saves to `config.toml` during an encrypted run (a hook trusted in
+`/hooks`, a dismissed notice) last until the next open, which copies the shared
+file again, except this session's project trust; make lasting changes in the
+shared `config.toml`. Relative paths in it resolve from the copy. Choosing other
+permissions in Codex's `/permissions` drops the read-only rule for that run.
+
+A Codex conversation bound before the session was encrypted stays in the shared
+home: the next open starts the session's first conversation in the vault and
+says so, and `--resume` refuses. If Codex ever saves a login inside the vault (a
+real `auth.json` where cs's link was), the open stops and says how to keep the
+newer one. Handoffs and the launch context live in `.cs/private`, and switching
+or carrying a conversation between Claude and Codex works as in any other
+session. `cs -doctor` checks the vault home's links. Antigravity still refuses
+encrypted sessions.
 
 ## Workspace preparation and installation
 
@@ -335,7 +369,7 @@ The installer registers `cs -codex-hook files-changed` for PostToolUse and
 deploys its recovery files to `$CODEX_HOME/hooks/cs/`; see
 [Completed file changes and recovery copies](engine-adapters.md#completed-file-changes-and-recovery-copies).
 Codex does not yet participate in Claude's automatic recovery prompt, queue delivery, usage
-reporting (`cs -usage`), encrypted sessions, observed runtime status, or native
+reporting (`cs -usage`), observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
 

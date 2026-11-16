@@ -130,7 +130,7 @@ _cs_antigravity_adapter_launch() {
 # pre-open asks for the vault's password; _launch_antigravity_bound, for any
 # other caller.
 _antigravity_encrypted_refusal() {  # session_name
-    printf '%s is encrypted, and Antigravity keeps its conversations in %s, outside the vault. Open it under Claude: cs %s --engine claude\n' \
+    printf '%s is encrypted, and Antigravity keeps its conversations in %s, outside the vault, with no setting to move them. Open it under Claude or Codex: cs %s --engine claude\n' \
         "$1" "$HOME/.gemini/antigravity-cli" "$1"
 }
 

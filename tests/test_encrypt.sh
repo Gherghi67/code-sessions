@@ -274,6 +274,22 @@ attach -nobrowse -mountpoint $s/vault-mnt $c
 detach $s/vault-mnt" "$(cat "$FAKE_HDIUTIL_LOG")" "create, attach, then detach" || return 1
     # shellcheck disable=SC2088  # cs prints the literal ~ path
     assert_output_contains "$out" "~/.claude/history.jsonl" "lists copies it could not move" || return 1
+    assert_output_contains "$out" "its Codex conversations in $HOME/.codex: rollouts under sessions/" \
+        "names Codex's copies too" || return 1
+    assert_output_contains "$out" "Codex keeps them in the vault, under .cs/private/codex-home" || return 1
+}
+
+# The Codex launch's context is a copy of memory and the narrative, written in
+# plaintext before the session was encrypted: removed, never moved or kept.
+test_encrypt_removes_the_plaintext_codex_context() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    printf 'memory excerpt\n' > "$s/local/codex-instructions.md"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_not_exists "$s/local/codex-instructions.md" "no plaintext Codex context" || return 1
+    assert_not_exists "$s/vault-mnt/private/codex-instructions.md" "nothing carried: the next Codex open writes it" || return 1
 }
 
 # A session cloned or synced here and never opened has no .cs/local: it is
@@ -1008,6 +1024,7 @@ run_test test_encrypt_refuses_an_existing_container
 run_test test_encrypt_refuses_an_existing_container_under_cs_data_dir
 run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
+run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_builds_the_container_under_cs_data_dir
 run_test test_encrypt_holds_the_session_lock_while_it_works

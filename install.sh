@@ -1097,7 +1097,7 @@ _cs_keybindings_strip() {  # bindings-json
 # install.sh last wrote under ~/.claude, beside the hooks' .version stamp.
 _cs_install_record() {
     if [ "${CS_INSTALL_ENGINES:-$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null)}" = codex ]; then
-        printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/hooks/cs/.installed"
+        printf '%s\n' "${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}/hooks/cs/.installed"
     else
         printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
     fi
@@ -2110,9 +2110,9 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "3aed42756487b7eb4d3e5c913b8e5b031e3db0235e6b4ad25e1c307aaa28d51b  bin/cs"
-    "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
-    "83a4dc6661a2ddc394464c7ab56fb97d26a82af30b71deeb1f9d39ebf6959ed3  bin/cs-codex-thread"
+    "509ee278a8c0c7b6b9739c3670c60637ddc1265698989705738a9ff69cf85d9d  bin/cs"
+    "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
+    "277389e3b4be2fd62eebb6d7d1a809f5aef9e3097f6184e0e1879c778e3a8ca3  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "604f0893c0b40a0072f9adaea3971e33af1eebc62c8fd9e8ff527702790c4bfe  bin/cs-statusline-agy"
