@@ -56,6 +56,21 @@ _cs_antigravity_adapter_capabilities() {
     printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
 }
 
+# The oldest agy the mail hooks were measured on: headless on 1.5.8 on
+# 2026-11-14, interactive on 1.5.9 on 2026-11-15.
+# shellcheck disable=SC2034  # read by cs -doctor in lib/60-doctor.sh
+CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.8
+
+# The installed agy's version: the first run of three dot-separated numbers
+# its --version prints (1.5.9 prints the number alone). Fails when agy exits
+# with an error or names no version, so doctor can say it cannot tell.
+_antigravity_version() {
+    local out
+    out=$("${AGY_BIN:-agy}" --version 2>&1) || return 1
+    [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
 # cs's skills ship inside its agy plugin, which offers them as /cs:<name>.
 # The installer deploys them only into a plugin that is cs's, through a
 # skills/ folder of its own; a folder there that is not holds none of them.

@@ -55,6 +55,11 @@ if [ "${1:-}" = --help ]; then
     done
     exit 0
 fi
+# --version prints AGY_VERSION alone on stdout, as agy 1.5.9 prints its own.
+if [ "${1:-}" = --version ]; then
+    printf '%s\n' "${AGY_VERSION:-1.5.9}"
+    exit 0
+fi
 printf '%s\n' "$*" >> "$AGY_LOG"
 printf '%s\n' "$@" > "$AGY_ARGV"
 pwd -P > "$AGY_PWD"
@@ -167,7 +172,7 @@ AGY
     unset IFS
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
-    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
+    unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_VERSION AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
@@ -181,7 +186,7 @@ teardown() {
     unset CS_CACHE_DIR
     unset CS_SESSIONS_ROOT CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
-    unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
+    unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_VERSION CS_DEFAULT_ENGINE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset CS_TMUX_BIN AGY_TMUX_LOG
@@ -1873,6 +1878,36 @@ test_a_hook_older_than_the_mail_wake_is_named_by_doctor() {
     assert_output_not_contains "$output" 'has no Stop entry' "not the Stop entry no hook would run"
 }
 
+# Mail at each prompt stands on invocationNum going back to 0 there, which was
+# measured on agy 1.5.8 and 1.5.9 (review R3): doctor names an older agy, the
+# oldest measured and the fix, and has no warning for 1.5.8 itself.
+test_doctor_names_an_agy_older_than_the_mail_was_checked_on() {
+    local output dir
+    output=$(AGY_NO_TURN=1 "$CS_BIN" aged --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir aged)
+    output=$(AGY_VERSION=1.5.7 CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" '\[WARN\].*Antigravity CLI 1\.5\.7 is older than 1\.5\.8.*agy update' \
+        "an older agy is named with the oldest measured and the fix" || return 1
+    output=$(AGY_VERSION=1.5.8 CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" 'is older than' "1.5.8 is not warned about" || return 1
+    assert_output_contains "$output" '\[ OK \].*Antigravity CLI 1\.5\.8' "and its version is named"
+}
+
+# An agy whose --version names no version is a warning, not a failure: doctor
+# cannot tell whether mail reaches each prompt. With no agy at all the
+# dependency check names it, and the version check says nothing more.
+test_doctor_says_when_the_agy_version_cannot_be_read() {
+    local output dir status=0
+    output=$(AGY_NO_TURN=1 "$CS_BIN" unread --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir unread)
+    output=$(AGY_VERSION=garbage CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || status=$?
+    assert_output_contains "$output" '\[WARN\].*Antigravity CLI version cannot be read' "an unreadable version is named" || return 1
+    assert_eq 0 "$status" "as a warning, not a failure: $output" || return 1
+    output=$(AGY_BIN="$TEST_TMPDIR/bin/no-agy" CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'Antigravity dependency missing: agy' "a missing agy is the dependency check's to name" || return 1
+    assert_output_not_contains "$output" 'Antigravity CLI' "and the version check says nothing"
+}
+
 # What an install or a removal of cs left is cs's to finish: doctor sends the
 # user to setup.sh, not to rename the folder.
 test_doctor_sends_a_folder_cs_left_to_setup() {
@@ -2026,6 +2061,8 @@ run_test test_conversations_lists_the_antigravity_conversations
 run_test test_a_missing_hook_is_named_at_launch_and_by_doctor
 run_test test_a_hook_without_its_recovery_consumer_is_named_at_launch_and_by_doctor
 run_test test_a_hook_older_than_the_mail_wake_is_named_by_doctor
+run_test test_doctor_names_an_agy_older_than_the_mail_was_checked_on
+run_test test_doctor_says_when_the_agy_version_cannot_be_read
 run_test test_edits_in_a_run_are_autosaved_for_recovery
 run_test test_doctor_reads_back_a_quoted_cs_path
 run_test test_the_hook_never_writes_through_a_link

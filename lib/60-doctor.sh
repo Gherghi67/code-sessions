@@ -99,6 +99,23 @@ _doctor_check_antigravity_hook() {
     fi
 }
 
+# The mail at each prompt stands on agy setting invocationNum back to 0 at
+# every prompt, measured on agy 1.5.8 and 1.5.9; an older agy may keep
+# counting across prompts, and then no prompt shows the mail. Checked apart
+# from the hook, so it is named whatever the hook check found. A missing agy
+# is the dependency check's to name.
+_doctor_check_antigravity_version() {
+    local version
+    command -v "${AGY_BIN:-agy}" >/dev/null 2>&1 || return 0
+    if ! version=$(_antigravity_version); then
+        _doctor_warn "Antigravity CLI version cannot be read from ${AGY_BIN:-agy} --version, so cs cannot tell whether mail reaches each prompt, which needs agy $CS_ANTIGRAVITY_MAIL_MIN_VERSION or later"
+    elif ! _version_at_least "$version" "$CS_ANTIGRAVITY_MAIL_MIN_VERSION"; then
+        _doctor_warn "Antigravity CLI $version is older than $CS_ANTIGRAVITY_MAIL_MIN_VERSION, the oldest agy cs's mail was checked on: mail may not reach each prompt. Update it with: agy update"
+    else
+        _doctor_ok "Antigravity CLI $version (mail delivery needs $CS_ANTIGRAVITY_MAIL_MIN_VERSION or later)"
+    fi
+}
+
 _doctor_check_keychain() {
     local script
     if ! script=$(find_secrets_script); then
@@ -1392,7 +1409,7 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "$label integration capabilities: ${capabilities//$'\n'/, }"
-        [ "$engine" != antigravity ] || _doctor_check_antigravity_hook
+        [ "$engine" != antigravity ] || { _doctor_check_antigravity_hook; _doctor_check_antigravity_version; }
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" "$engine"); then

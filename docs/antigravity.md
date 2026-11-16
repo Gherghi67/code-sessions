@@ -395,6 +395,18 @@ headless turns:
   stayed false at every Stop, so cs's wake guards itself. `agy` stopped after
   ten continuations on its own.
 
+Checked again against `agy` 1.5.9 on 2026-11-15, in one interactive run with
+the prompts typed into the TUI:
+
+- `invocationNum` went back to 0 at each prompt, and the system message
+  injected there reached the model each time.
+- After a Stop `continue`, the next model call had `invocationNum` 1, and
+  `continuationActive` was still false at the next Stop.
+- `/clear` started a new conversation, with an ID of its own, and fired
+  SessionStart for it. No hook payload told it from the run's first.
+
+Mail delivery needs `agy` 1.5.8 or later; `cs -doctor` warns below it.
+
 ## Capabilities and limits
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
