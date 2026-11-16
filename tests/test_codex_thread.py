@@ -1213,6 +1213,28 @@ class TransplantTests(HelperFixture):
             module.codex_tool_text(text, [], "\x00s-{}-x\x00")
         self.assertLessEqual(sum(handed), 5 * len(text))
 
+    def test_a_result_inside_a_value_too_deep_to_walk_still_converts(self):
+        # Brackets printed around a result can make a value that decodes but
+        # is too deep to walk: how deep differs between Pythons, so the walk
+        # is made to overflow on any list. The lines inside are then read on
+        # their own, as after a failed decode, and the result converts.
+        loader = importlib.machinery.SourceFileLoader("cs_codex_thread_under_test", str(HELPER))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        walk = module.lifted
+
+        def overflowing(value, found, sentinel):
+            if isinstance(value, list):
+                raise RecursionError("maximum recursion depth exceeded")
+            return walk(value, found, sentinel)
+
+        result = json.dumps(command_result("fatal: 3 tests failed", exit_code=1), separators=(",", ":"))
+        found = []
+        with patch.object(module, "lifted", overflowing):
+            pieces = module.codex_tool_text("[\n" + result + "\n]\n", found, "\x00s-{}-x\x00")
+        self.assertEqual(found, [("fatal: 3 tests failed", "exit code 1")])
+        self.assertEqual(pieces, ["[\n", (0, 1, None), "\n]\n"])
+
     def test_a_result_after_a_part_that_never_closes_still_converts(self):
         # Codex merges what a script printed into one part when it cuts the
         # output, so a printed file of "[" lines can come before a result:

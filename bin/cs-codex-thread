@@ -415,8 +415,9 @@ def codex_tool_text(text, found, sentinel):
     # skeleton): skeleton is the structure around them as compact JSON with
     # sentinel in place of each, or None when the value is one result. The
     # part comes back as those and the text between them, kept as written;
-    # with no such value it gives None. JSON holding no result, and a value
-    # too deep to walk, leave found as it was and stay in the text.
+    # with no such value it gives None. JSON holding no result leaves found as
+    # it was and stays in the text; a value too deep to walk does too, but the
+    # lines inside it are read on their own.
     decoder, pieces, done = json.JSONDecoder(object_pairs_hook=unique_keys), [], 0
     # A value that never closes is read again from each later line: failed decodes share a budget.
     # Once it is spent, a value is decoded within its own line only, where a failure costs that line.
@@ -450,10 +451,14 @@ def codex_tool_text(text, found, sentinel):
                             skeleton = compact_json(value)
                         pieces += [text[done:at], (start, len(found), skeleton)]
                         done = end
+                    # Nothing inside a value is looked at again.
+                    at = end
                 except (ValueError, RecursionError):
+                    # Too deep to walk: its lines are read on their own, as
+                    # after a failed decode, so a result inside still converts.
                     del found[start:]
-                # Nothing inside a value is looked at again.
-                at = end
+                    if not bounded:
+                        budget -= end - at
         newline = text.find("\n", at)
         if newline < 0:
             break
