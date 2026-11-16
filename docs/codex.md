@@ -162,15 +162,24 @@ Codex home inside its vault, `.cs/private/codex-home`, so its rollouts, history,
 state databases and logs never reach the shared home (`$CODEX_HOME`, else
 `~/.codex`). At every open, cs:
 
-- links `auth.json`, its two lock files, `AGENTS.md`, `hooks.json` and the
-  `skills/`, `agents/`, `plugins/`, `rules/` and `hooks/` folders to the shared
-  home, so the login, instructions and extensions are the shell's. Everything
-  else Codex writes is born in the vault.
+- links `auth.json`, its two lock files, `AGENTS.md`, `AGENTS.override.md`,
+  `.env`, `hooks.json` and the `skills/`, `agents/`, `themes/` and `hooks/`
+  folders to the shared home, so the login, instructions and extensions are
+  the shell's. `plugins/` is a folder of the vault whose `cache/` and staging
+  folders link to the shared ones, so plugins are installed once and their
+  data (`plugins/data/`) stays in the vault. Everything else Codex writes is
+  born in the vault. `.credentials.json`, the file Codex falls back to for MCP
+  OAuth logins, is not shared: an MCP server that falls back to it logs in
+  again inside the session.
 - copies the shared `config.toml` in, with each `[hooks.state]` trust entry
   renamed to the vault home's path, since Codex keys hook trust by the path it
   read the hook from. Before Codex starts, cs asks it which hooks it trusts
   there, and refuses to start when a hook trusted in the shared home would not
   run (a guard hook would otherwise stop silently).
+- copies the shared `rules/` folder in, following the links in it. An approval
+  you make during an encrypted run (Codex appends an "always allow" for a
+  command or a host to `rules/default.rules`) lasts until the next open, which
+  copies the folder again; lasting ones belong in the shared `rules/`.
 - starts Codex with cs's permissions profile, `cs-vault-home`, on the command
   line: Codex's workspace sandbox with the vault home read-only, so the agent
   cannot rewrite its own configuration, hooks or rules. The profile carries

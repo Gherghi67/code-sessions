@@ -955,14 +955,16 @@ def plain_path(path):
 
 
 def seed_config(args):
-    # The vault home's config.toml: a copy of the shared home's, made at every
-    # launch, so the user's later edits reach it. Codex keys hook trust by the
-    # path of the hooks.json or config.toml it read the hook from, so each trust
-    # table the shared home holds is renamed to the vault home's path: the hooks
-    # are the same file (hooks.json is a link) or the same text (config.toml), and
-    # every trusted_hash is bound to the hook's content. The one entry Codex may
-    # add here that the next copy would drop, this session's project trust, is
-    # carried over from the previous copy when the shared home has none.
+    # The vault home's config.toml and rules/: copies of the shared home's, made
+    # at every launch, so the user's later edits reach them and what a run saves
+    # in them (an approval Codex appends to rules/) lasts until the next open.
+    # Codex keys hook trust by the path of the hooks.json or config.toml it read
+    # the hook from, so each trust table the shared home holds is renamed to the
+    # vault home's path: the hooks are the same file (hooks.json is a link) or
+    # the same text (config.toml), and every trusted_hash is bound to the hook's
+    # content. The one entry Codex may add here that the next copy would drop,
+    # this session's project trust, is carried over from the previous copy when
+    # the shared home has none.
     shared, home = Path(args.shared_home), Path(args.home)
     if not home.is_dir() or home.is_symlink():
         raise BootstrapError("the vault Codex home is not a directory: " + str(home))
@@ -1017,7 +1019,52 @@ def seed_config(args):
         with contextlib.suppress(OSError):
             os.unlink(temp)
         raise
+    seed_rules(shared, home)
     return str(target)
+
+
+def dangling_links(directory, names):
+    # copytree's own ignore_dangling_symlinks tests a relative link from the
+    # current directory, not from the link's, and so drops a sound one.
+    return {name for name in names
+            if os.path.islink(os.path.join(directory, name)) and not os.path.exists(os.path.join(directory, name))}
+
+
+def seed_rules(shared, home):
+    # rules/ is copied whole, links in the shared one followed and dangling ones
+    # left out, so nothing in the copy points back into the shared home. An
+    # earlier open's link to the shared rules/ is removed; the previous copy is
+    # replaced only once the new one is complete.
+    target = home / "rules"
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists() and not target.is_dir():
+        raise BootstrapError("the vault Codex home's rules is not a directory: " + str(target))
+    source = shared / "rules"
+    fresh = tempfile.mkdtemp(prefix=".rules.", dir=str(home))
+    aside = None
+    try:
+        if source.is_dir():
+            shutil.copytree(str(source), fresh, symlinks=False, ignore=dangling_links, dirs_exist_ok=True)
+        os.chmod(fresh, 0o700)
+        if target.is_dir():
+            # Renamed over an empty directory of its own, which rename allows.
+            aside = tempfile.mkdtemp(prefix=".rules.", dir=str(home))
+            os.rename(str(target), aside)
+        try:
+            os.rename(fresh, str(target))
+        except BaseException:
+            if aside is not None:
+                os.rename(aside, str(target))
+                aside = None
+            raise
+    except BaseException as exc:
+        shutil.rmtree(fresh, ignore_errors=True)
+        if isinstance(exc, OSError):
+            raise BootstrapError("could not copy " + str(source) + " into the vault Codex home") from exc
+        raise
+    if aside is not None:
+        shutil.rmtree(aside, ignore_errors=True)
 
 
 def vault_check(args):
@@ -1084,7 +1131,7 @@ def main():
     parser.add_argument("--has-thread", action="store_true",
                         help="print yes when CODEX_HOME keeps --thread-id's history, else no")
     parser.add_argument("--seed-config", action="store_true",
-                        help="copy --shared-home's config.toml into --home with its hook trust re-keyed")
+                        help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
     parser.add_argument("--vault-check", action="store_true",
                         help="print, as JSON, the sandbox settings and untrusted hooks of the vault home in CODEX_HOME")
     parser.add_argument("--shared-home")

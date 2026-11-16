@@ -1386,6 +1386,73 @@ class VaultHomeTests(HelperFixture):
         self.assertEqual(self.seed().returncode, 0)
         self.assertEqual((self.home / 'config.toml').read_text(), '')
 
+    def test_seed_config_copies_the_shared_rules_into_the_vault(self):
+        # Codex appends an 'always allow' approval to rules/default.rules: the
+        # vault keeps a copy, so one made in the session stays in the vault.
+        rules = self.shared / 'rules'
+        (rules / 'nested').mkdir(parents=True)
+        (rules / 'default.rules').write_text('prefix_rule(pattern=["ls"], decision="allow")\n')
+        (rules / 'nested' / 'more.rules').write_text('nested\n')
+        outside = self.root / 'outside-cs-vault-rules.rules'
+        outside.write_text('linked\n')
+        (rules / 'linked.rules').symlink_to(outside)
+        # Relative to the link's own directory, not to the helper's.
+        (rules / 'relative.rules').symlink_to(os.path.join('..', '..', outside.name))
+        (rules / 'dangling.rules').symlink_to(self.root / 'missing.rules')
+        result = self.seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        copy = self.home / 'rules'
+        self.assertTrue(copy.is_dir() and not copy.is_symlink(), 'rules is a vault directory')
+        self.assertEqual(copy.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((copy / 'default.rules').read_text(), 'prefix_rule(pattern=["ls"], decision="allow")\n')
+        self.assertEqual((copy / 'nested' / 'more.rules').read_text(), 'nested\n')
+        self.assertFalse((copy / 'linked.rules').is_symlink(), 'a link in the shared rules is followed')
+        self.assertEqual((copy / 'linked.rules').read_text(), 'linked\n')
+        self.assertFalse((copy / 'relative.rules').is_symlink())
+        self.assertEqual((copy / 'relative.rules').read_text(), 'linked\n')
+        self.assertFalse(os.path.lexists(copy / 'dangling.rules'))
+        with (copy / 'default.rules').open('a') as out:
+            out.write('prefix_rule(pattern=["rm"], decision="allow")\n')
+        self.assertEqual((rules / 'default.rules').read_text(), 'prefix_rule(pattern=["ls"], decision="allow")\n',
+                         'an approval made in the vault does not reach the shared rules')
+        # The next copy replaces the previous one, whole.
+        (rules / 'default.rules').write_text('edited\n')
+        (rules / 'nested' / 'more.rules').unlink()
+        self.assertEqual(self.seed().returncode, 0)
+        self.assertEqual((copy / 'default.rules').read_text(), 'edited\n')
+        self.assertFalse((copy / 'nested' / 'more.rules').exists())
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), ['config.toml', 'rules'],
+                         'no temporary directory is left')
+
+    def test_seed_config_replaces_a_linked_rules_with_a_copy(self):
+        # An earlier open linked rules/ to the shared home.
+        (self.shared / 'rules').mkdir()
+        (self.shared / 'rules' / 'default.rules').write_text('shared\n')
+        (self.home / 'rules').symlink_to(self.shared / 'rules')
+        result = self.seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.home / 'rules').is_symlink())
+        self.assertEqual((self.home / 'rules' / 'default.rules').read_text(), 'shared\n')
+        self.assertEqual(os.listdir(self.shared / 'rules'), ['default.rules'], 'the shared rules are left alone')
+        self.assertEqual((self.shared / 'rules' / 'default.rules').read_text(), 'shared\n')
+
+    def test_seed_config_refuses_a_file_where_rules_belongs(self):
+        (self.shared / 'rules').mkdir()
+        (self.home / 'rules').write_text('not a directory\n')
+        result = self.seed()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(self.home / 'rules'), result.stderr)
+        self.assertEqual((self.home / 'rules').read_text(), 'not a directory\n')
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), ['config.toml', 'rules'],
+                         'no temporary directory is left')
+
+    def test_seed_config_without_shared_rules_leaves_an_empty_copy(self):
+        (self.home / 'rules').mkdir()
+        (self.home / 'rules' / 'default.rules').write_text('approved in the vault\n')
+        self.assertEqual(self.seed().returncode, 0)
+        self.assertTrue((self.home / 'rules').is_dir())
+        self.assertEqual(list((self.home / 'rules').iterdir()), [])
+
     def vault_check(self, config, hooks, mode=''):
         env = dict(self.env, CODEX_HOME=str(self.home), FAKE_CONFIG=json.dumps(config), FAKE_HOOKS=json.dumps(hooks))
         return self.helper('--vault-check', '--codex-bin', str(self.fake), '--cwd', str(self.cwd),

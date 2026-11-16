@@ -2473,18 +2473,27 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
     ln -s vault-mnt/private "$sess/.cs/private"
     git -C "$sess" init -q
     home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
-    for name in auth.json auth.json.lock auth.lock AGENTS.md hooks.json skills agents plugins rules hooks; do
+    for name in auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json skills agents themes hooks; do
         ln -s "$shared/$name" "$home/$name"
     done
-    mkdir -p "$shared/skills" "$shared/agents" "$shared/plugins" "$shared/rules" "$shared/hooks"
+    mkdir -p "$shared/skills" "$shared/agents" "$shared/themes" "$shared/hooks" "$home/rules" "$home/plugins/data"
+    # rules/ is a copy and plugins/ a vault directory; only plugins' installs
+    # and staging link to the shared home.
+    for name in cache .marketplace-plugin-source-staging .remote-plugin-install-staging .plugin-appserver; do
+        mkdir -p "$shared/plugins/$name"
+        ln -s "$shared/plugins/$name" "$home/plugins/$name"
+    done
     printf 'model = "m"\n' > "$home/config.toml"
     output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
         CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" "Codex vault home: inside the vault, sharing the login and extensions of $shared" \
         "a sound home is OK" || return 1
+    assert_output_not_contains "$output" "rules is not a link" "rules is a vault directory" || return 1
+    assert_output_not_contains "$output" "plugins is not a link" "plugins is a vault directory" || return 1
     rm "$home/auth.json"
     printf '{}\n' > "$home/auth.json"
     ln -sfn "$TEST_TMPDIR/elsewhere" "$home/skills"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$home/plugins/cache"
     printf '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "x"\n' "$shared" > "$home/config.toml"
     output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
         CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
@@ -2493,8 +2502,18 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
     assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
     assert_output_not_contains "$output" "login saved inside the vault" "does not claim Codex wrote it" || return 1
     assert_output_contains "$output" "skills links to $TEST_TMPDIR/elsewhere, not $shared/skills" || return 1
+    assert_output_contains "$output" "plugins/cache links to $TEST_TMPDIR/elsewhere, not $shared/plugins/cache" || return 1
     assert_output_contains "$output" "config.toml still keys hook trust by $shared" || return 1
     assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK beside the warnings" || return 1
+    # An earlier open linked plugins/ and rules/ to the shared home: named,
+    # and the next open makes them vault directories.
+    rm -rf "$home/plugins" "$home/rules"
+    ln -s "$shared/plugins" "$home/plugins"
+    ln -s "$shared/rules" "$home/rules"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "plugins is still a link to $shared/plugins" "a linked plugins is named" || return 1
+    assert_output_contains "$output" "rules is still a link to $shared/rules" "a linked rules is named" || return 1
 }
 run_test test_doctor_checks_an_encrypted_sessions_codex_home
 

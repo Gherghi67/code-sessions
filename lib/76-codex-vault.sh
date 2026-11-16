@@ -4,13 +4,20 @@
 # Codex keeps rollouts, history, its state databases and logs in CODEX_HOME.
 # An encrypted session runs it on .cs/private/codex-home, which is in the vault,
 # so none of that lands in the shared home in plaintext. Only these names are
-# shared, by symlink: the login, instructions and extensions. Everything else
-# Codex writes is born in the vault, a file a later Codex adds included. The
-# directories are made in the shared home when missing, so no link dangles
-# where Codex would make a directory; a file link may dangle until Codex
-# writes through it (codex login writes through auth.json's link).
-CS_CODEX_VAULT_LINK_FILES="auth.json auth.json.lock auth.lock AGENTS.md hooks.json"
-CS_CODEX_VAULT_LINK_DIRS="skills agents plugins rules hooks"
+# shared, by symlink: the login, instructions, .env and extensions. Everything
+# else Codex writes is born in the vault, a file a later Codex adds included.
+# config.toml and rules/ (where Codex appends an approval) are copied from the
+# shared home at every open instead (cs-codex-thread --seed-config), so what a
+# run saves in them lasts until the next open. plugins/ is a vault directory
+# whose installs and staging (CS_CODEX_VAULT_PLUGIN_LINKS) link to the shared
+# home, so plugin data (plugins/data) stays in the vault. The directories are
+# made in the shared home when missing, so no link dangles where Codex would
+# make a directory; a file link may dangle until Codex writes through it
+# (codex login writes through auth.json's link). .credentials.json is not
+# linked: Codex deletes it when it is empty, which would delete the link.
+CS_CODEX_VAULT_LINK_FILES="auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json"
+CS_CODEX_VAULT_LINK_DIRS="skills agents themes hooks"
+CS_CODEX_VAULT_PLUGIN_LINKS="cache .marketplace-plugin-source-staging .remote-plugin-install-staging .plugin-appserver"
 # The lock files hold nothing: a real one Codex made before cs linked it is
 # replaced. A real auth.json would hold a login, so it is never touched.
 CS_CODEX_VAULT_LOCKS="auth.json.lock auth.lock"
@@ -51,7 +58,8 @@ _codex_vault_home_path() {  # session_dir
 # Makes or refreshes the vault home and prints its path. A link that points
 # anywhere else is pointed back at the shared home (the shell's home may have
 # moved); a real file or directory where a link belongs stops the launch,
-# named, since it may hold the only copy of something (a login).
+# named, since it may hold the only copy of something (a login). plugins/ is
+# made a directory, an earlier open's link to the shared one removed.
 _codex_vault_home_prepare() {  # session_dir, shared_home, helper
     local home shared="$2" name target
     case "$shared" in
@@ -101,8 +109,38 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
             return 1
         }
     done
+    if [ -L "$home/plugins" ]; then
+        rm -f "$home/plugins" || {
+            _codex_launch_error "Could not remove the link $home/plugins."
+            return 1
+        }
+    elif [ -e "$home/plugins" ] && [ ! -d "$home/plugins" ]; then
+        _codex_launch_error "$home/plugins is not a directory. Move it aside; cs makes it at the next open."
+        return 1
+    fi
+    (umask 077 && mkdir -p "$home/plugins") || {
+        _codex_launch_error "Could not make $home/plugins."
+        return 1
+    }
+    for name in $CS_CODEX_VAULT_PLUGIN_LINKS; do
+        target="$shared/plugins/$name"
+        if [ ! -d "$target" ] && ! (umask 077 && mkdir -p "$target"); then
+            _codex_launch_error "Could not make $target for the vault Codex home to link to."
+            return 1
+        fi
+        if [ -L "$home/plugins/$name" ]; then
+            [ "$(readlink "$home/plugins/$name")" = "$target" ] && continue
+        elif [ -e "$home/plugins/$name" ]; then
+            _codex_launch_error "$home/plugins/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+            return 1
+        fi
+        ln -sfn "$target" "$home/plugins/$name" || {
+            _codex_launch_error "Could not link $home/plugins/$name to $target."
+            return 1
+        }
+    done
     cs_run_child "$3" --seed-config --shared-home "$shared" --home "$home" --cwd "$1" >/dev/null || {
-        _codex_launch_error "Could not copy $shared/config.toml into the vault Codex home; the line above says why."
+        _codex_launch_error "Could not copy $shared/config.toml and rules/ into the vault Codex home; the line above says why."
         return 1
     }
     printf '%s\n' "$home"

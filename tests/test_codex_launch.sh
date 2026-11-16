@@ -396,17 +396,35 @@ _codex_config_args() {
 # Codex runs an encrypted session on a home inside its vault: exported for
 # Codex and its helpers, sharing the login and extensions by link, with the
 # shell's config copied in and its hook trust re-keyed to the copy's path.
+# Approvals (rules/) are a copy and plugin data a vault directory, so neither
+# an approval nor a plugin's data made in the session reaches the shared home.
 test_encrypted_session_runs_codex_on_its_vault_home() {
     _vault_fixture
     local output status=0 name
+    mkdir -p "$CODEX_HOME/rules"
+    printf 'prefix_rule(pattern=["git", "status"], decision="allow")\n' > "$CODEX_HOME/rules/default.rules"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
     assert_eq 0 "$status" "launch failed: $output" || return 1
     assert_file_contains "$CS_CODEX_ENV" "^CODEX_HOME=$VAULT_HOME\$" "Codex runs on the vault home" || return 1
     assert_file_contains "$CS_CODEX_ENV" "^CS_CODEX_SHARED_HOME=$CODEX_HOME\$" "the shell's home is kept beside it" || return 1
     assert_file_contains "$CS_HELPER_VAULT_CALLS" "^CODEX_HOME=$VAULT_HOME " "the check reads the vault home" || return 1
-    for name in auth.json auth.json.lock auth.lock AGENTS.md hooks.json skills agents plugins rules hooks; do
+    for name in auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json skills agents themes hooks; do
         assert_eq "$CODEX_HOME/$name" "$(readlink "$VAULT_HOME/$name")" "$name links into the shared home" || return 1
     done
+    assert_eq "" "$(readlink "$VAULT_HOME/rules")" "rules is not a link" || return 1
+    assert_dir "$VAULT_HOME/rules" "rules is a vault directory" || return 1
+    assert_eq 'prefix_rule(pattern=["git", "status"], decision="allow")' "$(cat "$VAULT_HOME/rules/default.rules")" \
+        "the shared rules are copied" || return 1
+    printf 'prefix_rule(pattern=["rm"], decision="allow")\n' >> "$VAULT_HOME/rules/default.rules"
+    assert_eq 'prefix_rule(pattern=["git", "status"], decision="allow")' "$(cat "$CODEX_HOME/rules/default.rules")" \
+        "an approval made in the vault stays there" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/plugins")" "plugins is not a link" || return 1
+    assert_dir "$VAULT_HOME/plugins" "plugins is a vault directory" || return 1
+    for name in cache .marketplace-plugin-source-staging .remote-plugin-install-staging .plugin-appserver; do
+        assert_eq "$CODEX_HOME/plugins/$name" "$(readlink "$VAULT_HOME/plugins/$name")" "plugins/$name links into the shared home" || return 1
+        assert_dir "$CODEX_HOME/plugins/$name" "plugins/$name is made in the shared home" || return 1
+    done
+    assert_eq "" "$(readlink "$VAULT_HOME/plugins/data")" "plugin data is never linked" || return 1
     assert_eq '{"tokens":"shared"}' "$(cat "$VAULT_HOME/auth.json")" "the login is the shell's" || return 1
     assert_file_contains "$VAULT_HOME/config.toml" "^model = \"m\"\$" "the config is copied" || return 1
     assert_file_contains "$VAULT_HOME/config.toml" "^\\[hooks.state.\"$VAULT_HOME/hooks.json:session_start:0:0\"\\]\$" \
@@ -420,21 +438,58 @@ default_permissions=\"cs-vault-home\"" "$(_codex_config_args)" "the agent cannot
     assert_eq "$CS_THREAD_ID" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "bound" || return 1
 }
 
-# The copy is made again at every open, so an edit to the shell's config
-# reaches the session; a stale link is pointed back, an empty lock replaced.
+# The copy is made again at every open, so an edit to the shell's config or
+# rules reaches the session, and an approval made in the session lasts until
+# then; a stale link is pointed back, an empty lock replaced.
 test_the_vault_home_is_refreshed_at_every_open() {
     _vault_fixture
     local output status=0
+    mkdir -p "$CODEX_HOME/rules"
+    printf 'first\n' > "$CODEX_HOME/rules/default.rules"
     ( launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null 2>&1 ) || return 1
     printf 'model = "edited"\n' > "$CODEX_HOME/config.toml"
+    printf 'edited\n' > "$CODEX_HOME/rules/default.rules"
+    printf 'approved in the vault\n' >> "$VAULT_HOME/rules/default.rules"
     ln -sfn "$TEST_TMPDIR/elsewhere" "$VAULT_HOME/skills"
     rm -f "$VAULT_HOME/auth.lock"
     : > "$VAULT_HOME/auth.lock"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
     assert_eq 0 "$status" "second launch failed: $output" || return 1
     assert_file_contains "$VAULT_HOME/config.toml" '^model = "edited"$' "the edit reached the copy" || return 1
+    assert_eq edited "$(cat "$VAULT_HOME/rules/default.rules")" "the rules are copied again" || return 1
     assert_eq "$CODEX_HOME/skills" "$(readlink "$VAULT_HOME/skills")" "the stale link is pointed back" || return 1
     assert_eq "$CODEX_HOME/auth.lock" "$(readlink "$VAULT_HOME/auth.lock")" "the empty lock is replaced by the link" || return 1
+}
+
+# An earlier open linked rules/ and plugins/ to the shared home: the next open
+# makes them vault directories and leaves the shared ones as they were. A real
+# directory where cs links a plugin install stops the open, named.
+test_an_earlier_opens_rules_and_plugins_links_become_vault_directories() {
+    _vault_fixture
+    local output status=0
+    mkdir -p "$VAULT_HOME" "$CODEX_HOME/rules" "$CODEX_HOME/plugins/data/demo-market"
+    printf 'shared\n' > "$CODEX_HOME/rules/default.rules"
+    ln -s "$CODEX_HOME/rules" "$VAULT_HOME/rules"
+    ln -s "$CODEX_HOME/plugins" "$VAULT_HOME/plugins"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/rules")" "rules is no longer a link" || return 1
+    assert_eq shared "$(cat "$VAULT_HOME/rules/default.rules")" "rules is a copy of the shared rules" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/plugins")" "plugins is no longer a link" || return 1
+    assert_dir "$VAULT_HOME/plugins" "plugins is a vault directory" || return 1
+    assert_eq "$CODEX_HOME/plugins/cache" "$(readlink "$VAULT_HOME/plugins/cache")" "the installs are the shell's" || return 1
+    assert_not_exists "$VAULT_HOME/plugins/data" "the shared plugin data does not come along" || return 1
+    assert_eq shared "$(cat "$CODEX_HOME/rules/default.rules")" "the shared rules are left alone" || return 1
+    assert_dir "$CODEX_HOME/plugins/data/demo-market" "the shared plugin data is left alone" || return 1
+    rm "$VAULT_HOME/plugins/cache"
+    mkdir "$VAULT_HOME/plugins/cache"
+    rm -f "$CS_CODEX_LOG"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a directory where cs links an install must stop the open" || return 1
+    assert_output_contains "$output" "plugins/cache is not cs's link to $CODEX_HOME/plugins/cache" || return 1
+    assert_dir "$VAULT_HOME/plugins/cache" "the directory is kept" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
 }
 
 # A real auth.json where cs's link was: Codex after a logout and login inside
@@ -1652,6 +1707,7 @@ run_test test_malformed_binding_rejected_without_helper
 run_test test_missing_codex_home_is_named_before_the_helper
 run_test test_encrypted_session_runs_codex_on_its_vault_home
 run_test test_the_vault_home_is_refreshed_at_every_open
+run_test test_an_earlier_opens_rules_and_plugins_links_become_vault_directories
 run_test test_a_login_saved_inside_the_vault_stops_the_open
 run_test test_a_locked_vault_stops_the_codex_open
 run_test test_a_linked_vault_home_stops_the_open

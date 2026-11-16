@@ -1151,10 +1151,12 @@ _doctor_check_hook_authority() {
 # so a clone cs has not launched in is out of reach; this names the one it can see.
 # An encrypted session's Codex home (lib/76-codex-vault.sh), when its vault is
 # mounted and Codex has run there. Each shared name must link into the shared
-# home; an auth.json that is a file (cs cannot tell who wrote it), a link that
-# leads elsewhere or dangles, and a copied config.toml whose hook trust still
-# names the shared home are named. The next Codex open repairs links and the
-# copy, never an auth.json.
+# home, and rules/ (a copy) and plugins/ must be vault directories, the plugin
+# installs and staging in plugins/ links; an auth.json that is a file (cs
+# cannot tell who wrote it), a link that leads elsewhere or dangles, an earlier
+# open's rules/ or plugins/ link, and a copied config.toml whose hook trust
+# still names the shared home are named. The next Codex open repairs links and
+# the copies, never an auth.json.
 _doctor_check_codex_vault_home() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found problems=""
     [ -n "$dir" ] || return 0
@@ -1185,6 +1187,32 @@ _doctor_check_codex_vault_home() {
             problems="$problems; $name is missing"
         fi
     done
+    for name in rules plugins; do
+        if [ -L "$home/$name" ]; then
+            problems="$problems; $name is still a link to $(readlink "$home/$name"), so what Codex saves there leaves the vault"
+        elif [ -e "$home/$name" ] && [ ! -d "$home/$name" ]; then
+            problems="$problems; $name is not a directory"
+        elif [ ! -e "$home/$name" ]; then
+            problems="$problems; $name is missing"
+        fi
+    done
+    if [ -d "$home/plugins" ] && [ ! -L "$home/plugins" ]; then
+        for name in $CS_CODEX_VAULT_PLUGIN_LINKS; do
+            target="$shared/plugins/$name"
+            if [ -L "$home/plugins/$name" ]; then
+                found=$(readlink "$home/plugins/$name")
+                if [ "$found" != "$target" ]; then
+                    problems="$problems; plugins/$name links to $found, not $target"
+                elif [ ! -e "$home/plugins/$name" ]; then
+                    problems="$problems; plugins/$name links to $target, which is missing"
+                fi
+            elif [ -e "$home/plugins/$name" ]; then
+                problems="$problems; plugins/$name is not a link to $target"
+            else
+                problems="$problems; plugins/$name is missing"
+            fi
+        done
+    fi
     if [ -f "$home/config.toml" ] && grep -F "[hooks.state.\"$shared/" "$home/config.toml" >/dev/null 2>&1; then
         problems="$problems; config.toml still keys hook trust by $shared, so those hooks would not run"
     fi
