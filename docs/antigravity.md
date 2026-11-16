@@ -266,13 +266,27 @@ nothing there to take back. The command is the install folder's
 `cs-statusline-agy` (`CS_INSTALL_DIR`), quoted as one shell word when its path
 needs it, as the hook's is.
 
-`stack_with_default` keeps `agy`'s own line, with its model, effort, quota and
-mode, and draws cs's under it. cs's line shows the session, its notes and
-unread mail, git, and the context once the first turn has run. It is
+`stack_with_default` keeps `agy`'s own line, with its mode, model and effort,
+and draws cs's under it. cs's line shows the session, its notes and unread
+mail, git, the context once the first turn has run, and the quota. It is
 `cs-statusline` itself, run by a small adapter, so its layout, colors and
 `CS_STATUSLINE_*` settings are the ones you use under Claude
-([Status line](statusline.md)). The model, limits and cost segments show
-nothing here, since `agy`'s line already carries them.
+([Status line](statusline.md)). The model and cost segments show nothing
+here, since `agy`'s line already carries the model.
+
+The quota reads as Claude's limits do: `5h` always, `wk` from 50% used, amber
+at 70 and red at 90, with the time to reset once a window is tight. `agy`
+reports a fraction left per bucket. Its own line showed none of them in a live
+1.5.9 run with up to 12% used; it was not watched nearer a limit. On a Google
+AI Pro account the buckets were `gemini-5h`, `gemini-weekly`,
+`gemini-argon-wtu-weekly`, `3p-5h` and `3p-weekly`, names `agy` does not
+document. Each window takes the most-used bucket ending in `-5h` or `-weekly`
+of the running model's family: the `gemini-` buckets for a Gemini model, the
+`3p-` buckets for any other. A bucket named for one model, such as
+`gemini-argon-…`, counts for every model of its family, so a window can read
+higher than the running model has used, never lower. A family with no bucket
+for a window leaves that window out, buckets for any other window (a daily
+one, say) are not drawn, and no quota shows until `agy` names the model.
 
 Claude's logo and attention shade are omitted under Antigravity. Mail and
 queue counts describe stored cs state: unread messages and pending queue
@@ -284,7 +298,9 @@ read mail with `cs -msg` and manage the queue with `cs -queue`.
 | `session_id`, `cwd`, `workspace.current_dir` | the same fields Claude Code sends |
 | `context_window.used_percentage` | the ctx gauge, once `context_window_size` and `total_input_tokens` are above 0; before the first turn `agy` reads 0, where Claude Code sends nothing |
 | `terminal_width` | the band layout's width; the default quiet layout does not use it |
-| `model`, `quota`, `cost`, `agent_state`, `plan_tier` and the rest | not used |
+| `quota.<bucket>.remaining_fraction`, `reset_time` (`reset_in_seconds` when the time is missing) | the `5h` and `wk` windows, as Claude Code's `rate_limits` |
+| `model` | which quota buckets count; not drawn |
+| `cost`, `agent_state`, `plan_tier` and the rest | not used |
 
 The band uses all reported terminal columns under Antigravity, whose frame
 defaults to zero rather than Claude Code's four columns. A live agy 1.5.9

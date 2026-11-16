@@ -4,22 +4,37 @@
 
 # agy's payload, measured on agy 1.5.9, keeps Claude Code's paths for what
 # the bar shows: session_id, cwd, workspace.current_dir and
-# context_window.used_percentage. It also carries a model and agy's own quota,
-# which agy's default line, stacked above this one, already shows, and the
-# terminal's width as terminal_width. context_window_size is 0 until the
+# context_window.used_percentage. It also carries a model, which agy's
+# default line, stacked above this one, already shows, the terminal's width
+# as terminal_width, and agy's quota, which that line did not show in a live
+# 1.5.9 run with up to 12% used. context_window_size is 0 until the
 # model is known, and used_percentage reads 0 before the first turn, where
 # Claude Code sends none; the context shows once the model has read input.
 #
-# So the payload cs-statusline gets keeps the session, the folder and the
-# context, takes terminal_width as its columns, and leaves out the model, the
-# limits and the cost. CS_STATUSLINE_ENGINE tells cs-statusline the bar is not
+# The quota is a table of buckets, each a fraction left with a reset:
+# gemini-5h, gemini-weekly, gemini-argon-wtu-weekly, 3p-5h and 3p-weekly
+# (the third-party models) on a Google AI Pro account. agy documents none of
+# these names. Claude Code sends the percentage used of a five_hour and a
+# seven_day window with the reset as an epoch, so each window here takes the
+# most-used bucket ending in -5h or -weekly of the running model's family:
+# gemini-* for a model whose display name (else id) has "gemini" in it,
+# 3p-* for any other. A bucket named for one
+# model counts for its whole family, so a window may read higher than the
+# running model has used, never lower. A family with no usable bucket for a
+# window leaves that window out, other windows are not drawn, and until the
+# model is known no quota goes over.
+#
+# So the payload cs-statusline gets keeps the session, the folder, the
+# context and the quota, takes terminal_width as its columns, and leaves out
+# the model and the cost. CS_STATUSLINE_ENGINE tells cs-statusline the bar is not
 # Claude Code's, so it writes none of the stamps Claude's hooks and the cs mod
 # read. CS_STATUSLINE_PARENT names agy, the process every repaint shares,
 # since this script is a new process each time and cs-statusline keys its
 # caches on its parent.
 #
 # agy turns a custom status line off after a run of failures, so every path
-# exits 0, and a missing renderer or jq prints nothing.
+# exits 0, and a missing renderer or jq prints nothing. The mapping calls no
+# regex builtin, so a jq built without Oniguruma still draws the line.
 
 set -uo pipefail
 
@@ -36,7 +51,34 @@ _mapped=$(jq -c '
     def num: if type == "number" then . else null end;
     def text: if type == "string" then . else "" end;
     def obj: if type == "object" then . else {} end;
+    def clamp: if . < 0 then 0 elif . > 100 then 100 else . end;
+    def epoch($bucket):
+        def near: if . != null and . <= now + 31 * 86400 then . else null end;
+        def whole_seconds:
+            split(".") as $p
+            | if ($p | length) == 2 and ($p[1] | endswith("Z")) then $p[0] + "Z" else . end;
+        ((($bucket.reset_time | text | whole_seconds) as $t
+          | try ($t | fromdateiso8601) catch null) | near)
+        // (($bucket.reset_in_seconds | num) as $s
+            | if $s == null then null else (now + $s | floor | near) end);
     (.context_window | obj) as $ctx
+    | (.model | obj | [(.display_name, .id) | text | select(. != "")]
+       | .[0] // "" | ascii_downcase) as $model
+    | (if $model == "" then null
+       elif ($model | contains("gemini")) then "gemini-"
+       else "3p-" end) as $family
+    | [if $family == null then empty
+       else (.quota | obj) | to_entries[] | select(.key | startswith($family)) end
+       | select((.value | obj | .remaining_fraction | num) != null)] as $buckets
+    | def window($suffix):
+        [$buckets[] | select(.key | endswith($suffix))]
+        | min_by(.value.remaining_fraction)
+        | if . == null then null
+          else {used_percentage: ((1 - .value.remaining_fraction) * 100 | clamp | round),
+                resets_at: epoch(.value)}
+          end;
+      ({five_hour: window("-5h"), seven_day: window("-weekly")}
+       | with_entries(select(.value != null))) as $limits
     | {
         session_id: (.session_id | text),
         cwd: (.cwd | text),
@@ -47,7 +89,8 @@ _mapped=$(jq -c '
                               then ($ctx.used_percentage | num) else null end)
         },
         columns: (.terminal_width | num)
-    }' <<< "$_input" 2>/dev/null) || exit 0
+    }
+    + (if $limits == {} then {} else {rate_limits: $limits} end)' <<< "$_input" 2>/dev/null) || exit 0
 
 CS_STATUSLINE_ENGINE=antigravity CS_STATUSLINE_PARENT="$PPID" "$_renderer" <<< "$_mapped" 2>/dev/null
 exit 0

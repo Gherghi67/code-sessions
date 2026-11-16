@@ -2110,12 +2110,12 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "3aed42756487b7eb4d3e5c913b8e5b031e3db0235e6b4ad25e1c307aaa28d51b  bin/cs"
+    "f07f3399ea780e827cdc22c657de201100de6f4b011f0a99cf6ae6affb179929  bin/cs"
     "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
     "83a4dc6661a2ddc394464c7ab56fb97d26a82af30b71deeb1f9d39ebf6959ed3  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
-    "604f0893c0b40a0072f9adaea3971e33af1eebc62c8fd9e8ff527702790c4bfe  bin/cs-statusline-agy"
+    "b1272ea923569f2c56fcac2900bdb8b52d98a7fe400031fe92ad067ed62aa65d  bin/cs-statusline-agy"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
     "4ac5d1b62454d266c597079dd2ce482d6e0236fbe17e41c3540b3c4ce318a9f6  hooks/cs-shared.sh"
     "e6d5ae5a6121a17d2935566a0e8c05f60f5d7fa5a2af3266dbe810a3b88c91b7  hooks/cs-engine-events.sh"
