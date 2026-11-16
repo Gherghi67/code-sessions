@@ -2917,7 +2917,10 @@ if _install_has_engine codex; then
 # Codex reads the same skills from its own home, so each engine registers one
 # payload natively. CODEX_HOME is where Codex itself looks (setup.sh points it
 # at the profile). Mods stay with Claude: they are Claude Code function hooks.
-CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+# While a cs launch points CODEX_HOME at an encrypted session's vault home, it
+# keeps the shell's home in CS_CODEX_SHARED_HOME, and the installer writes
+# there, as _cs_install_record does.
+CODEX_DIR="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 CS_DESTINATIONS="$CS_DESTINATIONS, $CODEX_DIR"
 CODEX_SKILLS_DIR="$CODEX_DIR/skills"
 installed "Codex skills" "$CODEX_SKILLS_DIR/"

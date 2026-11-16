@@ -192,8 +192,9 @@ open the same way. If Codex ever saves a login inside the vault (a
 real `auth.json` where cs's link was), the open stops and says how to keep the
 newer one. Handoffs and the launch context live in `.cs/private`, and switching
 or carrying a conversation between Claude and Codex works as in any other
-session. `cs -doctor` checks the vault home's links. Antigravity still refuses
-encrypted sessions.
+session. `cs -doctor` checks the vault home's links. `cs -update` or
+`install.sh` run inside an encrypted session installs into the shared home.
+Antigravity still refuses encrypted sessions.
 
 ## Workspace preparation and installation
 
