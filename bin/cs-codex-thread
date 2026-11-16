@@ -231,6 +231,9 @@ CODEX_CONTEXT = frozenset((
     "guardian_tool_descriptions", "external_codex_apps_open_page", "node_repl_review_evidence"))
 TAG_WRAPPED = re.compile(r"\A\s*<([A-Za-z_][\w-]*)>.*</\1>\s*\Z", re.S)
 CODEX_FINAL_ANSWER = "Message Type: FINAL_ANSWER\n"
+# The keys of exec_command's result, as code mode prints it.
+CODEX_COMMAND_RESULT = frozenset((
+    "chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count", "output"))
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -338,11 +341,76 @@ def codex_injected(text):
     return stripped.startswith(CODEX_AGENTS) or (wrapped is not None and wrapped.group(1) in CODEX_CONTEXT)
 
 
+def codex_command(value):
+    """A command's output, under its exit code when not 0 or its session while
+    it still runs, when value is exec_command's result; else None."""
+    if not (isinstance(value, dict) and "chunk_id" in value and isinstance(value.get("output"), str)
+            and set(value) <= CODEX_COMMAND_RESULT):
+        return None
+    if value.get("exit_code") not in (None, 0):
+        mark = "[exit code {}]".format(value["exit_code"])
+    elif "exit_code" not in value and "session_id" in value:
+        mark = "[still running, session {}]".format(value["session_id"])
+    else:
+        return value["output"]
+    return mark + ("\n" + value["output"] if value["output"] else "")
+
+
+def holds_command(value):
+    if codex_command(value) is not None:
+        return True
+    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    return any(holds_command(item) for item in items)
+
+
+def readable(value):
+    """A JSON value as text: a command result as its output, a string as
+    itself, a mapping as key: value lines and a list as - items, with a
+    value of several lines indented under its key or dash."""
+    command = codex_command(value)
+    if command is not None:
+        return command
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and value:
+        rows = [(str(key) + ":", item) for key, item in value.items()]
+    elif isinstance(value, list) and value:
+        rows = [("-", item) for item in value]
+    else:
+        return json.dumps(value, ensure_ascii=False)
+    lines = []
+    for label, item in rows:
+        text = readable(item)
+        if "\n" not in text:
+            lines.append(label + " " + text if text else label)
+        elif label == "-":
+            first, rest = text.split("\n", 1)
+            lines.append("- " + first + "\n" + "\n".join("  " + line for line in rest.split("\n")))
+        else:
+            lines.append(label + "\n" + "\n".join("  " + line for line in text.split("\n")))
+    return "\n".join(lines)
+
+
+def codex_tool_text(text):
+    # Code mode prints what a script returns as JSON, so a command run from a
+    # script arrives as exec_command's result, its output one escaped string.
+    # That crosses as the output itself; other text, and JSON holding no
+    # command result, crosses as written.
+    stripped = text.strip()
+    if stripped[:1] not in ("{", "["):
+        return text
+    try:
+        value = json.loads(stripped)
+        return readable(value) if holds_command(value) else text
+    except (ValueError, RecursionError):
+        return text
+
+
 def codex_output(output):
     if isinstance(output, str):
-        return output
+        return codex_tool_text(output)
     if isinstance(output, list):
-        return "\n".join(codex_texts(output))
+        return "\n".join(codex_tool_text(text) for text in codex_texts(output))
     if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
         return codex_output(output["content"])
     return "" if output is None else json.dumps(output, ensure_ascii=False)

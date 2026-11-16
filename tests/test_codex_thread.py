@@ -840,6 +840,56 @@ class TransplantTests(HelperFixture):
         self.assertEqual([r["type"] for r in records], ["user", "assistant"])
         self.assertTrue(self.text_of(records[0]).startswith("[cs carried"))
 
+    def test_a_command_run_from_code_mode_crosses_as_its_output(self):
+        # Code mode prints a script's return value as JSON, so a command's
+        # result arrives as exec_command's object, its output one escaped
+        # string (shapes from real rollouts, 2026-11).
+        def command(output, **extra):
+            return dict({"chunk_id": "ca48b8", "wall_time_seconds": 0.000005834}, **extra,
+                        original_token_count=219, output=output)
+        header = {"type": "input_text", "text": "Script completed\nWall time 0.7 seconds\nOutput:\n"}
+        printed = [
+            command("A  one.md\nA  two.md\n", exit_code=0),
+            command("boom", exit_code=2),
+            command("Warning: added host\r\n", session_id=38455),
+            {"status": "fulfilled", "value": command("## cs/bots\nA  three.md", exit_code=0)},
+            [{"i": 0, "status": "fulfilled", "value": command("", exit_code=0)},
+             {"i": 1, "status": "rejected", "reason": "no such file"}],
+            command('{"task": "a23", "title": "Wrap WaW bot session"}', exit_code=0),
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, value in enumerate(printed):
+            lines.append(rollout_line("response_item", {"type": "custom_tool_call", "name": "exec",
+                                                        "call_id": "c%d" % n, "input": "run(%d)" % n}))
+            lines.append(rollout_line("response_item", {
+                "type": "custom_tool_call_output", "call_id": "c%d" % n,
+                "output": [header, {"type": "input_text", "text": json.dumps(value, separators=(",", ":"))}]}))
+        # The script's own JSON, holding no command result, and a plain
+        # function call's output cross as written.
+        own = '{"task":"a23","done":false}'
+        lines.append(rollout_line("response_item", {"type": "custom_tool_call", "name": "exec",
+                                                    "call_id": "c9", "input": "own()"}))
+        lines.append(rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "c9",
+                                                    "output": [header, {"type": "input_text", "text": own}]}))
+        lines.append(rollout_line("response_item", {"type": "function_call_output", "call_id": "c10",
+                                                    "output": json.dumps(command("ok", exit_code=0))}))
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
+        self.assertIn(top + "A  one.md\nA  two.md\n\n", agent)
+        self.assertIn(top + "[exit code 2]\nboom", agent)
+        self.assertIn(top + "[still running, session 38455]\nWarning: added host\r\n", agent)
+        self.assertIn(top + "status: fulfilled\nvalue:\n  ## cs/bots\n  A  three.md", agent)
+        self.assertIn(top + "- i: 0\n  status: fulfilled\n  value:\n"
+                            "- i: 1\n  status: rejected\n  reason: no such file", agent)
+        self.assertIn(top + '{"task": "a23", "title": "Wrap WaW bot session"}', agent)
+        self.assertIn(top + own, agent)
+        self.assertIn("[tool result]\nok", agent)
+        for absent in ("chunk_id", "ca48b8", "wall_time_seconds", "original_token_count", "\\n"):
+            self.assertNotIn(absent, agent)
+
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())
         result, records = self.export("--clip", "5")
