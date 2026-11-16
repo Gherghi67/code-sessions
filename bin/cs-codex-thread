@@ -408,14 +408,19 @@ def codex_tool_text(text, found, sentinel):
     # with no such value it gives None. JSON holding no result, and a value
     # too deep to walk, leave found as it was and stay in the text.
     decoder, pieces, done = json.JSONDecoder(), [], 0
+    # A value that never closes is read again from each later line: failed decodes share a budget.
+    budget = 2 * len(text)
     at = len(text) - len(text.lstrip())
     while at < len(text):
         if text[at] in "{[":
             start = len(found)
             try:
                 value, end = decoder.raw_decode(text, at)
-            except (ValueError, RecursionError):
+            except (ValueError, RecursionError) as exc:
                 end = None
+                budget -= (exc.pos if isinstance(exc, json.JSONDecodeError) else len(text)) - at
+                if budget < 0:
+                    break
             if end is not None:
                 try:
                     value = lifted(value, found, sentinel)

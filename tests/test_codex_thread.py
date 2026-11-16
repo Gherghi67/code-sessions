@@ -2,6 +2,8 @@
 # ABOUTME: Exercises Codex bootstrap protocol, exact identity, persistence, and cleanup.
 # ABOUTME: Uses an isolated fake server and an optional real Codex no-model smoke test.
 
+import importlib.machinery
+import importlib.util
 import json
 import http.server
 import os
@@ -1128,6 +1130,29 @@ class TransplantTests(HelperFixture):
         self.assertLess(len(crossed), 3 * len(printed))
         self.assertIn("<output 1, exit code 0>", crossed)
         self.assertIn("[output 1, exit code 0]\n", crossed)
+
+    def test_a_part_that_never_closes_is_scanned_in_linear_time(self):
+        # A decode starts at each line that opens a bracket, and a failed one
+        # reads on to where the value broke, so a value that never closes
+        # would be read again from every later line. Python 3.9 stops a deep
+        # value with RecursionError, 3.12 and later read it to the end.
+        loader = importlib.machinery.SourceFileLoader("cs_codex_thread_under_test", str(HELPER))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        failures = []
+
+        class Counting(json.JSONDecoder):
+            def raw_decode(self, *args, **kwargs):
+                try:
+                    return super().raw_decode(*args, **kwargs)
+                except (json.JSONDecodeError, RecursionError):
+                    failures.append(1)
+                    raise
+
+        text = "[\n" * 5000 + json.dumps(command_result("ok", exit_code=0), separators=(",", ":")) + "\n"
+        with patch.object(module.json, "JSONDecoder", Counting):
+            module.codex_tool_text(text, [], "\x00s-{}-x\x00")
+        self.assertLessEqual(len(failures), 10)
 
     def test_only_code_mode_results_are_converted(self):
         # Only code mode's exec and wait answer with a script's header and
