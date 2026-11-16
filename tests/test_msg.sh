@@ -2378,29 +2378,27 @@ _blocks_of_seven_stops() {
     printf '%s' "$blocks"
 }
 
-# The snapshot is read only from a regular file, never through a link, so a
-# process in the session that links mail/woke to a file elsewhere in it would
-# have every Stop read it as empty and write through the link each time. The
-# writer replaces the link instead: the first Stop wakes, and the snapshot it
-# writes is the one the next Stop reads.
-test_stop_wake_replaces_linked_records() {
+# The snapshot is read only from a regular file, never through a link, and the
+# writer leaves a link it finds there to cs_write_atomic, which refuses one that
+# leads out of the session: removing it first would let a link planted after
+# that check be followed out (PR #38 review). So a standing link at mail/woke to
+# a file outside the session is never written through, the scan reads the
+# snapshot as empty each time, and the one message wakes up to the ceiling.
+test_stop_wake_never_writes_a_linked_snapshot_out_of_the_session() {
     "$CS_BIN" -msg receiver "one" >/dev/null 2>&1 || return 1
-    local session="$CS_SESSIONS_ROOT/receiver" mail name
+    local mail outside="$TEST_TMPDIR/outside-woke.txt"
     mail=$(MAILDIR)
-    name=$(FIRST_MSG) || return 1
-    name=${name##*/}
-    printf 'woke target\n' > "$session/woke-target.txt"
-    ln -s "$session/woke-target.txt" "$mail/woke" || return 1
-    assert_eq "1" "$(_blocks_of_seven_stops)" "one unread message wakes one of seven Stops" || return 1
-    assert_eq "woke target" "$(cat "$session/woke-target.txt")" \
-        "the snapshot is not written through its link" || return 1
-    [ -f "$mail/woke" ] && [ ! -L "$mail/woke" ] || { echo "  FAIL: woke is not a regular file"; return 1; }
-    assert_eq "$name" "$(cat "$mail/woke")" "the snapshot written in its place names the message" || return 1
+    printf 'user file\n' > "$outside"
+    ln -s "$outside" "$mail/woke" || return 1
+    assert_eq "2" "$(_blocks_of_seven_stops)" "the message wakes up to the ceiling of 2" || return 1
+    assert_eq "user file" "$(cat "$outside")" \
+        "the file outside the session is never written through the link" || return 1
+    [ -L "$mail/woke" ] || { echo "  FAIL: the link at woke was removed"; return 1; }
 }
 
 # The count is read only from a regular file that is not a link, and anything
-# else at its name reads as the ceiling, so nothing done to the two records
-# can loop the wake past CS_MAIL_WAKE_MAX. Read as no wakes, links at both
+# else at its name reads as the ceiling, so a link or a directory planted there
+# silences the wake rather than looping it. Read as no wakes, links at both
 # names that a process in the session put back after each write would wake
 # every Stop for one message. Here no Stop wakes, the writers never run, and
 # nothing is written through either link.
@@ -2461,7 +2459,7 @@ test_stop_wake_dangling_count_link_reads_as_the_ceiling() {
 run_test test_stop_wake_only_the_lead_wakes
 run_test test_wake_turn_does_not_reset_the_ceiling
 run_test test_stop_wake_stops_at_the_ceiling
-run_test test_stop_wake_replaces_linked_records
+run_test test_stop_wake_never_writes_a_linked_snapshot_out_of_the_session
 run_test test_stop_wake_linked_count_reads_as_the_ceiling
 run_test test_stop_wake_unreadable_count_reads_as_the_ceiling
 run_test test_stop_wake_directory_count_reads_as_the_ceiling

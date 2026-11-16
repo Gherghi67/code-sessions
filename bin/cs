@@ -3750,9 +3750,11 @@ cs_mail_wake_silence() {  # wakes file
     # CS_MAIL_WAKE_MAX. Read as none, it would wake every Stop again: nothing
     # replaces a directory, cs_write_atomic keeps a mode-000 file's mode, and
     # a process in the session can put a link back after each write. Failing
-    # closed bounds every loop by the ceiling whatever happens to the two
-    # records, so a snapshot cs_mail_wake_scan cannot read costs at most that
-    # many wakes between prompts.
+    # closed turns each of those into silence, and a snapshot
+    # cs_mail_wake_scan cannot read costs at most CS_MAIL_WAKE_MAX wakes
+    # between prompts. It is no guard against a process that deletes or
+    # rewrites the count where it can write: Claude keeps both records in the
+    # session's mailbox, Antigravity in cs's 0700 cache.
     if [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; then
         seen=$(<"$1") || seen=$max
     elif [ -e "$1" ] || [ -L "$1" ]; then
