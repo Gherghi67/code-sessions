@@ -493,7 +493,7 @@ $prompt"
         [ -z "$spawn_wait" ] \
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
     fi
-    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet."
+    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
             _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."
@@ -726,12 +726,13 @@ _antigravity_hook_post_tool_use() {  # payload
 
 # The folder that holds the session's mail, printed when the conversation is
 # the one the session is bound to, in the run that holds its lease: a
-# subagent's conversation has an id of its own, and another agy run in the
-# folder holds no lease. Mail git tracks came with a pull, a merge or a
-# checkout, not from a sender on this machine, so none of it is shown then, as
-# under Claude and Codex. The launch refuses an encrypted session, so a
-# .cs/private there came mid-run, maybe as a link out of the session, and no
-# mail is read through it.
+# subagent's conversation has an id of its own, as does one started mid-run
+# with /clear or /new, which no hook payload tells from a subagent's, and
+# another agy run in the folder holds no lease. Mail git tracks came with a
+# pull, a merge or a checkout, not from a sender on this machine, so none of
+# it is shown then, as under Claude and Codex. The launch refuses an
+# encrypted session, so a .cs/private there came mid-run, maybe as a link out
+# of the session, and no mail is read through it.
 _antigravity_mail_dir() {  # conversation_id
     local bound private
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 1

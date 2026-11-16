@@ -39,8 +39,11 @@ setup() {
     # in turn: the first after the prompt's model call, each later one during
     # a continuation.
     # AGY_TRACK_MAIL has git track the mailbox once the run is going, as a
-    # pull could. A run left before any turn (AGY_NO_TURN) fires none. Hook
-    # stdout goes to AGY_HOOK_OUT.
+    # pull could. AGY_CLEARED names a conversation started with /clear once
+    # the Stop loop is over, which gets SessionStart, PreInvocation 0 and a
+    # Stop that ended NO_TOOL_CALL, as agy 1.5.9 was measured to give one,
+    # with its answers in AGY_HOOK_OUT.cleared. A run left before any turn
+    # (AGY_NO_TURN) fires none. Hook stdout goes to AGY_HOOK_OUT.
     cat > "$TEST_TMPDIR/bin/agy" <<'AGY'
 #!/usr/bin/env bash
 # --help lists the flags cs passes, less any named in AGY_HELP_OMIT, on
@@ -84,6 +87,7 @@ done
 hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
 # The answers of the event fired last, for the Stop loop to read.
 last="$AGY_HOOK_OUT.last"
+hook_out="$AGY_HOOK_OUT"
 fire() {  # event, payload
     local cmd
     : > "$last"
@@ -93,7 +97,7 @@ fire() {  # event, payload
     [ "$(jq -r '.plugins.cs.enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" != false ] || return 0
     jq -r --arg e "$1" '.[] | (.[$e] // [])[] | (.hooks // [.])[] | .command' "$hooks" \
         | while IFS= read -r cmd; do
-            printf '%s' "$2" | (cd "${hooks%/*}" && sh -c "$cmd") 2>&1 | tee -a "$AGY_HOOK_OUT" >> "$last"
+            printf '%s' "$2" | (cd "${hooks%/*}" && sh -c "$cmd") 2>&1 | tee -a "$hook_out" >> "$last"
         done
 }
 set -- ${AGY_MAIL_DURING_TURN:-}
@@ -135,6 +139,14 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
         mail_comes "$@"
         [ $# -eq 0 ] || shift
     done
+    if [ -n "${AGY_CLEARED:-}" ]; then
+        hook_out="$AGY_HOOK_OUT.cleared"
+        fire SessionStart "$(payload "$AGY_CLEARED")"
+        fire PreInvocation "$(payload "$AGY_CLEARED" '{"invocationNum": 0}')"
+        fire Stop "$(payload "$AGY_CLEARED" \
+            '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "error": "", "fullyIdle": true, "continuationActive": false}')"
+        hook_out="$AGY_HOOK_OUT"
+    fi
 fi
 if [ -n "${AGY_RAW_SWITCH:-}" ]; then
     printf 'engine=%s\nmode=fresh\nhandoff=2026-11-05-rotate.md\nrun=%s\n' \
@@ -156,7 +168,7 @@ AGY
     export AGY_CLEAN_PATH="$clean"
     export PATH="$TEST_TMPDIR/bin:$clean"
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
-    unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
+    unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -171,7 +183,7 @@ teardown() {
     unset CS_NO_FUNCTION_HOOKS CLAUDE_CODE_BIN CODEX_BIN AGY_SAVED_PATH AGY_CLEAN_PATH
     unset AGY_LOG AGY_ARGV AGY_PWD AGY_ENV AGY_STATE AGY_BIN AGY_EXIT AGY_HELP_OMIT CS_DEFAULT_ENGINE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
-    unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
+    unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset CS_TMUX_BIN AGY_TMUX_LOG
 }
 
@@ -786,7 +798,9 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_output_not_contains "$output" 'Mail and the task queue are not available' \
         "mail works under Antigravity, so the launch no longer calls it unavailable" || return 1
     assert_output_contains "$output" 'The task queue is not available under Antigravity yet' \
-        "the task queue alone is still named unavailable"
+        "the task queue alone is still named unavailable" || return 1
+    assert_output_contains "$output" 'A conversation started with /clear or /new gets no cs mail' \
+        "the launch names the conversations mail does not reach"
 }
 
 test_reopen_resumes_by_id_and_fresh_and_resume_choose_explicitly() {
@@ -1625,6 +1639,25 @@ test_unread_mail_reaches_each_prompt_of_the_bound_conversation() {
     assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT")" "read mail is not shown again"
 }
 
+# A conversation started with /clear or /new once the run has bound has an id
+# of its own, and no hook payload tells it from a subagent's, so it leaves the
+# binding alone and gets neither the digest nor the wake. The user stopped the
+# main turn here, so its Stop leaves the mail unannounced: a wake at the
+# cleared conversation's Stop would be that conversation's own.
+test_a_conversation_started_mid_run_gets_no_mail() {
+    local output mail cleared=77777777-7777-4777-8777-777777777777
+    output=$("$CS_BIN" cleared --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    mail=$(_mailbox cleared)
+    _mail_doc "$mail/new/c1.json" peer 'for the bound conversation'
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_CLEARED=$cleared AGY_STOP_REASON=USER_CANCELED "$CS_BIN" cleared 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq 1 "$(_injected | grep -c 'for the bound conversation')" "the bound conversation's prompt shows the mail" || return 1
+    assert_eq "$(printf '{}\n{}')" "$(cat "$AGY_HOOK_OUT.cleared" 2>/dev/null)" \
+        "the cleared conversation's prompt and Stop both answer {}" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding cleared)" "and the binding stays with the first conversation"
+}
+
 # Mail that comes while a turn runs keeps the turn going once it ends, naming
 # the sender, and the wake is not repeated for the same message. Mail a
 # prompt showed and the turn left unread wakes it once too, as under Claude.
@@ -1971,6 +2004,7 @@ run_test test_a_fresh_start_rebinds_once_it_reaches_the_model
 run_test test_a_later_conversation_in_the_run_never_takes_the_binding
 run_test test_the_hook_acts_only_in_the_run_cs_launched
 run_test test_unread_mail_reaches_each_prompt_of_the_bound_conversation
+run_test test_a_conversation_started_mid_run_gets_no_mail
 run_test test_mail_that_comes_during_a_turn_wakes_it_once
 run_test test_a_wake_names_the_sender_of_a_files_first_document
 run_test test_a_wake_names_five_senders_at_most

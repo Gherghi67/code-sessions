@@ -362,8 +362,15 @@ hook, as it does under Claude and Codex:
   the session folder, which the agent can write. A turn the user stopped, one
   that failed, and one `agy` cut off at a limit end as they are.
 - Only the session's own conversation, in the run that holds its lease, gets
-  mail. A subagent's conversation has an ID of its own. Mail that git tracks came
-  with a pull, a merge or a checkout, so it is neither shown nor woken for.
+  mail. A subagent's conversation has an ID of its own, and so does one started
+  mid-run with `/clear` or `/new`, or opened with `/resume` after the first
+  turn: no hook payload tells it from a subagent's, so it leaves the binding
+  alone and gets neither the digest nor the wake. To have mail reach the
+  conversation you are in, rotate (`/cs:rotate`, then `/exit` and
+  `cs <name> --from-handoff`), or reopen (`/exit`, then `cs <name>`) and pick
+  it with `/resume` before the first turn, which binds it
+  ([Reopening](#reopening)). Mail that git tracks came with a pull, a merge or
+  a checkout, so it is neither shown nor woken for.
 
 `agy` has no event for a conversation sitting idle at its prompt, so mail that
 comes then waits for the next prompt. Claude's idle wake (FileChanged) has no
@@ -397,6 +404,7 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
+| Mail in a conversation started mid-run (`/clear`, `/new`, or `/resume` after the first turn) | Neither the digest nor the wake: the session stays bound to the run's first conversation, since no hook payload tells a new main conversation from a subagent's. Rotate (`/cs:rotate`, then `/exit` and `cs <name> --from-handoff`), or reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
