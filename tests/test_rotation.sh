@@ -2799,6 +2799,45 @@ test_fresh_notice_present_on_clear_without_rebind_env() {
     assert_output_contains "$out" "Fresh Conversation" "clear is a clean break" || return 1
 }
 
+test_claude_restores_saved_context_on_startup_resume_and_clear() {
+    _rot_hook_session "rot-restore"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local source context
+    for source in startup resume clear; do
+        context=$(_start_hook "$UUID_B" "$source" | jq -r '.hookSpecificOutput.additionalContext') || return 1
+        assert_output_contains "$context" '1. .cs/summary.md — read in full' "$source restores summary first" || return 1
+        assert_output_contains "$context" '2. .cs/README.md — read in full' || return 1
+        assert_output_contains "$context" '3. .cs/memory/narrative.alice.md — read your own current narrative in full' || return 1
+        assert_output_contains "$context" 'Skip missing files' || return 1
+        assert_output_contains "$context" "The current user's request is the active task" || return 1
+        assert_output_contains "$context" 'and a teammate narrative only' || return 1
+        assert_output_contains "$context" 'from the line the resume digest names for it' || return 1
+        assert_output_contains "$context" 'grep on demand, never preload' || return 1
+        assert_output_not_contains "$context" 'For prior context, lazily consult as needed' || return 1
+    done
+    context=$(_start_hook "$UUID_B" compact | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_not_contains "$context" '## Restoring session context' 'compaction retains the conversation'
+}
+
+test_claude_rotation_keeps_handoff_priority_while_restoring_context() {
+    _rot_hook_session "rot-restore-handoff"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local context
+    context=$(_start_hook "$UUID_B" clear | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" 'Read .cs/handoffs/2026-07-16-test.md FIRST' || return 1
+    assert_output_contains "$context" '1. .cs/summary.md — read in full' || return 1
+    assert_output_contains "$context" 'handoff FIRST, then read the following files in order' || return 1
+    assert_output_contains "$context" 'A first message carrying its own content takes precedence over the handoff' || return 1
+    assert_output_not_contains "$context" 'Fresh Conversation\|lazily consult as needed' || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-test.md" 'status: consumed' || return 1
+    assert_not_exists "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+}
+
+run_test test_claude_restores_saved_context_on_startup_resume_and_clear
+run_test test_claude_rotation_keeps_handoff_priority_while_restoring_context
+
 # The marker names a basename. A path in it must not reach outside the
 # handoff store — the file it lands on would be rewritten and named to Claude.
 test_marker_with_a_path_is_rejected() {
