@@ -143,7 +143,9 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     local out raw="${TMPDIR:-/tmp}/cs-mod-validate.$$"
     env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" > "$raw" 2>&1
     local status=$?
-    out="$(sed 's/\x1b\[[0-9;]*m//g' "$raw")"; rm -f "$raw"
+    # Newer validators annotate default matcher keys; the selector inventory
+    # itself is still checked in full below.
+    out="$(sed 's/\x1b\[[0-9;]*m//g; s/ (default matcher key: [^)]*)//g' "$raw")"; rm -f "$raw"
     assert_eq "0" "$status" "validate exits 0" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Validation passed" "manifest and hooks validate" || return 1
     # A Claude Code from before function hooks validates the manifest and
@@ -156,7 +158,9 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     assert_output_contains "$out" "gating hook without .catch: command.run{command=cs}" "/cs is a gate: it answers an argument itself and hands bare /cs to the cs panel's hook" || return 1
     assert_output_not_contains "$out" '$.prompt.fill' "nothing fills the composer any more" || return 1
     assert_output_contains "$out" 'env reads: CLAUDE_CONFIG_DIR, CS_BAND_BARS, CS_BAND_PROMPT, CS_BAND_PROMPTS, CS_BIN, CS_FILTER_CHAT, CS_ROTATE_BUTTON_CTX, CS_ROTATE_FORCE_CTX, CS_RUN_ID, CS_SESSIONS_ROOT, CS_STATUSLINE_CTX_WARN, CS_TERM_BG_RGB, CS_TERM_THEME, CS_TRANSCRIPTS_DIR, HOME, XDG_CONFIG_HOME' "the cs path, the three prompt-bar settings, the two thresholds, the run id a pending switch is checked against, the bar's warn band, the measured background and the theme (the count's amber pivot), where keybindings.json lives (the band spells the keys' chords where they draw on it), the sessions root and where transcripts live (this claude's own config dir) are read from the environment; the caps consent is not" || return 1
-    assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart), $.session.compact (via offerToStart), $.session.cwd' "/queue runs cs from its own hook and its start offer, which alone submits a prompt and compacts; the rotation asks cs -vet-session before it arms; the /finish watch runs kill -0 to ask after cs's pid; the footer asks /bin/sh for its Claude Code's pid" || return 1
+    # Keep these checks separate: newer validators wrap between calls rows.
+    assert_output_contains "$out" '$.process.run, $.prompt.submit (via offerToStart)' "/queue runs cs from its own hook and its start offer, which alone submits a prompt; the rotation asks cs -vet-session before it arms; the /finish watch runs kill -0 to ask after cs's pid; the footer asks /bin/sh for its Claude Code's pid" || return 1
+    assert_output_contains "$out" '$.session.compact (via offerToStart), $.session.cwd' "the start offer compacts, and the mod reads the session cwd" || return 1
     assert_output_contains "$out" '$.command.list, $.command.register, $.command.run (via askToWrap, clearAndContinue, exitAndContinue, noteConversation, pressFinish, rotate)' "the band discovers commands; the wrap, clear (a pending switch's /exit among them), finish and rotate keys and conversation colour keep their command routes" || return 1
     assert_output_contains "$out" '$.clock.after, $.clock.every (via changeFooter, readFeatures, startCountdown, watchFinish), $.clock.now (via gateWord)' "the forced /rotate, the next-step toast and the rail's and the footer's redraws are one-shot timers, the grace, the /finish watch, the idle features read and the footer's read of the status line's width tickers, and the gate word alone reads the time" || return 1
     local src="$MOD/hooks/register.tsx" scroll_lines jump_range filter_chat_range pid_range
