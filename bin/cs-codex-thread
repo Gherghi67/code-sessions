@@ -391,26 +391,48 @@ def compact_json(value):
 def codex_tool_text(text, found, sentinel):
     # Code mode prints what a script passes to text(), as JSON when it is not
     # a string, each call its own part, so a command run from a script arrives
-    # as exec_command's result, its output one escaped string. The results in
-    # a part go to found, and a structure around them comes back as compact
-    # JSON with sentinel in place of each. A part that is one result, other
-    # text, JSON holding none and a value too deep to walk give None, and
-    # found keeps no result of the last three: they cross as written.
-    stripped = text.strip()
-    if stripped[:1] not in ("{", "["):
+    # as exec_command's result, its output one escaped string. A part can
+    # hold other text too: Codex puts its truncation warning before results
+    # printed one a line. A JSON value starting the part or a line in it, and
+    # holding results, sends them to found and comes back as (start, end,
+    # skeleton): skeleton is the structure around them as compact JSON with
+    # sentinel in place of each, or None when the value is one result. The
+    # part comes back as those and the text between them, kept as written;
+    # with no such value it gives None. JSON holding no result, and a value
+    # too deep to walk, leave found as it was and stay in the text.
+    decoder, pieces, done = json.JSONDecoder(), [], 0
+    at = len(text) - len(text.lstrip())
+    while at < len(text):
+        if text[at] in "{[":
+            start = len(found)
+            try:
+                value, end = decoder.raw_decode(text, at)
+            except (ValueError, RecursionError):
+                end = None
+            if end is not None:
+                try:
+                    value = lifted(value, found, sentinel)
+                    if len(found) > start:
+                        if isinstance(value, str):
+                            skeleton = None
+                        elif isinstance(value, list):
+                            # Promise.allSettled's array, say: an entry a line.
+                            skeleton = "[" + ",\n ".join(compact_json(item) for item in value) + "]"
+                        else:
+                            skeleton = compact_json(value)
+                        pieces += [text[done:at], (start, len(found), skeleton)]
+                        done = end
+                except (ValueError, RecursionError):
+                    del found[start:]
+                # Nothing inside a value is looked at again.
+                at = end
+        newline = text.find("\n", at)
+        if newline < 0:
+            break
+        at = newline + 1
+    if not pieces:
         return None
-    start = len(found)
-    try:
-        value = lifted(json.loads(stripped), found, sentinel)
-        if len(found) == start or isinstance(value, str):
-            return None
-        if isinstance(value, list):
-            # Promise.allSettled's array, say: an entry a line.
-            return "[" + ",\n ".join(compact_json(item) for item in value) + "]"
-        return compact_json(value)
-    except (ValueError, RecursionError):
-        del found[start:]
-        return None
+    return pieces + [text[done:]]
 
 
 def output_block(number, output, status):
@@ -422,15 +444,13 @@ def output_block(number, output, status):
 def codex_script_output(texts):
     """The parts a code-mode script printed, each command result in them
     carried as its output. One result printed on its own crosses as just its
-    output, marked unless it exited 0. Otherwise each part holding results
-    crosses as its structure's skeleton, each result in it a placeholder
-    numbered across the tool result, then each output as its own block."""
+    output, marked unless it exited 0. Otherwise each printed value holding
+    results crosses as its structure's skeleton, each result in it a
+    placeholder numbered across the tool result, then each output as its own
+    block. Text around those values crosses as written."""
     sentinel = "\x00cs-output-{}-" + uuid.uuid4().hex + "\x00"
-    found, parts = [], []
-    for text in texts:
-        start = len(found)
-        skeleton = codex_tool_text(text, found, sentinel)
-        parts.append((text, start, len(found), skeleton))
+    found = []
+    parts = [(text, codex_tool_text(text, found, sentinel)) for text in texts]
     head, tail = json.dumps(sentinel, ensure_ascii=False).split("{}")
     placed = re.compile(re.escape(head) + r"(\d+)" + re.escape(tail))
 
@@ -439,11 +459,7 @@ def codex_script_output(texts):
         status = found[number - 1][1]
         return "<output {}".format(number) + (", " + status if status else "") + ">"
 
-    converted = []
-    for text, start, end, skeleton in parts:
-        if start == end:
-            converted.append(text)
-            continue
+    def crossed(start, end, skeleton):
         if len(found) == 1 and skeleton is None:
             output, status = found[0]
             if status in ("", "exit code 0"):
@@ -454,8 +470,11 @@ def codex_script_output(texts):
             blocks = "\n".join(output_block(number + 1, *found[number]) for number in range(start, end))
             result = blocks if skeleton is None else placed.sub(placeholder, skeleton) + "\n" + blocks
         # Decoded again, an unpaired escape is a lone surrogate no rollout line holds; the transcript is strict UTF-8.
-        converted.append(LONE_SURROGATE.sub("\ufffd", result))
-    return converted
+        return LONE_SURROGATE.sub("\ufffd", result)
+
+    return [text if pieces is None else "".join(piece if isinstance(piece, str) else crossed(*piece)
+                                                for piece in pieces)
+            for text, pieces in parts]
 
 
 def codex_output(output, code_mode):

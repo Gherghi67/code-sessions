@@ -133,8 +133,10 @@ command's own output, marked `[exit code N]` when not 0 or
 results, or a structure around one (`Promise.allSettled`'s array, say), the
 structure crosses as compact JSON with each result replaced by
 `<output k, status>`, followed by each output under its own
-`[output k, status]` line. The result's chunk ID, wall time and token count
-stay behind, and all of this happens before the tool-result cut; other tools'
+`[output k, status]` line. Results that follow other text in a part, such as
+Codex's truncation warning, convert the same way, and that text stays. The
+result's chunk ID, wall time and token count stay behind, and all of this
+happens before the tool-result cut; other tools'
 output, and JSON holding no command result, cross as written. A sub-agent's
 final answer crosses cut like a tool result; its other messages are encrypted
 and stay. After a Codex compaction only the prompts Codex kept cross: its

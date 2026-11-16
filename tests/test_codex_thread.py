@@ -1009,6 +1009,39 @@ class TransplantTests(HelperFixture):
         ])
         self.assertNotRegex(agent, r"(?m)^[ \t]+$")
 
+    def test_command_results_after_other_text_in_a_part_convert(self):
+        # Codex puts its truncation warning in the part that holds the
+        # results, which follow it one a line, and a script can print text
+        # after a result in the same part: each result still converts, and
+        # the text around it stays as written. The longest outputs are the
+        # ones Codex truncates, so they must not cross as escaped JSON.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        warning = "Warning: truncated output (original token count: 12345)\nTotal output lines: 300\n\n"
+        long_warning = "Warning: truncated output (original token count: 99999)\nTotal output lines: 900\n\n"
+        printed = [
+            warning + compact(command_result("first", exit_code=0)) + "\n"
+            + compact(command_result("boom", exit_code=2)) + "\n",
+            compact(command_result("x", exit_code=0)) + "\ndone",
+            long_warning + compact(command_result("L" * 6000, exit_code=0)),
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, text in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, text))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed[:2], [
+            top + warning + "[output 1, exit code 0]\nfirst\n\n[output 2, exit code 2]\nboom\n\n",
+            top + "x\ndone",
+        ])
+        self.assertTrue(crossed[2].startswith(top + long_warning + "L" * 100), crossed[2][:300])
+        self.assertNotIn("chunk_id", agent)
+
     def test_deep_nesting_costs_no_more_than_its_size(self):
         # Rendering a structure once re-split and re-indented everything
         # beneath each level; its skeleton and blocks now grow with the part.
