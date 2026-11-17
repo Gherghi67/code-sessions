@@ -247,6 +247,11 @@ BACKTICKS = re.compile(r"`+")
 # Levels of a tool input laid out as lines; deeper values cross as JSON, so a
 # nested input costs its own size plus at most two spaces a level a line.
 READABLE_DEPTH = 32
+# A string that, written bare, would read as a JSON number, literal, string,
+# object or list, or as a block marker.
+NOT_BARE = re.compile(r'(?:-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null|NaN|-?Infinity|\|[-+]?)\Z|[\[{"]')
+# Control characters JSON escapes, but for the tab and the newline a laid-out string keeps.
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
 ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
 # Claude Code's own label for messages no model produced.
 CARRIED_MODEL = "<synthetic>"
@@ -705,19 +710,38 @@ def fenced(text):
     return fence + "\n" + text + "\n" + fence
 
 
-def scalar_lines(value):
-    # A string as its lines, without one final newline; anything else as JSON.
-    if isinstance(value, str):
-        return (value[:-1] if value.endswith("\n") else value).split("\n")
-    return [json.dumps(value, ensure_ascii=False)]
+def bare(text):
+    # A string that reads as itself on a line: not empty, one line, no edge
+    # spaces or control characters, and not another JSON value or a | marker.
+    return (text != "" and text == text.strip() and "\n" not in text
+            and not CONTROL.search(text) and not NOT_BARE.match(text))
+
+
+def one_line(value):
+    return value if isinstance(value, str) and bare(value) else json.dumps(value, ensure_ascii=False)
+
+
+def field_name(key):
+    # Quoted too when it could pass for a list entry or hold a second "key:".
+    return key if bare(key) and ":" not in key and not key.startswith("-") else json.dumps(key, ensure_ascii=False)
+
+
+def block(text):
+    # A string of several lines, written under a | marker: | for one final
+    # newline, |- for none and |+ for more, which then show as blank lines.
+    if "\n" not in text or not text.strip() or CONTROL.search(text):
+        return None
+    ends = len(text) - len(text.rstrip("\n"))
+    return "|" + ("-" if ends == 0 else "" if ends == 1 else "+"), (text[:-1] if ends else text).split("\n")
 
 
 def readable_lines(value):
-    """A tool input as lines a person reads. An object has a "key: value" line
-    for each field and a list a "- item" line for each entry. A value that
-    takes several lines starts under its key or on its dash, indented two
-    spaces. Empty objects and lists, other values and anything nested deeper
-    than READABLE_DEPTH are written as JSON."""
+    """A tool input as lines a person reads, and that read back to one input.
+    An object has a "key: value" line for each field and a list a "- item"
+    line for each entry. A nested value starts under its key or on its dash,
+    and a string of several lines under a | marker, indented two spaces. Any
+    other string that would not read as itself is quoted as JSON, as are the
+    other values and anything nested deeper than READABLE_DEPTH."""
     lines = []
 
     def nested(item, depth):
@@ -726,7 +750,7 @@ def readable_lines(value):
     def lay_out(container, first, rest, depth):
         # Each line is written once: the first starts with first, the rest with rest.
         if isinstance(container, dict):
-            entries = [(str(key) + ":", item) for key, item in container.items()]
+            entries = [(field_name(key) + ":", item) for key, item in container.items()]
         else:
             entries = [("-", item) for item in container]
         for index, (head, item) in enumerate(entries):
@@ -739,18 +763,17 @@ def readable_lines(value):
                     lines.append(prefix + head)
                     lay_out(item, rest + "  ", rest + "  ", depth + 1)
                 continue
-            body = scalar_lines(item)
-            if head == "-" or len(body) == 1:
-                lines.append(prefix + head + (" " + body[0] if body[0] else ""))
-                body = body[1:]
+            several = block(item) if isinstance(item, str) else None
+            if several:
+                lines.append(prefix + head + " " + several[0])
+                lines.extend(rest + "  " + line if line else "" for line in several[1])
             else:
-                lines.append(prefix + head)
-            lines.extend(rest + "  " + line if line else "" for line in body)
+                lines.append(prefix + head + " " + one_line(item))
 
     if nested(value, 1):
         lay_out(value, "", "", 1)
         return lines
-    return scalar_lines(value)
+    return [one_line(value)]
 
 
 def claude_tool_call(name, value):

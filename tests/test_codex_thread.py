@@ -1720,13 +1720,13 @@ class TransplantTests(HelperFixture):
         agent = self.carried_model_items()[2]['content'][0]['text']
         self.assertEqual(agent, "\n\n".join([
             "Looking.",
-            "[tool call: Bash]\n```\ncommand:\n  cat notes.md\n  printf 'a\\\\tb'\ndescription: Read notes\n```",
+            "[tool call: Bash]\n```\ncommand: |-\n  cat notes.md\n  printf 'a\\\\tb'\ndescription: Read notes\n```",
             "[tool result]\n````\n# Notes\n- one\nuse ```sh\\\\ here\n````",
-            "[tool call: Edit]\n```\nfile_path: app.py\nold_string:\n  def f():\n\n      return 1\n"
-            "new_string:\nreplace_all: false\n```",
+            "[tool call: Edit]\n```\nfile_path: app.py\nold_string: |\n  def f():\n\n      return 1\n"
+            "new_string: \"\"\nreplace_all: false\n```",
             "[tool result]",
-            "[tool call: TodoWrite]\n```\ntodos:\n  - content:\n      Fix\n      it\n    status: done\n"
-            "  - plain\n  -\nmeta: {}\nn: 2\n```",
+            "[tool call: TodoWrite]\n```\ntodos:\n  - content: |-\n      Fix\n      it\n    status: done\n"
+            "  - plain\n  - \"\"\nmeta: {}\nn: 2\n```",
             "[tool error]\n```\n" + "y" * 40 + "\n```\n[cs cut the remaining 5 characters]",
             "[tool call: EnterPlanMode]",
             "[tool result]\n```\nplanning\n```",
@@ -1756,6 +1756,26 @@ class TransplantTests(HelperFixture):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-500:])
         self.assertLess(json.loads(result.stdout)["characters"], 300000)
+
+    def test_a_claude_tool_input_reads_back_to_one_input(self):
+        # Codex's model reads the laid-out input too, so two inputs must never
+        # share a layout: a final newline, a type or a nesting has to show.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        pairs = [("x\n", "x"), ("x\n\n", "x\n"), ("", "\n"), (" x", "x"), (2, "2"), (True, "true"),
+                 (None, "null"), ({}, "{}"), ([], "[]"), ("|", "|-"), ({"a": "1", "b": "2"}, "a: 1\nb: 2"),
+                 (["a", "b"], "- a\n- b"), (["x\n"], ["x"]), ("a\rb", "a\nb")]
+        for left, right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertNotEqual(helper['claude_tool_call']('X', {"v": left}),
+                                    helper['claude_tool_call']('X', {"v": right}))
+        self.assertEqual(helper['claude_tool_call']('X', {
+            "plain": "a b", "clip": "two\nlines\n", "strip": "two\nlines", "keep": "two\n\n", "empty": "",
+            "space": "\n", "number": "2", "literal": "{}", "control": "a\x1bb", "k\ney": 1, "": "",
+            "list": ["x\ny", "", "-"]}),
+            '[tool call: X]\n```\nplain: a b\nclip: |\n  two\n  lines\nstrip: |-\n  two\n  lines\n'
+            'keep: |+\n  two\n\nempty: ""\nspace: "\\n"\nnumber: "2"\nliteral: "{}"\ncontrol: "a\\u001bb"\n'
+            '"k\\ney": 1\n"": ""\nlist:\n  - |-\n    x\n    y\n  - ""\n  - -\n```')
+        self.assertEqual(helper['claude_tool_call']('X', "\n"), '[tool call: X]\n```\n"\\n"\n```')
 
     def test_a_claude_tool_input_is_laid_out_to_a_fixed_depth(self):
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
