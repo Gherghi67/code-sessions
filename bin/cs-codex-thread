@@ -240,9 +240,23 @@ CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell 
 CODEX_CODE_MODE = frozenset(("exec", "wait"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
+LEADING_BLANK_LINES = re.compile(r"\A\s*\n")
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>")
+BACKTICKS = re.compile(r"`+")
+# CommonMark's fence lines: an opening one with its info string (a backtick
+# fence's holds no backtick), and a closing one, indented up to three spaces.
+FENCE_OPEN = re.compile(r"(`{3,}|~{3,})(.*)")
+FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*\Z")
+# Levels of a tool input laid out as lines; deeper values cross as JSON, so a
+# nested input costs its own size plus at most two spaces a level a line.
+READABLE_DEPTH = 32
+# A string that, written bare, would read as a JSON number, literal, string,
+# object or list, or as a block marker.
+NOT_BARE = re.compile(r'(?:-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null|NaN|-?Infinity|\|[-+]?)\Z|[\[{"]')
+# Control characters JSON escapes, but for the tab and the newline a laid-out string keeps.
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
 ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
 # Claude Code's own label for messages no model produced.
 CARRIED_MODEL = "<synthetic>"
@@ -250,6 +264,28 @@ CARRIED_MODEL = "<synthetic>"
 # carried conversation is carried on. Only the newest note goes with it.
 CARRIED_NOTE = re.compile(r"\A\s*\[cs carried this conversation over from [^\]]*\]\s*")
 DEFAULT_CLAUDE_VERSION = "2.1.0"
+
+
+def open_block(text, closer=None):
+    """The line that closes the block text leaves open, starting inside the
+    block closer closes: a fence as long as the one that opened it, --> for
+    an HTML comment, or None. Only blocks opened at the left margin count: a
+    list item's or a quote's block ends at the next line that starts there."""
+    for line in text.split("\n"):
+        if closer is None:
+            opened = FENCE_OPEN.match(line)
+            if line.startswith("<!--"):
+                closer = None if "-->" in line[4:] else "-->"
+            elif opened and not (opened.group(1)[0] == "`" and "`" in opened.group(2)):
+                closer = opened.group(1)
+        elif closer == "-->":
+            if "-->" in line:
+                closer = None
+        else:
+            shut = FENCE_CLOSE.match(line)
+            if shut and shut.group(1)[0] == closer[0] and len(shut.group(1)) >= len(closer):
+                closer = None
+    return closer
 
 
 class History:
@@ -262,14 +298,24 @@ class History:
         # outputs whose calls came before it.
         self.calls = {}
 
-    def add(self, role, text, timestamp=None):
+    def add(self, role, text, timestamp=None, closed=False):
+        # A closed part is cs's own markdown, every block in it closed. A
+        # message is one markdown document, so a block the text before it
+        # left open is closed first, or the two would pair up.
         if not isinstance(text, str) or not text.strip():
             return
         last = self.messages[-1] if self.messages else None
-        if last is not None and last["role"] == role:
-            last["parts"].append(text)
-        else:
-            self.messages.append({"role": role, "parts": [text], "timestamp": timestamp})
+        if last is None or last["role"] != role:
+            last = {"role": role, "parts": [], "timestamp": timestamp, "closed": 0}
+            self.messages.append(last)
+        if closed:
+            closer = None
+            for part in last["parts"][last["closed"]:]:
+                closer = open_block(part, closer)
+            if closer:
+                text = closer + "\n" + text
+            last["closed"] = len(last["parts"]) + 1
+        last["parts"].append(text)
 
     def reset(self):
         self.messages = []
@@ -279,10 +325,13 @@ class History:
                 for m in self.messages]
 
 
+def cut_note(text, limit):
+    # limit is --clip, which main keeps at one character or more.
+    return "\n[cs cut the remaining {:,} characters]".format(len(text) - limit) if len(text) > limit else ""
+
+
 def clipped(text, limit):
-    if limit and len(text) > limit:
-        return text[:limit] + "\n[cs cut the remaining {:,} characters]".format(len(text) - limit)
-    return text
+    return text[:limit] + cut_note(text, limit)
 
 
 def tool_call(name, body):
@@ -679,14 +728,115 @@ def claude_blocks(content):
 
 
 def claude_result_text(content):
-    # Claude Code's reminders ride on tool results; they were never the tool's.
-    parts = []
+    # A result's text and how many images it held. Claude Code's reminders
+    # ride on tool results; they were never the tool's.
+    parts, images = [], 0
     for block in claude_blocks(content):
         if block.get("type") == "text" and isinstance(block.get("text"), str):
-            parts.append(SYSTEM_REMINDER.sub("", block["text"]).strip())
+            # Blank lines go, but not the first line's indent: a fence shows it.
+            parts.append(LEADING_BLANK_LINES.sub("", SYSTEM_REMINDER.sub("", block["text"])).rstrip())
         elif block.get("type") == "image":
-            parts.append("[image]")
-    return "\n".join(part for part in parts if part)
+            images += 1
+    return "\n".join(part for part in parts if part), images
+
+
+def fenced(text):
+    # Codex's transcript renders an agent message as markdown: a result's
+    # "# " lines turn into headings, "- " lines into bullets, and "\\" loses
+    # a backslash. A code fence shows its text as written. A fence closes at
+    # a run of backticks as long as it, so it outruns every run inside.
+    longest = max((len(run) for run in BACKTICKS.findall(text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return fence + "\n" + text + "\n" + fence
+
+
+def bare(text):
+    # A string that reads as itself on a line: not empty, one line, no edge
+    # spaces or control characters, and not another JSON value or a | marker.
+    return (text != "" and text == text.strip() and "\n" not in text
+            and not CONTROL.search(text) and not NOT_BARE.match(text))
+
+
+def one_line(value):
+    return value if isinstance(value, str) and bare(value) else json.dumps(value, ensure_ascii=False)
+
+
+def field_name(key):
+    # Quoted too when it could pass for a list entry or hold a second "key:".
+    return key if bare(key) and ":" not in key and not key.startswith("-") else json.dumps(key, ensure_ascii=False)
+
+
+def block(text):
+    # A string of several lines, written under a | marker: | for one final
+    # newline, |- for none and |+ for more, which then show as blank lines.
+    if "\n" not in text or not text.strip() or CONTROL.search(text):
+        return None
+    ends = len(text) - len(text.rstrip("\n"))
+    return "|" + ("-" if ends == 0 else "" if ends == 1 else "+"), (text[:-1] if ends else text).split("\n")
+
+
+def readable_lines(value):
+    """A tool input as lines a person reads, and that read back to one input.
+    An object has a "key: value" line for each field and a list a "- item"
+    line for each entry. A nested value starts under its key or on its dash,
+    and a string of several lines under a | marker, indented two spaces. Any
+    other string that would not read as itself is quoted as JSON, as are the
+    other values and anything nested deeper than READABLE_DEPTH."""
+    lines = []
+
+    def nested(item, depth):
+        return isinstance(item, (dict, list)) and bool(item) and depth <= READABLE_DEPTH
+
+    def lay_out(container, first, rest, depth):
+        # Each line is written once: the first starts with first, the rest with rest.
+        if isinstance(container, dict):
+            entries = [(field_name(key) + ":", item) for key, item in container.items()]
+        else:
+            entries = [("-", item) for item in container]
+        for index, (head, item) in enumerate(entries):
+            prefix = first if index == 0 else rest
+            if nested(item, depth + 1):
+                # A list entry starts on its dash, a field on the line under its name.
+                if head == "-":
+                    lay_out(item, prefix + "- ", rest + "  ", depth + 1)
+                else:
+                    lines.append(prefix + head)
+                    lay_out(item, rest + "  ", rest + "  ", depth + 1)
+                continue
+            several = block(item) if isinstance(item, str) else None
+            if several:
+                lines.append(prefix + head + " " + several[0])
+                lines.extend(rest + "  " + line if line else "" for line in several[1])
+            else:
+                lines.append(prefix + head + " " + one_line(item))
+
+    if nested(value, 1):
+        lay_out(value, "", "", 1)
+        return lines
+    return [one_line(value)]
+
+
+def claude_tool_call(name, value):
+    # Claude's tool input is a JSON object. Written as JSON, a multi-line
+    # command or edit shows as one line of literal \n in Codex's transcript.
+    label = name if isinstance(name, str) and name else "tool"
+    head = "[tool call: " + label + "]"
+    if value is None or value in ({}, "", []):
+        return head
+    try:
+        body = "\n".join(readable_lines(value))
+    except RecursionError:
+        # json.loads read it, so only json.dumps from a deeper stack gets here.
+        return head + "\n[cs left out this input: it is nested too deeply to show]"
+    return head + "\n" + fenced(body)
+
+
+def claude_tool_result(text, images, limit, failed=False):
+    # The cut note and the image markers are cs's, so they follow the fence.
+    head = "[tool error]" if failed else "[tool result]"
+    if text:
+        head += "\n" + fenced(text[:limit]) + cut_note(text, limit)
+    return head + "\n[image]" * images
 
 
 def claude_user_text(text):
@@ -762,7 +912,7 @@ def read_claude(path, limit):
         for line in handle:
             try:
                 record = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if isinstance(record, dict):
                 records.append(record)
@@ -779,15 +929,17 @@ def read_claude(path, limit):
                 if kind == "text" and isinstance(block.get("text"), str):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
-                    history.add("assistant", tool_result(claude_result_text(block.get("content")), limit,
-                                                         block.get("is_error") is True), stamp)
+                    history.add("assistant", claude_tool_result(*claude_result_text(block.get("content")), limit,
+                                                                failed=block.get("is_error") is True),
+                                stamp, closed=True)
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
             elif record.get("type") == "assistant":
                 if kind == "text":
                     history.add("assistant", block.get("text"), stamp)
                 elif kind == "tool_use":
-                    history.add("assistant", tool_call(block.get("name"), block.get("input")), stamp)
+                    history.add("assistant", claude_tool_call(block.get("name"), block.get("input")), stamp,
+                                closed=True)
                 # Thinking is signed for the model that wrote it and stays behind.
     return history.export()
 
