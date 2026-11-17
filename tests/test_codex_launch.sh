@@ -849,28 +849,47 @@ test_a_context_link_to_a_directory_stops_the_open() {
     assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
 }
 
-# A link swapped in after the check cannot be staged, so the rename itself is
-# tested: it replaces a link at the destination rather than moving the file
-# into the directory the link points to, and fails on a directory.
-test_the_rename_into_place_never_follows_the_destination() {
-    local dir="$TEST_TMPDIR/rename" status=0
-    mkdir -p "$dir/outside"
-    printf 'context' > "$dir/source"
+# A link swapped in for the temp file after the check cannot be staged, so the
+# writer is tested where it can be: a link or a non-file at the destination is
+# refused, named, and nothing reaches where it points.
+test_the_write_into_place_refuses_a_link_to_a_file() {
+    local dir="$TEST_TMPDIR/write" output status=0
+    mkdir -p "$dir"
+    printf 'precious' > "$dir/outside"
     ln -s "$dir/outside" "$dir/destination"
-    _codex_rename_into_place "$dir/source" "$dir/destination" || status=$?
-    assert_eq 0 "$status" "the rename over a link failed" || return 1
+    output=$(printf 'context' | _codex_write_into_place "$dir/destination" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the write through a link to a file succeeded"; return 1; }
+    assert_output_contains "$output" "$dir/destination is a link or not a regular file; cs does not write through it." \
+        "names the path" || return 1
+    assert_eq precious "$(cat "$dir/outside")" "the link's target is untouched" || return 1
+    [ -L "$dir/destination" ] || { echo "  FAIL: the link was replaced"; return 1; }
+    assert_eq "$(printf 'destination\noutside')" "$(ls -A "$dir")" "no temp file is left beside it" || return 1
+}
+
+test_the_write_into_place_refuses_a_link_to_a_directory() {
+    local dir="$TEST_TMPDIR/write" output status=0
+    mkdir -p "$dir/outside"
+    ln -s "$dir/outside" "$dir/destination"
+    output=$(printf 'context' | _codex_write_into_place "$dir/destination" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the write through a link to a directory succeeded"; return 1; }
+    assert_output_contains "$output" "$dir/destination is a link or not a regular file; cs does not write through it." \
+        "names the path" || return 1
+    assert_eq '' "$(ls -A "$dir/outside")" "nothing lands in the link's directory" || return 1
+    assert_eq "$(printf 'destination\noutside')" "$(ls -A "$dir")" "no temp file is left beside it" || return 1
+}
+
+# A missing destination is written with the content on stdin, trailing newlines
+# kept, readable by the owner alone, and no temp file is left beside it.
+test_the_write_into_place_writes_a_new_file() {
+    local dir="$TEST_TMPDIR/write" status=0
+    mkdir -p "$dir"
+    printf 'context\n\n' | _codex_write_into_place "$dir/destination" || status=$?
+    assert_eq 0 "$status" "the write failed" || return 1
     [ -f "$dir/destination" ] && [ ! -L "$dir/destination" ] \
         || { echo "  FAIL: the destination is not a regular file"; return 1; }
-    assert_eq context "$(cat "$dir/destination")" "the destination holds the source" || return 1
-    assert_eq '' "$(ls -A "$dir/outside")" "nothing lands in the link's directory" || return 1
-    assert_not_exists "$dir/source" "the source is moved" || return 1
-    mkdir "$dir/a directory"
-    printf 'context' > "$dir/source"
-    status=0
-    _codex_rename_into_place "$dir/source" "$dir/a directory" 2>/dev/null || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: the rename onto a directory succeeded"; return 1; }
-    assert_eq '' "$(ls -A "$dir/a directory")" "the directory is unchanged" || return 1
-    assert_not_exists "$dir/source" "a failed rename removes the source" || return 1
+    assert_eq "$(printf 'context\n\nx')" "$(cat "$dir/destination"; printf x)" "the destination holds stdin" || return 1
+    assert_eq 600 "$(_file_mode "$dir/destination")" "the file is private" || return 1
+    assert_eq destination "$(ls -A "$dir")" "no temp file is left beside it" || return 1
 }
 
 # The rotation profile lives in CODEX_HOME, the vault home for an encrypted
@@ -1803,7 +1822,9 @@ run_test test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff
 run_test test_the_context_write_ignores_a_planted_temp_link
 run_test test_a_linked_context_file_stops_the_open
 run_test test_a_context_link_to_a_directory_stops_the_open
-run_test test_the_rename_into_place_never_follows_the_destination
+run_test test_the_write_into_place_refuses_a_link_to_a_file
+run_test test_the_write_into_place_refuses_a_link_to_a_directory
+run_test test_the_write_into_place_writes_a_new_file
 run_test test_a_linked_rotation_profile_stops_the_open
 run_test test_mismatched_refresh_rejected
 run_test test_cli_status_and_lock_cleanup

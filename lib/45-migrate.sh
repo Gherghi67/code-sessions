@@ -275,8 +275,8 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
 # and cs -encrypt moves each into the vault, except the Codex context
 # (codex-instructions.md), a copy it deletes first. The temp files a launch
-# interrupted while it rendered that context leaves beside it
-# (.codex-instructions.XXXXXX, or an older cs's codex-instructions.md.tmp.<pid>)
+# interrupted while it wrote that context leaves beside it
+# (.codex-instructions.*, or an older cs's codex-instructions.md.tmp.<pid>)
 # are matched by pattern apart from this list, and treated the same way.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot memory-archive.snapshot mail
     queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating

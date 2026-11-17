@@ -37,8 +37,8 @@ _encrypt_refuse() {  # session_name
         && [ ! -f "$meta/local/codex-instructions.md" ]; then
         error "$name: .cs/local/codex-instructions.md is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
     fi
-    # So are the temp files a launch interrupted while it rendered the context
-    # left beside it (.codex-instructions.XXXXXX, or an older cs's
+    # So are the temp files a launch interrupted while it wrote the context
+    # left beside it (.codex-instructions.*, or an older cs's
     # codex-instructions.md.tmp.<pid>).
     for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
         if { [ -e "$leftover" ] || [ -L "$leftover" ]; } && [ ! -f "$leftover" ]; then

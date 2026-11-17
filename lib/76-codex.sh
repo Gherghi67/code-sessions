@@ -12,21 +12,22 @@ _codex_rotation_profile_path() {  # session_dir
 
 # CODEX_HOME is the vault home for an encrypted session, which the agent can
 # write while cs's profile is off: a link or a non-file at the profile's name
-# stops the launch, and the profile is renamed into place, never through it.
+# stops the launch, and _codex_write_into_place writes the profile, never
+# through a link.
 _codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
-    local profile tmp
+    local profile content
     profile=$(_codex_rotation_profile_path "$1") || return 1
     if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -f "$profile" ]; }; then
         _codex_launch_error "$profile is a link or not a regular file; cs does not write the Codex model profile through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
     mkdir -p "$(dirname "$profile")" || return 1
-    tmp=$(mktemp "$profile.XXXXXX") || return 1
-    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp"; then
-        rm -f "$tmp"
-        return 1
-    fi
-    _codex_rename_into_place "$tmp" "$profile" || return 1
+    # The x keeps the last newline through $( ); a failed jq writes nothing.
+    content=$(
+        printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' || exit 1
+        printf x
+    ) || return 1
+    printf '%s' "${content%x}" | _codex_write_into_place "$profile" || return 1
     CS_CODEX_ROTATION_PROFILE=$profile
 }
 
@@ -62,13 +63,37 @@ _codex_launch_error() {  # message
     return 1
 }
 
-# Replaces the destination itself with the source, by rename(2): a link at the
-# destination is replaced, never followed, and a directory there fails. mv
-# would move the source into the directory a link swapped in there points to.
-_codex_rename_into_place() {  # source, destination
-    python3 -I -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$1" "$2" 2>/dev/null && return 0
-    rm -f "$1" 2>/dev/null
-    return 1
+# Writes stdin to the destination, in a folder the agent can write. The temp
+# file beside it is made by mkstemp and written through the descriptor that
+# made it, never opened again by name, so a link swapped in for it receives
+# nothing; os.replace (rename(2)) then replaces the destination itself, never
+# following a link there. A link or a non-file already at the destination is
+# refused, named. The file keeps mkstemp's 0600 mode.
+_codex_write_into_place() {  # destination; the content on stdin
+    python3 -I -c '
+import os, stat, sys, tempfile
+dest = sys.argv[1]
+tmp = None
+try:
+    try:
+        mode = os.lstat(dest).st_mode
+    except FileNotFoundError:
+        mode = None
+    if mode is not None and not stat.S_ISREG(mode):
+        print(dest + " is a link or not a regular file; cs does not write through it.", file=sys.stderr)
+        sys.exit(1)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", prefix="." + os.path.basename(dest) + ".")
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(sys.stdin.buffer.read())
+    os.replace(tmp, dest)
+except Exception:
+    if tmp is not None:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    sys.exit(1)
+' "$1"
 }
 
 _cs_codex_adapter_dependencies() {
@@ -152,31 +177,29 @@ _codex_emit_context() {  # cs_bin
 # The agent can write the folder the context lives in (.cs/private, for an
 # encrypted session), so nothing is written through a name it could plant: a
 # link or a non-file at the context's own name stops the launch, and the
-# context, with the rotation preamble when one is given, goes into a fresh temp
-# file that is then moved into place.
+# context, with the rotation preamble when one is given, is rendered in full
+# first and then written by _codex_write_into_place. A failed render replaces
+# nothing.
 _codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin, [rotation_handoff]
     local session_name="$1" session_dir="$2" output_file="$3"
     local actor="$4" cs_bin="$5" rotation_handoff="${6:-}"
-    local temp_file write_status=0
+    local content
     if [ -L "$output_file" ] || { [ -e "$output_file" ] && [ ! -f "$output_file" ]; }; then
         _codex_launch_error "$output_file is a link or not a regular file; cs does not write the Codex context through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
-    temp_file=$(mktemp "$(dirname -- "$output_file")/.codex-instructions.XXXXXX") || return 1
-    {
+    # The x keeps the context's last newlines through $( ).
+    content=$(
         cs_session_context "$session_name" "$session_dir" "$actor" \
-            _codex_emit_context "$cs_bin" || write_status=1
-        if [ "$write_status" = 0 ] && [ -n "$rotation_handoff" ]; then
+            _codex_emit_context "$cs_bin" || exit 1
+        if [ -n "$rotation_handoff" ]; then
             printf '\n'
             _rotation_preamble "$rotation_handoff" "$actor" "$(_codex_handoffs_shown "$session_dir")" \
-                || write_status=1
+                || exit 1
         fi
-    } > "$temp_file" || write_status=1
-    if [ "$write_status" != 0 ]; then
-        rm -f "$temp_file" 2>/dev/null || true
-        return 1
-    fi
-    _codex_rename_into_place "$temp_file" "$output_file"
+        printf x
+    ) || return 1
+    printf '%s' "${content%x}" | _codex_write_into_place "$output_file"
 }
 
 # Commit only a helper-acknowledged candidate while the current lease is held.

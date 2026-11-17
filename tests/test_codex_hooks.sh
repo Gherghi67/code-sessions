@@ -299,6 +299,7 @@ test_rotation_keeps_the_last_turn_model_with_manual_clear() {
     assert_eq "" "$out" || return 1
     assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model = "gpt-6-astra"$' || return 1
     assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model_reasoning_effort = "xhigh"$' || return 1
+    assert_eq "${CS_CODEX_ROTATION_PROFILE##*/}" "$(ls -A "$CODEX_HOME")" "no temp file is left beside the profile" || return 1
     before=$(cat "$CS_CODEX_ROTATION_PROFILE")
     # A different thread cannot replace this run's selection.
     jq -cn --arg id "$NEW_THREAD" --arg path "$transcript" \
@@ -337,6 +338,31 @@ test_a_setting_fixed_for_the_run_is_named_instead_of_the_count() {
     out=$(CS_CODEX_CLEAR_GRACE=20 TURN_TRANSCRIPT="$transcript" _turn_hook stop "$OLD_THREAD") || return 1
     assert_file_exists "$STAMP" || return 1
     assert_output_contains "$out" '/clear and go in 20 s' || return 1
+}
+
+# The profile lives in CODEX_HOME, the vault home for an encrypted session,
+# which the agent can write: a link planted at its name is never written
+# through, and the turn says the choice was not kept.
+test_a_linked_rotation_profile_is_never_written_through() {
+    _handoff unconsumed; _arm
+    export CODEX_HOME="$TEST_TMPDIR/codex" CS_RUN_ENGINE=codex CS_RUN_ID="$RUN"
+    export CS_RUN_OWNER_PID="$$" CS_SESSION_DIR="$SESSION"
+    mkdir -p "$CODEX_HOME"
+    export CS_CODEX_ROTATION_PROFILE
+    CS_CODEX_ROTATION_PROFILE="$CODEX_HOME/cs-rotation-$(python3 -I -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:20])' "$SESSION").config.toml"
+    printf 'precious\n' > "$TEST_TMPDIR/outside"
+    ln -s "$TEST_TMPDIR/outside" "$CS_CODEX_ROTATION_PROFILE"
+    local transcript="$TEST_TMPDIR/rollout.jsonl" out
+    jq -cn --arg id "$OLD_THREAD" --arg cwd "$SESSION" \
+        '{type:"session_meta",payload:{id:$id,cwd:$cwd}}' > "$transcript"
+    printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"xhigh"}}' >> "$transcript"
+    out=$(jq -cn --arg id "$OLD_THREAD" --arg path "$transcript" \
+        '{session_id:$id,transcript_path:$path}' \
+        | CS_ROTATE_FORCE_CTX=off "$CS_BIN" -codex-hook stop) || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_output_contains "$out" 'could not preserve' "the turn says the choice was not kept" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/outside")" "the link's target is untouched" || return 1
+    [ -L "$CS_CODEX_ROTATION_PROFILE" ] || { echo "  FAIL: the link was replaced"; return 1; }
+    assert_eq "${CS_CODEX_ROTATION_PROFILE##*/}" "$(ls -A "$CODEX_HOME")" "no temp file is left beside it" || return 1
 }
 
 # A grace with a leading zero is decimal: 08 is eight seconds, not an
@@ -645,6 +671,7 @@ run_test test_unknown_hook_event_is_a_usage_error
 run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
 run_test test_rotation_keeps_the_last_turn_model_with_manual_clear
 run_test test_a_setting_fixed_for_the_run_is_named_instead_of_the_count
+run_test test_a_linked_rotation_profile_is_never_written_through
 run_test test_a_grace_with_a_leading_zero_is_decimal
 run_test test_a_turn_end_never_writes_into_the_workspace
 run_test test_no_run_dir_means_no_count_and_no_message
