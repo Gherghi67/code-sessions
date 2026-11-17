@@ -244,6 +244,9 @@ COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>")
 BACKTICKS = re.compile(r"`+")
+# Levels of a tool input laid out as lines; deeper values cross as JSON, so a
+# nested input costs its own size plus at most two spaces a level a line.
+READABLE_DEPTH = 32
 ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
 # Claude Code's own label for messages no model produced.
 CARRIED_MODEL = "<synthetic>"
@@ -702,40 +705,67 @@ def fenced(text):
     return fence + "\n" + text + "\n" + fence
 
 
-def readable_lines(value):
-    """A tool input as lines a person reads: a string as written, an object a
-    "key: value" line a field and a list a "- item" line an entry, a value
-    that takes several lines indented under its key or dash. Other values,
-    and empty objects and lists, as JSON."""
+def scalar_lines(value):
+    # A string as its lines, without one final newline; anything else as JSON.
     if isinstance(value, str):
         return (value[:-1] if value.endswith("\n") else value).split("\n")
-    if isinstance(value, dict) and value:
-        heads = [(str(key) + ":", item) for key, item in value.items()]
-    elif isinstance(value, list) and value:
-        heads = [("-", item) for item in value]
-    else:
-        return [json.dumps(value, ensure_ascii=False)]
+    return [json.dumps(value, ensure_ascii=False)]
+
+
+def readable_lines(value):
+    """A tool input as lines a person reads. An object has a "key: value" line
+    for each field and a list a "- item" line for each entry. A value that
+    takes several lines starts under its key or on its dash, indented two
+    spaces. Empty objects and lists, other values and anything nested deeper
+    than READABLE_DEPTH are written as JSON."""
     lines = []
-    for head, item in heads:
-        body = readable_lines(item)
-        # A list entry starts on its dash; a field's nested object or
-        # multi-line value starts on the line under its name.
-        if head == "-" or (len(body) == 1 and not (isinstance(item, (dict, list)) and item)):
-            lines.append(head + (" " + body[0] if body[0] else ""))
-            body = body[1:]
+
+    def nested(item, depth):
+        return isinstance(item, (dict, list)) and bool(item) and depth <= READABLE_DEPTH
+
+    def lay_out(container, first, rest, depth):
+        # Each line is written once: the first starts with first, the rest with rest.
+        if isinstance(container, dict):
+            entries = [(str(key) + ":", item) for key, item in container.items()]
         else:
-            lines.append(head)
-        lines.extend("  " + line if line else "" for line in body)
-    return lines
+            entries = [("-", item) for item in container]
+        for index, (head, item) in enumerate(entries):
+            prefix = first if index == 0 else rest
+            if nested(item, depth + 1):
+                # A list entry starts on its dash, a field on the line under its name.
+                if head == "-":
+                    lay_out(item, prefix + "- ", rest + "  ", depth + 1)
+                else:
+                    lines.append(prefix + head)
+                    lay_out(item, rest + "  ", rest + "  ", depth + 1)
+                continue
+            body = scalar_lines(item)
+            if head == "-" or len(body) == 1:
+                lines.append(prefix + head + (" " + body[0] if body[0] else ""))
+                body = body[1:]
+            else:
+                lines.append(prefix + head)
+            lines.extend(rest + "  " + line if line else "" for line in body)
+
+    if nested(value, 1):
+        lay_out(value, "", "", 1)
+        return lines
+    return scalar_lines(value)
 
 
 def claude_tool_call(name, value):
     # Claude's tool input is a JSON object. Written as JSON, a multi-line
     # command or edit shows as one line of literal \n in Codex's transcript.
     label = name if isinstance(name, str) and name else "tool"
+    head = "[tool call: " + label + "]"
     if value is None or value in ({}, "", []):
-        return "[tool call: " + label + "]"
-    return "[tool call: " + label + "]\n" + fenced("\n".join(readable_lines(value)))
+        return head
+    try:
+        body = "\n".join(readable_lines(value))
+    except RecursionError:
+        # json.loads read it, so only json.dumps from a deeper stack gets here.
+        return head + "\n[cs left out this input: it is nested too deeply to show]"
+    return head + "\n" + fenced(body)
 
 
 def claude_tool_result(text, limit, failed=False):
@@ -819,7 +849,7 @@ def read_claude(path, limit):
         for line in handle:
             try:
                 record = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if isinstance(record, dict):
                 records.append(record)

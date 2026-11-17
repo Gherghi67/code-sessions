@@ -1733,6 +1733,45 @@ class TransplantTests(HelperFixture):
             "Done.",
         ]))
 
+    def test_a_deep_claude_tool_input_carries_bounded_and_never_fails(self):
+        # Each level of a nested input used to re-indent every line below it,
+        # with no floor: 5,000 levels raised RecursionError and 60 KB of lines
+        # under 900 lists carried as 36 MB. A line too deep for json.loads is
+        # skipped, as a damaged line is.
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        deep = '{"a": ' * 5000 + '"leaf"' + '}' * 5000
+        lists = '[' * 900 + json.dumps('\n'.join(['ab'] * 20000)) + ']' * 900
+        path.write_text("\n".join([
+            claude_record("user", "go", "u1", None),
+            claude_record("assistant", [{"type": "tool_use", "id": "t1", "name": "X", "input": {"v": "DEEP"}}],
+                          "x1", "u1").replace('"DEEP"', deep),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}], "x2", "x1"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t2", "name": "X", "input": {"v": "LISTS"}}],
+                          "x3", "x2").replace('"LISTS"', lists),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}], "x4", "x3"),
+            claude_record("assistant", [{"type": "text", "text": "Done."}], "x5", "x4"),
+            claude_record("user", "TOO DEEP", "z1", "x5").replace('"TOO DEEP"', '[' * 200000 + ']' * 200000),
+        ]) + "\n")
+        result = subprocess.run([sys.executable, str(HELPER), "--read-claude", str(path)], env=self.env,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-500:])
+        self.assertLess(json.loads(result.stdout)["characters"], 300000)
+
+    def test_a_claude_tool_input_is_laid_out_to_a_fixed_depth(self):
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        value = "leaf"
+        for _ in range(40):
+            value = {"a": value}
+        lines = helper['claude_tool_call']('X', value).split('\n')
+        indents = [len(line) - len(line.lstrip(' ')) for line in lines[2:-1]]
+        self.assertEqual(indents, list(range(0, 64, 2)))
+        self.assertEqual(lines[-2].strip(), 'a: ' + json.dumps(json.loads('{"a": ' * 8 + '"leaf"' + '}' * 8)))
+        # json.loads read the input, so json.dumps fails only from a deeper
+        # stack; the call still crosses, without its input.
+        with patch.object(helper['json'], 'dumps', side_effect=RecursionError):
+            self.assertEqual(helper['claude_tool_call']('X', {"n": 1}),
+                             '[tool call: X]\n[cs left out this input: it is nested too deeply to show]')
+
     def test_claude_compaction_starts_at_its_summary(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
         path.write_text("\n".join([
