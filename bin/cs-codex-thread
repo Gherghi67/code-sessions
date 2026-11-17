@@ -1081,6 +1081,7 @@ def vault_check(args):
     # profile under cs's name, and the hooks trusted in the shared home that are
     # not trusted here: the shared config.toml's own trust tables decide which
     # those are, so a table the copy missed is found whatever its TOML form.
+    # A source the vault lists no hook of at all is named apart, in unlisted.
     codex_home = os.environ.get("CODEX_HOME")
     if not codex_home or not Path(codex_home).is_dir():
         raise BootstrapError("--vault-check needs CODEX_HOME set to the vault Codex home")
@@ -1103,6 +1104,7 @@ def vault_check(args):
     state = shared.get("hooks", {}).get("state") if isinstance(shared.get("hooks"), dict) else None
     state = state if isinstance(state, dict) else {}
     untrusted = []
+    unlisted = []
     for old in trust_sources(Path(args.shared_home)):
         new = os.path.join(codex_home, os.path.basename(old))
         trusted = {key: value for key, value in state.items()
@@ -1110,11 +1112,12 @@ def vault_check(args):
                    and isinstance(value.get("trusted_hash"), str)}
         # The vault lists no hook of a source the shared home still defines
         # hooks in: Codex lists or keys them in a way cs did not re-key for,
-        # and every hook trusted there would stop running without a word, so
-        # each counts as untrusted.
+        # and every hook trusted there would stop running without a word.
+        # Trusting them again in /hooks cannot change that, so the source is
+        # named apart from the hooks the vault lists untrusted.
         if trusted and not any(key.startswith(new + ":") for key in hooks) \
                 and defines_hooks(old, shared):
-            untrusted.extend(trusted)
+            unlisted.append(old)
             continue
         for key, value in trusted.items():
             hook = hooks.get(new + key[len(old):])
@@ -1144,6 +1147,7 @@ def vault_check(args):
         "sandbox_workspace_write": sandbox,
         "profile_defined": isinstance(permissions, dict) and VAULT_PROFILE in permissions,
         "untrusted": untrusted,
+        "unlisted": unlisted,
         "home_roots": home_roots,
     })
 

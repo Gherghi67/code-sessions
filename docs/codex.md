@@ -180,7 +180,11 @@ state databases and logs never reach the shared home (`$CODEX_HOME`, else
   Codex writes; an entry for the shared home written another way stops the
   open, which names it. Before Codex starts, cs asks it which hooks it trusts
   there, and refuses to start when a hook trusted in the shared home would not
-  run (a guard hook would otherwise stop silently).
+  run (a guard hook would otherwise stop silently). It refuses too, saying so,
+  when Codex lists none of the hooks a trusted `hooks.json` or `config.toml`
+  defines for the vault home, as a Codex that lists hooks differently from the
+  version cs was checked against (0.167) may: trusting them again in `/hooks`
+  cannot help there, so update cs or open the session under Claude.
 - copies the shared `rules/` folder in, following the links in it. An approval
   you make during an encrypted run (Codex appends an "always allow" for a
   command or a host to `rules/default.rules`) lasts until the next open, which

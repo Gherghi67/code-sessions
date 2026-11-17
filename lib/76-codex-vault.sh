@@ -207,10 +207,12 @@ _export_session_codex_home() {  # session_dir, [existing]
 # Asks Codex what the vault home resolves to and refuses what cs cannot
 # confine: a profile some file already defines under cs's name (cs's would
 # merge into it), a hook trusted in the shared home but not here (a guard
-# hook would silently stop running), or a writable root at or under the vault
-# home (its write entry would win over cs's read one). Prints the check's JSON.
+# hook would silently stop running), a trusted hook source Codex lists none of
+# the hooks of here (the same, and no /hooks answer helps), or a writable root
+# at or under the vault home (its write entry would win over cs's read one).
+# Prints the check's JSON.
 _codex_vault_check() {  # helper, codex_bin, session_dir
-    local check untrusted home_roots
+    local check unlisted untrusted home_roots
     check=$(cs_run_child "$1" --vault-check --codex-bin "$2" --cwd "$3" \
         --shared-home "$CS_CODEX_SHARED_HOME") || {
         _codex_launch_error "Could not read the vault Codex home's configuration; cs does not start Codex there unchecked."
@@ -218,6 +220,11 @@ _codex_vault_check() {  # helper, codex_bin, session_dir
     }
     if [ "$(printf '%s' "$check" | jq -r '.profile_defined')" != false ]; then
         _codex_launch_error "A Codex config file for $3 already defines the permissions profile cs-vault-home, which cs adds to keep the agent out of the vault Codex home. Rename that profile."
+        return 1
+    fi
+    unlisted=$(printf '%s' "$check" | jq -r '.unlisted // [] | join("; ")') || return 1
+    if [ -n "$unlisted" ]; then
+        _codex_launch_error "Codex listed none of the hooks $unlisted defines for the vault Codex home, though $CS_CODEX_SHARED_HOME trusts them, so cs cannot confirm they would run and does not start Codex. This Codex may list hooks differently from the version cs was checked against (0.167); update cs, or open this session under Claude."
         return 1
     fi
     untrusted=$(printf '%s' "$check" | jq -r '.untrusted[]') || return 1

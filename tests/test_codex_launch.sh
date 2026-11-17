@@ -621,10 +621,11 @@ test_native_approval_follows_the_users_sandbox() {
 test_the_vault_check_refuses_what_cs_cannot_confine() {
     _vault_fixture
     local output status case
-    for case in profile untrusted home_root failed; do
+    for case in profile untrusted unlisted home_root failed; do
         case "$case" in
             profile) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":true,"untrusted":[]}' ;;
             untrusted) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":["aws-readonly-guard","echo hi"]}' ;;
+            unlisted) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[],\"unlisted\":[\"$CODEX_HOME/hooks.json\"]}" ;;
             home_root) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{\"writable_roots\":[\"$VAULT_HOME/config.toml\",\"/w\",\"$VAULT_HOME\"]},\"profile_defined\":false,\"untrusted\":[],\"home_roots\":[\"$VAULT_HOME/config.toml\",\"$VAULT_HOME\"]}" ;;
             failed) export CS_HELPER_VAULT_EXIT=1 ;;
         esac
@@ -634,6 +635,11 @@ test_the_vault_check_refuses_what_cs_cannot_confine() {
         case "$case" in
             profile) assert_output_contains "$output" "already defines the permissions profile cs-vault-home" || return 1 ;;
             untrusted) assert_output_contains "$output" "would not run in the vault Codex home.*: aws-readonly-guard; echo hi\\." || return 1 ;;
+            unlisted)
+                # Re-trusting in /hooks cannot make Codex list them.
+                assert_output_contains "$output" "Codex listed none of the hooks $CODEX_HOME/hooks.json defines for the vault Codex home" || return 1
+                assert_output_contains "$output" "update cs, or open this session under Claude" || return 1
+                assert_output_not_contains "$output" "/hooks in a Codex outside" "no advice that cannot help" || return 1 ;;
             home_root) assert_output_contains "$output" "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: $VAULT_HOME/config.toml; $VAULT_HOME\\. Remove them from the Codex config that sets them\\." || return 1 ;;
             failed) assert_output_contains "$output" "does not start Codex there unchecked" || return 1 ;;
         esac
