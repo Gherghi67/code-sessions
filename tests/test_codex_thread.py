@@ -1382,6 +1382,24 @@ class VaultHomeTests(HelperFixture):
         self.assertEqual((self.home / 'config.toml').read_text(), 'model = "previous"\n')
         self.assertEqual([p.name for p in self.home.iterdir()], ['config.toml'], 'no temporary file is left')
 
+    def test_seed_config_names_a_hook_trust_entry_it_cannot_rekey(self):
+        # cs re-keys the [hooks.state."<key>"] tables Codex writes. A trust
+        # entry spelled another way would stay keyed by the shared home, so the
+        # copy stops and says how to write it, the previous copy left in place.
+        (self.home / 'config.toml').write_text('model = "previous"\n')
+        key = str(self.shared) + '/hooks.json:stop:0:0'
+        for spelling in ('[hooks]\nstate."%s" = { trusted_hash = "sha256:a" }\n',
+                         '[ hooks.state."%s" ]\ntrusted_hash = "sha256:a"\n',
+                         "[hooks.state.'%s']\ntrusted_hash = \"sha256:a\"\n"):
+            (self.shared / 'config.toml').write_text(spelling % key)
+            result = self.seed()
+            self.assertNotEqual(result.returncode, 0, spelling)
+            self.assertIn(key, result.stderr)
+            self.assertIn('[hooks.state.', result.stderr)
+            self.assertIn(str(self.shared / 'config.toml'), result.stderr)
+            self.assertEqual((self.home / 'config.toml').read_text(), 'model = "previous"\n')
+            self.assertEqual([p.name for p in self.home.iterdir()], ['config.toml'], 'no temporary file is left')
+
     def test_seed_config_without_a_shared_config_writes_an_empty_one(self):
         self.assertEqual(self.seed().returncode, 0)
         self.assertEqual((self.home / 'config.toml').read_text(), '')

@@ -986,6 +986,17 @@ def seed_config(args):
                 break
         lines.append(line)
     seeded = "".join(lines)
+    # An entry the text pass did not re-key (another TOML form, written by hand)
+    # stays keyed by the shared home and its hook would not run here: say how
+    # to write it, before the previous copy is replaced.
+    state = load_toml(seeded, str(source)).get("hooks")
+    state = state.get("state") if isinstance(state, dict) else None
+    for key in (state if isinstance(state, dict) else ()):
+        if any(key.startswith(old + ":") for old, _ in renames):
+            raise BootstrapError(
+                "cs cannot re-key the hook trust entry " + json.dumps(key) + " in " + str(source)
+                + " for the vault Codex home: it re-keys only [hooks.state.\"<key>\"] tables, so write"
+                + " the entry as [hooks.state." + json.dumps(key) + "] there")
     target = home / "config.toml"
     carried = ""
     if target.is_file() and not target.is_symlink():

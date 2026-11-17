@@ -173,7 +173,9 @@ state databases and logs never reach the shared home (`$CODEX_HOME`, else
   again inside the session.
 - copies the shared `config.toml` in, with each `[hooks.state]` trust entry
   renamed to the vault home's path, since Codex keys hook trust by the path it
-  read the hook from. Before Codex starts, cs asks it which hooks it trusts
+  read the hook from. cs renames `[hooks.state."<key>"]` tables, the form
+  Codex writes; an entry for the shared home written another way stops the
+  open, which names it. Before Codex starts, cs asks it which hooks it trusts
   there, and refuses to start when a hook trusted in the shared home would not
   run (a guard hook would otherwise stop silently).
 - copies the shared `rules/` folder in, following the links in it. An approval
