@@ -236,7 +236,10 @@ session folder, unlike a plain session's `~/.codex`, so while Codex runs in an
 encrypted session nothing else should write to the session folder outside
 Codex's sandbox (another conversation of the session, a tool started from
 one): such a writer can change what Codex loads, MCP servers included, which
-run outside the sandbox.
+run outside the sandbox. It can also reach past the session: a marketplace
+entry it adds makes Codex replace that marketplace's checkout under
+`.tmp/marketplaces`, which is the shared home's, so every session's Codex sees
+it.
 
 A Codex conversation bound before the session was encrypted stays in the shared
 home: when the shared home keeps it, the next open starts the session's first

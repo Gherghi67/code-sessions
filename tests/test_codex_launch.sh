@@ -535,10 +535,11 @@ test_a_login_saved_inside_the_vault_stops_the_open() {
     assert_output_contains "$output" "cs cannot tell who wrote it" "names no author" || return 1
     assert_output_not_contains "$output" "Codex saved a login" "does not claim Codex wrote it" || return 1
     assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
-    # The vault home is named as a plain name: the space in the session
-    # folder's name shows as _.
-    assert_output_contains "$output" "mv \"${VAULT_HOME// /_}/auth.json\" \"$CODEX_HOME/auth.json\"" "names the fix" || return 1
-    assert_output_contains "$output" "rm \"${VAULT_HOME// /_}/auth.json\"" "names the other way out" || return 1
+    # The commands to paste name the file by the session's own spelling, which
+    # keeps the space in the session folder's name: the description beside
+    # them shows the resolved vault home as a plain name.
+    assert_output_contains "$output" "mv \"$CS_TEST_SESSION_DIR/.cs/private/codex-home/auth.json\" \"$CODEX_HOME/auth.json\"" "names the fix" || return 1
+    assert_output_contains "$output" "rm \"$CS_TEST_SESSION_DIR/.cs/private/codex-home/auth.json\"" "names the other way out" || return 1
     assert_eq '{"tokens":"vault"}' "$(cat "$VAULT_HOME/auth.json")" "the login is kept" || return 1
     assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
@@ -602,7 +603,9 @@ test_vault_home_refusals_name_the_home_as_a_plain_name() {
             cache) assert_output_contains "$output" "$shown/plugins/cache is not cs's link to $CODEX_HOME/plugins/cache" || return 1 ;;
             auth)
                 assert_output_contains "$output" "$shown/auth.json is a file, not cs's link" || return 1
-                assert_output_contains "$output" "rm \"$shown/auth.json\"" "the way out is named" || return 1 ;;
+                # The command names the file by the session's own spelling,
+                # which holds nothing the session can plant.
+                assert_output_contains "$output" "rm \"$CS_TEST_SESSION_DIR/.cs/private/codex-home/auth.json\"" "the way out is named" || return 1 ;;
             linked) assert_output_contains "$output" "$shown is a link or not a directory" || return 1 ;;
         esac
         assert_no_escape_bytes "$output" "$case: no escape byte reaches the terminal" || return 1
@@ -670,7 +673,7 @@ test_the_vault_check_refuses_what_cs_cannot_confine() {
             project) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[\"aws-readonly-guard\"],\"untrusted_project_configs\":[\"$folder/.codex/config.toml\",\"$TEST_TMPDIR/e\\u001b]0;evil\\u0007/.codex/config.toml\"]}" ;;
             untrusted) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":["aws-readonly-guard","echo hi"]}' ;;
             unlisted) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[],\"unlisted\":[\"$CODEX_HOME/hooks.json\"]}" ;;
-            home_root) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{\"writable_roots\":[\"$VAULT_HOME/config.toml\",\"/w\",\"$VAULT_HOME\"]},\"profile_defined\":false,\"untrusted\":[],\"home_roots\":[\"$VAULT_HOME/config.toml\",\"$VAULT_HOME\"]}" ;;
+            home_root) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{\"writable_roots\":[\"$VAULT_HOME/config.toml\",\"/w\",\"$VAULT_HOME\"]},\"profile_defined\":false,\"untrusted\":[],\"home_roots\":[\"$VAULT_HOME/config.toml\",\"$VAULT_HOME\",\"$VAULT_HOME/e\\u001b]0;evil\\u0007\"]}" ;;
             failed) export CS_HELPER_VAULT_EXIT=1 ;;
         esac
         status=0
@@ -691,7 +694,11 @@ test_the_vault_check_refuses_what_cs_cannot_confine() {
                 assert_output_contains "$output" "Codex listed none of the hooks $CODEX_HOME/hooks.json defines for the vault Codex home" || return 1
                 assert_output_contains "$output" "update cs, or open this session under Claude" || return 1
                 assert_output_not_contains "$output" "/hooks in a Codex outside" "no advice that cannot help" || return 1 ;;
-            home_root) assert_output_contains "$output" "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: $VAULT_HOME/config.toml; $VAULT_HOME\\. Remove them from the Codex config that sets them\\." || return 1 ;;
+            home_root)
+                # Each root is shown as a plain name: the space in the session
+                # folder's name, and a planted root's escape bytes, show as _.
+                assert_output_contains "$output" "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: ${VAULT_HOME// /_}/config.toml; ${VAULT_HOME// /_}; ${VAULT_HOME// /_}/e__0_evil_\\. Remove them from the Codex config that sets them\\." || return 1
+                assert_eq 0 "$(printf '%s' "$output" | LC_ALL=C grep -c "$(printf '\033')")" "no escape byte reaches the terminal" || return 1 ;;
             failed) assert_output_contains "$output" "does not start Codex there unchecked" || return 1 ;;
         esac
         assert_not_exists "$CS_HELPER_COUNT" "$case: no thread prepared" || return 1
@@ -955,7 +962,9 @@ test_a_linked_rotation_profile_stops_the_open() {
     ln -s "$TEST_TMPDIR/outside" "$profile"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
     assert_eq 1 "$status" "a linked rotation profile must stop the open" || return 1
-    assert_output_contains "$output" "$profile is a link or not a regular file" "names the path" || return 1
+    # Shown as a plain name: the vault home is reached through .cs/private, a
+    # link, and the space in the session folder's name shows as _.
+    assert_output_contains "$output" "${profile// /_} is a link or not a regular file" "names the path" || return 1
     assert_output_contains "$output" "Remove it; cs writes the file again at the next open." "says what to do" || return 1
     assert_eq '' "$(ls -A "$TEST_TMPDIR/outside")" "nothing lands in the link's directory" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1

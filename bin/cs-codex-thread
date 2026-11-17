@@ -1028,7 +1028,9 @@ def seed_rules(shared, home):
     if target.is_symlink():
         target.unlink()
     elif target.exists() and not target.is_dir():
-        raise BootstrapError("the vault Codex home's rules is not a directory: " + str(target))
+        # Shown as cs shows a plain name: the vault home is reached through .cs/private, a link.
+        shown = re.sub(r"[^A-Za-z0-9._/@-]", "_", str(target))
+        raise BootstrapError("the vault Codex home's rules is not a directory: " + shown)
     source = shared / "rules"
     fresh = tempfile.mkdtemp(prefix=".rules.", dir=str(home))
     aside = None

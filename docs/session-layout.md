@@ -290,7 +290,8 @@ Claude Code to exit and unmounts the volume, unless the session reopened in
 the meantime. The unmount is never forced: if something still holds the
 volume, it stays mounted, and the next open unmounts it and asks for the
 password. A second conversation opened while the session runs joins the
-mounted volume without asking. `pre-open` learns that the session runs from
+mounted volume without asking; while one of them is a Codex run, see
+[Codex](codex.md#encrypted-sessions) on writers beside it. `pre-open` learns that the session runs from
 `CS_LIVE_LOCK_PID` (see the table above) or from `.cs/local/vault-holders`;
 it never reads the lock itself. Run by hand, without the variable or with
 one that names no running process (a pid that has ended, `0`), it joins

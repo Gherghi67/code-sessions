@@ -18,7 +18,7 @@ _codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX
     local profile content
     profile=$(_codex_rotation_profile_path "$1") || return 1
     if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -f "$profile" ]; }; then
-        _codex_launch_error "$profile is a link or not a regular file; cs does not write the Codex model profile through it. Remove it; cs writes the file again at the next open."
+        _codex_launch_error "$(_cs_plain_name "$profile") is a link or not a regular file; cs does not write the Codex model profile through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
     mkdir -p "$(dirname "$profile")" || return 1
@@ -80,7 +80,9 @@ try:
     except FileNotFoundError:
         mode = None
     if mode is not None and not stat.S_ISREG(mode):
-        print(dest + " is a link or not a regular file; cs does not write through it.", file=sys.stderr)
+        # Shown as cs shows a plain name (_cs_plain_name): the path may lead through a planted link.
+        shown = "".join(c if c.isascii() and (c.isalnum() or c in "._/@-") else "_" for c in dest)
+        print(shown + " is a link or not a regular file; cs does not write through it.", file=sys.stderr)
         sys.exit(1)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", prefix="." + os.path.basename(dest) + ".")
     with os.fdopen(fd, "wb") as stream:

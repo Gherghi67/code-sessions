@@ -147,7 +147,7 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
             esac
             if [ -e "$home/$name" ]; then
                 if [ "$name" = auth.json ]; then
-                    _codex_launch_error "$shown/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$shown/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$shown/auth.json\". The next open links the shared login again."
+                    _codex_launch_error "$shown/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$1/.cs/private/codex-home/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$1/.cs/private/codex-home/auth.json\". The next open links the shared login again."
                 else
                     _codex_launch_error "$shown/$name is not cs's link to $target. Move it aside; cs links it at the next open."
                 fi
@@ -249,8 +249,12 @@ _codex_vault_check() {  # helper, codex_bin, session_dir
         _codex_launch_error "These hooks are trusted in $CS_CODEX_SHARED_HOME but would not run in the vault Codex home, so cs does not start it: $(printf '%s' "$untrusted" | tr '\n' ';' | sed 's/;$//; s/;/; /g'). Review them with /hooks in a Codex outside this session."
         return 1
     fi
-    home_roots=$(printf '%s' "$check" | jq -r '.home_roots // [] | join("; ")') || return 1
+    # Each root comes from a Codex config a session's writer may have set, so
+    # it is shown as a plain name.
+    home_roots=$(printf '%s' "$check" | jq -r '.home_roots // [] | .[]') || return 1
     if [ -n "$home_roots" ]; then
+        home_roots=$(printf '%s\n' "$home_roots" | while IFS= read -r one; do printf '%s; ' "$(_cs_plain_name "$one")"; done)
+        home_roots=${home_roots%; }
         _codex_launch_error "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: $home_roots. Remove them from the Codex config that sets them."
         return 1
     fi
@@ -271,7 +275,7 @@ _codex_vault_profile_args() {  # check JSON, home, approval; appends to CS_NATIV
     own=$(printf '%s' "$check" | jq -r '.default_permissions // ""') || return 1
     if [ "$3" = native ]; then
         if [ -n "$own" ] && [ "$own" != cs-vault-home ]; then
-            _codex_launch_error "Your Codex config selects the permissions profile $own, and cs cannot add the vault rule to it. Open this encrypted session with automatic approval (--approve-for-me)."
+            _codex_launch_error "Your Codex config selects the permissions profile $(_cs_plain_name "$own" 160), and cs cannot add the vault rule to it. Open this encrypted session with automatic approval (--approve-for-me)."
             return 1
         fi
         case "$mode" in
