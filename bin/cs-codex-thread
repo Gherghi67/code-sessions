@@ -1108,13 +1108,25 @@ def vault_check(args):
             if hook.get("trustStatus") != "trusted":
                 untrusted.append(str(hook.get("command") or key))
     sandbox = config.get("sandbox_workspace_write")
+    sandbox = sandbox if isinstance(sandbox, dict) else {}
+    # cs's profile carries each writable root as a write entry beside the home's
+    # read one, and Codex lets a write at or under a path win over its read: such
+    # a root would undo the read-only home, so the launch refuses it.
+    real_home = os.path.realpath(codex_home)
+    roots = sandbox.get("writable_roots")
+    home_roots = []
+    for root in (roots if isinstance(roots, list) else ()):
+        real = os.path.realpath(root) if isinstance(root, str) else None
+        if real is not None and (real == real_home or real.startswith(real_home + os.sep)):
+            home_roots.append(root)
     permissions = config.get("permissions")
     return json.dumps({
         "sandbox_mode": config.get("sandbox_mode"),
         "default_permissions": config.get("default_permissions"),
-        "sandbox_workspace_write": sandbox if isinstance(sandbox, dict) else {},
+        "sandbox_workspace_write": sandbox,
         "profile_defined": isinstance(permissions, dict) and VAULT_PROFILE in permissions,
         "untrusted": untrusted,
+        "home_roots": home_roots,
     })
 
 

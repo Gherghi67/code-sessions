@@ -184,7 +184,9 @@ state databases and logs never reach the shared home (`$CODEX_HOME`, else
   line: Codex's workspace sandbox with the vault home read-only, so the agent
   cannot rewrite its own configuration, hooks or rules. The profile carries
   your `[sandbox_workspace_write]` writable roots, network access and
-  temp-directory settings. Under `--native-approval` it is added only to the
+  temp-directory settings. A writable root at or inside the vault home is
+  refused, since Codex would let it win over the read-only rule. Under
+  `--native-approval` the profile is added only to the
   workspace sandbox, never to read-only or full access, and a
   `default_permissions` profile of your own is refused. A config file that
   defines a profile named `cs-vault-home` is refused too.

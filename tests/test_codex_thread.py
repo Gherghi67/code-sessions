@@ -1479,7 +1479,7 @@ class VaultHomeTests(HelperFixture):
         self.assertEqual(json.loads(result.stdout), {
             'sandbox_mode': 'workspace-write', 'default_permissions': None,
             'sandbox_workspace_write': {'writable_roots': ['/w']}, 'profile_defined': False,
-            'untrusted': ['aws-readonly-guard']})
+            'untrusted': ['aws-readonly-guard'], 'home_roots': []})
         requests = [r['request'] for r in self.requests()]
         self.assertEqual([r['method'] for r in requests], ['initialize', 'initialized', 'config/read', 'hooks/list'])
         self.assertEqual(requests[3]['params'], {'cwds': [str(self.cwd.resolve())]})
@@ -1488,6 +1488,23 @@ class VaultHomeTests(HelperFixture):
         self.assertEqual(json.loads(self.vault_check(config, hooks).stdout)['untrusted'], [])
         config['config']['permissions'] = {'cs-vault-home': {'extends': ':workspace'}}
         self.assertTrue(json.loads(self.vault_check(config, hooks).stdout)['profile_defined'])
+
+    def test_vault_check_names_writable_roots_inside_the_vault_home(self):
+        # cs's profile makes the vault home read-only, and a writable root at or
+        # under it would win over that rule, so the launch refuses such a root.
+        home = str(self.home)
+        def home_roots(roots):
+            config = {'config': {'sandbox_workspace_write': {'writable_roots': roots}}, 'origins': {}}
+            result = self.vault_check(config, {'data': []})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)['home_roots']
+        self.assertEqual(home_roots([home + '/config.toml', '/w', home + '-sibling']), [home + '/config.toml'])
+        link = self.root / 'link to the vault home'
+        link.symlink_to(self.home)
+        self.assertEqual(home_roots(['/w', str(link) + '/hooks']), [str(link) + '/hooks'],
+                         'a root spelled through a link to the home is inside it')
+        self.assertEqual(home_roots([home]), [home], 'the home itself')
+        self.assertEqual(home_roots(['/']), [], 'a root above the home leaves the read rule standing')
 
     def test_vault_check_needs_the_vault_home_and_a_readable_answer(self):
         result = self.helper('--vault-check', '--codex-bin', str(self.fake), '--cwd', str(self.cwd),

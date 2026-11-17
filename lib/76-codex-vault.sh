@@ -191,10 +191,11 @@ _export_session_codex_home() {  # session_dir, [existing]
 
 # Asks Codex what the vault home resolves to and refuses what cs cannot
 # confine: a profile some file already defines under cs's name (cs's would
-# merge into it), or a hook trusted in the shared home but not here (a guard
-# hook would silently stop running). Prints the check's JSON.
+# merge into it), a hook trusted in the shared home but not here (a guard
+# hook would silently stop running), or a writable root at or under the vault
+# home (its write entry would win over cs's read one). Prints the check's JSON.
 _codex_vault_check() {  # helper, codex_bin, session_dir
-    local check untrusted
+    local check untrusted home_roots
     check=$(cs_run_child "$1" --vault-check --codex-bin "$2" --cwd "$3" \
         --shared-home "$CS_CODEX_SHARED_HOME") || {
         _codex_launch_error "Could not read the vault Codex home's configuration; cs does not start Codex there unchecked."
@@ -207,6 +208,11 @@ _codex_vault_check() {  # helper, codex_bin, session_dir
     untrusted=$(printf '%s' "$check" | jq -r '.untrusted[]') || return 1
     if [ -n "$untrusted" ]; then
         _codex_launch_error "These hooks are trusted in $CS_CODEX_SHARED_HOME but would not run in the vault Codex home, so cs does not start it: $(printf '%s' "$untrusted" | tr '\n' ';' | sed 's/;$//; s/;/; /g'). Review them with /hooks in a Codex outside this session."
+        return 1
+    fi
+    home_roots=$(printf '%s' "$check" | jq -r '.home_roots // [] | join("; ")') || return 1
+    if [ -n "$home_roots" ]; then
+        _codex_launch_error "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: $home_roots. Remove them from the Codex config that sets them."
         return 1
     fi
     printf '%s\n' "$check"

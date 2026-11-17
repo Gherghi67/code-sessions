@@ -588,14 +588,16 @@ test_native_approval_follows_the_users_sandbox() {
 
 # What cs cannot confine stops the open before anything is bound: a profile a
 # file already defines under cs's name (cs's would merge into it), a hook the
-# shell's home trusts that would not run here, or a check that cannot run.
+# shell's home trusts that would not run here, a writable root inside the vault
+# home (it would win over cs's read rule), or a check that cannot run.
 test_the_vault_check_refuses_what_cs_cannot_confine() {
     _vault_fixture
     local output status case
-    for case in profile untrusted failed; do
+    for case in profile untrusted home_root failed; do
         case "$case" in
             profile) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":true,"untrusted":[]}' ;;
             untrusted) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":["aws-readonly-guard","echo hi"]}' ;;
+            home_root) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{\"writable_roots\":[\"$VAULT_HOME/config.toml\",\"/w\",\"$VAULT_HOME\"]},\"profile_defined\":false,\"untrusted\":[],\"home_roots\":[\"$VAULT_HOME/config.toml\",\"$VAULT_HOME\"]}" ;;
             failed) export CS_HELPER_VAULT_EXIT=1 ;;
         esac
         status=0
@@ -604,6 +606,7 @@ test_the_vault_check_refuses_what_cs_cannot_confine() {
         case "$case" in
             profile) assert_output_contains "$output" "already defines the permissions profile cs-vault-home" || return 1 ;;
             untrusted) assert_output_contains "$output" "would not run in the vault Codex home.*: aws-readonly-guard; echo hi\\." || return 1 ;;
+            home_root) assert_output_contains "$output" "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: $VAULT_HOME/config.toml; $VAULT_HOME\\. Remove them from the Codex config that sets them\\." || return 1 ;;
             failed) assert_output_contains "$output" "does not start Codex there unchecked" || return 1 ;;
         esac
         assert_not_exists "$CS_HELPER_COUNT" "$case: no thread prepared" || return 1
