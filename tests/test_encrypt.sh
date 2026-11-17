@@ -361,6 +361,47 @@ test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file() {
     assert_eq "log" "$(cat "$s/local/session.log")" "session.log stays in place" || return 1
 }
 
+# The agent can write .cs/local, so it chooses a leftover's name: an escape
+# sequence there never reaches the terminal. The refusal names the leftover
+# with each byte but letters, digits and ._/@- shown as _.
+test_encrypt_names_a_leftover_with_escapes_in_plain_text() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    mkdir "$s/local/.codex-instructions."$'\033]0;evil\007'
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "non-zero exit" || return 1
+    assert_output_contains "$out" "enc: \.cs/local/\.codex-instructions\.__0_evil_ is not a regular file" \
+        "names the leftover in plain text" || return 1
+    assert_output_not_contains "$out" $'\033' "no escape byte reaches the terminal" || return 1
+    assert_output_not_contains "$out" $'\007' "no bell byte reaches the terminal" || return 1
+    _assert_nothing_written enc || return 1
+}
+
+# So does a leftover cs could not delete: an rm stub fails on that name alone
+# and, as BSD rm does, prints the name it was given.
+test_encrypt_names_a_leftover_it_cannot_delete_in_plain_text() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0 real_rm
+    real_rm=$(command -v rm)
+    cat > "$TEST_TMPDIR/stub/rm" <<EOF
+#!/bin/sh
+for last; do :; done
+case "\$last" in *evil*) echo "rm: \$last: Operation not permitted" >&2; exit 1 ;; esac
+exec "$real_rm" "\$@"
+EOF
+    chmod +x "$TEST_TMPDIR/stub/rm"
+    printf 'memory excerpt\n' > "$s/local/.codex-instructions."$'\033]0;evil\007'
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "non-zero exit" || return 1
+    assert_output_contains "$out" "enc: could not delete .*/\.cs/local/\.codex-instructions\.__0_evil_, a plaintext copy of the Codex context" \
+        "names the leftover in plain text" || return 1
+    assert_output_not_contains "$out" $'\033' "no escape byte reaches the terminal" || return 1
+    assert_output_not_contains "$out" $'\007' "no bell byte reaches the terminal" || return 1
+    _assert_nothing_written enc || return 1
+}
+
 # A session cloned or synced here and never opened has no .cs/local: it is
 # gitignored and born on the first open, and the pre-open hook lives in it.
 test_encrypt_builds_a_session_never_opened_on_this_machine() {
@@ -766,6 +807,19 @@ test_open_refuses_a_leftover_codex_context_temp_file_beside_the_vault() {
 detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
+# The agent chooses that file's name: an escape sequence in it never reaches
+# the terminal, and the open names the file in plain text.
+test_open_names_a_leftover_with_escapes_in_plain_text() {
+    _encrypted_session enc || return 1
+    echo "memory excerpt" > "$CS_SESSIONS_ROOT/enc/.cs/local/.codex-instructions."$'\033]0;evil\007'
+    local out rc=0
+    out=$(_open enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open stops" || return 1
+    assert_output_contains "$out" "still holds \.codex-instructions\.__0_evil_ in plaintext" "names the leftover in plain text" || return 1
+    assert_output_not_contains "$out" $'\033' "no escape byte reaches the terminal" || return 1
+    assert_output_not_contains "$out" $'\007' "no bell byte reaches the terminal" || return 1
+}
+
 test_open_that_stops_leaves_a_running_session_vault_mounted() {
     _encrypted_session enc || return 1
     : > "$TEST_TMPDIR/mounted"
@@ -1123,6 +1177,8 @@ run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_removes_leftover_codex_context_temp_files
 run_test test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file
+run_test test_encrypt_names_a_leftover_with_escapes_in_plain_text
+run_test test_encrypt_names_a_leftover_it_cannot_delete_in_plain_text
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_builds_the_container_under_cs_data_dir
 run_test test_encrypt_holds_the_session_lock_while_it_works
@@ -1147,6 +1203,7 @@ run_test test_pre_open_attaches_the_recorded_container_whatever_cs_data_dir_says
 run_test test_open_that_stops_detaches_the_vault_it_mounted
 run_test test_open_refuses_a_plaintext_codex_context_beside_the_vault
 run_test test_open_refuses_a_leftover_codex_context_temp_file_beside_the_vault
+run_test test_open_names_a_leftover_with_escapes_in_plain_text
 run_test test_open_that_stops_leaves_a_running_session_vault_mounted
 run_test test_open_that_stops_reads_the_lock_by_the_one_lock_rule
 run_test test_open_over_a_mounted_vault_reads_the_lock_by_the_one_lock_rule

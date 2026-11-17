@@ -294,9 +294,11 @@ _refuse_plaintext_beside_private() {  # session_name, session_dir
         [ -e "$meta/local/$name" ] || continue
         error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds $name in plaintext. Move it into .cs/private or delete it, then reopen."
     done
+    # The agent can write .cs/local and so chooses these names: each is
+    # printed plain, so no escape sequence in one reaches the terminal.
     for name in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
         [ -e "$name" ] || continue
-        error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds ${name##*/} in plaintext, a copy of the Codex context an interrupted launch left. Delete it, then reopen."
+        error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds $(_cs_plain_name "${name##*/}" 160) in plaintext, a copy of the Codex context an interrupted launch left. Delete it, then reopen."
     done
     if [ -e "$meta/handoffs" ]; then
         error "$1: .cs/private keeps this session's rotation handoffs in its vault, but .cs/handoffs still holds them in plaintext. Move it to .cs/private/handoffs or delete it, then reopen."

@@ -39,10 +39,11 @@ _encrypt_refuse() {  # session_name
     fi
     # So are the temp files a launch interrupted while it wrote the context
     # left beside it (.codex-instructions.*, or an older cs's
-    # codex-instructions.md.tmp.<pid>).
+    # codex-instructions.md.tmp.<pid>). The agent chose their names, so each
+    # is printed plain.
     for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
         if { [ -e "$leftover" ] || [ -L "$leftover" ]; } && [ ! -f "$leftover" ]; then
-            error "$name: .cs/local/${leftover##*/} is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+            error "$name: .cs/local/$(_cs_plain_name "${leftover##*/}" 160) is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
         fi
     done
     container=$(_encrypt_container_path "$name")
@@ -233,13 +234,14 @@ run_encrypt() {
     # but a copy, written again inside the vault at the next Codex open.
     # Deleted, not carried, and before the container is made, so a failure
     # leaves the session as it was. So is every temp copy an interrupted
-    # launch left beside it.
+    # launch left beside it, named plain: the agent chose that name, and rm
+    # would print it raw.
     rm -f "$meta/local/codex-instructions.md" \
         || error "$name: could not delete $meta/local/codex-instructions.md, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
     for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
         [ -e "$leftover" ] || [ -L "$leftover" ] || continue
-        rm -f "$leftover" \
-            || error "$name: could not delete $leftover, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+        rm -f "$leftover" 2>/dev/null \
+            || error "$name: could not delete $meta/local/$(_cs_plain_name "${leftover##*/}" 160), a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
     done
 
     mkdir -p "$(dirname "$container")"

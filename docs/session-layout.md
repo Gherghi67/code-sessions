@@ -359,7 +359,8 @@ file is still outside it: any of the `.cs/private` files above left in
 `.cs/local/`, a temp copy of the Codex context an interrupted launch left there
 (`.codex-instructions.*` or `codex-instructions.md.tmp.*`), or a
 `.cs/handoffs/` or `.cs/checkpoints/` folder, or a plain
-`.cs/narrative-archive/` beside a linked `.cs/memory`. The error names the file. Move it
+`.cs/narrative-archive/` beside a linked `.cs/memory`. The error names the file,
+with every character other than letters, digits and `._/@-` replaced by `_`. Move it
 into the vault or delete it. cs does not move it for you, because backups and
 snapshots already hold the old copy.
 
