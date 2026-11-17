@@ -16310,7 +16310,9 @@ _doctor_check_hook_authority() {
 # auth.json that is a file (cs cannot tell who wrote it), a link that leads
 # elsewhere or dangles, an earlier open's rules/, plugins/ or .tmp link, and a
 # copied config.toml whose hook trust still names the shared home are named.
-# The next Codex open repairs links and the copies, never an auth.json.
+# The next Codex open repairs links and the copies, never an auth.json. A link
+# target read from the vault home is printed as a plain name: whenever cs's
+# profile is off, the agent can plant one that carries a terminal escape.
 _doctor_check_codex_vault_home() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found sub children problems=""
     [ -n "$dir" ] || return 0
@@ -16329,7 +16331,7 @@ _doctor_check_codex_vault_home() {
         if [ -L "$home/$name" ]; then
             found=$(readlink "$home/$name")
             if [ "$found" != "$target" ]; then
-                problems="$problems; $name links to $found, not $target"
+                problems="$problems; $name links to $(_cs_plain_name "$found" 160), not $target"
             elif [ ! -e "$home/$name" ] && case " $CS_CODEX_VAULT_LINK_DIRS " in *" $name "*) true ;; *) false ;; esac; then
                 problems="$problems; $name links to $target, which is missing"
             fi
@@ -16343,7 +16345,7 @@ _doctor_check_codex_vault_home() {
     done
     for name in rules plugins .tmp; do
         if [ -L "$home/$name" ]; then
-            problems="$problems; $name is still a link to $(readlink "$home/$name"), so what Codex saves there leaves the vault"
+            problems="$problems; $name is still a link to $(_cs_plain_name "$(readlink "$home/$name")" 160), so what Codex saves there leaves the vault"
         elif [ -e "$home/$name" ] && [ ! -d "$home/$name" ]; then
             problems="$problems; $name is not a directory"
         elif [ ! -e "$home/$name" ]; then
@@ -16359,7 +16361,7 @@ _doctor_check_codex_vault_home() {
             if [ -L "$home/$sub/$name" ]; then
                 found=$(readlink "$home/$sub/$name")
                 if [ "$found" != "$target" ]; then
-                    problems="$problems; $sub/$name links to $found, not $target"
+                    problems="$problems; $sub/$name links to $(_cs_plain_name "$found" 160), not $target"
                 elif [ ! -e "$home/$sub/$name" ]; then
                     problems="$problems; $sub/$name links to $target, which is missing"
                 fi
