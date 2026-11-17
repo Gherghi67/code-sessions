@@ -244,6 +244,10 @@ COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>")
 BACKTICKS = re.compile(r"`+")
+# CommonMark's fence lines: an opening one with its info string (a backtick
+# fence's holds no backtick), and a closing one, indented up to three spaces.
+FENCE_OPEN = re.compile(r"(`{3,}|~{3,})(.*)")
+FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*\Z")
 # Levels of a tool input laid out as lines; deeper values cross as JSON, so a
 # nested input costs its own size plus at most two spaces a level a line.
 READABLE_DEPTH = 32
@@ -261,6 +265,28 @@ CARRIED_NOTE = re.compile(r"\A\s*\[cs carried this conversation over from [^\]]*
 DEFAULT_CLAUDE_VERSION = "2.1.0"
 
 
+def open_block(text, closer=None):
+    """The line that closes the block text leaves open, starting inside the
+    block closer closes: a fence as long as the one that opened it, --> for
+    an HTML comment, or None. Only blocks opened at the left margin count: a
+    list item's or a quote's block ends at the next line that starts there."""
+    for line in text.split("\n"):
+        if closer is None:
+            opened = FENCE_OPEN.match(line)
+            if line.startswith("<!--"):
+                closer = None if "-->" in line[4:] else "-->"
+            elif opened and not (opened.group(1)[0] == "`" and "`" in opened.group(2)):
+                closer = opened.group(1)
+        elif closer == "-->":
+            if "-->" in line:
+                closer = None
+        else:
+            shut = FENCE_CLOSE.match(line)
+            if shut and shut.group(1)[0] == closer[0] and len(shut.group(1)) >= len(closer):
+                closer = None
+    return closer
+
+
 class History:
     """User and agent messages in order. One agent message holds everything
     the agent did between two user messages: its text, calls and results."""
@@ -271,14 +297,24 @@ class History:
         # outputs whose calls came before it.
         self.calls = {}
 
-    def add(self, role, text, timestamp=None):
+    def add(self, role, text, timestamp=None, closed=False):
+        # A closed part is cs's own markdown, every block in it closed. A
+        # message is one markdown document, so a block the text before it
+        # left open is closed first, or the two would pair up.
         if not isinstance(text, str) or not text.strip():
             return
         last = self.messages[-1] if self.messages else None
-        if last is not None and last["role"] == role:
-            last["parts"].append(text)
-        else:
-            self.messages.append({"role": role, "parts": [text], "timestamp": timestamp})
+        if last is None or last["role"] != role:
+            last = {"role": role, "parts": [], "timestamp": timestamp, "closed": 0}
+            self.messages.append(last)
+        if closed:
+            closer = None
+            for part in last["parts"][last["closed"]:]:
+                closer = open_block(part, closer)
+            if closer:
+                text = closer + "\n" + text
+            last["closed"] = len(last["parts"]) + 1
+        last["parts"].append(text)
 
     def reset(self):
         self.messages = []
@@ -890,14 +926,15 @@ def read_claude(path, limit):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
                     history.add("assistant", claude_tool_result(claude_result_text(block.get("content")), limit,
-                                                                block.get("is_error") is True), stamp)
+                                                                block.get("is_error") is True), stamp, closed=True)
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
             elif record.get("type") == "assistant":
                 if kind == "text":
                     history.add("assistant", block.get("text"), stamp)
                 elif kind == "tool_use":
-                    history.add("assistant", claude_tool_call(block.get("name"), block.get("input")), stamp)
+                    history.add("assistant", claude_tool_call(block.get("name"), block.get("input")), stamp,
+                                closed=True)
                 # Thinking is signed for the model that wrote it and stays behind.
     return history.export()
 

@@ -1733,6 +1733,35 @@ class TransplantTests(HelperFixture):
             "Done.",
         ]))
 
+    def test_a_block_claude_left_open_is_closed_before_a_tool_part(self):
+        # An agent message is one markdown document. Reply text that ends
+        # inside a fence (a markdown file holding a code block, shown in
+        # ```) or an HTML comment would pair with cs's fences and leave the
+        # result outside them, rendered as markdown.
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        texts = [["The file:\n```markdown\n# Doc\n```python\nx = 1\n```\n```"], ["Plan:\n<!-- draft"],
+                 ["```py\nx", "```"], ["1. step\n   ```sh\n   cmd"], ["~~~~ raw\n````"]]
+        lines, parent = [claude_record("user", "go", "u1", None)], "u1"
+        for number, parts in enumerate(texts):
+            lines.append(claude_record("assistant", [{"type": "text", "text": text} for text in parts] + [
+                {"type": "tool_use", "id": "t%d" % number, "name": "X", "input": {} if number else {"n": 1}}],
+                "a%d" % number, parent))
+            lines.append(claude_record("user", [{"type": "tool_result", "tool_use_id": "t%d" % number,
+                                                 "content": "# HEADING" if number == 0 else "ok"}],
+                                       "r%d" % number, "a%d" % number))
+            parent = "r%d" % number
+        path.write_text("\n".join(lines) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ok = "[tool result]\n```\nok\n```"
+        self.assertEqual(self.carried_model_items()[2]['content'][0]['text'], "\n\n".join([
+            texts[0][0], "```\n[tool call: X]\n```\nn: 1\n```", "[tool result]\n```\n# HEADING\n```",
+            texts[1][0], "-->\n[tool call: X]", ok,
+            # Closed by the reply itself, or inside a list item the next line ends.
+            texts[2][0], texts[2][1], "[tool call: X]", ok,
+            texts[3][0], "[tool call: X]", ok,
+            texts[4][0], "~~~~\n[tool call: X]", ok]))
+
     def test_a_deep_claude_tool_input_carries_bounded_and_never_fails(self):
         # Each level of a nested input used to re-indent every line below it,
         # with no floor: 5,000 levels raised RecursionError and 60 KB of lines
