@@ -263,8 +263,11 @@ On macOS, `cs -encrypt <name>` sets this up for an existing session. Run it
 from a terminal, with the session closed. It:
 
 1. Deletes `.cs/local/codex-instructions.md`, a plaintext copy of memory the
-   next Codex open writes again inside the vault. Anything but a file at that
-   name stops `cs -encrypt` before anything changes; move it aside first.
+   next Codex open writes again inside the vault, and the temp copies a Codex
+   launch interrupted while it wrote that file left beside it
+   (`.cs/local/.codex-instructions.*`, or `codex-instructions.md.tmp.*` from an
+   older cs). Anything but a file at one of those names stops `cs -encrypt`
+   before anything changes; move it aside first.
 2. Creates an AES-256 encrypted sparse bundle at
    `~/.local/share/cs/vaults/<name>.sparsebundle` (`$CS_DATA_DIR/vaults/` when
    that is set, as the code-sessions profile sets it) with `hdiutil`, which asks
@@ -353,7 +356,9 @@ keeps its conversations outside the vault, and names
 
 Opening an encrypted session also refuses when a plaintext copy of a vault
 file is still outside it: any of the `.cs/private` files above left in
-`.cs/local/`, or a `.cs/handoffs/` or `.cs/checkpoints/` folder, or a plain
+`.cs/local/`, a temp copy of the Codex context an interrupted launch left there
+(`.codex-instructions.*` or `codex-instructions.md.tmp.*`), or a
+`.cs/handoffs/` or `.cs/checkpoints/` folder, or a plain
 `.cs/narrative-archive/` beside a linked `.cs/memory`. The error names the file. Move it
 into the vault or delete it. cs does not move it for you, because backups and
 snapshots already hold the old copy.

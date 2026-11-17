@@ -10,7 +10,7 @@ _encrypt_container_path() {  # session_name
 
 # Every precondition, checked before anything is written.
 _encrypt_refuse() {  # session_name
-    local name="$1" dir meta sub container
+    local name="$1" dir meta sub container leftover
     [ "$(uname -s)" = "Darwin" ] || error "cs -encrypt needs macOS (hdiutil); Linux is not supported yet."
     case "$name" in
         *@*) error "$name: encrypt the base session, not a feature worktree." ;;
@@ -37,6 +37,14 @@ _encrypt_refuse() {  # session_name
         && [ ! -f "$meta/local/codex-instructions.md" ]; then
         error "$name: .cs/local/codex-instructions.md is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
     fi
+    # So are the temp files a launch interrupted while it rendered the context
+    # left beside it (.codex-instructions.XXXXXX, or an older cs's
+    # codex-instructions.md.tmp.<pid>).
+    for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        if { [ -e "$leftover" ] || [ -L "$leftover" ]; } && [ ! -f "$leftover" ]; then
+            error "$name: .cs/local/${leftover##*/} is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+        fi
+    done
     container=$(_encrypt_container_path "$name")
     # pre-open records this path and attaches it from the session directory.
     case "$container" in /*) ;; *) error "CS_DATA_DIR=$CS_DATA_DIR: cs -encrypt needs an absolute path; every open attaches the container from the session directory." ;; esac
@@ -195,7 +203,7 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub taken=0
+    local name="$1" meta container mnt sub leftover taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
@@ -224,9 +232,15 @@ run_encrypt() {
     # The Codex launch's context, built from memory and the narrative: nothing
     # but a copy, written again inside the vault at the next Codex open.
     # Deleted, not carried, and before the container is made, so a failure
-    # leaves the session as it was.
+    # leaves the session as it was. So is every temp copy an interrupted
+    # launch left beside it.
     rm -f "$meta/local/codex-instructions.md" \
         || error "$name: could not delete $meta/local/codex-instructions.md, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+    for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        [ -e "$leftover" ] || [ -L "$leftover" ] || continue
+        rm -f "$leftover" \
+            || error "$name: could not delete $leftover, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+    done
 
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."

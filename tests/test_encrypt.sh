@@ -329,6 +329,38 @@ test_encrypt_refuses_a_codex_context_that_is_not_a_file() {
     assert_eq "log" "$(cat "$s/local/session.log")" "session.log stays in place" || return 1
 }
 
+# A launch interrupted while it renders the Codex context leaves its temp file
+# (.codex-instructions.XXXXXX, or codex-instructions.md.tmp.<pid> from an older
+# cs): a full plaintext copy, removed with the context, never moved or kept.
+test_encrypt_removes_leftover_codex_context_temp_files() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0 name
+    printf 'memory excerpt\n' > "$s/local/.codex-instructions.AbC123"
+    printf 'memory excerpt\n' > "$s/local/codex-instructions.md.tmp.4242"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    for name in .codex-instructions.AbC123 codex-instructions.md.tmp.4242; do
+        assert_not_exists "$s/local/$name" "no plaintext $name" || return 1
+        assert_not_exists "$s/vault-mnt/private/$name" "$name is not carried into the vault" || return 1
+    done
+}
+
+# Anything but a file at a leftover's name would stop its removal halfway:
+# refused, named, before the container is made or anything moves.
+test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file() {
+    _stubs
+    _populated_session enc
+    local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    mkdir "$s/local/.codex-instructions.AbC123"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "non-zero exit" || return 1
+    assert_output_contains "$out" "enc: .cs/local/.codex-instructions.AbC123 is not a regular file" "names the path" || return 1
+    assert_output_contains "$out" "Move it aside first." "says what to do" || return 1
+    _assert_nothing_written enc || return 1
+    assert_eq "log" "$(cat "$s/local/session.log")" "session.log stays in place" || return 1
+}
+
 # A session cloned or synced here and never opened has no .cs/local: it is
 # gitignored and born on the first open, and the pre-open hook lives in it.
 test_encrypt_builds_a_session_never_opened_on_this_machine() {
@@ -722,6 +754,18 @@ test_open_refuses_a_plaintext_codex_context_beside_the_vault() {
 detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
 }
 
+# So is the temp file an interrupted context write left there.
+test_open_refuses_a_leftover_codex_context_temp_file_beside_the_vault() {
+    _encrypted_session enc || return 1
+    echo "memory excerpt" > "$CS_SESSIONS_ROOT/enc/.cs/local/.codex-instructions.AbC123"
+    local out rc=0
+    out=$(_open enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open stops" || return 1
+    assert_output_contains "$out" "still holds .codex-instructions.AbC123 in plaintext" "names the leftover" || return 1
+    assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
+detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "attach, then detach on the way out" || return 1
+}
+
 test_open_that_stops_leaves_a_running_session_vault_mounted() {
     _encrypted_session enc || return 1
     : > "$TEST_TMPDIR/mounted"
@@ -1077,6 +1121,8 @@ run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
+run_test test_encrypt_removes_leftover_codex_context_temp_files
+run_test test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_builds_the_container_under_cs_data_dir
 run_test test_encrypt_holds_the_session_lock_while_it_works
@@ -1100,6 +1146,7 @@ run_test test_pre_open_attaches_with_a_prompt
 run_test test_pre_open_attaches_the_recorded_container_whatever_cs_data_dir_says
 run_test test_open_that_stops_detaches_the_vault_it_mounted
 run_test test_open_refuses_a_plaintext_codex_context_beside_the_vault
+run_test test_open_refuses_a_leftover_codex_context_temp_file_beside_the_vault
 run_test test_open_that_stops_leaves_a_running_session_vault_mounted
 run_test test_open_that_stops_reads_the_lock_by_the_one_lock_rule
 run_test test_open_over_a_mounted_vault_reads_the_lock_by_the_one_lock_rule
