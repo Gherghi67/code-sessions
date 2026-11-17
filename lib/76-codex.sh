@@ -10,16 +10,23 @@ _codex_rotation_profile_path() {  # session_dir
     printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
 }
 
+# CODEX_HOME is the vault home for an encrypted session, which the agent can
+# write while cs's profile is off: a link or a non-file at the profile's name
+# stops the launch, and the profile is renamed into place, never through it.
 _codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
     local profile tmp
     profile=$(_codex_rotation_profile_path "$1") || return 1
+    if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -f "$profile" ]; }; then
+        _codex_launch_error "$profile is a link or not a regular file; cs does not write the Codex model profile through it. Remove it; cs writes the file again at the next open."
+        return 1
+    fi
     mkdir -p "$(dirname "$profile")" || return 1
     tmp=$(mktemp "$profile.XXXXXX") || return 1
-    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp" \
-        || ! mv "$tmp" "$profile"; then
+    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp"; then
         rm -f "$tmp"
         return 1
     fi
+    _codex_rename_into_place "$tmp" "$profile" || return 1
     CS_CODEX_ROTATION_PROFILE=$profile
 }
 
@@ -52,6 +59,15 @@ _codex_rotation_setup() {  # helper, codex_bin, session_dir; sets rotation_cli_*
 
 _codex_launch_error() {  # message
     printf 'Error: %s\n' "$1" >&2
+    return 1
+}
+
+# Replaces the destination itself with the source, by rename(2): a link at the
+# destination is replaced, never followed, and a directory there fails. mv
+# would move the source into the directory a link swapped in there points to.
+_codex_rename_into_place() {  # source, destination
+    python3 -I -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$1" "$2" 2>/dev/null && return 0
+    rm -f "$1" 2>/dev/null
     return 1
 }
 
@@ -156,10 +172,11 @@ _codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bi
                 || write_status=1
         fi
     } > "$temp_file" || write_status=1
-    if [ "$write_status" != 0 ] || ! mv -f "$temp_file" "$output_file"; then
+    if [ "$write_status" != 0 ]; then
         rm -f "$temp_file" 2>/dev/null || true
         return 1
     fi
+    _codex_rename_into_place "$temp_file" "$output_file"
 }
 
 # Commit only a helper-acknowledged candidate while the current lease is held.

@@ -849,6 +849,48 @@ test_a_context_link_to_a_directory_stops_the_open() {
     assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
 }
 
+# A link swapped in after the check cannot be staged, so the rename itself is
+# tested: it replaces a link at the destination rather than moving the file
+# into the directory the link points to, and fails on a directory.
+test_the_rename_into_place_never_follows_the_destination() {
+    local dir="$TEST_TMPDIR/rename" status=0
+    mkdir -p "$dir/outside"
+    printf 'context' > "$dir/source"
+    ln -s "$dir/outside" "$dir/destination"
+    _codex_rename_into_place "$dir/source" "$dir/destination" || status=$?
+    assert_eq 0 "$status" "the rename over a link failed" || return 1
+    [ -f "$dir/destination" ] && [ ! -L "$dir/destination" ] \
+        || { echo "  FAIL: the destination is not a regular file"; return 1; }
+    assert_eq context "$(cat "$dir/destination")" "the destination holds the source" || return 1
+    assert_eq '' "$(ls -A "$dir/outside")" "nothing lands in the link's directory" || return 1
+    assert_not_exists "$dir/source" "the source is moved" || return 1
+    mkdir "$dir/a directory"
+    printf 'context' > "$dir/source"
+    status=0
+    _codex_rename_into_place "$dir/source" "$dir/a directory" 2>/dev/null || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the rename onto a directory succeeded"; return 1; }
+    assert_eq '' "$(ls -A "$dir/a directory")" "the directory is unchanged" || return 1
+    assert_not_exists "$dir/source" "a failed rename removes the source" || return 1
+}
+
+# The rotation profile lives in CODEX_HOME, the vault home for an encrypted
+# session; a link or a non-file planted at its name stops the open, named, and
+# nothing is moved to where it points.
+test_a_linked_rotation_profile_stops_the_open() {
+    _vault_fixture
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    local profile output status=0
+    mkdir -p "$VAULT_HOME" "$TEST_TMPDIR/outside"
+    profile=$(CODEX_HOME="$VAULT_HOME" _codex_rotation_profile_path "$CS_TEST_SESSION_DIR") || return 1
+    ln -s "$TEST_TMPDIR/outside" "$profile"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a linked rotation profile must stop the open" || return 1
+    assert_output_contains "$output" "$profile is a link or not a regular file" "names the path" || return 1
+    assert_output_contains "$output" "Remove it; cs writes the file again at the next open." "says what to do" || return 1
+    assert_eq '' "$(ls -A "$TEST_TMPDIR/outside")" "nothing lands in the link's directory" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
+}
+
 test_mismatched_refresh_rejected() {
     local binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id" output status=0
     printf 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n' > "$binding"
@@ -1761,6 +1803,8 @@ run_test test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff
 run_test test_the_context_write_ignores_a_planted_temp_link
 run_test test_a_linked_context_file_stops_the_open
 run_test test_a_context_link_to_a_directory_stops_the_open
+run_test test_the_rename_into_place_never_follows_the_destination
+run_test test_a_linked_rotation_profile_stops_the_open
 run_test test_mismatched_refresh_rejected
 run_test test_cli_status_and_lock_cleanup
 run_test test_claude_runtime_binding_isolation

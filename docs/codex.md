@@ -303,7 +303,9 @@ profiles (`--profile <CONFIG_PROFILE_V2>`), cs launches with a profile scoped to
 this checkout and snapshots those two settings when a turn arms a handoff.
 Both manual and automatic `/clear` then reload that choice. The profile lives
 in `$CODEX_HOME/cs-rotation-<checkout-hash>.config.toml`; each launch resets it to
-that launch's choices. Other sessions keep their own defaults. Restart an
+that launch's choices. A link or anything but a file at that name stops the
+launch, named: cs never writes the profile through it; remove it, and the next
+launch writes the file again. Other sessions keep their own defaults. Restart an
 already running cs/Codex once after installing this support. Older Codex builds
 print a notice that model carryover needs file-backed profile support.
 
