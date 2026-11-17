@@ -16,6 +16,7 @@ source "$SCRIPT_DIR/../lib/52-spawn.sh"
 source "$SCRIPT_DIR/../lib/55-queue.sh"
 source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
+source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
 source "$SCRIPT_DIR/../lib/78-switch.sh"
 
@@ -46,6 +47,11 @@ setup() {
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
     export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0 CS_HELPER_TURN_FAIL_ONCE=0
     export CS_HELPER_PROJECT_CONFIG='{}' CS_HELPER_PROJECT_EXIT=0
+    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
+    export CS_HELPER_VAULT_EXIT=0 CS_HELPER_VAULT_CALLS="$TEST_TMPDIR/helper-vault-calls"
+    export CS_HELPER_HAS_THREAD_EXIT=0 CS_HELPER_HAS_THREAD_HOME=""
+    # The helper's file-only verbs run for real: no Codex is involved.
+    export CS_REAL_THREAD_BIN="$SCRIPT_DIR/../bin/cs-codex-thread"
     export CODEX_BIN="$TEST_TMPDIR/codex with spaces"
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/cs-codex-thread"
     export CS_BIN="$SCRIPT_DIR/../bin/cs"
@@ -56,7 +62,7 @@ if [ "${1:-}" = --help ]; then
     exit "$CS_CODEX_HELP_EXIT"
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
-env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_CODEX_ROTATION_FIXED=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
+env | grep -E '^(CODEX_HOME=|CS_CODEX_SHARED_HOME=|CS_SESSION_|CS_RUN_APPROVAL=|CS_CODEX_ROTATION_FIXED=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
 if [ "$CS_CODEX_START" = 1 ]; then
     printf '{"session_id":"%s","source":"resume"}' "$CS_THREAD_ID" | "$CS_BIN" -codex-hook session-start
 fi
@@ -96,6 +102,24 @@ case " $* " in
         printf '%s\n' "$CS_HELPER_PROJECT_CONFIG"
         exit 0
         ;;
+    *' --vault-check '*)
+        printf 'CODEX_HOME=%s %s\n' "${CODEX_HOME:-}" "$*" >> "$CS_HELPER_VAULT_CALLS"
+        [ "$CS_HELPER_VAULT_EXIT" -eq 0 ] || exit "$CS_HELPER_VAULT_EXIT"
+        printf '%s\n' "$CS_HELPER_VAULT_CHECK"
+        exit 0
+        ;;
+    *' --has-thread '*)
+        # A probe that fails, everywhere or only under CS_HELPER_HAS_THREAD_HOME.
+        if [ "${CS_HELPER_HAS_THREAD_EXIT:-0}" -ne 0 ] \
+            && { [ -z "${CS_HELPER_HAS_THREAD_HOME:-}" ] || [ "${CODEX_HOME:-}" = "$CS_HELPER_HAS_THREAD_HOME" ]; }; then
+            echo 'simulated has-thread failure' >&2
+            exit "$CS_HELPER_HAS_THREAD_EXIT"
+        fi
+        exec python3 -I "$CS_REAL_THREAD_BIN" "$@"
+        ;;
+    *' --seed-config '*)
+        exec python3 -I "$CS_REAL_THREAD_BIN" "$@"
+        ;;
 esac
 printf '%s\n' "$@" > "$CS_HELPER_ARGS"
 printf 'called\n' >> "$CS_HELPER_COUNT"
@@ -103,7 +127,7 @@ printf 'called\n' >> "$CS_HELPER_COUNT"
 printf '%s\n' "$CS_THREAD_ID"
 HELPER
     chmod +x "$CODEX_BIN" "$CS_CODEX_THREAD_BIN"
-    unset CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID CODEX_HOME
+    unset CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID CODEX_HOME CS_CODEX_SHARED_HOME
 }
 
 teardown() {
@@ -116,6 +140,8 @@ teardown() {
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
     unset CS_HELPER_TURN_FAIL_ONCE
     unset CS_HELPER_PROJECT_CONFIG CS_HELPER_PROJECT_EXIT
+    unset CS_HELPER_VAULT_CHECK CS_HELPER_VAULT_EXIT CS_HELPER_VAULT_CALLS CS_REAL_THREAD_BIN CS_CODEX_SHARED_HOME
+    unset CS_HELPER_HAS_THREAD_EXIT CS_HELPER_HAS_THREAD_HOME
     unset CS_TEST_PROBE SESSIONS_ROOT CS_SPAWN_TOKEN
 }
 
@@ -350,28 +376,600 @@ test_missing_codex_home_is_named_before_the_helper() {
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
 }
 
-# Codex keeps its conversations in its own home, outside the vault, so no
-# intent opens an encrypted session; a locked vault (a dangling link) counts.
-test_encrypted_session_refuses_codex() {
-    local output status intent
-    mkdir -p "$TEST_TMPDIR/vault/private"
-    ln -s "$TEST_TMPDIR/vault/private" "$CS_TEST_SESSION_DIR/.cs/private"
-    printf '%s\n' "$CS_THREAD_ID" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
-    for intent in auto fresh resume handoff; do
-        status=0
-        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" "$intent" 2>&1) || status=$?
-        assert_eq 1 "$status" "$intent must refuse an encrypted session" || return 1
-        assert_output_contains "$output" "demo is encrypted" "$intent names why" || return 1
-        assert_output_contains "$output" "cs demo --engine claude" "$intent names the Claude way" || return 1
+# An encrypted session: .cs/private links into a vault, and the shell's Codex
+# home holds a login, a hook and that hook's trust, keyed by its own path.
+_vault_fixture() {
+    mkdir -p "$CS_TEST_SESSION_DIR/.cs/vault-mnt/private"
+    ln -s vault-mnt/private "$CS_TEST_SESSION_DIR/.cs/private"
+    export CODEX_HOME="$TEST_TMPDIR/shared codex"
+    mkdir -p "$CODEX_HOME"
+    printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}\n' > "$CODEX_HOME/hooks.json"
+    printf 'model = "m"\n\n[hooks.state."%s/hooks.json:session_start:0:0"]\ntrusted_hash = "sha256:abc"\n' \
+        "$CODEX_HOME" > "$CODEX_HOME/config.toml"
+    printf '{"tokens":"shared"}\n' > "$CODEX_HOME/auth.json"
+    VAULT_HOME="$(cd -P "$CS_TEST_SESSION_DIR/.cs/private" && pwd -P)/codex-home"
+}
+
+# The fake codex's argv, one -c value per line after its -c.
+_codex_config_args() {
+    awk 'prev == "-c" { print } { prev = $0 }' "$CS_CODEX_LOG"
+}
+
+# Codex runs an encrypted session on a home inside its vault: exported for
+# Codex and its helpers, sharing the login and extensions by link, with the
+# shell's config copied in and its hook trust re-keyed to the copy's path.
+# Approvals (rules/) are a copy and plugin data a vault directory, so neither
+# an approval nor a plugin's data made in the session reaches the shared home.
+test_encrypted_session_runs_codex_on_its_vault_home() {
+    _vault_fixture
+    local output status=0 name
+    mkdir -p "$CODEX_HOME/rules" "$CODEX_HOME/.tmp/bundled-marketplaces"
+    printf 'prefix_rule(pattern=["git", "status"], decision="allow")\n' > "$CODEX_HOME/rules/default.rules"
+    : > "$CODEX_HOME/.tmp/plugins.sync.lock"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_file_contains "$CS_CODEX_ENV" "^CODEX_HOME=$VAULT_HOME\$" "Codex runs on the vault home" || return 1
+    assert_file_contains "$CS_CODEX_ENV" "^CS_CODEX_SHARED_HOME=$CODEX_HOME\$" "the shell's home is kept beside it" || return 1
+    assert_file_contains "$CS_HELPER_VAULT_CALLS" "^CODEX_HOME=$VAULT_HOME " "the check reads the vault home" || return 1
+    for name in auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json skills agents themes hooks; do
+        assert_eq "$CODEX_HOME/$name" "$(readlink "$VAULT_HOME/$name")" "$name links into the shared home" || return 1
     done
-    rm -rf "$TEST_TMPDIR/vault"
+    assert_eq "" "$(readlink "$VAULT_HOME/rules")" "rules is not a link" || return 1
+    assert_dir "$VAULT_HOME/rules" "rules is a vault directory" || return 1
+    assert_eq 'prefix_rule(pattern=["git", "status"], decision="allow")' "$(cat "$VAULT_HOME/rules/default.rules")" \
+        "the shared rules are copied" || return 1
+    printf 'prefix_rule(pattern=["rm"], decision="allow")\n' >> "$VAULT_HOME/rules/default.rules"
+    assert_eq 'prefix_rule(pattern=["git", "status"], decision="allow")' "$(cat "$CODEX_HOME/rules/default.rules")" \
+        "an approval made in the vault stays there" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/plugins")" "plugins is not a link" || return 1
+    assert_dir "$VAULT_HOME/plugins" "plugins is a vault directory" || return 1
+    for name in cache .marketplace-plugin-source-staging .remote-plugin-install-staging .plugin-appserver; do
+        assert_eq "$CODEX_HOME/plugins/$name" "$(readlink "$VAULT_HOME/plugins/$name")" "plugins/$name links into the shared home" || return 1
+        assert_dir "$CODEX_HOME/plugins/$name" "plugins/$name is made in the shared home" || return 1
+    done
+    assert_eq "" "$(readlink "$VAULT_HOME/plugins/data")" "plugin data is never linked" || return 1
+    # Codex keeps a marketplace added from git in .tmp/marketplaces; the rest
+    # of .tmp (bundled marketplaces, sync locks) is per home.
+    assert_eq "" "$(readlink "$VAULT_HOME/.tmp")" ".tmp is not a link" || return 1
+    assert_dir "$VAULT_HOME/.tmp" ".tmp is a vault directory" || return 1
+    assert_eq 700 "$(_file_mode "$VAULT_HOME/.tmp")" ".tmp is private" || return 1
+    assert_eq "$CODEX_HOME/.tmp/marketplaces" "$(readlink "$VAULT_HOME/.tmp/marketplaces")" \
+        ".tmp/marketplaces links into the shared home" || return 1
+    assert_dir "$CODEX_HOME/.tmp/marketplaces" ".tmp/marketplaces is made in the shared home" || return 1
+    assert_eq marketplaces "$(ls -A "$VAULT_HOME/.tmp")" "no other .tmp entry is linked" || return 1
+    assert_eq '{"tokens":"shared"}' "$(cat "$VAULT_HOME/auth.json")" "the login is the shell's" || return 1
+    assert_file_contains "$VAULT_HOME/config.toml" "^model = \"m\"\$" "the config is copied" || return 1
+    assert_file_contains "$VAULT_HOME/config.toml" "^\\[hooks.state.\"$VAULT_HOME/hooks.json:session_start:0:0\"\\]\$" \
+        "hook trust is re-keyed to the vault home" || return 1
+    assert_file_not_contains "$VAULT_HOME/config.toml" "$CODEX_HOME/hooks.json" "no trust keyed by the shared home" || return 1
+    assert_eq 700 "$(_file_mode "$VAULT_HOME")" "the home is private" || return 1
+    assert_file_exists "$CS_TEST_SESSION_DIR/.cs/private/codex-instructions.md" "the context is in the vault" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "no plaintext context" || return 1
+    assert_eq "permissions.cs-vault-home={extends=\":workspace\", filesystem={\"$VAULT_HOME\"=\"read\"}}
+default_permissions=\"cs-vault-home\"" "$(_codex_config_args)" "the agent cannot write the vault home" || return 1
+    assert_eq "$CS_THREAD_ID" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "bound" || return 1
+}
+
+# The copy is made again at every open, so an edit to the shell's config or
+# rules reaches the session, and an approval made in the session lasts until
+# then; a stale link is pointed back, an empty lock replaced.
+test_the_vault_home_is_refreshed_at_every_open() {
+    _vault_fixture
+    local output status=0
+    mkdir -p "$CODEX_HOME/rules"
+    printf 'first\n' > "$CODEX_HOME/rules/default.rules"
+    ( launch_codex demo "$CS_TEST_SESSION_DIR" false false >/dev/null 2>&1 ) || return 1
+    printf 'model = "edited"\n' > "$CODEX_HOME/config.toml"
+    printf 'edited\n' > "$CODEX_HOME/rules/default.rules"
+    printf 'approved in the vault\n' >> "$VAULT_HOME/rules/default.rules"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$VAULT_HOME/skills"
+    rm -f "$VAULT_HOME/auth.lock"
+    : > "$VAULT_HOME/auth.lock"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "second launch failed: $output" || return 1
+    assert_file_contains "$VAULT_HOME/config.toml" '^model = "edited"$' "the edit reached the copy" || return 1
+    assert_eq edited "$(cat "$VAULT_HOME/rules/default.rules")" "the rules are copied again" || return 1
+    assert_eq "$CODEX_HOME/skills" "$(readlink "$VAULT_HOME/skills")" "the stale link is pointed back" || return 1
+    assert_eq "$CODEX_HOME/auth.lock" "$(readlink "$VAULT_HOME/auth.lock")" "the empty lock is replaced by the link" || return 1
+}
+
+# An earlier open linked rules/ and plugins/ to the shared home: the next open
+# makes them vault directories and leaves the shared ones as they were. A real
+# directory where cs links a plugin install stops the open, named.
+test_an_earlier_opens_rules_and_plugins_links_become_vault_directories() {
+    _vault_fixture
+    local output status=0
+    mkdir -p "$VAULT_HOME" "$CODEX_HOME/rules" "$CODEX_HOME/plugins/data/demo-market"
+    printf 'shared\n' > "$CODEX_HOME/rules/default.rules"
+    ln -s "$CODEX_HOME/rules" "$VAULT_HOME/rules"
+    ln -s "$CODEX_HOME/plugins" "$VAULT_HOME/plugins"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/rules")" "rules is no longer a link" || return 1
+    assert_eq shared "$(cat "$VAULT_HOME/rules/default.rules")" "rules is a copy of the shared rules" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/plugins")" "plugins is no longer a link" || return 1
+    assert_dir "$VAULT_HOME/plugins" "plugins is a vault directory" || return 1
+    assert_eq "$CODEX_HOME/plugins/cache" "$(readlink "$VAULT_HOME/plugins/cache")" "the installs are the shell's" || return 1
+    assert_not_exists "$VAULT_HOME/plugins/data" "the shared plugin data does not come along" || return 1
+    assert_eq shared "$(cat "$CODEX_HOME/rules/default.rules")" "the shared rules are left alone" || return 1
+    assert_dir "$CODEX_HOME/plugins/data/demo-market" "the shared plugin data is left alone" || return 1
+    rm "$VAULT_HOME/plugins/cache"
+    mkdir "$VAULT_HOME/plugins/cache"
+    rm -f "$CS_CODEX_LOG"
     status=0
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
-    assert_eq 1 "$status" "a locked vault must refuse too" || return 1
-    assert_output_contains "$output" "demo is encrypted" || return 1
-    assert_not_exists "$CS_HELPER_COUNT" "no helper call" || return 1
+    assert_eq 1 "$status" "a directory where cs links an install must stop the open" || return 1
+    assert_output_contains "$output" "plugins/cache is not cs's link to $CODEX_HOME/plugins/cache" || return 1
+    assert_dir "$VAULT_HOME/plugins/cache" "the directory is kept" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# A link planted where the vault home's .tmp belongs (to the shared .tmp) is
+# replaced by a vault directory, whose only link is marketplaces; the rest of
+# the shared .tmp stays out of the vault home and as it was.
+test_a_planted_tmp_link_becomes_a_vault_directory() {
+    _vault_fixture
+    local output status=0
+    mkdir -p "$VAULT_HOME" "$CODEX_HOME/.tmp/bundled-marketplaces"
+    ln -s "$CODEX_HOME/.tmp" "$VAULT_HOME/.tmp"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/.tmp")" ".tmp is no longer a link" || return 1
+    assert_dir "$VAULT_HOME/.tmp" ".tmp is a vault directory" || return 1
+    assert_eq "$CODEX_HOME/.tmp/marketplaces" "$(readlink "$VAULT_HOME/.tmp/marketplaces")" \
+        "the marketplaces are the shell's" || return 1
+    assert_not_exists "$VAULT_HOME/.tmp/bundled-marketplaces" "the rest of the shared .tmp does not come along" || return 1
+    assert_dir "$CODEX_HOME/.tmp/bundled-marketplaces" "the shared .tmp is left alone" || return 1
+}
+
+# A real auth.json where cs's link was: Codex after a logout and login inside
+# the session, or anything else that can write there, may have put it. It may
+# be the only copy of a login, or a planted one, so cs neither deletes nor uses
+# it, and does not say who wrote it.
+test_a_login_saved_inside_the_vault_stops_the_open() {
+    _vault_fixture
+    local output status=0
+    mkdir -p "$VAULT_HOME"
+    printf '{"tokens":"vault"}\n' > "$VAULT_HOME/auth.json"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a real auth.json must stop the open" || return 1
+    assert_output_contains "$output" "auth.json is a file, not cs's link" || return 1
+    assert_output_contains "$output" "cs cannot tell who wrote it" "names no author" || return 1
+    assert_output_not_contains "$output" "Codex saved a login" "does not claim Codex wrote it" || return 1
+    assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
+    # The commands to paste name the file by the session's own spelling, which
+    # keeps the space in the session folder's name: the description beside
+    # them shows the resolved vault home as a plain name.
+    assert_output_contains "$output" "mv \"$CS_TEST_SESSION_DIR/.cs/private/codex-home/auth.json\" \"$CODEX_HOME/auth.json\"" "names the fix" || return 1
+    assert_output_contains "$output" "rm \"$CS_TEST_SESSION_DIR/.cs/private/codex-home/auth.json\"" "names the other way out" || return 1
+    assert_eq '{"tokens":"vault"}' "$(cat "$VAULT_HOME/auth.json")" "the login is kept" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
+}
+
+# A locked vault (a dangling .cs/private) has nowhere to keep Codex's home.
+test_a_locked_vault_stops_the_codex_open() {
+    _vault_fixture
+    rm -rf "$CS_TEST_SESSION_DIR/.cs/vault-mnt/private"
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a locked vault must stop the open" || return 1
+    assert_output_contains "$output" "its vault is not mounted" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no helper call" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# A codex-home planted as a link (the agent can write .cs/private) is refused
+# before cs makes, chmods or links anything: cs never follows it.
+test_a_linked_vault_home_stops_the_open() {
+    _vault_fixture
+    local victim="$TEST_TMPDIR/victim" output status=0
+    mkdir "$victim"
+    chmod 755 "$victim"
+    ln -s "$victim" "$CS_TEST_SESSION_DIR/.cs/vault-mnt/private/codex-home"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a linked vault home must stop the open" || return 1
+    assert_output_contains "$output" "codex-home is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home." || return 1
+    assert_eq 755 "$(_file_mode "$victim")" "the link's target keeps its mode" || return 1
+    assert_eq "" "$(ls -A "$victim")" "nothing is linked into the link's target" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# The agent can repoint .cs/private at a directory whose name carries a
+# terminal escape (ESC ] ... BEL retitles the terminal or writes the
+# clipboard). Each refusal names the vault home as a plain name, each
+# character a plain name lacks replaced by _, and still names the entry.
+test_vault_home_refusals_name_the_home_as_a_plain_name() {
+    _vault_fixture
+    local evil="$TEST_TMPDIR/v"$'\033]0;evil\007' shown output status case
+    mkdir "$evil"
+    rm "$CS_TEST_SESSION_DIR/.cs/private"
+    ln -s "$evil" "$CS_TEST_SESSION_DIR/.cs/private"
+    VAULT_HOME="$(cd -P "$evil" && pwd -P)/codex-home"
+    shown="$(cd -P "$TEST_TMPDIR" && pwd -P)/v__0_evil_/codex-home"
+    for case in skills cache auth linked; do
+        rm -rf "$VAULT_HOME"
+        case "$case" in
+            skills) mkdir -p "$VAULT_HOME/skills" ;;
+            cache) mkdir -p "$VAULT_HOME/plugins/cache" ;;
+            auth) mkdir -p "$VAULT_HOME" && printf '{}\n' > "$VAULT_HOME/auth.json" ;;
+            linked) ln -s "$TEST_TMPDIR" "$VAULT_HOME" ;;
+        esac
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 1 "$status" "$case must refuse: $output" || return 1
+        case "$case" in
+            skills) assert_output_contains "$output" "$shown/skills is not cs's link to $CODEX_HOME/skills" || return 1 ;;
+            cache) assert_output_contains "$output" "$shown/plugins/cache is not cs's link to $CODEX_HOME/plugins/cache" || return 1 ;;
+            auth)
+                assert_output_contains "$output" "$shown/auth.json is a file, not cs's link" || return 1
+                # The command names the file by the session's own spelling,
+                # which holds nothing the session can plant.
+                assert_output_contains "$output" "rm \"$CS_TEST_SESSION_DIR/.cs/private/codex-home/auth.json\"" "the way out is named" || return 1 ;;
+            linked) assert_output_contains "$output" "$shown is a link or not a directory" || return 1 ;;
+        esac
+        assert_no_escape_bytes "$output" "$case: no escape byte reaches the terminal" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "$case: no thread prepared" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "$case: no CLI call" || return 1
+    done
+}
+
+# The profile replaces [sandbox_workspace_write], so the settings Codex
+# resolved from it are carried into cs's profile.
+test_the_vault_profile_keeps_the_users_workspace_settings() {
+    _vault_fixture
+    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":"workspace-write","default_permissions":null,"sandbox_workspace_write":{"writable_roots":["/w/one","/w/t\"wo"],"network_access":true,"exclude_slash_tmp":true,"exclude_tmpdir_env_var":true},"profile_defined":false,"untrusted":[]}'
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq "permissions.cs-vault-home={extends=\":workspace\", filesystem={\"$VAULT_HOME\"=\"read\", \"/w/one\"=\"write\", \"/w/t\\\"wo\"=\"write\", \":slash_tmp\"=\"read\", \":tmpdir\"=\"read\"}, network={enabled=true}}
+default_permissions=\"cs-vault-home\"" "$(_codex_config_args)" "every setting is carried" || return 1
+}
+
+# Native approval leaves the sandbox to the user's config: read-only and full
+# access need no rule, the workspace sandbox gets cs's, and a profile of the
+# user's own is refused before anything is prepared.
+test_native_approval_follows_the_users_sandbox() {
+    _vault_fixture
+    export CS_LAUNCH_APPROVAL=native
+    local output status mode
+    for mode in read-only danger-full-access; do
+        export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":\"$mode\",\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[]}"
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 0 "$status" "$mode launch failed: $output" || return 1
+        assert_eq "" "$(_codex_config_args)" "$mode adds no profile" || return 1
+    done
+    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":"workspace-write","default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "workspace launch failed: $output" || return 1
+    assert_output_contains "$(_codex_config_args)" '^default_permissions="cs-vault-home"$' "the workspace sandbox gets the rule" || return 1
+    rm -f "$CS_CODEX_LOG" "$CS_HELPER_COUNT" "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":"mine","sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a profile of the user's own must refuse" || return 1
+    assert_output_contains "$output" "selects the permissions profile mine" || return 1
+    assert_output_contains "$output" "--approve-for-me" "names the way that works" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# What cs cannot confine stops the open before anything is bound: a profile a
+# file already defines under cs's name (cs's would merge into it), a project
+# config Codex loads only once the folder is trusted (after cs has chosen its
+# profile), a hook the shell's home trusts that would not run here, a writable
+# root inside the vault home (it would win over cs's read rule), or a check
+# that cannot run.
+test_the_vault_check_refuses_what_cs_cannot_confine() {
+    _vault_fixture
+    local output status case folder
+    folder=$(cd -P "$CS_TEST_SESSION_DIR" && pwd -P)
+    for case in profile project untrusted unlisted home_root failed; do
+        case "$case" in
+            profile) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":true,"untrusted":[]}' ;;
+            # Its hooks would be refused too; the project config is named first.
+            project) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[\"aws-readonly-guard\"],\"untrusted_project_configs\":[\"$folder/.codex/config.toml\",\"$TEST_TMPDIR/e\\u001b]0;evil\\u0007/.codex/config.toml\"]}" ;;
+            untrusted) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":["aws-readonly-guard","echo hi"]}' ;;
+            unlisted) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[],\"unlisted\":[\"$CODEX_HOME/hooks.json\"]}" ;;
+            home_root) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{\"writable_roots\":[\"$VAULT_HOME/config.toml\",\"/w\",\"$VAULT_HOME\"]},\"profile_defined\":false,\"untrusted\":[],\"home_roots\":[\"$VAULT_HOME/config.toml\",\"$VAULT_HOME\",\"$VAULT_HOME/e\\u001b]0;evil\\u0007\"]}" ;;
+            failed) export CS_HELPER_VAULT_EXIT=1 ;;
+        esac
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 1 "$status" "$case must refuse" || return 1
+        case "$case" in
+            profile) assert_output_contains "$output" "already defines the permissions profile cs-vault-home" || return 1 ;;
+            project)
+                # Each path as a plain name: a space or an escape shows as _.
+                assert_output_contains "$output" "${folder// /_}/.codex/config.toml; ${TEST_TMPDIR// /_}/e__0_evil_/.codex/config.toml is a Codex project config that Codex reads only once you trust this folder" || return 1
+                assert_output_contains "$output" "Trust the folder in $CODEX_HOME/config.toml (\\[projects\\.\"$folder\"\\] with trust_level = \"trusted\"), so cs's checks see that config too, or remove it\\." \
+                    "names both ways out" || return 1
+                assert_output_not_contains "$output" "would not run in the vault Codex home" "named before the hooks" || return 1
+                assert_no_escape_bytes "$output" "no escape byte reaches the terminal" || return 1 ;;
+            untrusted) assert_output_contains "$output" "would not run in the vault Codex home.*: aws-readonly-guard; echo hi\\." || return 1 ;;
+            unlisted)
+                # Re-trusting in /hooks cannot make Codex list them.
+                assert_output_contains "$output" "Codex listed none of the hooks $CODEX_HOME/hooks.json defines for the vault Codex home" || return 1
+                assert_output_contains "$output" "update cs, or open this session under Claude" || return 1
+                assert_output_not_contains "$output" "/hooks in a Codex outside" "no advice that cannot help" || return 1 ;;
+            home_root)
+                # Each root is shown as a plain name: the space in the session
+                # folder's name, and a planted root's escape bytes, show as _.
+                assert_output_contains "$output" "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: ${VAULT_HOME// /_}/config.toml; ${VAULT_HOME// /_}; ${VAULT_HOME// /_}/e__0_evil_\\. Remove them from the Codex config that sets them\\." || return 1
+                assert_eq 0 "$(printf '%s' "$output" | LC_ALL=C grep -c "$(printf '\033')")" "no escape byte reaches the terminal" || return 1 ;;
+            failed) assert_output_contains "$output" "does not start Codex there unchecked" || return 1 ;;
+        esac
+        assert_not_exists "$CS_HELPER_COUNT" "$case: no thread prepared" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "$case: no CLI call" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "$case: lock released" || return 1
+    done
+}
+
+# A vault home inherited from a launch into another encrypted session is
+# dropped for a plain one, back to the shell's home, or to Codex's default.
+test_an_inherited_vault_home_is_dropped() {
+    local output status=0
+    export CS_CODEX_SHARED_HOME="$TEST_TMPDIR/shell codex"
+    export CODEX_HOME="$TEST_TMPDIR/other/.cs/vault-mnt/private/codex-home"
+    mkdir -p "$CS_CODEX_SHARED_HOME" "$CODEX_HOME"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_file_contains "$CS_CODEX_ENV" "^CODEX_HOME=$TEST_TMPDIR/shell codex\$" "back to the shell's home" || return 1
+    assert_file_not_contains "$CS_CODEX_ENV" "^CS_CODEX_SHARED_HOME=" "no vault home here" || return 1
+    assert_eq "" "$(_codex_config_args)" "no vault profile for a plain session" || return 1
+    unset CS_CODEX_SHARED_HOME
+    export CODEX_HOME="$TEST_TMPDIR/other/.cs/private/codex-home"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_file_not_contains "$CS_CODEX_ENV" "^CODEX_HOME=" "Codex's default home" || return 1
+}
+
+# A binding made before the session's Codex home moved into its vault names a
+# thread the shared home keeps. The open starts the vault's first thread in
+# its place, and says where the old one stays; an explicit resume refuses.
+test_a_binding_from_before_the_vault_starts_a_vault_thread() {
+    _vault_fixture
+    local old=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status=0
+    printf '%s\n' "$old" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    # The old conversation's history, in the shared home.
+    mkdir -p "$CODEX_HOME/sessions/2026/11/16"
+    : > "$CODEX_HOME/sessions/2026/11/16/rollout-2026-11-16T09-00-00-$old.jsonl"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" resume 2>&1) || status=$?
+    assert_eq 1 "$status" "an explicit resume must refuse" || return 1
+    assert_output_contains "$output" "Cannot resume: the recorded Codex conversation $old is kept in $CODEX_HOME, outside the vault" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_output_contains "$output" "The earlier Codex conversation $old stays in $CODEX_HOME, outside the vault" || return 1
+    assert_output_not_contains "$(cat "$CS_HELPER_ARGS")" '--thread-id' "a new thread is made" || return 1
+    assert_eq "$CS_THREAD_ID" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "the binding moves to it" || return 1
+    # Once the vault keeps the bound thread's history, the open resumes it.
+    mkdir -p "$VAULT_HOME/sessions/2026/11/16"
+    : > "$VAULT_HOME/sessions/2026/11/16/rollout-2026-11-16T10-00-00-$CS_THREAD_ID.jsonl"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" resume 2>&1) || status=$?
+    assert_eq 0 "$status" "resume failed: $output" || return 1
+    assert_output_contains "$(cat "$CS_HELPER_ARGS")" "$CS_THREAD_ID" "the vault thread is resumed" || return 1
+    assert_output_not_contains "$output" "outside the vault" || return 1
+}
+
+# A bound conversation neither the vault nor the shared home keeps is not one
+# from before the vault: the open refreshes it as in a plain session, and a
+# refresh that fails keeps the binding.
+test_a_binding_found_in_neither_home_fails_its_refresh() {
+    _vault_fixture
+    local old=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status=0
+    printf '%s\n' "$old" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    export CS_HELPER_EXIT=1
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a failed refresh must stop the open" || return 1
+    assert_output_not_contains "$output" "stays in" "nothing is said to stay outside the vault" || return 1
+    assert_output_contains "$(cat "$CS_HELPER_ARGS")" "^--thread-id\$" "the bound thread is refreshed" || return 1
+    assert_output_contains "$(cat "$CS_HELPER_ARGS")" "^$old\$" "the bound thread is refreshed" || return 1
+    assert_output_contains "$output" "Could not refresh Codex thread $old\\. The binding remains" || return 1
+    assert_eq "$old" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "the binding is unchanged" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# A probe for the bound conversation that fails says nothing about where it
+# is kept: the open stops with the helper's reason and the binding as it was,
+# whether the vault's probe failed or the shared home's.
+test_a_failed_thread_probe_stops_the_open() {
+    _vault_fixture
+    local old=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa output status
+    printf '%s\n' "$old" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    export CS_HELPER_HAS_THREAD_EXIT=1
+    for CS_HELPER_HAS_THREAD_HOME in "" "$CODEX_HOME"; do
+        export CS_HELPER_HAS_THREAD_HOME
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 1 "$status" "a failed probe must stop the open (${CS_HELPER_HAS_THREAD_HOME:-vault})" || return 1
+        if [ -z "$CS_HELPER_HAS_THREAD_HOME" ]; then
+            assert_output_contains "$output" "Could not look for Codex conversation $old in the vault's Codex home; the binding is unchanged\\." || return 1
+        else
+            assert_output_contains "$output" "Could not look for Codex conversation $old in the shared Codex home $CODEX_HOME; the binding is unchanged\\." || return 1
+        fi
+        assert_output_contains "$output" "simulated has-thread failure" "the helper's reason reaches the terminal" || return 1
+        assert_output_not_contains "$output" "stays in" "nothing is said to stay outside the vault" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+        assert_eq "$old" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id")" "the binding is unchanged" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "lock released" || return 1
+    done
+}
+
+# r in an encrypted session: the handoff and its marker live in the vault, and
+# the new thread is told where to read them. The handoff's name is the
+# session's topic: it stays out of Codex's argv and the plaintext timeline.
+test_r_in_an_encrypted_session_reads_the_vault_handoff() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0 kick
+    # The thread the rotation leaves, kept in the vault.
+    printf '%s\n' "$ROTATION_OLD_THREAD" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    mkdir -p "$VAULT_HOME/sessions/2026/11/16"
+    : > "$VAULT_HOME/sessions/2026/11/16/rollout-2026-11-16T10-00-00-$ROTATION_OLD_THREAD.jsonl"
+    mkdir -p "$private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: next step\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$ROTATION_OLD_THREAD" > "$private/handoffs/$ROTATION_HANDOFF"
+    printf '%s\n' "$ROTATION_HANDOFF" > "$private/pending-handoff"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    assert_eq 0 "$status" "handoff launch failed: $output" || return 1
+    kick=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_output_not_contains "$kick" "$ROTATION_HANDOFF" "the topic stays out of argv" || return 1
+    assert_output_contains "$kick" "^Continue from the pending rotation handoff: read the handoff in \\.cs/private/handoffs/ " \
+        "the kick names the vault path" || return 1
+    assert_output_contains "$kick" "consumed_by: $CS_THREAD_ID first\\.\$" "and the consumed_by line to find it by" || return 1
+    jq -e --arg from "$ROTATION_OLD_THREAD" --arg to "$CS_THREAD_ID" \
+        'select(.event == "rotated") | .engine == "codex" and .from == $from and .to == $to
+         and .reason == "handoff" and (has("handoff") | not)' \
+        "$CS_TEST_SESSION_DIR/.cs/timeline.jsonl" >/dev/null \
+        || { echo "  FAIL: no rotated event for the handoff without its name"; return 1; }
+    assert_eq "" "$(grep -rF "$ROTATION_HANDOFF" "$CS_TEST_SESSION_DIR/.cs/timeline.jsonl" "$CS_TEST_SESSION_DIR/.cs/local")" \
+        "the handoff's name stays out of the plaintext files" || return 1
+    assert_file_contains "$private/codex-instructions.md" "Read .cs/private/handoffs/$ROTATION_HANDOFF FIRST" || return 1
+    [ -f "$private/codex-instructions.md" ] && [ ! -L "$private/codex-instructions.md" ] \
+        || { echo "  FAIL: the context with its rotation preamble is not a regular file"; return 1; }
+    assert_file_contains "$private/codex-instructions.md" 'Agent-sessions executable:' "the file holds the context as well as the preamble" || return 1
+    assert_file_contains "$private/handoffs/$ROTATION_HANDOFF" "^status: consumed$" "spent" || return 1
+    assert_not_exists "$private/pending-handoff" "the vault's marker is disarmed" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/handoffs" "nothing written outside the vault" || return 1
+}
+
+# The same with a flip the vault's handoff store refuses: no consumed_by line
+# was written to point at, so the kick names the marker, never the file.
+test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0 kick
+    mkdir -p "$private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: next step\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$ROTATION_OLD_THREAD" > "$private/handoffs/$ROTATION_HANDOFF"
+    printf '%s\n' "$ROTATION_HANDOFF" > "$private/pending-handoff"
+    chmod 555 "$private/handoffs"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    chmod 755 "$private/handoffs"
+    assert_eq 0 "$status" "handoff launch failed: $output" || return 1
+    assert_file_contains "$private/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" "the flip is refused" || return 1
+    assert_file_exists "$private/pending-handoff" "the marker stays armed" || return 1
+    kick=$(tail -n 1 "$CS_CODEX_LOG")
+    assert_output_not_contains "$kick" "$ROTATION_HANDOFF" "the topic stays out of argv" || return 1
+    assert_output_contains "$kick" "^Continue from the pending rotation handoff: read the handoff \\.cs/private/pending-handoff names, in \\.cs/private/handoffs/, first\\. " \
+        "the kick names the marker" || return 1
+    assert_output_contains "$kick" "will load this same handoff again" "and says the next start retries" || return 1
+}
+
+# The agent can write .cs/private, where an encrypted session's context lives.
+# A link planted at the temp name cs once wrote the context through is never
+# followed: the context is written to a fresh temp file and moved into place.
+test_the_context_write_ignores_a_planted_temp_link() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    printf 'precious' > "$TEST_TMPDIR/victim"
+    # launch_codex runs in a subshell of this shell, where bash's $$ is still
+    # this shell's pid: the name the old "$output_file.tmp.$$" would take.
+    ln -s "$TEST_TMPDIR/victim" "$private/codex-instructions.md.tmp.$$"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the file outside the session is untouched" || return 1
+    [ -f "$private/codex-instructions.md" ] && [ ! -L "$private/codex-instructions.md" ] \
+        || { echo "  FAIL: the context is not a regular file"; return 1; }
+    assert_file_contains "$private/codex-instructions.md" 'Agent-sessions executable:' "the context is written" || return 1
+}
+
+# A link at the context's own name stops the open: cs writes nothing through
+# it and names it, so the user can remove it.
+test_a_linked_context_file_stops_the_open() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    printf 'precious' > "$TEST_TMPDIR/victim"
+    ln -s "$TEST_TMPDIR/victim" "$private/codex-instructions.md"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a linked context file must stop the open" || return 1
+    assert_output_contains "$output" "$private/codex-instructions.md is a link or not a regular file" "names the path" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/victim")" "the link's target is untouched" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
+}
+
+# The same with the link pointing at a directory outside the session: nothing
+# is moved into it.
+test_a_context_link_to_a_directory_stops_the_open() {
+    _vault_fixture
+    local private="$CS_TEST_SESSION_DIR/.cs/private" output status=0
+    mkdir "$TEST_TMPDIR/outside"
+    ln -s "$TEST_TMPDIR/outside" "$private/codex-instructions.md"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a context link to a directory must stop the open" || return 1
+    assert_output_contains "$output" "$private/codex-instructions.md is a link or not a regular file" "names the path" || return 1
+    assert_eq '' "$(ls -A "$TEST_TMPDIR/outside")" "nothing lands in the directory" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
+}
+
+# A link swapped in for the temp file after the check cannot be staged, so the
+# writer is tested where it can be: a link or a non-file at the destination is
+# refused, named, and nothing reaches where it points.
+test_the_write_into_place_refuses_a_link_to_a_file() {
+    local dir="$TEST_TMPDIR/write" output status=0
+    mkdir -p "$dir"
+    printf 'precious' > "$dir/outside"
+    ln -s "$dir/outside" "$dir/destination"
+    output=$(printf 'context' | _codex_write_into_place "$dir/destination" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the write through a link to a file succeeded"; return 1; }
+    assert_output_contains "$output" "$dir/destination is a link or not a regular file; cs does not write through it." \
+        "names the path" || return 1
+    assert_eq precious "$(cat "$dir/outside")" "the link's target is untouched" || return 1
+    [ -L "$dir/destination" ] || { echo "  FAIL: the link was replaced"; return 1; }
+    assert_eq "$(printf 'destination\noutside')" "$(ls -A "$dir")" "no temp file is left beside it" || return 1
+}
+
+test_the_write_into_place_refuses_a_link_to_a_directory() {
+    local dir="$TEST_TMPDIR/write" output status=0
+    mkdir -p "$dir/outside"
+    ln -s "$dir/outside" "$dir/destination"
+    output=$(printf 'context' | _codex_write_into_place "$dir/destination" 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the write through a link to a directory succeeded"; return 1; }
+    assert_output_contains "$output" "$dir/destination is a link or not a regular file; cs does not write through it." \
+        "names the path" || return 1
+    assert_eq '' "$(ls -A "$dir/outside")" "nothing lands in the link's directory" || return 1
+    assert_eq "$(printf 'destination\noutside')" "$(ls -A "$dir")" "no temp file is left beside it" || return 1
+}
+
+# A missing destination is written with the content on stdin, trailing newlines
+# kept, readable by the owner alone, and no temp file is left beside it.
+test_the_write_into_place_writes_a_new_file() {
+    local dir="$TEST_TMPDIR/write" status=0
+    mkdir -p "$dir"
+    printf 'context\n\n' | _codex_write_into_place "$dir/destination" || status=$?
+    assert_eq 0 "$status" "the write failed" || return 1
+    [ -f "$dir/destination" ] && [ ! -L "$dir/destination" ] \
+        || { echo "  FAIL: the destination is not a regular file"; return 1; }
+    assert_eq "$(printf 'context\n\nx')" "$(cat "$dir/destination"; printf x)" "the destination holds stdin" || return 1
+    assert_eq 600 "$(_file_mode "$dir/destination")" "the file is private" || return 1
+    assert_eq destination "$(ls -A "$dir")" "no temp file is left beside it" || return 1
+}
+
+# The rotation profile lives in CODEX_HOME, the vault home for an encrypted
+# session; a link or a non-file planted at its name stops the open, named, and
+# nothing is moved to where it points.
+test_a_linked_rotation_profile_stops_the_open() {
+    _vault_fixture
+    export CS_CODEX_HELP=$'--approve-for-me\n-p, --profile <CONFIG_PROFILE_V2>'
+    local profile output status=0
+    mkdir -p "$VAULT_HOME" "$TEST_TMPDIR/outside"
+    profile=$(CODEX_HOME="$VAULT_HOME" _codex_rotation_profile_path "$CS_TEST_SESSION_DIR") || return 1
+    ln -s "$TEST_TMPDIR/outside" "$profile"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a linked rotation profile must stop the open" || return 1
+    # Shown as a plain name: the vault home is reached through .cs/private, a
+    # link, and the space in the session folder's name shows as _.
+    assert_output_contains "$output" "${profile// /_} is a link or not a regular file" "names the path" || return 1
+    assert_output_contains "$output" "Remove it; cs writes the file again at the next open." "says what to do" || return 1
+    assert_eq '' "$(ls -A "$TEST_TMPDIR/outside")" "nothing lands in the link's directory" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no Codex start" || return 1
 }
 
 test_mismatched_refresh_rejected() {
@@ -481,6 +1079,7 @@ source "$CS_TEST_LIB_DIR/../lib/40-state.sh"
 source "$CS_TEST_LIB_DIR/../lib/41-bindings.sh"
 source "$CS_TEST_LIB_DIR/../lib/75-launch.sh"
 source "$CS_TEST_LIB_DIR/../lib/76-codex.sh"
+source "$CS_TEST_LIB_DIR/../lib/76-codex-vault.sh"
 source "$CS_TEST_LIB_DIR/../lib/77-codex-hooks.sh"
 source "$CS_TEST_LIB_DIR/../lib/78-switch.sh"
 _set_local_state() { printf '%s: %s\n' "$2" "$3" >> "$1"; }
@@ -554,7 +1153,7 @@ FAKE_CODEX
     cat > "$launcher_script" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
-for lib in 02-shared 15-lock 16-lifecycle 24-engine-adapters 36-context 40-state 41-bindings 75-launch 76-codex 77-codex-hooks 78-switch; do
+for lib in 02-shared 15-lock 16-lifecycle 24-engine-adapters 36-context 40-state 41-bindings 75-launch 76-codex 76-codex-vault 77-codex-hooks 78-switch; do
     source "$CS_TEST_LIB_DIR/../lib/$lib.sh"
 done
 _set_local_state() { printf '%s: %s\n' "$2" "$3" >> "$1"; }
@@ -1266,7 +1865,30 @@ run_test test_resume_refreshes_exact_thread
 run_test test_failed_refresh_never_starts_fresh
 run_test test_malformed_binding_rejected_without_helper
 run_test test_missing_codex_home_is_named_before_the_helper
-run_test test_encrypted_session_refuses_codex
+run_test test_encrypted_session_runs_codex_on_its_vault_home
+run_test test_the_vault_home_is_refreshed_at_every_open
+run_test test_an_earlier_opens_rules_and_plugins_links_become_vault_directories
+run_test test_a_planted_tmp_link_becomes_a_vault_directory
+run_test test_a_login_saved_inside_the_vault_stops_the_open
+run_test test_a_locked_vault_stops_the_codex_open
+run_test test_a_linked_vault_home_stops_the_open
+run_test test_vault_home_refusals_name_the_home_as_a_plain_name
+run_test test_the_vault_profile_keeps_the_users_workspace_settings
+run_test test_native_approval_follows_the_users_sandbox
+run_test test_the_vault_check_refuses_what_cs_cannot_confine
+run_test test_an_inherited_vault_home_is_dropped
+run_test test_a_binding_from_before_the_vault_starts_a_vault_thread
+run_test test_a_binding_found_in_neither_home_fails_its_refresh
+run_test test_a_failed_thread_probe_stops_the_open
+run_test test_r_in_an_encrypted_session_reads_the_vault_handoff
+run_test test_r_in_an_encrypted_session_with_a_refused_flip_names_no_handoff
+run_test test_the_context_write_ignores_a_planted_temp_link
+run_test test_a_linked_context_file_stops_the_open
+run_test test_a_context_link_to_a_directory_stops_the_open
+run_test test_the_write_into_place_refuses_a_link_to_a_file
+run_test test_the_write_into_place_refuses_a_link_to_a_directory
+run_test test_the_write_into_place_writes_a_new_file
+run_test test_a_linked_rotation_profile_stops_the_open
 run_test test_mismatched_refresh_rejected
 run_test test_cli_status_and_lock_cleanup
 run_test test_claude_runtime_binding_isolation

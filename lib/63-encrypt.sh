@@ -10,7 +10,7 @@ _encrypt_container_path() {  # session_name
 
 # Every precondition, checked before anything is written.
 _encrypt_refuse() {  # session_name
-    local name="$1" dir meta sub container
+    local name="$1" dir meta sub container leftover
     [ "$(uname -s)" = "Darwin" ] || error "cs -encrypt needs macOS (hdiutil); Linux is not supported yet."
     case "$name" in
         *@*) error "$name: encrypt the base session, not a feature worktree." ;;
@@ -31,6 +31,21 @@ _encrypt_refuse() {  # session_name
         [ -e "$meta/$sub" ] && error "$name: .cs/$sub already exists and is not a link; cs -encrypt links it into the vault. Move it aside first."
     done
     [ -e "$meta/local/pre-open" ] && error "$name: .cs/local/pre-open already exists; cs -encrypt writes its own. Move yours aside first."
+    # The Codex launch's plaintext context is deleted before anything moves;
+    # anything but a file there would stop that delete with the work half done.
+    if { [ -e "$meta/local/codex-instructions.md" ] || [ -L "$meta/local/codex-instructions.md" ]; } \
+        && [ ! -f "$meta/local/codex-instructions.md" ]; then
+        error "$name: .cs/local/codex-instructions.md is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+    fi
+    # So are the temp files a launch interrupted while it wrote the context
+    # left beside it (.codex-instructions.*, or an older cs's
+    # codex-instructions.md.tmp.<pid>). The agent chose their names, so each
+    # is printed plain.
+    for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        if { [ -e "$leftover" ] || [ -L "$leftover" ]; } && [ ! -f "$leftover" ]; then
+            error "$name: .cs/local/$(_cs_plain_name "${leftover##*/}" 160) is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+        fi
+    done
     container=$(_encrypt_container_path "$name")
     # pre-open records this path and attaches it from the session directory.
     case "$container" in /*) ;; *) error "CS_DATA_DIR=$CS_DATA_DIR: cs -encrypt needs an absolute path; every open attaches the container from the session directory." ;; esac
@@ -189,7 +204,7 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub taken=0
+    local name="$1" meta container mnt sub leftover taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
@@ -214,6 +229,20 @@ run_encrypt() {
     mkdir -p "$meta/local"
     mnt="$meta/vault-mnt"
     container=$(_encrypt_container_path "$name")
+
+    # The Codex launch's context, built from memory and the narrative: nothing
+    # but a copy, written again inside the vault at the next Codex open.
+    # Deleted, not carried, and before the container is made, so a failure
+    # leaves the session as it was. So is every temp copy an interrupted
+    # launch left beside it, named plain: the agent chose that name, and rm
+    # would print it raw.
+    rm -f "$meta/local/codex-instructions.md" \
+        || error "$name: could not delete $meta/local/codex-instructions.md, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+    for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        [ -e "$leftover" ] || [ -L "$leftover" ] || continue
+        rm -f "$leftover" 2>/dev/null \
+            || error "$name: could not delete $meta/local/$(_cs_plain_name "${leftover##*/}" 160), a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+    done
 
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."
@@ -241,10 +270,18 @@ run_encrypt() {
     hdiutil detach "$mnt" \
         || error "$name: encrypted, but the vault would not detach; run hdiutil detach $mnt before opening it."
     info "$name is encrypted. Every open asks for the vault password; the vault detaches when the last conversation ends."
+    # The shell's Codex home, never a vault home inherited from another
+    # encrypted session's launch, as cs -doctor names it.
+    local codex_shared
+    codex_shared=$(_codex_shared_home)
+    _codex_is_vault_home "$codex_shared" && codex_shared="$HOME/.codex"
     echo "cs could not move copies made before today; remove them by hand if they matter:"
     echo "  - this session's transcripts in ~/.claude/projects/"
     echo "  - its lines in ~/.claude/history.jsonl"
     echo "  - its project entries in ~/.claude.json and that file's backups"
+    echo "  - its Codex conversations in $codex_shared: rollouts under sessions/ and archived_sessions/,"
+    echo "    lines in history.jsonl and session_index.jsonl, rows in its state databases, and its"
+    echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
     echo "  - git history of anything committed before, and backups or snapshots"
 }

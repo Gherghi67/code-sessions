@@ -3,7 +3,7 @@
 # ABOUTME: model settings, without a model.
 # ABOUTME: Persists CS context through app-server and verifies it in a fresh process.
 # ABOUTME: Also carries a conversation across engines: a thread out as a Claude transcript,
-# ABOUTME: a Claude transcript into a new thread.
+# ABOUTME: a Claude transcript into a new thread. Seeds and checks an encrypted session's vault home.
 """Requires Codex app-server's experimental thread/inject_items API."""
 
 import argparse
@@ -1108,6 +1108,265 @@ def project_config(args):
     return json.dumps(pinned)
 
 
+# An encrypted session runs Codex on a home inside its vault (lib/76-codex-vault.sh).
+# cs's permissions profile there keeps the agent from writing that home.
+VAULT_PROFILE = "cs-vault-home"
+
+
+def has_thread(args):
+    # Whether CODEX_HOME keeps this thread's history: a binding made before the
+    # session's Codex home moved into its vault names a thread kept elsewhere.
+    try:
+        codex_rollout(args.thread_id)
+    except BootstrapError:
+        return "no"
+    return "yes"
+
+
+def load_toml(text, what):
+    try:
+        import tomllib
+    except ImportError as exc:
+        raise BootstrapError("reading " + what + " needs Python 3.11 or later (tomllib)") from exc
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise BootstrapError(what + " is not valid TOML") from exc
+
+
+def trust_sources(home):
+    # The paths Codex keys a home's hook trust by: the home's hooks.json and
+    # config.toml ([[hooks.<event>]] tables), as the home is spelled and as it resolves.
+    spellings = []
+    for base in (str(home), os.path.realpath(home)):
+        for name in ("hooks.json", "config.toml"):
+            path = os.path.join(base, name)
+            if path not in spellings:
+                spellings.append(path)
+    return spellings
+
+
+def plain_path(path):
+    # Kept out of the re-keyed TOML keys: a quote or a backslash would need escaping there.
+    return '"' not in path and "\\" not in path and "\n" not in path
+
+
+def seed_config(args):
+    # The vault home's config.toml and rules/: copies of the shared home's, made
+    # at every launch, so the user's later edits reach them and what a run saves
+    # in them (an approval Codex appends to rules/, a project trust) lasts until
+    # the next open. Codex keys hook trust by the path of the hooks.json or
+    # config.toml it read the hook from, so each trust table the shared home
+    # holds is renamed to the vault home's path: the hooks are the same file
+    # (hooks.json is a link) or the same text (config.toml), and every
+    # trusted_hash is bound to the hook's content. Nothing else is changed and
+    # nothing is taken from the previous copy, which a writer outside Codex's
+    # sandbox may have edited.
+    shared, home = Path(args.shared_home), Path(args.home)
+    if not home.is_dir() or home.is_symlink():
+        raise BootstrapError("the vault Codex home is not a directory: " + str(home))
+    new_base = str(home)
+    if not plain_path(new_base):
+        raise BootstrapError("the vault Codex home's path holds a quote or a backslash")
+    source = shared / "config.toml"
+    text = source.read_text(encoding="utf-8") if source.is_file() else ""
+    load_toml(text, str(source))
+    renames = [(old, os.path.join(new_base, os.path.basename(old)))
+               for old in trust_sources(shared) if plain_path(old)]
+    lines = []
+    for line in text.splitlines(keepends=True):
+        body = line.lstrip()
+        for old, new in renames:
+            prefix = '[hooks.state."' + old + ":"
+            if body.startswith(prefix):
+                line = line[:len(line) - len(body)] + '[hooks.state."' + new + ":" + body[len(prefix):]
+                break
+        lines.append(line)
+    seeded = "".join(lines)
+    # An entry the text pass did not re-key (another TOML form, written by hand)
+    # stays keyed by the shared home and its hook would not run here: say how
+    # to write it, before the previous copy is replaced.
+    state = load_toml(seeded, str(source)).get("hooks")
+    state = state.get("state") if isinstance(state, dict) else None
+    for key in (state if isinstance(state, dict) else ()):
+        if any(key.startswith(old + ":") for old, _ in renames):
+            raise BootstrapError(
+                "cs cannot re-key the hook trust entry " + json.dumps(key) + " in " + str(source)
+                + " for the vault Codex home: it re-keys only [hooks.state.\"<key>\"] tables, so write"
+                + " the entry as [hooks.state." + json.dumps(key) + "] there")
+    target = home / "config.toml"
+    handle, temp = tempfile.mkstemp(prefix=".config.toml.", dir=str(home))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(seeded)
+        os.chmod(temp, 0o600)
+        os.replace(temp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+    seed_rules(shared, home)
+    return str(target)
+
+
+def dangling_links(directory, names):
+    # copytree's own ignore_dangling_symlinks tests a relative link from the
+    # current directory, not from the link's, and so drops a sound one.
+    return {name for name in names
+            if os.path.islink(os.path.join(directory, name)) and not os.path.exists(os.path.join(directory, name))}
+
+
+def seed_rules(shared, home):
+    # rules/ is copied whole, links in the shared one followed and dangling ones
+    # left out, so nothing in the copy points back into the shared home. An
+    # earlier open's link to the shared rules/ is removed; the previous copy is
+    # replaced only once the new one is complete.
+    target = home / "rules"
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists() and not target.is_dir():
+        # Shown as cs shows a plain name: the vault home is reached through .cs/private, a link.
+        shown = re.sub(r"[^A-Za-z0-9._/@-]", "_", str(target))
+        raise BootstrapError("the vault Codex home's rules is not a directory: " + shown)
+    source = shared / "rules"
+    fresh = tempfile.mkdtemp(prefix=".rules.", dir=str(home))
+    aside = None
+    try:
+        if source.is_dir():
+            shutil.copytree(str(source), fresh, symlinks=False, ignore=dangling_links, dirs_exist_ok=True)
+        os.chmod(fresh, 0o700)
+        if target.is_dir():
+            # Renamed over an empty directory of its own, which rename allows.
+            aside = tempfile.mkdtemp(prefix=".rules.", dir=str(home))
+            os.rename(str(target), aside)
+        try:
+            os.rename(fresh, str(target))
+        except BaseException:
+            if aside is not None:
+                os.rename(aside, str(target))
+                aside = None
+            raise
+    except BaseException as exc:
+        shutil.rmtree(fresh, ignore_errors=True)
+        if isinstance(exc, OSError):
+            raise BootstrapError("could not copy " + str(source) + " into the vault Codex home") from exc
+        raise
+    if aside is not None:
+        shutil.rmtree(aside, ignore_errors=True)
+
+
+def defines_hooks(source, shared):
+    # Whether a trust source of the shared home still defines a hook, as Codex
+    # loads them: a hooks.json whose "hooks" object, or the config.toml (parsed
+    # in shared) whose [hooks] table, its state aside, names an event with a
+    # matcher group. Codex loads nothing from a hooks.json it cannot read or parse.
+    if os.path.basename(source) == "hooks.json":
+        try:
+            data = json.loads(Path(source).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return False
+        events = data.get("hooks") if isinstance(data, dict) else None
+    else:
+        events = shared.get("hooks")
+        events = {name: groups for name, groups in events.items() if name != "state"} \
+            if isinstance(events, dict) else None
+    return isinstance(events, dict) and any(events.values())
+
+
+def vault_check(args):
+    # What the launch needs before it starts Codex on a vault home (CODEX_HOME):
+    # the sandbox settings Codex resolves for the session from its files (the
+    # command line adds cs's profile on top), whether a file already defines a
+    # profile under cs's name, and the hooks trusted in the shared home that are
+    # not trusted here: the shared config.toml's own trust tables decide which
+    # those are, so a table the copy missed is found whatever its TOML form.
+    # A source the vault lists no hook of at all is named apart, in unlisted.
+    # So is each project config.toml Codex reads but leaves out until the folder
+    # is trusted, in untrusted_project_configs: answering Codex's trust question
+    # loads it after cs has chosen its profile from what config/read said.
+    codex_home = os.environ.get("CODEX_HOME")
+    if not codex_home or not Path(codex_home).is_dir():
+        raise BootstrapError("--vault-check needs CODEX_HOME set to the vault Codex home")
+    cwd = str(Path(args.cwd).resolve(strict=True))
+    shared_config = Path(args.shared_home) / "config.toml"
+    shared = load_toml(shared_config.read_text(encoding="utf-8"), str(shared_config)) \
+        if shared_config.is_file() else {}
+    with AppServer(args.codex_bin, cwd, time.monotonic() + args.timeout) as server:
+        server.initialize()
+        result = server.request("config/read", {"cwd": cwd, "includeLayers": True})
+        listed = server.request("hooks/list", {"cwds": [cwd]})
+    config, layers = result.get("config"), result.get("layers")
+    if not isinstance(config, dict) or not isinstance(layers, list):
+        raise BootstrapError("codex app-server returned an invalid config/read response")
+    # Codex keeps a project layer it does not trust, disabled (disabledReason
+    # set), out of the config it resolves. One with no config.toml behind it
+    # has nothing for Codex to load once the folder is trusted.
+    untrusted_project_configs = []
+    for layer in layers:
+        source = layer.get("name") if isinstance(layer, dict) else None
+        if not isinstance(source, dict) or source.get("type") != "project" \
+                or layer.get("disabledReason") is None or not isinstance(source.get("dotCodexFolder"), str):
+            continue
+        project_file = os.path.join(source["dotCodexFolder"], "config.toml")
+        if os.path.isfile(project_file) and project_file not in untrusted_project_configs:
+            untrusted_project_configs.append(project_file)
+    hooks = {}
+    for entry in listed.get("data") or []:
+        for hook in (entry.get("hooks") if isinstance(entry, dict) else None) or []:
+            if isinstance(hook, dict) and isinstance(hook.get("key"), str):
+                hooks[hook["key"]] = hook
+    state = shared.get("hooks", {}).get("state") if isinstance(shared.get("hooks"), dict) else None
+    state = state if isinstance(state, dict) else {}
+    untrusted = []
+    unlisted = []
+    for old in trust_sources(Path(args.shared_home)):
+        new = os.path.join(codex_home, os.path.basename(old))
+        trusted = {key: value for key, value in state.items()
+                   if key.startswith(old + ":") and isinstance(value, dict)
+                   and isinstance(value.get("trusted_hash"), str)}
+        # The vault lists no hook of a source the shared home still defines
+        # hooks in: Codex lists or keys them in a way cs did not re-key for,
+        # and every hook trusted there would stop running without a word.
+        # Trusting them again in /hooks cannot change that, so the source is
+        # named apart from the hooks the vault lists untrusted.
+        if trusted and not any(key.startswith(new + ":") for key in hooks) \
+                and defines_hooks(old, shared):
+            unlisted.append(old)
+            continue
+        for key, value in trusted.items():
+            hook = hooks.get(new + key[len(old):])
+            # Beside hooks of the same source the vault does list, a trust the
+            # shared home keeps for content that changed since, or for a hook
+            # no longer there, trusts nothing anywhere.
+            if hook is None or hook.get("currentHash") != value.get("trusted_hash"):
+                continue
+            if hook.get("trustStatus") != "trusted":
+                untrusted.append(str(hook.get("command") or key))
+    sandbox = config.get("sandbox_workspace_write")
+    sandbox = sandbox if isinstance(sandbox, dict) else {}
+    # cs's profile carries each writable root as a write entry beside the home's
+    # read one, and Codex lets a write at or under a path win over its read: such
+    # a root would undo the read-only home, so the launch refuses it.
+    real_home = os.path.realpath(codex_home)
+    roots = sandbox.get("writable_roots")
+    home_roots = []
+    for root in (roots if isinstance(roots, list) else ()):
+        real = os.path.realpath(root) if isinstance(root, str) else None
+        if real is not None and (real == real_home or real.startswith(real_home + os.sep)):
+            home_roots.append(root)
+    permissions = config.get("permissions")
+    return json.dumps({
+        "sandbox_mode": config.get("sandbox_mode"),
+        "default_permissions": config.get("default_permissions"),
+        "sandbox_workspace_write": sandbox,
+        "profile_defined": isinstance(permissions, dict) and VAULT_PROFILE in permissions,
+        "untrusted": untrusted,
+        "unlisted": unlisted,
+        "home_roots": home_roots,
+        "untrusted_project_configs": untrusted_project_configs,
+    })
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex-bin")
@@ -1118,6 +1377,14 @@ def main():
                         help="print the thread's newest turn ID (empty for none) and change nothing")
     parser.add_argument("--project-config", action="store_true",
                         help="print, as JSON, the model settings a project layer sets for --cwd")
+    parser.add_argument("--has-thread", action="store_true",
+                        help="print yes when CODEX_HOME keeps --thread-id's history, else no")
+    parser.add_argument("--seed-config", action="store_true",
+                        help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
+    parser.add_argument("--vault-check", action="store_true",
+                        help="print, as JSON, the sandbox settings and untrusted hooks of the vault home in CODEX_HOME")
+    parser.add_argument("--shared-home")
+    parser.add_argument("--home")
     parser.add_argument("--export-claude", action="store_true",
                         help="write --thread-id's saved history to --out as a Claude transcript for --session-id")
     parser.add_argument("--read-claude", metavar="TRANSCRIPT",
@@ -1147,6 +1414,15 @@ def main():
     elif args.read_claude is not None:
         if args.thread_id is not None or args.latest_turn or args.project_config:
             parser.error("--read-claude reads no thread")
+    elif args.has_thread:
+        if args.thread_id is None:
+            parser.error("--has-thread needs --thread-id")
+    elif args.seed_config:
+        if args.shared_home is None or args.home is None or args.cwd is None:
+            parser.error("--seed-config needs --shared-home, --home and --cwd")
+    elif args.vault_check:
+        if args.codex_bin is None or args.cwd is None or args.shared_home is None:
+            parser.error("--vault-check needs --codex-bin, --cwd and --shared-home")
     else:
         if args.codex_bin is None or args.cwd is None:
             parser.error("--codex-bin and --cwd are required")
@@ -1171,6 +1447,12 @@ def main():
             printed = read_claude_stats(args)
         elif args.project_config:
             printed = project_config(args)
+        elif args.has_thread:
+            printed = has_thread(args)
+        elif args.seed_config:
+            printed = seed_config(args)
+        elif args.vault_check:
+            printed = vault_check(args)
         else:
             printed = latest_turn(args) if args.latest_turn else bootstrap(args)
     except KeyboardInterrupt:
@@ -1180,7 +1462,9 @@ def main():
         # File and process errors may contain paths or server text; keep them private.
         message = str(exc) if isinstance(exc, BootstrapError) else (
             "could not read the thread's turns" if args.latest_turn
-            else "could not read the project's configuration" if args.project_config
+            else "could not read the project's configuration" if args.project_config or args.vault_check
+            else "could not write the vault Codex home's config.toml" if args.seed_config
+            else "could not look for the thread's history" if args.has_thread
             else "could not write the Claude transcript" if args.export_claude
             else "could not read the Claude transcript" if args.read_claude is not None
             else "could not read bootstrap inputs")

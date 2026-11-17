@@ -273,11 +273,15 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 
 # The cs content files a plain session keeps in .cs/local and an encrypted one
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
-# and cs -encrypt moves each into the vault.
+# and cs -encrypt moves each into the vault, except the Codex context
+# (codex-instructions.md), a copy it deletes first. The temp files a launch
+# interrupted while it wrote that context leaves beside it
+# (.codex-instructions.*, or an older cs's codex-instructions.md.tmp.<pid>)
+# are matched by pattern apart from this list, and treated the same way.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot memory-archive.snapshot mail
     queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
-    pending-switch finish-progress.json"
+    pending-switch finish-progress.json codex-instructions.md"
 
 # Once .cs/private holds a session's cs content files, a copy still in
 # .cs/local is plaintext the vault was meant to hold: an unmigrated log, or one
@@ -289,6 +293,12 @@ _refuse_plaintext_beside_private() {  # session_name, session_dir
     for name in $CS_PRIVATE_LOCAL_FILES; do
         [ -e "$meta/local/$name" ] || continue
         error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds $name in plaintext. Move it into .cs/private or delete it, then reopen."
+    done
+    # The agent can write .cs/local and so chooses these names: each is
+    # printed plain, so no escape sequence in one reaches the terminal.
+    for name in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        [ -e "$name" ] || continue
+        error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds $(_cs_plain_name "${name##*/}" 160) in plaintext, a copy of the Codex context an interrupted launch left. Delete it, then reopen."
     done
     if [ -e "$meta/handoffs" ]; then
         error "$1: .cs/private keeps this session's rotation handoffs in its vault, but .cs/handoffs still holds them in plaintext. Move it to .cs/private/handoffs or delete it, then reopen."

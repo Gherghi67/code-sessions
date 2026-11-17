@@ -22,8 +22,11 @@ returns successfully.
 
 Codex launches use the `codex` executable by default. Set `CODEX_BIN` to its
 path when it is installed elsewhere. The Codex adapter uses Python 3 for its
-startup/bootstrap helper. Codex CLI must be installed and authenticated for
-the current user; CS does not configure Codex credentials.
+startup/bootstrap helper. Opening an [encrypted session](#encrypted-sessions)
+under Codex needs Python 3.11 or later (`tomllib`) as `python3` on `PATH`;
+macOS's `/usr/bin/python3` is 3.9, and a Homebrew or python.org Python works.
+Codex CLI must be installed and authenticated for the current user; CS does
+not configure Codex credentials.
 
 The startup helper uses Codex's experimental app-server `thread/inject_items`
 API to create or resume a thread and append startup context without starting a
@@ -168,11 +171,108 @@ that cannot start, leaves the handoff armed and prints both ways back:
 <current>`. When the target exits with an error before its conversation
 starts, cs also puts back a handoff its launch had already marked consumed.
 
-Codex does not open an [encrypted session](session-layout.md#encrypted-sessions)
-yet: it keeps its conversations in `CODEX_HOME`, outside the vault. Every Codex
-launch of one refuses before the vault's password is asked for, `--engine codex
---from-handoff` included, and names `cs <name> --engine claude`; a switch into
-Codex refuses there as well.
+## Encrypted sessions
+
+An [encrypted session](session-layout.md#encrypted-sessions) runs Codex on a
+Codex home inside its vault, `.cs/private/codex-home`, so its rollouts, history,
+state databases and logs never reach the shared home (`$CODEX_HOME`, else
+`~/.codex`). At every open, cs:
+
+- links `auth.json`, its two lock files, `AGENTS.md`, `AGENTS.override.md`,
+  `.env`, `hooks.json` and the `skills/`, `agents/`, `themes/` and `hooks/`
+  folders to the shared home, so the login, instructions and extensions are
+  the shell's. `plugins/` is a folder of the vault whose `cache/` and staging
+  folders link to the shared ones, so plugins are installed once and their
+  data (`plugins/data/`) stays in the vault. `.tmp/` is a folder of the vault
+  too: only `.tmp/marketplaces/`, where Codex keeps the marketplaces added
+  from git, links to the shared one, so those marketplaces are shared; the
+  rest of `.tmp/` is per vault. Everything else Codex writes is
+  born in the vault. `.credentials.json`, the file Codex falls back to for MCP
+  OAuth logins, is not shared: an MCP server that falls back to it logs in
+  again inside the session.
+- copies the shared `config.toml` in, with each `[hooks.state]` trust entry
+  renamed to the vault home's path, since Codex keys hook trust by the path it
+  read the hook from. cs renames `[hooks.state."<key>"]` tables, the form
+  Codex writes; an entry for the shared home written another way stops the
+  open, which names it. Before Codex starts, cs asks it which hooks it trusts
+  there, and refuses to start when a hook trusted in the shared home would not
+  run (a guard hook would otherwise stop silently). It refuses too, saying so,
+  when Codex lists none of the hooks a trusted `hooks.json` or `config.toml`
+  defines for the vault home, as a Codex that lists hooks differently from the
+  version cs was checked against (0.167) may: trusting them again in `/hooks`
+  cannot help there, so update cs or open the session under Claude.
+- copies the shared `rules/` folder in, following the links in it. An approval
+  you make during an encrypted run (Codex appends an "always allow" for a
+  command or a host to `rules/default.rules`) lasts until the next open, which
+  copies the folder again; lasting ones belong in the shared `rules/`.
+- starts Codex with cs's permissions profile, `cs-vault-home`, on the command
+  line: Codex's workspace sandbox with the vault home read-only, so the agent
+  cannot rewrite its own configuration, hooks or rules. The profile carries
+  your `[sandbox_workspace_write]` writable roots, network access and
+  temp-directory settings. A writable root at or inside the vault home is
+  refused, since Codex would let it win over the read-only rule. Under
+  `--native-approval` the profile is added only to the
+  workspace sandbox, never to read-only or full access, and a
+  `default_permissions` profile of your own is refused. A config file that
+  defines a profile named `cs-vault-home` is refused too.
+
+cs reads and copies `config.toml` with Python's `tomllib`, so the open needs
+Python 3.11 or later as `python3` on `PATH`. macOS's `/usr/bin/python3` is
+3.9; a Homebrew or python.org Python works.
+
+Settings Codex saves to `config.toml` during an encrypted run (a hook trusted in
+`/hooks`, a dismissed notice, a trusted folder) last until the next open, which
+copies the shared file again; make lasting changes in the shared `config.toml`.
+Relative paths in it resolve from the copy. Choosing other
+permissions in Codex's `/permissions` drops the read-only rule for that run:
+outside cs's profile the agent can rewrite the vault home's configuration,
+hooks and links for that run, and a hook it trusts there runs outside the
+sandbox. cs still runs its own hook scripts from the shared home.
+
+Codex therefore asks whether to trust the session folder at each open of an
+encrypted session: cs does not carry an answer given inside one, since anything
+that writes to the session outside Codex's sandbox could plant it. To stop the
+question, trust the folder in the shared `config.toml` (`~/.codex/config.toml`),
+under the session folder's full path, as `pwd -P` prints it:
+
+```toml
+[projects."/full/path/to/the/session"]
+trust_level = "trusted"
+```
+
+A project `.codex/config.toml` in a folder the shared `config.toml` does not
+trust is one Codex loads only once you answer that question, after cs has
+chosen how to keep the agent out of the vault home, so cs's checks never see
+what it sets: the open refuses and names the file. Trust the folder in the
+shared `config.toml` as above, so the checks read that file too, or remove it.
+
+cs checks the vault home when it opens the session, but Codex reads the vault
+home's `config.toml` again at each `/clear`. The vault home lives inside the
+session folder, unlike a plain session's `~/.codex`, so while Codex runs in an
+encrypted session nothing else should write to the session folder outside
+Codex's sandbox (another conversation of the session, a tool started from
+one): such a writer can change what Codex loads, MCP servers included, which
+run outside the sandbox. It can also reach past the session: a marketplace
+entry it adds makes Codex replace that marketplace's checkout under
+`.tmp/marketplaces`, which is the shared home's, so every session's Codex sees
+it.
+
+A Codex conversation bound before the session was encrypted stays in the shared
+home: when the shared home keeps it, the next open starts the session's first
+conversation in the vault and says so, and `--resume` refuses. A bound
+conversation that neither home keeps is refreshed as in any session, and that
+refresh fails with the binding left in place; a lookup that cannot run stops the
+open the same way. If the vault home holds a real `auth.json` where cs's link
+was, the open stops: cs cannot tell who wrote it (Codex after a `codex logout`
+and `codex login` inside the session, or anything else that can write to the
+session). Inspect it before you use it, and move it over the shared
+`auth.json` only if it is a login you made yourself; otherwise remove it, and
+the next open links the shared login again. Handoffs and the launch context
+live in `.cs/private`, and switching
+or carrying a conversation between Claude and Codex works as in any other
+session. `cs -doctor` checks the vault home's links. `cs -update` or
+`install.sh` run inside an encrypted session installs into the shared home.
+Antigravity still refuses encrypted sessions.
 
 ## Workspace preparation and installation
 
@@ -236,7 +336,9 @@ profiles (`--profile <CONFIG_PROFILE_V2>`), cs launches with a profile scoped to
 this checkout and snapshots those two settings when a turn arms a handoff.
 Both manual and automatic `/clear` then reload that choice. The profile lives
 in `$CODEX_HOME/cs-rotation-<checkout-hash>.config.toml`; each launch resets it to
-that launch's choices. Other sessions keep their own defaults. Restart an
+that launch's choices. A link or anything but a file at that name stops the
+launch, named: cs never writes the profile through it; remove it, and the next
+launch writes the file again. Other sessions keep their own defaults. Restart an
 already running cs/Codex once after installing this support. Older Codex builds
 print a notice that model carryover needs file-backed profile support.
 
@@ -351,7 +453,7 @@ The installer registers `cs -codex-hook files-changed` for PostToolUse and
 deploys its recovery files to `$CODEX_HOME/hooks/cs/`; see
 [Completed file changes and recovery copies](engine-adapters.md#completed-file-changes-and-recovery-copies).
 Codex does not yet participate in Claude's automatic recovery prompt, queue delivery, usage
-reporting (`cs -usage`), encrypted sessions, observed runtime status, or native
+reporting (`cs -usage`), observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
 

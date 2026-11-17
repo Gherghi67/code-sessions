@@ -1097,7 +1097,7 @@ _cs_keybindings_strip() {  # bindings-json
 # install.sh last wrote under ~/.claude, beside the hooks' .version stamp.
 _cs_install_record() {
     if [ "${CS_INSTALL_ENGINES:-$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null)}" = codex ]; then
-        printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/hooks/cs/.installed"
+        printf '%s\n' "${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}/hooks/cs/.installed"
     else
         printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
     fi
@@ -2110,9 +2110,9 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "ddb84a298dbe67bda6252a6d91d8df102599ca69bd7fd95d0c8503ff5fb50442  bin/cs"
-    "f3831d31c209af7edcb76e228913adfc902fd7fd3f8f8470c6ba6823bda4b869  bin/cs-secrets"
-    "67074b76788950fdfe593169e8d29e8c731ef3545a96de04941b2e851b164d6d  bin/cs-codex-thread"
+    "c1687c4c9f1358a4eef66155e13d7e628ab273b751ce89871d25627a2ba22225  bin/cs"
+    "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
+    "3cd66a3215731e2dd26a0cf9e64aa896a73b912a9bfc06ba4464f70d432acc07  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "b1272ea923569f2c56fcac2900bdb8b52d98a7fe400031fe92ad067ed62aa65d  bin/cs-statusline-agy"
@@ -2917,7 +2917,10 @@ if _install_has_engine codex; then
 # Codex reads the same skills from its own home, so each engine registers one
 # payload natively. CODEX_HOME is where Codex itself looks (setup.sh points it
 # at the profile). Mods stay with Claude: they are Claude Code function hooks.
-CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+# While a cs launch points CODEX_HOME at an encrypted session's vault home, it
+# keeps the shell's home in CS_CODEX_SHARED_HOME, and the installer writes
+# there, as _cs_install_record does.
+CODEX_DIR="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 CS_DESTINATIONS="$CS_DESTINATIONS, $CODEX_DIR"
 CODEX_SKILLS_DIR="$CODEX_DIR/skills"
 installed "Codex skills" "$CODEX_SKILLS_DIR/"

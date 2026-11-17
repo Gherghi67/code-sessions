@@ -167,14 +167,15 @@ _handoff_refusal_notice() {  # shown_handoff, refusal, shown_marker
 }
 
 # Shared rotation context for native launch prompts and hooks.
-_rotation_preamble() {  # handoff_basename, actor_slug
+_rotation_preamble() {  # handoff_basename, actor_slug, [handoff dir as shown]
+    local dir="${3:-.cs/handoffs}"
     printf '%s\n' \
         '--- Conversation Rotation ---' \
-        "This fresh conversation continues rotated work. Read .cs/handoffs/$1 FIRST — it is the previous conversation's handoff; the prior conversation is not loaded, and the handoff plus your own .cs/memory/narrative.$2.md carry the context." \
+        "This fresh conversation continues rotated work. Read $dir/$1 FIRST — it is the previous conversation's handoff; the prior conversation is not loaded, and the handoff plus your own .cs/memory/narrative.$2.md carry the context." \
         '' \
         'The message that arrives with this context starts the work. A bare nudge — "go", "continue", "ok" — means begin: execute the handoff'"'"'s next step and report what you did, without re-summarising the handoff or asking which part to start with. A message carrying its own content takes precedence over the handoff; answer that instead. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible.' \
         '' \
-        "Once that next step is done, append a \`## Successor report\` section to the end of .cs/handoffs/$1: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
+        "Once that next step is done, append a \`## Successor report\` section to the end of $dir/$1: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
 }
 
 # A launch carries only the handoff it selected before starting the native
@@ -996,6 +997,12 @@ _launch_claude_bound() {
         _seed_session_claude_json "$CODE_SESSIONS_HOME/.claude" "$(_cs_claude_json_path "$HOME/.claude" "$HOME/.claude.json")" || return $?
     fi
     _export_session_claude_config "$session_dir" || return $?
+    # Codex's home too: one inherited from another encrypted session is
+    # dropped, and an encrypted session where Codex has run points at its own,
+    # so a carry reads Codex's history from the vault and a codex the agent
+    # starts keeps its conversation there. Claude opens without it if it cannot
+    # be prepared; the carry then finds nothing to offer.
+    _export_session_codex_home "$session_dir" existing || true
     # Expose the recorded session UUID to hooks. Hooks can use this to
     # reverse-look-up which cs session they're firing inside without having
     # to depend on $CLAUDE_CODE_SESSION_ID (set by Claude Code itself, but

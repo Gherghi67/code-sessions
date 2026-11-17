@@ -236,6 +236,22 @@ test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private() {
     assert_not_exists "$SESSION/.cs/local/session.log" || return 1
 }
 
+# A /clear into a handoff kept in the vault: the plaintext timeline records
+# that a handoff rotated, never which, since its name is the session's topic.
+test_a_clear_in_an_encrypted_session_keeps_the_handoff_name_out_of_the_timeline() {
+    mkdir -p "$SESSION/.cs/private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: continue the plan\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$OLD_THREAD" > "$SESSION/.cs/private/handoffs/$HANDOFF"
+    printf '%s\n' "$HANDOFF" > "$SESSION/.cs/private/pending-handoff"
+    _hook clear >/dev/null || return 1
+    assert_file_contains "$SESSION/.cs/private/handoffs/$HANDOFF" "^consumed_by: $NEW_THREAD$" "the handoff is spent" || return 1
+    jq -e --arg from "$OLD_THREAD" --arg to "$NEW_THREAD" \
+        'select(.event == "rotated") | .engine == "codex" and .from == $from and .to == $to
+         and .reason == "handoff" and (has("handoff") | not)' \
+        "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no rotated event for the handoff without its name"; return 1; }
+    assert_eq "" "$(grep -F "$HANDOFF" "$SESSION/.cs/timeline.jsonl")" "the timeline keeps the handoff's name out" || return 1
+}
+
 # A locked vault drops the line, as the Claude hooks do.
 test_a_locked_vault_drops_the_log_line() {
     ln -s "$TEST_TMPDIR/not-mounted" "$SESSION/.cs/private"
@@ -320,6 +336,7 @@ test_rotation_keeps_the_last_turn_model_with_manual_clear() {
     assert_eq "" "$out" || return 1
     assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model = "gpt-6-astra"$' || return 1
     assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model_reasoning_effort = "xhigh"$' || return 1
+    assert_eq "${CS_CODEX_ROTATION_PROFILE##*/}" "$(ls -A "$CODEX_HOME")" "no temp file is left beside the profile" || return 1
     before=$(cat "$CS_CODEX_ROTATION_PROFILE")
     # A different thread cannot replace this run's selection.
     jq -cn --arg id "$NEW_THREAD" --arg path "$transcript" \
@@ -358,6 +375,31 @@ test_a_setting_fixed_for_the_run_is_named_instead_of_the_count() {
     out=$(CS_CODEX_CLEAR_GRACE=20 TURN_TRANSCRIPT="$transcript" _turn_hook stop "$OLD_THREAD") || return 1
     assert_file_exists "$STAMP" || return 1
     assert_output_contains "$out" '/clear and go in 20 s' || return 1
+}
+
+# The profile lives in CODEX_HOME, the vault home for an encrypted session,
+# which the agent can write: a link planted at its name is never written
+# through, and the turn says the choice was not kept.
+test_a_linked_rotation_profile_is_never_written_through() {
+    _handoff unconsumed; _arm
+    export CODEX_HOME="$TEST_TMPDIR/codex" CS_RUN_ENGINE=codex CS_RUN_ID="$RUN"
+    export CS_RUN_OWNER_PID="$$" CS_SESSION_DIR="$SESSION"
+    mkdir -p "$CODEX_HOME"
+    export CS_CODEX_ROTATION_PROFILE
+    CS_CODEX_ROTATION_PROFILE="$CODEX_HOME/cs-rotation-$(python3 -I -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:20])' "$SESSION").config.toml"
+    printf 'precious\n' > "$TEST_TMPDIR/outside"
+    ln -s "$TEST_TMPDIR/outside" "$CS_CODEX_ROTATION_PROFILE"
+    local transcript="$TEST_TMPDIR/rollout.jsonl" out
+    jq -cn --arg id "$OLD_THREAD" --arg cwd "$SESSION" \
+        '{type:"session_meta",payload:{id:$id,cwd:$cwd}}' > "$transcript"
+    printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"xhigh"}}' >> "$transcript"
+    out=$(jq -cn --arg id "$OLD_THREAD" --arg path "$transcript" \
+        '{session_id:$id,transcript_path:$path}' \
+        | CS_ROTATE_FORCE_CTX=off "$CS_BIN" -codex-hook stop) || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_output_contains "$out" 'could not preserve' "the turn says the choice was not kept" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/outside")" "the link's target is untouched" || return 1
+    [ -L "$CS_CODEX_ROTATION_PROFILE" ] || { echo "  FAIL: the link was replaced"; return 1; }
+    assert_eq "${CS_CODEX_ROTATION_PROFILE##*/}" "$(ls -A "$CODEX_HOME")" "no temp file is left beside it" || return 1
 }
 
 # A grace with a leading zero is decimal: 08 is eight seconds, not an
@@ -661,11 +703,13 @@ run_test test_a_run_without_the_lease_leaves_a_stale_marker
 run_test test_outside_a_cs_codex_run_the_hook_is_inert
 run_test test_an_encrypted_session_logs_the_start_behind_private
 run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
+run_test test_a_clear_in_an_encrypted_session_keeps_the_handoff_name_out_of_the_timeline
 run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
 run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
 run_test test_rotation_keeps_the_last_turn_model_with_manual_clear
 run_test test_a_setting_fixed_for_the_run_is_named_instead_of_the_count
+run_test test_a_linked_rotation_profile_is_never_written_through
 run_test test_a_grace_with_a_leading_zero_is_decimal
 run_test test_a_turn_end_never_writes_into_the_workspace
 run_test test_no_run_dir_means_no_count_and_no_message

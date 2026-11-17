@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/../lib/02-shared.sh"
 source "$SCRIPT_DIR/../lib/35-claudemd.sh"
 source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
+source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/79-antigravity.sh"
 
 # Assert the startup contract, rather than just the presence of file names.
@@ -166,7 +167,7 @@ test_codex_failed_render_keeps_prior_context() (
     _codex_write_context name /workspace "$output" actor /cs || status=$?
     assert_eq 1 "$status" || return 1
     assert_eq 'Previous context' "$(cat "$output")" || return 1
-    assert_not_exists "$output.tmp.$$"
+    assert_eq '' "$(find "$TEST_TMPDIR" -maxdepth 1 -name '.codex-instructions.*')" "no temp file left" || return 1
 )
 
 echo 'Running test_session_context.sh'

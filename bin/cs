@@ -991,7 +991,7 @@ _cs_keybindings_strip() {  # bindings-json
 # install.sh last wrote under ~/.claude, beside the hooks' .version stamp.
 _cs_install_record() {
     if [ "${CS_INSTALL_ENGINES:-$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null)}" = codex ]; then
-        printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/hooks/cs/.installed"
+        printf '%s\n' "${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}/hooks/cs/.installed"
     else
         printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
     fi
@@ -10487,11 +10487,15 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 
 # The cs content files a plain session keeps in .cs/local and an encrypted one
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
-# and cs -encrypt moves each into the vault.
+# and cs -encrypt moves each into the vault, except the Codex context
+# (codex-instructions.md), a copy it deletes first. The temp files a launch
+# interrupted while it wrote that context leaves beside it
+# (.codex-instructions.*, or an older cs's codex-instructions.md.tmp.<pid>)
+# are matched by pattern apart from this list, and treated the same way.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot memory-archive.snapshot mail
     queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
-    pending-switch finish-progress.json"
+    pending-switch finish-progress.json codex-instructions.md"
 
 # Once .cs/private holds a session's cs content files, a copy still in
 # .cs/local is plaintext the vault was meant to hold: an unmigrated log, or one
@@ -10503,6 +10507,12 @@ _refuse_plaintext_beside_private() {  # session_name, session_dir
     for name in $CS_PRIVATE_LOCAL_FILES; do
         [ -e "$meta/local/$name" ] || continue
         error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds $name in plaintext. Move it into .cs/private or delete it, then reopen."
+    done
+    # The agent can write .cs/local and so chooses these names: each is
+    # printed plain, so no escape sequence in one reaches the terminal.
+    for name in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        [ -e "$name" ] || continue
+        error "$1: .cs/private keeps this session's cs files in its vault, but .cs/local still holds $(_cs_plain_name "${name##*/}" 160) in plaintext, a copy of the Codex context an interrupted launch left. Delete it, then reopen."
     done
     if [ -e "$meta/handoffs" ]; then
         error "$1: .cs/private keeps this session's rotation handoffs in its vault, but .cs/handoffs still holds them in plaintext. Move it to .cs/private/handoffs or delete it, then reopen."
@@ -11980,16 +11990,16 @@ _transplant_label() {  # engine
 # The other engine's conversation, when it is the newer one: the session's
 # last run was under that engine. cs_launch_session records a run's engine as
 # the run ends, so during a launch the state still names the previous run's.
-# Prints "<engine> <native id>". Nothing is offered on a same-engine open, from
-# or to Antigravity (its format is not probed yet), or in an encrypted session:
-# Codex keeps its threads outside the vault, so none ever ran there to carry.
+# Prints "<engine> <native id>". Nothing is offered on a same-engine open, or
+# from or to Antigravity (its format is not probed yet). An encrypted session
+# keeps both engines' conversations in its vault (.cs/claude-config and
+# .cs/private/codex-home), and a carry reads one and writes the other there.
 _transplant_source() {  # session_dir, target engine
     local session_dir="$1" target="$2" last id
     case "$target" in claude|codex) ;; *) return 1 ;; esac
     last=$(_read_local_state "$session_dir/.cs/local/state" engine)
     case "$last" in claude|codex) ;; *) return 1 ;; esac
     [ "$last" != "$target" ] || return 1
-    ! _switch_session_encrypted "$session_dir" || return 1
     id=$(cs_binding_read "$session_dir" "$last" 2>/dev/null) || return 1
     case "$last" in
         claude) _is_uuid "$id" || return 1 ;;
@@ -12664,7 +12674,7 @@ _spawn_window() {  # name, token, engine
     # the caller's configuration, including unsets, without copying credentials.
     # env options must precede its assignments on both BSD and GNU env.
     for selector in HOME PATH XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME \
-        CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME \
+        CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CODEX_HOME CS_CODEX_SHARED_HOME \
         CODE_SESSIONS_HOME CODE_SESSIONS_ORIGINAL_ROOT CS_BIN CS_INSTALL_DIR \
         CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_CLAUDE_DIR CS_HOOKS_DIR \
         CS_COMMANDS_DIR CS_SKILLS_DIR CS_TRANSCRIPTS_DIR CS_SESSIONS_ROOT \
@@ -15547,7 +15557,7 @@ _doctor_check_hook_drift() {
 
     # Codex gets the same skills in its own home. A machine where Codex never
     # ran has no such home, and nothing there to compare.
-    local engines codex_dir="${CODEX_HOME:-$HOME/.codex}"
+    local engines codex_dir="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}"
     engines=$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null) || engines=claude,codex
     if [[ ",$engines," == *,codex,* ]] && [ -d "$codex_dir" ]; then
         _drift_scan "Codex skill" "$codex_dir/skills" "${skill_sources[@]}"
@@ -16324,6 +16334,88 @@ _doctor_check_hook_authority() {
 # nothing behind it, and MEMORY.md text-merges on the next pull. The driver is
 # deliberately per-clone and never global — cs does not write to ~/.gitconfig —
 # so a clone cs has not launched in is out of reach; this names the one it can see.
+# An encrypted session's Codex home (lib/76-codex-vault.sh), when its vault is
+# mounted and Codex has run there. Each shared name must link into the shared
+# home, and rules/ (a copy), plugins/ and .tmp must be vault directories, the
+# plugin installs and staging in plugins/ and .tmp/marketplaces links; an
+# auth.json that is a file (cs cannot tell who wrote it), a link that leads
+# elsewhere or dangles, an earlier open's rules/, plugins/ or .tmp link, and a
+# copied config.toml whose hook trust still names the shared home are named.
+# The next Codex open repairs links and the copies, never an auth.json. A link
+# target read from the vault home is printed as a plain name: whenever cs's
+# profile is off, the agent can plant one that carries a terminal escape. So
+# is the home itself: .cs/private is a link the agent can point at a directory
+# whose name carries one.
+_doctor_check_codex_vault_home() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shown shared name target found sub children problems=""
+    [ -n "$dir" ] || return 0
+    _switch_session_encrypted "$dir" || return 0
+    home=$(_codex_vault_home_path "$dir") || return 0
+    shown=$(_cs_plain_name "$home" 160)
+    # Never inspected through a link: the open refuses one, and so names it.
+    if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
+        _doctor_warn "Codex vault home: $shown is a link or not a directory; cs does not follow a link there. Move it aside; the next Codex open makes the vault Codex home"
+        return 0
+    fi
+    [ -d "$home" ] || return 0
+    shared=$(_codex_shared_home)
+    _codex_is_vault_home "$shared" && shared="$HOME/.codex"
+    for name in $CS_CODEX_VAULT_LINK_FILES $CS_CODEX_VAULT_LINK_DIRS; do
+        target="$shared/$name"
+        if [ -L "$home/$name" ]; then
+            found=$(readlink "$home/$name")
+            if [ "$found" != "$target" ]; then
+                problems="$problems; $name links to $(_cs_plain_name "$found" 160), not $target"
+            elif [ ! -e "$home/$name" ] && case " $CS_CODEX_VAULT_LINK_DIRS " in *" $name "*) true ;; *) false ;; esac; then
+                problems="$problems; $name links to $target, which is missing"
+            fi
+        elif [ "$name" = auth.json ] && [ -e "$home/$name" ]; then
+            _doctor_warn "Codex vault home: $shown/auth.json is a file, not a link to $target, and cs cannot tell who wrote it (Codex after a logout and login inside this session, or anything else that can write to the session). Inspect it (which account, when it was written) before you use it: only if it is a login you made yourself, mv it over $target; otherwise remove it or move it aside. The next Codex open links the shared login again"
+        elif [ -e "$home/$name" ]; then
+            problems="$problems; $name is not a link to $target"
+        else
+            problems="$problems; $name is missing"
+        fi
+    done
+    for name in rules plugins .tmp; do
+        if [ -L "$home/$name" ]; then
+            problems="$problems; $name is still a link to $(_cs_plain_name "$(readlink "$home/$name")" 160), so what Codex saves there leaves the vault"
+        elif [ -e "$home/$name" ] && [ ! -d "$home/$name" ]; then
+            problems="$problems; $name is not a directory"
+        elif [ ! -e "$home/$name" ]; then
+            problems="$problems; $name is missing"
+        fi
+    done
+    for sub in plugins .tmp; do
+        [ -d "$home/$sub" ] && [ ! -L "$home/$sub" ] || continue
+        children=$CS_CODEX_VAULT_PLUGIN_LINKS
+        [ "$sub" = .tmp ] && children=$CS_CODEX_VAULT_TMP_LINKS
+        for name in $children; do
+            target="$shared/$sub/$name"
+            if [ -L "$home/$sub/$name" ]; then
+                found=$(readlink "$home/$sub/$name")
+                if [ "$found" != "$target" ]; then
+                    problems="$problems; $sub/$name links to $(_cs_plain_name "$found" 160), not $target"
+                elif [ ! -e "$home/$sub/$name" ]; then
+                    problems="$problems; $sub/$name links to $target, which is missing"
+                fi
+            elif [ -e "$home/$sub/$name" ]; then
+                problems="$problems; $sub/$name is not a link to $target"
+            else
+                problems="$problems; $sub/$name is missing"
+            fi
+        done
+    done
+    if [ -f "$home/config.toml" ] && grep -F "[hooks.state.\"$shared/" "$home/config.toml" >/dev/null 2>&1; then
+        problems="$problems; config.toml still keys hook trust by $shared, so those hooks would not run"
+    fi
+    if [ -n "$problems" ]; then
+        _doctor_warn "Codex vault home $shown:${problems#;}. The next Codex open of this session repairs it"
+    else
+        _doctor_ok "Codex vault home: inside the vault, sharing the login and extensions of $shared"
+    fi
+}
+
 _doctor_check_merge_driver() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
     [ -n "$dir" ] || return 0
@@ -16579,6 +16671,7 @@ run_doctor() {
     if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then
         _doctor_check_shadow_ref
         _doctor_check_merge_driver
+        _doctor_check_codex_vault_home
         _doctor_check_migration_stamp
         _doctor_check_integrate_lock
         _doctor_check_finish_progress
@@ -16634,6 +16727,7 @@ run_doctor() {
             _doctor_check_integrate_lock
             _doctor_check_worktrees
             _doctor_check_narrative_size
+            _doctor_check_codex_vault_home
         fi
     fi
 
@@ -17055,7 +17149,7 @@ _encrypt_container_path() {  # session_name
 
 # Every precondition, checked before anything is written.
 _encrypt_refuse() {  # session_name
-    local name="$1" dir meta sub container
+    local name="$1" dir meta sub container leftover
     [ "$(uname -s)" = "Darwin" ] || error "cs -encrypt needs macOS (hdiutil); Linux is not supported yet."
     case "$name" in
         *@*) error "$name: encrypt the base session, not a feature worktree." ;;
@@ -17076,6 +17170,21 @@ _encrypt_refuse() {  # session_name
         [ -e "$meta/$sub" ] && error "$name: .cs/$sub already exists and is not a link; cs -encrypt links it into the vault. Move it aside first."
     done
     [ -e "$meta/local/pre-open" ] && error "$name: .cs/local/pre-open already exists; cs -encrypt writes its own. Move yours aside first."
+    # The Codex launch's plaintext context is deleted before anything moves;
+    # anything but a file there would stop that delete with the work half done.
+    if { [ -e "$meta/local/codex-instructions.md" ] || [ -L "$meta/local/codex-instructions.md" ]; } \
+        && [ ! -f "$meta/local/codex-instructions.md" ]; then
+        error "$name: .cs/local/codex-instructions.md is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+    fi
+    # So are the temp files a launch interrupted while it wrote the context
+    # left beside it (.codex-instructions.*, or an older cs's
+    # codex-instructions.md.tmp.<pid>). The agent chose their names, so each
+    # is printed plain.
+    for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        if { [ -e "$leftover" ] || [ -L "$leftover" ]; } && [ ! -f "$leftover" ]; then
+            error "$name: .cs/local/$(_cs_plain_name "${leftover##*/}" 160) is not a regular file; cs -encrypt deletes that copy of the Codex context before anything moves. Move it aside first."
+        fi
+    done
     container=$(_encrypt_container_path "$name")
     # pre-open records this path and attaches it from the session directory.
     case "$container" in /*) ;; *) error "CS_DATA_DIR=$CS_DATA_DIR: cs -encrypt needs an absolute path; every open attaches the container from the session directory." ;; esac
@@ -17234,7 +17343,7 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub taken=0
+    local name="$1" meta container mnt sub leftover taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
@@ -17259,6 +17368,20 @@ run_encrypt() {
     mkdir -p "$meta/local"
     mnt="$meta/vault-mnt"
     container=$(_encrypt_container_path "$name")
+
+    # The Codex launch's context, built from memory and the narrative: nothing
+    # but a copy, written again inside the vault at the next Codex open.
+    # Deleted, not carried, and before the container is made, so a failure
+    # leaves the session as it was. So is every temp copy an interrupted
+    # launch left beside it, named plain: the agent chose that name, and rm
+    # would print it raw.
+    rm -f "$meta/local/codex-instructions.md" \
+        || error "$name: could not delete $meta/local/codex-instructions.md, a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+    for leftover in "$meta/local"/.codex-instructions.* "$meta/local"/codex-instructions.md.tmp.*; do
+        [ -e "$leftover" ] || [ -L "$leftover" ] || continue
+        rm -f "$leftover" 2>/dev/null \
+            || error "$name: could not delete $meta/local/$(_cs_plain_name "${leftover##*/}" 160), a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
+    done
 
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."
@@ -17286,10 +17409,18 @@ run_encrypt() {
     hdiutil detach "$mnt" \
         || error "$name: encrypted, but the vault would not detach; run hdiutil detach $mnt before opening it."
     info "$name is encrypted. Every open asks for the vault password; the vault detaches when the last conversation ends."
+    # The shell's Codex home, never a vault home inherited from another
+    # encrypted session's launch, as cs -doctor names it.
+    local codex_shared
+    codex_shared=$(_codex_shared_home)
+    _codex_is_vault_home "$codex_shared" && codex_shared="$HOME/.codex"
     echo "cs could not move copies made before today; remove them by hand if they matter:"
     echo "  - this session's transcripts in ~/.claude/projects/"
     echo "  - its lines in ~/.claude/history.jsonl"
     echo "  - its project entries in ~/.claude.json and that file's backups"
+    echo "  - its Codex conversations in $codex_shared: rollouts under sessions/ and archived_sessions/,"
+    echo "    lines in history.jsonl and session_index.jsonl, rows in its state databases, and its"
+    echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
     echo "  - git history of anything committed before, and backups or snapshots"
 }
@@ -18223,7 +18354,9 @@ _statusline_caps_ask() {
 # CS_CODEX_STATUS_LINE), wherever Codex has a home. A status line the user
 # wrote is theirs: enable never replaces it, disable never removes it.
 _statusline_codex() {  # enable|disable
-    local dir="${CODEX_HOME:-$HOME/.codex}" rc=0 state
+    # The shared home, also from inside an encrypted session, whose vault home
+    # copies its config.toml at every open.
+    local dir="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}" rc=0 state
     [ -d "$dir" ] || return 0
     case "$1" in
         enable)
@@ -18768,14 +18901,15 @@ _handoff_refusal_notice() {  # shown_handoff, refusal, shown_marker
 }
 
 # Shared rotation context for native launch prompts and hooks.
-_rotation_preamble() {  # handoff_basename, actor_slug
+_rotation_preamble() {  # handoff_basename, actor_slug, [handoff dir as shown]
+    local dir="${3:-.cs/handoffs}"
     printf '%s\n' \
         '--- Conversation Rotation ---' \
-        "This fresh conversation continues rotated work. Read .cs/handoffs/$1 FIRST — it is the previous conversation's handoff; the prior conversation is not loaded, and the handoff plus your own .cs/memory/narrative.$2.md carry the context." \
+        "This fresh conversation continues rotated work. Read $dir/$1 FIRST — it is the previous conversation's handoff; the prior conversation is not loaded, and the handoff plus your own .cs/memory/narrative.$2.md carry the context." \
         '' \
         'The message that arrives with this context starts the work. A bare nudge — "go", "continue", "ok" — means begin: execute the handoff'"'"'s next step and report what you did, without re-summarising the handoff or asking which part to start with. A message carrying its own content takes precedence over the handoff; answer that instead. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible.' \
         '' \
-        "Once that next step is done, append a \`## Successor report\` section to the end of .cs/handoffs/$1: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
+        "Once that next step is done, append a \`## Successor report\` section to the end of $dir/$1: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
 }
 
 # A launch carries only the handoff it selected before starting the native
@@ -19597,6 +19731,12 @@ _launch_claude_bound() {
         _seed_session_claude_json "$CODE_SESSIONS_HOME/.claude" "$(_cs_claude_json_path "$HOME/.claude" "$HOME/.claude.json")" || return $?
     fi
     _export_session_claude_config "$session_dir" || return $?
+    # Codex's home too: one inherited from another encrypted session is
+    # dropped, and an encrypted session where Codex has run points at its own,
+    # so a carry reads Codex's history from the vault and a codex the agent
+    # starts keeps its conversation there. Claude opens without it if it cannot
+    # be prepared; the carry then finds nothing to offer.
+    _export_session_codex_home "$session_dir" existing || true
     # Expose the recorded session UUID to hooks. Hooks can use this to
     # reverse-look-up which cs session they're firing inside without having
     # to depend on $CLAUDE_CODE_SESSION_ID (set by Claude Code itself, but
@@ -20324,6 +20464,297 @@ _iterm_tab_through_tmux() {
 }
 
 # Run secrets subcommand
+# Codex keeps rollouts, history, its state databases and logs in CODEX_HOME.
+# An encrypted session runs it on .cs/private/codex-home, which is in the vault,
+# so none of that lands in the shared home in plaintext. Only these names are
+# shared, by symlink: the login, instructions, .env and extensions. Everything
+# else Codex writes is born in the vault, a file a later Codex adds included.
+# config.toml and rules/ (where Codex appends an approval) are copied from the
+# shared home at every open instead (cs-codex-thread --seed-config), so what a
+# run saves in them lasts until the next open. plugins/ is a vault directory
+# whose installs and staging (CS_CODEX_VAULT_PLUGIN_LINKS) link to the shared
+# home, so plugin data (plugins/data) stays in the vault. .tmp is one too:
+# only marketplaces/ (CS_CODEX_VAULT_TMP_LINKS), where Codex keeps each
+# marketplace added from git and skips one it finds no checkout of, links to
+# the shared home; the rest of .tmp is per home. The directories are
+# made in the shared home when missing, so no link dangles where Codex would
+# make a directory; a file link may dangle until Codex writes through it
+# (codex login writes through auth.json's link). .credentials.json is not
+# linked: Codex deletes it when it is empty, which would delete the link.
+CS_CODEX_VAULT_LINK_FILES="auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json"
+CS_CODEX_VAULT_LINK_DIRS="skills agents themes hooks"
+CS_CODEX_VAULT_PLUGIN_LINKS="cache .marketplace-plugin-source-staging .remote-plugin-install-staging .plugin-appserver"
+CS_CODEX_VAULT_TMP_LINKS="marketplaces"
+# The lock files hold nothing: a real one Codex made before cs linked it is
+# replaced. A real auth.json would hold a login, so it is never touched.
+CS_CODEX_VAULT_LOCKS="auth.json.lock auth.lock"
+
+# The home cs installs into and reads its own Codex files from: the shell's,
+# also while a launch has pointed CODEX_HOME at a session's vault.
+_codex_shared_home() {
+    printf '%s\n' "${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}"
+}
+
+# A vault home, by its spelling: as linked, or as it resolves into the mount.
+_codex_is_vault_home() {  # path
+    case "$1" in
+        */.cs/private/codex-home|*/.cs/vault-mnt/private/codex-home) return 0 ;;
+    esac
+    return 1
+}
+
+# Where a Codex conversation is told its rotation handoffs and their marker are,
+# relative to the session: in the vault for an encrypted session, as
+# cs_handoff_dir and cs_private_dir decide.
+_codex_handoffs_shown() {  # session_dir
+    if _switch_session_encrypted "$1"; then echo .cs/private/handoffs; else echo .cs/handoffs; fi
+}
+
+_codex_marker_shown() {  # session_dir
+    if _switch_session_encrypted "$1"; then echo .cs/private/pending-handoff; else echo .cs/local/pending-handoff; fi
+}
+
+# The vault home of an encrypted session, as it resolves (the spelling Codex
+# keys hook trust by). Fails while the vault is not mounted.
+_codex_vault_home_path() {  # session_dir
+    local private
+    private=$(cd -P -- "$1/.cs/private" 2>/dev/null && pwd -P) || return 1
+    printf '%s/codex-home\n' "$private"
+}
+
+# Makes <home>/<subdir> a vault directory, a link there (an earlier open's to
+# the shared one, or one planted) removed, whose <children> link to the shared
+# home's <subdir>/<child>, made there when missing. A link that points anywhere
+# else is pointed back; anything else where a link belongs stops the launch.
+# The home is named as a plain name, for the reason _codex_vault_home_prepare
+# gives.
+_codex_vault_link_children() {  # home, shared_home, subdir, children...
+    local home="$1" shared="$2" sub="$3" name target shown
+    shift 3
+    shown=$(_cs_plain_name "$home" 160)
+    if [ -L "$home/$sub" ]; then
+        rm -f "$home/$sub" || {
+            _codex_launch_error "Could not remove the link $shown/$sub."
+            return 1
+        }
+    elif [ -e "$home/$sub" ] && [ ! -d "$home/$sub" ]; then
+        _codex_launch_error "$shown/$sub is not a directory. Move it aside; cs makes it at the next open."
+        return 1
+    fi
+    (umask 077 && mkdir -p "$home/$sub") || {
+        _codex_launch_error "Could not make $shown/$sub."
+        return 1
+    }
+    for name in "$@"; do
+        target="$shared/$sub/$name"
+        if [ ! -d "$target" ] && ! (umask 077 && mkdir -p "$target"); then
+            _codex_launch_error "Could not make $target for the vault Codex home to link to."
+            return 1
+        fi
+        if [ -L "$home/$sub/$name" ]; then
+            [ "$(readlink "$home/$sub/$name")" = "$target" ] && continue
+        elif [ -e "$home/$sub/$name" ]; then
+            _codex_launch_error "$shown/$sub/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+            return 1
+        fi
+        ln -sfn "$target" "$home/$sub/$name" || {
+            _codex_launch_error "Could not link $shown/$sub/$name to $target."
+            return 1
+        }
+    done
+}
+
+# Makes or refreshes the vault home and prints its path. A link that points
+# anywhere else is pointed back at the shared home (the shell's home may have
+# moved); a real file or directory where a link belongs stops the launch,
+# named, since it may hold the only copy of something (a login). plugins/ and
+# .tmp are made directories, an earlier open's link to the shared one removed.
+# The home is named as a plain name: .cs/private is a link the agent can point
+# at a directory whose name carries a terminal escape. The names after it are
+# cs's own.
+_codex_vault_home_prepare() {  # session_dir, shared_home, helper
+    local home shared="$2" name target shown
+    case "$shared" in
+        /*) ;;
+        *) _codex_launch_error "The shared Codex home must be an absolute path, not $shared."; return 1 ;;
+    esac
+    home=$(_codex_vault_home_path "$1") || {
+        _codex_launch_error "$1 is encrypted, but its vault is not mounted; cs makes its Codex home there."
+        return 1
+    }
+    shown=$(_cs_plain_name "$home" 160)
+    # The agent can write .cs/private: a codex-home it planted as a link would
+    # have cs chmod and link wherever it points.
+    if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
+        _codex_launch_error "$shown is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home."
+        return 1
+    fi
+    (umask 077 && mkdir -p "$home") && chmod 700 "$home" || {
+        _codex_launch_error "Could not make the vault Codex home $shown."
+        return 1
+    }
+    for name in $CS_CODEX_VAULT_LINK_DIRS; do
+        target="$shared/$name"
+        if [ ! -d "$target" ] && ! (umask 077 && mkdir -p "$target"); then
+            _codex_launch_error "Could not make $target for the vault Codex home to link to."
+            return 1
+        fi
+    done
+    for name in $CS_CODEX_VAULT_LINK_FILES $CS_CODEX_VAULT_LINK_DIRS; do
+        target="$shared/$name"
+        if [ -L "$home/$name" ]; then
+            [ "$(readlink "$home/$name")" = "$target" ] && continue
+        elif [ -e "$home/$name" ]; then
+            case " $CS_CODEX_VAULT_LOCKS " in
+                *" $name "*) [ -f "$home/$name" ] && [ ! -s "$home/$name" ] && rm -f "$home/$name" ;;
+            esac
+            if [ -e "$home/$name" ]; then
+                if [ "$name" = auth.json ]; then
+                    _codex_launch_error "$shown/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$1/.cs/private/codex-home/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$1/.cs/private/codex-home/auth.json\". The next open links the shared login again."
+                else
+                    _codex_launch_error "$shown/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+                fi
+                return 1
+            fi
+        fi
+        ln -sfn "$target" "$home/$name" || {
+            _codex_launch_error "Could not link $shown/$name to $target."
+            return 1
+        }
+    done
+    _codex_vault_link_children "$home" "$shared" plugins $CS_CODEX_VAULT_PLUGIN_LINKS || return 1
+    _codex_vault_link_children "$home" "$shared" .tmp $CS_CODEX_VAULT_TMP_LINKS || return 1
+    cs_run_child "$3" --seed-config --shared-home "$shared" --home "$home" --cwd "$1" >/dev/null || {
+        _codex_launch_error "Could not copy $shared/config.toml and rules/ into the vault Codex home; the line above says why."
+        return 1
+    }
+    printf '%s\n' "$home"
+}
+
+# Back to the shell's Codex home from a vault home a launch into an encrypted
+# session exported (CS_CODEX_SHARED_HOME is set only beside one), or to Codex's
+# default when only the vault home's spelling came along.
+_codex_drop_inherited_vault_home() {
+    if [ -n "${CS_CODEX_SHARED_HOME:-}" ] || _codex_is_vault_home "${CODEX_HOME:-}"; then
+        if [ -n "${CS_CODEX_SHARED_HOME:-}" ]; then
+            export CODEX_HOME="$CS_CODEX_SHARED_HOME"
+        else
+            unset CODEX_HOME
+        fi
+    fi
+    unset CS_CODEX_SHARED_HOME
+}
+
+# The counterpart of _export_session_claude_config. A vault home inherited
+# from a launch into another encrypted session is dropped, back to the shell's
+# home, so nothing started from inside one session writes into its vault. An
+# encrypted session then gets its own, exported for Codex and every helper and
+# hook the run starts, with the shell's home in CS_CODEX_SHARED_HOME.
+# The second argument, existing, prepares the home only when Codex has run in
+# this vault before, as a Claude launch does: it reads Codex history from it.
+_export_session_codex_home() {  # session_dir, [existing]
+    local home helper shared
+    _codex_drop_inherited_vault_home
+    _switch_session_encrypted "$1" || return 0
+    if [ "${2:-}" = existing ]; then
+        home=$(_codex_vault_home_path "$1") && [ -d "$home" ] || return 0
+    fi
+    helper=$(_codex_thread_helper) && [ -x "$helper" ] || {
+        _codex_launch_error "Cannot locate cs-codex-thread beside the cs executable; cs needs it to prepare the vault Codex home."
+        return 1
+    }
+    shared="${CODEX_HOME:-$HOME/.codex}"
+    [ -d "$shared" ] || {
+        _codex_launch_error "The shared Codex home $shared does not exist; the vault Codex home links its login there. Run codex login first."
+        return 1
+    }
+    # Kept as spelled: Codex keys the shared home's hook trust by that spelling,
+    # and the copy re-keys it and its resolved form both.
+    home=$(_codex_vault_home_prepare "$1" "$shared" "$helper") || return 1
+    export CS_CODEX_SHARED_HOME="$shared" CODEX_HOME="$home"
+}
+
+# Asks Codex what the vault home resolves to and refuses what cs cannot
+# confine: a profile some file already defines under cs's name (cs's would
+# merge into it), a project config.toml Codex loads only once the folder is
+# trusted (answering its trust question loads it after cs has chosen its
+# profile, so cs never sees what it sets), a hook trusted in the shared home
+# but not here (a guard hook would silently stop running), a trusted hook
+# source Codex lists none of the hooks of here (the same, and no /hooks answer
+# helps), or a writable root at or under the vault home (its write entry would
+# win over cs's read one). Prints the check's JSON.
+_codex_vault_check() {  # helper, codex_bin, session_dir
+    local check unlisted untrusted home_roots projects shown folder
+    check=$(cs_run_child "$1" --vault-check --codex-bin "$2" --cwd "$3" \
+        --shared-home "$CS_CODEX_SHARED_HOME") || {
+        _codex_launch_error "Could not read the vault Codex home's configuration; cs does not start Codex there unchecked."
+        return 1
+    }
+    if [ "$(printf '%s' "$check" | jq -r '.profile_defined')" != false ]; then
+        _codex_launch_error "A Codex config file for $3 already defines the permissions profile cs-vault-home, which cs adds to keep the agent out of the vault Codex home. Rename that profile."
+        return 1
+    fi
+    # The session folder can hold such a file, so each path is a plain name.
+    projects=$(printf '%s' "$check" | jq -r '.untrusted_project_configs // [] | .[]') || return 1
+    if [ -n "$projects" ]; then
+        shown=$(printf '%s\n' "$projects" | while IFS= read -r one; do printf '%s; ' "$(_cs_plain_name "$one" 160)"; done)
+        folder=$(cd -P -- "$3" 2>/dev/null && pwd -P) || folder=$3
+        _codex_launch_error "${shown%; } is a Codex project config that Codex reads only once you trust this folder, after cs has chosen how to keep the agent out of the vault Codex home, so cs does not start Codex. Trust the folder in $CS_CODEX_SHARED_HOME/config.toml ([projects.\"$folder\"] with trust_level = \"trusted\"), so cs's checks see that config too, or remove it."
+        return 1
+    fi
+    unlisted=$(printf '%s' "$check" | jq -r '.unlisted // [] | join("; ")') || return 1
+    if [ -n "$unlisted" ]; then
+        _codex_launch_error "Codex listed none of the hooks $unlisted defines for the vault Codex home, though $CS_CODEX_SHARED_HOME trusts them, so cs cannot confirm they would run and does not start Codex. This Codex may list hooks differently from the version cs was checked against (0.167); update cs, or open this session under Claude."
+        return 1
+    fi
+    untrusted=$(printf '%s' "$check" | jq -r '.untrusted[]') || return 1
+    if [ -n "$untrusted" ]; then
+        _codex_launch_error "These hooks are trusted in $CS_CODEX_SHARED_HOME but would not run in the vault Codex home, so cs does not start it: $(printf '%s' "$untrusted" | tr '\n' ';' | sed 's/;$//; s/;/; /g'). Review them with /hooks in a Codex outside this session."
+        return 1
+    fi
+    # Each root comes from a Codex config a session's writer may have set, so
+    # it is shown as a plain name.
+    home_roots=$(printf '%s' "$check" | jq -r '.home_roots // [] | .[]') || return 1
+    if [ -n "$home_roots" ]; then
+        home_roots=$(printf '%s\n' "$home_roots" | while IFS= read -r one; do printf '%s; ' "$(_cs_plain_name "$one")"; done)
+        home_roots=${home_roots%; }
+        _codex_launch_error "These writable roots are inside the vault Codex home, which cs keeps read-only to the agent, so cs does not start Codex: $home_roots. Remove them from the Codex config that sets them."
+        return 1
+    fi
+    printf '%s\n' "$check"
+}
+
+# cs's permissions profile, on the command line (it outranks every config
+# file and stays across /clear): Codex's workspace sandbox with the vault home
+# read-only. The profile replaces [sandbox_workspace_write], so its settings are
+# carried in: each writable root, network access, and the temp directories it
+# keeps read-only. Under automatic approval it is always added. Under native
+# approval it follows the user's sandbox: read-only and full access need
+# nothing (nothing to write, or no sandbox chosen), a profile of their own is
+# refused (cs cannot add its rule to it), anything else gets cs's.
+_codex_vault_profile_args() {  # check JSON, home, approval; appends to CS_NATIVE_LAUNCH_ARGS
+    local check="$1" home="$2" mode own table
+    mode=$(printf '%s' "$check" | jq -r '.sandbox_mode // ""') || return 1
+    own=$(printf '%s' "$check" | jq -r '.default_permissions // ""') || return 1
+    if [ "$3" = native ]; then
+        if [ -n "$own" ] && [ "$own" != cs-vault-home ]; then
+            _codex_launch_error "Your Codex config selects the permissions profile $(_cs_plain_name "$own" 160), and cs cannot add the vault rule to it. Open this encrypted session with automatic approval (--approve-for-me)."
+            return 1
+        fi
+        case "$mode" in
+            read-only|danger-full-access) return 0 ;;
+        esac
+    fi
+    table=$(printf '%s' "$check" | jq -r --arg home "$home" '
+        .sandbox_workspace_write as $w
+        | ([($home | tojson) + "=\"read\""]
+           + [($w.writable_roots // [])[] | select(type == "string") | tojson + "=\"write\""]
+           + (if $w.exclude_slash_tmp == true then ["\":slash_tmp\"=\"read\""] else [] end)
+           + (if $w.exclude_tmpdir_env_var == true then ["\":tmpdir\"=\"read\""] else [] end)) as $fs
+        | "permissions.cs-vault-home={extends=\":workspace\", filesystem={" + ($fs | join(", ")) + "}"
+          + (if $w.network_access == true then ", network={enabled=true}" else "" end) + "}"') || return 1
+    CS_NATIVE_LAUNCH_ARGS+=(-c "$table" -c 'default_permissions="cs-vault-home"')
+}
 # A separate named profile lets /clear reload the last rotation's /model choice
 # without changing defaults for other sessions. Reused per checkout, reset at each
 # launch; it contains only model settings, never authentication or permissions.
@@ -20333,16 +20764,24 @@ _codex_rotation_profile_path() {  # session_dir
     printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
 }
 
+# CODEX_HOME is the vault home for an encrypted session, which the agent can
+# write while cs's profile is off: a link or a non-file at the profile's name
+# stops the launch, and _codex_write_into_place writes the profile, never
+# through a link.
 _codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
-    local profile tmp
+    local profile content
     profile=$(_codex_rotation_profile_path "$1") || return 1
-    mkdir -p "$(dirname "$profile")" || return 1
-    tmp=$(mktemp "$profile.XXXXXX") || return 1
-    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp" \
-        || ! mv "$tmp" "$profile"; then
-        rm -f "$tmp"
+    if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -f "$profile" ]; }; then
+        _codex_launch_error "$(_cs_plain_name "$profile") is a link or not a regular file; cs does not write the Codex model profile through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
+    mkdir -p "$(dirname "$profile")" || return 1
+    # The x keeps the last newline through $( ); a failed jq writes nothing.
+    content=$(
+        printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' || exit 1
+        printf x
+    ) || return 1
+    printf '%s' "${content%x}" | _codex_write_into_place "$profile" || return 1
     CS_CODEX_ROTATION_PROFILE=$profile
 }
 
@@ -20378,6 +20817,41 @@ _codex_launch_error() {  # message
     return 1
 }
 
+# Writes stdin to the destination, in a folder the agent can write. The temp
+# file beside it is made by mkstemp and written through the descriptor that
+# made it, never opened again by name, so a link swapped in for it receives
+# nothing; os.replace (rename(2)) then replaces the destination itself, never
+# following a link there. A link or a non-file already at the destination is
+# refused, named. The file keeps mkstemp's 0600 mode.
+_codex_write_into_place() {  # destination; the content on stdin
+    python3 -I -c '
+import os, stat, sys, tempfile
+dest = sys.argv[1]
+tmp = None
+try:
+    try:
+        mode = os.lstat(dest).st_mode
+    except FileNotFoundError:
+        mode = None
+    if mode is not None and not stat.S_ISREG(mode):
+        # Shown as cs shows a plain name (_cs_plain_name): the path may lead through a planted link.
+        shown = "".join(c if c.isascii() and (c.isalnum() or c in "._/@-") else "_" for c in dest)
+        print(shown + " is a link or not a regular file; cs does not write through it.", file=sys.stderr)
+        sys.exit(1)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", prefix="." + os.path.basename(dest) + ".")
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(sys.stdin.buffer.read())
+    os.replace(tmp, dest)
+except Exception:
+    if tmp is not None:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    sys.exit(1)
+' "$1"
+}
+
 _cs_codex_adapter_dependencies() {
     # Codex takes an executable path, not a shell command string.
     command -v "$CODEX_BIN" >/dev/null 2>&1 || printf '%s\n' codex
@@ -20387,7 +20861,7 @@ _cs_codex_adapter_dependencies() {
 
 # Where the installer puts cs's skills for Codex.
 _cs_codex_adapter_skill_dir() {
-    printf '%s/skills\n' "${CODEX_HOME:-$HOME/.codex}"
+    printf '%s/skills\n' "$(_codex_shared_home)"
 }
 
 _cs_codex_adapter_capabilities() {
@@ -20456,19 +20930,32 @@ _codex_emit_context() {  # cs_bin
     cs_emit_engine_context "$@"
 }
 
-_codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin
+# The agent can write the folder the context lives in (.cs/private, for an
+# encrypted session), so nothing is written through a name it could plant: a
+# link or a non-file at the context's own name stops the launch, and the
+# context, with the rotation preamble when one is given, is rendered in full
+# first and then written by _codex_write_into_place. A failed render replaces
+# nothing.
+_codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin, [rotation_handoff]
     local session_name="$1" session_dir="$2" output_file="$3"
-    local actor="$4" cs_bin="$5"
-    local temp_file="$output_file.tmp.$$"
-    if ! cs_session_context "$session_name" "$session_dir" "$actor" \
-        _codex_emit_context "$cs_bin" > "$temp_file"; then
-        rm -f "$temp_file" 2>/dev/null || true
+    local actor="$4" cs_bin="$5" rotation_handoff="${6:-}"
+    local content
+    if [ -L "$output_file" ] || { [ -e "$output_file" ] && [ ! -f "$output_file" ]; }; then
+        _codex_launch_error "$output_file is a link or not a regular file; cs does not write the Codex context through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
-    if ! mv "$temp_file" "$output_file"; then
-        rm -f "$temp_file" 2>/dev/null || true
-        return 1
-    fi
+    # The x keeps the context's last newlines through $( ).
+    content=$(
+        cs_session_context "$session_name" "$session_dir" "$actor" \
+            _codex_emit_context "$cs_bin" || exit 1
+        if [ -n "$rotation_handoff" ]; then
+            printf '\n'
+            _rotation_preamble "$rotation_handoff" "$actor" "$(_codex_handoffs_shown "$session_dir")" \
+                || exit 1
+        fi
+        printf x
+    ) || return 1
+    printf '%s' "${content%x}" | _codex_write_into_place "$output_file"
 }
 
 # Commit only a helper-acknowledged candidate while the current lease is held.
@@ -20521,16 +21008,6 @@ _codex_commit_prepared() {  # session_dir, previous_id, thread_id, source
 _codex_ack_resume() {  # session_dir, thread_id
     _cs_set_local_state_unlocked "$1/.cs/local/state" engine codex || return 1
     _timeline_started "$1" codex "$2" resume
-}
-
-# Codex writes its rollouts, history and state under CODEX_HOME, outside an
-# encrypted session's vault, so it opens none. main refuses before the pre-open
-# asks for the vault's password; _launch_codex_bound, for any other caller.
-_codex_encrypted_refusal() {  # session_name, intent
-    local again="cs $1 --engine claude"
-    [ "${2:-}" != handoff ] || again="$again --from-handoff"
-    printf '%s is encrypted, and Codex keeps its conversations in %s, outside the vault. Open it under Claude: %s\n' \
-        "$1" "${CODEX_HOME:-$HOME/.codex}" "$again"
 }
 
 # Reconcile the durable kickoff against native history before retrying.
@@ -20602,11 +21079,6 @@ _launch_codex_bound() {
         _codex_launch_error "Session directory does not exist: $session_dir"
         return 1
     }
-    # A stopgap until Codex keeps its home inside the vault.
-    if _switch_session_encrypted "$session_dir"; then
-        _codex_launch_error "$(_codex_encrypted_refusal "$session_name" "$intent")"
-        return 1
-    fi
     mkdir -p "$local_dir" || return 1
     umask 077
 
@@ -20618,6 +21090,9 @@ _launch_codex_bound() {
         _codex_launch_error "Codex executable is not executable: $codex_bin"
         return 1
     }
+    # A vault home inherited from another encrypted session's launch is never
+    # this session's (lib/76-codex-vault.sh); the shell's home is checked here.
+    _codex_drop_inherited_vault_home
     # Codex refuses a CODEX_HOME that does not exist, and its app-server exits
     # before the helper can say why; the helper keeps server output private.
     if [ -n "${CODEX_HOME:-}" ] && [ ! -d "$CODEX_HOME" ]; then
@@ -20646,6 +21121,20 @@ _launch_codex_bound() {
         _codex_launch_error "Codex thread helper is missing or not executable: $helper"
         return 1
     }
+    # An encrypted session runs Codex on its own home inside the vault
+    # (lib/76-codex-vault.sh), exported here for Codex and every helper and hook
+    # the run starts, and checked before anything is bound or spent. Its
+    # context file goes beside its handoffs, in the vault.
+    local vault_home="" vault_check=""
+    _export_session_codex_home "$session_dir" || return 1
+    if [ -n "${CS_CODEX_SHARED_HOME:-}" ]; then
+        vault_home=$CODEX_HOME
+        vault_check=$(_codex_vault_check "$helper" "$codex_bin" "$session_dir") || return 1
+        ( CS_NATIVE_LAUNCH_ARGS=(); _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" ) \
+            || return 1
+        context_file="$meta_dir/private/codex-instructions.md"
+        rm -f "$local_dir/codex-instructions.md" 2>/dev/null || true
+    fi
 
     recorded_id=$(cs_binding_read "$session_dir" codex) || {
         _codex_launch_error "Cannot read Codex thread binding: $binding_file"
@@ -20656,6 +21145,40 @@ _launch_codex_bound() {
             _codex_launch_error "Invalid Codex thread binding in $binding_file. Repair it before launching; no new thread was created."
             return 1
         }
+    fi
+    # A binding made before the session's Codex home moved into its vault names
+    # a thread the shared home keeps: it stays there, and this launch starts the
+    # session's first conversation in the vault. An explicit resume refuses.
+    # Only the shared home's yes says so; a thread neither home keeps takes the
+    # ordinary refresh, which fails as in a plain session, and a probe that
+    # fails stops the launch with the helper's reason on the terminal.
+    local outside_id="" in_vault="" in_shared="" probe_status
+    if [ -n "$vault_home" ] && [ -n "$recorded_id" ]; then
+        probe_status=0
+        in_vault=$(cs_run_child "$helper" --has-thread --thread-id "$recorded_id") || probe_status=$?
+        if [ "$probe_status" -ne 0 ]; then
+            _codex_launch_error "Could not look for Codex conversation $recorded_id in the vault's Codex home; the binding is unchanged."
+            return 1
+        fi
+        if [ "$in_vault" = no ]; then
+            probe_status=0
+            in_shared=$(CODEX_HOME="$CS_CODEX_SHARED_HOME" cs_run_child "$helper" --has-thread --thread-id "$recorded_id") \
+                || probe_status=$?
+            if [ "$probe_status" -ne 0 ]; then
+                _codex_launch_error "Could not look for Codex conversation $recorded_id in the shared Codex home $CS_CODEX_SHARED_HOME; the binding is unchanged."
+                return 1
+            fi
+        fi
+    fi
+    if [ "$in_shared" = yes ]; then
+        if [ "$intent" = resume ]; then
+            _codex_launch_error "Cannot resume: the recorded Codex conversation $recorded_id is kept in $CS_CODEX_SHARED_HOME, outside the vault. Start one in the vault with --fresh."
+            return 1
+        fi
+        outside_id=$recorded_id
+        recorded_id=""
+        printf "${DIM}The earlier Codex conversation %s stays in %s, outside the vault; this session's Codex conversations start in the vault from now on.${NC}\n" \
+            "$outside_id" "$CS_CODEX_SHARED_HOME"
     fi
     # An earlier kickoff is settled before the launch answers the resume
     # question, binds a thread or spends a handoff: a history that cannot be
@@ -20790,7 +21313,8 @@ _launch_codex_bound() {
         _codex_launch_error "Cannot resume: no recorded Codex conversation. Use --fresh."
         return 1
     fi
-    local previous_id="$recorded_id"
+    # A thread the shared home keeps is still the binding a new one replaces.
+    local previous_id="${recorded_id:-$outside_id}"
     [ "$intent" != fresh ] || recorded_id=""
 
     cs_export_session_context "$session_name" "$session_dir"
@@ -20803,16 +21327,11 @@ _launch_codex_bound() {
 
     local actor
     actor=$(cs_actor_slug "$session_dir") || return 1
-    _codex_write_context "$session_name" "$session_dir" "$context_file" "$actor" "$CS_BIN" || {
+    _codex_write_context "$session_name" "$session_dir" "$context_file" "$actor" "$CS_BIN" \
+        "$rotation_handoff" || {
         _codex_launch_error "Could not write Codex context: $context_file"
         return 1
     }
-    if [ -n "$rotation_handoff" ]; then
-        { printf '\n'; _rotation_preamble "$rotation_handoff" "$actor"; } >> "$context_file" || {
-            _codex_launch_error "Could not add the rotation handoff to the Codex context: $context_file"
-            return 1
-        }
-    fi
 
     # The helper uses app-server to create or refresh a *persistent* thread and
     # injects context without starting a user/model turn. A failed refresh must
@@ -20833,7 +21352,7 @@ _launch_codex_bound() {
         if [ "$helper_status" -ne 0 ]; then
             carry=""
             helper_status=0
-            if [ -n "$previous_id" ]; then
+            if [ -n "$previous_id" ] && [ -z "$outside_id" ]; then
                 printf 'cs: could not carry the Claude conversation over; resuming the earlier Codex conversation.\n' >&2
                 intent=auto
                 recorded_id="$previous_id"
@@ -20880,7 +21399,12 @@ _launch_codex_bound() {
             carried_from="claude:$transplant_id"
             start_source=transplant
         fi
-        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$rotation_handoff" \
+        # An encrypted session's handoff name is its topic, so it stays out of
+        # the plaintext pending record and timeline, as on Claude: the
+        # rotation is recorded with its reason and without the name.
+        local public_handoff="$rotation_handoff"
+        ! _switch_session_encrypted "$session_dir" || public_handoff=""
+        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$public_handoff" \
             "$carried_from"; then
             _codex_launch_error "Could not stage Codex thread binding: $binding_file"
             return 1
@@ -20894,7 +21418,7 @@ _launch_codex_bound() {
                 "${transplant_id:0:8}" "$transplant_size"
             # codex resume opens the earlier thread outside cs: the binding
             # stays on the carried one.
-            [ -z "$previous_id" ] \
+            [ -z "$previous_id" ] || [ -n "$outside_id" ] \
                 || printf "${DIM}The earlier Codex conversation stays. To return to it:${NC} codex resume %s\n" "$previous_id"
         fi
     fi
@@ -20919,13 +21443,26 @@ _launch_codex_bound() {
         # A refused flip keeps the marker for the next start or /clear to
         # retry (_handoff_spend); the thread still starts from the handoff,
         # and the terminal and the kick name the refusal.
-        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$rotation_handoff" "$local_dir/pending-handoff" "$thread_id") || true
-        kick="Continue from the pending rotation handoff: read .cs/handoffs/$rotation_handoff first."
-        printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
-        if [ -n "$refusal" ]; then
-            _handoff_refusal_notice ".cs/handoffs/$rotation_handoff" "$refusal" .cs/local/pending-handoff
-            kick="$kick $(_handoff_refusal_warning ".cs/handoffs/$rotation_handoff" "$refusal" .cs/local/pending-handoff)"
+        local shown_handoff shown_marker
+        shown_handoff="$(_codex_handoffs_shown "$session_dir")/$rotation_handoff"
+        shown_marker="$(_codex_marker_shown "$session_dir")"
+        refusal=$(_handoff_spend "$session_dir/$shown_handoff" "$session_dir/$shown_marker" "$thread_id") || true
+        # The kick is codex's argv, visible to ps: an encrypted session's
+        # handoff name, its topic, stays out of it, as in a switch's resume
+        # (_switch_resume_handoff). The terminal still names the file.
+        if ! _switch_session_encrypted "$session_dir"; then
+            kick="Continue from the pending rotation handoff: read $shown_handoff first."
+            [ -z "$refusal" ] || kick="$kick $(_handoff_refusal_warning "$shown_handoff" "$refusal" "$shown_marker")"
+        elif [ -z "$refusal" ]; then
+            kick="Continue from the pending rotation handoff: read the handoff in .cs/private/handoffs/ whose frontmatter says consumed_by: $thread_id first."
+        else
+            # No consumed_by line was written to point at: the marker stands
+            # in, and the reason stays on the terminal.
+            kick="Continue from the pending rotation handoff: read the handoff $shown_marker names, in .cs/private/handoffs/, first."
+            kick="$kick $(_handoff_refusal_warning "the handoff $shown_marker names" "cs printed the reason in the terminal" "$shown_marker")"
         fi
+        printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
+        [ -z "$refusal" ] || _handoff_refusal_notice "$shown_handoff" "$refusal" "$shown_marker"
         # r is the user choosing the handoff over the merge armed moments
         # earlier, as on Claude; the merge waits for its own launch.
         [ -z "$merge_feature" ] \
@@ -20960,6 +21497,10 @@ _launch_codex_bound() {
     if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
         local profile_name=${CS_CODEX_ROTATION_PROFILE##*/}
         CS_NATIVE_LAUNCH_ARGS+=(--profile "${profile_name%.config.toml}")
+    fi
+    # The vault home stays out of the agent's reach (lib/76-codex-vault.sh).
+    if [ -n "$vault_home" ]; then
+        _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" || return 1
     fi
     # The run's approval, for its hooks and the automatic /clear's watcher: a
     # run with native approval never quits for a switch unattended.
@@ -21330,7 +21871,7 @@ _codex_hook_files_changed() {
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     event=$(cs_engine_call codex files_changed) || return 0
     [ -n "$event" ] || return 0
-    hook="${CODEX_HOME:-$HOME/.codex}/hooks/cs/autosave-commits.sh"
+    hook="$(_codex_shared_home)/hooks/cs/autosave-commits.sh"
     [ -r "$hook" ] || return 0
     printf '%s' "$event" | bash "$hook" --event || true
 }
@@ -21371,14 +21912,17 @@ _codex_hook_session_start() {
         # retry (_handoff_spend); the rotation still loads, and both the
         # conversation and the user's line name the refusal.
         local refusal=""
-        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$meta/local/pending-handoff" "$session_id") || true
-        context=$(_rotation_preamble "$handoff" "$actor")
+        local shown_dir shown_marker
+        shown_dir=$(_codex_handoffs_shown "$session_dir")
+        shown_marker=$(_codex_marker_shown "$session_dir")
+        refusal=$(_handoff_spend "$session_dir/$shown_dir/$handoff" "$session_dir/$shown_marker" "$session_id") || true
+        context=$(_rotation_preamble "$handoff" "$actor" "$shown_dir")
         sysmsg="Rotation loaded from $handoff; this conversation continues from it."
         if [ -n "$refusal" ]; then
             context="$context
 
-$(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-handoff)"
-            sysmsg="$sysmsg cs could not mark .cs/handoffs/$handoff consumed: $refusal. The marker stays armed, so the next /clear loads it again."
+$(_handoff_refusal_warning "$shown_dir/$handoff" "$refusal" "$shown_marker")"
+            sysmsg="$sysmsg cs could not mark $shown_dir/$handoff consumed: $refusal. The marker stays armed, so the next /clear loads it again."
         fi
     else
         context=$(_fresh_notice_codex "$actor")
@@ -21407,6 +21951,9 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
         { printf '%s - Rebound codex thread: %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
             "${previous:-none}" "$thread_id" >> "$log_dir/session.log"; } 2>/dev/null || true
     fi
+    # An encrypted session's handoff name is its topic: the plaintext timeline
+    # records that a handoff rotated, never which (hooks/session-start.sh).
+    ! _switch_session_encrypted "$session_dir" || handoff=""
     if [ -n "$previous" ]; then
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi
@@ -21686,19 +22233,24 @@ _codex_autoclear_grace() {
 
 # Stop runs outside the workspace sandbox, before either a manual or automatic
 # /clear. Read only the bound thread's native transcript; never infer a model
-# from handoff prose. Atomic replacement leaves the previous profile on errors.
+# from handoff prose. Atomic replacement leaves the previous profile on errors,
+# and _codex_write_into_place never writes through a link the agent planted.
 # A setting fixed for the run (CS_CODEX_ROTATION_FIXED, lib/76-codex.sh) wins
 # on /clear; when it differs from the final turn's, the save still happens,
 # fails, and prints the line that says so.
 _codex_rotation_model_save() {  # session_dir, session_id, Stop input
     [ -n "${CS_CODEX_ROTATION_PROFILE:-}" ] || return 0
-    local expected transcript tmp note status=0
+    local expected transcript note status=0
     expected=$(_codex_rotation_profile_path "$1") || return 1
     [ "$CS_CODEX_ROTATION_PROFILE" = "$expected" ] || return 1
     [ -f "$expected" ] && [ ! -L "$expected" ] || return 1
     transcript=$(printf '%s' "$3" | jq -er '.transcript_path | select(type == "string" and length > 0)' 2>/dev/null) || return 1
-    tmp=$(mktemp "$expected.XXXXXX" 2>/dev/null) || return 1
-    note=$(python3 -I -c '
+    # The pass prints the profile on stdout and the note on stderr, which fd 3
+    # carries out to $note. The profile is written only when the pass ends 0
+    # or 3; the x keeps its last newline through $( ).
+    note=$( {
+        pass=0
+        settings=$(python3 -I -c '
 import json, os, sys
 session, thread, transcript = sys.argv[1:]
 metadata = None
@@ -21742,12 +22294,13 @@ try:
         sys.exit(3)
 except (OSError, ValueError, TypeError):
     sys.exit(1)
-' "$1" "$2" "$transcript" 2>&1 > "$tmp") || status=$?
+' "$1" "$2" "$transcript" 2>&3; rc=$?; printf x; exit "$rc") || pass=$?
+        [ "$pass" -eq 0 ] || [ "$pass" -eq 3 ] || exit 1
+        printf '%s' "${settings%x}" | _codex_write_into_place "$expected" 2>/dev/null || exit 1
+        exit "$pass"
+    } 3>&1 ) || status=$?
     # 3: the profile is written, and a fixed setting outranks it on /clear.
-    if { [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; } || ! mv "$tmp" "$expected" 2>/dev/null; then
-        rm -f "$tmp" 2>/dev/null
-        return 1
-    fi
+    { [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; } || return 1
     [ "$status" -eq 0 ] || { printf '%s\n' "$note"; return 1; }
 }
 
@@ -22230,11 +22783,13 @@ _switch_session_encrypted() {  # session_dir
     [ -e "$1/.cs/private" ] || [ -L "$1/.cs/private" ]
 }
 
-# Only Claude can start from a handoff kept in the vault. Codex's launch
-# and hook paths read plaintext handoffs; Antigravity stores conversations
-# outside the vault and refuses encrypted sessions altogether.
+# Claude and Codex start from a handoff kept in the vault, and keep their
+# conversations there (.cs/claude-config, .cs/private/codex-home).
+# Antigravity has no home setting to point into the vault and refuses
+# encrypted sessions altogether.
 _switch_engine_reads_vault() {  # engine
-    [ "$1" = claude ]
+    case "$1" in claude|codex) return 0 ;; esac
+    return 1
 }
 
 _switch_usage() {
@@ -22883,7 +23438,7 @@ _cs_antigravity_adapter_launch() {
 # pre-open asks for the vault's password; _launch_antigravity_bound, for any
 # other caller.
 _antigravity_encrypted_refusal() {  # session_name
-    printf '%s is encrypted, and Antigravity keeps its conversations in %s, outside the vault. Open it under Claude: cs %s --engine claude\n' \
+    printf '%s is encrypted, and Antigravity keeps its conversations in %s, outside the vault, with no setting to move them. Open it under Claude or Codex: cs %s --engine claude\n' \
         "$1" "$HOME/.gemini/antigravity-cli" "$1"
 }
 
@@ -23104,6 +23659,9 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         _antigravity_launch_error "$(_antigravity_encrypted_refusal "$session_name")"
         return 1
     fi
+    # A vault home inherited from another encrypted session's launch is never
+    # this session's (lib/76-codex-vault.sh); a codex the agent starts gets the shell's.
+    _codex_drop_inherited_vault_home
     # Both paths are made absolute before the launch changes into the
     # session folder, where a relative one would name another file.
     agy_bin=$(command -v "$agy_bin" 2>/dev/null) || {
@@ -24487,7 +25045,7 @@ run_uninstall() {
     local hooks_dir="$hooks_parent_dir/cs"
     local commands_dir="$HOME/.claude/commands"
     local skills_dir="$HOME/.claude/skills"
-    local codex_skills_dir="${CODEX_HOME:-$HOME/.codex}/skills"
+    local codex_skills_dir="${CS_CODEX_SHARED_HOME:-${CODEX_HOME:-$HOME/.codex}}/skills"
     local settings_file="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
     local bash_completion_dir="$HOME/.bash_completion.d"
     # install.sh picks the zsh completion dir from the user's fpath line: its
@@ -25499,16 +26057,18 @@ main() {
     local session_dir="$SESSIONS_ROOT/$session_name"
     local engine
     engine=$(_session_engine "$session_dir" "$explicit_engine")
-    # A stopgap until Codex and Antigravity keep their homes inside the vault
-    # (_codex_encrypted_refusal, _antigravity_encrypted_refusal). Claude
-    # refuses a worktree of an encrypted base too, so that one is not pointed at it.
+    # Codex runs an encrypted session on a home inside its vault
+    # (lib/76-codex-vault.sh). Antigravity has no home setting to point there
+    # (_antigravity_encrypted_refusal), so it stays refused, before the pre-open
+    # asks for the vault's password. Claude refuses a worktree of an encrypted
+    # base too, so that one is not pointed at it.
     if [ "$engine" != claude ]; then
         if [ -n "$wt_base" ] && _switch_session_encrypted "$(_resolve_session_dir "$wt_base")"; then
             error "$wt_base is encrypted, and feature worktrees of an encrypted session are not supported yet."
         fi
         if _switch_session_encrypted "$session_dir"; then
             case "$engine" in
-                codex) error "$(_codex_encrypted_refusal "$session_name" "$launch_intent")" ;;
+                codex) ;;
                 antigravity) error "$(_antigravity_encrypted_refusal "$session_name")" ;;
                 *) error "$session_name is encrypted, and $engine keeps its state outside the vault. Open it under Claude: cs $session_name --engine claude" ;;
             esac

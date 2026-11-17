@@ -1647,6 +1647,33 @@ test_install_deploys_codex_skills_under_codex_home() {
     assert_not_exists "$fake_home/.codex" "nothing lands in ~/.codex when CODEX_HOME points elsewhere" || return 1
 }
 
+# Inside an encrypted session cs points CODEX_HOME at the session's vault home
+# and keeps the shell's in CS_CODEX_SHARED_HOME. cs -update run there must
+# install into the shared home: the vault's hooks.json stays cs's link, and
+# hook trust lands where the next open seeds the vault's config.toml from.
+test_install_writes_the_shared_codex_home_from_inside_a_vault() {
+    local fake_home="$TEST_TMPDIR/codex-vault-update" shared vault
+    shared="$fake_home/.codex"
+    vault="$TEST_TMPDIR/s/.cs/vault-mnt/private/codex-home"
+    mkdir -p "$shared/skills" "$shared/hooks" "$vault"
+    printf '{}\n' > "$shared/hooks.json"
+    ln -s "$shared/hooks.json" "$vault/hooks.json"
+    ln -s "$shared/skills" "$vault/skills"
+    ln -s "$shared/hooks" "$vault/hooks"
+    printf 'model = "seeded"\n' > "$vault/config.toml"
+    HOME="$fake_home" CODEX_HOME="$vault" CS_CODEX_SHARED_HOME="$shared" CS_INSTALL_ENGINES=codex \
+        bash "$INSTALL_SH" > "$TEST_TMPDIR/vault-update.out" 2>&1 < /dev/null \
+        || { cat "$TEST_TMPDIR/vault-update.out"; echo "  FAIL: install.sh exited non-zero"; return 1; }
+    [ -L "$vault/hooks.json" ] && [ "$(readlink "$vault/hooks.json")" = "$shared/hooks.json" ] \
+        || { echo "  FAIL: the vault's hooks.json is no longer cs's link to the shared one"; return 1; }
+    assert_file_contains "$shared/hooks.json" 'cs -codex-hook session-start' "the hook is registered in the shared home" || return 1
+    assert_file_contains "$shared/config.toml" "^\[hooks.state.\"$(_bre_literal "$shared/hooks.json"):" \
+        "its trust is written to the shared config.toml" || return 1
+    if grep -qF '[hooks.state.' "$vault/config.toml"; then
+        echo "  FAIL: hook trust was written to the vault's config.toml"; return 1
+    fi
+}
+
 # Codex skips an untrusted hook without a word, and trusts one only by the
 # sha256 of its normalized definition. A known answer from real Codex 0.160
 # (it recorded this hash for this command when the hook was trusted in its
@@ -4552,6 +4579,7 @@ run_test test_manifest_arrays_match_repo_files
 run_test test_skill_files_exist_in_repo
 run_test test_install_deploys_skills_for_codex
 run_test test_install_deploys_codex_skills_under_codex_home
+run_test test_install_writes_the_shared_codex_home_from_inside_a_vault
 run_test test_claude_only_install_leaves_codex_absent
 run_test test_codex_hook_trust_hash_matches_codex
 run_test test_install_registers_a_trusted_codex_hook

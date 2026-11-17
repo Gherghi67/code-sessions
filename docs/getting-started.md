@@ -127,7 +127,8 @@ conversation, cs deletes it and the next reopen asks again; if Claude had
 already written to it, cs keeps it and prints the `claude --resume` line that
 continues it. `--resume`, a spawned open and an open without a terminal
 resume this engine's own conversation as before.
-Antigravity sessions and encrypted sessions are not offered a carry-over.
+Antigravity sessions are not offered a carry-over; an encrypted session carries
+between Claude and Codex inside its vault.
 `ccs research-notes -conversations` shows a carry-over as `rotated
 (transplant from codex:01a1b1c4)`. Keep one interactive owner open for a
 workspace at a time.
@@ -169,10 +170,10 @@ the resume prompt: the armed one, otherwise the newest unconsumed one, labelled
 pending handoff it refuses and points at `--fresh`. It cannot be combined with
 `--fresh`, `--resume` or `-finish`. An ambiguous Antigravity launch must recover
 with `--engine antigravity --resume`; follow cs's notice and inspect native
-history before attempting any replay. Codex and Antigravity do not open an
-[encrypted session](session-layout.md#encrypted-sessions) yet, so the switch
-into either engine refuses there; open it with
-`cs <name> --engine claude`.
+history before attempting any replay. Antigravity does not open an
+[encrypted session](session-layout.md#encrypted-sessions) yet, so a switch into
+it refuses there; Claude and Codex both keep an encrypted session's
+conversations in its vault.
 
 Run `ccs .` from the root of an adopted project or registered session to open
 that workspace. From anywhere, `ccs` with no arguments opens the interactive
@@ -224,7 +225,7 @@ shared startup context, rotation, the `switch` skill in both directions, and
 finishing a feature (`-finish`, `$finish`).
 Claude's hooks and mods do not run inside Codex. Codex does not yet provide
 cs's autosave and crash recovery, automatic queue or mailbox
-delivery, runtime usage reporting, encrypted sessions, or native terminal
+delivery, runtime usage reporting, or native terminal
 controls. Manual status and workspace management are available.
 
 Under Antigravity, cs starts `agy` with the session context, and a hook cs
