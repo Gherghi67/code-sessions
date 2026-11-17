@@ -33,21 +33,23 @@ The capability check `cs_engine_supports <engine> <capability>` performs an
 exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`,
-`memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
+`memory_index`, `mail_delivery`, `recovery_autosave`, and `clear_rotation`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
-`mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
+`mail_delivery`, `recovery_autosave`, and `clear_rotation`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, `feature_finish`, and `mail_delivery` ([Antigravity sessions](antigravity.md)). These
+`spawn_brief`, `feature_finish`, and `mail_delivery`, and `clear_rotation` inside a run whose launch found
+`agy` 1.5.10 or later and cs's SessionStart hook ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
 must fail before session creation or adapter preparation when unsupported.
 
-The four session-manager capabilities name what the shipped skills rely on:
+The session-manager capabilities name what the shipped skills rely on:
 
 | Capability | Means | Checked by |
 | --- | --- | --- |
 | `rotation` | a fresh conversation consumes the handoff and binds its exact ID: `/clear` under Claude/Codex, exit/reopen under Antigravity | the rotate skill |
+| `clear_rotation` | `/clear` in the running CLI carries the armed handoff into the new conversation, which takes the binding (Claude, Codex; Antigravity per run) | the rotate skill, under Antigravity |
 | `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude, Codex and Antigravity) | the switch skill and verb |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |

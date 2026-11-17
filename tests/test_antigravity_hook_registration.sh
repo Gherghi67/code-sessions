@@ -30,8 +30,10 @@ test_register_writes_one_named_hook_for_the_installed_cs() {
         "$(jq -r '."cs-session".PostToolUse[0].hooks[0].command' "$PLUGIN/hooks.json")" || return 1
     assert_eq '/opt/cs/bin/cs -antigravity-hook stop' \
         "$(jq -r '."cs-session".Stop[0].command' "$PLUGIN/hooks.json")" "Stop is flat, as PreInvocation is" || return 1
-    assert_eq '["PostToolUse","PreInvocation","Stop"]' "$(jq -c '."cs-session" | keys' "$PLUGIN/hooks.json")" \
-        "only the three events cs uses" || return 1
+    assert_eq '/opt/cs/bin/cs -antigravity-hook session-start' \
+        "$(jq -r '."cs-session".SessionStart[0].command' "$PLUGIN/hooks.json")" "SessionStart is flat too" || return 1
+    assert_eq '["PostToolUse","PreInvocation","SessionStart","Stop"]' "$(jq -c '."cs-session" | keys' "$PLUGIN/hooks.json")" \
+        "only the four events cs uses: never PreToolUse, where an answer of {} denies the tool" || return 1
     # agy skips the whole file when a handler's type is not "command" or its
     # timeout (seconds) is not an integer. Pinned here as well as validated
     # below, since CI has no agy.
@@ -162,6 +164,19 @@ test_agy_validates_the_plugin_with_cs_skills() {
         || { echo "  FAIL: agy plugin validate --strict refuses cs's skills:"; printf '    %s\n' "$output"; return 1; }
     assert_eq "${#CS_SKILLS[@]}" "$(printf '%s' "$output" | jq -r '.components.skills')" \
         "agy loads every skill cs ships" || return 1
+}
+
+# agy loads only the first 24000 bytes of a skill's body, the text after its
+# front matter (agy 1.5.10's validator warns past it, and --strict fails), so
+# what a skill says at its end, such as the rotate skill's last line, would
+# never reach the model. Checked here without agy, which CI lacks.
+test_every_cs_skill_body_fits_what_agy_loads() {
+    local skill bytes
+    for skill in "${CS_SKILLS[@]}"; do
+        bytes=$(awk 'BEGIN { n = 0 } /^---$/ && n < 2 { n++; next } n >= 2' "$SCRIPT_DIR/../skills/$skill/SKILL.md" | wc -c | tr -d ' ')
+        [ "$bytes" -lt 24000 ] \
+            || { echo "  FAIL: skills/$skill/SKILL.md has a $bytes-byte body; agy loads the first 24000"; return 1; }
+    done
 }
 
 test_unregister_removes_only_what_cs_wrote() {
@@ -458,6 +473,7 @@ run_test test_reregister_replaces_cs_files_in_place_and_is_idempotent
 run_test test_a_folder_of_the_users_is_never_written_or_removed
 run_test test_a_linked_folder_or_hooks_file_is_never_written_through
 run_test test_agy_validates_the_plugin_with_cs_skills
+run_test test_every_cs_skill_body_fits_what_agy_loads
 run_test test_unregister_removes_only_what_cs_wrote
 run_test test_unregister_removes_cs_skills_and_keeps_the_users
 run_test test_a_folder_a_removal_left_with_a_changed_skill_is_taken_by_the_next_install

@@ -54,6 +54,13 @@ _cs_antigravity_adapter_capabilities() {
     # mail_delivery: PreInvocation shows unread mail at each prompt, and Stop
     # wakes a turn that ends with mail which came while it ran.
     printf '%s\n' launch exact_resume startup_context recovery_autosave memory_index rotation engine_switch spawn_brief feature_finish mail_delivery
+    # clear_rotation: /clear (or /new) carries an armed rotation into the new
+    # conversation, which takes the binding. Claimed only inside a run whose
+    # launch found it usable (_antigravity_clear_rebind_on), so the rotate
+    # skill offers /clear only where it works.
+    if _antigravity_clear_rebind_on; then
+        printf '%s\n' clear_rotation
+    fi
 }
 
 # The oldest agy on which invocationNum was measured going back to 0 at each
@@ -63,12 +70,20 @@ _cs_antigravity_adapter_capabilities() {
 # shellcheck disable=SC2034  # read by cs -doctor in lib/60-doctor.sh
 CS_ANTIGRAVITY_MAIL_MIN_VERSION=1.5.9
 
+# The oldest agy on which a conversation /clear or /new started was measured
+# apart from a subagent's, which the /clear rebind stands on: 1.5.10, on
+# 2026-11-17, in one interactive run. A subagent's hooks carried
+# lastUserInput "" at every event and initialNumSteps 0 at its first model
+# call; every main conversation's carried the prompt typed into it.
+CS_ANTIGRAVITY_CLEAR_MIN_VERSION=1.5.10
+
 # The installed agy's version: the first run of three dot-separated numbers
 # its --version prints (1.5.9 prints the number alone). Fails when agy exits
-# with an error or names no version, so doctor can say it cannot tell.
-_antigravity_version() {
+# with an error or names no version, so doctor can say it cannot tell. A
+# launch names the binary it resolved; doctor asks AGY_BIN or the PATH's.
+_antigravity_version() {  # [agy_bin]
     local out
-    out=$("${AGY_BIN:-agy}" --version 2>&1) || return 1
+    out=$("${1:-${AGY_BIN:-agy}}" --version 2>&1) || return 1
     [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] || return 1
     printf '%s\n' "${BASH_REMATCH[1]}"
 }
@@ -241,8 +256,9 @@ _antigravity_flags_listed() {  # agy_bin, args...
 
 # Ownership lets the installer repair a partial plugin. Rotation instead
 # needs an enabled PreInvocation command that can actually bind its consumer.
-_antigravity_rotation_hook_ready() {
-    local dir commands command cs_path
+# With an event and its verb, the same check for that event's command.
+_antigravity_rotation_hook_ready() {  # [event, verb]
+    local dir commands command cs_path event="${1:-PreInvocation}" verb="${2:-pre-invocation}"
     dir=$(_antigravity_plugin_dir)
     _antigravity_plugin_is_cs "$dir" \
         && _antigravity_plugin_manifest_is_cs "$dir/plugin.json" || return 1
@@ -250,15 +266,15 @@ _antigravity_rotation_hook_ready() {
         jq -e --arg name "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$name].enabled != false' \
             "$HOME/.gemini/config/config.json" >/dev/null 2>&1 || return 1
     fi
-    commands=$(jq -er --arg name "$CS_ANTIGRAVITY_HOOK_NAME" '
-        .[$name].PreInvocation | arrays | .[]
+    commands=$(jq -er --arg name "$CS_ANTIGRAVITY_HOOK_NAME" --arg event "$event" --arg tail " -antigravity-hook $verb" '
+        .[$name][$event] | arrays | .[]
         | select(type == "object" and .enabled != false)
         | (.hooks // [.]) | arrays | .[]
         | select(type == "object" and .enabled != false and .type == "command")
-        | .command | strings | select(endswith(" -antigravity-hook pre-invocation"))
+        | .command | strings | select(endswith($tail))
     ' "$dir/hooks.json" 2>/dev/null) || return 1
     while IFS= read -r command; do
-        cs_path=${command%" -antigravity-hook pre-invocation"}
+        cs_path=${command%" -antigravity-hook $verb"}
         case "$cs_path" in
             \'*\')
                 cs_path=${cs_path#\'}
@@ -268,11 +284,29 @@ _antigravity_rotation_hook_ready() {
         esac
         # Accept only the installer's shell-word encoding, never evaluate a
         # hook command to find its path. This includes paths with quotes.
-        [ "$(_antigravity_hook_command "$cs_path" pre-invocation)" = "$command" ] || continue
+        [ "$(_antigravity_hook_command "$cs_path" "$verb")" = "$command" ] || continue
         case "$cs_path" in /*) ;; *) continue ;; esac
         [ -f "$cs_path" ] && [ -x "$cs_path" ] && return 0
     done < <(printf '%s\n' "$commands")
     return 1
+}
+
+# Whether a run may carry a rotation through /clear: an agy at least
+# CS_ANTIGRAVITY_CLEAR_MIN_VERSION, whose payloads tell a conversation /clear
+# started from a subagent's, and a plugin whose SessionStart, which marks a
+# new conversation, and PreInvocation, which rebinds to it, can both run cs.
+_antigravity_clear_rebind_usable() {  # agy_bin
+    local version
+    version=$(_antigravity_version "$1") && _version_at_least "$version" "$CS_ANTIGRAVITY_CLEAR_MIN_VERSION" || return 1
+    _antigravity_rotation_hook_ready && _antigravity_rotation_hook_ready SessionStart session-start
+}
+
+# Whether this run's launch found the /clear rebind usable and said so in the
+# run's directory.
+_antigravity_clear_rebind_on() {
+    local run_dir
+    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 1
+    [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]
 }
 
 # cs's status line under agy is bin/cs-statusline-agy, which runs
@@ -556,6 +590,11 @@ $prompt"
         if [ -n "$rotation_handoff" ]; then
             printf '%s\n' "$rotation_handoff" > "$run_dir/handoff" || return 1
         fi
+        # Whether /clear may move the session to the conversation it starts,
+        # decided once for the run, as the version and the plugin stand now.
+        if [ -n "$hooked" ] && _antigravity_clear_rebind_usable "$agy_bin"; then
+            _antigravity_run_mark "$run_dir/clear-rebind"
+        fi
     else
         if [ -n "$rotation_handoff" ]; then
             _antigravity_launch_error "Cannot prepare a private Antigravity run directory; the handoff stays pending."
@@ -665,12 +704,13 @@ cmd_antigravity_hook() {  # event
     ANTIGRAVITY_HOOK_REPLY=""
     ANTIGRAVITY_HOOK_AFTER=""
     case "${1:-}" in
+        session-start) handler=_antigravity_hook_session_start ;;
         pre-invocation) handler=_antigravity_hook_pre_invocation ;;
         post-tool-use) handler=_antigravity_hook_post_tool_use ;;
         stop) handler=_antigravity_hook_stop ;;
         *)
             if [ -t 0 ]; then
-                printf 'Usage: cs -antigravity-hook pre-invocation|post-tool-use|stop\n' >&2
+                printf 'Usage: cs -antigravity-hook session-start|pre-invocation|post-tool-use|stop\n' >&2
                 return 2
             fi
             handler=""
@@ -697,11 +737,14 @@ cmd_antigravity_hook() {  # event
 # The payload fields the handlers read, in one jq: AGY_HOOK_ID, the
 # conversation id, a UUID or the read fails (it names a native file and goes
 # onto agy's command line at the next reopen); AGY_HOOK_INVOCATION,
-# PreInvocation's invocationNum when it is a whole number, else empty; and
-# AGY_HOOK_TERMINATION, Stop's terminationReason when it is a word, else empty.
+# PreInvocation's invocationNum when it is a whole number, else empty;
+# AGY_HOOK_TERMINATION, Stop's terminationReason when it is a word, else
+# empty; AGY_HOOK_STEPS, PreInvocation's initialNumSteps when it is a whole
+# number, else empty; and AGY_HOOK_TYPED, 1 when lastUserInput is a string
+# that is not empty, else empty (the prompt itself is never kept).
 _antigravity_payload_read() {  # payload
     local fields rest
-    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION=""
+    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED=""
     # Each field is kept only when every character in it is one its shape
     # allows, judged by what is left once those are deleted (a regex "$"
     # also matches before a newline), so none can carry the separator or a
@@ -709,7 +752,9 @@ _antigravity_payload_read() {  # payload
     fields=$(printf '%s' "$1" | jq -r 'if type == "object" then
             [((.conversationId | strings | select(length == 36 and gsub("[0-9A-Fa-f-]"; "") == "")) // ""),
              ((.invocationNum | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
-             ((.terminationReason | strings | select(length <= 40 and gsub("[A-Z_]"; "") == "")) // "")]
+             ((.terminationReason | strings | select(length <= 40 and gsub("[A-Z_]"; "") == "")) // ""),
+             ((.initialNumSteps | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
+             (if (.lastUserInput | type) == "string" and (.lastUserInput | length) > 0 then "1" else "" end)]
             | join("|")
         else "" end' 2>/dev/null) || return 1
     # Split by expansion, not read with a here-document, which bash 3.2
@@ -717,34 +762,83 @@ _antigravity_payload_read() {  # payload
     AGY_HOOK_ID=${fields%%"|"*}
     rest=${fields#*"|"}
     AGY_HOOK_INVOCATION=${rest%%"|"*}
-    AGY_HOOK_TERMINATION=${rest#*"|"}
-    _is_uuid "$AGY_HOOK_ID" || { AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION=""; return 1; }
+    rest=${rest#*"|"}
+    AGY_HOOK_TERMINATION=${rest%%"|"*}
+    rest=${rest#*"|"}
+    AGY_HOOK_STEPS=${rest%%"|"*}
+    AGY_HOOK_TYPED=${rest#*"|"}
+    if ! _is_uuid "$AGY_HOOK_ID"; then
+        AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED=""
+        return 1
+    fi
+}
+
+# A conversation the user started: one a prompt was typed into, agy's
+# lastUserInput. Measured on agy 1.5.10 (2026-11-17): a subagent's
+# conversation fires SessionStart, PreInvocation, PostToolUse,
+# PostInvocation and Stop as a main one does, with an id of its own, but its
+# lastUserInput was "" at every event, a follow-up turn its parent sent
+# included, while a main conversation's (the run's first, one /clear or /new
+# started, one /resume opened, a turn its own subagent's answer woke) always
+# carried the prompt typed last.
+_antigravity_hook_typed() {
+    [ "$AGY_HOOK_TYPED" = 1 ]
+}
+
+# SessionStart fires once for each conversation agy starts: the run's first
+# when the launch opened none, one /clear or /new started, and a subagent's;
+# never for one opened with --conversation or /resume. Once the run has bound
+# its conversation, a typed one is marked new in the run's directory, for
+# PreInvocation to move the session to it (_antigravity_hook_bind). The mark
+# is all this does: it never binds, and always answers {}.
+_antigravity_hook_session_start() {  # payload
+    local run_dir
+    _antigravity_payload_read "$1" || return 0
+    _antigravity_hook_typed || return 0
+    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 0
+    [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
+    [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ] || return 0
+    cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
+    _antigravity_run_mark "$run_dir/new-$AGY_HOOK_ID"
 }
 
 # The first conversation to reach the model in a run is the one the run works
 # in: the main conversation's model call comes before anything it starts, and
 # a subagent's conversation has its own id. Each id is weighed once a run, so
-# later model calls stop at a file test. The first model call of a turn then
-# carries the unread mail.
+# later model calls stop at a file test. A later one takes the session only
+# when /clear or /new started it (_antigravity_hook_rebind_clear), and its
+# first model call is then handed the rotation armed for it. The first model
+# call of a turn carries the unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs"
+    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" AGY_HOOK_DIGEST=""
     _antigravity_payload_read "$1" || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
     if { [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; } && cs_run_lease_owned "$meta"; then
-        cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" || true
+        # The lease runs its callback in a subshell, so the rotation comes
+        # back on descriptor 3; nothing else the callback prints is kept.
+        rotation=$(cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" \
+            3>&1 >/dev/null 2>&1) || true
     fi
     [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
+    [ -n "$rotation$AGY_HOOK_DIGEST" ] || return 0
+    # The shape measured on 1.5.8, terminationBehavior "" (call the model) included.
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" '
+        {injectSteps: ([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})),
+         terminationBehavior: ""}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
 # whichever it is: the one a reopen named, a new one, or one opened with
-# /resume before the first turn. Later conversations of the run leave the
-# binding alone. A run without its directory cannot tell first from later,
-# and binds only a session that has no conversation yet (or the legacy word).
+# /resume before the first turn. Of the conversations the run meets later,
+# only one /clear or /new started may take the binding
+# (_antigravity_hook_rebind_clear); a subagent's and one /resume opened leave
+# it alone. A run without its directory cannot tell first from later, and
+# binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir
     if [ -n "$run_dir" ]; then
         if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
+            _antigravity_hook_rebind_clear "$session_dir" "$id" "$run_dir" || true
             _antigravity_run_mark "$run_dir/seen-$id"
             return 0
         fi
@@ -798,6 +892,62 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     [ -z "$run_dir" ] || { _antigravity_run_mark "$run_dir/bound"; _antigravity_run_mark "$run_dir/seen-$id"; }
 }
 
+# Under the run lease, for a conversation the run meets after it has bound
+# its own, at that conversation's first weighing. It takes the session only
+# when /clear or /new started it, which is all of: the launch found the
+# rebind usable (clear-rebind: agy at least CS_ANTIGRAVITY_CLEAR_MIN_VERSION
+# and cs's SessionStart entry); SessionStart marked it new (a /resume starts
+# nothing, and a --conversation open is the run's first); a prompt was typed
+# into it; this is its first model call; and its trajectory starts with that
+# prompt, where a subagent's starts empty (initialNumSteps 0 on agy 1.5.10).
+# The marks are counted only as regular files: a link at their name, which
+# only a process with the user's rights could plant in the run's private
+# directory, counts for nothing. Then, as Codex's SessionStart hook does at
+# /clear (_codex_hook_rebind), the binding moves to it and the lineage is
+# recorded, and the rotation /cs:rotate armed is spent for it: its context
+# goes out on descriptor 3 for PreInvocation to hand the model. A spend the
+# store refused keeps the marker for the next /clear and says so there. An
+# encrypted session's (the launch refuses one, so a .cs/private here came
+# mid-run, maybe as a link out of the session) is left alone, and so is a
+# marker git tracks, which came with a pull rather than from /cs:rotate here.
+_antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
+    local session_dir="$1" id="$2" run_dir="$3" previous handoff="" reason=clear refusal="" context log_dir actor
+    [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
+    [ -f "$run_dir/new-$id" ] && [ ! -L "$run_dir/new-$id" ] || return 0
+    [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
+    [ -n "$AGY_HOOK_STEPS" ] && [ "$AGY_HOOK_STEPS" -ge 1 ] || return 0
+    ! _switch_session_encrypted "$session_dir" || return 0
+    previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+    [ "$previous" != "$id" ] || return 0
+    if ! cs_files_tracked_notice "$session_dir/.cs" "$session_dir" >/dev/null; then
+        handoff=$(_rotation_armed_handoff "$session_dir")
+    fi
+    cs_binding_write "$session_dir" antigravity "$id" || return 1
+    _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+    if [ -n "$handoff" ]; then
+        reason=handoff
+        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$session_dir/.cs/local/pending-handoff" "$id") || true
+        actor=$(cs_actor_slug "$session_dir" 2>/dev/null) || actor=unknown
+        context=$(_rotation_preamble "$handoff" "$actor" .cs/handoffs)
+        if [ -n "$refusal" ]; then
+            context="$context
+
+$(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-handoff)"
+        fi
+        { printf '%s' "$context" >&3; } 2>/dev/null || true
+    fi
+    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
+        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
+        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: clear, ID: %s)\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "$id" || true
+    fi
+    if _is_uuid "$previous"; then
+        _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "$handoff" antigravity || true
+    fi
+    _timeline_started "$session_dir" antigravity "$id" clear || true
+}
+
 # A finished edit in the run that holds the session's lease, translated by
 # the adapter, goes to the recovery consumer the installer put beside the hook.
 _antigravity_hook_post_tool_use() {  # payload
@@ -827,9 +977,11 @@ _antigravity_hook_post_tool_use() {  # payload
 
 # The folder that holds the session's mail, printed when the conversation is
 # the one the session is bound to, in the run that holds its lease: a
-# subagent's conversation has an id of its own, as does one started mid-run
-# with /clear or /new, which no hook payload tells from a subagent's, and
-# another agy run in the folder holds no lease. Mail git tracks came with a
+# subagent's conversation has an id of its own, as does one opened mid-run
+# with /resume, and another agy run in the folder holds no lease. One /clear
+# or /new started takes the binding at its first model call
+# (_antigravity_hook_rebind_clear), before the digest is read, so the mail
+# follows it. Mail git tracks came with a
 # pull, a merge or a checkout, not from a sender on this machine, so none of
 # it is shown then, as under Claude and Codex. The launch refuses an
 # encrypted session, so a .cs/private there came mid-run, maybe as a link out
@@ -884,7 +1036,8 @@ _antigravity_mail_state_write() {  # file, text
 # cs -msg moves it to cur/, as Claude's and Codex's prompt hooks give it.
 # A prompt also clears the wake budget, as scope-prompt.sh does for a typed
 # prompt: a wake continues its turn and never starts one, so invocationNum 0
-# is always a prompt.
+# is always a prompt. The digest goes to AGY_HOOK_DIGEST, which
+# _antigravity_hook_pre_invocation answers with.
 _antigravity_hook_mail_digest() {  # conversation_id
     local mail state MAIL_DIGEST=""
     mail=$(_antigravity_mail_dir "$1") || return 0
@@ -892,11 +1045,7 @@ _antigravity_hook_mail_digest() {  # conversation_id
         rm -f "$state/wakes" 2>/dev/null || true
     fi
     cs_mail_digest "${mail%/mail}"
-    [ -n "$MAIL_DIGEST" ] || return 0
-    # The shape measured on 1.5.8, terminationBehavior "" (call the model) included.
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$MAIL_DIGEST" \
-        '{injectSteps: [{systemMessage: {systemMessage: $m}}], terminationBehavior: ""}' 2>/dev/null) \
-        || ANTIGRAVITY_HOOK_REPLY=""
+    AGY_HOOK_DIGEST=$MAIL_DIGEST
 }
 
 # A turn that ends on its own with mail that came after its prompt goes on, so
