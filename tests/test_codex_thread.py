@@ -1734,6 +1734,19 @@ class TransplantTests(HelperFixture):
             "Done.",
         ]))
 
+    def test_claude_tool_parts_at_their_edges(self):
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        call, result = helper['claude_tool_call'], helper['claude_tool_result']
+        # An input's own fence is outrun, as a result's is.
+        self.assertEqual(call('X', {"code": "```py\nx\n```"}), '[tool call: X]\n````\ncode: |-\n  ```py\n  x\n  ```\n````')
+        # Claude's inputs are objects; anything else still crosses whole.
+        self.assertEqual(call('X', ["a", 1]), '[tool call: X]\n```\n- a\n- 1\n```')
+        self.assertEqual(call('X', "ls -la"), '[tool call: X]\n```\nls -la\n```')
+        # A result exactly at the limit is whole; one more character is cut.
+        self.assertEqual(result("y" * 40, 0, 40), '[tool result]\n```\n' + "y" * 40 + '\n```')
+        self.assertEqual(result("y" * 41, 0, 40), '[tool result]\n```\n' + "y" * 40 +
+                         '\n```\n[cs cut the remaining 1 characters]')
+
     def test_a_claude_tool_result_keeps_its_first_line_indent(self):
         # In a fence a Read result's gutter shows as written, so line 1 keeps
         # its spaces; only blank lines around the result and a reminder go.
