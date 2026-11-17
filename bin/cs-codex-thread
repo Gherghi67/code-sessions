@@ -957,14 +957,14 @@ def plain_path(path):
 def seed_config(args):
     # The vault home's config.toml and rules/: copies of the shared home's, made
     # at every launch, so the user's later edits reach them and what a run saves
-    # in them (an approval Codex appends to rules/) lasts until the next open.
-    # Codex keys hook trust by the path of the hooks.json or config.toml it read
-    # the hook from, so each trust table the shared home holds is renamed to the
-    # vault home's path: the hooks are the same file (hooks.json is a link) or
-    # the same text (config.toml), and every trusted_hash is bound to the hook's
-    # content. The one entry Codex may add here that the next copy would drop,
-    # this session's project trust, is carried over from the previous copy when
-    # the shared home has none.
+    # in them (an approval Codex appends to rules/, a project trust) lasts until
+    # the next open. Codex keys hook trust by the path of the hooks.json or
+    # config.toml it read the hook from, so each trust table the shared home
+    # holds is renamed to the vault home's path: the hooks are the same file
+    # (hooks.json is a link) or the same text (config.toml), and every
+    # trusted_hash is bound to the hook's content. Nothing else is changed and
+    # nothing is taken from the previous copy, which a writer outside Codex's
+    # sandbox may have edited.
     shared, home = Path(args.shared_home), Path(args.home)
     if not home.is_dir() or home.is_symlink():
         raise BootstrapError("the vault Codex home is not a directory: " + str(home))
@@ -998,28 +998,6 @@ def seed_config(args):
                 + " for the vault Codex home: it re-keys only [hooks.state.\"<key>\"] tables, so write"
                 + " the entry as [hooks.state." + json.dumps(key) + "] there")
     target = home / "config.toml"
-    carried = ""
-    if target.is_file() and not target.is_symlink():
-        try:
-            previous = load_toml(target.read_text(encoding="utf-8"), "the previous vault config.toml")
-        except (BootstrapError, OSError, UnicodeError):
-            previous = {}
-        now = load_toml(seeded, str(source)).get("projects")
-        now = now if isinstance(now, dict) else {}
-        before = previous.get("projects") if isinstance(previous.get("projects"), dict) else {}
-        cwd = str(Path(args.cwd))
-        for key in dict.fromkeys((cwd, os.path.realpath(cwd))):
-            entry = before.get(key)
-            level = entry.get("trust_level") if isinstance(entry, dict) else None
-            if key not in now and isinstance(level, str):
-                carried += "\n[projects.%s]\ntrust_level = %s\n" % (json.dumps(key), json.dumps(level))
-    if carried:
-        candidate = seeded + ("" if seeded.endswith("\n") or not seeded else "\n") + carried
-        try:
-            load_toml(candidate, "the vault config.toml")
-            seeded = candidate
-        except BootstrapError:
-            pass  # The shared config spells projects inline; the prompt comes back.
     handle, temp = tempfile.mkstemp(prefix=".config.toml.", dir=str(home))
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as out:

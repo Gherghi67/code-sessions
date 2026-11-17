@@ -198,13 +198,24 @@ Python 3.11 or later as `python3` on `PATH`. macOS's `/usr/bin/python3` is
 3.9; a Homebrew or python.org Python works.
 
 Settings Codex saves to `config.toml` during an encrypted run (a hook trusted in
-`/hooks`, a dismissed notice) last until the next open, which copies the shared
-file again, except this session's project trust; make lasting changes in the
-shared `config.toml`. Relative paths in it resolve from the copy. Choosing other
+`/hooks`, a dismissed notice, a trusted folder) last until the next open, which
+copies the shared file again; make lasting changes in the shared `config.toml`.
+Relative paths in it resolve from the copy. Choosing other
 permissions in Codex's `/permissions` drops the read-only rule for that run:
 outside cs's profile the agent can rewrite the vault home's configuration,
 hooks and links for that run, and a hook it trusts there runs outside the
 sandbox. cs still runs its own hook scripts from the shared home.
+
+Codex therefore asks whether to trust the session folder at each open of an
+encrypted session: cs does not carry an answer given inside one, since anything
+that writes to the session outside Codex's sandbox could plant it. To stop the
+question, trust the folder in the shared `config.toml` (`~/.codex/config.toml`),
+under the session folder's full path, as `pwd -P` prints it:
+
+```toml
+[projects."/full/path/to/the/session"]
+trust_level = "trusted"
+```
 
 A Codex conversation bound before the session was encrypted stays in the shared
 home: when the shared home keeps it, the next open starts the session's first

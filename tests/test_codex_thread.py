@@ -1358,20 +1358,27 @@ class VaultHomeTests(HelperFixture):
         self.assertEqual(self.load(self.home / 'config.toml')['hooks']['state'],
                          {home + '/hooks.json:stop:0:0': {'trusted_hash': 'sha256:six'}})
 
-    def test_seed_config_keeps_this_sessions_project_trust_from_the_previous_copy(self):
+    def test_seed_config_drops_a_project_trust_the_shared_home_does_not_give(self):
+        # The previous copy is writable by whatever wrote the session outside
+        # cs's profile: a trust planted there would have Codex load the
+        # session's .codex/config.toml (and start its MCP servers) at the next
+        # open. Only the shared home's answer reaches the vault copy.
         cwd = str(self.cwd)
-        (self.home / 'config.toml').write_text(
-            '[projects.%s]\ntrust_level = "trusted"\n\n[projects."/another"]\ntrust_level = "trusted"\n'
-            % json.dumps(cwd))
+        (self.home / 'config.toml').write_text(''.join(
+            '[projects.%s]\ntrust_level = "trusted"\n\n' % json.dumps(key)
+            for key in dict.fromkeys((cwd, os.path.realpath(cwd), '/another'))))
         (self.shared / 'config.toml').write_text('model = "m"\n')
         self.assertEqual(self.seed().returncode, 0)
         seeded = self.load(self.home / 'config.toml')
-        self.assertEqual(seeded['projects'], {cwd: {'trust_level': 'trusted'}})
+        self.assertNotIn('projects', seeded)
         self.assertEqual(seeded['model'], 'm')
-        # The shared home's own answer wins over the copy's.
-        (self.shared / 'config.toml').write_text('[projects.%s]\ntrust_level = "untrusted"\n' % json.dumps(cwd))
+
+    def test_seed_config_keeps_a_project_trust_the_shared_home_gives(self):
+        cwd = str(self.cwd)
+        (self.home / 'config.toml').write_text('[projects.%s]\ntrust_level = "untrusted"\n' % json.dumps(cwd))
+        (self.shared / 'config.toml').write_text('[projects.%s]\ntrust_level = "trusted"\n' % json.dumps(cwd))
         self.assertEqual(self.seed().returncode, 0)
-        self.assertEqual(self.load(self.home / 'config.toml')['projects'], {cwd: {'trust_level': 'untrusted'}})
+        self.assertEqual(self.load(self.home / 'config.toml')['projects'], {cwd: {'trust_level': 'trusted'}})
 
     def test_seed_config_refuses_a_config_that_is_not_toml(self):
         (self.home / 'config.toml').write_text('model = "previous"\n')
