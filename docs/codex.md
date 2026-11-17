@@ -224,6 +224,20 @@ under the session folder's full path, as `pwd -P` prints it:
 trust_level = "trusted"
 ```
 
+A project `.codex/config.toml` in a folder the shared `config.toml` does not
+trust is one Codex loads only once you answer that question, after cs has
+chosen how to keep the agent out of the vault home, so cs's checks never see
+what it sets: the open refuses and names the file. Trust the folder in the
+shared `config.toml` as above, so the checks read that file too, or remove it.
+
+cs checks the vault home when it opens the session, but Codex reads the vault
+home's `config.toml` again at each `/clear`. The vault home lives inside the
+session folder, unlike a plain session's `~/.codex`, so while Codex runs in an
+encrypted session nothing else should write to the session folder outside
+Codex's sandbox (another conversation of the session, a tool started from
+one): such a writer can change what Codex loads, MCP servers included, which
+run outside the sandbox.
+
 A Codex conversation bound before the session was encrypted stays in the shared
 home: when the shared home keeps it, the next open starts the session's first
 conversation in the vault and says so, and `--resume` refuses. A bound

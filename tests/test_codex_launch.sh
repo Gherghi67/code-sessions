@@ -654,15 +654,20 @@ test_native_approval_follows_the_users_sandbox() {
 }
 
 # What cs cannot confine stops the open before anything is bound: a profile a
-# file already defines under cs's name (cs's would merge into it), a hook the
-# shell's home trusts that would not run here, a writable root inside the vault
-# home (it would win over cs's read rule), or a check that cannot run.
+# file already defines under cs's name (cs's would merge into it), a project
+# config Codex loads only once the folder is trusted (after cs has chosen its
+# profile), a hook the shell's home trusts that would not run here, a writable
+# root inside the vault home (it would win over cs's read rule), or a check
+# that cannot run.
 test_the_vault_check_refuses_what_cs_cannot_confine() {
     _vault_fixture
-    local output status case
-    for case in profile untrusted unlisted home_root failed; do
+    local output status case folder
+    folder=$(cd -P "$CS_TEST_SESSION_DIR" && pwd -P)
+    for case in profile project untrusted unlisted home_root failed; do
         case "$case" in
             profile) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":true,"untrusted":[]}' ;;
+            # Its hooks would be refused too; the project config is named first.
+            project) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[\"aws-readonly-guard\"],\"untrusted_project_configs\":[\"$folder/.codex/config.toml\",\"$TEST_TMPDIR/e\\u001b]0;evil\\u0007/.codex/config.toml\"]}" ;;
             untrusted) export CS_HELPER_VAULT_CHECK='{"sandbox_mode":null,"default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":["aws-readonly-guard","echo hi"]}' ;;
             unlisted) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[],\"unlisted\":[\"$CODEX_HOME/hooks.json\"]}" ;;
             home_root) export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":null,\"default_permissions\":null,\"sandbox_workspace_write\":{\"writable_roots\":[\"$VAULT_HOME/config.toml\",\"/w\",\"$VAULT_HOME\"]},\"profile_defined\":false,\"untrusted\":[],\"home_roots\":[\"$VAULT_HOME/config.toml\",\"$VAULT_HOME\"]}" ;;
@@ -673,6 +678,13 @@ test_the_vault_check_refuses_what_cs_cannot_confine() {
         assert_eq 1 "$status" "$case must refuse" || return 1
         case "$case" in
             profile) assert_output_contains "$output" "already defines the permissions profile cs-vault-home" || return 1 ;;
+            project)
+                # Each path as a plain name: a space or an escape shows as _.
+                assert_output_contains "$output" "${folder// /_}/.codex/config.toml; ${TEST_TMPDIR// /_}/e__0_evil_/.codex/config.toml is a Codex project config that Codex reads only once you trust this folder" || return 1
+                assert_output_contains "$output" "Trust the folder in $CODEX_HOME/config.toml (\\[projects\\.\"$folder\"\\] with trust_level = \"trusted\"), so cs's checks see that config too, or remove it\\." \
+                    "names both ways out" || return 1
+                assert_output_not_contains "$output" "would not run in the vault Codex home" "named before the hooks" || return 1
+                assert_no_escape_bytes "$output" "no escape byte reaches the terminal" || return 1 ;;
             untrusted) assert_output_contains "$output" "would not run in the vault Codex home.*: aws-readonly-guard; echo hi\\." || return 1 ;;
             unlisted)
                 # Re-trusting in /hooks cannot make Codex list them.

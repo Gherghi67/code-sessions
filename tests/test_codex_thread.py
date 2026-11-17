@@ -1498,13 +1498,14 @@ class VaultHomeTests(HelperFixture):
         ]}]}
         config = {'config': {'sandbox_mode': 'workspace-write', 'default_permissions': None,
                              'sandbox_workspace_write': {'writable_roots': ['/w']},
-                             'permissions': {'mine': {}}}, 'origins': {}}
+                             'permissions': {'mine': {}}}, 'origins': {}, 'layers': []}
         result = self.vault_check(config, hooks)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {
             'sandbox_mode': 'workspace-write', 'default_permissions': None,
             'sandbox_workspace_write': {'writable_roots': ['/w']}, 'profile_defined': False,
-            'untrusted': ['aws-readonly-guard'], 'unlisted': [], 'home_roots': []})
+            'untrusted': ['aws-readonly-guard'], 'unlisted': [], 'home_roots': [],
+            'untrusted_project_configs': []})
         requests = [r['request'] for r in self.requests()]
         self.assertEqual([r['method'] for r in requests], ['initialize', 'initialized', 'config/read', 'hooks/list'])
         self.assertEqual(requests[3]['params'], {'cwds': [str(self.cwd.resolve())]})
@@ -1530,7 +1531,7 @@ class VaultHomeTests(HelperFixture):
             {'hooks': [{'type': 'command', 'command': 'aws-readonly-guard'}]}]}}))
         key = shared + '/hooks.json:pre_tool_use:0:0'
         (self.shared / 'config.toml').write_text('[hooks.state."%s"]\ntrusted_hash = "sha256:guard"\n' % key)
-        config = {'config': {}, 'origins': {}}
+        config = {'config': {}, 'origins': {}, 'layers': []}
         def checked(listed):
             result = json.loads(self.vault_check(config, listed).stdout)
             return result['unlisted'], result['untrusted']
@@ -1554,7 +1555,7 @@ class VaultHomeTests(HelperFixture):
         # under it would win over that rule, so the launch refuses such a root.
         home = str(self.home)
         def home_roots(roots):
-            config = {'config': {'sandbox_workspace_write': {'writable_roots': roots}}, 'origins': {}}
+            config = {'config': {'sandbox_workspace_write': {'writable_roots': roots}}, 'origins': {}, 'layers': []}
             result = self.vault_check(config, {'data': []})
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)['home_roots']
@@ -1565,6 +1566,40 @@ class VaultHomeTests(HelperFixture):
                          'a root spelled through a link to the home is inside it')
         self.assertEqual(home_roots([home]), [home], 'the home itself')
         self.assertEqual(home_roots(['/']), [], 'a root above the home leaves the read rule standing')
+
+    def test_vault_check_names_project_configs_codex_loads_only_once_the_folder_is_trusted(self):
+        # A project .codex/config.toml in a folder the shared home does not
+        # trust: Codex reads it but disables its layer until the trust question
+        # is answered, then loads it, after cs has chosen its profile from what
+        # config/read said. The check names the file, from the layers it asks
+        # for; an enabled project layer, a disabled one with no config.toml to
+        # load, or no project layer at all names nothing.
+        dot_codex = self.cwd / '.codex'
+        dot_codex.mkdir()
+        user = {'name': {'type': 'user', 'file': str(self.home / 'config.toml'), 'profile': None},
+                'version': 'u', 'config': {}}
+        def project(disabled):
+            layer = {'name': {'type': 'project', 'dotCodexFolder': str(dot_codex)}, 'version': 'p',
+                     'config': {'sandbox_mode': 'workspace-write'}}
+            if disabled:
+                layer['disabledReason'] = ('To load project-local config, hooks, and exec policies, add '
+                                           + str(self.cwd) + ' as a trusted project in ' + str(self.home / 'config.toml') + '.')
+            return layer
+        def checked(layers):
+            result = self.vault_check({'config': {}, 'origins': {}, 'layers': layers}, {'data': []})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)['untrusted_project_configs']
+        self.assertEqual(checked([project(True), user]), [], 'no config.toml for Codex to load')
+        (dot_codex / 'config.toml').write_text('sandbox_mode = "workspace-write"\n')
+        self.assertEqual(checked([project(True), user]), [str(dot_codex / 'config.toml')])
+        reads = [r['request'] for r in self.requests() if r['request']['method'] == 'config/read']
+        self.assertEqual(reads[-1]['params'], {'cwd': str(self.cwd.resolve()), 'includeLayers': True})
+        self.assertEqual(checked([project(False), user]), [], 'a trusted project config is in what cs read')
+        self.assertEqual(checked([user]), [], 'no project layer')
+        # An answer without its layers cannot be checked.
+        result = self.vault_check({'config': {}, 'origins': {}}, {'data': []})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
 
     def test_vault_check_needs_the_vault_home_and_a_readable_answer(self):
         result = self.helper('--vault-check', '--codex-bin', str(self.fake), '--cwd', str(self.cwd),
