@@ -1603,8 +1603,9 @@ class TransplantTests(HelperFixture):
         self.assertIn("Claude's thinking is not included", texts[0])
         self.assertEqual(texts[1], '/color blue\n\nfind the budget')
         self.assertIn('Reading notes.', texts[2])
-        self.assertIn('[tool call: Read]\n{"file_path": "notes.txt"}', texts[2])
-        self.assertIn('[tool result]\nbudget is 42\n[image]', texts[2])
+        self.assertIn('[tool call: Read]\n```\nfile_path: notes.txt\n```', texts[2])
+        # [image] is cs's word, like the cut note, so it follows the fence.
+        self.assertIn('[tool result]\n```\nbudget is 42\n```\n[image]\n\nThe budget', texts[2])
         self.assertIn('The budget is 42.', texts[2])
         self.assertEqual(texts[3], 'follow-up v2')
         self.assertEqual(texts[4], 'Answer two.')
@@ -1685,9 +1686,167 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         items = self.carried_model_items()
         agent = items[2]['content'][0]['text']
-        self.assertIn('[tool error]\nExit code 2\nmake: *** no rule', agent)
-        self.assertIn('[tool result]\nMakefile.am', agent)
+        self.assertIn('[tool error]\n```\nExit code 2\nmake: *** no rule\n```', agent)
+        self.assertIn('[tool result]\n```\nMakefile.am\n```', agent)
         self.assertEqual(agent.count('[tool result]'), 1)
+
+    def test_claude_tool_calls_and_results_cross_as_written(self):
+        # Codex's transcript renders an agent message as markdown. Tool input
+        # carried as JSON showed a multi-line command as one line of literal
+        # \n, and a result's "# " and "- " lines and "\\" escapes came out
+        # styled. Each input field is a line, and input and result sit in a
+        # fence longer than any backtick run inside.
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        path.write_text("\n".join([
+            claude_record("user", "tidy notes", "u1", None),
+            claude_record("assistant", [{"type": "text", "text": "Looking."}, {
+                "type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": "cat notes.md\nprintf 'a\\\\tb'", "description": "Read notes"}}], "x1", "u1"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t1",
+                                    "content": "# Notes\n- one\nuse ```sh\\\\ here\n"}], "x2", "x1"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t2", "name": "Edit", "input": {
+                "file_path": "app.py", "old_string": "def f():\n\n    return 1\n", "new_string": "",
+                "replace_all": False}}], "x3", "x2"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t2", "content": ""}], "x4", "x3"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t3", "name": "TodoWrite", "input": {
+                "todos": [{"content": "Fix\nit", "status": "done"}, "plain", ""], "meta": {}, "n": 2}}],
+                "x5", "x4"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t3", "is_error": True,
+                                    "content": "y" * 45}], "x6", "x5"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t4", "name": "EnterPlanMode", "input": {}}],
+                          "x7", "x6"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t4", "content": "planning"}], "x8", "x7"),
+            claude_record("assistant", [{"type": "text", "text": "Done."}], "x9", "x8"),
+        ]) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path), '--clip', '40')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.carried_model_items()[2]['content'][0]['text']
+        self.assertEqual(agent, "\n\n".join([
+            "Looking.",
+            "[tool call: Bash]\n```\ncommand: |-\n  cat notes.md\n  printf 'a\\\\tb'\ndescription: Read notes\n```",
+            "[tool result]\n````\n# Notes\n- one\nuse ```sh\\\\ here\n````",
+            "[tool call: Edit]\n```\nfile_path: app.py\nold_string: |\n  def f():\n\n      return 1\n"
+            "new_string: \"\"\nreplace_all: false\n```",
+            "[tool result]",
+            "[tool call: TodoWrite]\n```\ntodos:\n  - content: |-\n      Fix\n      it\n    status: done\n"
+            "  - plain\n  - \"\"\nmeta: {}\nn: 2\n```",
+            "[tool error]\n```\n" + "y" * 40 + "\n```\n[cs cut the remaining 5 characters]",
+            "[tool call: EnterPlanMode]",
+            "[tool result]\n```\nplanning\n```",
+            "Done.",
+        ]))
+
+    def test_claude_tool_parts_at_their_edges(self):
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        call, result = helper['claude_tool_call'], helper['claude_tool_result']
+        # An input's own fence is outrun, as a result's is.
+        self.assertEqual(call('X', {"code": "```py\nx\n```"}), '[tool call: X]\n````\ncode: |-\n  ```py\n  x\n  ```\n````')
+        # Claude's inputs are objects; anything else still crosses whole.
+        self.assertEqual(call('X', ["a", 1]), '[tool call: X]\n```\n- a\n- 1\n```')
+        self.assertEqual(call('X', "ls -la"), '[tool call: X]\n```\nls -la\n```')
+        # A result exactly at the limit is whole; one more character is cut.
+        self.assertEqual(result("y" * 40, 0, 40), '[tool result]\n```\n' + "y" * 40 + '\n```')
+        self.assertEqual(result("y" * 41, 0, 40), '[tool result]\n```\n' + "y" * 40 +
+                         '\n```\n[cs cut the remaining 1 characters]')
+
+    def test_a_claude_tool_result_keeps_its_first_line_indent(self):
+        # In a fence a Read result's gutter shows as written, so line 1 keeps
+        # its spaces; only blank lines around the result and a reminder go.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        text = helper['claude_result_text']([{"type": "text", "text": " \n\n     1\tfirst\n     2\tsecond  \n"
+                                                                       "<system-reminder>R</system-reminder>\n"}])
+        self.assertEqual(text, ("     1\tfirst\n     2\tsecond", 0))
+        # An image alone needs no fence.
+        self.assertEqual(helper['claude_tool_result'](*helper['claude_result_text']([{"type": "image"}]), 40),
+                         '[tool result]\n[image]')
+
+    def test_a_block_claude_left_open_is_closed_before_a_tool_part(self):
+        # An agent message is one markdown document. Reply text that ends
+        # inside a fence (a markdown file holding a code block, shown in
+        # ```) or an HTML comment would pair with cs's fences and leave the
+        # result outside them, rendered as markdown.
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        texts = [["The file:\n```markdown\n# Doc\n```python\nx = 1\n```\n```"], ["Plan:\n<!-- draft"],
+                 ["```py\nx", "```"], ["1. step\n   ```sh\n   cmd"], ["~~~~ raw\n````"]]
+        lines, parent = [claude_record("user", "go", "u1", None)], "u1"
+        for number, parts in enumerate(texts):
+            lines.append(claude_record("assistant", [{"type": "text", "text": text} for text in parts] + [
+                {"type": "tool_use", "id": "t%d" % number, "name": "X", "input": {} if number else {"n": 1}}],
+                "a%d" % number, parent))
+            lines.append(claude_record("user", [{"type": "tool_result", "tool_use_id": "t%d" % number,
+                                                 "content": "# HEADING" if number == 0 else "ok"}],
+                                       "r%d" % number, "a%d" % number))
+            parent = "r%d" % number
+        path.write_text("\n".join(lines) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ok = "[tool result]\n```\nok\n```"
+        self.assertEqual(self.carried_model_items()[2]['content'][0]['text'], "\n\n".join([
+            texts[0][0], "```\n[tool call: X]\n```\nn: 1\n```", "[tool result]\n```\n# HEADING\n```",
+            texts[1][0], "-->\n[tool call: X]", ok,
+            # Closed by the reply itself, or inside a list item the next line ends.
+            texts[2][0], texts[2][1], "[tool call: X]", ok,
+            texts[3][0], "[tool call: X]", ok,
+            texts[4][0], "~~~~\n[tool call: X]", ok]))
+
+    def test_a_deep_claude_tool_input_carries_bounded_and_never_fails(self):
+        # Each level of a nested input used to re-indent every line below it,
+        # with no floor: 5,000 levels raised RecursionError and 60 KB of lines
+        # under 900 lists carried as 36 MB. A line too deep for json.loads is
+        # skipped, as a damaged line is.
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        deep = '{"a": ' * 5000 + '"leaf"' + '}' * 5000
+        lists = '[' * 900 + json.dumps('\n'.join(['ab'] * 20000)) + ']' * 900
+        path.write_text("\n".join([
+            claude_record("user", "go", "u1", None),
+            claude_record("assistant", [{"type": "tool_use", "id": "t1", "name": "X", "input": {"v": "DEEP"}}],
+                          "x1", "u1").replace('"DEEP"', deep),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}], "x2", "x1"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t2", "name": "X", "input": {"v": "LISTS"}}],
+                          "x3", "x2").replace('"LISTS"', lists),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}], "x4", "x3"),
+            claude_record("assistant", [{"type": "text", "text": "Done."}], "x5", "x4"),
+            claude_record("user", "TOO DEEP", "z1", "x5").replace('"TOO DEEP"', '[' * 200000 + ']' * 200000),
+        ]) + "\n")
+        result = subprocess.run([sys.executable, str(HELPER), "--read-claude", str(path)], env=self.env,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-500:])
+        self.assertLess(json.loads(result.stdout)["characters"], 300000)
+
+    def test_a_claude_tool_input_reads_back_to_one_input(self):
+        # Codex's model reads the laid-out input too, so two inputs must never
+        # share a layout: a final newline, a type or a nesting has to show.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        pairs = [("x\n", "x"), ("x\n\n", "x\n"), ("", "\n"), (" x", "x"), (2, "2"), (True, "true"),
+                 (None, "null"), ({}, "{}"), ([], "[]"), ("|", "|-"), ({"a": "1", "b": "2"}, "a: 1\nb: 2"),
+                 (["a", "b"], "- a\n- b"), (["x\n"], ["x"]), ("a\rb", "a\nb")]
+        for left, right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertNotEqual(helper['claude_tool_call']('X', {"v": left}),
+                                    helper['claude_tool_call']('X', {"v": right}))
+        self.assertEqual(helper['claude_tool_call']('X', {
+            "plain": "a b", "clip": "two\nlines\n", "strip": "two\nlines", "keep": "two\n\n", "empty": "",
+            "space": "\n", "number": "2", "literal": "{}", "control": "a\x1bb", "k\ney": 1, "": "",
+            "list": ["x\ny", "", "-"]}),
+            '[tool call: X]\n```\nplain: a b\nclip: |\n  two\n  lines\nstrip: |-\n  two\n  lines\n'
+            'keep: |+\n  two\n\nempty: ""\nspace: "\\n"\nnumber: "2"\nliteral: "{}"\ncontrol: "a\\u001bb"\n'
+            '"k\\ney": 1\n"": ""\nlist:\n  - |-\n    x\n    y\n  - ""\n  - -\n```')
+        self.assertEqual(helper['claude_tool_call']('X', "\n"), '[tool call: X]\n```\n"\\n"\n```')
+
+    def test_a_claude_tool_input_is_laid_out_to_a_fixed_depth(self):
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        value = "leaf"
+        for _ in range(40):
+            value = {"a": value}
+        lines = helper['claude_tool_call']('X', value).split('\n')
+        indents = [len(line) - len(line.lstrip(' ')) for line in lines[2:-1]]
+        self.assertEqual(indents, list(range(0, 64, 2)))
+        self.assertEqual(lines[-2].strip(), 'a: ' + json.dumps(json.loads('{"a": ' * 8 + '"leaf"' + '}' * 8)))
+        # json.loads read the input, so json.dumps fails only from a deeper
+        # stack; the call still crosses, without its input.
+        with patch.object(helper['json'], 'dumps', side_effect=RecursionError):
+            self.assertEqual(helper['claude_tool_call']('X', {"n": 1}),
+                             '[tool call: X]\n[cs left out this input: it is nested too deeply to show]')
 
     def test_claude_compaction_starts_at_its_summary(self):
         path = self.root / (CLAUDE_ID + ".jsonl")
