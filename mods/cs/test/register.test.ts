@@ -5478,6 +5478,8 @@ const sitesWithKeys = (trees: Record<Site, unknown>) =>
 // A mod loaded afresh: what the sites learned of an earlier screen is gone.
 const reload = () => { for (const k of Object.keys(hooks)) delete hooks[k]; timers = []; register(on as any) }
 
+// The 2,688 render combinations can exceed Bun's five-second default while
+// other suites run on the same CI host. Keep the full matrix with its own budget.
 test('exactly one site draws the keys, whatever each site is told of the screen', async () => {
   percent = 40
   enableFilterChat()
@@ -5497,7 +5499,7 @@ test('exactly one site draws the keys, whatever each site is told of the screen'
   }
   // Each site takes its turn somewhere in the table, so the count above is not one site's alone.
   expect([...drew].sort()).toEqual(['band', 'hint', 'mode'])
-})
+}, 30_000)
 
 test('a footer too narrow for the keys, or one nobody measured, draws them on the band above the prompt, their chords spelled', async () => {
   bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })

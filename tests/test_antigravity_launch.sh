@@ -791,6 +791,8 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_eq "" "$(_agy_argv)" "a new session starts a new conversation" || return 1
     assert_eq "$(cd "$dir" && pwd -P)" "$(cat "$AGY_PWD")" "agy runs in the session folder" || return 1
     assert_file_contains "$rule" '^trigger: always_on$' "the rule is always in context" || return 1
+    assert_file_contains "$rule" '^1. .cs/summary.md — read in full' 'fresh conversations restore saved facts' || return 1
+    assert_file_contains "$rule" "The current user's request is the active task" || return 1
     assert_file_contains "$rule" 'cs:antigravity-session-context' "the rule carries cs's mark" || return 1
     assert_file_contains "$rule" '^Session: fresh$' "the rule names the session" || return 1
     assert_file_contains "$rule" '# Session memory index' "the rule carries the memory index" || return 1

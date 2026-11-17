@@ -290,6 +290,8 @@ test_new_thread_binding_and_context() {
     assert_eq 6 "$(wc -l < "$CS_HELPER_ARGS" | tr -d ' ')" "helper takes three named arguments" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'This context does not request work' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'narrative.test-actor.md' || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" '^1. .cs/summary.md — read in full' || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "The current user's request is the active task" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'Agent-sessions executable:' || return 1
     assert_output_contains "$output" 'automatic recovery is enabled' "feature scope notice" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/state" 'engine: codex' || return 1

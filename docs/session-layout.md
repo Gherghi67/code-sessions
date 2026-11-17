@@ -130,6 +130,21 @@ Bash command that keeps the store's exit status. An open rewrites that section
 to the current text when it still reads byte for byte as one of the wordings
 cs wrote there before; a section edited anywhere keeps its text.
 
+Claude, Codex and Antigravity receive the same context-restoration instructions:
+at every conversation start, read `.cs/summary.md`, `.cs/README.md` and the
+current actor's narrative in full, in that order, skipping missing files. An
+armed rotation handoff is read first. Teammate narratives remain limited to
+the lines named by the resume digest; archives are searched on demand. Relevant
+memories and project files should be consulted before asking the user to repeat
+project facts. The manager renders these instructions rather than inlining the
+saved documents.
+
+This applies after Claude or Codex `/clear` too; Antigravity retains the
+instructions in its always-on workspace rule across `/clear` and `/new`.
+The current user request remains the active task. `/wrap` saves context without
+arming continuation; `/rotate` also arms a handoff. Saved plans remain background
+unless the user asks to continue or an armed rotation supplies that intent.
+
 ## Machine-local files (`.cs/local/`, gitignored)
 
 An [encrypted session](#encrypted-sessions) keeps the content files among these
