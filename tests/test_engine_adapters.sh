@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/test_lib.sh"
 source "$SCRIPT_DIR/../lib/24-engine-adapters.sh"
 source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
+source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/02-shared.sh"
 
 source "$SCRIPT_DIR/../lib/34-narrative-storage.sh"

@@ -60,6 +60,7 @@ CODEX
     cat > "$CS_CODEX_THREAD_BIN" <<'HELPER'
 #!/usr/bin/env bash
 case " $* " in
+    *" --seed-config "*|*" --has-thread "*) exec python3 "$CS_REAL_THREAD_HELPER" "$@" ;;
     *" --export-claude "*|*" --read-claude "*)
         printf '%s\n' "$*" >> "$CS_HELPER_LOG.real"
         [ -n "${CS_HELPER_SWAP_STAGED:-}" ] || exec python3 "$CS_REAL_THREAD_HELPER" "$@"
@@ -567,6 +568,36 @@ _tp_claude_then_codex() {  # name
     _tp_write_rollout "$_tp_codex_thread"
 }
 
+# An encrypted session keeps Codex's threads in its vault home: the Claude
+# reopen's carry reads the newer Codex conversation from there, and the same
+# thread in the shared home is never what it reads.
+test_claude_reopen_carries_a_codex_conversation_from_the_vault() {
+    local output session_dir new_id proj home
+    _tp_claude_then_codex vcarry || return 1
+    session_dir=$(_engine_session_dir vcarry)
+    # Encrypted since: .cs/private stands in for the mounted vault, and Codex
+    # ran there, so its home holds the thread. The shared copy says otherwise.
+    mkdir -p "$session_dir/.cs/private/codex-home"
+    # What cs -encrypt moves into the vault (CS_PRIVATE_LOCAL_FILES).
+    local f
+    for f in $(sed -n '/^CS_PRIVATE_LOCAL_FILES="/,/"$/p' "$SCRIPT_DIR/../lib/45-migrate.sh" \
+        | sed 's/^CS_PRIVATE_LOCAL_FILES=//' | tr -d '"'); do
+        [ ! -e "$session_dir/.cs/local/$f" ] || mv "$session_dir/.cs/local/$f" "$session_dir/.cs/private/"
+    done
+    mv "$HOME/.codex/sessions" "$session_dir/.cs/private/codex-home/sessions"
+    home="$(cd -P "$session_dir/.cs/private" && pwd -P)/codex-home"
+    mkdir -p "$HOME/.codex/sessions/2026/11/07"
+    printf '%s\n' '{"timestamp":"2026-11-07T10:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"SHARED COPY"}]}}' \
+        > "$HOME/.codex/sessions/2026/11/07/rollout-2026-11-07T10-00-00-$_tp_codex_thread.jsonl"
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" vcarry --engine claude <<< "y" 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Carrying over the Codex conversation" "the carry is offered in an encrypted session" || return 1
+    new_id=$(_tp_claude_id "$session_dir")
+    proj=$(_tp_project_dir "$session_dir")
+    assert_file_contains "$proj/$new_id.jsonl" 'The codename is AMBER-FALCON' "the vault's thread is carried" || return 1
+    assert_file_not_contains "$proj/$new_id.jsonl" 'SHARED COPY' "never the shared home's" || return 1
+    assert_eq "$HOME/.codex/skills" "$(readlink "$home/skills")" "the vault home is prepared for the run" || return 1
+}
+
 test_claude_reopen_carries_the_newer_codex_conversation() {
     local output session_dir old_id new_id proj
     _tp_claude_then_codex carry || return 1
@@ -911,6 +942,7 @@ run_test test_profile_launch_without_the_variable_shares_the_default_login
 run_test test_profile_launch_keeps_a_chosen_credential_dir
 run_test test_original_launch_leaves_the_credential_dir_alone
 run_test test_claude_reopen_carries_the_newer_codex_conversation
+run_test test_claude_reopen_carries_a_codex_conversation_from_the_vault
 run_test test_claude_reopen_e_resumes_the_earlier_conversation
 run_test test_claude_carry_over_is_never_staged_in_the_session
 run_test test_claude_never_places_a_swapped_staged_transcript

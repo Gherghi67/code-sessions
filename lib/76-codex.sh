@@ -10,16 +10,24 @@ _codex_rotation_profile_path() {  # session_dir
     printf '%s/cs-rotation-%s.config.toml\n' "${CODEX_HOME:-$HOME/.codex}" "$key"
 }
 
+# CODEX_HOME is the vault home for an encrypted session, which the agent can
+# write while cs's profile is off: a link or a non-file at the profile's name
+# stops the launch, and _codex_write_into_place writes the profile, never
+# through a link.
 _codex_rotation_profile_prepare() {  # session_dir, settings JSON; sets CS_CODEX_ROTATION_PROFILE
-    local profile tmp
+    local profile content
     profile=$(_codex_rotation_profile_path "$1") || return 1
-    mkdir -p "$(dirname "$profile")" || return 1
-    tmp=$(mktemp "$profile.XXXXXX") || return 1
-    if ! printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' > "$tmp" \
-        || ! mv "$tmp" "$profile"; then
-        rm -f "$tmp"
+    if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -f "$profile" ]; }; then
+        _codex_launch_error "$(_cs_plain_name "$profile") is a link or not a regular file; cs does not write the Codex model profile through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
+    mkdir -p "$(dirname "$profile")" || return 1
+    # The x keeps the last newline through $( ); a failed jq writes nothing.
+    content=$(
+        printf '%s' "$2" | jq -r 'to_entries[] | .key + " = " + (.value | tojson)' || exit 1
+        printf x
+    ) || return 1
+    printf '%s' "${content%x}" | _codex_write_into_place "$profile" || return 1
     CS_CODEX_ROTATION_PROFILE=$profile
 }
 
@@ -55,6 +63,41 @@ _codex_launch_error() {  # message
     return 1
 }
 
+# Writes stdin to the destination, in a folder the agent can write. The temp
+# file beside it is made by mkstemp and written through the descriptor that
+# made it, never opened again by name, so a link swapped in for it receives
+# nothing; os.replace (rename(2)) then replaces the destination itself, never
+# following a link there. A link or a non-file already at the destination is
+# refused, named. The file keeps mkstemp's 0600 mode.
+_codex_write_into_place() {  # destination; the content on stdin
+    python3 -I -c '
+import os, stat, sys, tempfile
+dest = sys.argv[1]
+tmp = None
+try:
+    try:
+        mode = os.lstat(dest).st_mode
+    except FileNotFoundError:
+        mode = None
+    if mode is not None and not stat.S_ISREG(mode):
+        # Shown as cs shows a plain name (_cs_plain_name): the path may lead through a planted link.
+        shown = "".join(c if c.isascii() and (c.isalnum() or c in "._/@-") else "_" for c in dest)
+        print(shown + " is a link or not a regular file; cs does not write through it.", file=sys.stderr)
+        sys.exit(1)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", prefix="." + os.path.basename(dest) + ".")
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(sys.stdin.buffer.read())
+    os.replace(tmp, dest)
+except Exception:
+    if tmp is not None:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    sys.exit(1)
+' "$1"
+}
+
 _cs_codex_adapter_dependencies() {
     # Codex takes an executable path, not a shell command string.
     command -v "$CODEX_BIN" >/dev/null 2>&1 || printf '%s\n' codex
@@ -64,7 +107,7 @@ _cs_codex_adapter_dependencies() {
 
 # Where the installer puts cs's skills for Codex.
 _cs_codex_adapter_skill_dir() {
-    printf '%s/skills\n' "${CODEX_HOME:-$HOME/.codex}"
+    printf '%s/skills\n' "$(_codex_shared_home)"
 }
 
 _cs_codex_adapter_capabilities() {
@@ -133,19 +176,32 @@ _codex_emit_context() {  # cs_bin
     cs_emit_engine_context "$@"
 }
 
-_codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin
+# The agent can write the folder the context lives in (.cs/private, for an
+# encrypted session), so nothing is written through a name it could plant: a
+# link or a non-file at the context's own name stops the launch, and the
+# context, with the rotation preamble when one is given, is rendered in full
+# first and then written by _codex_write_into_place. A failed render replaces
+# nothing.
+_codex_write_context() {  # session_name, session_dir, output_file, actor, cs_bin, [rotation_handoff]
     local session_name="$1" session_dir="$2" output_file="$3"
-    local actor="$4" cs_bin="$5"
-    local temp_file="$output_file.tmp.$$"
-    if ! cs_session_context "$session_name" "$session_dir" "$actor" \
-        _codex_emit_context "$cs_bin" > "$temp_file"; then
-        rm -f "$temp_file" 2>/dev/null || true
+    local actor="$4" cs_bin="$5" rotation_handoff="${6:-}"
+    local content
+    if [ -L "$output_file" ] || { [ -e "$output_file" ] && [ ! -f "$output_file" ]; }; then
+        _codex_launch_error "$output_file is a link or not a regular file; cs does not write the Codex context through it. Remove it; cs writes the file again at the next open."
         return 1
     fi
-    if ! mv "$temp_file" "$output_file"; then
-        rm -f "$temp_file" 2>/dev/null || true
-        return 1
-    fi
+    # The x keeps the context's last newlines through $( ).
+    content=$(
+        cs_session_context "$session_name" "$session_dir" "$actor" \
+            _codex_emit_context "$cs_bin" || exit 1
+        if [ -n "$rotation_handoff" ]; then
+            printf '\n'
+            _rotation_preamble "$rotation_handoff" "$actor" "$(_codex_handoffs_shown "$session_dir")" \
+                || exit 1
+        fi
+        printf x
+    ) || return 1
+    printf '%s' "${content%x}" | _codex_write_into_place "$output_file"
 }
 
 # Commit only a helper-acknowledged candidate while the current lease is held.
@@ -198,16 +254,6 @@ _codex_commit_prepared() {  # session_dir, previous_id, thread_id, source
 _codex_ack_resume() {  # session_dir, thread_id
     _cs_set_local_state_unlocked "$1/.cs/local/state" engine codex || return 1
     _timeline_started "$1" codex "$2" resume
-}
-
-# Codex writes its rollouts, history and state under CODEX_HOME, outside an
-# encrypted session's vault, so it opens none. main refuses before the pre-open
-# asks for the vault's password; _launch_codex_bound, for any other caller.
-_codex_encrypted_refusal() {  # session_name, intent
-    local again="cs $1 --engine claude"
-    [ "${2:-}" != handoff ] || again="$again --from-handoff"
-    printf '%s is encrypted, and Codex keeps its conversations in %s, outside the vault. Open it under Claude: %s\n' \
-        "$1" "${CODEX_HOME:-$HOME/.codex}" "$again"
 }
 
 # Reconcile the durable kickoff against native history before retrying.
@@ -279,11 +325,6 @@ _launch_codex_bound() {
         _codex_launch_error "Session directory does not exist: $session_dir"
         return 1
     }
-    # A stopgap until Codex keeps its home inside the vault.
-    if _switch_session_encrypted "$session_dir"; then
-        _codex_launch_error "$(_codex_encrypted_refusal "$session_name" "$intent")"
-        return 1
-    fi
     mkdir -p "$local_dir" || return 1
     umask 077
 
@@ -295,6 +336,9 @@ _launch_codex_bound() {
         _codex_launch_error "Codex executable is not executable: $codex_bin"
         return 1
     }
+    # A vault home inherited from another encrypted session's launch is never
+    # this session's (lib/76-codex-vault.sh); the shell's home is checked here.
+    _codex_drop_inherited_vault_home
     # Codex refuses a CODEX_HOME that does not exist, and its app-server exits
     # before the helper can say why; the helper keeps server output private.
     if [ -n "${CODEX_HOME:-}" ] && [ ! -d "$CODEX_HOME" ]; then
@@ -323,6 +367,20 @@ _launch_codex_bound() {
         _codex_launch_error "Codex thread helper is missing or not executable: $helper"
         return 1
     }
+    # An encrypted session runs Codex on its own home inside the vault
+    # (lib/76-codex-vault.sh), exported here for Codex and every helper and hook
+    # the run starts, and checked before anything is bound or spent. Its
+    # context file goes beside its handoffs, in the vault.
+    local vault_home="" vault_check=""
+    _export_session_codex_home "$session_dir" || return 1
+    if [ -n "${CS_CODEX_SHARED_HOME:-}" ]; then
+        vault_home=$CODEX_HOME
+        vault_check=$(_codex_vault_check "$helper" "$codex_bin" "$session_dir") || return 1
+        ( CS_NATIVE_LAUNCH_ARGS=(); _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" ) \
+            || return 1
+        context_file="$meta_dir/private/codex-instructions.md"
+        rm -f "$local_dir/codex-instructions.md" 2>/dev/null || true
+    fi
 
     recorded_id=$(cs_binding_read "$session_dir" codex) || {
         _codex_launch_error "Cannot read Codex thread binding: $binding_file"
@@ -333,6 +391,40 @@ _launch_codex_bound() {
             _codex_launch_error "Invalid Codex thread binding in $binding_file. Repair it before launching; no new thread was created."
             return 1
         }
+    fi
+    # A binding made before the session's Codex home moved into its vault names
+    # a thread the shared home keeps: it stays there, and this launch starts the
+    # session's first conversation in the vault. An explicit resume refuses.
+    # Only the shared home's yes says so; a thread neither home keeps takes the
+    # ordinary refresh, which fails as in a plain session, and a probe that
+    # fails stops the launch with the helper's reason on the terminal.
+    local outside_id="" in_vault="" in_shared="" probe_status
+    if [ -n "$vault_home" ] && [ -n "$recorded_id" ]; then
+        probe_status=0
+        in_vault=$(cs_run_child "$helper" --has-thread --thread-id "$recorded_id") || probe_status=$?
+        if [ "$probe_status" -ne 0 ]; then
+            _codex_launch_error "Could not look for Codex conversation $recorded_id in the vault's Codex home; the binding is unchanged."
+            return 1
+        fi
+        if [ "$in_vault" = no ]; then
+            probe_status=0
+            in_shared=$(CODEX_HOME="$CS_CODEX_SHARED_HOME" cs_run_child "$helper" --has-thread --thread-id "$recorded_id") \
+                || probe_status=$?
+            if [ "$probe_status" -ne 0 ]; then
+                _codex_launch_error "Could not look for Codex conversation $recorded_id in the shared Codex home $CS_CODEX_SHARED_HOME; the binding is unchanged."
+                return 1
+            fi
+        fi
+    fi
+    if [ "$in_shared" = yes ]; then
+        if [ "$intent" = resume ]; then
+            _codex_launch_error "Cannot resume: the recorded Codex conversation $recorded_id is kept in $CS_CODEX_SHARED_HOME, outside the vault. Start one in the vault with --fresh."
+            return 1
+        fi
+        outside_id=$recorded_id
+        recorded_id=""
+        printf "${DIM}The earlier Codex conversation %s stays in %s, outside the vault; this session's Codex conversations start in the vault from now on.${NC}\n" \
+            "$outside_id" "$CS_CODEX_SHARED_HOME"
     fi
     # An earlier kickoff is settled before the launch answers the resume
     # question, binds a thread or spends a handoff: a history that cannot be
@@ -467,7 +559,8 @@ _launch_codex_bound() {
         _codex_launch_error "Cannot resume: no recorded Codex conversation. Use --fresh."
         return 1
     fi
-    local previous_id="$recorded_id"
+    # A thread the shared home keeps is still the binding a new one replaces.
+    local previous_id="${recorded_id:-$outside_id}"
     [ "$intent" != fresh ] || recorded_id=""
 
     cs_export_session_context "$session_name" "$session_dir"
@@ -480,16 +573,11 @@ _launch_codex_bound() {
 
     local actor
     actor=$(cs_actor_slug "$session_dir") || return 1
-    _codex_write_context "$session_name" "$session_dir" "$context_file" "$actor" "$CS_BIN" || {
+    _codex_write_context "$session_name" "$session_dir" "$context_file" "$actor" "$CS_BIN" \
+        "$rotation_handoff" || {
         _codex_launch_error "Could not write Codex context: $context_file"
         return 1
     }
-    if [ -n "$rotation_handoff" ]; then
-        { printf '\n'; _rotation_preamble "$rotation_handoff" "$actor"; } >> "$context_file" || {
-            _codex_launch_error "Could not add the rotation handoff to the Codex context: $context_file"
-            return 1
-        }
-    fi
 
     # The helper uses app-server to create or refresh a *persistent* thread and
     # injects context without starting a user/model turn. A failed refresh must
@@ -510,7 +598,7 @@ _launch_codex_bound() {
         if [ "$helper_status" -ne 0 ]; then
             carry=""
             helper_status=0
-            if [ -n "$previous_id" ]; then
+            if [ -n "$previous_id" ] && [ -z "$outside_id" ]; then
                 printf 'cs: could not carry the Claude conversation over; resuming the earlier Codex conversation.\n' >&2
                 intent=auto
                 recorded_id="$previous_id"
@@ -557,7 +645,12 @@ _launch_codex_bound() {
             carried_from="claude:$transplant_id"
             start_source=transplant
         fi
-        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$rotation_handoff" \
+        # An encrypted session's handoff name is its topic, so it stays out of
+        # the plaintext pending record and timeline, as on Claude: the
+        # rotation is recorded with its reason and without the name.
+        local public_handoff="$rotation_handoff"
+        ! _switch_session_encrypted "$session_dir" || public_handoff=""
+        if ! cs_binding_stage "$session_dir" codex "$previous_id" "$thread_id" "$stage_reason" "$public_handoff" \
             "$carried_from"; then
             _codex_launch_error "Could not stage Codex thread binding: $binding_file"
             return 1
@@ -571,7 +664,7 @@ _launch_codex_bound() {
                 "${transplant_id:0:8}" "$transplant_size"
             # codex resume opens the earlier thread outside cs: the binding
             # stays on the carried one.
-            [ -z "$previous_id" ] \
+            [ -z "$previous_id" ] || [ -n "$outside_id" ] \
                 || printf "${DIM}The earlier Codex conversation stays. To return to it:${NC} codex resume %s\n" "$previous_id"
         fi
     fi
@@ -596,13 +689,26 @@ _launch_codex_bound() {
         # A refused flip keeps the marker for the next start or /clear to
         # retry (_handoff_spend); the thread still starts from the handoff,
         # and the terminal and the kick name the refusal.
-        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$rotation_handoff" "$local_dir/pending-handoff" "$thread_id") || true
-        kick="Continue from the pending rotation handoff: read .cs/handoffs/$rotation_handoff first."
-        printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
-        if [ -n "$refusal" ]; then
-            _handoff_refusal_notice ".cs/handoffs/$rotation_handoff" "$refusal" .cs/local/pending-handoff
-            kick="$kick $(_handoff_refusal_warning ".cs/handoffs/$rotation_handoff" "$refusal" .cs/local/pending-handoff)"
+        local shown_handoff shown_marker
+        shown_handoff="$(_codex_handoffs_shown "$session_dir")/$rotation_handoff"
+        shown_marker="$(_codex_marker_shown "$session_dir")"
+        refusal=$(_handoff_spend "$session_dir/$shown_handoff" "$session_dir/$shown_marker" "$thread_id") || true
+        # The kick is codex's argv, visible to ps: an encrypted session's
+        # handoff name, its topic, stays out of it, as in a switch's resume
+        # (_switch_resume_handoff). The terminal still names the file.
+        if ! _switch_session_encrypted "$session_dir"; then
+            kick="Continue from the pending rotation handoff: read $shown_handoff first."
+            [ -z "$refusal" ] || kick="$kick $(_handoff_refusal_warning "$shown_handoff" "$refusal" "$shown_marker")"
+        elif [ -z "$refusal" ]; then
+            kick="Continue from the pending rotation handoff: read the handoff in .cs/private/handoffs/ whose frontmatter says consumed_by: $thread_id first."
+        else
+            # No consumed_by line was written to point at: the marker stands
+            # in, and the reason stays on the terminal.
+            kick="Continue from the pending rotation handoff: read the handoff $shown_marker names, in .cs/private/handoffs/, first."
+            kick="$kick $(_handoff_refusal_warning "the handoff $shown_marker names" "cs printed the reason in the terminal" "$shown_marker")"
         fi
+        printf "${DIM}Continuing from handoff:${NC} %s%b\n" "$rotation_handoff" "$rotation_origin"
+        [ -z "$refusal" ] || _handoff_refusal_notice "$shown_handoff" "$refusal" "$shown_marker"
         # r is the user choosing the handoff over the merge armed moments
         # earlier, as on Claude; the merge waits for its own launch.
         [ -z "$merge_feature" ] \
@@ -637,6 +743,10 @@ _launch_codex_bound() {
     if [ -n "$CS_CODEX_ROTATION_PROFILE" ]; then
         local profile_name=${CS_CODEX_ROTATION_PROFILE##*/}
         CS_NATIVE_LAUNCH_ARGS+=(--profile "${profile_name%.config.toml}")
+    fi
+    # The vault home stays out of the agent's reach (lib/76-codex-vault.sh).
+    if [ -n "$vault_home" ]; then
+        _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" || return 1
     fi
     # The run's approval, for its hooks and the automatic /clear's watcher: a
     # run with native approval never quits for a switch unattended.

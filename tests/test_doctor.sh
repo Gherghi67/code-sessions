@@ -2463,6 +2463,147 @@ test_doctor_is_quiet_when_the_session_clone_has_the_merge_driver() {
 run_test test_doctor_warns_when_the_session_clone_lacks_the_merge_driver
 run_test test_doctor_is_quiet_when_the_session_clone_has_the_merge_driver
 
+# An encrypted session's Codex home (lib/76-codex-vault.sh): a sound one is
+# OK; an auth.json that is not cs's link (cs cannot tell who wrote it), a link
+# that leads elsewhere and hook trust still keyed by the shared home are named.
+# Both homes are scratch directories.
+test_doctor_checks_an_encrypted_sessions_codex_home() {
+    local sess="$TEST_TMPDIR/sess-vault" shared="$TEST_TMPDIR/shared codex" home name output
+    mkdir -p "$sess/.cs/memory" "$sess/.cs/vault-mnt/private/codex-home" "$shared"
+    ln -s vault-mnt/private "$sess/.cs/private"
+    git -C "$sess" init -q
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    for name in auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json skills agents themes hooks; do
+        ln -s "$shared/$name" "$home/$name"
+    done
+    mkdir -p "$shared/skills" "$shared/agents" "$shared/themes" "$shared/hooks" "$home/rules" "$home/plugins/data"
+    # rules/ is a copy and plugins/ a vault directory; only plugins' installs
+    # and staging link to the shared home.
+    for name in cache .marketplace-plugin-source-staging .remote-plugin-install-staging .plugin-appserver; do
+        mkdir -p "$shared/plugins/$name"
+        ln -s "$shared/plugins/$name" "$home/plugins/$name"
+    done
+    # .tmp is a vault directory too; only marketplaces added from git link.
+    mkdir -p "$shared/.tmp/marketplaces" "$home/.tmp/bundled-marketplaces"
+    ln -s "$shared/.tmp/marketplaces" "$home/.tmp/marketplaces"
+    printf 'model = "m"\n' > "$home/config.toml"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Codex vault home: inside the vault, sharing the login and extensions of $shared" \
+        "a sound home is OK" || return 1
+    assert_output_not_contains "$output" "rules is not a link" "rules is a vault directory" || return 1
+    assert_output_not_contains "$output" "plugins is not a link" "plugins is a vault directory" || return 1
+    rm "$home/auth.json"
+    printf '{}\n' > "$home/auth.json"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$home/skills"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$home/plugins/cache"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$home/.tmp/marketplaces"
+    printf '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "x"\n' "$shared" > "$home/config.toml"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "auth.json is a file, not a link to $shared/auth.json, and cs cannot tell who wrote it" \
+        "names the file without naming an author" || return 1
+    assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
+    assert_output_not_contains "$output" "login saved inside the vault" "does not claim Codex wrote it" || return 1
+    assert_output_contains "$output" "skills links to $TEST_TMPDIR/elsewhere, not $shared/skills" || return 1
+    assert_output_contains "$output" "plugins/cache links to $TEST_TMPDIR/elsewhere, not $shared/plugins/cache" || return 1
+    assert_output_contains "$output" ".tmp/marketplaces links to $TEST_TMPDIR/elsewhere, not $shared/.tmp/marketplaces" || return 1
+    assert_output_contains "$output" "config.toml still keys hook trust by $shared" || return 1
+    assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK beside the warnings" || return 1
+    # An earlier open linked plugins/ and rules/ to the shared home: named,
+    # and the next open makes them vault directories.
+    rm -rf "$home/plugins" "$home/rules"
+    ln -s "$shared/plugins" "$home/plugins"
+    ln -s "$shared/rules" "$home/rules"
+    rm "$home/.tmp/marketplaces"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
+    # Named as plain names: the space in the shared home's name shows as _.
+    assert_output_contains "$output" "plugins is still a link to ${shared// /_}/plugins" "a linked plugins is named" || return 1
+    assert_output_contains "$output" "rules is still a link to ${shared// /_}/rules" "a linked rules is named" || return 1
+    assert_output_contains "$output" ".tmp/marketplaces is missing" "a missing marketplaces link is named" || return 1
+}
+run_test test_doctor_checks_an_encrypted_sessions_codex_home
+
+# A codex-home that is a link is named, never inspected through: what it
+# points at is not the vault home, and the open refuses it.
+test_doctor_names_a_linked_codex_vault_home() {
+    local sess="$TEST_TMPDIR/sess-vault-link" shared="$TEST_TMPDIR/shared codex" victim="$TEST_TMPDIR/victim" home output
+    mkdir -p "$sess/.cs/memory" "$sess/.cs/vault-mnt/private" "$shared" "$victim"
+    ln -s vault-mnt/private "$sess/.cs/private"
+    git -C "$sess" init -q
+    ln -s "$victim" "$sess/.cs/vault-mnt/private/codex-home"
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-vl" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Codex vault home: $home is a link or not a directory; cs does not follow a link there. Move it aside" \
+        "the link is named, with the way out" || return 1
+    assert_output_not_contains "$output" "auth.json is missing" "what the link points at is not inspected" || return 1
+    assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK for a linked home" || return 1
+}
+run_test test_doctor_names_a_linked_codex_vault_home
+
+# Whenever cs's profile is off, the agent can plant a link in the vault home,
+# and its target can carry a terminal escape (ESC ] ... BEL retitles the
+# terminal or writes the clipboard). The warning names each target it read as
+# a plain name, each character a plain name lacks replaced by _.
+test_doctor_names_vault_home_link_targets_as_plain_names() {
+    local sess="$TEST_TMPDIR/sess-vault-esc" shared="$TEST_TMPDIR/shared codex" home name output msg
+    local evil="$TEST_TMPDIR/e"$'\033]0;evil\007' shown="$TEST_TMPDIR/e__0_evil_"
+    mkdir -p "$sess/.cs/memory" "$sess/.cs/vault-mnt/private/codex-home" "$shared"
+    ln -s vault-mnt/private "$sess/.cs/private"
+    git -C "$sess" init -q
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    for name in auth.json auth.json.lock auth.lock AGENTS.md AGENTS.override.md .env hooks.json agents themes hooks; do
+        ln -s "$shared/$name" "$home/$name"
+    done
+    mkdir -p "$shared/agents" "$shared/themes" "$shared/hooks" "$home/plugins" "$home/.tmp"
+    ln -s "$evil" "$home/skills"
+    ln -s "$evil" "$home/rules"
+    ln -s "$evil" "$home/.tmp/marketplaces"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-ve" "$CS_BIN" -doctor 2>&1) || true
+    # The [WARN] tag before the message carries cs's own colours.
+    msg=$(grep -F 'Codex vault home ' <<< "$output")
+    msg="Codex vault home ${msg#*Codex vault home }"
+    assert_output_contains "$msg" "skills links to $shown, not $shared/skills" "the link is still named" || return 1
+    assert_output_contains "$msg" "rules is still a link to $shown, so" "a linked rules is still named" || return 1
+    assert_output_contains "$msg" ".tmp/marketplaces links to $shown, not $shared/.tmp/marketplaces" \
+        "a linked marketplaces is still named" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte reaches the terminal" || return 1
+}
+run_test test_doctor_names_vault_home_link_targets_as_plain_names
+
+# The agent can repoint .cs/private at a directory whose name carries a
+# terminal escape: each warning names the vault home itself as a plain name
+# too, and is still given.
+test_doctor_names_the_vault_home_as_a_plain_name() {
+    local sess="$TEST_TMPDIR/sess-vault-esc-home" shared="$TEST_TMPDIR/shared codex" home output msg
+    local evil="$TEST_TMPDIR/v"$'\033]0;evil\007' shown
+    mkdir -p "$sess/.cs/memory" "$evil/codex-home" "$shared"
+    ln -s "$evil" "$sess/.cs/private"
+    git -C "$sess" init -q
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    shown="$(cd -P "$TEST_TMPDIR" && pwd -P)/v__0_evil_/codex-home"
+    printf '{}\n' > "$home/auth.json"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-veh" "$CS_BIN" -doctor 2>&1) || true
+    # The [WARN] tag before each message carries cs's own colours.
+    msg=$(grep -F 'Codex vault home' <<< "$output" | sed 's/.*Codex vault home/Codex vault home/')
+    assert_output_contains "$msg" "Codex vault home: $shown/auth.json is a file, not a link to $shared/auth.json" \
+        "the file is still named" || return 1
+    assert_output_contains "$msg" "Codex vault home $shown: auth.json.lock is missing" "the missing links are still named" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte reaches the terminal" || return 1
+    rm -rf "$home"
+    ln -s "$TEST_TMPDIR" "$home"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-veh" "$CS_BIN" -doctor 2>&1) || true
+    msg=$(grep -F 'Codex vault home' <<< "$output" | sed 's/.*Codex vault home/Codex vault home/')
+    assert_output_contains "$msg" "Codex vault home: $shown is a link or not a directory" "the link is still named" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte from the linked home" || return 1
+}
+run_test test_doctor_names_the_vault_home_as_a_plain_name
+
 
 # Stamp the setup session the way a clean open would for alice: the merge
 # driver set, the probe files it has (CLAUDE.md, .cs/README.md) at a fixed old

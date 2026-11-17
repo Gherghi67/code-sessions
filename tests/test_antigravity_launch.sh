@@ -65,7 +65,7 @@ fi
 printf '%s\n' "$*" >> "$AGY_LOG"
 printf '%s\n' "$@" > "$AGY_ARGV"
 pwd -P > "$AGY_PWD"
-env | grep -E '^(CS_|CLAUDE_)' | sort > "$AGY_ENV"
+env | grep -E '^(CS_|CLAUDE_|CODEX_HOME=)' | sort > "$AGY_ENV"
 grep '^engine:' "$CS_SESSION_META_DIR/local/state" > "$AGY_STATE" 2>/dev/null || : > "$AGY_STATE"
 conversation="" new=""
 while [ $# -gt 0 ]; do
@@ -192,7 +192,7 @@ teardown() {
     unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset CS_TMUX_BIN AGY_TMUX_LOG
+    unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
 }
 
 # cs's plugin as the installer writes it, in the test's HOME.
@@ -791,6 +791,8 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
     assert_eq "" "$(_agy_argv)" "a new session starts a new conversation" || return 1
     assert_eq "$(cd "$dir" && pwd -P)" "$(cat "$AGY_PWD")" "agy runs in the session folder" || return 1
     assert_file_contains "$rule" '^trigger: always_on$' "the rule is always in context" || return 1
+    assert_file_contains "$rule" '^1. .cs/summary.md — read in full' 'fresh conversations restore saved facts' || return 1
+    assert_file_contains "$rule" "The current user's request is the active task" || return 1
     assert_file_contains "$rule" 'cs:antigravity-session-context' "the rule carries cs's mark" || return 1
     assert_file_contains "$rule" '^Session: fresh$' "the rule names the session" || return 1
     assert_file_contains "$rule" '# Session memory index' "the rule carries the memory index" || return 1
@@ -1396,6 +1398,25 @@ test_an_encrypted_session_is_refused_before_its_vault_opens() {
     [ "$status" -ne 0 ] || { echo "  FAIL: an encrypted session must be refused"; return 1; }
     assert_output_contains "$output" 'Antigravity keeps its conversations' || return 1
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+}
+
+# A vault Codex home inherited from a launch into another encrypted session is
+# dropped before agy starts, back to the shell's home, or to Codex's default,
+# so a codex the agent starts never writes into that other session's vault.
+test_an_inherited_vault_home_is_dropped() {
+    local output
+    export CS_CODEX_SHARED_HOME="$TEST_TMPDIR/shell codex"
+    export CODEX_HOME="$TEST_TMPDIR/other/.cs/vault-mnt/private/codex-home"
+    mkdir -p "$CS_CODEX_SHARED_HOME" "$CODEX_HOME"
+    output=$("$CS_BIN" inherited --engine antigravity 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_file_contains "$AGY_ENV" "^CODEX_HOME=$TEST_TMPDIR/shell codex\$" "back to the shell's home" || return 1
+    assert_file_not_contains "$AGY_ENV" "^CS_CODEX_SHARED_HOME=" "no vault home here" || return 1
+    unset CS_CODEX_SHARED_HOME
+    export CODEX_HOME="$TEST_TMPDIR/other/.cs/private/codex-home"
+    mkdir -p "$CODEX_HOME"
+    output=$("$CS_BIN" inherited --fresh 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_file_not_contains "$AGY_ENV" "^CODEX_HOME=" "Codex's default home" || return 1
+    unset CODEX_HOME CS_CODEX_SHARED_HOME
 }
 
 test_a_feature_worktree_launches_and_keeps_its_rule_out_of_git() {
@@ -2214,6 +2235,7 @@ run_test test_a_finish_open_leaves_a_spawn_seed_staged
 run_test test_missing_handoff_is_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_an_encrypted_session_is_refused_before_its_vault_opens
+run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_feature_worktree_launches_and_keeps_its_rule_out_of_git
 run_test test_the_engine_is_recorded_before_agy_starts
 run_test test_relative_agy_and_cs_paths_resolve_before_the_launch_changes_folder

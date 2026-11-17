@@ -260,18 +260,10 @@ _claude_emit_session_context() {
 
 This is a Claude Code session managed by the cs tool. Session metadata lives in the .cs/ directory. The session root is your workspace for project files.
 
-## Session Files - READ THESE ON RESUME
-
-At the start of every conversation in this session, read the following files to restore context (any conversation after the first is a resume; on a true first run they are stubs). Skip any that don't exist yet — they are created as the session progresses.
-
-1. **$CS_CONTEXT_SUMMARY** - If exists, read first for previous session overview
-2. **$CS_CONTEXT_OBJECTIVE** - Session objective, environment, and outcome
-3. **$CS_CONTEXT_NARRATIVE** - Per-actor lab notebooks: findings, in-progress state, observations. Yours in full; a teammate's only where the resume digest says it grew
-
-Narratives are per-actor (narrative.<actor>.md) so co-developers never conflict.
-Append only to your own; on resume read your own in full, and a teammate narrative only
-from the line the resume digest names for it (nothing, when it names none). Older sections
-sit under $CS_CONTEXT_ARCHIVE/ — grep on demand, never preload.
+EOF
+    cs_emit_context_restoration "$CS_CONTEXT_SUMMARY" "$CS_CONTEXT_OBJECTIVE" \
+        "$CS_CONTEXT_NARRATIVE" "$CS_CONTEXT_ARCHIVE"
+    cat << EOF
 
 ## Documentation Discipline
 

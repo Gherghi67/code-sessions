@@ -104,6 +104,20 @@ test_setup_from_old_session_still_installs_only_normal_integrations() {
     assert_not_exists "$LEGACY/.codex/hooks.json"
 }
 
+# Inside an encrypted session cs exports the shell's Codex home as
+# CS_CODEX_SHARED_HOME, which the installer prefers over CODEX_HOME: setup
+# still installs into ~/.codex, as it does under an inherited CODEX_HOME.
+test_setup_from_an_encrypted_session_installs_into_the_normal_codex_home() {
+    stage_checkout
+    local other="$TEST_TMPDIR/other codex" vault="$TEST_TMPDIR/session/.cs/private/codex-home"
+    mkdir -p "$other"
+    CS_CODEX_SHARED_HOME="$other" CODEX_HOME="$vault" run_setup --skip-tui-build || return 1
+    assert_file_exists "$HOME/.codex/hooks.json" || return 1
+    assert_file_exists "$HOME/.codex/skills/finish/SKILL.md" || return 1
+    assert_eq "" "$(ls -A "$other")" "nothing is installed into the inherited shared home" || return 1
+    assert_not_exists "$vault" || return 1
+}
+
 test_setup_reinstall_preserves_preferences_and_unique_path() {
     stage_checkout
     printf '# my shell settings\n' > "$HOME/.zshrc"
@@ -140,6 +154,7 @@ run_test test_shared_setup_installs_normal_engines_and_replaces_cs_with_backup
 run_test test_shared_setup_imports_history_without_moving_projects_or_credentials
 run_test test_launcher_clears_inherited_profile_config_and_preserves_manager_data
 run_test test_setup_from_old_session_still_installs_only_normal_integrations
+run_test test_setup_from_an_encrypted_session_installs_into_the_normal_codex_home
 run_test test_setup_reinstall_preserves_preferences_and_unique_path
 run_test test_build_failure_does_not_replace_original_or_import_history
 run_test test_direct_install_requires_explicit_replacement

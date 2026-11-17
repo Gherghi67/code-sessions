@@ -441,7 +441,7 @@ replay an ambiguous attempt with `--from-handoff`.
 `cs -switch cancel` removes the switch and keeps the handoff armed. To continue
 it under Antigravity, exit and run `cs <name> --engine antigravity --from-handoff`.
 An unsuccessful source exit leaves the handoff armed without relaunching.
-Codex and Antigravity targets refuse encrypted sessions.
+An Antigravity target refuses encrypted sessions.
 
 ## Mail
 
@@ -528,7 +528,7 @@ Skills that check before relying on a capability refuse cleanly
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Mail in a conversation started mid-run (`/clear`, `/new`, or `/resume` after the first turn) | Neither the digest nor the wake: the session stays bound to the run's first conversation, since no hook payload tells a new main conversation from a subagent's. Rotate (`/cs:rotate`, then `/exit` and `cs <name> --from-handoff`), or reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). |
-| Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault. |
+| Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault, and has no setting that moves its state (it resolves everything from `$HOME`). Codex runs such a session on a home inside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
 
@@ -680,4 +680,6 @@ that fires the plugin's hooks with payloads of the measured shape.
 ## Follow-ups
 
 These come later as separate changes: in-place `/clear`
-rotation, and encrypted sessions.
+rotation, and encrypted sessions, which need a home for agy inside the vault:
+with no home setting, that means a separate `$HOME` for agy that links back to
+the real one.

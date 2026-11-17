@@ -69,6 +69,12 @@ test_clear_with_an_armed_handoff_rebinds_and_loads_it() {
     assert_output_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" \
         "narrative.tester.md" "and at its actor's narrative" || return 1
     assert_output_contains "$(printf '%s' "$out" | jq -r '.systemMessage')" "Rotation loaded from $HANDOFF" || return 1
+    local context
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" '1. .cs/summary.md — read in full' || return 1
+    assert_output_contains "$context" 'handoff FIRST, then read the following files in order' || return 1
+    assert_output_contains "$context" 'A message carrying its own content takes precedence over the handoff' || return 1
+    assert_output_not_contains "$context" 'Fresh Conversation\|read as needed\|clean break' || return 1
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^status: consumed$" || return 1
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^consumed_by: $NEW_THREAD$" || return 1
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^status: unconsumed is quoted here" \
@@ -114,10 +120,41 @@ test_clear_without_a_handoff_rebinds_as_a_clean_break() {
     assert_eq "$NEW_THREAD" "$(cat "$SESSION/.cs/local/codex-thread-id")" || return 1
     assert_output_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" \
         "--- Fresh Conversation ---" || return 1
+    local context
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" '1. .cs/summary.md — read in full' || return 1
+    assert_output_contains "$context" '2. .cs/README.md — read in full' || return 1
+    assert_output_contains "$context" '3. .cs/memory/narrative.tester.md — read your own current narrative in full' || return 1
+    assert_output_contains "$context" 'Skip missing files' || return 1
+    assert_output_contains "$context" "The current user's request is the active task" || return 1
+    assert_output_not_contains "$context" 'read as needed\|Conversation Rotation' || return 1
     printf '%s' "$out" | jq -e 'has("systemMessage") | not' >/dev/null \
         || { echo "  FAIL: nothing to announce without a rotation"; return 1; }
     jq -e 'select(.event == "rotated") | .reason == "rebind" and (has("handoff") | not)' \
         "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: rebind lineage missing"; return 1; }
+}
+
+# Regression fixture for llm-cognition: /wrap saved all twelve splits, and
+# /clear lost the transcript. This checks the rendered instruction contract
+# and the saved evidence it points to, not model compliance with that contract.
+test_clear_points_to_saved_dataset_facts_before_asking_the_user() {
+    mkdir -p "$SESSION/.cs/memory"
+    printf '%s\n' 'All 12 splits: GSM8K, ARC-Challenge, HellaSwag, WinoGrande, LAMBADA, GLUE CoLA, MRPC, QNLI, RTE, SST-2, STS-B, WNLI.' \
+        > "$SESSION/.cs/summary.md"
+    printf '%s\n' 'Task 2 built all 12 loaders. User asked for every dataset link.' \
+        > "$SESSION/.cs/memory/narrative.tester.md"
+    printf '%s\n' 'Teammate notebook must not be preloaded.' > "$SESSION/.cs/memory/narrative.other.md"
+    local out context path
+    out=$(_hook clear) || return 1
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" 'local project files before asking the user to repeat project facts' || return 1
+    # Follow the summary path actually emitted to the new conversation.
+    path=$(printf '%s\n' "$context" | sed -n 's/^1\. \([^ ]*\) .*/\1/p')
+    assert_file_contains "$SESSION/$path" 'All 12 splits: GSM8K.*WNLI' || return 1
+    assert_file_contains "$SESSION/.cs/memory/narrative.tester.md" 'User asked for every dataset link' || return 1
+    assert_output_contains "$context" 'and a teammate narrative only' || return 1
+    assert_output_contains "$context" 'from the line the resume digest names for it' || return 1
+    assert_output_not_contains "$context" 'Teammate notebook must not be preloaded'
 }
 
 # A marker naming a spent handoff is stale: the clear is a clean break and the
@@ -197,6 +234,22 @@ test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private() {
     assert_file_contains "$SESSION/.cs/private/session.log" "Session started (source: clear, ID: $NEW_THREAD)" || return 1
     assert_file_contains "$SESSION/.cs/private/session.log" "Rebound codex thread: $OLD_THREAD -> $NEW_THREAD" || return 1
     assert_not_exists "$SESSION/.cs/local/session.log" || return 1
+}
+
+# A /clear into a handoff kept in the vault: the plaintext timeline records
+# that a handoff rotated, never which, since its name is the session's topic.
+test_a_clear_in_an_encrypted_session_keeps_the_handoff_name_out_of_the_timeline() {
+    mkdir -p "$SESSION/.cs/private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-10-05T10:00:00Z\npurpose: continue the plan\nstatus: unconsumed\n---\n\n## 1. Next Step\n' \
+        "$OLD_THREAD" > "$SESSION/.cs/private/handoffs/$HANDOFF"
+    printf '%s\n' "$HANDOFF" > "$SESSION/.cs/private/pending-handoff"
+    _hook clear >/dev/null || return 1
+    assert_file_contains "$SESSION/.cs/private/handoffs/$HANDOFF" "^consumed_by: $NEW_THREAD$" "the handoff is spent" || return 1
+    jq -e --arg from "$OLD_THREAD" --arg to "$NEW_THREAD" \
+        'select(.event == "rotated") | .engine == "codex" and .from == $from and .to == $to
+         and .reason == "handoff" and (has("handoff") | not)' \
+        "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no rotated event for the handoff without its name"; return 1; }
+    assert_eq "" "$(grep -F "$HANDOFF" "$SESSION/.cs/timeline.jsonl")" "the timeline keeps the handoff's name out" || return 1
 }
 
 # A locked vault drops the line, as the Claude hooks do.
@@ -283,6 +336,7 @@ test_rotation_keeps_the_last_turn_model_with_manual_clear() {
     assert_eq "" "$out" || return 1
     assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model = "gpt-6-astra"$' || return 1
     assert_file_contains "$CS_CODEX_ROTATION_PROFILE" '^model_reasoning_effort = "xhigh"$' || return 1
+    assert_eq "${CS_CODEX_ROTATION_PROFILE##*/}" "$(ls -A "$CODEX_HOME")" "no temp file is left beside the profile" || return 1
     before=$(cat "$CS_CODEX_ROTATION_PROFILE")
     # A different thread cannot replace this run's selection.
     jq -cn --arg id "$NEW_THREAD" --arg path "$transcript" \
@@ -321,6 +375,31 @@ test_a_setting_fixed_for_the_run_is_named_instead_of_the_count() {
     out=$(CS_CODEX_CLEAR_GRACE=20 TURN_TRANSCRIPT="$transcript" _turn_hook stop "$OLD_THREAD") || return 1
     assert_file_exists "$STAMP" || return 1
     assert_output_contains "$out" '/clear and go in 20 s' || return 1
+}
+
+# The profile lives in CODEX_HOME, the vault home for an encrypted session,
+# which the agent can write: a link planted at its name is never written
+# through, and the turn says the choice was not kept.
+test_a_linked_rotation_profile_is_never_written_through() {
+    _handoff unconsumed; _arm
+    export CODEX_HOME="$TEST_TMPDIR/codex" CS_RUN_ENGINE=codex CS_RUN_ID="$RUN"
+    export CS_RUN_OWNER_PID="$$" CS_SESSION_DIR="$SESSION"
+    mkdir -p "$CODEX_HOME"
+    export CS_CODEX_ROTATION_PROFILE
+    CS_CODEX_ROTATION_PROFILE="$CODEX_HOME/cs-rotation-$(python3 -I -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:20])' "$SESSION").config.toml"
+    printf 'precious\n' > "$TEST_TMPDIR/outside"
+    ln -s "$TEST_TMPDIR/outside" "$CS_CODEX_ROTATION_PROFILE"
+    local transcript="$TEST_TMPDIR/rollout.jsonl" out
+    jq -cn --arg id "$OLD_THREAD" --arg cwd "$SESSION" \
+        '{type:"session_meta",payload:{id:$id,cwd:$cwd}}' > "$transcript"
+    printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6-astra","effort":"xhigh"}}' >> "$transcript"
+    out=$(jq -cn --arg id "$OLD_THREAD" --arg path "$transcript" \
+        '{session_id:$id,transcript_path:$path}' \
+        | CS_ROTATE_FORCE_CTX=off "$CS_BIN" -codex-hook stop) || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_output_contains "$out" 'could not preserve' "the turn says the choice was not kept" || return 1
+    assert_eq precious "$(cat "$TEST_TMPDIR/outside")" "the link's target is untouched" || return 1
+    [ -L "$CS_CODEX_ROTATION_PROFILE" ] || { echo "  FAIL: the link was replaced"; return 1; }
+    assert_eq "${CS_CODEX_ROTATION_PROFILE##*/}" "$(ls -A "$CODEX_HOME")" "no temp file is left beside it" || return 1
 }
 
 # A grace with a leading zero is decimal: 08 is eight seconds, not an
@@ -616,6 +695,7 @@ run_test test_mail_git_tracks_after_launch_is_not_shown
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
 run_test test_a_refused_flip_keeps_the_marker_and_says_so
 run_test test_clear_without_a_handoff_rebinds_as_a_clean_break
+run_test test_clear_points_to_saved_dataset_facts_before_asking_the_user
 run_test test_a_stale_marker_is_dropped
 run_test test_resume_changes_nothing_but_the_log
 run_test test_a_run_without_the_lease_rebinds_nothing
@@ -623,11 +703,13 @@ run_test test_a_run_without_the_lease_leaves_a_stale_marker
 run_test test_outside_a_cs_codex_run_the_hook_is_inert
 run_test test_an_encrypted_session_logs_the_start_behind_private
 run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
+run_test test_a_clear_in_an_encrypted_session_keeps_the_handoff_name_out_of_the_timeline
 run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
 run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
 run_test test_rotation_keeps_the_last_turn_model_with_manual_clear
 run_test test_a_setting_fixed_for_the_run_is_named_instead_of_the_count
+run_test test_a_linked_rotation_profile_is_never_written_through
 run_test test_a_grace_with_a_leading_zero_is_decimal
 run_test test_a_turn_end_never_writes_into_the_workspace
 run_test test_no_run_dir_means_no_count_and_no_message

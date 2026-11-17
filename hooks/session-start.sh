@@ -1120,14 +1120,21 @@ elif [ -n "$FRESH_NOTICE" ]; then
     CONTEXT="${CONTEXT}
 
 --- Fresh Conversation ---
-The user explicitly started a fresh conversation in this cs session — the prior conversation's transcript is not loaded. Treat this as a clean break, not a continuation.
-
-For prior context, lazily consult as needed:
-- .cs/memory/narrative.$ACTOR_SLUG.md — your findings and decisions from earlier work (append only here; a teammate's narrative only from the line the resume digest names; older sections under .cs/narrative-archive/<actor>/)
-- .cs/README.md            — session objective
-
-Do not assume continuity with previous turns."
+The user explicitly started a fresh conversation in this cs session — the prior transcript is not loaded. Restore saved project context; the current user request starts the task."
 fi
+
+# Also covers sessions whose existing CLAUDE.local.md predates the shared
+# protocol. Compaction retains the conversation, so it needs no full reread.
+case "$SOURCE" in
+    startup|resume|clear)
+        if command -v cs_emit_context_restoration >/dev/null 2>&1; then
+            CONTEXT="${CONTEXT}
+
+$(cs_emit_context_restoration .cs/summary.md .cs/README.md \
+    ".cs/memory/narrative.$ACTOR_SLUG.md" ".cs/narrative-archive/$ACTOR_SLUG")"
+        fi
+        ;;
+esac
 
 # Append crash recovery info if present
 if [ -n "${CRASH_CONTEXT:-}" ]; then

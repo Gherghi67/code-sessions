@@ -1,16 +1,11 @@
 # ABOUTME: Codex hook entry points the installer registers in $CODEX_HOME/hooks.json (`cs -codex-hook <verb>`):
 # ABOUTME: rebind after /clear with an armed rotation, recovery, and the automatic /clear after a rotation.
 
-# A /clear with nothing armed: a clean break, said so the conversation does not
-# act on history it no longer has.
+# A /clear with nothing armed starts a new task while restoring project facts.
 _fresh_notice_codex() {  # actor_slug
     printf '%s\n' \
         '--- Fresh Conversation ---' \
-        'The user explicitly started a fresh conversation in this cs session with /clear; the prior conversation is not loaded. Treat this as a clean break, not a continuation.' \
-        '' \
-        'For prior context, read as needed:' \
-        "- .cs/memory/narrative.$1.md — your findings and decisions from earlier work (append only here)" \
-        '- .cs/README.md — session objective'
+        'The user explicitly started a fresh conversation in this cs session with /clear; the prior transcript is not loaded. Restore saved project context; the current user request starts the task.'
 }
 
 cmd_codex_hook() {  # event
@@ -42,7 +37,7 @@ _codex_hook_files_changed() {
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     event=$(cs_engine_call codex files_changed) || return 0
     [ -n "$event" ] || return 0
-    hook="${CODEX_HOME:-$HOME/.codex}/hooks/cs/autosave-commits.sh"
+    hook="$(_codex_shared_home)/hooks/cs/autosave-commits.sh"
     [ -r "$hook" ] || return 0
     printf '%s' "$event" | bash "$hook" --event || true
 }
@@ -83,18 +78,25 @@ _codex_hook_session_start() {
         # retry (_handoff_spend); the rotation still loads, and both the
         # conversation and the user's line name the refusal.
         local refusal=""
-        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$meta/local/pending-handoff" "$session_id") || true
-        context=$(_rotation_preamble "$handoff" "$actor")
+        local shown_dir shown_marker
+        shown_dir=$(_codex_handoffs_shown "$session_dir")
+        shown_marker=$(_codex_marker_shown "$session_dir")
+        refusal=$(_handoff_spend "$session_dir/$shown_dir/$handoff" "$session_dir/$shown_marker" "$session_id") || true
+        context=$(_rotation_preamble "$handoff" "$actor" "$shown_dir")
         sysmsg="Rotation loaded from $handoff; this conversation continues from it."
         if [ -n "$refusal" ]; then
             context="$context
 
-$(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-handoff)"
-            sysmsg="$sysmsg cs could not mark .cs/handoffs/$handoff consumed: $refusal. The marker stays armed, so the next /clear loads it again."
+$(_handoff_refusal_warning "$shown_dir/$handoff" "$refusal" "$shown_marker")"
+            sysmsg="$sysmsg cs could not mark $shown_dir/$handoff consumed: $refusal. The marker stays armed, so the next /clear loads it again."
         fi
     else
         context=$(_fresh_notice_codex "$actor")
     fi
+    context="$context
+
+$(cs_emit_context_restoration .cs/summary.md .cs/README.md \
+    ".cs/memory/narrative.$actor.md" ".cs/narrative-archive/$actor")"
     context="$context$(cs_memory_index "$session_dir")"
     jq -n --arg context "$context" --arg sysmsg "$sysmsg" '
         {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $context}}
@@ -115,6 +117,9 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
         { printf '%s - Rebound codex thread: %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
             "${previous:-none}" "$thread_id" >> "$log_dir/session.log"; } 2>/dev/null || true
     fi
+    # An encrypted session's handoff name is its topic: the plaintext timeline
+    # records that a handoff rotated, never which (hooks/session-start.sh).
+    ! _switch_session_encrypted "$session_dir" || handoff=""
     if [ -n "$previous" ]; then
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi
@@ -394,19 +399,24 @@ _codex_autoclear_grace() {
 
 # Stop runs outside the workspace sandbox, before either a manual or automatic
 # /clear. Read only the bound thread's native transcript; never infer a model
-# from handoff prose. Atomic replacement leaves the previous profile on errors.
+# from handoff prose. Atomic replacement leaves the previous profile on errors,
+# and _codex_write_into_place never writes through a link the agent planted.
 # A setting fixed for the run (CS_CODEX_ROTATION_FIXED, lib/76-codex.sh) wins
 # on /clear; when it differs from the final turn's, the save still happens,
 # fails, and prints the line that says so.
 _codex_rotation_model_save() {  # session_dir, session_id, Stop input
     [ -n "${CS_CODEX_ROTATION_PROFILE:-}" ] || return 0
-    local expected transcript tmp note status=0
+    local expected transcript note status=0
     expected=$(_codex_rotation_profile_path "$1") || return 1
     [ "$CS_CODEX_ROTATION_PROFILE" = "$expected" ] || return 1
     [ -f "$expected" ] && [ ! -L "$expected" ] || return 1
     transcript=$(printf '%s' "$3" | jq -er '.transcript_path | select(type == "string" and length > 0)' 2>/dev/null) || return 1
-    tmp=$(mktemp "$expected.XXXXXX" 2>/dev/null) || return 1
-    note=$(python3 -I -c '
+    # The pass prints the profile on stdout and the note on stderr, which fd 3
+    # carries out to $note. The profile is written only when the pass ends 0
+    # or 3; the x keeps its last newline through $( ).
+    note=$( {
+        pass=0
+        settings=$(python3 -I -c '
 import json, os, sys
 session, thread, transcript = sys.argv[1:]
 metadata = None
@@ -450,12 +460,13 @@ try:
         sys.exit(3)
 except (OSError, ValueError, TypeError):
     sys.exit(1)
-' "$1" "$2" "$transcript" 2>&1 > "$tmp") || status=$?
+' "$1" "$2" "$transcript" 2>&3; rc=$?; printf x; exit "$rc") || pass=$?
+        [ "$pass" -eq 0 ] || [ "$pass" -eq 3 ] || exit 1
+        printf '%s' "${settings%x}" | _codex_write_into_place "$expected" 2>/dev/null || exit 1
+        exit "$pass"
+    } 3>&1 ) || status=$?
     # 3: the profile is written, and a fixed setting outranks it on /clear.
-    if { [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; } || ! mv "$tmp" "$expected" 2>/dev/null; then
-        rm -f "$tmp" 2>/dev/null
-        return 1
-    fi
+    { [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; } || return 1
     [ "$status" -eq 0 ] || { printf '%s\n' "$note"; return 1; }
 }
 
