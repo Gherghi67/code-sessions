@@ -535,8 +535,10 @@ test_a_login_saved_inside_the_vault_stops_the_open() {
     assert_output_contains "$output" "cs cannot tell who wrote it" "names no author" || return 1
     assert_output_not_contains "$output" "Codex saved a login" "does not claim Codex wrote it" || return 1
     assert_output_contains "$output" "Inspect it" "asks for a look before it is used" || return 1
-    assert_output_contains "$output" "mv \"$VAULT_HOME/auth.json\" \"$CODEX_HOME/auth.json\"" "names the fix" || return 1
-    assert_output_contains "$output" "rm \"$VAULT_HOME/auth.json\"" "names the other way out" || return 1
+    # The vault home is named as a plain name: the space in the session
+    # folder's name shows as _.
+    assert_output_contains "$output" "mv \"${VAULT_HOME// /_}/auth.json\" \"$CODEX_HOME/auth.json\"" "names the fix" || return 1
+    assert_output_contains "$output" "rm \"${VAULT_HOME// /_}/auth.json\"" "names the other way out" || return 1
     assert_eq '{"tokens":"vault"}' "$(cat "$VAULT_HOME/auth.json")" "the login is kept" || return 1
     assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
@@ -570,6 +572,43 @@ test_a_linked_vault_home_stops_the_open() {
     assert_eq "" "$(ls -A "$victim")" "nothing is linked into the link's target" || return 1
     assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# The agent can repoint .cs/private at a directory whose name carries a
+# terminal escape (ESC ] ... BEL retitles the terminal or writes the
+# clipboard). Each refusal names the vault home as a plain name, each
+# character a plain name lacks replaced by _, and still names the entry.
+test_vault_home_refusals_name_the_home_as_a_plain_name() {
+    _vault_fixture
+    local evil="$TEST_TMPDIR/v"$'\033]0;evil\007' shown output status case
+    mkdir "$evil"
+    rm "$CS_TEST_SESSION_DIR/.cs/private"
+    ln -s "$evil" "$CS_TEST_SESSION_DIR/.cs/private"
+    VAULT_HOME="$(cd -P "$evil" && pwd -P)/codex-home"
+    shown="$(cd -P "$TEST_TMPDIR" && pwd -P)/v__0_evil_/codex-home"
+    for case in skills cache auth linked; do
+        rm -rf "$VAULT_HOME"
+        case "$case" in
+            skills) mkdir -p "$VAULT_HOME/skills" ;;
+            cache) mkdir -p "$VAULT_HOME/plugins/cache" ;;
+            auth) mkdir -p "$VAULT_HOME" && printf '{}\n' > "$VAULT_HOME/auth.json" ;;
+            linked) ln -s "$TEST_TMPDIR" "$VAULT_HOME" ;;
+        esac
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 1 "$status" "$case must refuse: $output" || return 1
+        case "$case" in
+            skills) assert_output_contains "$output" "$shown/skills is not cs's link to $CODEX_HOME/skills" || return 1 ;;
+            cache) assert_output_contains "$output" "$shown/plugins/cache is not cs's link to $CODEX_HOME/plugins/cache" || return 1 ;;
+            auth)
+                assert_output_contains "$output" "$shown/auth.json is a file, not cs's link" || return 1
+                assert_output_contains "$output" "rm \"$shown/auth.json\"" "the way out is named" || return 1 ;;
+            linked) assert_output_contains "$output" "$shown is a link or not a directory" || return 1 ;;
+        esac
+        assert_no_escape_bytes "$output" "$case: no escape byte reaches the terminal" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "$case: no thread prepared" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "$case: no CLI call" || return 1
+    done
 }
 
 # The profile replaces [sandbox_workspace_write], so the settings Codex
@@ -1810,6 +1849,7 @@ run_test test_a_planted_tmp_link_becomes_a_vault_directory
 run_test test_a_login_saved_inside_the_vault_stops_the_open
 run_test test_a_locked_vault_stops_the_codex_open
 run_test test_a_linked_vault_home_stops_the_open
+run_test test_vault_home_refusals_name_the_home_as_a_plain_name
 run_test test_the_vault_profile_keeps_the_users_workspace_settings
 run_test test_native_approval_follows_the_users_sandbox
 run_test test_the_vault_check_refuses_what_cs_cannot_confine

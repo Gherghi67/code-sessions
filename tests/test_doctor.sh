@@ -2574,6 +2574,36 @@ test_doctor_names_vault_home_link_targets_as_plain_names() {
 }
 run_test test_doctor_names_vault_home_link_targets_as_plain_names
 
+# The agent can repoint .cs/private at a directory whose name carries a
+# terminal escape: each warning names the vault home itself as a plain name
+# too, and is still given.
+test_doctor_names_the_vault_home_as_a_plain_name() {
+    local sess="$TEST_TMPDIR/sess-vault-esc-home" shared="$TEST_TMPDIR/shared codex" home output msg
+    local evil="$TEST_TMPDIR/v"$'\033]0;evil\007' shown
+    mkdir -p "$sess/.cs/memory" "$evil/codex-home" "$shared"
+    ln -s "$evil" "$sess/.cs/private"
+    git -C "$sess" init -q
+    home="$(cd -P "$sess/.cs/private" && pwd -P)/codex-home"
+    shown="$(cd -P "$TEST_TMPDIR" && pwd -P)/v__0_evil_/codex-home"
+    printf '{}\n' > "$home/auth.json"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-veh" "$CS_BIN" -doctor 2>&1) || true
+    # The [WARN] tag before each message carries cs's own colours.
+    msg=$(grep -F 'Codex vault home' <<< "$output" | sed 's/.*Codex vault home/Codex vault home/')
+    assert_output_contains "$msg" "Codex vault home: $shown/auth.json is a file, not a link to $shared/auth.json" \
+        "the file is still named" || return 1
+    assert_output_contains "$msg" "Codex vault home $shown: auth.json.lock is missing" "the missing links are still named" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte reaches the terminal" || return 1
+    rm -rf "$home"
+    ln -s "$TEST_TMPDIR" "$home"
+    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
+        CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-veh" "$CS_BIN" -doctor 2>&1) || true
+    msg=$(grep -F 'Codex vault home' <<< "$output" | sed 's/.*Codex vault home/Codex vault home/')
+    assert_output_contains "$msg" "Codex vault home: $shown is a link or not a directory" "the link is still named" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte from the linked home" || return 1
+}
+run_test test_doctor_names_the_vault_home_as_a_plain_name
+
 
 # Stamp the setup session the way a clean open would for alice: the merge
 # driver set, the probe files it has (CLAUDE.md, .cs/README.md) at a fixed old

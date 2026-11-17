@@ -1158,15 +1158,18 @@ _doctor_check_hook_authority() {
 # copied config.toml whose hook trust still names the shared home are named.
 # The next Codex open repairs links and the copies, never an auth.json. A link
 # target read from the vault home is printed as a plain name: whenever cs's
-# profile is off, the agent can plant one that carries a terminal escape.
+# profile is off, the agent can plant one that carries a terminal escape. So
+# is the home itself: .cs/private is a link the agent can point at a directory
+# whose name carries one.
 _doctor_check_codex_vault_home() {
-    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found sub children problems=""
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shown shared name target found sub children problems=""
     [ -n "$dir" ] || return 0
     _switch_session_encrypted "$dir" || return 0
     home=$(_codex_vault_home_path "$dir") || return 0
+    shown=$(_cs_plain_name "$home" 160)
     # Never inspected through a link: the open refuses one, and so names it.
     if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
-        _doctor_warn "Codex vault home: $home is a link or not a directory; cs does not follow a link there. Move it aside; the next Codex open makes the vault Codex home"
+        _doctor_warn "Codex vault home: $shown is a link or not a directory; cs does not follow a link there. Move it aside; the next Codex open makes the vault Codex home"
         return 0
     fi
     [ -d "$home" ] || return 0
@@ -1182,7 +1185,7 @@ _doctor_check_codex_vault_home() {
                 problems="$problems; $name links to $target, which is missing"
             fi
         elif [ "$name" = auth.json ] && [ -e "$home/$name" ]; then
-            _doctor_warn "Codex vault home: $home/auth.json is a file, not a link to $target, and cs cannot tell who wrote it (Codex after a logout and login inside this session, or anything else that can write to the session). Inspect it (which account, when it was written) before you use it: only if it is a login you made yourself, mv it over $target; otherwise remove it or move it aside. The next Codex open links the shared login again"
+            _doctor_warn "Codex vault home: $shown/auth.json is a file, not a link to $target, and cs cannot tell who wrote it (Codex after a logout and login inside this session, or anything else that can write to the session). Inspect it (which account, when it was written) before you use it: only if it is a login you made yourself, mv it over $target; otherwise remove it or move it aside. The next Codex open links the shared login again"
         elif [ -e "$home/$name" ]; then
             problems="$problems; $name is not a link to $target"
         else
@@ -1222,7 +1225,7 @@ _doctor_check_codex_vault_home() {
         problems="$problems; config.toml still keys hook trust by $shared, so those hooks would not run"
     fi
     if [ -n "$problems" ]; then
-        _doctor_warn "Codex vault home $home:${problems#;}. The next Codex open of this session repairs it"
+        _doctor_warn "Codex vault home $shown:${problems#;}. The next Codex open of this session repairs it"
     else
         _doctor_ok "Codex vault home: inside the vault, sharing the login and extensions of $shared"
     fi

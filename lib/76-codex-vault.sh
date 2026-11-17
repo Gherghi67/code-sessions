@@ -63,20 +63,23 @@ _codex_vault_home_path() {  # session_dir
 # the shared one, or one planted) removed, whose <children> link to the shared
 # home's <subdir>/<child>, made there when missing. A link that points anywhere
 # else is pointed back; anything else where a link belongs stops the launch.
+# The home is named as a plain name, for the reason _codex_vault_home_prepare
+# gives.
 _codex_vault_link_children() {  # home, shared_home, subdir, children...
-    local home="$1" shared="$2" sub="$3" name target
+    local home="$1" shared="$2" sub="$3" name target shown
     shift 3
+    shown=$(_cs_plain_name "$home" 160)
     if [ -L "$home/$sub" ]; then
         rm -f "$home/$sub" || {
-            _codex_launch_error "Could not remove the link $home/$sub."
+            _codex_launch_error "Could not remove the link $shown/$sub."
             return 1
         }
     elif [ -e "$home/$sub" ] && [ ! -d "$home/$sub" ]; then
-        _codex_launch_error "$home/$sub is not a directory. Move it aside; cs makes it at the next open."
+        _codex_launch_error "$shown/$sub is not a directory. Move it aside; cs makes it at the next open."
         return 1
     fi
     (umask 077 && mkdir -p "$home/$sub") || {
-        _codex_launch_error "Could not make $home/$sub."
+        _codex_launch_error "Could not make $shown/$sub."
         return 1
     }
     for name in "$@"; do
@@ -88,11 +91,11 @@ _codex_vault_link_children() {  # home, shared_home, subdir, children...
         if [ -L "$home/$sub/$name" ]; then
             [ "$(readlink "$home/$sub/$name")" = "$target" ] && continue
         elif [ -e "$home/$sub/$name" ]; then
-            _codex_launch_error "$home/$sub/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+            _codex_launch_error "$shown/$sub/$name is not cs's link to $target. Move it aside; cs links it at the next open."
             return 1
         fi
         ln -sfn "$target" "$home/$sub/$name" || {
-            _codex_launch_error "Could not link $home/$sub/$name to $target."
+            _codex_launch_error "Could not link $shown/$sub/$name to $target."
             return 1
         }
     done
@@ -103,8 +106,11 @@ _codex_vault_link_children() {  # home, shared_home, subdir, children...
 # moved); a real file or directory where a link belongs stops the launch,
 # named, since it may hold the only copy of something (a login). plugins/ and
 # .tmp are made directories, an earlier open's link to the shared one removed.
+# The home is named as a plain name: .cs/private is a link the agent can point
+# at a directory whose name carries a terminal escape. The names after it are
+# cs's own.
 _codex_vault_home_prepare() {  # session_dir, shared_home, helper
-    local home shared="$2" name target
+    local home shared="$2" name target shown
     case "$shared" in
         /*) ;;
         *) _codex_launch_error "The shared Codex home must be an absolute path, not $shared."; return 1 ;;
@@ -113,14 +119,15 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
         _codex_launch_error "$1 is encrypted, but its vault is not mounted; cs makes its Codex home there."
         return 1
     }
+    shown=$(_cs_plain_name "$home" 160)
     # The agent can write .cs/private: a codex-home it planted as a link would
     # have cs chmod and link wherever it points.
     if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
-        _codex_launch_error "$home is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home."
+        _codex_launch_error "$shown is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home."
         return 1
     fi
     (umask 077 && mkdir -p "$home") && chmod 700 "$home" || {
-        _codex_launch_error "Could not make the vault Codex home $home."
+        _codex_launch_error "Could not make the vault Codex home $shown."
         return 1
     }
     for name in $CS_CODEX_VAULT_LINK_DIRS; do
@@ -140,15 +147,15 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
             esac
             if [ -e "$home/$name" ]; then
                 if [ "$name" = auth.json ]; then
-                    _codex_launch_error "$home/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$home/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$home/auth.json\". The next open links the shared login again."
+                    _codex_launch_error "$shown/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$shown/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$shown/auth.json\". The next open links the shared login again."
                 else
-                    _codex_launch_error "$home/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+                    _codex_launch_error "$shown/$name is not cs's link to $target. Move it aside; cs links it at the next open."
                 fi
                 return 1
             fi
         fi
         ln -sfn "$target" "$home/$name" || {
-            _codex_launch_error "Could not link $home/$name to $target."
+            _codex_launch_error "Could not link $shown/$name to $target."
             return 1
         }
     done

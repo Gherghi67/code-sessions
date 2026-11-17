@@ -16321,15 +16321,18 @@ _doctor_check_hook_authority() {
 # copied config.toml whose hook trust still names the shared home are named.
 # The next Codex open repairs links and the copies, never an auth.json. A link
 # target read from the vault home is printed as a plain name: whenever cs's
-# profile is off, the agent can plant one that carries a terminal escape.
+# profile is off, the agent can plant one that carries a terminal escape. So
+# is the home itself: .cs/private is a link the agent can point at a directory
+# whose name carries one.
 _doctor_check_codex_vault_home() {
-    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shared name target found sub children problems=""
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shown shared name target found sub children problems=""
     [ -n "$dir" ] || return 0
     _switch_session_encrypted "$dir" || return 0
     home=$(_codex_vault_home_path "$dir") || return 0
+    shown=$(_cs_plain_name "$home" 160)
     # Never inspected through a link: the open refuses one, and so names it.
     if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
-        _doctor_warn "Codex vault home: $home is a link or not a directory; cs does not follow a link there. Move it aside; the next Codex open makes the vault Codex home"
+        _doctor_warn "Codex vault home: $shown is a link or not a directory; cs does not follow a link there. Move it aside; the next Codex open makes the vault Codex home"
         return 0
     fi
     [ -d "$home" ] || return 0
@@ -16345,7 +16348,7 @@ _doctor_check_codex_vault_home() {
                 problems="$problems; $name links to $target, which is missing"
             fi
         elif [ "$name" = auth.json ] && [ -e "$home/$name" ]; then
-            _doctor_warn "Codex vault home: $home/auth.json is a file, not a link to $target, and cs cannot tell who wrote it (Codex after a logout and login inside this session, or anything else that can write to the session). Inspect it (which account, when it was written) before you use it: only if it is a login you made yourself, mv it over $target; otherwise remove it or move it aside. The next Codex open links the shared login again"
+            _doctor_warn "Codex vault home: $shown/auth.json is a file, not a link to $target, and cs cannot tell who wrote it (Codex after a logout and login inside this session, or anything else that can write to the session). Inspect it (which account, when it was written) before you use it: only if it is a login you made yourself, mv it over $target; otherwise remove it or move it aside. The next Codex open links the shared login again"
         elif [ -e "$home/$name" ]; then
             problems="$problems; $name is not a link to $target"
         else
@@ -16385,7 +16388,7 @@ _doctor_check_codex_vault_home() {
         problems="$problems; config.toml still keys hook trust by $shared, so those hooks would not run"
     fi
     if [ -n "$problems" ]; then
-        _doctor_warn "Codex vault home $home:${problems#;}. The next Codex open of this session repairs it"
+        _doctor_warn "Codex vault home $shown:${problems#;}. The next Codex open of this session repairs it"
     else
         _doctor_ok "Codex vault home: inside the vault, sharing the login and extensions of $shared"
     fi
@@ -20501,20 +20504,23 @@ _codex_vault_home_path() {  # session_dir
 # the shared one, or one planted) removed, whose <children> link to the shared
 # home's <subdir>/<child>, made there when missing. A link that points anywhere
 # else is pointed back; anything else where a link belongs stops the launch.
+# The home is named as a plain name, for the reason _codex_vault_home_prepare
+# gives.
 _codex_vault_link_children() {  # home, shared_home, subdir, children...
-    local home="$1" shared="$2" sub="$3" name target
+    local home="$1" shared="$2" sub="$3" name target shown
     shift 3
+    shown=$(_cs_plain_name "$home" 160)
     if [ -L "$home/$sub" ]; then
         rm -f "$home/$sub" || {
-            _codex_launch_error "Could not remove the link $home/$sub."
+            _codex_launch_error "Could not remove the link $shown/$sub."
             return 1
         }
     elif [ -e "$home/$sub" ] && [ ! -d "$home/$sub" ]; then
-        _codex_launch_error "$home/$sub is not a directory. Move it aside; cs makes it at the next open."
+        _codex_launch_error "$shown/$sub is not a directory. Move it aside; cs makes it at the next open."
         return 1
     fi
     (umask 077 && mkdir -p "$home/$sub") || {
-        _codex_launch_error "Could not make $home/$sub."
+        _codex_launch_error "Could not make $shown/$sub."
         return 1
     }
     for name in "$@"; do
@@ -20526,11 +20532,11 @@ _codex_vault_link_children() {  # home, shared_home, subdir, children...
         if [ -L "$home/$sub/$name" ]; then
             [ "$(readlink "$home/$sub/$name")" = "$target" ] && continue
         elif [ -e "$home/$sub/$name" ]; then
-            _codex_launch_error "$home/$sub/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+            _codex_launch_error "$shown/$sub/$name is not cs's link to $target. Move it aside; cs links it at the next open."
             return 1
         fi
         ln -sfn "$target" "$home/$sub/$name" || {
-            _codex_launch_error "Could not link $home/$sub/$name to $target."
+            _codex_launch_error "Could not link $shown/$sub/$name to $target."
             return 1
         }
     done
@@ -20541,8 +20547,11 @@ _codex_vault_link_children() {  # home, shared_home, subdir, children...
 # moved); a real file or directory where a link belongs stops the launch,
 # named, since it may hold the only copy of something (a login). plugins/ and
 # .tmp are made directories, an earlier open's link to the shared one removed.
+# The home is named as a plain name: .cs/private is a link the agent can point
+# at a directory whose name carries a terminal escape. The names after it are
+# cs's own.
 _codex_vault_home_prepare() {  # session_dir, shared_home, helper
-    local home shared="$2" name target
+    local home shared="$2" name target shown
     case "$shared" in
         /*) ;;
         *) _codex_launch_error "The shared Codex home must be an absolute path, not $shared."; return 1 ;;
@@ -20551,14 +20560,15 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
         _codex_launch_error "$1 is encrypted, but its vault is not mounted; cs makes its Codex home there."
         return 1
     }
+    shown=$(_cs_plain_name "$home" 160)
     # The agent can write .cs/private: a codex-home it planted as a link would
     # have cs chmod and link wherever it points.
     if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
-        _codex_launch_error "$home is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home."
+        _codex_launch_error "$shown is a link or not a directory; cs does not follow a link there. Move it aside; the next open makes the vault Codex home."
         return 1
     fi
     (umask 077 && mkdir -p "$home") && chmod 700 "$home" || {
-        _codex_launch_error "Could not make the vault Codex home $home."
+        _codex_launch_error "Could not make the vault Codex home $shown."
         return 1
     }
     for name in $CS_CODEX_VAULT_LINK_DIRS; do
@@ -20578,15 +20588,15 @@ _codex_vault_home_prepare() {  # session_dir, shared_home, helper
             esac
             if [ -e "$home/$name" ]; then
                 if [ "$name" = auth.json ]; then
-                    _codex_launch_error "$home/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$home/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$home/auth.json\". The next open links the shared login again."
+                    _codex_launch_error "$shown/auth.json is a file, not cs's link to $target, and cs cannot tell who wrote it: Codex after a logout and login inside this session, or anything else that can write to the session. Inspect it (which account, when it was written) before you use it. Only if it is a login you made yourself: mv \"$shown/auth.json\" \"$target\". Otherwise remove it or move it aside: rm \"$shown/auth.json\". The next open links the shared login again."
                 else
-                    _codex_launch_error "$home/$name is not cs's link to $target. Move it aside; cs links it at the next open."
+                    _codex_launch_error "$shown/$name is not cs's link to $target. Move it aside; cs links it at the next open."
                 fi
                 return 1
             fi
         fi
         ln -sfn "$target" "$home/$name" || {
-            _codex_launch_error "Could not link $home/$name to $target."
+            _codex_launch_error "Could not link $shown/$name to $target."
             return 1
         }
     done
