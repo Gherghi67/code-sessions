@@ -243,6 +243,7 @@ SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>")
+BACKTICKS = re.compile(r"`+")
 ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
 # Claude Code's own label for messages no model produced.
 CARRIED_MODEL = "<synthetic>"
@@ -279,10 +280,12 @@ class History:
                 for m in self.messages]
 
 
+def cut_note(text, limit):
+    return "\n[cs cut the remaining {:,} characters]".format(len(text) - limit) if limit and len(text) > limit else ""
+
+
 def clipped(text, limit):
-    if limit and len(text) > limit:
-        return text[:limit] + "\n[cs cut the remaining {:,} characters]".format(len(text) - limit)
-    return text
+    return text[:limit] + cut_note(text, limit) if limit and len(text) > limit else text
 
 
 def tool_call(name, body):
@@ -689,6 +692,60 @@ def claude_result_text(content):
     return "\n".join(part for part in parts if part)
 
 
+def fenced(text):
+    # Codex's transcript renders an agent message as markdown: a result's
+    # "# " lines turn into headings, "- " lines into bullets, and "\\" loses
+    # a backslash. A code fence shows its text as written. A fence closes at
+    # a run of backticks as long as it, so it outruns every run inside.
+    longest = max((len(run) for run in BACKTICKS.findall(text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return fence + "\n" + text + "\n" + fence
+
+
+def readable_lines(value):
+    """A tool input as lines a person reads: a string as written, an object a
+    "key: value" line a field and a list a "- item" line an entry, a value
+    that takes several lines indented under its key or dash. Other values,
+    and empty objects and lists, as JSON."""
+    if isinstance(value, str):
+        return (value[:-1] if value.endswith("\n") else value).split("\n")
+    if isinstance(value, dict) and value:
+        heads = [(str(key) + ":", item) for key, item in value.items()]
+    elif isinstance(value, list) and value:
+        heads = [("-", item) for item in value]
+    else:
+        return [json.dumps(value, ensure_ascii=False)]
+    lines = []
+    for head, item in heads:
+        body = readable_lines(item)
+        # A list entry starts on its dash; a field's nested object or
+        # multi-line value starts on the line under its name.
+        if head == "-" or (len(body) == 1 and not (isinstance(item, (dict, list)) and item)):
+            lines.append(head + (" " + body[0] if body[0] else ""))
+            body = body[1:]
+        else:
+            lines.append(head)
+        lines.extend("  " + line if line else "" for line in body)
+    return lines
+
+
+def claude_tool_call(name, value):
+    # Claude's tool input is a JSON object. Written as JSON, a multi-line
+    # command or edit shows as one line of literal \n in Codex's transcript.
+    label = name if isinstance(name, str) and name else "tool"
+    if value is None or value in ({}, "", []):
+        return "[tool call: " + label + "]"
+    return "[tool call: " + label + "]\n" + fenced("\n".join(readable_lines(value)))
+
+
+def claude_tool_result(text, limit, failed=False):
+    head = "[tool error]" if failed else "[tool result]"
+    if not text:
+        return head
+    # The cut note is cs's, so it goes after the fence, outside the result.
+    return head + "\n" + fenced(text[:limit] if limit else text) + cut_note(text, limit)
+
+
 def claude_user_text(text):
     text = CARRIED_NOTE.sub("", SYSTEM_REMINDER.sub("", text).strip())
     if text.startswith(LOCAL_COMMAND_OUTPUT):
@@ -779,15 +836,15 @@ def read_claude(path, limit):
                 if kind == "text" and isinstance(block.get("text"), str):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
-                    history.add("assistant", tool_result(claude_result_text(block.get("content")), limit,
-                                                         block.get("is_error") is True), stamp)
+                    history.add("assistant", claude_tool_result(claude_result_text(block.get("content")), limit,
+                                                                block.get("is_error") is True), stamp)
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
             elif record.get("type") == "assistant":
                 if kind == "text":
                     history.add("assistant", block.get("text"), stamp)
                 elif kind == "tool_use":
-                    history.add("assistant", tool_call(block.get("name"), block.get("input")), stamp)
+                    history.add("assistant", claude_tool_call(block.get("name"), block.get("input")), stamp)
                 # Thinking is signed for the model that wrote it and stays behind.
     return history.export()
 

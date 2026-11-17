@@ -1601,8 +1601,8 @@ class TransplantTests(HelperFixture):
         self.assertIn("Claude's thinking is not included", texts[0])
         self.assertEqual(texts[1], '/color blue\n\nfind the budget')
         self.assertIn('Reading notes.', texts[2])
-        self.assertIn('[tool call: Read]\n{"file_path": "notes.txt"}', texts[2])
-        self.assertIn('[tool result]\nbudget is 42\n[image]', texts[2])
+        self.assertIn('[tool call: Read]\n```\nfile_path: notes.txt\n```', texts[2])
+        self.assertIn('[tool result]\n```\nbudget is 42\n[image]\n```', texts[2])
         self.assertIn('The budget is 42.', texts[2])
         self.assertEqual(texts[3], 'follow-up v2')
         self.assertEqual(texts[4], 'Answer two.')
@@ -1683,9 +1683,55 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         items = self.carried_model_items()
         agent = items[2]['content'][0]['text']
-        self.assertIn('[tool error]\nExit code 2\nmake: *** no rule', agent)
-        self.assertIn('[tool result]\nMakefile.am', agent)
+        self.assertIn('[tool error]\n```\nExit code 2\nmake: *** no rule\n```', agent)
+        self.assertIn('[tool result]\n```\nMakefile.am\n```', agent)
         self.assertEqual(agent.count('[tool result]'), 1)
+
+    def test_claude_tool_calls_and_results_cross_as_written(self):
+        # Codex's transcript renders an agent message as markdown. Tool input
+        # carried as JSON showed a multi-line command as one line of literal
+        # \n, and a result's "# " and "- " lines and "\\" escapes came out
+        # styled. Each input field is a line, and input and result sit in a
+        # fence longer than any backtick run inside.
+        path = self.root / (CLAUDE_ID + ".jsonl")
+        path.write_text("\n".join([
+            claude_record("user", "tidy notes", "u1", None),
+            claude_record("assistant", [{"type": "text", "text": "Looking."}, {
+                "type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": "cat notes.md\nprintf 'a\\\\tb'", "description": "Read notes"}}], "x1", "u1"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t1",
+                                    "content": "# Notes\n- one\nuse ```sh\\\\ here\n"}], "x2", "x1"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t2", "name": "Edit", "input": {
+                "file_path": "app.py", "old_string": "def f():\n\n    return 1\n", "new_string": "",
+                "replace_all": False}}], "x3", "x2"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t2", "content": ""}], "x4", "x3"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t3", "name": "TodoWrite", "input": {
+                "todos": [{"content": "Fix\nit", "status": "done"}, "plain", ""], "meta": {}, "n": 2}}],
+                "x5", "x4"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t3", "is_error": True,
+                                    "content": "y" * 45}], "x6", "x5"),
+            claude_record("assistant", [{"type": "tool_use", "id": "t4", "name": "EnterPlanMode", "input": {}}],
+                          "x7", "x6"),
+            claude_record("user", [{"type": "tool_result", "tool_use_id": "t4", "content": "planning"}], "x8", "x7"),
+            claude_record("assistant", [{"type": "text", "text": "Done."}], "x9", "x8"),
+        ]) + "\n")
+        result = self.run_helper('', '--history-from-claude', str(path), '--clip', '40')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.carried_model_items()[2]['content'][0]['text']
+        self.assertEqual(agent, "\n\n".join([
+            "Looking.",
+            "[tool call: Bash]\n```\ncommand:\n  cat notes.md\n  printf 'a\\\\tb'\ndescription: Read notes\n```",
+            "[tool result]\n````\n# Notes\n- one\nuse ```sh\\\\ here\n````",
+            "[tool call: Edit]\n```\nfile_path: app.py\nold_string:\n  def f():\n\n      return 1\n"
+            "new_string:\nreplace_all: false\n```",
+            "[tool result]",
+            "[tool call: TodoWrite]\n```\ntodos:\n  - content:\n      Fix\n      it\n    status: done\n"
+            "  - plain\n  -\nmeta: {}\nn: 2\n```",
+            "[tool error]\n```\n" + "y" * 40 + "\n```\n[cs cut the remaining 5 characters]",
+            "[tool call: EnterPlanMode]",
+            "[tool result]\n```\nplanning\n```",
+            "Done.",
+        ]))
 
     def test_claude_compaction_starts_at_its_summary(self):
         path = self.root / (CLAUDE_ID + ".jsonl")

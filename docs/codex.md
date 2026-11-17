@@ -105,6 +105,10 @@ fresh. The carried thread is a new one: cs starts it through app-server, adds
 the session context, then a developer note and Claude's messages as user and
 assistant items, with every tool call and each tool result's first 4,000
 characters (a failed call's result marked `[tool error]`), and binds it.
+A tool call's input crosses as a `key: value` line per field, a multi-line
+value (a heredoc, an edit's text) indented under its name, and each call's
+input and result sit in a code fence, so Codex's transcript shows them as
+written instead of as JSON with literal `\n` or as markdown.
 The helper records the carried model messages and transcript display events
 inside matching turn boundaries after the new thread's writer exits, so native
 revert removes both views of an exchange. It then resumes the thread in a
