@@ -1733,6 +1733,14 @@ class TransplantTests(HelperFixture):
             "Done.",
         ]))
 
+    def test_a_claude_tool_result_keeps_its_first_line_indent(self):
+        # In a fence a Read result's gutter shows as written, so line 1 keeps
+        # its spaces; only blank lines around the result and a reminder go.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        text = helper['claude_result_text']([{"type": "text", "text": " \n\n     1\tfirst\n     2\tsecond  \n"
+                                                                       "<system-reminder>R</system-reminder>\n"}])
+        self.assertEqual(text, "     1\tfirst\n     2\tsecond")
+
     def test_a_block_claude_left_open_is_closed_before_a_tool_part(self):
         # An agent message is one markdown document. Reply text that ends
         # inside a fence (a markdown file holding a code block, shown in

@@ -240,6 +240,7 @@ CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell 
 CODEX_CODE_MODE = frozenset(("exec", "wait"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
+LEADING_BLANK_LINES = re.compile(r"\A\s*\n")
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 LOCAL_COMMAND_OUTPUT = ("<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>")
@@ -730,7 +731,8 @@ def claude_result_text(content):
     parts = []
     for block in claude_blocks(content):
         if block.get("type") == "text" and isinstance(block.get("text"), str):
-            parts.append(SYSTEM_REMINDER.sub("", block["text"]).strip())
+            # Blank lines go, but not the first line's indent: a fence shows it.
+            parts.append(LEADING_BLANK_LINES.sub("", SYSTEM_REMINDER.sub("", block["text"])).rstrip())
         elif block.get("type") == "image":
             parts.append("[image]")
     return "\n".join(part for part in parts if part)
