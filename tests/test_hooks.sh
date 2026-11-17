@@ -4665,7 +4665,7 @@ run_test test_session_start_timeline_write_fails_quietly
 # the user declined to resume the prior conversation
 # ============================================================================
 
-test_session_start_fresh_rebind_injects_clean_break_notice() {
+test_session_start_fresh_rebind_restores_context_for_the_current_request() {
     session_start_setup
 
     local output context
@@ -4680,8 +4680,12 @@ test_session_start_fresh_rebind_injects_clean_break_notice() {
         session_start_teardown
         return 1
     fi
-    if ! grep -q "clean break" <<< "$context"; then
-        echo "  FAIL: fresh-rebind block should mention the clean break"
+    if ! assert_output_contains "$context" 'Restore saved project context; the current user request starts the task' \
+        || ! assert_output_contains "$context" '1. .cs/summary.md — read in full' \
+        || ! assert_output_contains "$context" '2. .cs/README.md — read in full' \
+        || ! assert_output_contains "$context" '3. .cs/memory/narrative.* — read your own current narrative in full' \
+        || ! assert_output_contains "$context" 'authorize resuming earlier work' \
+        || ! assert_output_not_contains "$context" 'clean break'; then
         session_start_teardown
         return 1
     fi
@@ -4689,7 +4693,7 @@ test_session_start_fresh_rebind_injects_clean_break_notice() {
     session_start_teardown
 }
 
-test_session_start_without_fresh_rebind_omits_clean_break_notice() {
+test_session_start_without_fresh_rebind_omits_fresh_notice() {
     session_start_setup
 
     # No CS_FRESH_REBIND env — context must NOT include the block.
@@ -4707,8 +4711,8 @@ test_session_start_without_fresh_rebind_omits_clean_break_notice() {
     session_start_teardown
 }
 
-run_test test_session_start_fresh_rebind_injects_clean_break_notice
-run_test test_session_start_without_fresh_rebind_omits_clean_break_notice
+run_test test_session_start_fresh_rebind_restores_context_for_the_current_request
+run_test test_session_start_without_fresh_rebind_omits_fresh_notice
 run_test test_session_end_appends_to_timeline
 run_test test_timeline_events_are_valid_jsonl
 run_test test_timeline_subagent_skipped

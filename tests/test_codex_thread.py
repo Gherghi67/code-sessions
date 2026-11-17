@@ -2,6 +2,8 @@
 # ABOUTME: Exercises Codex bootstrap protocol, exact identity, persistence, and cleanup.
 # ABOUTME: Uses an isolated fake server and an optional real Codex no-model smoke test.
 
+import importlib.machinery
+import importlib.util
 import json
 import http.server
 import os
@@ -501,6 +503,25 @@ def codex_message(role, text, kind=None):
     return {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}
 
 
+# Code mode's exec: exec_command's result as a script prints it, and the call
+# and its output, the header part first (shapes from real rollouts, 2026-11).
+SCRIPT_HEADER = {"type": "input_text", "text": "Script completed\nWall time 0.7 seconds\nOutput:\n"}
+
+
+def command_result(output, **extra):
+    return dict({"chunk_id": "ca48b8", "wall_time_seconds": 0.000005834}, **extra,
+                original_token_count=219, output=output)
+
+
+def exec_call(call_id):
+    return {"type": "custom_tool_call", "name": "exec", "call_id": call_id, "input": "run()"}
+
+
+def exec_output(call_id, *printed):
+    return {"type": "custom_tool_call_output", "call_id": call_id,
+            "output": [SCRIPT_HEADER] + [{"type": "input_text", "text": text} for text in printed]}
+
+
 def claude_record(kind, content, uid, parent, **extra):
     record = {"type": kind, "uuid": uid, "parentUuid": parent, "sessionId": CLAUDE_ID,
               "timestamp": "2026-11-07T10:00:00.000Z",
@@ -841,6 +862,472 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([r["type"] for r in records], ["user", "assistant"])
         self.assertTrue(self.text_of(records[0]).startswith("[cs carried"))
+
+    def test_a_command_run_from_code_mode_crosses_as_its_output(self):
+        # Code mode prints what a script passes to text(), as JSON when it is
+        # not a string, each call its own part, so a command's result arrives
+        # as exec_command's object, its output one escaped string (shapes
+        # from real rollouts, 2026-11).
+        def command(output, **extra):
+            return dict({"chunk_id": "ca48b8", "wall_time_seconds": 0.000005834}, **extra,
+                        original_token_count=219, output=output)
+        header = {"type": "input_text", "text": "Script completed\nWall time 0.7 seconds\nOutput:\n"}
+        printed = [
+            command("A  one.md\nA  two.md\n", exit_code=0),
+            command("boom", exit_code=2),
+            command("Warning: added host\r\n", session_id=38455),
+            {"status": "fulfilled", "value": command("## cs/bots\nA  three.md", exit_code=0)},
+            [{"i": 0, "status": "fulfilled", "value": command("", exit_code=0)},
+             {"i": 1, "status": "rejected", "reason": "no such file"}],
+            command('{"task": "a23", "title": "Wrap WaW bot session"}', exit_code=0),
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, value in enumerate(printed):
+            lines.append(rollout_line("response_item", {"type": "custom_tool_call", "name": "exec",
+                                                        "call_id": "c%d" % n, "input": "run(%d)" % n}))
+            lines.append(rollout_line("response_item", {
+                "type": "custom_tool_call_output", "call_id": "c%d" % n,
+                "output": [header, {"type": "input_text", "text": json.dumps(value, separators=(",", ":"))}]}))
+        # The script's own JSON, holding no command result, crosses as written.
+        own = '{"task":"a23","done":false}'
+        lines.append(rollout_line("response_item", {"type": "custom_tool_call", "name": "exec",
+                                                    "call_id": "c9", "input": "own()"}))
+        lines.append(rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "c9",
+                                                    "output": [header, {"type": "input_text", "text": own}]}))
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        # Each tool result whole, so nothing can follow an output unseen.
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = "Script completed\nWall time 0.7 seconds\nOutput:\n\n"
+        self.assertEqual(crossed, [
+            top + "A  one.md\nA  two.md\n",
+            top + "[exit code 2]\nboom",
+            top + "[still running in Codex, session 38455]\nWarning: added host\r\n",
+            top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                  "[output 1, exit code 0]\n## cs/bots\nA  three.md\n",
+            top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
+                  ' {"i":1,"status":"rejected","reason":"no such file"}]\n'
+                  "[output 1, exit code 0, no output]\n",
+            top + '{"task": "a23", "title": "Wrap WaW bot session"}',
+            top + own,
+        ])
+        for absent in ("chunk_id", "ca48b8", "wall_time_seconds", "original_token_count", "\\n"):
+            self.assertNotIn(absent, "".join(crossed))
+
+    def test_a_lone_surrogate_in_a_command_result_never_stops_the_export(self):
+        # JSON.stringify writes a string cut through an emoji with a \ud83d
+        # escape; decoded, that half is a character UTF-8 cannot hold.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", json.dumps(command_result("ok \ud83d", exit_code=0)))),
+            rollout_line("response_item", exec_call("c1")),
+            rollout_line("response_item", exec_output("c1", json.dumps({
+                "status": "fulfilled", "note": "x\udc00", "value": command_result("fine", exit_code=0)}))),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("ok \ufffd", agent)
+        self.assertIn("x\ufffd", agent)
+        self.assertFalse([ch for ch in agent if "\ud800" <= ch <= "\udfff"])
+
+    def test_a_lone_surrogate_anywhere_in_a_rollout_never_stops_the_export(self):
+        # Codex writes no unpaired escape, but a rollout line holding one
+        # decodes to a lone surrogate at the first json.loads.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "hi \ud83d")),
+            rollout_line("response_item", codex_message("assistant", "Hello.")),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("hi \ufffd", self.text_of(records[0]))
+        written = (self.root / "carried.jsonl").read_text(encoding="utf-8")
+        self.assertFalse([ch for ch in written + json.dumps(records, ensure_ascii=False)
+                          if "\ud800" <= ch <= "\udfff"])
+
+    def test_only_a_well_typed_command_result_is_converted(self):
+        # exec_command's result has a numeric wall time and an integer exit
+        # code or session; other objects with a chunk_id and an output, a
+        # retrieval tool's passages say, cross as written.
+        printed = [
+            [{"chunk_id": "doc-12#3", "output": "retrieved passage"}, {"chunk_id": "doc-13#1", "output": "another"}],
+            command_result("x", exit_code=True),
+            command_result("x", exit_code="0"),
+            command_result("x", session_id="7"),
+            {"chunk_id": "c", "wall_time_seconds": "0.1", "exit_code": 0, "output": "x"},
+        ]
+        texts = [json.dumps(value, separators=(",", ":")) for value in printed]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, text in enumerate(texts):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, text))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        for text in texts:
+            self.assertIn(text, agent)
+        self.assertNotIn("[exit code True]", agent)
+        self.assertNotIn("retrieved passage\n- another", agent)
+
+    def test_a_null_exit_code_or_session_counts_as_absent(self):
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", json.dumps(
+                command_result("Warning: still going\n", exit_code=None, session_id=38456)))),
+            rollout_line("response_item", exec_call("c1")),
+            rollout_line("response_item", exec_output("c1", json.dumps(command_result("done", session_id=None)))),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("[still running in Codex, session 38456]\nWarning: still going", agent)
+        self.assertIn("Output:\n\ndone", agent)
+        self.assertNotIn("session None", agent)
+
+    def test_several_results_cross_as_a_skeleton_and_one_block_each(self):
+        # Several command results in one tool result, or one inside a
+        # structure, cross as the structure in compact JSON with a placeholder
+        # for each result, then each output under its own head, unindented: a
+        # failure's mark never sits on the next output, and an output that
+        # reads like key: value lines still reads as output.
+        printed = [
+            [json.dumps(command_result("alpha\n", exit_code=0)), json.dumps(command_result("", exit_code=1)),
+             json.dumps(command_result("beta\n", exit_code=0))],
+            [json.dumps([{"i": 0, "status": "fulfilled",
+                          "value": command_result("A  one.md\nA  two.md\n", exit_code=0)},
+                         {"i": 1, "status": "fulfilled", "value": command_result("fatal: x", exit_code=1)},
+                         {"i": 2, "status": "rejected", "reason": "no such file"}], separators=(",", ":"))],
+            [json.dumps({"status": "fulfilled", "value": command_result("## cs/bots\nA  three.md\n", exit_code=0)},
+                        separators=(",", ":"))],
+            [json.dumps({"status": "fulfilled",
+                         "value": command_result("status: rejected\nreason: boom", exit_code=0)})],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, texts in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, *texts))]
+        self.write_rollout(lines)
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed, [
+            top + "[output 1, exit code 0]\nalpha\n\n[output 2, exit code 1, no output]\n\n"
+                  "[output 3, exit code 0]\nbeta\n",
+            top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
+                  ' {"i":1,"status":"fulfilled","value":<output 2, exit code 1>},\n'
+                  ' {"i":2,"status":"rejected","reason":"no such file"}]\n'
+                  "[output 1, exit code 0]\nA  one.md\nA  two.md\n\n[output 2, exit code 1]\nfatal: x\n",
+            top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                  "[output 1, exit code 0]\n## cs/bots\nA  three.md\n",
+            top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
+                  "[output 1, exit code 0]\nstatus: rejected\nreason: boom\n",
+        ])
+        self.assertNotRegex(agent, r"(?m)^[ \t]+$")
+
+    def test_command_results_after_other_text_in_a_part_convert(self):
+        # Codex puts its truncation warning in the part that holds the
+        # results, which follow it one a line, and a script can print text
+        # after a result in the same part: each result still converts, and
+        # the text around it stays as written. The longest outputs are the
+        # ones Codex truncates, so they must not cross as escaped JSON.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        warning = "Warning: truncated output (original token count: 12345)\nTotal output lines: 300\n\n"
+        long_warning = "Warning: truncated output (original token count: 99999)\nTotal output lines: 900\n\n"
+        printed = [
+            warning + compact(command_result("first", exit_code=0)) + "\n"
+            + compact(command_result("boom", exit_code=2)) + "\n",
+            compact(command_result("x", exit_code=0)) + "\ndone",
+            long_warning + compact(command_result("L" * 6000, exit_code=0)),
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, text in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, text))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed[:2], [
+            top + warning + "[output 1, exit code 0]\nfirst\n\n[output 2, exit code 2]\nboom\n\n",
+            top + "[output 1, exit code 0]\nx\n\ndone",
+        ])
+        self.assertTrue(crossed[2].startswith(top + long_warning + "L" * 100), crossed[2][:300])
+        self.assertNotIn("chunk_id", agent)
+
+    def test_a_result_with_text_printed_after_it_gets_its_head(self):
+        # Without its head a result's output, or a failure's bare mark, would
+        # run on into what the script printed next.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        printed = [
+            [compact(command_result("", exit_code=1)), "done"],
+            [compact(command_result("boom", exit_code=0)), "all checks passed"],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, texts in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, *texts))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed, [
+            top + "[output 1, exit code 1, no output]\n\ndone",
+            top + "[output 1, exit code 0]\nboom\n\nall checks passed",
+        ])
+
+    def test_a_long_result_lists_every_status_before_the_cut(self):
+        # Printed by separate text() calls, a long first output would push
+        # the second result's head, and its failure, past the cut.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", compact(command_result("y" * 5000, exit_code=0)),
+                                                      compact(command_result("fatal", exit_code=1)))),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertTrue(crossed.startswith(
+            SCRIPT_HEADER["text"] + "\n[results: output 1, exit code 0; output 2, exit code 1]\n\n"
+            "[output 1, exit code 0]\nyyy"), crossed[:300])
+        self.assertIn("exit code 1", crossed[:4000])
+
+    def test_a_script_s_own_keys_stay_beside_its_command_result(self):
+        # A script that spreads a result into its own object ({...r, label})
+        # keeps its keys: they stay in the skeleton beside the placeholder,
+        # and the result still converts.
+        printed = [
+            dict(command_result("x", exit_code=3), label="lint"),
+            [command_result("ok\n", exit_code=0), dict(command_result("bad", exit_code=1), gate="lint")],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, value in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, json.dumps(value, separators=(",", ":"))))]
+        self.write_rollout(lines)
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(crossed, [
+            top + '{"label":"lint","output":<output 1, exit code 3>}\n[output 1, exit code 3]\nx\n',
+            top + '[<output 1, exit code 0>,\n {"gate":"lint","output":<output 2, exit code 1>}]\n'
+                  "[output 1, exit code 0]\nok\n\n[output 2, exit code 1]\nbad\n",
+        ])
+
+    def test_real_code_mode_result_shapes_cross_whole(self):
+        # More shapes from real rollouts (2026-11): a result part that is not
+        # the last, and an empty one still running; failed and running
+        # results inside a structure; a result with both an exit code and a
+        # session, which ended; and an output longer than the cut, which
+        # counts the converted text, not the escaped JSON.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        long_output = "".join("line %04d\n" % n for n in range(500))
+        printed = [
+            [compact(command_result("one\n", exit_code=0)), compact(command_result("", session_id=7)),
+             compact(command_result("two", exit_code=0))],
+            [compact([{"status": "fulfilled", "value": command_result("bad", exit_code=2)},
+                      {"status": "fulfilled", "value": command_result("", session_id=9)}])],
+            [compact(command_result("done\n", exit_code=0, session_id=5))],
+            [compact(command_result(long_output, exit_code=0))],
+        ]
+        lines = [rollout_line("response_item", codex_message("user", "run them"))]
+        for n, texts in enumerate(printed):
+            lines += [rollout_line("response_item", exec_call("c%d" % n)),
+                      rollout_line("response_item", exec_output("c%d" % n, *texts))]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        top = SCRIPT_HEADER["text"] + "\n"
+        self.assertEqual(len(long_output), 5000)
+        self.assertEqual(crossed, [
+            top + "[output 1, exit code 0]\none\n\n[output 2, still running in Codex, session 7, no output]\n\n"
+                  "[output 3, exit code 0]\ntwo\n",
+            top + '[{"status":"fulfilled","value":<output 1, exit code 2>},\n'
+                  ' {"status":"fulfilled","value":<output 2, still running in Codex, session 9>}]\n'
+                  "[output 1, exit code 2]\nbad\n\n[output 2, still running in Codex, session 9, no output]\n",
+            top + "done\n",
+            # The default cut, 4,000 of the 5,048 converted characters: the
+            # 48 of the header, then the output's first 3,952.
+            top + long_output[:3952] + "\n[cs cut the remaining 1,048 characters]",
+        ])
+
+    def test_deep_nesting_costs_no_more_than_its_size(self):
+        # Rendering a structure once re-split and re-indented everything
+        # beneath each level; its skeleton and blocks now grow with the part.
+        value = command_result("x\n" * 200, exit_code=0)
+        for _ in range(300):
+            value = {"a": value}
+        printed = json.dumps(value, separators=(",", ":"))
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run it")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", printed)),
+        ])
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertLess(len(crossed), 3 * len(printed))
+        self.assertIn("<output 1, exit code 0>", crossed)
+        self.assertIn("[output 1, exit code 0]\n", crossed)
+
+    def test_a_part_that_never_closes_is_scanned_in_linear_time(self):
+        # A decode starts at each line that opens a bracket, and a failed one
+        # reads on to where the value broke, so a value that never closes
+        # would be read again from every later line. Python 3.9 stops a deep
+        # value with RecursionError, 3.12 and later read it to the end. What
+        # every failed decode was handed, to the end of the part or of its
+        # line, adds up to a few times the part.
+        loader = importlib.machinery.SourceFileLoader("cs_codex_thread_under_test", str(HELPER))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        handed = []
+
+        class Counting(json.JSONDecoder):
+            def raw_decode(self, s, idx=0):
+                try:
+                    return super().raw_decode(s, idx)
+                except (json.JSONDecodeError, RecursionError):
+                    handed.append(len(s) - idx)
+                    raise
+
+        text = "[\n" * 5000 + json.dumps(command_result("ok", exit_code=0), separators=(",", ":")) + "\n"
+        with patch.object(module.json, "JSONDecoder", Counting):
+            module.codex_tool_text(text, [], "\x00s-{}-x\x00")
+        self.assertLessEqual(sum(handed), 5 * len(text))
+
+    def test_a_result_inside_a_value_too_deep_to_walk_still_converts(self):
+        # Brackets printed around a result can make a value that decodes but
+        # is too deep to walk: how deep differs between Pythons, so the walk
+        # is made to overflow on any list. The lines inside are then read on
+        # their own, as after a failed decode, and the result converts.
+        loader = importlib.machinery.SourceFileLoader("cs_codex_thread_under_test", str(HELPER))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        walk = module.lifted
+
+        def overflowing(value, found, sentinel):
+            if isinstance(value, list):
+                raise RecursionError("maximum recursion depth exceeded")
+            return walk(value, found, sentinel)
+
+        result = json.dumps(command_result("fatal: 3 tests failed", exit_code=1), separators=(",", ":"))
+        found = []
+        with patch.object(module, "lifted", overflowing):
+            pieces = module.codex_tool_text("[\n" + result + "\n]\n", found, "\x00s-{}-x\x00")
+        self.assertEqual(found, [("fatal: 3 tests failed", "exit code 1")])
+        self.assertEqual(pieces, ["[\n", (0, 1, None), "\n]\n"])
+
+    def test_a_result_after_a_part_that_never_closes_still_converts(self):
+        # Codex merges what a script printed into one part when it cuts the
+        # output, so a printed file of "[" lines can come before a result:
+        # once failed decodes spend their budget, a value is still read
+        # within its own line, and the result after them converts.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        part = ("Warning: truncated output (original token count: 12000)\n"
+                + compact(command_result("a" * 5000, exit_code=0)) + "\n"
+                + compact(command_result("ok", exit_code=0)) + "\n" + "[\n" * 300
+                + compact(command_result("fatal: 3 tests failed", exit_code=1)) + "\n")
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", part)),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertIn("output 3, exit code 1", crossed[:4000])
+        # Its block lies past the default cut.
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertIn("[output 3, exit code 1]\nfatal: 3 tests failed", crossed)
+        self.assertNotIn('"exit_code":1', crossed)
+
+    def test_a_repeated_key_cannot_swallow_a_result(self):
+        # JSON.stringify never repeats a key, so a value that does is printed
+        # text: read whole, it would keep only the key's last value, and text
+        # around a real result could put a forged one in its place.
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        warning = "Warning: truncated output (original token count: 12000)\n"
+        forged = compact(command_result("all 3 tests passed", exit_code=0))
+        part = (warning + compact(command_result("ok", exit_code=0)) + '\n{"x":\n'
+                + compact(command_result("fatal: 3 tests failed", exit_code=1)) + '\n,"x":' + forged + "}\n")
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", part)),
+        ])
+        result, records = self.export("--clip", "1000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        self.assertEqual(crossed, SCRIPT_HEADER["text"] + "\n" + warning + "[output 1, exit code 0]\nok\n\n"
+                         + '{"x":\n[output 2, exit code 1]\nfatal: 3 tests failed\n\n,"x":' + forged + "}\n")
+
+    def test_only_code_mode_results_are_converted(self):
+        # Only code mode's exec and wait answer with a script's header and
+        # then what it printed; another tool's output crosses as written.
+        top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
+        printed = json.dumps(command_result("ok", exit_code=0))
+        raw = json.dumps(command_result("raw", exit_code=0))
+        # Another tool's output with a script's header, and exec's without one.
+        headed = json.dumps(command_result("ok", exit_code=0), separators=(",", ":"))
+        unheaded = json.dumps(command_result("raw2", exit_code=0), separators=(",", ":"))
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run it")),
+            # A compaction keeps an output whose call came before it.
+            rollout_line("response_item", exec_call("d0")),
+            rollout_line("compacted", {"message": "", "replacement_history": [
+                codex_message("user", "kept prompt"),
+                exec_output("d0", json.dumps(command_result("kept", exit_code=0)))]}),
+            rollout_line("response_item", {"type": "function_call", "name": "js", "call_id": "f1",
+                                           "arguments": "{}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "f1", "output": printed}),
+            rollout_line("response_item", {"type": "function_call", "name": "wait", "call_id": "w1",
+                                           "arguments": "{}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "w1", "output": [
+                SCRIPT_HEADER, {"type": "input_text", "text": json.dumps(command_result("waited", exit_code=0))}]}),
+            rollout_line("response_item", {"type": "function_call", "name": "js", "call_id": "f2",
+                                           "arguments": "{}"}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "f2", "output": [
+                SCRIPT_HEADER, {"type": "input_text", "text": headed}]}),
+            rollout_line("response_item", exec_call("e2")),
+            rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "e2", "output": [
+                {"type": "input_text", "text": "hello"}, {"type": "input_text", "text": unheaded}]}),
+            rollout_line("response_item", exec_call("e1")),
+            rollout_line("response_item", {"type": "custom_tool_call_output", "call_id": "e1",
+                                           "output": [{"type": "input_text", "text": raw}]}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent = self.text_of(records[1])
+        self.assertIn("[tool result]\n" + printed + "\n\n", agent)
+        self.assertIn(top + "waited", agent)
+        self.assertIn("[tool result]\n" + SCRIPT_HEADER["text"] + "\n" + headed + "\n\n", agent)
+        self.assertIn("[tool result]\nhello\n" + unheaded + "\n\n", agent)
+        self.assertTrue(agent.endswith("[tool result]\n" + raw), agent)
+        self.assertTrue(agent.startswith(top + "kept"), agent)
 
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())

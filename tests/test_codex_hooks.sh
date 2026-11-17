@@ -69,6 +69,12 @@ test_clear_with_an_armed_handoff_rebinds_and_loads_it() {
     assert_output_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" \
         "narrative.tester.md" "and at its actor's narrative" || return 1
     assert_output_contains "$(printf '%s' "$out" | jq -r '.systemMessage')" "Rotation loaded from $HANDOFF" || return 1
+    local context
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" '1. .cs/summary.md — read in full' || return 1
+    assert_output_contains "$context" 'handoff FIRST, then read the following files in order' || return 1
+    assert_output_contains "$context" 'A message carrying its own content takes precedence over the handoff' || return 1
+    assert_output_not_contains "$context" 'Fresh Conversation\|read as needed\|clean break' || return 1
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^status: consumed$" || return 1
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^consumed_by: $NEW_THREAD$" || return 1
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^status: unconsumed is quoted here" \
@@ -114,10 +120,41 @@ test_clear_without_a_handoff_rebinds_as_a_clean_break() {
     assert_eq "$NEW_THREAD" "$(cat "$SESSION/.cs/local/codex-thread-id")" || return 1
     assert_output_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" \
         "--- Fresh Conversation ---" || return 1
+    local context
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" '1. .cs/summary.md — read in full' || return 1
+    assert_output_contains "$context" '2. .cs/README.md — read in full' || return 1
+    assert_output_contains "$context" '3. .cs/memory/narrative.tester.md — read your own current narrative in full' || return 1
+    assert_output_contains "$context" 'Skip missing files' || return 1
+    assert_output_contains "$context" "The current user's request is the active task" || return 1
+    assert_output_not_contains "$context" 'read as needed\|Conversation Rotation' || return 1
     printf '%s' "$out" | jq -e 'has("systemMessage") | not' >/dev/null \
         || { echo "  FAIL: nothing to announce without a rotation"; return 1; }
     jq -e 'select(.event == "rotated") | .reason == "rebind" and (has("handoff") | not)' \
         "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: rebind lineage missing"; return 1; }
+}
+
+# Regression fixture for llm-cognition: /wrap saved all twelve splits, and
+# /clear lost the transcript. This checks the rendered instruction contract
+# and the saved evidence it points to, not model compliance with that contract.
+test_clear_points_to_saved_dataset_facts_before_asking_the_user() {
+    mkdir -p "$SESSION/.cs/memory"
+    printf '%s\n' 'All 12 splits: GSM8K, ARC-Challenge, HellaSwag, WinoGrande, LAMBADA, GLUE CoLA, MRPC, QNLI, RTE, SST-2, STS-B, WNLI.' \
+        > "$SESSION/.cs/summary.md"
+    printf '%s\n' 'Task 2 built all 12 loaders. User asked for every dataset link.' \
+        > "$SESSION/.cs/memory/narrative.tester.md"
+    printf '%s\n' 'Teammate notebook must not be preloaded.' > "$SESSION/.cs/memory/narrative.other.md"
+    local out context path
+    out=$(_hook clear) || return 1
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    assert_output_contains "$context" 'local project files before asking the user to repeat project facts' || return 1
+    # Follow the summary path actually emitted to the new conversation.
+    path=$(printf '%s\n' "$context" | sed -n 's/^1\. \([^ ]*\) .*/\1/p')
+    assert_file_contains "$SESSION/$path" 'All 12 splits: GSM8K.*WNLI' || return 1
+    assert_file_contains "$SESSION/.cs/memory/narrative.tester.md" 'User asked for every dataset link' || return 1
+    assert_output_contains "$context" 'and a teammate narrative only' || return 1
+    assert_output_contains "$context" 'from the line the resume digest names for it' || return 1
+    assert_output_not_contains "$context" 'Teammate notebook must not be preloaded'
 }
 
 # A marker naming a spent handoff is stale: the clear is a clean break and the
@@ -658,6 +695,7 @@ run_test test_mail_git_tracks_after_launch_is_not_shown
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
 run_test test_a_refused_flip_keeps_the_marker_and_says_so
 run_test test_clear_without_a_handoff_rebinds_as_a_clean_break
+run_test test_clear_points_to_saved_dataset_facts_before_asking_the_user
 run_test test_a_stale_marker_is_dropped
 run_test test_resume_changes_nothing_but_the_log
 run_test test_a_run_without_the_lease_rebinds_nothing

@@ -1,16 +1,11 @@
 # ABOUTME: Codex hook entry points the installer registers in $CODEX_HOME/hooks.json (`cs -codex-hook <verb>`):
 # ABOUTME: rebind after /clear with an armed rotation, recovery, and the automatic /clear after a rotation.
 
-# A /clear with nothing armed: a clean break, said so the conversation does not
-# act on history it no longer has.
+# A /clear with nothing armed starts a new task while restoring project facts.
 _fresh_notice_codex() {  # actor_slug
     printf '%s\n' \
         '--- Fresh Conversation ---' \
-        'The user explicitly started a fresh conversation in this cs session with /clear; the prior conversation is not loaded. Treat this as a clean break, not a continuation.' \
-        '' \
-        'For prior context, read as needed:' \
-        "- .cs/memory/narrative.$1.md — your findings and decisions from earlier work (append only here)" \
-        '- .cs/README.md — session objective'
+        'The user explicitly started a fresh conversation in this cs session with /clear; the prior transcript is not loaded. Restore saved project context; the current user request starts the task.'
 }
 
 cmd_codex_hook() {  # event
@@ -98,6 +93,10 @@ $(_handoff_refusal_warning "$shown_dir/$handoff" "$refusal" "$shown_marker")"
     else
         context=$(_fresh_notice_codex "$actor")
     fi
+    context="$context
+
+$(cs_emit_context_restoration .cs/summary.md .cs/README.md \
+    ".cs/memory/narrative.$actor.md" ".cs/narrative-archive/$actor")"
     context="$context$(cs_memory_index "$session_dir")"
     jq -n --arg context "$context" --arg sysmsg "$sysmsg" '
         {hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $context}}
