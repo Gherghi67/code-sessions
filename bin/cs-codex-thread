@@ -216,8 +216,9 @@ def exact_id(result, expected=None):
 # record is checked as it is read and anything unknown is skipped, never fatal.
 # What crosses: the user's and the agent's text and every tool call, each tool
 # result (and a Codex sub-agent's final answer) cut to its first CLIP
-# characters. What stays: Codex's encrypted reasoning and sub-agent messages,
-# Claude's thinking, and the context each engine injects for itself.
+# characters. A command a Codex code-mode script ran crosses as its output,
+# before the cut. What stays: Codex's encrypted reasoning and sub-agent
+# messages, Claude's thinking, and the context each engine injects for itself.
 DEFAULT_CLIP = 4000
 # Seconds the zstd command gets to unpack a compressed rollout.
 ZSTD_TIMEOUT = 60
@@ -231,6 +232,13 @@ CODEX_CONTEXT = frozenset((
     "guardian_tool_descriptions", "external_codex_apps_open_page", "node_repl_review_evidence"))
 TAG_WRAPPED = re.compile(r"\A\s*<([A-Za-z_][\w-]*)>.*</\1>\s*\Z", re.S)
 CODEX_FINAL_ANSWER = "Message Type: FINAL_ANSWER\n"
+# The keys of exec_command's result, as code mode prints it.
+CODEX_COMMAND_RESULT = frozenset((
+    "chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count", "output"))
+# Code mode's tools, whose output starts with how the script ended, then what it printed.
+CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell ID [^\n]*)\nWall time [^\n]*\nOutput:\n\Z")
+CODEX_CODE_MODE = frozenset(("exec", "wait"))
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -250,6 +258,9 @@ class History:
 
     def __init__(self):
         self.messages = []
+        # Tool names by call id. A reset keeps them: a compaction replays
+        # outputs whose calls came before it.
+        self.calls = {}
 
     def add(self, role, text, timestamp=None):
         if not isinstance(text, str) or not text.strip():
@@ -338,13 +349,192 @@ def codex_injected(text):
     return stripped.startswith(CODEX_AGENTS) or (wrapped is not None and wrapped.group(1) in CODEX_CONTEXT)
 
 
-def codex_output(output):
+def json_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def command_status(value):
+    """The status of exec_command's result when value is one: its exit code,
+    else its session while it still runs, else ""; None for any other value."""
+    # Typed as every real result is: a numeric wall time, an integer exit code and session.
+    # Other keys, a script's own ({...r, label}) or ones Codex adds later, do not matter.
+    if not (isinstance(value, dict) and "chunk_id" in value and isinstance(value.get("output"), str)
+            and (json_int(value.get("wall_time_seconds")) or isinstance(value.get("wall_time_seconds"), float))
+            and all(value.get(key) is None or json_int(value[key]) for key in ("exit_code", "session_id"))):
+        return None
+    code, session = value.get("exit_code"), value.get("session_id")
+    if code is not None:
+        return "exit code {}".format(code)
+    if session is not None:
+        return "still running in Codex, session {}".format(session)
+    return ""
+
+
+def lifted(value, found, sentinel):
+    """value with each command result in it, depth first, appended to found as
+    its output and status and replaced by sentinel holding its number there.
+    A result with keys exec_command's has not becomes a dict of those keys,
+    then "output" holding the sentinel."""
+    status = command_status(value)
+    if status is not None:
+        extra = {key: lifted(item, found, sentinel) for key, item in value.items()
+                 if key not in CODEX_COMMAND_RESULT}
+        found.append((value["output"], status))
+        if not extra:
+            return sentinel.format(len(found))
+        extra["output"] = sentinel.format(len(found))
+        return extra
+    if isinstance(value, dict):
+        return {key: lifted(item, found, sentinel) for key, item in value.items()}
+    if isinstance(value, list):
+        return [lifted(item, found, sentinel) for item in value]
+    return value
+
+
+def compact_json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def unique_keys(pairs):
+    # JSON.stringify never repeats a key, so an object that does is printed
+    # text. Read whole it keeps only the key's last value: text around a real
+    # result could put a forged one in its place. It fails to decode instead.
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("a repeated key")
+    return value
+
+
+def codex_tool_text(text, found, sentinel):
+    # Code mode prints what a script passes to text(), as JSON when it is not
+    # a string, each call its own part, so a command run from a script arrives
+    # as exec_command's result, its output one escaped string. A part can
+    # hold other text too: Codex puts its truncation warning before results
+    # printed one a line. A JSON value starting the part or a line in it, and
+    # holding results, sends them to found and comes back as (start, end,
+    # skeleton): skeleton is the structure around them as compact JSON with
+    # sentinel in place of each, or None when the value is one result. The
+    # part comes back as those and the text between them, kept as written;
+    # with no such value it gives None. JSON holding no result leaves found as
+    # it was and stays in the text; a value too deep to walk does too, but the
+    # lines inside it are read on their own.
+    decoder, pieces, done = json.JSONDecoder(object_pairs_hook=unique_keys), [], 0
+    # A value that never closes is read again from each later line: failed decodes share a budget.
+    # Once it is spent, a value is decoded within its own line only, where a failure costs that line.
+    budget = 2 * len(text)
+    at = len(text) - len(text.lstrip())
+    while at < len(text):
+        if text[at] in "{[":
+            start = len(found)
+            bounded = budget < 0
+            try:
+                if bounded:
+                    line_end = text.find("\n", at)
+                    value, end = decoder.raw_decode(text[at:line_end if line_end >= 0 else len(text)])
+                    end += at
+                else:
+                    value, end = decoder.raw_decode(text, at)
+            except (ValueError, RecursionError) as exc:
+                end = None
+                if not bounded:
+                    budget -= (exc.pos if isinstance(exc, json.JSONDecodeError) else len(text)) - at
+            if end is not None:
+                try:
+                    value = lifted(value, found, sentinel)
+                    if len(found) > start:
+                        if isinstance(value, str):
+                            skeleton = None
+                        elif isinstance(value, list):
+                            # Promise.allSettled's array, say: an entry a line.
+                            skeleton = "[" + ",\n ".join(compact_json(item) for item in value) + "]"
+                        else:
+                            skeleton = compact_json(value)
+                        pieces += [text[done:at], (start, len(found), skeleton)]
+                        done = end
+                    # Nothing inside a value is looked at again.
+                    at = end
+                except (ValueError, RecursionError):
+                    # Too deep to walk: its lines are read on their own, as
+                    # after a failed decode, so a result inside still converts.
+                    del found[start:]
+                    if not bounded:
+                        budget -= end - at
+        newline = text.find("\n", at)
+        if newline < 0:
+            break
+        at = newline + 1
+    if not pieces:
+        return None
+    return pieces + [text[done:]]
+
+
+def output_block(number, output, status):
+    body = output[:-1] if output.endswith("\n") else output
+    head = "[output {}".format(number) + (", " + status if status else "") + ("" if body else ", no output") + "]"
+    return head + ("\n" + body if body else "") + "\n"
+
+
+def codex_script_output(texts):
+    """The parts a code-mode script printed, each command result in them
+    carried as its output. One result printed on its own, with nothing printed
+    after it, crosses as just its output, marked unless it exited 0.
+    Otherwise each printed value holding results crosses as its structure's
+    skeleton, each result in it a placeholder numbered across the tool
+    result, then each output as its own block. Text around those values
+    crosses as written. Each result's status comes back too, in number
+    order."""
+    sentinel = "\x00cs-output-{}-" + uuid.uuid4().hex + "\x00"
+    found = []
+    parts = [(text, codex_tool_text(text, found, sentinel)) for text in texts]
+    single = False
+    if len(found) == 1:
+        # Text after a bare output, or a bare mark, would read as the command's.
+        holding = next(n for n, (_, pieces) in enumerate(parts) if pieces is not None)
+        single = not (parts[holding][1][-1] + "".join(text for text, _ in parts[holding + 1:])).strip()
+    head, tail = json.dumps(sentinel, ensure_ascii=False).split("{}")
+    placed = re.compile(re.escape(head) + r"(\d+)" + re.escape(tail))
+
+    def placeholder(match):
+        number = int(match.group(1))
+        status = found[number - 1][1]
+        return "<output {}".format(number) + (", " + status if status else "") + ">"
+
+    def crossed(start, end, skeleton):
+        if single and skeleton is None:
+            output, status = found[0]
+            if status in ("", "exit code 0"):
+                result = output
+            else:
+                result = "[" + status + "]" + ("\n" + output if output else "")
+        else:
+            blocks = "\n".join(output_block(number + 1, *found[number]) for number in range(start, end))
+            result = blocks if skeleton is None else placed.sub(placeholder, skeleton) + "\n" + blocks
+        return result
+
+    return [text if pieces is None else "".join(piece if isinstance(piece, str) else crossed(*piece)
+                                                for piece in pieces)
+            for text, pieces in parts], [status for _, status in found]
+
+
+def codex_output(output, code_mode, limit):
     if isinstance(output, str):
         return output
     if isinstance(output, list):
-        return "\n".join(codex_texts(output))
+        texts = codex_texts(output)
+        if code_mode and texts and CODEX_SCRIPT_HEADER.match(texts[0]):
+            # A script printing a command's stdout that is itself a result-shaped object is still
+            # converted: nothing tells it apart from text(result).
+            printed, statuses = codex_script_output(texts[1:])
+            text = "\n".join(texts[:1] + printed)
+            if len(statuses) > 1 and limit and len(text) > limit:
+                # The cut could hide a later result's head, and its failure: every status comes first.
+                index = "[results: " + "; ".join("output {}".format(number) + (", " + status if status else "")
+                                                 for number, status in enumerate(statuses, 1)) + "]\n"
+                text = "\n".join(texts[:1] + [index] + printed)
+            return text
+        return "\n".join(texts)
     if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
-        return codex_output(output["content"])
+        return codex_output(output["content"], code_mode, limit)
     return "" if output is None else json.dumps(output, ensure_ascii=False)
 
 
@@ -352,6 +542,9 @@ def codex_item(history, item, timestamp, limit):
     if not isinstance(item, dict):
         return
     kind = item.get("type")
+    if kind in ("function_call", "custom_tool_call") and isinstance(item.get("call_id"), str) \
+            and isinstance(item.get("name"), str):
+        history.calls[item["call_id"]] = item["name"]
     if kind == "message":
         texts = codex_texts(item.get("content"))
         if item.get("role") == "user":
@@ -366,7 +559,9 @@ def codex_item(history, item, timestamp, limit):
         history.add("assistant", tool_call(item.get("name"), item.get("input")), timestamp)
     elif kind in ("function_call_output", "custom_tool_call_output"):
         # Codex records no failure flag: a failed call's output says so itself.
-        history.add("assistant", tool_result(codex_output(item.get("output")), limit), timestamp)
+        call_id = item.get("call_id")
+        code_mode = isinstance(call_id, str) and history.calls.get(call_id) in CODEX_CODE_MODE
+        history.add("assistant", tool_result(codex_output(item.get("output"), code_mode, limit), limit), timestamp)
     elif kind == "local_shell_call":
         action = item.get("action")
         command = action.get("command") if isinstance(action, dict) else None
@@ -633,9 +828,11 @@ def export_claude(args):
     if messages:
         cwd = str(Path(args.cwd).resolve(strict=True))
         note = carried_note("codex", args.thread_id, args.clip)
-        write_private(args.out, claude_transcript(
+        # An unpaired escape, in a rollout line or in a command result decoded again, is a lone
+        # surrogate once decoded; the transcript is strict UTF-8.
+        write_private(args.out, LONE_SURROGATE.sub("\ufffd", claude_transcript(
             messages, args.session_id, cwd, args.claude_version or DEFAULT_CLAUDE_VERSION,
-            args.git_branch or "", note))
+            args.git_branch or "", note)))
     return history_stats(messages)
 
 
