@@ -1483,11 +1483,40 @@ class VaultHomeTests(HelperFixture):
         requests = [r['request'] for r in self.requests()]
         self.assertEqual([r['method'] for r in requests], ['initialize', 'initialized', 'config/read', 'hooks/list'])
         self.assertEqual(requests[3]['params'], {'cwds': [str(self.cwd.resolve())]})
-        # A hook the vault cannot list at all is missing too.
+        # A trusted hook the vault does not list, beside hooks of the same
+        # source it does list, is a stale entry: no home has that hook.
         hooks['data'][0]['hooks'] = hooks['data'][0]['hooks'][1:]
         self.assertEqual(json.loads(self.vault_check(config, hooks).stdout)['untrusted'], [])
+        # So is every trust of a source that defines no hooks at all.
+        (self.shared / 'hooks.json').write_text('{"hooks": {"PreToolUse": []}}\n')
+        self.assertEqual(json.loads(self.vault_check(config, {'data': []}).stdout)['untrusted'], [])
         config['config']['permissions'] = {'cs-vault-home': {'extends': ':workspace'}}
         self.assertTrue(json.loads(self.vault_check(config, hooks).stdout)['profile_defined'])
+
+    def test_vault_check_names_trusted_hooks_the_vault_lists_none_of(self):
+        # The shared home defines and trusts a guard, but the vault lists no
+        # hook of that source at all (Codex changed its listing or its key
+        # spelling): the guard would silently stop running, so it is untrusted.
+        shared, home = str(self.shared), str(self.home)
+        (self.shared / 'hooks.json').write_text(json.dumps({'hooks': {'PreToolUse': [
+            {'hooks': [{'type': 'command', 'command': 'aws-readonly-guard'}]}]}}))
+        key = shared + '/hooks.json:pre_tool_use:0:0'
+        (self.shared / 'config.toml').write_text('[hooks.state."%s"]\ntrusted_hash = "sha256:guard"\n' % key)
+        config = {'config': {}, 'origins': {}}
+        self.assertEqual(json.loads(self.vault_check(config, {'data': []}).stdout)['untrusted'], [key])
+        # Listed under the shared home's spelling, not the vault home's.
+        listed = {'data': [{'cwd': str(self.cwd), 'hooks': [
+            {'key': key, 'command': 'aws-readonly-guard', 'currentHash': 'sha256:guard', 'trustStatus': 'trusted'}]}]}
+        self.assertEqual(json.loads(self.vault_check(config, listed).stdout)['untrusted'], [key])
+        # Listed under the vault home's spelling, it is checked as before.
+        listed['data'][0]['hooks'][0]['key'] = home + '/hooks.json:pre_tool_use:0:0'
+        self.assertEqual(json.loads(self.vault_check(config, listed).stdout)['untrusted'], [])
+        # A hook config.toml defines and trusts counts the same way.
+        key = shared + '/config.toml:stop:0:0'
+        (self.shared / 'config.toml').write_text(
+            '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "guard"\n\n'
+            '[hooks.state."%s"]\ntrusted_hash = "sha256:stop"\n' % key)
+        self.assertEqual(json.loads(self.vault_check(config, {'data': []}).stdout)['untrusted'], [key])
 
     def test_vault_check_names_writable_roots_inside_the_vault_home(self):
         # cs's profile makes the vault home read-only, and a writable root at or

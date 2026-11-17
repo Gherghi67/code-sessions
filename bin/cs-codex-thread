@@ -1067,6 +1067,24 @@ def seed_rules(shared, home):
         shutil.rmtree(aside, ignore_errors=True)
 
 
+def defines_hooks(source, shared):
+    # Whether a trust source of the shared home still defines a hook, as Codex
+    # loads them: a hooks.json whose "hooks" object, or the config.toml (parsed
+    # in shared) whose [hooks] table, its state aside, names an event with a
+    # matcher group. Codex loads nothing from a hooks.json it cannot read or parse.
+    if os.path.basename(source) == "hooks.json":
+        try:
+            data = json.loads(Path(source).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return False
+        events = data.get("hooks") if isinstance(data, dict) else None
+    else:
+        events = shared.get("hooks")
+        events = {name: groups for name, groups in events.items() if name != "state"} \
+            if isinstance(events, dict) else None
+    return isinstance(events, dict) and any(events.values())
+
+
 def vault_check(args):
     # What the launch needs before it starts Codex on a vault home (CODEX_HOME):
     # the sandbox settings Codex resolves for the session from its files (the
@@ -1094,15 +1112,26 @@ def vault_check(args):
             if isinstance(hook, dict) and isinstance(hook.get("key"), str):
                 hooks[hook["key"]] = hook
     state = shared.get("hooks", {}).get("state") if isinstance(shared.get("hooks"), dict) else None
+    state = state if isinstance(state, dict) else {}
     untrusted = []
     for old in trust_sources(Path(args.shared_home)):
         new = os.path.join(codex_home, os.path.basename(old))
-        for key, value in (state.items() if isinstance(state, dict) else ()):
-            if not key.startswith(old + ":") or not isinstance(value, dict):
-                continue
+        trusted = {key: value for key, value in state.items()
+                   if key.startswith(old + ":") and isinstance(value, dict)
+                   and isinstance(value.get("trusted_hash"), str)}
+        # The vault lists no hook of a source the shared home still defines
+        # hooks in: Codex lists or keys them in a way cs did not re-key for,
+        # and every hook trusted there would stop running without a word, so
+        # each counts as untrusted.
+        if trusted and not any(key.startswith(new + ":") for key in hooks) \
+                and defines_hooks(old, shared):
+            untrusted.extend(trusted)
+            continue
+        for key, value in trusted.items():
             hook = hooks.get(new + key[len(old):])
-            # A trust the shared home keeps for content that changed since, or
-            # for a hook no longer there, trusts nothing anywhere.
+            # Beside hooks of the same source the vault does list, a trust the
+            # shared home keeps for content that changed since, or for a hook
+            # no longer there, trusts nothing anywhere.
             if hook is None or hook.get("currentHash") != value.get("trusted_hash"):
                 continue
             if hook.get("trustStatus") != "trusted":
