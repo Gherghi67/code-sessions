@@ -727,15 +727,16 @@ def claude_blocks(content):
 
 
 def claude_result_text(content):
-    # Claude Code's reminders ride on tool results; they were never the tool's.
-    parts = []
+    # A result's text and how many images it held. Claude Code's reminders
+    # ride on tool results; they were never the tool's.
+    parts, images = [], 0
     for block in claude_blocks(content):
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             # Blank lines go, but not the first line's indent: a fence shows it.
             parts.append(LEADING_BLANK_LINES.sub("", SYSTEM_REMINDER.sub("", block["text"])).rstrip())
         elif block.get("type") == "image":
-            parts.append("[image]")
-    return "\n".join(part for part in parts if part)
+            images += 1
+    return "\n".join(part for part in parts if part), images
 
 
 def fenced(text):
@@ -829,12 +830,12 @@ def claude_tool_call(name, value):
     return head + "\n" + fenced(body)
 
 
-def claude_tool_result(text, limit, failed=False):
+def claude_tool_result(text, images, limit, failed=False):
+    # The cut note and the image markers are cs's, so they follow the fence.
     head = "[tool error]" if failed else "[tool result]"
-    if not text:
-        return head
-    # The cut note is cs's, so it goes after the fence, outside the result.
-    return head + "\n" + fenced(text[:limit] if limit else text) + cut_note(text, limit)
+    if text:
+        head += "\n" + fenced(text[:limit] if limit else text) + cut_note(text, limit)
+    return head + "\n[image]" * images
 
 
 def claude_user_text(text):
@@ -927,8 +928,9 @@ def read_claude(path, limit):
                 if kind == "text" and isinstance(block.get("text"), str):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
-                    history.add("assistant", claude_tool_result(claude_result_text(block.get("content")), limit,
-                                                                block.get("is_error") is True), stamp, closed=True)
+                    history.add("assistant", claude_tool_result(*claude_result_text(block.get("content")), limit,
+                                                                failed=block.get("is_error") is True),
+                                stamp, closed=True)
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
             elif record.get("type") == "assistant":

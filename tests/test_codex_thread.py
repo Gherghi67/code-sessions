@@ -1602,7 +1602,8 @@ class TransplantTests(HelperFixture):
         self.assertEqual(texts[1], '/color blue\n\nfind the budget')
         self.assertIn('Reading notes.', texts[2])
         self.assertIn('[tool call: Read]\n```\nfile_path: notes.txt\n```', texts[2])
-        self.assertIn('[tool result]\n```\nbudget is 42\n[image]\n```', texts[2])
+        # [image] is cs's word, like the cut note, so it follows the fence.
+        self.assertIn('[tool result]\n```\nbudget is 42\n```\n[image]\n\nThe budget', texts[2])
         self.assertIn('The budget is 42.', texts[2])
         self.assertEqual(texts[3], 'follow-up v2')
         self.assertEqual(texts[4], 'Answer two.')
@@ -1739,7 +1740,10 @@ class TransplantTests(HelperFixture):
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
         text = helper['claude_result_text']([{"type": "text", "text": " \n\n     1\tfirst\n     2\tsecond  \n"
                                                                        "<system-reminder>R</system-reminder>\n"}])
-        self.assertEqual(text, "     1\tfirst\n     2\tsecond")
+        self.assertEqual(text, ("     1\tfirst\n     2\tsecond", 0))
+        # An image alone needs no fence.
+        self.assertEqual(helper['claude_tool_result'](*helper['claude_result_text']([{"type": "image"}]), 40),
+                         '[tool result]\n[image]')
 
     def test_a_block_claude_left_open_is_closed_before_a_tool_part(self):
         # An agent message is one markdown document. Reply text that ends
