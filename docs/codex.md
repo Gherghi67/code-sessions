@@ -167,7 +167,10 @@ state databases and logs never reach the shared home (`$CODEX_HOME`, else
   folders to the shared home, so the login, instructions and extensions are
   the shell's. `plugins/` is a folder of the vault whose `cache/` and staging
   folders link to the shared ones, so plugins are installed once and their
-  data (`plugins/data/`) stays in the vault. Everything else Codex writes is
+  data (`plugins/data/`) stays in the vault. `.tmp/` is a folder of the vault
+  too: only `.tmp/marketplaces/`, where Codex keeps the marketplaces added
+  from git, links to the shared one, so those marketplaces are shared; the
+  rest of `.tmp/` is per vault. Everything else Codex writes is
   born in the vault. `.credentials.json`, the file Codex falls back to for MCP
   OAuth logins, is not shared: an MCP server that falls back to it logs in
   again inside the session.

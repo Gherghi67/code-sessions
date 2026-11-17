@@ -401,8 +401,9 @@ _codex_config_args() {
 test_encrypted_session_runs_codex_on_its_vault_home() {
     _vault_fixture
     local output status=0 name
-    mkdir -p "$CODEX_HOME/rules"
+    mkdir -p "$CODEX_HOME/rules" "$CODEX_HOME/.tmp/bundled-marketplaces"
     printf 'prefix_rule(pattern=["git", "status"], decision="allow")\n' > "$CODEX_HOME/rules/default.rules"
+    : > "$CODEX_HOME/.tmp/plugins.sync.lock"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
     assert_eq 0 "$status" "launch failed: $output" || return 1
     assert_file_contains "$CS_CODEX_ENV" "^CODEX_HOME=$VAULT_HOME\$" "Codex runs on the vault home" || return 1
@@ -425,6 +426,15 @@ test_encrypted_session_runs_codex_on_its_vault_home() {
         assert_dir "$CODEX_HOME/plugins/$name" "plugins/$name is made in the shared home" || return 1
     done
     assert_eq "" "$(readlink "$VAULT_HOME/plugins/data")" "plugin data is never linked" || return 1
+    # Codex keeps a marketplace added from git in .tmp/marketplaces; the rest
+    # of .tmp (bundled marketplaces, sync locks) is per home.
+    assert_eq "" "$(readlink "$VAULT_HOME/.tmp")" ".tmp is not a link" || return 1
+    assert_dir "$VAULT_HOME/.tmp" ".tmp is a vault directory" || return 1
+    assert_eq 700 "$(_file_mode "$VAULT_HOME/.tmp")" ".tmp is private" || return 1
+    assert_eq "$CODEX_HOME/.tmp/marketplaces" "$(readlink "$VAULT_HOME/.tmp/marketplaces")" \
+        ".tmp/marketplaces links into the shared home" || return 1
+    assert_dir "$CODEX_HOME/.tmp/marketplaces" ".tmp/marketplaces is made in the shared home" || return 1
+    assert_eq marketplaces "$(ls -A "$VAULT_HOME/.tmp")" "no other .tmp entry is linked" || return 1
     assert_eq '{"tokens":"shared"}' "$(cat "$VAULT_HOME/auth.json")" "the login is the shell's" || return 1
     assert_file_contains "$VAULT_HOME/config.toml" "^model = \"m\"\$" "the config is copied" || return 1
     assert_file_contains "$VAULT_HOME/config.toml" "^\\[hooks.state.\"$VAULT_HOME/hooks.json:session_start:0:0\"\\]\$" \
@@ -490,6 +500,24 @@ test_an_earlier_opens_rules_and_plugins_links_become_vault_directories() {
     assert_output_contains "$output" "plugins/cache is not cs's link to $CODEX_HOME/plugins/cache" || return 1
     assert_dir "$VAULT_HOME/plugins/cache" "the directory is kept" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+}
+
+# A link planted where the vault home's .tmp belongs (to the shared .tmp) is
+# replaced by a vault directory, whose only link is marketplaces; the rest of
+# the shared .tmp stays out of the vault home and as it was.
+test_a_planted_tmp_link_becomes_a_vault_directory() {
+    _vault_fixture
+    local output status=0
+    mkdir -p "$VAULT_HOME" "$CODEX_HOME/.tmp/bundled-marketplaces"
+    ln -s "$CODEX_HOME/.tmp" "$VAULT_HOME/.tmp"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 0 "$status" "launch failed: $output" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/.tmp")" ".tmp is no longer a link" || return 1
+    assert_dir "$VAULT_HOME/.tmp" ".tmp is a vault directory" || return 1
+    assert_eq "$CODEX_HOME/.tmp/marketplaces" "$(readlink "$VAULT_HOME/.tmp/marketplaces")" \
+        "the marketplaces are the shell's" || return 1
+    assert_not_exists "$VAULT_HOME/.tmp/bundled-marketplaces" "the rest of the shared .tmp does not come along" || return 1
+    assert_dir "$CODEX_HOME/.tmp/bundled-marketplaces" "the shared .tmp is left alone" || return 1
 }
 
 # A real auth.json where cs's link was: Codex after a logout and login inside
@@ -1711,6 +1739,7 @@ run_test test_missing_codex_home_is_named_before_the_helper
 run_test test_encrypted_session_runs_codex_on_its_vault_home
 run_test test_the_vault_home_is_refreshed_at_every_open
 run_test test_an_earlier_opens_rules_and_plugins_links_become_vault_directories
+run_test test_a_planted_tmp_link_becomes_a_vault_directory
 run_test test_a_login_saved_inside_the_vault_stops_the_open
 run_test test_a_locked_vault_stops_the_codex_open
 run_test test_a_linked_vault_home_stops_the_open

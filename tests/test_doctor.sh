@@ -2483,6 +2483,9 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
         mkdir -p "$shared/plugins/$name"
         ln -s "$shared/plugins/$name" "$home/plugins/$name"
     done
+    # .tmp is a vault directory too; only marketplaces added from git link.
+    mkdir -p "$shared/.tmp/marketplaces" "$home/.tmp/bundled-marketplaces"
+    ln -s "$shared/.tmp/marketplaces" "$home/.tmp/marketplaces"
     printf 'model = "m"\n' > "$home/config.toml"
     output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
         CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
@@ -2494,6 +2497,7 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
     printf '{}\n' > "$home/auth.json"
     ln -sfn "$TEST_TMPDIR/elsewhere" "$home/skills"
     ln -sfn "$TEST_TMPDIR/elsewhere" "$home/plugins/cache"
+    ln -sfn "$TEST_TMPDIR/elsewhere" "$home/.tmp/marketplaces"
     printf '[hooks.state."%s/hooks.json:stop:0:0"]\ntrusted_hash = "x"\n' "$shared" > "$home/config.toml"
     output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
         CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
@@ -2503,6 +2507,7 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
     assert_output_not_contains "$output" "login saved inside the vault" "does not claim Codex wrote it" || return 1
     assert_output_contains "$output" "skills links to $TEST_TMPDIR/elsewhere, not $shared/skills" || return 1
     assert_output_contains "$output" "plugins/cache links to $TEST_TMPDIR/elsewhere, not $shared/plugins/cache" || return 1
+    assert_output_contains "$output" ".tmp/marketplaces links to $TEST_TMPDIR/elsewhere, not $shared/.tmp/marketplaces" || return 1
     assert_output_contains "$output" "config.toml still keys hook trust by $shared" || return 1
     assert_output_not_contains "$output" "Codex vault home: inside the vault" "no OK beside the warnings" || return 1
     # An earlier open linked plugins/ and rules/ to the shared home: named,
@@ -2510,10 +2515,12 @@ test_doctor_checks_an_encrypted_sessions_codex_home() {
     rm -rf "$home/plugins" "$home/rules"
     ln -s "$shared/plugins" "$home/plugins"
     ln -s "$shared/rules" "$home/rules"
+    rm "$home/.tmp/marketplaces"
     output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" CS_CODEX_SHARED_HOME="$shared" \
         CODEX_HOME="$home" CS_CLAUDE_DIR="$TEST_TMPDIR/claude-v" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" "plugins is still a link to $shared/plugins" "a linked plugins is named" || return 1
     assert_output_contains "$output" "rules is still a link to $shared/rules" "a linked rules is named" || return 1
+    assert_output_contains "$output" ".tmp/marketplaces is missing" "a missing marketplaces link is named" || return 1
 }
 run_test test_doctor_checks_an_encrypted_sessions_codex_home
 
