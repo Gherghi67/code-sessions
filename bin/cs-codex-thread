@@ -326,11 +326,12 @@ class History:
 
 
 def cut_note(text, limit):
-    return "\n[cs cut the remaining {:,} characters]".format(len(text) - limit) if limit and len(text) > limit else ""
+    # limit is --clip, which main keeps at one character or more.
+    return "\n[cs cut the remaining {:,} characters]".format(len(text) - limit) if len(text) > limit else ""
 
 
 def clipped(text, limit):
-    return text[:limit] + cut_note(text, limit) if limit and len(text) > limit else text
+    return text[:limit] + cut_note(text, limit)
 
 
 def tool_call(name, body):
@@ -834,7 +835,7 @@ def claude_tool_result(text, images, limit, failed=False):
     # The cut note and the image markers are cs's, so they follow the fence.
     head = "[tool error]" if failed else "[tool result]"
     if text:
-        head += "\n" + fenced(text[:limit] if limit else text) + cut_note(text, limit)
+        head += "\n" + fenced(text[:limit]) + cut_note(text, limit)
     return head + "\n[image]" * images
 
 
