@@ -453,8 +453,10 @@ conversation, `cs -engine supports clear_rotation` exits 1, `/cs:rotate`
 gives the exit/reopen line, and `cs -doctor` names the cause. A spend the
 handoff store refuses keeps the marker, so the next `/clear` loads the same
 handoff again; the new conversation is told why. An encrypted session (the
-launch refuses one, so a `.cs/private` there came mid-run) and a marker git
-tracks are left alone.
+launch refuses one, so a `.cs/private` there came mid-run) is left alone. So
+is a marker in files git tracks, which came with a pull: the session still
+moves, nothing is spent, and the new conversation is told why, with the
+command that untracks them.
 
 #### Checked against agy 1.5.10
 

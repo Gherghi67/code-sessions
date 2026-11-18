@@ -2090,9 +2090,10 @@ test_a_clear_in_a_session_with_a_planted_vault_changes_nothing() {
 # this checkout, and an armed marker there may have too (here the mailbox is
 # tracked mid-run, as a pull could): the conversation /clear started still
 # takes the binding, but the handoff and its marker are left as they were, and
-# no rotation is handed to it.
+# no rotation is handed to it. It is told why instead, in the words Claude's
+# Stop hook uses.
 test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff() {
-    local output dir mail cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    local output dir mail injected cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
     output=$("$CS_BIN" trackedclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir trackedclear)
     mail=$(_mailbox trackedclear)
@@ -2104,8 +2105,12 @@ test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff() {
     assert_eq "$cleared" "$(_binding trackedclear)" "the binding moves" || return 1
     assert_eq unconsumed "$(_handoff_status trackedclear "$name")" "the armed handoff is not spent" || return 1
     assert_file_exists "$dir/.cs/local/pending-handoff" "and its marker stays" || return 1
-    assert_output_not_contains "$(_injected_in "$AGY_HOOK_OUT.cleared")" 'Conversation Rotation' \
-        "and no rotation is handed to the cleared conversation"
+    injected=$(_injected_in "$AGY_HOOK_OUT.cleared")
+    assert_output_not_contains "$injected" 'Conversation Rotation' \
+        "and no rotation is handed to the cleared conversation" || return 1
+    assert_output_contains "$injected" 'cs reads no queue, mail or rotation in this session' \
+        "which is told why" || return 1
+    assert_output_contains "$injected" '.cs/local' "naming what git tracks"
 }
 
 # A spend the handoff store refuses keeps the marker armed for the next
