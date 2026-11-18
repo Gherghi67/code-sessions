@@ -946,8 +946,13 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
 # mid-run, maybe as a link out of the session) is left alone. So is a marker
 # in files git tracks, which came with a pull rather than from /cs:rotate
 # here: the binding still moves, nothing is spent, and the conversation is
-# told why on descriptor 3, in the words Claude's Stop hook uses, with the
-# command that untracks them. Everything up to the session's engine state, written last, runs under the
+# asked on descriptor 3 to tell the user why, in fixed words. The tracked-
+# files notice itself stays out of it: it names a file the repository chose
+# and ends in advice written for the user to act on (an untrack and a commit
+# that takes whatever else is staged, or cs -rm), which Claude's Stop hook
+# shows the user only and which the model here could run. The next open
+# refuses the session and prints that notice (cs_assert_local_untracked).
+# Everything up to the session's engine state, written last, runs under the
 # run guard. That write comes last because its state lock (_cs_lock) reopens
 # descriptor 9, the one cs_run_guarded holds the guard on, which lets go of
 # the guard. The launch already recorded the engine as antigravity, so a
@@ -955,7 +960,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
 # has moved, the handoff is spent, its context is out and the lineage is
 # written, and the failure only fails the call.
 _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
-    local session_dir="$1" id="$2" run_dir="$3" previous handoff="" reason=clear refusal="" context="" tracked log_dir actor
+    local session_dir="$1" id="$2" run_dir="$3" previous handoff="" reason=clear refusal="" context="" log_dir actor
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
     [ -f "$run_dir/new-$id" ] && [ ! -L "$run_dir/new-$id" ] || return 0
     [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
@@ -963,8 +968,8 @@ _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
     ! _switch_session_encrypted "$session_dir" || return 0
     previous=$(cs_binding_read "$session_dir" antigravity) || return 1
     [ "$previous" != "$id" ] || return 0
-    if tracked=$(cs_files_tracked_notice "$session_dir/.cs" "$session_dir"); then
-        context="cs reads no queue, mail or rotation in this session: $tracked"
+    if cs_files_tracked_notice "$session_dir/.cs" "$session_dir" >/dev/null; then
+        context="Tell the user before anything else: cs reads no queue, mail or rotation in this session, because git tracks files in its .cs/local or .cs/private (they came with a pull or a checkout), or one of them looks like a git repository, or cs could not ask git about them. So this conversation got no rotation, and one /cs:rotate armed stays armed. Do not untrack, commit, delete or remove anything for this yourself, and do not run cs -rm: the fix is the user's, and cs refuses the next open of this session and says why and what to do."
     else
         handoff=$(_rotation_armed_handoff "$session_dir")
     fi

@@ -455,8 +455,10 @@ handoff store refuses keeps the marker, so the next `/clear` loads the same
 handoff again; the new conversation is told why. An encrypted session (the
 launch refuses one, so a `.cs/private` there came mid-run) is left alone. So
 is a marker in files git tracks, which came with a pull: the session still
-moves, nothing is spent, and the new conversation is told why, with the
-command that untracks them.
+moves, nothing is spent, and the new conversation is asked to tell you why,
+in cs's own words. What git tracks and how to stop it stay out of the
+conversation, since the model could act on them; cs refuses the next open of
+the session and prints both.
 
 #### Checked against agy 1.5.10
 

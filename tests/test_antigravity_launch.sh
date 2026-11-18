@@ -2132,8 +2132,10 @@ test_a_clear_in_a_session_with_a_planted_vault_changes_nothing() {
 # this checkout, and an armed marker there may have too (here the mailbox is
 # tracked mid-run, as a pull could): the conversation /clear started still
 # takes the binding, but the handoff and its marker are left as they were, and
-# no rotation is handed to it. It is told why instead, in the words Claude's
-# Stop hook uses.
+# no rotation is handed to it. It is asked to tell the user why instead, in
+# cs's own fixed words: the tracked-files notice, with the file name the
+# repository chose and the untrack-and-commit it advises, is the user's, and
+# reaches the model nowhere.
 test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff() {
     local output dir mail injected cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
     output=$("$CS_BIN" trackedclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
@@ -2152,7 +2154,11 @@ test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff() {
         "and no rotation is handed to the cleared conversation" || return 1
     assert_output_contains "$injected" 'cs reads no queue, mail or rotation in this session' \
         "which is told why" || return 1
-    assert_output_contains "$injected" '.cs/local' "naming what git tracks"
+    assert_output_contains "$injected" 'Tell the user' "to tell the user" || return 1
+    assert_output_contains "$injected" '.cs/local' "naming where git tracks files" || return 1
+    assert_output_not_contains "$injected" 'is tracked in git' "but not the notice itself" || return 1
+    assert_output_not_contains "$injected" 'rm -r --cached' "nor its untrack command" || return 1
+    assert_output_not_contains "$injected" 'commit -m' "nor its commit"
 }
 
 # A spend the handoff store refuses keeps the marker armed for the next
