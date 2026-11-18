@@ -1648,7 +1648,7 @@ test_a_later_conversation_in_the_run_never_takes_the_binding() {
 # The hook acts only in the run cs launched, for a conversation id that is a
 # UUID; everything else answers {} and changes nothing.
 test_the_hook_acts_only_in_the_run_cs_launched() {
-    local output dir payload status
+    local output dir payload status run_dir typed
     output=$(AGY_NO_TURN=1 "$CS_BIN" guarded --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir guarded)
     payload=$(jq -nc --arg id "$AGY_NEW_ID" '{conversationId: $id}')
@@ -1656,10 +1656,19 @@ test_the_hook_acts_only_in_the_run_cs_launched() {
     assert_eq '{}' "$output" "a plain agy run gets {}" || return 1
     output=$(printf '%s' "$payload" | "$CS_BIN" -antigravity-hook session-start) || return 1
     assert_eq '{}' "$output" "its SessionStart too" || return 1
-    output=$(printf '%s' "$payload" | CS_RUN_ENGINE=antigravity CS_SESSION_DIR="$dir" \
+    # A typed SessionStart, in a run directory laid out as a run that has
+    # bound its conversation with the /clear route on would leave it: the
+    # lease is all that keeps this run from marking the conversation new.
+    run_dir="$CS_CACHE_DIR/antigravity-runs/66666666-6666-4666-8666-666666666666"
+    (umask 077 && mkdir -p "$CS_CACHE_DIR/antigravity-runs" && mkdir -m 700 "$run_dir") || return 1
+    : > "$run_dir/clear-rebind"
+    : > "$run_dir/bound"
+    typed=$(jq -nc --arg id "$AGY_NEW_ID" '{conversationId: $id, lastUserInput: "go"}')
+    output=$(printf '%s' "$typed" | CS_RUN_ENGINE=antigravity CS_SESSION_DIR="$dir" \
         CS_RUN_ID=66666666-6666-4666-8666-666666666666 "$CS_BIN" -antigravity-hook session-start) || return 1
     assert_eq '{}' "$output" "as does a SessionStart in a run that does not hold the lease" || return 1
-    assert_not_exists "$CS_CACHE_DIR/antigravity-runs/66666666-6666-4666-8666-666666666666" "which marks nothing" || return 1
+    assert_not_exists "$run_dir/new-$AGY_NEW_ID" "which marks nothing" || return 1
+    rm -rf "$run_dir"
     output=$(printf '%s' "$payload" | CS_RUN_ENGINE=antigravity CS_SESSION_DIR="$dir" \
         CS_RUN_ID=66666666-6666-4666-8666-666666666666 "$CS_BIN" -antigravity-hook pre-invocation) || return 1
     assert_eq '{}' "$output" "a run that does not hold the session's lease gets {}" || return 1
