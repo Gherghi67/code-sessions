@@ -162,7 +162,7 @@ the `/` menu and in the list the model reads.
 | Skill | Under Antigravity |
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
-| `rotate` | Writes and arms the shared handoff, then asks you to `/exit` and reopen with `cs <name> --from-handoff`. |
+| `rotate` | Writes and arms the shared handoff. In a run that takes rotation through `/clear` (`agy` 1.5.10 or later with cs's SessionStart entry) it then asks you to run `/clear` and send `go`, otherwise to `/exit` and reopen with `cs <name> --from-handoff` ([Rotation through /clear](#rotation-through-clear)). |
 | `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail shows at the next prompt, or keeps a turn going that ends after it came ([Mail](#mail)); `/cs:finish <feature>` lands it ([Finishing a feature](#finishing-a-feature)). |
 | `finish`, `switch` | Run only when you type them. `switch` carries a handoff to Claude or Codex through a managed exit. `finish` lands and retires a feature ([Finishing a feature](#finishing-a-feature)). Outside a cs session, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from, since `cs -engine skill-dir` needs a session too. |
 

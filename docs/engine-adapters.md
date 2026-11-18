@@ -264,8 +264,9 @@ Antigravity targets require a usable enabled PreInvocation hook. Fresh and
 resumed targets receive `--prompt-interactive`; the protected launch journal
 records intent before agy starts and claims the first consumer. An ambiguous
 attempt requires recovery with `--engine antigravity --resume`, never replay
-with `--from-handoff`. Cancel under Antigravity leaves the handoff for an
-exit/reopen with `--from-handoff`, since in-place `/clear` rotation is deferred.
+with `--from-handoff`. Cancel under Antigravity leaves the handoff armed for an
+exit/reopen with `--from-handoff`, or for the next `/clear` in a run that claims
+`clear_rotation`.
 
 `cs_launch_session` settles the switch after the CLI exits, while the run
 still holds its lease and an encrypted session's vault is mounted. Only the
@@ -335,8 +336,9 @@ no setting that moves its state.
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 `~/.gemini/config/plugins/cs/`, and cs's status line, which each launch passes with
 `agy --settings` for that run only. The same hook brings `cs -msg` mail into the
-session's conversation (see `docs/antigravity.md`, Mail). Rotation uses `/exit` then a fresh
-managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
+session's conversation (see `docs/antigravity.md`, Mail). Rotation uses `/clear` then `go` in a
+run that claims `clear_rotation`, otherwise `/exit` then a fresh managed launch with
+`--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Antigravity takes a brief but no
 `--task`, as Codex does: its launch consumes the seed through the shared reader and sends the

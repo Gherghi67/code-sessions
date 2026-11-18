@@ -153,8 +153,10 @@ message. When that engine has no conversation recorded here, cs says so and
 starts a fresh one.
 
 `cs -switch cancel` drops a recorded switch and leaves the handoff armed, so
-`/clear` continues from it under Claude or Codex. Under Antigravity, exit and
-reopen with `--engine antigravity --from-handoff`. Under Claude or Codex,
+`/clear` continues from it under Claude or Codex, and under Antigravity in a
+run that takes rotation through `/clear` (`agy` 1.5.10 or later with cs's
+SessionStart entry). In any other Antigravity run, exit and reopen with
+`--engine antigravity --from-handoff`. Under Claude, Codex or such an Antigravity run,
 a `/clear` instead of the exit also takes the handoff in the same engine; cs then drops the switch with a
 notice. If the CLI exits with an error, or the other engine cannot start, cs
 prints both ways back and the handoff stays armed:

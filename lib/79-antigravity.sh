@@ -629,7 +629,14 @@ $prompt"
         [ -z "$spawn_wait" ] \
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
     fi
-    printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
+    # The line names the route this run takes, read from the mark itself:
+    # _antigravity_run_mark swallows a failed write, and a run whose mark is
+    # missing keeps the binding and the mail with its first conversation.
+    if [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]; then
+        printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /clear and send go. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+    else
+        printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
+    fi
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
             _antigravity_launch_error "Cannot record the Antigravity handoff attempt; the handoff stays pending."

@@ -861,8 +861,14 @@ test_fresh_launch_starts_agy_in_the_session_with_its_context_rule() {
         "mail works under Antigravity, so the launch no longer calls it unavailable" || return 1
     assert_output_contains "$output" 'The task queue is not available under Antigravity yet' \
         "the task queue alone is still named unavailable" || return 1
-    assert_output_contains "$output" 'A conversation started with /clear or /new gets no cs mail' \
-        "the launch names the conversations mail does not reach"
+    assert_output_contains "$output" 'then /clear and send go' \
+        "a run that takes rotation through /clear names that route" || return 1
+    assert_output_contains "$output" 'takes over the session and its cs mail' \
+        "and says the /clear conversation gets the session's mail" || return 1
+    assert_output_not_contains "$output" 'gets no cs mail' \
+        "the launch no longer says /clear loses the mail" || return 1
+    assert_output_not_contains "$output" '/exit and cs' \
+        "nor sends the rotation through an exit and reopen"
 }
 
 test_reopen_resumes_by_id_and_fresh_and_resume_choose_explicitly() {
@@ -1965,6 +1971,9 @@ test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry() {
     output=$(AGY_VERSION=1.5.9 AGY_ARM=$name AGY_CLEARED=$cleared AGY_CAP_CS="$CS_BIN" AGY_CAP_OUT="$TEST_TMPDIR/cap" \
         "$CS_BIN" gated 2>&1) || { echo "$output"; return 1; }
     assert_eq no "$(cat "$TEST_TMPDIR/cap")" "on agy 1.5.9 it does not" || return 1
+    assert_output_contains "$output" '/exit and cs gated --from-handoff' \
+        "its launch line keeps the exit-and-reopen route" || return 1
+    assert_output_contains "$output" 'gets no cs mail' "and says /clear loses the mail" || return 1
     assert_eq "$AGY_NEW_ID" "$(_binding gated)" "and /clear leaves the binding" || return 1
     assert_eq unconsumed "$(_handoff_status gated "$name")" "and the armed handoff" || return 1
     rm -f "$dir/.cs/local/pending-handoff" "$dir/.cs/handoffs/$name"
@@ -1972,6 +1981,9 @@ test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry() {
     output=$(AGY_ARM=$name AGY_CLEARED=$cleared AGY_CAP_CS="$CS_BIN" AGY_CAP_OUT="$TEST_TMPDIR/cap" \
         "$CS_BIN" gated 2>&1) || { echo "$output"; return 1; }
     assert_eq no "$(cat "$TEST_TMPDIR/cap")" "nor with a plugin that has no SessionStart entry" || return 1
+    assert_output_contains "$output" '/exit and cs gated --from-handoff' \
+        "whose launch line keeps the exit-and-reopen route" || return 1
+    assert_output_contains "$output" 'gets no cs mail' "and says /clear loses the mail" || return 1
     assert_eq "$AGY_NEW_ID" "$(_binding gated)" "whose /clear leaves the binding" || return 1
     assert_eq unconsumed "$(_handoff_status gated "$name")" "and the armed handoff"
 }
