@@ -910,6 +910,13 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
 # encrypted session's (the launch refuses one, so a .cs/private here came
 # mid-run, maybe as a link out of the session) is left alone, and so is a
 # marker git tracks, which came with a pull rather than from /cs:rotate here.
+# Everything up to the session's engine state, written last, runs under the
+# run guard. That write comes last because its state lock (_cs_lock) reopens
+# descriptor 9, the one cs_run_guarded holds the guard on, which lets go of
+# the guard. The launch already recorded the engine as antigravity, so a
+# failed write there no longer holds back the rotation: by then the binding
+# has moved, the handoff is spent, its context is out and the lineage is
+# written, and the failure only fails the call.
 _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous handoff="" reason=clear refusal="" context log_dir actor
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
@@ -923,7 +930,6 @@ _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
         handoff=$(_rotation_armed_handoff "$session_dir")
     fi
     cs_binding_write "$session_dir" antigravity "$id" || return 1
-    _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
     if [ -n "$handoff" ]; then
         reason=handoff
         refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$session_dir/.cs/local/pending-handoff" "$id") || true
@@ -946,6 +952,7 @@ $(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-
         _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "$handoff" antigravity || true
     fi
     _timeline_started "$session_dir" antigravity "$id" clear || true
+    _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
 }
 
 # A finished edit in the run that holds the session's lease, translated by

@@ -1826,6 +1826,93 @@ test_a_rotation_and_mail_share_the_cleared_conversations_first_call() {
     assert_eq '""' "$(printf '%s' "$first" | jq -c '.terminationBehavior')" "calling the model"
 }
 
+# For the two cases below, which run the /clear rebind from cs's sourced
+# functions under the run guard, as PreInvocation's lease runs it: the session
+# bound to the run's first conversation, the rotation /cs:rotate armed in it
+# (the fake's arm()), and a private run directory where the launch found the
+# rebind usable, the run has bound, and SessionStart marked the conversation
+# /clear started. Sets run_dir, and the fields the hook reads from that
+# conversation's first model call.
+_clear_rebind_setup() {  # session_dir, cleared, handoff basename
+    local dir="$1" cleared="$2" name="$3"
+    export CS_RUN_ID=33333333-3333-4333-8333-333333333333 CS_RUN_ENGINE=antigravity
+    export CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs"
+    cs_binding_write "$dir" antigravity "$AGY_NEW_ID" || return 1
+    mkdir -p "$dir/.cs/handoffs" || return 1
+    printf -- '---\nparent: %s\ncreated: 2026-11-17T12:00:00Z\npurpose: continue testing\nstatus: unconsumed\n---\n\n## Next Step\nCheck rotation.\n' \
+        "$AGY_NEW_ID" > "$dir/.cs/handoffs/$name" || return 1
+    printf '%s\n' "$name" > "$dir/.cs/local/pending-handoff" || return 1
+    run_dir="$TEST_TMPDIR/run"
+    mkdir -m 700 "$run_dir" || return 1
+    : > "$run_dir/clear-rebind" && : > "$run_dir/bound" && : > "$run_dir/new-$cleared" || return 1
+    # Read by the sourced _antigravity_hook_rebind_clear.
+    # shellcheck disable=SC2034
+    AGY_HOOK_INVOCATION=0 AGY_HOOK_TYPED=1 AGY_HOOK_STEPS=1
+}
+
+# Everything the /clear rebind does once it has moved the binding, the spend
+# of the armed handoff included, runs under the run guard the lease holds: no
+# second process can take the guard while the handoff is spent.
+test_a_clear_rebind_spends_the_handoff_under_the_run_guard() {
+    local output dir cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    output=$(AGY_NO_TURN=1 "$CS_BIN" guarded --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir guarded)
+    (
+        local fragment run_dir guard="$dir/.cs/local/run-lease.guard"
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        _clear_rebind_setup "$dir" "$cleared" "$name" || exit 1
+        eval "$(declare -f _handoff_spend | sed '1s/^_handoff_spend/_test_original_handoff_spend/')"
+        # The spend first records whether a second process could take the
+        # guard now, as tests/test_run_lifecycle.sh probes it.
+        _handoff_spend() {
+            local status=0
+            if command -v flock >/dev/null 2>&1; then
+                flock -n "$guard" true || status=$?
+            else
+                lockf -s -k -t 0 "$guard" true || status=$?
+            fi
+            if [ "$status" -ne 0 ]; then echo held; else echo free; fi > "$TEST_TMPDIR/guard-at-spend"
+            _test_original_handoff_spend "$@"
+        }
+        cs_run_guarded "$dir/.cs" _antigravity_hook_rebind_clear "$dir" "$cleared" "$run_dir" 3>/dev/null || exit 1
+        assert_eq held "$(cat "$TEST_TMPDIR/guard-at-spend" 2>/dev/null)" "the handoff is spent under the run guard" || exit 1
+        assert_file_contains "$dir/.cs/handoffs/$name" "^consumed_by: $cleared$" "for the cleared conversation"
+    )
+}
+
+# The launch has already recorded the engine, so a failed engine-state write
+# at /clear holds nothing back: the cleared conversation still takes the
+# binding, the armed handoff is spent for it and its context handed out, and
+# the lineage is written.
+test_a_failed_engine_state_write_still_hands_over_the_rotation() {
+    local output dir cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    output=$(AGY_NO_TURN=1 "$CS_BIN" stateless --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir stateless)
+    (
+        local fragment run_dir context
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        _clear_rebind_setup "$dir" "$cleared" "$name" || exit 1
+        # cs_write_atomic refuses a directory where the state file should be.
+        rm -f "$dir/.cs/local/state" && mkdir "$dir/.cs/local/state" || exit 1
+        context=$(cs_run_guarded "$dir/.cs" _antigravity_hook_bind "$dir" "$cleared" "$run_dir" 3>&1 >/dev/null 2>&1)
+        assert_eq "$cleared" "$(cat "$dir/.cs/local/antigravity-conversation")" "the binding moves" || exit 1
+        assert_file_contains "$dir/.cs/handoffs/$name" '^status: consumed$' "the armed handoff is spent" || exit 1
+        assert_file_contains "$dir/.cs/handoffs/$name" "^consumed_by: $cleared$" "for the cleared conversation" || exit 1
+        assert_not_exists "$dir/.cs/local/pending-handoff" "and its marker goes" || exit 1
+        assert_output_contains "$context" 'Conversation Rotation' "its context goes out for the model" || exit 1
+        assert_eq 1 "$(jq -s --arg id "$cleared" '[.[] | select(.event == "rotated" and .to == $id and .reason == "handoff")] | length' \
+            "$dir/.cs/timeline.jsonl" 2>/dev/null)" "the rotation is recorded" || exit 1
+        assert_file_contains "$dir/.cs/local/session.log" "Session started (source: clear, ID: $cleared)" "and the start logged" || exit 1
+        assert_file_exists "$run_dir/seen-$cleared" "the conversation is weighed once"
+    )
+}
+
 # A subagent's conversation also fires SessionStart and PreInvocation, but no
 # prompt was typed into it: lastUserInput is "" and its trajectory starts
 # empty (agy 1.5.10). It never takes the binding or the armed rotation,
@@ -2482,6 +2569,8 @@ run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
 run_test test_clear_with_nothing_armed_rebinds_quietly
 run_test test_mail_follows_a_conversation_started_with_clear
 run_test test_a_rotation_and_mail_share_the_cleared_conversations_first_call
+run_test test_a_clear_rebind_spends_the_handoff_under_the_run_guard
+run_test test_a_failed_engine_state_write_still_hands_over_the_rotation
 run_test test_a_subagent_never_takes_the_binding_or_an_armed_handoff
 run_test test_a_conversation_opened_with_resume_keeps_the_binding
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
