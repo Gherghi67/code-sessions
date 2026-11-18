@@ -94,10 +94,11 @@ _doctor_check_antigravity_hook() {
         '[.[$name].Stop | arrays | .[] | objects | .command | strings | select(endswith(" -antigravity-hook stop"))] | length > 0' \
         "$dir/hooks.json" >/dev/null 2>&1; then
         _doctor_warn "Antigravity hook in $dir has no Stop entry: mail that comes during a turn waits for the next prompt; run setup.sh again"
-    elif ! jq -e --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
-        '[.[$name].SessionStart | arrays | .[] | objects | .command | strings | select(endswith(" -antigravity-hook session-start"))] | length > 0' \
-        "$dir/hooks.json" >/dev/null 2>&1; then
-        _doctor_warn "Antigravity hook in $dir has no SessionStart entry: /clear keeps the session on its first conversation, so rotate with /exit and --from-handoff; run setup.sh again"
+    # The SessionStart entry is read as the launch reads it before it lets a
+    # run rotate through /clear: one switched off, or naming a cs that is not
+    # there, leaves /clear alone as surely as no entry at all.
+    elif ! _antigravity_rotation_hook_ready SessionStart session-start; then
+        _doctor_warn "Antigravity hook in $dir has no usable SessionStart entry (missing, switched off, or naming a cs that is not there): /clear keeps the session on its first conversation, so rotate with /exit and --from-handoff; run setup.sh again"
     else
         _doctor_ok "Antigravity hook installed: $dir"
     fi
@@ -123,6 +124,20 @@ _doctor_check_antigravity_version() {
     else
         _doctor_ok "Antigravity CLI $version (mail delivery needs $CS_ANTIGRAVITY_MAIL_MIN_VERSION or later, rotation through /clear $CS_ANTIGRAVITY_CLEAR_MIN_VERSION)"
     fi
+}
+
+# A run keeps the route through /clear its launch chose (the run directory's
+# clear-rebind mark), so one launched before agy or cs's plugin was brought up
+# to it has none, although the hook and the version rows are healthy by now.
+# Named only inside an Antigravity run, and only when the gate passes for the
+# agy doctor sees; a gate that fails is the hook or the version row's to name.
+_doctor_check_antigravity_run() {
+    local run_dir
+    [ "${CS_RUN_ENGINE:-}" = antigravity ] || return 0
+    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 0
+    _antigravity_clear_rebind_usable "${AGY_BIN:-agy}" || return 0
+    _antigravity_clear_rebind_on && return 0
+    _doctor_warn "This Antigravity run started without rotation through /clear (agy or cs's plugin changed after it launched): rotate with /exit and --from-handoff, or reopen the session to turn it on"
 }
 
 # cs's status line under Antigravity: whether the next launch passes it to agy
@@ -1531,6 +1546,7 @@ run_doctor() {
         if [ "$engine" = antigravity ]; then
             _doctor_check_antigravity_hook
             _doctor_check_antigravity_version
+            _doctor_check_antigravity_run
             _doctor_check_antigravity_statusline
         fi
         echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."

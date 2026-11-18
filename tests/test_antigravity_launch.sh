@@ -56,7 +56,10 @@ setup() {
     # trajectory has steps. AGY_ARM arms that handoff in the session after
     # the prompt's first model call, as /cs:rotate in the conversation would.
     # AGY_CAP_CS names the cs the run asks `-engine supports clear_rotation`,
-    # its answer (yes or no) in AGY_CAP_OUT.
+    # its answer (yes or no) in AGY_CAP_OUT. With AGY_DOCTOR_OUT the run also
+    # has that cs run -doctor, its output in AGY_DOCTOR_OUT; AGY_DOCTOR_VERSION,
+    # when set, is the version --version prints to that doctor, which runs
+    # after the launch has read AGY_VERSION, as an agy updated mid-run would.
     cat > "$TEST_TMPDIR/bin/agy" <<'AGY'
 #!/usr/bin/env bash
 # --help lists the flags cs passes, less any named in AGY_HELP_OMIT and with
@@ -161,6 +164,12 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
             echo no > "$AGY_CAP_OUT"
         fi
     fi
+    if [ -n "${AGY_DOCTOR_OUT:-}" ]; then
+        (
+            [ -z "${AGY_DOCTOR_VERSION:-}" ] || export AGY_VERSION="$AGY_DOCTOR_VERSION"
+            "$AGY_CAP_CS" -doctor > "$AGY_DOCTOR_OUT" 2>&1
+        )
+    fi
     mail_comes "$@"
     [ $# -eq 0 ] || shift
     for edit in ${AGY_EDITS:-}; do
@@ -226,7 +235,7 @@ AGY
     export PATH="$TEST_TMPDIR/bin:$clean"
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA AGY_VERSION CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT
+    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -243,7 +252,7 @@ teardown() {
     unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT
+    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
 }
 
@@ -2285,8 +2294,64 @@ test_a_hook_older_than_the_clear_rotation_is_named_by_doctor() {
     output=$(AGY_NO_TURN=1 "$CS_BIN" olderclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir olderclear)
     output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" 'has no SessionStart entry.*/clear.*run setup.sh again' "doctor names the missing entry" || return 1
+    assert_output_contains "$output" 'has no usable SessionStart entry.*/clear.*run setup.sh again' "doctor names the missing entry" || return 1
     assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed"
+}
+
+# A SessionStart entry switched off marks no new conversation, so a launch
+# leaves /clear alone, as with no entry at all: doctor names it the same way
+# (review N2).
+test_a_session_start_entry_switched_off_is_named_by_doctor() {
+    local output dir hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    jq '."cs-session".SessionStart[0].enabled = false' "$hooks" > "$hooks.new" && mv "$hooks.new" "$hooks" || return 1
+    output=$(AGY_NO_TURN=1 "$CS_BIN" offstart --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir offstart)
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'has no usable SessionStart entry.*/clear.*run setup.sh again' \
+        "doctor names the entry switched off" || return 1
+    assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed"
+}
+
+# Nor does one whose command, in the installer's encoding, names a cs that is
+# not there (review N2).
+test_a_session_start_entry_naming_a_missing_cs_is_named_by_doctor() {
+    local output dir hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    jq '."cs-session".SessionStart[0].command = "/nonexistent/cs -antigravity-hook session-start"' "$hooks" > "$hooks.new" \
+        && mv "$hooks.new" "$hooks" || return 1
+    output=$(AGY_NO_TURN=1 "$CS_BIN" gonestart --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir gonestart)
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'has no usable SessionStart entry.*/clear.*run setup.sh again' \
+        "doctor names the entry naming a missing cs" || return 1
+    assert_output_not_contains "$output" 'Antigravity hook installed' "and does not call it installed"
+}
+
+# A run keeps the route its launch chose. Launched on agy 1.5.9, with agy at
+# 1.5.10 by the time doctor asks inside it, the run has no /clear route
+# although the hook and the version rows are healthy: doctor names the run and
+# how to rotate. A run launched with the route says nothing of it, and nor
+# does doctor outside a run (review N2).
+test_a_run_started_without_the_clear_route_is_named_by_doctor_inside_it() {
+    local output dir
+    output=$("$CS_BIN" lateclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir lateclear)
+    output=$(AGY_VERSION=1.5.9 AGY_DOCTOR_VERSION=1.5.10 AGY_CAP_CS="$CS_BIN" AGY_CAP_OUT="$TEST_TMPDIR/cap" \
+        AGY_DOCTOR_OUT="$TEST_TMPDIR/doctor" "$CS_BIN" lateclear 2>&1) || { echo "$output"; return 1; }
+    assert_eq no "$(cat "$TEST_TMPDIR/cap")" "the run launched on agy 1.5.9 does not claim clear_rotation" || return 1
+    output=$(cat "$TEST_TMPDIR/doctor" 2>/dev/null)
+    assert_output_contains "$output" '\[ OK \].*Antigravity CLI 1\.5\.10' "the doctor inside it sees agy 1.5.10" || return 1
+    assert_output_contains "$output" '\[ OK \].*Antigravity hook installed' "and a healthy hook" || return 1
+    assert_output_contains "$output" '\[WARN\].*This Antigravity run started without rotation through /clear.*/exit and --from-handoff.*reopen the session' \
+        "and names the run that started without the route" || return 1
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" 'started without rotation through /clear' "doctor outside a run says nothing of it" || return 1
+    rm -f "$TEST_TMPDIR/doctor"
+    output=$(AGY_CAP_CS="$CS_BIN" AGY_CAP_OUT="$TEST_TMPDIR/cap" AGY_DOCTOR_OUT="$TEST_TMPDIR/doctor" \
+        "$CS_BIN" lateclear 2>&1) || { echo "$output"; return 1; }
+    assert_eq yes "$(cat "$TEST_TMPDIR/cap")" "a run launched on agy 1.5.10 claims clear_rotation" || return 1
+    output=$(cat "$TEST_TMPDIR/doctor" 2>/dev/null)
+    assert_output_contains "$output" '\[ OK \].*Antigravity hook installed' "its doctor ran" || return 1
+    assert_output_not_contains "$output" 'started without rotation through /clear' "and says nothing of the route"
 }
 
 # An agy whose --version names no version is a warning, not a failure: doctor
@@ -2641,6 +2706,9 @@ run_test test_a_missing_hook_is_named_at_launch_and_by_doctor
 run_test test_a_hook_without_its_recovery_consumer_is_named_at_launch_and_by_doctor
 run_test test_a_hook_older_than_the_mail_wake_is_named_by_doctor
 run_test test_a_hook_older_than_the_clear_rotation_is_named_by_doctor
+run_test test_a_session_start_entry_switched_off_is_named_by_doctor
+run_test test_a_session_start_entry_naming_a_missing_cs_is_named_by_doctor
+run_test test_a_run_started_without_the_clear_route_is_named_by_doctor_inside_it
 run_test test_doctor_names_an_agy_older_than_the_mail_was_checked_on
 run_test test_doctor_says_when_the_agy_version_cannot_be_read
 run_test test_edits_in_a_run_are_autosaved_for_recovery

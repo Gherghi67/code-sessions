@@ -762,7 +762,15 @@ runs that check whenever `agy` is on `PATH`.
 Not checked live: whether cs's plugin hook runs in a folder `agy` does not
 trust yet, or one whose trust the user declined (the headless runs were not
 asked). What a subagent's hooks carry was measured on 1.5.10
-([Checked against agy 1.5.10](#checked-against-agy-1510)). Whether `agy` can
+([Checked against agy 1.5.10](#checked-against-agy-1510)), in one run, and
+what tells it from a conversation `/clear` started, `lastUserInput` `""` and
+`initialNumSteps` 0 at its first model call, was measured there only. cs
+sets 1.5.10 as a floor, not a ceiling, so after an `agy` upgrade measure both
+again before relying on the `/clear` rebind there. cs's own SessionStart
+handler, which always answers `{}`, ran live on 1.5.10 only: the installer
+registers it for every `agy`, and the logging plugins saw SessionStart fire
+on 1.4.11 and 1.5.9, but how those versions take cs's `{}` was not checked.
+Whether `agy` can
 wake a conversation left with `/clear` on its own, for instance with its
 subagent's answer, was not checked either; if it can, that conversation takes
 the session back at that turn. The test suite uses
