@@ -24327,11 +24327,12 @@ $(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-
 # with /resume (source resume, reason rebind). Nothing is spent and nothing
 # goes out on descriptor 3: a rotation /cs:rotate armed stays armed for the
 # next /clear. An encrypted session's (the launch refuses one, so a
-# .cs/private here came mid-run) is left alone.
+# .cs/private here came mid-run) is left alone. A call made without a payload
+# read, with no invocationNum set, is no first model call and takes nothing.
 _antigravity_hook_retake() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous log_dir
     [ -f "$run_dir/held-$id" ] && [ ! -L "$run_dir/held-$id" ] || return 0
-    [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
+    [ "${AGY_HOOK_INVOCATION:-}" = 0 ] && _antigravity_hook_typed || return 0
     ! _switch_session_encrypted "$session_dir" || return 0
     previous=$(cs_binding_read "$session_dir" antigravity) || return 1
     [ "$previous" != "$id" ] || return 0
