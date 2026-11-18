@@ -642,18 +642,23 @@ _antigravity_hooks_file_is_cs() {  # hooks.json
     ' "$1" >/dev/null 2>&1
 }
 
-# PreInvocation binds the session to the conversation its run works in and
-# gives a prompt the unread mail, PostToolUse hands finished edits to recovery,
-# and Stop wakes a turn that ends with new mail (lib/79-antigravity.sh). Every
-# tool reaches the hook, whose translator keeps the edits: "*" is the matcher
-# agy was measured with. The shapes and the timeout in seconds follow the
-# hooks guide agy 1.4.11 embeds, and 1.5.8's for Stop.
+# SessionStart marks a conversation /clear or /new started, PreInvocation
+# binds the session to the conversation its run works in (moving it to one
+# SessionStart marked) and gives a prompt the unread mail, PostToolUse hands
+# finished edits to recovery, and Stop wakes a turn that ends with new mail
+# (lib/79-antigravity.sh). Every tool reaches the hook, whose translator keeps
+# the edits: "*" is the matcher agy was measured with. The shapes and the
+# timeout in seconds follow the hooks guide agy 1.4.11 embeds, and 1.5.8's
+# for Stop. Never PreToolUse: agy 1.5.10 denies the tool when a PreToolUse
+# handler answers {}, since its decision is required.
 _antigravity_hooks_document() {  # cs_path
     jq -n --arg name "$CS_ANTIGRAVITY_HOOK_NAME" \
+        --arg start "$(_antigravity_hook_command "$1" session-start)" \
         --arg invocation "$(_antigravity_hook_command "$1" pre-invocation)" \
         --arg tool "$(_antigravity_hook_command "$1" post-tool-use)" \
         --arg stop "$(_antigravity_hook_command "$1" stop)" '
         {($name): {
+            SessionStart: [{type: "command", command: $start, timeout: 10}],
             PreInvocation: [{type: "command", command: $invocation, timeout: 10}],
             PostToolUse: [{matcher: "*", hooks: [{type: "command", command: $tool, timeout: 10}]}],
             Stop: [{type: "command", command: $stop, timeout: 10}]}}'
@@ -2110,7 +2115,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "c1687c4c9f1358a4eef66155e13d7e628ab273b751ce89871d25627a2ba22225  bin/cs"
+    "d28462274ebf52c730db28f53b03dd122e300c6be97f81820d0da9b8269cb04f  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
     "8a8314d16ec68c40a29badb10870736a21370855ca6d6e2f575e5fb6b1577a93  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
@@ -2135,7 +2140,7 @@ CS_PAYLOAD_SHA256=(
     "12a1d214de1fc27b2ad9b7210df72a96e0fddca969f95e569f71356cbf6d40a4  hooks/scope-prompt.sh"
     "51c551abcbccfe720c35026bfb73abe8acb952a61f5ff9cb242822db2b4208cb  skills/store-secret/SKILL.md"
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
-    "a95a83d4ca340cd18252e53e1eb4bcd882ae870b26bddf66e19806dd2a309e5f  skills/rotate/SKILL.md"
+    "6c4e4db4118a77494c022f0ddb3edbdee011da96a0a24a56d77f4cc640b8a3bb  skills/rotate/SKILL.md"
     "60d31e44f63ef96e367eb75ae2e367f267fd42480752d645231f803181732bc9  skills/switch/SKILL.md"
     "567e7ac3d7a346edaaf6230cd264f21cd8d2d5febf3da012a98dd2aa779ddf68  skills/finish/SKILL.md"
     "3b3d3cf069960d15cb81213c430e43482fc372c813470598d5371f03e2f5f5fa  skills/feature/SKILL.md"

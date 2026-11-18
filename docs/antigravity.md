@@ -162,7 +162,7 @@ the `/` menu and in the list the model reads.
 | Skill | Under Antigravity |
 | --- | --- |
 | `checkpoint`, `summary`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `write-as-me` | Need no capability Antigravity lacks, and run as under the other engines. `write-as-me` still learns from Claude Code transcripts only. |
-| `rotate` | Writes and arms the shared handoff, then asks you to `/exit` and reopen with `cs <name> --from-handoff`. |
+| `rotate` | Writes and arms the shared handoff. In a run that takes rotation through `/clear` (`agy` 1.5.10 or later with cs's SessionStart entry) it then asks you to run `/clear` and send `go`, otherwise to `/exit` and reopen with `cs <name> --from-handoff` ([Rotation through /clear](#rotation-through-clear)). |
 | `feature` | Spawns the feature with its brief ([Spawn briefs](#spawn-briefs)). Its result mail shows at the next prompt, or keeps a turn going that ends after it came ([Mail](#mail)); `/cs:finish <feature>` lands it ([Finishing a feature](#finishing-a-feature)). |
 | `finish`, `switch` | Run only when you type them. `switch` carries a handoff to Claude or Codex through a managed exit. `finish` lands and retires a feature ([Finishing a feature](#finishing-a-feature)). Outside a cs session, `switch` stops for want of a session, and `finish` stops when it cannot tell which folder it was loaded from, since `cs -engine skill-dir` needs a session too. |
 
@@ -218,9 +218,13 @@ records nothing.
 
 - The run's first conversation to reach the model is the session's: the one a
   reopen named, a new one, or one picked with `/resume` before the first turn.
-  A conversation the run meets later (a subagent's, or one opened with
-  `/resume` mid-run) has its own ID and leaves the binding alone. The hook
-  keeps track of this in a private directory of the run, under
+  Of the conversations the run meets later, one started with `/clear` or
+  `/new` takes the session at its first model call
+  ([Rotation through /clear](#rotation-through-clear)), and one that held the
+  session earlier in the run takes it back when you return to it with
+  `/resume` and type a prompt; a subagent's, or any other opened with
+  `/resume` mid-run, has its own ID and leaves the binding alone.
+  The hook keeps track of this in a private directory of the run, under
   `~/.cache/cs/antigravity-runs/`, outside the session folder.
 - A fresh start keeps the old binding until the new conversation reaches the
   model. Then cs rebinds and records the rotation on the session's timeline.
@@ -357,7 +361,9 @@ still drawn.
 ## Rotation
 
 Run `/cs:rotate <purpose>` inside the session. The shared skill writes and
-arms a lineage-stamped handoff. Then run `/exit` and reopen from your shell:
+arms a lineage-stamped handoff. Then either run `/clear` and send `go`
+([Rotation through /clear](#rotation-through-clear)), or run `/exit` and
+reopen from your shell:
 
 ```bash
 cs investigate --from-handoff
@@ -406,17 +412,92 @@ unattended ordinary opens disarm the marker while leaving the handoff pending.
 
 Antigravity's native `/clear` (alias `/new`) resets context, and `/exit`
 (alias `/quit`) closes the CLI; see the [native command reference](https://antigravity.google/docs/cli/reference).
-cs uses the exit/reopen route because its current hook contract does not
-identify a new main conversation separately from a subagent after the run
-has bound once. In-place `/clear` rotation and automatic terminal input are
-not implemented. Engine switching uses the managed exit described below.
+Engine switching uses the managed exit described below.
 The capabilities listed under [Capabilities and limits](#capabilities-and-limits) remain unavailable. Native approval settings and
 explicit model/effort options follow the ordinary launch behavior.
+
+### Rotation through /clear
+
+With `agy` 1.5.10 or later and a cs plugin that has its SessionStart entry,
+`/cs:rotate` ends with **Run `/clear` now, then send `go`**. Antigravity starts
+no turn by itself after `/clear`, so the message is needed; any message works,
+and one with its own content takes precedence over the handoff. At that
+message's first model call cs points the session at the new conversation,
+marks the armed handoff `consumed` with `consumed_by`, removes its marker,
+records the rotation (reason `handoff`) on the timeline and hands the model
+the same rotation context a `--from-handoff` launch gives. A `/clear` with
+nothing armed moves the session the same way, quietly: the always-on rule
+already restores the session's context in every conversation. Either way the
+mail follows the session, and the next `cs <name>` resumes the new
+conversation. There is no automatic countdown or terminal input, as cs gives
+Codex.
+
+cs tells the conversation `/clear` started from a subagent's by what `agy`
+1.5.10 was measured to send ([below](#checked-against-agy-1510)): SessionStart
+fires for a new conversation, a subagent's included, but never for one opened
+with `/resume`; a prompt was typed into the new conversation (`lastUserInput`),
+where a subagent's carries `""`; and its first model call starts with that
+prompt (`initialNumSteps` 1), where a subagent's starts empty. All of them must
+hold, at the conversation's first model call, in the run that holds the
+session's lease. A conversation opened with `/resume` takes the session back
+only if it held it earlier in the same run, such as the first conversation
+after a `/clear` or `/new` detour: at the first prompt typed into it, the
+binding, the mail and the next `cs <name>` return to it, the lineage records
+the return, and an armed handoff stays armed for the next `/clear`. Any other
+conversation opened with `/resume` leaves the binding alone, as under Codex.
+
+Each launch decides whether its run takes this route: `agy --version` must
+be at least 1.5.10 and the plugin must have usable SessionStart and
+PreInvocation commands. Otherwise `/clear` leaves the session on its first
+conversation, `cs -engine supports clear_rotation` exits 1, `/cs:rotate`
+gives the exit/reopen line, and `cs -doctor` names the cause. A spend the
+handoff store refuses keeps the marker, so the next `/clear` loads the same
+handoff again; the new conversation is told why. An encrypted session (the
+launch refuses one, so a `.cs/private` there came mid-run) is left alone. So
+is a marker in files git tracks, which came with a pull: the session still
+moves, nothing is spent, and the new conversation is asked to tell you why,
+in cs's own words. What git tracks and how to stop it stay out of the
+conversation, since the model could act on them; cs refuses the next open of
+the session and prints both.
+
+#### Checked against agy 1.5.10
+
+On 2026-11-17, in one interactive run (`agy` 1.5.10, the TUI in a private
+tmux server, a temporary plugin that logged every hook's payload and
+environment, removed afterwards), with one subagent started through
+`invoke_subagent`, then `/clear`, `/resume <id>`, and `/new` with a second
+subagent that its parent sent a follow-up:
+
+- A subagent's conversation fired SessionStart, PreInvocation, PostToolUse
+  (its `send_message` back), PostInvocation and Stop, in the same `agy`
+  process, with an ID of its own; `ANTIGRAVITY_CONVERSATION_ID` in its hooks'
+  environment was its own ID too.
+- Its `lastUserInput` was `""` at every event, the follow-up turn included,
+  and its first model call had `initialNumSteps` 0. Every main conversation's
+  events carried the prompt typed last: the run's first, the ones `/clear`
+  and `/new` started (`initialNumSteps` 1 at their first call), the one
+  `/resume` opened, and the parent's turns its subagent's answer woke.
+- `/clear` and `/new` fired nothing until the next prompt, then SessionStart
+  and PreInvocation for the new ID. `/resume <id>` fired no SessionStart.
+- `agy`'s own index (`conversation_summaries.db`) records a subagent's parent,
+  but its row was missing at a subagent's first model call once in two, so cs
+  does not read it.
+- A PreToolUse handler that answered `{}` made `agy` deny the tool: its
+  `decision` is required. cs registers no PreToolUse.
+
+The route itself was then run live the same day, with this cs installed, in a
+scratch session on `agy` 1.5.10: a subagent's conversation left the binding
+alone; `/cs:rotate` found `clear_rotation` and ended with **Run `/clear` now,
+then send `go`**; after `/clear` and `go` the session was bound to the new
+conversation, the handoff was `consumed` by it and its marker gone, the
+timeline recorded the rotation with reason `handoff`, and the reply began by
+reading the handoff and appended its `## Successor report`. `agy`'s exit line
+named the new conversation, which the next `cs <name>` resumes.
 
 The route and initial-prompt flag were checked against agy 1.4.12's help,
 embedded exit documentation, and the native command reference. Local
 regressions use fake agy with isolated state. A live model turn exercising
-rotation has not been run.
+the exit/reopen route has not been run; the `/clear` route has (below).
 
 ## Switching engines
 
@@ -473,14 +554,18 @@ hook, as it does under Claude and Codex:
   hand control back to the user. If an interactive turn that uses tools turns
   out to end that way, mail that came during it waits for the next prompt.
 - Only the session's own conversation, in the run that holds its lease, gets
-  mail. A subagent's conversation has an ID of its own, and so does one started
-  mid-run with `/clear` or `/new`, or opened with `/resume` after the first
-  turn: no hook payload tells it from a subagent's, so it leaves the binding
-  alone and gets neither the digest nor the wake. To have mail reach the
-  conversation you are in, rotate (`/cs:rotate`, then `/exit` and
-  `cs <name> --from-handoff`), or reopen (`/exit`, then `cs <name>`) and pick
-  it with `/resume` before the first turn, which binds it
-  ([Reopening](#reopening)). Mail that git tracks came with a pull, a merge or
+  mail. One started mid-run with `/clear` or `/new` becomes the session's at
+  its first model call, before the digest is read, so the mail follows it
+  ([Rotation through /clear](#rotation-through-clear)). One that held the
+  session earlier in the run and that you return to with `/resume` takes it
+  back at the first prompt typed into it, before the digest is read, so the
+  mail follows it back. A subagent's conversation has an ID of its own, and
+  so does any other opened with `/resume` after the first turn: they leave
+  the binding alone and get neither the digest nor the wake. To have mail
+  reach such a conversation, reopen (`/exit`, then `cs <name>`) and pick it
+  with `/resume` before the first turn, which binds it
+  ([Reopening](#reopening)). Mail that
+  git tracks came with a pull, a merge or
   a checkout, so it is neither shown nor woken for.
 
 `agy` has no event for a conversation sitting idle at its prompt, so mail that
@@ -510,15 +595,20 @@ the prompts typed into the TUI:
 - After a Stop `continue`, the next model call had `invocationNum` 1, and
   `continuationActive` was still false at the next Stop.
 - `/clear` started a new conversation, with an ID of its own, and fired
-  SessionStart for it. No hook payload told it from the run's first.
+  SessionStart for it. No hook payload told it from the run's first; what
+  tells it from a subagent's was measured on 1.5.10
+  ([Checked against agy 1.5.10](#checked-against-agy-1510)).
 
-Mail delivery needs `agy` 1.5.9 or later; `cs -doctor` warns below it.
+Mail delivery needs `agy` 1.5.9 or later, and mail after `/clear` 1.5.10;
+`cs -doctor` warns below each.
 
 ## Capabilities and limits
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
 `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, `feature_finish`, and `mail_delivery`.
+`spawn_brief`, `feature_finish`, and `mail_delivery`, plus `clear_rotation`
+inside a run whose launch found rotation through `/clear` usable
+([Rotation through /clear](#rotation-through-clear)).
 `cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly
 ([Skills](#skills)).
@@ -527,7 +617,8 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
-| Mail in a conversation started mid-run (`/clear`, `/new`, or `/resume` after the first turn) | Neither the digest nor the wake: the session stays bound to the run's first conversation, since no hook payload tells a new main conversation from a subagent's. Rotate (`/cs:rotate`, then `/exit` and `cs <name> --from-handoff`), or reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). |
+| Mail and the binding in a conversation the run never bound, opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear` and `/new` do move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
+| An automatic `/clear` after a rotation | Codex gets one (cs types `/clear` and `go`); under Antigravity you type them ([Rotation through /clear](#rotation-through-clear)). |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault, and has no setting that moves its state (it resolves everything from `$HOME`). Codex runs such a session on a home inside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
@@ -666,20 +757,36 @@ confirmed that an always-on rule in `.agents/rules/` reaches the model and that
 
 The `hooks.json` shapes come from the hooks guide built into `agy` 1.4.11
 (`strings` on the binary, section "Lifecycle Hooks"), not from a live run:
-PreInvocation and Stop (the latter from 1.5.8's guide) take a flat list of
-handlers, PostToolUse groups them under a `matcher`, and `timeout` is in
-seconds, 30 by default (cs sets 10).
+SessionStart, PreInvocation and Stop (the latter from 1.5.8's guide) take a
+flat list of handlers, PostToolUse groups them under a `matcher`, and
+`timeout` is in seconds, 30 by default (cs sets 10).
 `agy plugin validate --strict` accepts the file cs writes, and the test suite
 runs that check whenever `agy` is on `PATH`.
 
 Not checked live: whether cs's plugin hook runs in a folder `agy` does not
 trust yet, or one whose trust the user declined (the headless runs were not
-asked), and what a subagent's hooks carry. The test suite uses a fake `agy`
-that fires the plugin's hooks with payloads of the measured shape.
+asked). What a subagent's hooks carry was measured on 1.5.10
+([Checked against agy 1.5.10](#checked-against-agy-1510)), in one run, and
+what tells it from a conversation `/clear` started, `lastUserInput` `""` and
+`initialNumSteps` 0 at its first model call, was measured there only. cs
+sets 1.5.10 as a floor, not a ceiling, so after an `agy` upgrade measure both
+again before relying on the `/clear` rebind there. cs's own SessionStart
+handler, which always answers `{}`, ran live on 1.5.10 only: the installer
+registers it for every `agy`, and the logging plugins saw SessionStart fire
+on 1.4.11 and 1.5.9, but how those versions take cs's `{}` was not checked.
+Whether `agy` can
+wake a conversation left with `/clear` on its own, for instance with its
+subagent's answer, was not checked either; if it can, that conversation takes
+the session back at that turn. The test suite uses
+a fake `agy` that fires the plugin's hooks with payloads of the measured
+shape.
 
 ## Follow-ups
 
-These come later as separate changes: in-place `/clear`
-rotation, and encrypted sessions, which need a home for agy inside the vault:
-with no home setting, that means a separate `$HOME` for agy that links back to
-the real one.
+These come later as separate changes: encrypted sessions, which need a home
+for agy inside the vault: with no home setting, that means a separate `$HOME`
+for agy that links back to the real one; an automatic `/clear` after a
+rotation, which cs would have to type into the terminal as it does for Codex;
+and a binding that follows a conversation the run never bound, opened with
+`/resume` mid-run, which cs leaves alone under Codex too (one that held the
+session earlier in the run already takes it back).

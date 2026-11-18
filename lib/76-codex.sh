@@ -115,7 +115,9 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief
+    # clear_rotation: the same session-start hook hands the new thread the
+    # armed rotation at /clear.
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode

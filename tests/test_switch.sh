@@ -132,6 +132,12 @@ if [ "${1:-}" = --help ]; then
     printf '  %s\n' --conversation --model --effort --mode --prompt-interactive
     exit 0
 fi
+# A launch asks the version (rotation through /clear needs 1.5.10); like
+# --help, that starts no run, so it is neither recorded nor planned.
+if [ "${1:-}" = --version ]; then
+    printf '1.5.10\n'
+    exit 0
+fi
 STUB_PPID=$PPID "$CS_STUB_DIR/record" antigravity "$@"
 if [ -f "$CS_STUB_DIR/antigravity.fail-early" ]; then
     if [ -f "$CS_STUB_DIR/antigravity.break-journal" ]; then

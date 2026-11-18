@@ -33,21 +33,23 @@ The capability check `cs_engine_supports <engine> <capability>` performs an
 exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`,
-`memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
+`memory_index`, `mail_delivery`, `recovery_autosave`, and `clear_rotation`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
-`mail_delivery`, and `recovery_autosave`; Antigravity supports `launch`,
+`mail_delivery`, `recovery_autosave`, and `clear_rotation`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
-`spawn_brief`, `feature_finish`, and `mail_delivery` ([Antigravity sessions](antigravity.md)). These
+`spawn_brief`, `feature_finish`, and `mail_delivery`, and `clear_rotation` inside a run whose launch found
+`agy` 1.5.10 or later and cs's SessionStart hook ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
 must fail before session creation or adapter preparation when unsupported.
 
-The four session-manager capabilities name what the shipped skills rely on:
+The session-manager capabilities name what the shipped skills rely on:
 
 | Capability | Means | Checked by |
 | --- | --- | --- |
 | `rotation` | a fresh conversation consumes the handoff and binds its exact ID: `/clear` under Claude/Codex, exit/reopen under Antigravity | the rotate skill |
+| `clear_rotation` | `/clear` in the running CLI carries the armed handoff into the new conversation, which takes the binding (Claude, Codex; Antigravity per run) | the rotate skill, under Antigravity |
 | `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude, Codex and Antigravity) | the switch skill and verb |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |
@@ -262,8 +264,9 @@ Antigravity targets require a usable enabled PreInvocation hook. Fresh and
 resumed targets receive `--prompt-interactive`; the protected launch journal
 records intent before agy starts and claims the first consumer. An ambiguous
 attempt requires recovery with `--engine antigravity --resume`, never replay
-with `--from-handoff`. Cancel under Antigravity leaves the handoff for an
-exit/reopen with `--from-handoff`, since in-place `/clear` rotation is deferred.
+with `--from-handoff`. Cancel under Antigravity leaves the handoff armed for an
+exit/reopen with `--from-handoff`, or for the next `/clear` in a run that claims
+`clear_rotation`.
 
 `cs_launch_session` settles the switch after the CLI exits, while the run
 still holds its lease and an encrypted session's vault is mounted. Only the
@@ -333,8 +336,9 @@ no setting that moves its state.
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 `~/.gemini/config/plugins/cs/`, and cs's status line, which each launch passes with
 `agy --settings` for that run only. The same hook brings `cs -msg` mail into the
-session's conversation (see `docs/antigravity.md`, Mail). Rotation uses `/exit` then a fresh
-managed launch with `--from-handoff`. `cs -switch` refuses to leave an engine without
+session's conversation (see `docs/antigravity.md`, Mail). Rotation uses `/clear` then `go` in a
+run that claims `clear_rotation`, otherwise `/exit` then a fresh managed launch with
+`--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
 for an engine without `spawn_brief` before staging a seed. Antigravity takes a brief but no
 `--task`, as Codex does: its launch consumes the seed through the shared reader and sends the

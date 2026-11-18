@@ -691,8 +691,9 @@ _cs_claude_adapter_capabilities() {
     # spawn_brief: a spawned session's first turn reads .cs/brief.md.
     # memory_index: .cs/memory/MEMORY.md loads at every session start.
     # mail_delivery: hooks surface `cs -msg` mail inside the conversation.
+    # clear_rotation: /clear carries the armed rotation into the new session.
     printf '%s\n' launch exact_resume startup_context feature_finish \
-        rotation engine_switch spawn_brief memory_index mail_delivery recovery_autosave
+        rotation engine_switch spawn_brief memory_index mail_delivery recovery_autosave clear_rotation
 }
 
 # Where the installer puts cs's skills for Claude Code. CS_SKILLS_DIR replaces
