@@ -1948,6 +1948,48 @@ test_a_failed_engine_state_write_still_hands_over_the_rotation() {
     )
 }
 
+# The return to a conversation that held the session earlier in the run
+# (_antigravity_hook_retake) takes the binding back only at a typed first
+# model call, only through a held mark that is a regular file, and never in a
+# session with a .cs/private: each call below leaves the binding on the
+# conversation /clear started, until the last, which has all of them.
+test_a_held_conversation_takes_the_session_back_only_at_a_typed_first_call() {
+    local output dir cleared=77777777-7777-4777-8777-777777777777
+    output=$(AGY_NO_TURN=1 "$CS_BIN" heldback --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir heldback)
+    (
+        local fragment run_dir="$TEST_TMPDIR/run" case
+        for fragment in "$SCRIPT_DIR"/../lib/[0-9]*-*.sh; do
+            # shellcheck disable=SC1090
+            [ "${fragment##*/}" = 99-main.sh ] || source "$fragment"
+        done
+        export CS_RUN_ID=33333333-3333-4333-8333-333333333333 CS_RUN_ENGINE=antigravity
+        export CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs"
+        cs_binding_write "$dir" antigravity "$cleared" || exit 1
+        mkdir -m 700 "$run_dir" || exit 1
+        : > "$run_dir/clear-rebind" && : > "$run_dir/bound" && : > "$run_dir/seen-$AGY_NEW_ID" || exit 1
+        : > "$TEST_TMPDIR/planted-held"
+        for case in later untyped linked vault; do
+            # Read by the sourced _antigravity_hook_retake.
+            # shellcheck disable=SC2034
+            AGY_HOOK_INVOCATION=0 AGY_HOOK_TYPED=1 AGY_HOOK_STEPS=7
+            rm -f "$run_dir/held-$AGY_NEW_ID"
+            : > "$run_dir/held-$AGY_NEW_ID"
+            case "$case" in
+                later) AGY_HOOK_INVOCATION=1 ;;
+                untyped) AGY_HOOK_TYPED="" ;;
+                linked) rm -f "$run_dir/held-$AGY_NEW_ID" && ln -s "$TEST_TMPDIR/planted-held" "$run_dir/held-$AGY_NEW_ID" ;;
+                vault) mkdir "$dir/.cs/private" ;;
+            esac
+            cs_run_guarded "$dir/.cs" _antigravity_hook_bind "$dir" "$AGY_NEW_ID" "$run_dir" 3>/dev/null >/dev/null 2>&1
+            assert_eq "$cleared" "$(cat "$dir/.cs/local/antigravity-conversation")" "a $case call leaves the binding" || exit 1
+            rmdir "$dir/.cs/private" 2>/dev/null
+        done
+        cs_run_guarded "$dir/.cs" _antigravity_hook_bind "$dir" "$AGY_NEW_ID" "$run_dir" 3>/dev/null >/dev/null 2>&1
+        assert_eq "$AGY_NEW_ID" "$(cat "$dir/.cs/local/antigravity-conversation")" "a typed first call takes it back"
+    )
+}
+
 # A subagent's conversation also fires SessionStart and PreInvocation, but no
 # prompt was typed into it: lastUserInput is "" and its trajectory starts
 # empty (agy 1.5.10). It never takes the binding or the armed rotation,
@@ -2815,6 +2857,7 @@ run_test test_mail_follows_a_conversation_started_with_clear
 run_test test_a_rotation_and_mail_share_the_cleared_conversations_first_call
 run_test test_a_clear_rebind_spends_the_handoff_under_the_run_guard
 run_test test_a_failed_engine_state_write_still_hands_over_the_rotation
+run_test test_a_held_conversation_takes_the_session_back_only_at_a_typed_first_call
 run_test test_a_subagent_never_takes_the_binding_or_an_armed_handoff
 run_test test_a_conversation_opened_with_resume_keeps_the_binding
 run_test test_a_conversation_resumed_after_clear_takes_the_session_back
