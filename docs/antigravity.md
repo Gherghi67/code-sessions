@@ -220,8 +220,10 @@ records nothing.
   reopen named, a new one, or one picked with `/resume` before the first turn.
   Of the conversations the run meets later, one started with `/clear` or
   `/new` takes the session at its first model call
-  ([Rotation through /clear](#rotation-through-clear)); a subagent's, or one
-  opened with `/resume` mid-run, has its own ID and leaves the binding alone.
+  ([Rotation through /clear](#rotation-through-clear)), and one that held the
+  session earlier in the run takes it back when you return to it with
+  `/resume` and type a prompt; a subagent's, or any other opened with
+  `/resume` mid-run, has its own ID and leaves the binding alone.
   The hook keeps track of this in a private directory of the run, under
   `~/.cache/cs/antigravity-runs/`, outside the session folder.
 - A fresh start keeps the old binding until the new conversation reaches the
@@ -437,8 +439,12 @@ with `/resume`; a prompt was typed into the new conversation (`lastUserInput`),
 where a subagent's carries `""`; and its first model call starts with that
 prompt (`initialNumSteps` 1), where a subagent's starts empty. All of them must
 hold, at the conversation's first model call, in the run that holds the
-session's lease. A conversation opened with `/resume` keeps today's behavior,
-as under Codex: it leaves the binding alone.
+session's lease. A conversation opened with `/resume` takes the session back
+only if it held it earlier in the same run, such as the first conversation
+after a `/clear` or `/new` detour: at the first prompt typed into it, the
+binding, the mail and the next `cs <name>` return to it, the lineage records
+the return, and an armed handoff stays armed for the next `/clear`. Any other
+conversation opened with `/resume` leaves the binding alone, as under Codex.
 
 Each launch decides whether its run takes this route: `agy --version` must
 be at least 1.5.10 and the plugin must have usable SessionStart and
@@ -546,12 +552,15 @@ hook, as it does under Claude and Codex:
 - Only the session's own conversation, in the run that holds its lease, gets
   mail. One started mid-run with `/clear` or `/new` becomes the session's at
   its first model call, before the digest is read, so the mail follows it
-  ([Rotation through /clear](#rotation-through-clear)). A subagent's
-  conversation has an ID of its own, and so does one opened with `/resume`
-  after the first turn: they leave the binding alone and get neither the
-  digest nor the wake. To have mail reach a conversation you opened with
-  `/resume`, reopen (`/exit`, then `cs <name>`) and pick it with `/resume`
-  before the first turn, which binds it ([Reopening](#reopening)). Mail that
+  ([Rotation through /clear](#rotation-through-clear)). One that held the
+  session earlier in the run and that you return to with `/resume` takes it
+  back at the first prompt typed into it, before the digest is read, so the
+  mail follows it back. A subagent's conversation has an ID of its own, and
+  so does any other opened with `/resume` after the first turn: they leave
+  the binding alone and get neither the digest nor the wake. To have mail
+  reach such a conversation, reopen (`/exit`, then `cs <name>`) and pick it
+  with `/resume` before the first turn, which binds it
+  ([Reopening](#reopening)). Mail that
   git tracks came with a pull, a merge or
   a checkout, so it is neither shown nor woken for.
 
@@ -604,7 +613,7 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
-| Mail and the binding in a conversation opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear` and `/new` do move the session ([Rotation through /clear](#rotation-through-clear)). |
+| Mail and the binding in a conversation the run never bound, opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear` and `/new` do move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
 | An automatic `/clear` after a rotation | Codex gets one (cs types `/clear` and `go`); under Antigravity you type them ([Rotation through /clear](#rotation-through-clear)). |
 | Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault, and has no setting that moves its state (it resolves everything from `$HOME`). Codex runs such a session on a home inside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
@@ -753,7 +762,10 @@ runs that check whenever `agy` is on `PATH`.
 Not checked live: whether cs's plugin hook runs in a folder `agy` does not
 trust yet, or one whose trust the user declined (the headless runs were not
 asked). What a subagent's hooks carry was measured on 1.5.10
-([Checked against agy 1.5.10](#checked-against-agy-1510)). The test suite uses
+([Checked against agy 1.5.10](#checked-against-agy-1510)). Whether `agy` can
+wake a conversation left with `/clear` on its own, for instance with its
+subagent's answer, was not checked either; if it can, that conversation takes
+the session back at that turn. The test suite uses
 a fake `agy` that fires the plugin's hooks with payloads of the measured
 shape.
 
@@ -763,5 +775,6 @@ These come later as separate changes: encrypted sessions, which need a home
 for agy inside the vault: with no home setting, that means a separate `$HOME`
 for agy that links back to the real one; an automatic `/clear` after a
 rotation, which cs would have to type into the terminal as it does for Codex;
-and a binding that follows a conversation opened with `/resume` mid-run, which
-cs leaves alone under Codex too.
+and a binding that follows a conversation the run never bound, opened with
+`/resume` mid-run, which cs leaves alone under Codex too (one that held the
+session earlier in the run already takes it back).

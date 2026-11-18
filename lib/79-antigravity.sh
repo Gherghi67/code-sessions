@@ -664,7 +664,8 @@ $prompt"
 # The run's own directory: in cs's cache, not in the session the agent can
 # write. The launch makes it 0700 before agy starts and says there whether the
 # run opened a conversation or started one; the hook marks there the
-# conversation the run works in and each one it has weighed.
+# conversation the run works in, each one it has weighed and each one that
+# has held the session.
 _antigravity_run_dir() {
     _is_uuid "${CS_RUN_ID:-}" || return 1
     printf '%s/antigravity-runs/%s\n' "${CS_CACHE_DIR:-$HOME/.cache/cs}" "$CS_RUN_ID"
@@ -811,16 +812,30 @@ _antigravity_hook_session_start() {  # payload
 
 # The first conversation to reach the model in a run is the one the run works
 # in: the main conversation's model call comes before anything it starts, and
-# a subagent's conversation has its own id. Each id is weighed once a run, so
-# later model calls stop at a file test. A later one takes the session only
-# when /clear or /new started it (_antigravity_hook_rebind_clear), and its
-# first model call is then handed the rotation armed for it. The first model
-# call of a turn carries the unread mail, after the rotation, in one answer.
+# a subagent's conversation has its own id. Each id is weighed at its first
+# model call in the run, so later model calls stop at a file test. A later one
+# takes the session only when /clear or /new started it
+# (_antigravity_hook_rebind_clear), and its first model call is then handed
+# the rotation armed for it. An id already weighed is weighed again only at a
+# prompt typed into a conversation that held the session earlier in the run
+# while another holds it: the user went back to it with /resume
+# (_antigravity_hook_retake). The first model call of a turn carries the
+# unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" AGY_HOOK_DIGEST=""
+    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST=""
     _antigravity_payload_read "$1" || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
-    if { [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; } && cs_run_lease_owned "$meta"; then
+    if [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; then
+        weigh=1
+    elif [ -f "$run_dir/held-$AGY_HOOK_ID" ] && [ ! -L "$run_dir/held-$AGY_HOOK_ID" ] \
+        && [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed \
+        && [ "$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null)" != "$AGY_HOOK_ID" ]; then
+        # The binding is read without the lease only to spare the lease every
+        # prompt of the conversation that holds the session; the retake reads
+        # it again under the lease.
+        weigh=1
+    fi
+    if [ -n "$weigh" ] && cs_run_lease_owned "$meta"; then
         # The lease runs its callback in a subshell, so the rotation comes
         # back on descriptor 3; nothing else the callback prints is kept.
         rotation=$(cs_run_with_lease "$meta" _antigravity_hook_bind "$CS_SESSION_DIR" "$AGY_HOOK_ID" "$run_dir" \
@@ -838,13 +853,20 @@ _antigravity_hook_pre_invocation() {  # payload
 # whichever it is: the one a reopen named, a new one, or one opened with
 # /resume before the first turn. Of the conversations the run meets later,
 # only one /clear or /new started may take the binding
-# (_antigravity_hook_rebind_clear); a subagent's and one /resume opened leave
-# it alone. A run without its directory cannot tell first from later, and
+# (_antigravity_hook_rebind_clear), and one that held it earlier in the run
+# takes it back when the user returns to it with /resume
+# (_antigravity_hook_retake); a subagent's, and one /resume opened that the
+# run never bound, leave it alone. Each conversation the binding moves to is
+# marked held. A run without its directory cannot tell first from later, and
 # binds only a session that has no conversation yet (or the legacy word).
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir
     if [ -n "$run_dir" ]; then
         if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
+            if [ -e "$run_dir/seen-$id" ] || [ -L "$run_dir/seen-$id" ]; then
+                _antigravity_hook_retake "$session_dir" "$id" "$run_dir" || true
+                return 0
+            fi
             _antigravity_hook_rebind_clear "$session_dir" "$id" "$run_dir" || true
             _antigravity_run_mark "$run_dir/seen-$id"
             return 0
@@ -896,7 +918,11 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             "$(date '+%Y-%m-%d %H:%M:%S')" "$source" "$id" || true
     fi
     _timeline_started "$session_dir" antigravity "$id" "$source" || true
-    [ -z "$run_dir" ] || { _antigravity_run_mark "$run_dir/bound"; _antigravity_run_mark "$run_dir/seen-$id"; }
+    if [ -n "$run_dir" ]; then
+        _antigravity_run_mark "$run_dir/bound"
+        _antigravity_run_mark "$run_dir/seen-$id"
+        _antigravity_run_mark "$run_dir/held-$id"
+    fi
 }
 
 # Under the run lease, for a conversation the run meets after it has bound
@@ -911,7 +937,9 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
 # only a process with the user's rights could plant in the run's private
 # directory, counts for nothing. Then, as Codex's SessionStart hook does at
 # /clear (_codex_hook_rebind), the binding moves to it and the lineage is
-# recorded, and the rotation /cs:rotate armed is spent for it: its context
+# recorded, the conversation is marked held, so that a /resume back to it
+# later in the run takes the session back (_antigravity_hook_retake), and
+# the rotation /cs:rotate armed is spent for it: its context
 # goes out on descriptor 3 for PreInvocation to hand the model. A spend the
 # store refused keeps the marker for the next /clear and says so there. An
 # encrypted session's (the launch refuses one, so a .cs/private here came
@@ -937,6 +965,7 @@ _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
         handoff=$(_rotation_armed_handoff "$session_dir")
     fi
     cs_binding_write "$session_dir" antigravity "$id" || return 1
+    _antigravity_run_mark "$run_dir/held-$id"
     if [ -n "$handoff" ]; then
         reason=handoff
         refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$session_dir/.cs/local/pending-handoff" "$id") || true
@@ -959,6 +988,41 @@ $(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-
         _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "$handoff" antigravity || true
     fi
     _timeline_started "$session_dir" antigravity "$id" clear || true
+    _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
+}
+
+# Under the run lease, for a conversation the run has already weighed, at a
+# prompt typed into it while another conversation holds the session. It takes
+# the session back only when it held it earlier in this run: the held mark,
+# counted only as a regular file, as clear-rebind and new are. That is the
+# conversation the user left for a /clear or /new and went back to with
+# /resume; one /resume opened that the run never bound, and every subagent,
+# leave the binding alone, as under Codex. The binding moves back and the
+# lineage is recorded as the run's first bind records a conversation opened
+# with /resume (source resume, reason rebind). Nothing is spent and nothing
+# goes out on descriptor 3: a rotation /cs:rotate armed stays armed for the
+# next /clear. An encrypted session's (the launch refuses one, so a
+# .cs/private here came mid-run) is left alone.
+_antigravity_hook_retake() {  # session_dir, conversation_id, run_dir
+    local session_dir="$1" id="$2" run_dir="$3" previous log_dir
+    [ -f "$run_dir/held-$id" ] && [ ! -L "$run_dir/held-$id" ] || return 0
+    [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
+    ! _switch_session_encrypted "$session_dir" || return 0
+    previous=$(cs_binding_read "$session_dir" antigravity) || return 1
+    [ "$previous" != "$id" ] || return 0
+    cs_binding_write "$session_dir" antigravity "$id" || return 1
+    _antigravity_run_mark "$run_dir/held-$id"
+    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
+        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
+        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: resume, ID: %s)\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "$id" || true
+    fi
+    if _is_uuid "$previous"; then
+        _timeline_rotated "$session_dir" "$previous" "$id" rebind "" antigravity || true
+    fi
+    _timeline_started "$session_dir" antigravity "$id" resume || true
+    # Last: its state lock (_cs_lock) reopens descriptor 9 and so lets go of the run guard.
     _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
 }
 
@@ -994,8 +1058,10 @@ _antigravity_hook_post_tool_use() {  # payload
 # subagent's conversation has an id of its own, as does one opened mid-run
 # with /resume, and another agy run in the folder holds no lease. One /clear
 # or /new started takes the binding at its first model call
-# (_antigravity_hook_rebind_clear), before the digest is read, so the mail
-# follows it. Mail git tracks came with a
+# (_antigravity_hook_rebind_clear), and one that held it earlier in the run
+# takes it back at a prompt typed into it after /resume
+# (_antigravity_hook_retake), both before the digest is read, so the mail
+# follows them. Mail git tracks came with a
 # pull, a merge or a checkout, not from a sender on this machine, so none of
 # it is shown then, as under Claude and Codex. The launch refuses an
 # encrypted session, so a .cs/private there came mid-run, maybe as a link out

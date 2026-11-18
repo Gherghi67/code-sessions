@@ -1957,6 +1957,46 @@ test_a_conversation_opened_with_resume_keeps_the_binding() {
     assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT.resumed")" "every hook there answers {}"
 }
 
+# A conversation that held the session earlier in the run takes it back when
+# the user returns to it with /resume and types a prompt: here the run's first
+# conversation, after a /clear detour. The binding, the mail still unread and
+# the next open follow it, and the return is recorded as a resume.
+test_a_conversation_resumed_after_clear_takes_the_session_back() {
+    local output dir mail cleared=77777777-7777-4777-8777-777777777777
+    output=$("$CS_BIN" goback --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir goback)
+    mail=$(_mailbox goback)
+    _mail_doc "$mail/new/r1.json" peer 'for the conversation it came back to'
+    rm -f "$AGY_HOOK_OUT.cleared" "$AGY_HOOK_OUT.resumed"
+    output=$(AGY_CLEARED=$cleared AGY_RESUMED=$AGY_NEW_ID "$CS_BIN" goback 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding goback)" "the binding comes back to the run's first conversation" || return 1
+    assert_file_contains "$dir/.cs/local/session.log" "Rebound antigravity conversation: $cleared -> $AGY_NEW_ID" || return 1
+    assert_eq 2 "$(grep -c -F "Session started (source: resume, ID: $AGY_NEW_ID)" "$dir/.cs/local/session.log")" \
+        "its return is logged as a resume, after the reopen's" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$cleared\",\"to\":\"$AGY_NEW_ID\",\"reason\":\"rebind\"" "the return is on the timeline" || return 1
+    assert_eq 1 "$(_injected_in "$AGY_HOOK_OUT.resumed" | grep -c 'for the conversation it came back to')" \
+        "the resumed conversation's prompt shows the unread mail" || return 1
+    output=$("$CS_BIN" goback 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $AGY_NEW_ID" "$(_agy_argv)" "the next open resumes it"
+}
+
+# Only a conversation that held the session in this run takes it back. On agy
+# 1.5.9 the run takes no /clear route, so the conversation /clear started is
+# weighed and refused without ever holding the binding; opened again with
+# /resume, it still leaves the binding alone.
+test_a_conversation_the_run_never_bound_keeps_off_on_resume() {
+    local output dir cleared=77777777-7777-4777-8777-777777777777
+    output=$("$CS_BIN" neverheld --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir neverheld)
+    rm -f "$AGY_HOOK_OUT.cleared" "$AGY_HOOK_OUT.resumed"
+    output=$(AGY_VERSION=1.5.9 AGY_CLEARED=$cleared AGY_RESUMED=$cleared "$CS_BIN" neverheld 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding neverheld)" "the binding stays" || return 1
+    assert_file_not_contains "$dir/.cs/local/session.log" "Rebound antigravity conversation: $AGY_NEW_ID -> $cleared" \
+        "and no rebind is logged"
+}
+
 # The /clear rebind stands on payloads measured on agy 1.5.10 and on cs's
 # SessionStart entry. An older agy, or a plugin installed before that entry,
 # keeps the binding with the run's first conversation and the rotation armed
@@ -2585,6 +2625,8 @@ run_test test_a_clear_rebind_spends_the_handoff_under_the_run_guard
 run_test test_a_failed_engine_state_write_still_hands_over_the_rotation
 run_test test_a_subagent_never_takes_the_binding_or_an_armed_handoff
 run_test test_a_conversation_opened_with_resume_keeps_the_binding
+run_test test_a_conversation_resumed_after_clear_takes_the_session_back
+run_test test_a_conversation_the_run_never_bound_keeps_off_on_resume
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
 run_test test_a_link_planted_at_the_new_conversation_mark_counts_for_nothing
 run_test test_mail_that_comes_during_a_turn_wakes_it_once
