@@ -1969,9 +1969,9 @@ test_a_held_conversation_takes_the_session_back_only_at_a_typed_first_call() {
         mkdir -m 700 "$run_dir" || exit 1
         : > "$run_dir/clear-rebind" && : > "$run_dir/bound" && : > "$run_dir/seen-$AGY_NEW_ID" || exit 1
         : > "$TEST_TMPDIR/planted-held"
+        # The AGY_HOOK_* fields are read by the sourced _antigravity_hook_retake.
+        # shellcheck disable=SC2034
         for case in later untyped linked vault; do
-            # Read by the sourced _antigravity_hook_retake.
-            # shellcheck disable=SC2034
             AGY_HOOK_INVOCATION=0 AGY_HOOK_TYPED=1 AGY_HOOK_STEPS=7
             rm -f "$run_dir/held-$AGY_NEW_ID"
             : > "$run_dir/held-$AGY_NEW_ID"
