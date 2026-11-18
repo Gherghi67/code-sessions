@@ -42,11 +42,16 @@ setup() {
     # pull could. AGY_CLEARED names a conversation started with /clear once
     # the Stop loop is over, which gets SessionStart, PreInvocation 0 and a
     # Stop that ended NO_TOOL_CALL, as agy 1.5.9 and 1.5.10 were measured to
-    # give one, with its answers in AGY_HOOK_OUT.cleared. AGY_RESUMED names
-    # one opened with /resume after that, which gets PreInvocation 0 and Stop
-    # but no SessionStart, its answers in AGY_HOOK_OUT.resumed. A run left
-    # before any turn (AGY_NO_TURN) fires none. Hook stdout goes to
-    # AGY_HOOK_OUT.
+    # give one, with its answers in AGY_HOOK_OUT.cleared;
+    # AGY_CLEARED_INVOCATION sets that PreInvocation's invocationNum instead
+    # of 0, and AGY_DROP_CLEARED_SEEN removes the run's seen mark for it once
+    # its hooks have run, as a run directory that lost the mark would read.
+    # AGY_RESUMED names one opened with /resume after that, which gets
+    # PreInvocation 0 and Stop but no SessionStart, its answers in
+    # AGY_HOOK_OUT.resumed. AGY_EARLY names one that gets a typed
+    # SessionStart before the run's first conversation fires anything, and
+    # no model call. A run left before any turn (AGY_NO_TURN) fires none.
+    # Hook stdout goes to AGY_HOOK_OUT.
     # Payloads carry what agy 1.5.10 was measured to send: lastUserInput, the
     # prompt typed last (AGY_PROMPT, "go") in a main conversation and "" in a
     # subagent's (AGY_SUBAGENT_PROMPT overrides it, AGY_SUBAGENT_NO_LUI drops
@@ -54,7 +59,9 @@ setup() {
     # AGY_SUBAGENT_STEPS, 0), 1 at a new main
     # conversation's first model call, 0 at a subagent's, more once the
     # trajectory has steps. AGY_ARM arms that handoff in the session after
-    # the prompt's first model call, as /cs:rotate in the conversation would.
+    # the prompt's first model call, as /cs:rotate in the conversation would;
+    # AGY_LOCK_HANDOFFS then makes .cs/handoffs read-only (555), so the store
+    # refuses to spend it.
     # AGY_CAP_CS names the cs the run asks `-engine supports clear_rotation`,
     # its answer (yes or no) in AGY_CAP_OUT. With AGY_DOCTOR_OUT the run also
     # has that cs run -doctor, its output in AGY_DOCTOR_OUT; AGY_DOCTOR_VERSION,
@@ -150,6 +157,7 @@ arm() {  # handoff basename
 }
 if [ -z "${AGY_NO_TURN:-}" ]; then
     [ -z "${AGY_TRACK_MAIL:-}" ] || git -C "$CS_SESSION_DIR" add -f .cs/local/mail
+    [ -z "${AGY_EARLY:-}" ] || fire SessionStart "$(payload "$AGY_EARLY")"
     [ -z "$new" ] || fire SessionStart "$(payload "$conversation")"
     if [ -n "$new" ]; then steps=1; else steps=5; fi
     # Each payload's extra JSON is built before the call: bash 3.2 misreads \"
@@ -157,6 +165,7 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "$steps")
     fire PreInvocation "$(payload "$conversation" "$extra")"
     [ -z "${AGY_ARM:-}" ] || arm "$AGY_ARM"
+    [ -z "${AGY_LOCK_HANDOFFS:-}" ] || chmod 555 "$CS_SESSION_META_DIR/handoffs"
     if [ -n "${AGY_CAP_CS:-}" ]; then
         if "$AGY_CAP_CS" -engine supports clear_rotation >/dev/null 2>&1; then
             echo yes > "$AGY_CAP_OUT"
@@ -201,10 +210,12 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
         [ -z "${AGY_PLANT_NEW:-}" ] \
             || ln -s "$AGY_PLANT_NEW" "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/new-$AGY_CLEARED"
         fire SessionStart "$(AGY_PROMPT="${AGY_CLEARED_PROMPT-go}" payload "$AGY_CLEARED")"
-        fire PreInvocation "$(AGY_PROMPT="${AGY_CLEARED_PROMPT-go}" payload "$AGY_CLEARED" '{"invocationNum": 0, "initialNumSteps": 1}')"
+        extra=$(printf '{"invocationNum": %s, "initialNumSteps": 1}' "${AGY_CLEARED_INVOCATION:-0}")
+        fire PreInvocation "$(AGY_PROMPT="${AGY_CLEARED_PROMPT-go}" payload "$AGY_CLEARED" "$extra")"
         fire Stop "$(AGY_PROMPT="${AGY_CLEARED_PROMPT-go}" payload "$AGY_CLEARED" \
             '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "error": "", "fullyIdle": true, "continuationActive": false}')"
         hook_out="$AGY_HOOK_OUT"
+        [ -z "${AGY_DROP_CLEARED_SEEN:-}" ] || rm -f "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/seen-$AGY_CLEARED"
     fi
     if [ -n "${AGY_RESUMED:-}" ]; then
         hook_out="$AGY_HOOK_OUT.resumed"
@@ -235,7 +246,7 @@ AGY
     export PATH="$TEST_TMPDIR/bin:$clean"
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA AGY_VERSION CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION
+    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -252,7 +263,7 @@ teardown() {
     unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION
+    unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
 }
 
@@ -2049,6 +2060,108 @@ test_a_link_planted_at_the_new_conversation_mark_counts_for_nothing() {
     assert_eq "$AGY_NEW_ID" "$(_binding plantnew)" "and the planted link does not rebind"
 }
 
+# The launch refuses an encrypted session, so a .cs/private that comes
+# mid-run was planted: a conversation /clear started then leaves the binding
+# and the armed rotation where they are, and every hook there answers {}.
+test_a_clear_in_a_session_with_a_planted_vault_changes_nothing() {
+    local output dir vault="$TEST_TMPDIR/planted" cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    output=$("$CS_BIN" clearvault --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir clearvault)
+    mkdir -p "$vault"
+    rm -f "$AGY_HOOK_OUT.cleared"
+    output=$(AGY_PLANT_VAULT="$vault" AGY_ARM=$name AGY_CLEARED=$cleared "$CS_BIN" clearvault 2>&1) || true
+    assert_eq "$AGY_NEW_ID" "$(_binding clearvault)" "the binding stays" || return 1
+    assert_eq unconsumed "$(_handoff_status clearvault "$name")" "and the armed handoff" || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff" "and its marker" || return 1
+    assert_file_exists "$AGY_HOOK_OUT.cleared" "the cleared conversation's hooks ran" || return 1
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT.cleared")" "and every one answered {}"
+}
+
+# What git tracks under .cs/local came with a pull, not from /cs:rotate in
+# this checkout, and an armed marker there may have too (here the mailbox is
+# tracked mid-run, as a pull could): the conversation /clear started still
+# takes the binding, but the handoff and its marker are left as they were, and
+# no rotation is handed to it.
+test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff() {
+    local output dir mail cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    output=$("$CS_BIN" trackedclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir trackedclear)
+    mail=$(_mailbox trackedclear)
+    _mail_doc "$mail/new/t1.json" peer 'shipped by a pull'
+    [ -d "$dir/.git" ] || git -C "$dir" init -q
+    rm -f "$AGY_HOOK_OUT.cleared"
+    output=$(AGY_TRACK_MAIL=1 AGY_ARM=$name AGY_CLEARED=$cleared "$CS_BIN" trackedclear 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "$cleared" "$(_binding trackedclear)" "the binding moves" || return 1
+    assert_eq unconsumed "$(_handoff_status trackedclear "$name")" "the armed handoff is not spent" || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff" "and its marker stays" || return 1
+    assert_output_not_contains "$(_injected_in "$AGY_HOOK_OUT.cleared")" 'Conversation Rotation' \
+        "and no rotation is handed to the cleared conversation"
+}
+
+# A spend the handoff store refuses keeps the marker armed for the next
+# /clear: the cleared conversation still takes the binding and is handed the
+# rotation, with the store's refusal and the retry to tell the user about.
+test_a_refused_spend_at_clear_keeps_the_marker_and_says_so() {
+    local output dir context status=0 cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    output=$("$CS_BIN" lockedclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir lockedclear)
+    rm -f "$AGY_HOOK_OUT.cleared"
+    output=$(AGY_ARM=$name AGY_CLEARED=$cleared AGY_LOCK_HANDOFFS=1 "$CS_BIN" lockedclear 2>&1) || status=$?
+    # Writable again, so teardown can remove it.
+    chmod 755 "$dir/.cs/handoffs"
+    assert_eq 0 "$status" "the run ends as agy did: $output" || return 1
+    assert_eq "$cleared" "$(_binding lockedclear)" "the binding moves" || return 1
+    assert_eq unconsumed "$(_handoff_status lockedclear "$name")" "the handoff stays unconsumed" || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff" "the marker stays armed for the next /clear" || return 1
+    context=$(_injected_in "$AGY_HOOK_OUT.cleared")
+    assert_output_contains "$context" 'Conversation Rotation' "the rotation still loads" || return 1
+    assert_output_contains "$context" "could not mark .cs/handoffs/$name consumed: mktemp: .*Permission denied" \
+        "the context carries the store's refusal" || return 1
+    assert_output_contains "$context" 'will load this same handoff again' "and says the next /clear retries"
+}
+
+# Only a conversation's first model call can take the binding: weighed first
+# at a later call, a conversation /clear started leaves the binding and the
+# armed rotation alone.
+test_a_cleared_conversation_first_weighed_past_its_first_call_keeps_off() {
+    local output cleared=77777777-7777-4777-8777-777777777777 name=2026-11-17-rotate.md
+    output=$("$CS_BIN" latecall --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_ARM=$name AGY_CLEARED=$cleared AGY_CLEARED_INVOCATION=1 "$CS_BIN" latecall 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding latecall)" "the binding stays" || return 1
+    assert_eq unconsumed "$(_handoff_status latecall "$name")" "and the armed handoff"
+}
+
+# A conversation weighed again while it already holds the session records
+# nothing new: no second start, no rotation from it to itself. Here the run's
+# directory lost the seen mark of the conversation /clear started, so the
+# first model call of its next turn reaches the /clear rebind again; a link
+# at the mark, dangling or not, would send it to the retake instead.
+test_a_cleared_conversation_weighed_again_while_bound_records_nothing() {
+    local output dir cleared=77777777-7777-4777-8777-777777777777
+    output=$("$CS_BIN" reweigh --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir reweigh)
+    output=$(AGY_CLEARED=$cleared AGY_DROP_CLEARED_SEEN=1 AGY_RESUMED=$cleared "$CS_BIN" reweigh 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "$cleared" "$(_binding reweigh)" "the cleared conversation holds the binding" || return 1
+    assert_eq 1 "$(grep -c -F "Session started (source: clear, ID: $cleared)" "$dir/.cs/local/session.log")" \
+        "its start is logged once" || return 1
+    assert_file_not_contains "$dir/.cs/timeline.jsonl" "\"from\":\"$cleared\",\"to\":\"$cleared\"" \
+        "and no rotation from it to itself is recorded"
+}
+
+# SessionStart marks a new conversation only once the run has bound its own:
+# one agy started before that, never weighed then, cannot take the binding
+# when it reaches the model later.
+test_a_conversation_started_before_the_run_bound_never_takes_it() {
+    local output other=88888888-8888-4888-8888-888888888888 name=2026-11-17-rotate.md
+    output=$("$CS_BIN" early --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_EARLY=$other AGY_ARM=$name AGY_RESUMED=$other "$CS_BIN" early 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding early)" "the binding stays" || return 1
+    assert_eq unconsumed "$(_handoff_status early "$name")" "and the armed handoff"
+}
+
 # Mail that comes while a turn runs keeps the turn going once it ends, naming
 # the sender, and the wake is not repeated for the same message. Mail a
 # prompt showed and the turn left unread wakes it once too, as under Claude.
@@ -2694,6 +2807,12 @@ run_test test_a_conversation_resumed_after_clear_takes_the_session_back
 run_test test_a_conversation_the_run_never_bound_keeps_off_on_resume
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
 run_test test_a_link_planted_at_the_new_conversation_mark_counts_for_nothing
+run_test test_a_clear_in_a_session_with_a_planted_vault_changes_nothing
+run_test test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff
+run_test test_a_refused_spend_at_clear_keeps_the_marker_and_says_so
+run_test test_a_cleared_conversation_first_weighed_past_its_first_call_keeps_off
+run_test test_a_cleared_conversation_weighed_again_while_bound_records_nothing
+run_test test_a_conversation_started_before_the_run_bound_never_takes_it
 run_test test_mail_that_comes_during_a_turn_wakes_it_once
 run_test test_a_wake_names_the_sender_of_a_files_first_document
 run_test test_a_wake_names_five_senders_at_most
