@@ -1281,6 +1281,27 @@ class TransplantTests(HelperFixture):
         self.assertEqual([r["type"] for r in records], ["user", "assistant"])
         self.assertTrue(self.text_of(records[0]).startswith("[cs carried"))
 
+    def test_prose_a_native_result_closes_ends_its_record_first(self):
+        # The line closing the fence the prose left open goes on the result's
+        # part. The result crosses as a tool_result, so the prose ends before it.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "show me")),
+            rollout_line("response_item", {"type": "function_call", "call_id": "a", "name": "exec_command",
+                                           "arguments": '{"cmd":"pwd"}'}),
+            rollout_line("response_item", codex_message("assistant", "Here:\n```python\nprint(1)")),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "a", "output": "/x"}),
+            rollout_line("response_item", codex_message("assistant", "later *emph*")),
+            rollout_line("response_item", {"type": "custom_tool_call", "name": "apply_patch", "call_id": "b",
+                                           "input": "*** Begin Patch"})])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([use["name"] for use in self.blocks(records, "tool_use")], ["Bash"])
+        texts = [self.text_of(r) for r in records
+                 if r["type"] == "assistant" and r["message"]["content"][0]["type"] == "text"]
+        self.assertTrue(any("print(1)" in text for text in texts))
+        self.assertTrue(any("later *emph*" in text for text in texts))
+        self.assertEqual([text for text in texts if "print(1)" in text and "later" in text], [])
+
     def test_a_command_run_from_code_mode_crosses_as_its_output(self):
         # Code mode prints what a script passes to text(), as JSON when it is
         # not a string, each call its own part, so a command's result arrives
@@ -2028,6 +2049,33 @@ class TransplantTests(HelperFixture):
         self.assertEqual(rows[4]['result']['content'][0]['text'], 'MARK-07 grep hit')
         self.assertNotIn('[tool call:', str([r for r in rows if r['type'] == 'AgentMessage']))
 
+    def test_prose_a_native_result_closes_ends_its_reply_first(self):
+        # The line closing the fence the prose left open goes on the result's
+        # part. The result is drawn in its command row, so the prose ends before it.
+        path = self.root / (CLAUDE_ID + '.jsonl')
+        path.write_text('\n'.join([
+            claude_record('user', 'go', '1', None),
+            claude_record('assistant', [{'type': 'tool_use', 'name': 'Bash', 'id': 'c1',
+                                         'input': {'command': 'pwd'}}], '2', '1'),
+            claude_record('assistant', [{'type': 'text', 'text': 'Here:\n```python\nprint(1)'}], '3', '2'),
+            claude_record('user', [{'type': 'tool_result', 'tool_use_id': 'c1', 'content': '/x'}], '4', '3'),
+            claude_record('assistant', [{'type': 'text', 'text': 'later'}], '5', '4')]) + '\n')
+        executable = os.environ.get('CS_CODEX_REAL_BIN', str(self.fake))
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+            '--instructions-file', str(self.instructions), '--history-from-claude', str(path),
+        ], env=self.env, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        events = [json.loads(line)['payload'] for line in rollout.read_text().splitlines()]
+        rows = [e['item'] for e in events if e.get('type') == 'item_completed']
+        # A native carry, not the text one a failed check falls back to.
+        self.assertIn('CommandExecution', [row['type'] for row in rows])
+        replies = [row['content'][0]['text'] for row in rows if row['type'] == 'AgentMessage']
+        self.assertTrue(any('print(1)' in text for text in replies))
+        self.assertTrue(any('later' in text for text in replies))
+        self.assertEqual([text for text in replies if 'print(1)' in text and 'later' in text], [])
+
     def test_failed_and_empty_claude_rows_round_trip(self):
         # Codex hands an empty command output back as null; the carry must still verify.
         executable = os.environ.get('CS_CODEX_REAL_BIN', str(self.fake))
@@ -2089,14 +2137,15 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         events = [json.loads(line)['payload'] for line in
                   next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
-        user, bash, lookup, fallback = [e['item'] for e in events if e.get('type') == 'item_completed']
+        # The unmatched call came before the matched results and the orphan after them.
+        user, bash, lookup, call, orphan = [e['item'] for e in events if e.get('type') == 'item_completed']
         self.assertEqual(bash['status'], 'failed')
         self.assertEqual(bash['exit_code'], 2)
         self.assertEqual(bash['aggregated_output'], 'Exit c\n[cs cut the remaining 13 characters]')
         self.assertEqual((lookup['server'], lookup['tool'], lookup['status']), ('server', 'lookup', 'failed'))
         self.assertEqual(lookup['result']['content'][0]['text'], 'unavai\n[cs cut the remaining 5 characters]\n[image]')
-        self.assertEqual(fallback['content'][0]['text'],
-                         '[tool call: Read]\n```\nfile_path: pending\n```\n\n[tool result]\n```\norphan\n```')
+        self.assertEqual(call['content'][0]['text'], '[tool call: Read]\n```\nfile_path: pending\n```')
+        self.assertEqual(orphan['content'][0]['text'], '[tool result]\n```\norphan\n```')
 
     def test_claude_transcript_starts_a_thread_after_the_context(self):
         path = self.sample_transcript()

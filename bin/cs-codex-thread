@@ -1118,6 +1118,11 @@ def claude_messages(message, cwd, version):
         if index not in pairs:
             if index not in results:
                 prose.append(parts[index])
+            elif prose:
+                # A result's part opens with the line closing a block the prose
+                # left open (History.add); without it, the prose ends here.
+                yield "assistant", "\n\n".join(prose), {}
+                prose = []
             index += 1
             continue
         if prose:
@@ -1274,6 +1279,10 @@ def display_items(message, cwd, native=True):
             yield rows[index]
         elif index not in consumed:
             prose.append(part)
+        elif prose:
+            # The result's part may hold the line closing a block the prose left open.
+            yield reply(prose, "commentary")
+            prose = []
     if prose:
         yield reply(prose, "final_answer")
 
