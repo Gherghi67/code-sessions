@@ -214,13 +214,14 @@ records nothing.
 | `cs <name>` unattended (no terminal) | `--conversation <id>` |
 | `cs <name>` in the spawn's own window, its seed staged | `--conversation <id>` when one is bound, then `--prompt-interactive <kickoff>`; asks nothing ([Spawn briefs](#spawn-briefs)) |
 | `cs <name> --resume` | `--conversation <id>`; requires a bound conversation or a recoverable handoff receipt |
+| `cs <name> --resume-conversation <uuid>` | `--conversation <uuid>`; binds the selected conversation when its first prompt reaches the model |
 | `cs <name> --fresh` | a new conversation |
 
 - The run's first conversation to reach the model is the session's: the one a
   reopen named, a new one, or one picked with `/resume` before the first turn.
   Of the conversations the run meets later, one started with `/clear` or
   `/new` takes the session at its first model call
-  ([Rotation through /clear](#rotation-through-clear)), and one that held the
+  ([Rotation through /clear](#rotation-through-clear)). One that held the
   session earlier in the run takes it back when you return to it with
   `/resume` and type a prompt; a subagent's, or any other opened with
   `/resume` mid-run, has its own ID and leaves the binding alone.
@@ -494,10 +495,18 @@ timeline recorded the rotation with reason `handoff`, and the reply began by
 reading the handoff and appended its `## Successor report`. `agy`'s exit line
 named the new conversation, which the next `cs <name>` resumes.
 
-The route and initial-prompt flag were checked against agy 1.4.12's help,
-embedded exit documentation, and the native command reference. Local
-regressions use fake agy with isolated state. A live model turn exercising
-the exit/reopen route has not been run; the `/clear` route has (below).
+### Forks
+
+`/fork` copies the current Antigravity conversation. In an open cs run, the
+original conversation keeps the binding, unread cs mail, and any armed
+rotation. Antigravity 1.5.12 gives a fork its own conversation ID without a
+SessionStart hook, and prompt history is shared by terminals in the same
+workspace. To move the session to the fork, type `/exit` from the fork and
+copy the UUID from agy's printed resume command. Run
+`cs <name> --resume-conversation <uuid>` and send a prompt. When that prompt
+reaches the model, the binding and unread mail follow the selected
+conversation. The rotation stays armed. If you exit before sending a prompt,
+the previous binding stays in place.
 
 ## Switching engines
 
@@ -703,7 +712,7 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
-| Mail and the binding in a conversation the run never bound, opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear` and `/new` do move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
+| Mail and the binding in a conversation the run never bound, opened with `/resume` or `/fork` after the first turn | The bound conversation keeps the digest and wake. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail), [Forks](#forks)). `/clear` and `/new` move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
 | An automatic `/clear` after a rotation | Codex gets one (cs types `/clear` and `go`); under Antigravity you type them ([Rotation through /clear](#rotation-through-clear)). |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |

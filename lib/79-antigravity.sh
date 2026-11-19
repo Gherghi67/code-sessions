@@ -368,6 +368,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     local meta_dir="$session_dir/.cs" agy_bin="${AGY_BIN:-agy}"
     local binding_file recorded reopen response="" actor run_dir=""
     local pending_handoff rotation_handoff="" rotation_origin="" prompt="" receipt_dir
+    local requested="${_cs_agy_resume_id:-}"
     local -a reopen_args=() prompt_args=()
 
     [ -d "$session_dir" ] || {
@@ -404,6 +405,10 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         return 1
     }
     export CS_BIN
+    if [ -n "$requested" ] && ! _antigravity_rotation_hook_ready PreInvocation pre-invocation "$CS_BIN"; then
+        _antigravity_launch_error "--resume-conversation requires the cs Antigravity binding hook. Enable the cs plugin and run setup.sh again."
+        return 1
+    fi
     if _switch_session_encrypted "$session_dir" && ! {
         _antigravity_rotation_hook_ready PreInvocation pre-invocation "$CS_BIN" &&
             _antigravity_rotation_hook_ready PostToolUse post-tool-use "$CS_BIN"
@@ -446,11 +451,12 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
             reopen=""
             ;;
         resume)
-            [ -n "$recorded" ] || {
+            if [ -n "$requested" ]; then
+                reopen="$requested"
+            elif [ -z "$recorded" ]; then
                 _antigravity_launch_error "Cannot resume: no recorded Antigravity conversation. Use --fresh."
                 return 1
-            }
-            if [ -n "${_cs_switch_resume:-}" ]; then
+            elif [ -n "${_cs_switch_resume:-}" ]; then
                 rotation_handoff=$(_rotation_armed_handoff "$session_dir")
                 [ -n "$rotation_handoff" ] || {
                     _antigravity_launch_error "No armed handoff to carry into the switched conversation."
@@ -602,8 +608,13 @@ $prompt"
     # The hook remembers in this run's own directory, out of the session the
     # agent can write, which conversation the run works in; the run's cleanup
     # removes it.
-    if run_dir=$(_antigravity_run_dir_prepare "${vault_home:+protected}" "$session_dir"); then
+    local protected="$vault_home$requested"
+    if run_dir=$(_antigravity_run_dir_prepare "${protected:+protected}" "$session_dir"); then
         _cs_run_helper_dir=$run_dir
+        if [ -n "$requested" ] && ! (umask 077; set -C; printf '%s\n' "$requested" > "$run_dir/resume-conversation"); then
+            _antigravity_launch_error "Could not record the selected Antigravity conversation."
+            return 1
+        fi
         if [ -n "$reopen" ]; then
             printf 'resume\n' > "$run_dir/opened" || true
         else
@@ -627,6 +638,10 @@ $prompt"
             _antigravity_run_mark "$run_dir/clear-rebind"
         fi
     else
+        if [ -n "$requested" ]; then
+            _antigravity_launch_error "Cannot prepare a private Antigravity run directory for --resume-conversation."
+            return 1
+        fi
         if [ -n "$rotation_handoff" ]; then
             _antigravity_launch_error "Cannot prepare a private Antigravity run directory; the handoff stays pending."
             return 1
@@ -713,6 +728,13 @@ _antigravity_run_dir() {
 
 _antigravity_run_dir_ok() {  # run_dir
     [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(_cs_perm_bits "$1")" = 700 ]
+}
+
+# Until the selected conversation has bound, mail stays queued and only
+# that conversation can claim the run. This record lives in the run cache.
+_antigravity_explicit_resume_pending() {  # run_dir
+    [ -n "$1" ] && { [ -e "$1/resume-conversation" ] || [ -L "$1/resume-conversation" ]; } \
+        && { [ ! -f "$1/bound" ] || [ -L "$1/bound" ]; }
 }
 
 # A mark is made only where nothing stands yet, a link included (noclobber
@@ -933,6 +955,12 @@ _antigravity_hook_pre_invocation() {  # payload
 _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous opened="" source=startup reason=fresh log_dir handoff="" receipt_dir
     if [ -n "$run_dir" ]; then
+        if _antigravity_explicit_resume_pending "$run_dir"; then
+            local expected
+            [ -f "$run_dir/resume-conversation" ] && [ ! -L "$run_dir/resume-conversation" ] \
+                && IFS= read -r expected < "$run_dir/resume-conversation" \
+                && [ "$id" = "$expected" ] && [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
+        fi
         if [ -e "$run_dir/bound" ] || [ -L "$run_dir/bound" ]; then
             if [ -e "$run_dir/seen-$id" ] || [ -L "$run_dir/seen-$id" ]; then
                 _antigravity_hook_retake "$session_dir" "$id" "$run_dir" || true
@@ -1164,6 +1192,7 @@ _antigravity_mail_dir() {  # conversation_id
     local bound private run_dir=""
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 1
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
+    _antigravity_explicit_resume_pending "$run_dir" && return 1
     _antigravity_vault_ok "$CS_SESSION_DIR" "$run_dir" || return 1
     bound=$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null) || return 1
     [ "$bound" = "$1" ] || return 1
