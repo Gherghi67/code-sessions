@@ -246,6 +246,22 @@ def make_shared_dirs(shared_dir, wanted):
         if not os.path.lexists(path):
             os.makedirs(path, mode=0o700, exist_ok=True)
 
+def check_private_state(path, rel, include=None, exclude=(), parent=None):
+    """Never follow a link while checking native state, including nested entries."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if entry.name in exclude or (include is not None and entry.name not in include):
+                    continue
+                child = os.path.join(rel, entry.name)
+                if entry.is_symlink():
+                    raise OSError("linked private state at " + child)
+                if entry.is_dir(follow_symlinks=False):
+                    check_private_state(entry.name, child, parent=fd)
+    finally:
+        os.close(fd)
+
 def main():
     gem_shared = os.path.join(shared, ".gemini")
     cli_shared = os.path.join(gem_shared, "antigravity-cli")
@@ -268,6 +284,10 @@ def main():
             copy_in(os.path.join(cli, name), os.path.join(cli_shared, name))
     elif mode == "check":
         guard_settings(os.path.join(cli, "settings.json"))
+    if not report:
+        check_private_state(os.path.join(home, ".gemini"), ".gemini",
+                            include=gem_private - {"antigravity-cli", "GEMINI.md"})
+        check_private_state(os.path.join(home, cli), cli, exclude=cli_links)
 
 try:
     main()

@@ -674,6 +674,9 @@ vault is not mounted, and when `antigravity-home` is a link or not a folder.
 Encrypted launches also require enabled PreInvocation and PostToolUse hooks
 from the cs build that opens the session, and a run directory in cs's
 protected cache. A missing or replaced vault stops the next model call.
+Native private state such as conversations and history must use regular
+paths inside the vault. cs refuses links in that state, including links
+inside conversation folders.
 agy did not rewrite its login file when it refreshed its access token
 (unchanged from 2026-11-09 to 2026-11-19 across daily use), so the link holds;
 a file the next open finds in its place is moved aside like anything else,

@@ -1740,6 +1740,36 @@ test_an_encrypted_run_stops_when_its_native_home_is_unavailable() {
     done
 }
 
+test_an_encrypted_open_refuses_links_in_native_state() {
+    local output state
+    AGY_NO_TURN=1 "$CS_BIN" privstate --engine antigravity || return 1
+    _vault_session privstate
+    state="$VAULT_HOME/.gemini/antigravity-cli"
+    mkdir -p "$state/conversations" "$TEST_TMPDIR/external"
+    ln -s "$TEST_TMPDIR/external" "$state/conversations/archive"
+    : > "$AGY_LOG"
+    if output=$(AGY_NO_TURN=1 "$CS_BIN" privstate --fresh 2>&1); then
+        echo "  FAIL: encrypted launch accepted a linked native state path"; return 1
+    fi
+    assert_output_contains "$output" "linked private state" "the open names the unsafe path" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/external")" "nothing is written to the external directory"
+}
+
+test_an_encrypted_turn_stops_on_a_link_in_native_state() {
+    local output state
+    AGY_NO_TURN=1 "$CS_BIN" statecheck --engine antigravity || return 1
+    _vault_session statecheck
+    state="$VAULT_HOME/.gemini/antigravity-cli"
+    mkdir -p "$TEST_TMPDIR/external"
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_VAULT_LINK=.gemini/antigravity-cli/history.jsonl AGY_VAULT_LINK_TO="$TEST_TMPDIR/external/history.jsonl" \
+        "$CS_BIN" statecheck --fresh 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$AGY_HOOK_OUT" '"terminationBehavior":"terminate"' "the next model call stops" || return 1
+    assert_eq "$TEST_TMPDIR/external/history.jsonl" "$(readlink "$state/history.jsonl")" "the unsafe path is left for inspection" || return 1
+    assert_not_exists "$TEST_TMPDIR/external/history.jsonl" "the link target is untouched"
+}
+
 # A command that plants a file in agy's home during the run: the PostToolUse
 # after it moves the file aside and restores the home, so the next tool of
 # the same step finds it gone, and the next model call stops the turn,
@@ -3260,6 +3290,8 @@ run_test test_a_linked_vault_home_stops_the_open
 run_test test_an_encrypted_run_stops_when_its_private_directory_changes
 run_test test_an_encrypted_launch_requires_both_vault_hooks
 run_test test_an_encrypted_run_stops_when_its_native_home_is_unavailable
+run_test test_an_encrypted_open_refuses_links_in_native_state
+run_test test_an_encrypted_turn_stops_on_a_link_in_native_state
 run_test test_a_command_that_changes_the_vault_home_stops_the_turn
 run_test test_a_command_that_changes_the_vault_settings_gets_them_put_back
 run_test test_an_untouched_vault_home_never_stops_a_turn
