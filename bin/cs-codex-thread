@@ -358,8 +358,7 @@ def carried_note(engine, native_id, limit):
     source = ENGINE_NAMES.get(engine, engine)
     kind = "thread" if engine == "codex" else "conversation"
     hidden = "Codex's reasoning is" if engine == "codex" else "Claude's thinking is"
-    return ("[cs carried this conversation over from {} {} {}. Tool calls and their results appear "
-            "as text, each result cut to its first {:,} characters; {} not included. Those tools "
+    return ("[cs carried this conversation over from {} {} {}. Each tool result carries its first {:,} characters; {} not included. Those tools "
             "were {}'s: use your own from here on.]").format(source, kind, native_id, limit, hidden, source)
 
 
@@ -618,8 +617,8 @@ def codex_function_call(name, arguments):
         except (ValueError, RecursionError):
             value = None
     if isinstance(value, (dict, list)):
-        return tool_call(name, value, arguments if isinstance(arguments, str) else None)
-    return text_call(name, arguments, "arguments as written")
+        return tool_call(name, value, arguments if isinstance(arguments, str) else None), value
+    return text_call(name, arguments, "arguments as written"), None
 
 
 def codex_item(history, item, timestamp, limit):
@@ -639,25 +638,41 @@ def codex_item(history, item, timestamp, limit):
         elif item.get("role") == "assistant":
             history.add("assistant", "\n\n".join(texts), timestamp)
         # Developer and system messages are Codex's own instructions.
-    elif kind == "function_call":
-        history.add("assistant", codex_function_call(item.get("name"), item.get("arguments")), timestamp,
-                    closed=True)
-    elif kind == "custom_tool_call":
-        history.add("assistant", text_call(item.get("name"), item.get("input")), timestamp, closed=True)
+    elif kind in ("function_call", "custom_tool_call", "local_shell_call"):
+        name = item.get("name")
+        if kind == "function_call":
+            text, args = codex_function_call(name, item.get("arguments"))
+        elif kind == "custom_tool_call":
+            raw = item.get("input")
+            text = text_call(name, raw)
+            args = {"input": raw} if isinstance(raw, str) else None
+        else:
+            name = "shell"
+            action = item.get("action")
+            args = action if isinstance(action, dict) else {}
+            command = args.get("command")
+            if isinstance(command, list):
+                command = shlex.join(str(word) for word in command)
+            text = text_call(name, command if isinstance(command, str) else None)
+        history.add("assistant", text, timestamp, closed=True, tool={
+            "call": item.get("call_id") or item.get("id"), "name": name, "input": args,
+            "namespace": item.get("namespace"), "failed": item.get("status") == "failed"})
     elif kind in ("function_call_output", "custom_tool_call_output"):
-        # Codex records no failure flag: a failed call's output says so itself.
         call_id = item.get("call_id")
-        code_mode = isinstance(call_id, str) and history.calls.get(call_id) in CODEX_CODE_MODE
-        text, images = codex_output(item.get("output"), code_mode, limit)
-        history.add("assistant", tool_result(trimmed(text), images, limit), timestamp, closed=True)
-    elif kind == "local_shell_call":
-        action = item.get("action")
-        command = action.get("command") if isinstance(action, dict) else None
-        if isinstance(command, list):
-            # Quoted as a shell would, so each word reads back as itself.
-            command = shlex.join(str(word) for word in command)
-        history.add("assistant", text_call("shell", command if isinstance(command, str) else None), timestamp,
-                    closed=True)
+        name = history.calls.get(call_id) if isinstance(call_id, str) else None
+        code_mode = name in CODEX_CODE_MODE
+        output = item.get("output")
+        text, images = codex_output(output, code_mode, limit)
+        text = trimmed(text)
+        failed = item.get("status") == "failed" or (isinstance(output, dict) and output.get("isError") is True)
+        if code_mode and isinstance(output, list) and output and isinstance(output[0], dict):
+            header = output[0].get("text")
+            failed |= isinstance(header, str) and header.startswith("Script failed\n") and bool(CODEX_SCRIPT_HEADER.fullmatch(header))
+        if name == "exec_command" and isinstance(output, str):
+            failed |= bool(re.match(r"Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess exited with code [1-9][0-9]*\n", output))
+        history.add("assistant", tool_result(text, images, limit, failed), timestamp, closed=True, tool={
+            "result": call_id, "failed": failed,
+            "output": text[:limit] + cut_note(text, limit) + "\n[image]" * images})
     elif kind == "web_search_call":
         action = item.get("action")
         query = action.get("query") if isinstance(action, dict) else None
@@ -1023,6 +1038,94 @@ def read_claude(path, limit):
     return history.export()
 
 
+def matched_tools(tools):
+    calls, results = defaultdict(list), defaultdict(list)
+    for index, tool in tools.items():
+        key = tool.get("call") if "call" in tool else tool["result"]
+        if isinstance(key, str) and key:
+            (calls if "call" in tool else results)[key].append(index)
+
+    # Match only unambiguous pairs within this assistant reply. Missing,
+    # duplicate and orphaned parts keep their original position and text.
+    for key, indices in calls.items():
+        matches = results.get(key, [])
+        if len(indices) == len(matches) == 1 and indices[0] < matches[0]:
+            yield indices[0], matches[0]
+
+
+def claude_tool_use(call):
+    name, args, namespace = call["name"], call["input"], call["namespace"]
+    if not isinstance(name, str) or not isinstance(args, dict) or not native_arguments(args):
+        return None
+    tool_name = name if name.startswith("mcp__") else "mcp__codex__" + name
+    if isinstance(namespace, str) and namespace not in ("", "functions"):
+        prefix = namespace if namespace.startswith("mcp__") else "mcp__codex__" + namespace
+        tool_name = prefix + "__" + name
+    elif name in ("exec_command", "shell", "shell_command"):
+        command = args.get("command", args.get("cmd"))
+        if isinstance(command, list):
+            command = shlex.join(str(word) for word in command)
+        if isinstance(command, str) and not ("cmd" in args and "command" in args):
+            args = dict(args, command=command)
+            args.pop("cmd", None)
+            tool_name = "Bash"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tool_name):
+        return None
+    return {"type": "tool_use", "id": "toolu_cs_" + uuid.uuid4().hex, "name": tool_name, "input": args}
+
+
+def claude_messages(message):
+    """Emit complete Claude tool exchanges. Parallel calls share an assistant
+    message; their results follow in original completion order. Never leave a
+    pending tool request at the end of history for the next engine to run."""
+    tools = message.get("tools", {})
+    pairs = {}
+    for call, result in matched_tools(tools):
+        use = claude_tool_use(tools[call])
+        if use is not None:
+            pairs[call] = (result, use)
+    if not pairs:
+        yield message["role"], message["text"], {}
+        return
+    results = {result for result, _ in pairs.values()}
+    parts = message["parts"]
+    index = 0
+    prose = []
+    while index < len(parts):
+        if index not in pairs:
+            if index not in results:
+                prose.append(parts[index])
+            index += 1
+            continue
+        if prose:
+            yield "assistant", "\n\n".join(prose), {}
+            prose = []
+        # Claude displays one tool row per assistant record. Its parallel
+        # tool blocks share the API message ID, each with its own record UUID
+        # for sourceToolAssistantUUID on the corresponding result.
+        batch = []
+        request_id = "req_cs_" + uuid.uuid4().hex
+        while index in pairs:
+            result, use = pairs[index]
+            assistant_id = str(uuid.uuid4())
+            failed = tools[index]["failed"] or tools[result]["failed"]
+            batch.append((result, use, failed, assistant_id))
+            yield "assistant", [use], {"uuid": assistant_id, "requestId": request_id}
+            index += 1
+        for result, use, failed, assistant_id in sorted(batch, key=lambda entry: entry[0]):
+            output = tools[result]["output"]
+            if failed:
+                # Claude's detailed transcript can render only the error line
+                # for a failed tool, even when a parallel call succeeded.
+                output = "[" + use["name"] + "] " + output
+            block = {"type": "tool_result", "tool_use_id": use["id"], "content": output, "is_error": failed}
+            detail = ({"stdout": output, "stderr": "", "interrupted": False, "isImage": False,
+                       "noOutputExpected": False} if use["name"] == "Bash" and not failed else output)
+            yield "user", [block], {"sourceToolAssistantUUID": assistant_id, "toolUseResult": detail}
+    if prose:
+        yield "assistant", "\n\n".join(prose), {}
+
+
 def claude_transcript(messages, session_id, cwd, version, branch, note):
     messages = list(messages)
     if messages and messages[0]["role"] == "user":
@@ -1032,23 +1135,26 @@ def claude_transcript(messages, session_id, cwd, version, branch, note):
     now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
     lines, parent = [], None
     for message in messages:
-        record_id = str(uuid.uuid4())
-        record = {"parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd,
-                  "sessionId": session_id, "version": version, "gitBranch": branch,
-                  "type": message["role"], "uuid": record_id, "timestamp": message["timestamp"] or now}
-        if message["role"] == "user":
-            record["message"] = {"role": "user", "content": message["text"]}
-        else:
-            record["message"] = {
-                "id": "msg_cs_" + uuid.uuid4().hex, "type": "message", "role": "assistant",
-                "model": CARRIED_MODEL, "content": [{"type": "text", "text": message["text"]}],
-                "stop_reason": "end_turn", "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0,
-                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
-            }
-            record["requestId"] = "req_cs_" + uuid.uuid4().hex
-        lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-        parent = record_id
+        for role, content, extra in claude_messages(message):
+            record_id = extra.get("uuid") or str(uuid.uuid4())
+            record = {"parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd,
+                      "sessionId": session_id, "version": version, "gitBranch": branch,
+                      **extra, "type": role, "uuid": record_id, "timestamp": message["timestamp"] or now}
+            if role == "user":
+                record["message"] = {"role": "user", "content": content}
+            else:
+                request_id = extra.get("requestId") or "req_cs_" + uuid.uuid4().hex
+                record["requestId"] = request_id
+                record["message"] = {
+                    "id": "msg_" + request_id[4:], "type": "message", "role": "assistant",
+                    "model": CARRIED_MODEL,
+                    "content": content if isinstance(content, list) else [{"type": "text", "text": content}],
+                    "stop_reason": "tool_use" if isinstance(content, list) else "end_turn", "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0,
+                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                }
+            lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            parent = record_id
     return "\n".join(lines) + "\n"
 
 
@@ -1120,22 +1226,12 @@ def display_items(message, cwd):
                "content": [{"type": "text", "text": message["text"], "text_elements": []}]}
         return
     tools = message.get("tools", {})
-    calls, results = defaultdict(list), defaultdict(list)
-    for index, tool in tools.items():
-        key = tool.get("call") if "call" in tool else tool["result"]
-        if isinstance(key, str) and key:
-            (calls if "call" in tool else results)[key].append(index)
-
-    # Match only unambiguous pairs within this assistant reply. Missing,
-    # duplicate and orphaned parts keep their original position and text.
     rows, consumed = {}, set()
-    for key, indices in calls.items():
-        matches = results.get(key, [])
-        if len(indices) == len(matches) == 1 and indices[0] < matches[0]:
-            row = native_tool_item(tools[indices[0]], tools[matches[0]], cwd)
-            if row is not None:
-                rows[indices[0]] = row
-                consumed.add(matches[0])
+    for call, result in matched_tools(tools):
+        row = native_tool_item(tools[call], tools[result], cwd)
+        if row is not None:
+            rows[call] = row
+            consumed.add(result)
 
     def reply(parts, phase):
         return {"type": "AgentMessage", "id": str(uuid.uuid4()), "phase": phase,

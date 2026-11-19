@@ -136,17 +136,15 @@ the launch resumes the earlier thread, or starts a fresh one when there is none.
 The other direction writes the Codex thread as a Claude transcript that Claude
 resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)
-stay behind, while a prompt the user wrapped in a tag crosses. Claude Code
-renders the carried messages as markdown too, so tool parts are laid out the
-same way: a function call's JSON arguments cross as `key: value` lines
-(arguments that are not one JSON object or list, that repeat a key, or that
-are nested too deeply to lay out, cross as written, under a
-`[tool call: <name>, arguments as written]` head), a
-custom tool's input (a code-mode script, a patch), a shell
-command (its words quoted as a shell would) and a search cross as written,
-and each input, each result and a sub-agent's final answer sit in a code
-fence, with cs's cut note and `[image]` marks after it. Text in a fence loses
-the blank lines before it and the whitespace after it. In code mode,
+stay behind, while a prompt the user wrapped in a tag crosses. Claude Code shows matching calls and results as native tool rows.
+Direct shell commands appear as Bash, MCP calls retain their server and tool
+names, and other Codex tools use the `codex` server label. A code-mode script
+appears with its original input and decoded output. Expand the transcript
+with Ctrl+O to inspect each row. Parallel results refer to their originating
+call IDs, and a reported tool failure includes its tool name on Claude’s error line.
+Calls without a matching result, orphaned results, and inputs Claude cannot
+represent as a tool argument object use the fenced text format. Sub-agent
+final answers also cross as fenced text. In code mode,
 Codex's `exec` and `wait` tools record what a script passes to `text()`, as JSON
 when it is not a string, so a command run from a script arrives as
 `exec_command`'s result object. cs carries a single such result, when nothing is

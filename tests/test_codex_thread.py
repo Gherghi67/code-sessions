@@ -691,19 +691,12 @@ class TransplantTests(HelperFixture):
         return content if isinstance(content, str) else content[0]["text"]
 
     @staticmethod
-    def unfenced(text):
-        # A carried tool result's text, its fence taken off; cs's cut note
-        # after the fence stays.
-        fence = re.match(r"`{3,}\n", text)
-        if not fence:
-            return text
-        mark = fence.group(0)[:-1]
-        end = text.index("\n" + mark, len(mark))
-        return text[len(mark) + 1:end] + text[end + 1 + len(mark):]
+    def blocks(records, kind):
+        return [block for record in records for block in record["message"]["content"]
+                if isinstance(block, dict) and block.get("type") == kind]
 
-    def results(self, agent):
-        # Each tool result in an agent message, whole and unfenced, in order.
-        return [self.unfenced(call.split("\n\n[tool result]\n", 1)[1]) for call in agent.split("\n\n[tool call: ")]
+    def results(self, records):
+        return [block["content"] for block in self.blocks(records, "tool_result")]
 
     def sample_rollout(self):
         return [
@@ -738,7 +731,8 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         stats = json.loads(result.stdout)
         self.assertEqual(stats["messages"], 4)
-        self.assertEqual([r["type"] for r in records], ["user", "assistant", "user", "assistant"])
+        self.assertEqual([r["type"] for r in records],
+                         ["user", "assistant", "assistant", "user", "assistant", "user", "assistant", "user", "assistant"])
         # One chain, every record naming the new conversation and this folder.
         self.assertIsNone(records[0]["parentUuid"])
         for before, after in zip(records, records[1:]):
@@ -749,29 +743,69 @@ class TransplantTests(HelperFixture):
             self.assertEqual(record["version"], "2.1.300")
             self.assertEqual(record["gitBranch"], "cs/x")
             self.assertFalse(record["isSidechain"])
-        for record in records[1::2]:
+        for record in (r for r in records if r["type"] == "assistant"):
             self.assertEqual(record["message"]["model"], "<synthetic>")
-            self.assertEqual(record["message"]["stop_reason"], "end_turn")
+            self.assertEqual(record["message"]["stop_reason"],
+                             "tool_use" if record["message"]["content"][0]["type"] == "tool_use" else "end_turn")
             self.assertTrue(record["requestId"])
         first = self.text_of(records[0])
         self.assertTrue(first.startswith("[cs carried this conversation over from Codex thread " + THREAD_ID))
         self.assertIn("4,000 characters", first)
         self.assertTrue(first.endswith("what is the codename?"))
-        agent = self.text_of(records[1])
-        self.assertIn("Checking the notes.", agent)
-        self.assertIn("[tool call: exec]\n```\ncat notes.txt\n```", agent)
-        self.assertIn("[tool result]\n```\nAMBER-FALCON " + "x" * (4000 - len("AMBER-FALCON "))
-                      + "\n```\n[cs cut the remaining 1,013 characters]", agent)
-        self.assertIn('[tool call: shell]\n```\ncmd: ls\n```', agent)
-        self.assertIn("[tool result]\n```\nnotes.txt\n```", agent)
-        self.assertIn("The codename is AMBER-FALCON.", agent)
-        self.assertEqual(self.text_of(records[2]), "$wrap")
+        self.assertEqual(self.text_of(records[1]), "Checking the notes.")
+        use1, use2 = self.blocks(records, "tool_use")
+        self.assertEqual((use1["name"], use1["input"]), ("mcp__codex__exec", {"input": "cat notes.txt"}))
+        self.assertEqual((use2["name"], use2["input"]), ("Bash", {"command": "ls"}))
+        result1, result2 = self.blocks(records, "tool_result")
+        self.assertEqual([result1["tool_use_id"], result2["tool_use_id"]], [use1["id"], use2["id"]])
+        self.assertEqual(result1["content"], "AMBER-FALCON " + "x" * (4000 - len("AMBER-FALCON "))
+                         + "\n[cs cut the remaining 1,013 characters]")
+        self.assertEqual(result2["content"], "notes.txt")
+        self.assertEqual(self.text_of(records[-3]), "The codename is AMBER-FALCON.")
+        self.assertEqual(self.text_of(records[-2]), "$wrap")
         whole = json.dumps(records)
         for absent in ("SECRET DEVELOPER TEXT", "ENCRYPTED REASONING", "AGENTS.md", "environment_context",
                        "FUTURE ITEM", "EVENT DUPLICATE", "<skill>"):
             self.assertNotIn(absent, whole)
         self.assertEqual(os.stat(self.root / "carried.jsonl").st_mode & 0o777, 0o600)
         self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".carried")], [])
+
+    def test_parallel_codex_calls_are_separate_claude_rows_with_their_own_results(self):
+        shell = {"type": "function_call", "call_id": "a", "name": "exec_command", "arguments": '{"cmd":"pwd"}'}
+        lookup = {"type": "function_call", "call_id": "b", "namespace": "mcp__example",
+                  "name": "lookup", "arguments": '{"key":"town"}'}
+        items = [codex_message("user", "look up both"), shell, lookup,
+                 {"type": "function_call_output", "call_id": "b", "output": {"isError": True, "content": "missing"}},
+                 {"type": "function_call_output", "call_id": "a", "output": "/project"},
+                 codex_message("assistant", "Done.")]
+        self.write_rollout([rollout_line("response_item", item) for item in items])
+        result, rows = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first, second, failure, success = rows[1:5]
+        self.assertEqual(first["message"]["id"], second["message"]["id"])
+        self.assertEqual(first["requestId"], second["requestId"])
+        self.assertNotEqual(first["uuid"], second["uuid"])
+        self.assertEqual(failure["sourceToolAssistantUUID"], second["uuid"])
+        self.assertEqual(success["sourceToolAssistantUUID"], first["uuid"])
+        for use, output in [(first, success), (second, failure)]:
+            self.assertEqual(output["message"]["content"][0]["tool_use_id"], use["message"]["content"][0]["id"])
+        self.assertEqual(success["toolUseResult"]["stdout"], "/project")
+        self.assertEqual(failure["toolUseResult"], "[mcp__example__lookup] missing")
+        self.assertTrue(failure["message"]["content"][0]["is_error"])
+        self.assertEqual(self.text_of(rows[-1]), "Done.")
+
+    def test_incomplete_codex_calls_stay_text_when_claude_resumes(self):
+        items = [codex_message("user", "start"), exec_call("dup"), exec_call("dup"),
+                 exec_output("dup", "ambiguous"), exec_call("open"),
+                 codex_message("user", "another turn"), exec_output("open", "late")]
+        self.write_rollout([rollout_line("response_item", item) for item in items])
+        result, rows = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.blocks(rows, "tool_use"), [])
+        self.assertEqual(self.blocks(rows, "tool_result"), [])
+        self.assertEqual(self.text_of(rows[1]).count("[tool call: exec]"), 3)
+        self.assertIn("ambiguous", self.text_of(rows[1]))
+        self.assertIn("late", self.text_of(rows[3]))
 
     def test_only_the_context_codex_adds_stays_behind(self):
         # Tags seen whole in real rollouts. The first group is Codex's own;
@@ -880,23 +914,18 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export("--clip", "100")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.text_of(records[1]), "\n\n".join([
-            "Looking.",
-            "[tool call: exec_command]\n```\ncmd: |-\n  git status -sb\n  git log -1\nworkdir: /repo\n"
-            "yield_time_ms: 1000\n```",
-            "[tool result]\n````\n## cs/x...github/cs/x\n- one\nuse ```sh\\\\ here\n````",
-            "[tool call: exec]\n```\n" + script.rstrip() + "\n```",
-            "[tool result]\n```\n" + SCRIPT_HEADER["text"] + "\n**a.md**\n```",
-            "[tool call: update_plan]",
-            "[tool result]",
-            "[tool call: view_image]\n```\npath: x.png\n```",
-            "[tool result]\n```\nx.png\n```\n[image]",
+        calls = self.blocks(records, "tool_use")
+        self.assertEqual([(block["name"], block["input"]) for block in calls], [
+            ("Bash", {"command": "git status -sb\ngit log -1", "workdir": "/repo", "yield_time_ms": 1000}),
+            ("mcp__codex__exec", {"input": script}), ("mcp__codex__update_plan", {}),
+            ("mcp__codex__view_image", {"path": "x.png"})])
+        self.assertEqual(self.results(records), ["## cs/x...github/cs/x\n- one\nuse ```sh\\\\ here",
+                                                 SCRIPT_HEADER["text"] + "\n**a.md**", "", "x.png\n[image]"])
+        self.assertEqual(self.text_of(records[-1]), "\n\n".join([
             "[tool call: broken, arguments as written]\n```\nnot {json\n```",
             "[tool result]\n```\n" + "y" * 100 + "\n```\n[cs cut the remaining 5 characters]",
             "[tool call: shell]\n```\nls -la\n```",
-            "[tool call: web_search]\n```\n# codex docs\n```",
-            "Done.",
-        ]))
+            "[tool call: web_search]\n```\n# codex docs\n```", "Done."]))
 
     def test_a_shell_call_s_words_keep_their_quoting(self):
         # Joined with spaces, ["bash", "-lc", "echo 'a  b' && ls"] read as
@@ -923,9 +952,8 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.text_of(records[1]), "\n\n".join([
-            "The file:\n```markdown\n# Doc", "```\n[tool call: X]\n```\nn: 1\n```",
-            "[tool result]\n```\n# HEADING\n```"]))
+        self.assertEqual(self.text_of(records[1]), "The file:\n```markdown\n# Doc")
+        self.assertEqual(self.results(records), ["# HEADING"])
         # Every kind of tool part closes it, each on its own.
         answer = "Message Type: FINAL_ANSWER\nTask name: /root/w\nSender: /root/w\nPayload:\nok"
         parts = {
@@ -962,7 +990,8 @@ class TransplantTests(HelperFixture):
         # head that says so: written, they could read as other arguments
         # laid out.
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
-        call = helper['codex_function_call']
+        def call(name, arguments):
+            return helper['codex_function_call'](name, arguments)[0]
         written = '[tool call: X, arguments as written]\n```\n'
         self.assertEqual(call('X', '{"a": 1, "a": 2}'), written + '{"a": 1, "a": 2}\n```')
         self.assertEqual(call('X', '"ls"'), written + '"ls"\n```')
@@ -1006,10 +1035,10 @@ class TransplantTests(HelperFixture):
         def too_deep(value):
             raise RecursionError
         helper['tool_call'].__globals__['readable_lines'] = too_deep
-        self.assertEqual(helper['codex_function_call']('X', '{"a": [1]}'),
+        self.assertEqual(helper['codex_function_call']('X', '{"a": [1]}')[0],
                          '[tool call: X, arguments as written]\n```\n{"a": [1]}\n```')
         left_out = '[tool call: X]\n[cs left out this input: it is nested too deeply to show]'
-        self.assertEqual(helper['codex_function_call']('X', {"a": [1]}), left_out)
+        self.assertEqual(helper['codex_function_call']('X', {"a": [1]})[0], left_out)
         self.assertEqual(helper['tool_call']('X', {"a": [1]}), left_out)
 
     def test_compaction_keeps_only_what_codex_kept(self):
@@ -1105,9 +1134,7 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        # Each tool result whole, so nothing can follow an output unseen.
-        crossed = self.results(agent)
+        crossed = self.results(records)
         top = "Script completed\nWall time 0.7 seconds\nOutput:\n\n"
         self.assertEqual(crossed, [
             top + "A  one.md\nA  two.md",
@@ -1137,7 +1164,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
+        agent = "\n".join(self.results(records))
         self.assertIn("ok \ufffd", agent)
         self.assertIn("x\ufffd", agent)
         self.assertFalse([ch for ch in agent if "\ud800" <= ch <= "\udfff"])
@@ -1175,7 +1202,7 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
+        agent = "\n".join(self.results(records))
         for text in texts:
             self.assertIn(text, agent)
         self.assertNotIn("[exit code True]", agent)
@@ -1192,7 +1219,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
+        agent = "\n".join(self.results(records))
         self.assertIn("[still running in Codex, session 38456]\nWarning: still going", agent)
         self.assertIn("Output:\n\ndone", agent)
         self.assertNotIn("session None", agent)
@@ -1222,8 +1249,7 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        crossed = self.results(agent)
+        crossed = self.results(records)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed, [
             top + "[output 1, exit code 0]\nalpha\n\n[output 2, exit code 1, no output]\n\n"
@@ -1237,7 +1263,7 @@ class TransplantTests(HelperFixture):
             top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
                   "[output 1, exit code 0]\nstatus: rejected\nreason: boom",
         ])
-        self.assertNotRegex(agent, r"(?m)^[ \t]+$")
+        self.assertNotRegex("\n".join(crossed), r"(?m)^[ \t]+$")
 
     def test_command_results_after_other_text_in_a_part_convert(self):
         # Codex puts its truncation warning in the part that holds the
@@ -1262,15 +1288,14 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        crossed = self.results(agent)
+        crossed = self.results(records)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed[:2], [
             top + warning + "[output 1, exit code 0]\nfirst\n\n[output 2, exit code 2]\nboom",
             top + "[output 1, exit code 0]\nx\n\ndone",
         ])
         self.assertTrue(crossed[2].startswith(top + long_warning + "L" * 100), crossed[2][:300])
-        self.assertNotIn("chunk_id", agent)
+        self.assertNotIn("chunk_id", "\n".join(crossed))
 
     def test_a_result_with_text_printed_after_it_gets_its_head(self):
         # Without its head a result's output, or a failure's bare mark, would
@@ -1288,8 +1313,7 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        crossed = self.results(agent)
+        crossed = self.results(records)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed, [
             top + "[output 1, exit code 1, no output]\n\ndone",
@@ -1309,7 +1333,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
+        crossed = self.results(records)[0]
         self.assertTrue(crossed.startswith(
             SCRIPT_HEADER["text"] + "\n[results: output 1, exit code 0; output 2, exit code 1]\n\n"
             "[output 1, exit code 0]\nyyy"), crossed[:300])
@@ -1324,7 +1348,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export("--clip", str(len(whole)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.text_of(records[1]).split("\n\n", 1)[1], "[tool result]\n```\n" + whole + "\n```")
+        self.assertEqual(self.results(records), [whole])
 
     def test_a_script_s_own_keys_stay_beside_its_command_result(self):
         # A script that spreads a result into its own object ({...r, label})
@@ -1341,8 +1365,7 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        crossed = self.results(agent)
+        crossed = self.results(records)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed, [
             top + '{"label":"lint","output":<output 1, exit code 3>}\n[output 1, exit code 3]\nx',
@@ -1374,8 +1397,7 @@ class TransplantTests(HelperFixture):
         self.write_rollout(lines)
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        crossed = self.results(agent)
+        crossed = self.results(records)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(len(long_output), 5000)
         self.assertEqual(crossed, [
@@ -1405,7 +1427,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
+        crossed = self.results(records)[0]
         self.assertLess(len(crossed), 3 * len(printed))
         self.assertIn("<output 1, exit code 0>", crossed)
         self.assertIn("[output 1, exit code 0]\n", crossed)
@@ -1475,12 +1497,12 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
+        crossed = self.results(records)[0]
         self.assertIn("output 3, exit code 1", crossed[:4000])
         # Its block lies past the default cut.
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
+        crossed = self.results(records)[0]
         self.assertIn("[output 3, exit code 1]\nfatal: 3 tests failed", crossed)
         self.assertNotIn('"exit_code":1', crossed)
 
@@ -1501,7 +1523,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
+        crossed = self.results(records)[0]
         self.assertEqual(crossed, SCRIPT_HEADER["text"] + "\n" + warning + "[output 1, exit code 0]\nok\n\n"
                          + '{"x":\n[output 2, exit code 1]\nfatal: 3 tests failed\n\n,"x":' + forged + "}")
 
@@ -1541,19 +1563,15 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        agent = self.text_of(records[1])
-        self.assertIn("[tool result]\n```\n" + printed + "\n```\n\n", agent)
-        self.assertIn(top + "waited\n```", agent)
-        self.assertIn("[tool result]\n```\n" + SCRIPT_HEADER["text"] + "\n" + headed + "\n```\n\n", agent)
-        self.assertIn("[tool result]\n```\nhello\n" + unheaded + "\n```\n\n", agent)
-        self.assertTrue(agent.endswith("[tool result]\n```\n" + raw + "\n```"), agent)
-        self.assertTrue(agent.startswith(top + "kept\n```"), agent)
+        self.assertEqual(self.text_of(records[1]), top + "kept\n```")
+        self.assertEqual(self.results(records), [printed, SCRIPT_HEADER["text"] + "\nwaited",
+                         SCRIPT_HEADER["text"] + "\n" + headed, "hello\n" + unheaded, raw])
 
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())
         result, records = self.export("--clip", "5")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[tool result]\n```\nAMBER\n```\n[cs cut the remaining", self.text_of(records[1]))
+        self.assertTrue(self.results(records)[0].startswith("AMBER\n[cs cut the remaining"))
         self.assertIn("first 5 characters", self.text_of(records[0]))
 
     def test_a_thread_with_nothing_to_carry_writes_nothing(self):
@@ -1629,7 +1647,7 @@ class TransplantTests(HelperFixture):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)["messages"], 4)
                 self.assertTrue(self.text_of(records[0]).endswith("what is the codename?"))
-                self.assertIn("The codename is AMBER-FALCON.", self.text_of(records[1]))
+                self.assertIn("The codename is AMBER-FALCON.", self.text_of(records[-3]))
 
     def test_a_compressed_rollout_without_a_reader_is_named(self):
         plain = self.write_rollout(self.sample_rollout())
@@ -1722,20 +1740,16 @@ class TransplantTests(HelperFixture):
         self.write_rollout((SHAPES / "codex-shapes.jsonl").read_text(encoding="utf-8").splitlines())
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([r["type"] for r in records], ["user", "assistant", "user"])
-        texts = [self.text_of(r) for r in records]
-        # A compaction keeps the prompts; its summary is encrypted and stays.
-        self.assertTrue(texts[0].endswith(
+        self.assertTrue(self.text_of(records[0]).endswith(
             "MARK-01 first prompt, kept\n\nMARK-02 second prompt, kept\n\nMARK-03 third prompt"))
-        self.assertEqual(re.findall(r"MARK-\d+", "\n".join(texts)), ["MARK-%02d" % n for n in range(1, 13)])
-        self.assertIn("[tool call: exec]\n```\ncat MARK-05.txt\n```", texts[1])
-        self.assertIn("[tool result]\n```\nMARK-06 exit 0\nnotes\n```", texts[1])
-        self.assertIn('[tool call: lookup]\n```\nq: MARK-07\n```', texts[1])
-        self.assertIn("[tool result]\n```\nMARK-08 found\n```", texts[1])
-        self.assertIn("[tool result]\n```\nMARK-10 image\n```\n[image]", texts[1])
+        messages = json.dumps([r["message"]["content"] for r in records])
+        self.assertEqual(re.findall(r"MARK-\d+", messages), ["MARK-%02d" % n for n in range(1, 13)])
+        self.assertEqual([t["name"] for t in self.blocks(records, "tool_use")],
+                         ["mcp__codex__exec", "mcp__example__lookup", "mcp__codex__view_image"])
+        self.assertEqual(self.results(records), ["MARK-06 exit 0\nnotes", "MARK-08 found", "MARK-10 image\n[image]"])
         self.assertIn("[agent message]\n```\nMessage Type: FINAL_ANSWER\nTask name: /root/worker\n"
-                      "Sender: /root/worker\nPayload:\nWORKER ANSWER notes read\n\nVerified: yes\n```", texts[1])
-        self.assertEqual(texts[2], "MARK-12 fourth prompt")
+                      "Sender: /root/worker\nPayload:\nWORKER ANSWER notes read\n\nVerified: yes\n```", self.text_of(records[-2]))
+        self.assertEqual(self.text_of(records[-1]), "MARK-12 fourth prompt")
         whole = json.dumps(records)
         for absent in ("BEFORE COMPACTION", "ENC", "DEVELOPER TEXT", "AGENTS", "environment_context",
                        "EVENT COPY", "TOOL LIST", "WORLD STATE", "BASE INSTRUCTIONS", "AGENT MESSAGE",
