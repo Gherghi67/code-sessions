@@ -963,6 +963,25 @@ class TransplantTests(HelperFixture):
         crossed = self.text_of(records[1])
         self.assertTrue(crossed.startswith('[tool call: X'), crossed[:100])
         self.assertLess(len(crossed), 3 * len(deep))
+        # Laid out or written, the brackets cross: none is left out.
+        self.assertIn('[' * 99000, crossed)
+        self.assertIn(']' * 99000, crossed)
+
+    def test_a_codex_call_the_layout_cannot_reach_crosses_as_written(self):
+        # json.loads can read a level that json.dumps, from the layout's
+        # deeper stack, cannot (3.9.6: 992 to 994 levels). A function call's
+        # arguments are text at hand, so they cross as written; Claude's
+        # input has no text of its own and is left out with a note.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+
+        def too_deep(value):
+            raise RecursionError
+        helper['tool_call'].__globals__['readable_lines'] = too_deep
+        self.assertEqual(helper['codex_function_call']('X', '{"a": [1]}'),
+                         '[tool call: X, arguments as written]\n```\n{"a": [1]}\n```')
+        left_out = '[tool call: X]\n[cs left out this input: it is nested too deeply to show]'
+        self.assertEqual(helper['codex_function_call']('X', {"a": [1]}), left_out)
+        self.assertEqual(helper['tool_call']('X', {"a": [1]}), left_out)
 
     def test_compaction_keeps_only_what_codex_kept(self):
         lines = self.sample_rollout()[:7] + [

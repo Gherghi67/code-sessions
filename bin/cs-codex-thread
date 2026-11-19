@@ -597,9 +597,10 @@ def codex_output(output, code_mode, limit):
 
 def codex_function_call(name, arguments):
     # A function call's arguments are a JSON object in a string, laid out as
-    # Claude's input is. Arguments that read as no object or list, or that
-    # repeat a key (the layout would keep one value), cross as written, under
-    # a head that says so: written, they could read as other arguments laid out.
+    # Claude's input is. Arguments that read as no object or list, that
+    # repeat a key (the layout would keep one value) or that the layout
+    # cannot reach cross as written, under a head that says so: written, they
+    # could read as other arguments laid out.
     value = arguments
     if isinstance(arguments, str):
         try:
@@ -607,7 +608,7 @@ def codex_function_call(name, arguments):
         except (ValueError, RecursionError):
             value = None
     if isinstance(value, (dict, list)):
-        return tool_call(name, value)
+        return tool_call(name, value, arguments if isinstance(arguments, str) else None)
     return text_call(name, arguments, "arguments as written")
 
 
@@ -861,17 +862,21 @@ def readable_lines(value):
     return [one_line(value)]
 
 
-def tool_call(name, value):
+def tool_call(name, value, written=None):
     # A tool input that is JSON: Claude's, or a Codex function call's
-    # arguments. Written as JSON, a multi-line command or edit shows as one
-    # line of literal \n in the other engine's transcript.
+    # arguments, with written the text they were read from. Written as JSON,
+    # a multi-line command or edit shows as one line of literal \n in the
+    # other engine's transcript.
     head = tool_head(name)
     if value is None or value in ({}, "", []):
         return head
     try:
         body = "\n".join(readable_lines(value))
     except RecursionError:
-        # json.loads read it, so only json.dumps from a deeper stack gets here.
+        # json.loads read it, so only json.dumps from a deeper stack gets
+        # here. Text at hand crosses as written; Claude's input has none.
+        if written is not None:
+            return text_call(name, written, "arguments as written")
         return head + "\n[cs left out this input: it is nested too deeply to show]"
     return head + "\n" + fenced(body)
 

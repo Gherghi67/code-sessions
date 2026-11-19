@@ -138,8 +138,9 @@ resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 stay behind, while a prompt the user wrapped in a tag crosses. Claude Code
 renders the carried messages as markdown too, so tool parts are laid out the
 same way: a function call's JSON arguments cross as `key: value` lines
-(arguments that are not one JSON object or list, or that repeat a key, cross
-as written, under a `[tool call: <name>, arguments as written]` head), a
+(arguments that are not one JSON object or list, that repeat a key, or that
+are nested too deeply to lay out, cross as written, under a
+`[tool call: <name>, arguments as written]` head), a
 custom tool's input (a code-mode script, a patch), a shell
 command and a search cross as written, and each input, each result and a
 sub-agent's final answer sit in a code fence, with cs's cut note and `[image]`
