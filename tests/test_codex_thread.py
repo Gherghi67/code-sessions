@@ -875,7 +875,7 @@ class TransplantTests(HelperFixture):
             "[tool result]",
             "[tool call: view_image]\n```\npath: x.png\n```",
             "[tool result]\n```\nx.png\n```\n[image]",
-            "[tool call: broken]\n```\nnot {json\n```",
+            "[tool call: broken, arguments as written]\n```\nnot {json\n```",
             "[tool result]\n```\n" + "y" * 100 + "\n```\n[cs cut the remaining 5 characters]",
             "[tool call: shell]\n```\nls -la\n```",
             "[tool call: web_search]\n```\n# codex docs\n```",
@@ -929,11 +929,16 @@ class TransplantTests(HelperFixture):
 
     def test_a_codex_call_s_arguments_read_back_to_one_input(self):
         # Arguments that are not one JSON object or list, or that repeat a
-        # key (the layout would keep one value), cross as written.
+        # key (the layout would keep one value), cross as written, under a
+        # head that says so: written, they could read as other arguments
+        # laid out.
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
         call = helper['codex_function_call']
-        self.assertEqual(call('X', '{"a": 1, "a": 2}'), '[tool call: X]\n```\n{"a": 1, "a": 2}\n```')
-        self.assertEqual(call('X', '"ls"'), '[tool call: X]\n```\n"ls"\n```')
+        written = '[tool call: X, arguments as written]\n```\n'
+        self.assertEqual(call('X', '{"a": 1, "a": 2}'), written + '{"a": 1, "a": 2}\n```')
+        self.assertEqual(call('X', '"ls"'), written + '"ls"\n```')
+        self.assertEqual(call('X', 'cmd: rm -rf ~'), written + 'cmd: rm -rf ~\n```')
+        self.assertEqual(call('X', '{"cmd": "rm -rf ~"}'), '[tool call: X]\n```\ncmd: rm -rf ~\n```')
         self.assertEqual(call('X', '[1, "b"]'), '[tool call: X]\n```\n- 1\n- b\n```')
         self.assertEqual(call('X', '{"v": "2"}'), '[tool call: X]\n```\nv: "2"\n```')
         self.assertEqual(call('X', ''), '[tool call: X]')
@@ -956,7 +961,7 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         crossed = self.text_of(records[1])
-        self.assertTrue(crossed.startswith('[tool call: X]\n'), crossed[:100])
+        self.assertTrue(crossed.startswith('[tool call: X'), crossed[:100])
         self.assertLess(len(crossed), 3 * len(deep))
 
     def test_compaction_keeps_only_what_codex_kept(self):

@@ -598,7 +598,8 @@ def codex_output(output, code_mode, limit):
 def codex_function_call(name, arguments):
     # A function call's arguments are a JSON object in a string, laid out as
     # Claude's input is. Arguments that read as no object or list, or that
-    # repeat a key (the layout would keep one value), cross as written.
+    # repeat a key (the layout would keep one value), cross as written, under
+    # a head that says so: written, they could read as other arguments laid out.
     value = arguments
     if isinstance(arguments, str):
         try:
@@ -607,7 +608,7 @@ def codex_function_call(name, arguments):
             value = None
     if isinstance(value, (dict, list)):
         return tool_call(name, value)
-    return text_call(name, arguments)
+    return text_call(name, arguments, "arguments as written")
 
 
 def codex_item(history, item, timestamp, limit):
@@ -789,8 +790,9 @@ def fenced_text(head, text, limit=None):
     return head + "\n" + fenced(text[:limit]) + cut_note(text, limit)
 
 
-def tool_head(name):
-    return "[tool call: " + (name if isinstance(name, str) and name else "tool") + "]"
+def tool_head(name, note=None):
+    label = name if isinstance(name, str) and name else "tool"
+    return "[tool call: " + label + (", " + note if note else "") + "]"
 
 
 def bare(text):
@@ -874,14 +876,16 @@ def tool_call(name, value):
     return head + "\n" + fenced(body)
 
 
-def text_call(name, text):
+def text_call(name, text, note=None):
     # A tool input that is text: a Codex custom tool's (a code mode script,
-    # a patch), a shell command, a search. It crosses as written.
+    # a patch), a shell command, a search. It crosses as written; a note
+    # goes in the head when there is text.
     if text is None:
         text = ""
     elif not isinstance(text, str):
         text = json.dumps(text, ensure_ascii=False)
-    return fenced_text(tool_head(name), trimmed(text))
+    text = trimmed(text)
+    return fenced_text(tool_head(name, note if text else None), text)
 
 
 def tool_result(text, images, limit, failed=False):
