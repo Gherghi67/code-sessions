@@ -2115,6 +2115,7 @@ unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE _cs_private_pin_meta _cs_pri
 cs_private_dir() {  # meta_dir
     [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
     if [ "${_cs_private_pin_meta:-}" = "$1" ]; then
+        # shellcheck disable=SC2154  # set by Antigravity's hook dispatch
         printf '%s\n' "$_cs_private_pin_dir"
     elif [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
@@ -2468,6 +2469,7 @@ cs_private_state() {  # meta_dir
 # dangles: a locked vault has no handoffs to offer or consume.
 cs_handoff_dir() {  # meta_dir
     if [ "${_cs_private_pin_meta:-}" = "$1" ]; then
+        # shellcheck disable=SC2154  # set by Antigravity's hook dispatch
         printf '%s/handoffs\n' "$_cs_private_pin_dir"
     elif [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
