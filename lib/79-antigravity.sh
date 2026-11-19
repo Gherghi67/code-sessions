@@ -562,9 +562,11 @@ $prompt"
         # An encrypted session's context goes into the vault home as agy's
         # global rule. A workspace rule of cs's that a run before the
         # encryption left is that context in plaintext, and goes.
+        _antigravity_drop_workspace_rule "$session_dir" || {
+            _antigravity_launch_error "Could not safely remove plaintext Antigravity context from .agents/rules. Check for linked or inaccessible paths there, then reopen."
+            return 1
+        }
         _antigravity_write_vault_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" "$vault_home" "$shared_home" || return 1
-        _antigravity_drop_workspace_rule "$session_dir" \
-            || warn "could not remove $CS_ANTIGRAVITY_RULE, cs's session context from before the session was encrypted, in plaintext; remove it by hand"
     else
         # The rule first: a launch refused over a rule of the user's adds no
         # exclude entry, which would have git ignore their file on cs's say-so.

@@ -17450,6 +17450,11 @@ run_encrypt() {
     mnt="$meta/vault-mnt"
     container=$(_encrypt_container_path "$name")
 
+    # The next Antigravity open writes its context in the vault. Remove
+    # marked workspace copies before creating the container or moving data.
+    _antigravity_drop_workspace_rule "$SESSIONS_ROOT/$name" \
+        || error "$name: could not safely remove plaintext Antigravity context from .agents/rules. Check for linked or inaccessible paths there, then retry."
+
     # The Codex launch's context, built from memory and the narrative: nothing
     # but a copy, written again inside the vault at the next Codex open.
     # Deleted, not carried, and before the container is made, so a failure
@@ -17463,15 +17468,6 @@ run_encrypt() {
         rm -f "$leftover" 2>/dev/null \
             || error "$name: could not delete $meta/local/$(_cs_plain_name "${leftover##*/}" 160), a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
     done
-
-    # The Antigravity launch's rule: the same context, written into the
-    # session folder for agy to load, plaintext once the session is encrypted.
-    # Deleted when it is cs's (its mark); the next Antigravity open writes it
-    # into the vault instead. A file there that is not cs's is the user's.
-    if _antigravity_rule_is_cs "$SESSIONS_ROOT/$name"; then
-        rm -f "$SESSIONS_ROOT/$name/$CS_ANTIGRAVITY_RULE" \
-            || error "$name: could not delete $CS_ANTIGRAVITY_RULE, a plaintext copy of the Antigravity context; the session is unchanged. Delete it, then retry."
-    fi
 
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."
@@ -23763,13 +23759,28 @@ _antigravity_write_vault_rule() {  # session_name, session_dir, actor, cs_bin, v
     fi
 }
 
-# The workspace rule a run before the session was encrypted left: cs's
-# context in plaintext in the session folder. Removed when it is cs's; one
-# that is not cs's is the user's and stays.
-_antigravity_drop_workspace_rule() {  # session_dir
-    _antigravity_rule_is_cs "$1" || return 0
-    rm -f -- "$1/$CS_ANTIGRAVITY_RULE"
-}
+# Drop cs's old plaintext workspace rule and any marked interrupted writes.
+# Anchor reads and removals in the checked directory so a symlink at either
+# parent cannot redirect cleanup to another checkout.
+_antigravity_drop_workspace_rule() (  # session_dir
+    local session_p parent rule_dir="${CS_ANTIGRAVITY_RULE%/*}" file
+    cd -P -- "$1" || return 1
+    session_p=$PWD
+    for parent in .agents "$rule_dir"; do
+        [ ! -L "$parent" ] || return 1
+        [ -e "$parent" ] || return 0
+        [ -d "$parent" ] && [ -r "$parent" ] && [ -x "$parent" ] || return 1
+    done
+    cd -P -- "./$rule_dir" && [ "$PWD" = "$session_p/$rule_dir" ] || return 1
+    for file in "${CS_ANTIGRAVITY_RULE##*/}" .cs-session.??????; do
+        [ ! -L "$file" ] && [ -f "$file" ] || continue
+        if grep -Fqx -- "$CS_ANTIGRAVITY_RULE_MARK" "$file"; then
+            rm -f -- "$file" || return 1
+        elif [ "$?" -ne 1 ]; then
+            return 1
+        fi
+    done
+)
 
 # The vault home recorded in the run directory, which only cs can write.
 _antigravity_run_vault_home() {  # run_dir
@@ -24410,9 +24421,11 @@ $prompt"
         # An encrypted session's context goes into the vault home as agy's
         # global rule. A workspace rule of cs's that a run before the
         # encryption left is that context in plaintext, and goes.
+        _antigravity_drop_workspace_rule "$session_dir" || {
+            _antigravity_launch_error "Could not safely remove plaintext Antigravity context from .agents/rules. Check for linked or inaccessible paths there, then reopen."
+            return 1
+        }
         _antigravity_write_vault_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" "$vault_home" "$shared_home" || return 1
-        _antigravity_drop_workspace_rule "$session_dir" \
-            || warn "could not remove $CS_ANTIGRAVITY_RULE, cs's session context from before the session was encrypted, in plaintext; remove it by hand"
     else
         # The rule first: a launch refused over a rule of the user's adds no
         # exclude entry, which would have git ignore their file on cs's say-so.

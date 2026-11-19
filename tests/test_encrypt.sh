@@ -324,14 +324,40 @@ test_encrypt_removes_the_plaintext_antigravity_rule() {
     local rule="$CS_SESSIONS_ROOT/enc/.agents/rules/cs-session.md" theirs="$CS_SESSIONS_ROOT/enc2/.agents/rules/cs-session.md" out rc=0
     mkdir -p "${rule%/*}" "${theirs%/*}"
     printf -- '---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\n\nmemory excerpt\n' > "$rule"
+    cp "$rule" "${rule%/*}/.cs-session.Abc123"
+    printf 'user temporary file\n' > "${rule%/*}/.cs-session.Xyz987"
     printf 'my own rule\n' > "$theirs"
     out=$(_encrypt enc 2>&1) || rc=$?
     assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
     assert_not_exists "$rule" "no plaintext Antigravity context" || return 1
+    assert_not_exists "${rule%/*}/.cs-session.Abc123" "the marked interrupted write is removed" || return 1
+    assert_eq "user temporary file" "$(cat "${rule%/*}/.cs-session.Xyz987")" "the unmarked file is left alone" || return 1
     assert_output_contains "$out" "its Antigravity conversations in ~/.gemini/antigravity-cli" "the list names agy's copies" || return 1
     out=$(_encrypt enc2 2>&1) || rc=$?
     assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
     assert_eq 'my own rule' "$(cat "$theirs")" "the user's rule stays"
+}
+
+test_encrypt_refuses_linked_antigravity_rule_parents() {
+    _stubs
+    local external="$TEST_TMPDIR/other-checkout/.agents" name parent out rc
+    mkdir -p "$external/rules"
+    printf '<!-- cs:antigravity-session-context -->\n' > "$external/rules/cs-session.md"
+    for parent in .agents rules; do
+        name="linked-${parent#.}"
+        _populated_session "$name"
+        if [ "$parent" = .agents ]; then
+            ln -s "$external" "$CS_SESSIONS_ROOT/$name/.agents"
+        else
+            mkdir "$CS_SESSIONS_ROOT/$name/.agents"
+            ln -s "$external/rules" "$CS_SESSIONS_ROOT/$name/.agents/rules"
+        fi
+        rc=0
+        out=$(_encrypt "$name" 2>&1) || rc=$?
+        assert_eq 1 "$rc" "conversion stops at linked $parent (output: $out)" || return 1
+        assert_file_exists "$external/rules/cs-session.md" "the other checkout's rule stays" || return 1
+        _assert_nothing_written "$name" || return 1
+    done
 }
 
 test_antigravity_reopen_after_encryption_starts_a_new_conversation() {
@@ -1238,6 +1264,7 @@ run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_removes_the_plaintext_antigravity_rule
+run_test test_encrypt_refuses_linked_antigravity_rule_parents
 run_test test_antigravity_reopen_after_encryption_starts_a_new_conversation
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_removes_leftover_codex_context_temp_files

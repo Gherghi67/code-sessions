@@ -237,6 +237,11 @@ run_encrypt() {
     mnt="$meta/vault-mnt"
     container=$(_encrypt_container_path "$name")
 
+    # The next Antigravity open writes its context in the vault. Remove
+    # marked workspace copies before creating the container or moving data.
+    _antigravity_drop_workspace_rule "$SESSIONS_ROOT/$name" \
+        || error "$name: could not safely remove plaintext Antigravity context from .agents/rules. Check for linked or inaccessible paths there, then retry."
+
     # The Codex launch's context, built from memory and the narrative: nothing
     # but a copy, written again inside the vault at the next Codex open.
     # Deleted, not carried, and before the container is made, so a failure
@@ -250,15 +255,6 @@ run_encrypt() {
         rm -f "$leftover" 2>/dev/null \
             || error "$name: could not delete $meta/local/$(_cs_plain_name "${leftover##*/}" 160), a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
     done
-
-    # The Antigravity launch's rule: the same context, written into the
-    # session folder for agy to load, plaintext once the session is encrypted.
-    # Deleted when it is cs's (its mark); the next Antigravity open writes it
-    # into the vault instead. A file there that is not cs's is the user's.
-    if _antigravity_rule_is_cs "$SESSIONS_ROOT/$name"; then
-        rm -f "$SESSIONS_ROOT/$name/$CS_ANTIGRAVITY_RULE" \
-            || error "$name: could not delete $CS_ANTIGRAVITY_RULE, a plaintext copy of the Antigravity context; the session is unchanged. Delete it, then retry."
-    fi
 
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."

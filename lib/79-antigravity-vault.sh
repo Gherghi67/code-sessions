@@ -360,13 +360,28 @@ _antigravity_write_vault_rule() {  # session_name, session_dir, actor, cs_bin, v
     fi
 }
 
-# The workspace rule a run before the session was encrypted left: cs's
-# context in plaintext in the session folder. Removed when it is cs's; one
-# that is not cs's is the user's and stays.
-_antigravity_drop_workspace_rule() {  # session_dir
-    _antigravity_rule_is_cs "$1" || return 0
-    rm -f -- "$1/$CS_ANTIGRAVITY_RULE"
-}
+# Drop cs's old plaintext workspace rule and any marked interrupted writes.
+# Anchor reads and removals in the checked directory so a symlink at either
+# parent cannot redirect cleanup to another checkout.
+_antigravity_drop_workspace_rule() (  # session_dir
+    local session_p parent rule_dir="${CS_ANTIGRAVITY_RULE%/*}" file
+    cd -P -- "$1" || return 1
+    session_p=$PWD
+    for parent in .agents "$rule_dir"; do
+        [ ! -L "$parent" ] || return 1
+        [ -e "$parent" ] || return 0
+        [ -d "$parent" ] && [ -r "$parent" ] && [ -x "$parent" ] || return 1
+    done
+    cd -P -- "./$rule_dir" && [ "$PWD" = "$session_p/$rule_dir" ] || return 1
+    for file in "${CS_ANTIGRAVITY_RULE##*/}" .cs-session.??????; do
+        [ ! -L "$file" ] && [ -f "$file" ] || continue
+        if grep -Fqx -- "$CS_ANTIGRAVITY_RULE_MARK" "$file"; then
+            rm -f -- "$file" || return 1
+        elif [ "$?" -ne 1 ]; then
+            return 1
+        fi
+    done
+)
 
 # The vault home recorded in the run directory, which only cs can write.
 _antigravity_run_vault_home() {  # run_dir

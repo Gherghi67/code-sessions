@@ -645,7 +645,10 @@ encrypted session, where it would sit in the session folder in plaintext. It
 goes into the vault home's `.gemini/GEMINI.md`, which agy loads as a global
 rule, followed by your own `~/.gemini/GEMINI.md` when you have one. The
 launch removes a workspace rule of cs's that a run before the encryption
-left, and `cs -encrypt` removes it first. Handoffs, their marker, mail and the
+left, along with any marked temporary rule left by an interrupted write.
+`cs -encrypt` removes those files too. A linked or inaccessible
+`.agents/rules` path must be repaired before conversion or encrypted launch.
+Handoffs, their marker, mail and the
 session log are the vault's (`.cs/private`), as under Claude and Codex.
 
 agy's terminal sandbox lets commands write anywhere in the workspace, so the

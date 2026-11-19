@@ -1555,6 +1555,7 @@ test_an_encrypted_session_runs_agy_on_its_vault_home() {
     output=$("$CS_BIN" sealed --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir sealed)
     assert_file_exists "$(_rule sealed)" "an unencrypted open writes the workspace rule" || return 1
+    cp "$(_rule sealed)" "$dir/.agents/rules/.cs-session.Abc123"
     _vault_session sealed
     output=$("$CS_BIN" sealed --fresh 2>&1) || { echo "  FAIL: the encrypted open failed: $output"; return 1; }
     assert_file_contains "$AGY_ENV" "^HOME=$VAULT_HOME\$" "agy runs on the vault home" || return 1
@@ -1584,12 +1585,28 @@ test_an_encrypted_session_runs_agy_on_its_vault_home() {
     assert_file_contains "$VAULT_HOME/.gemini/GEMINI.md" '<!-- cs:antigravity-session-context -->' "the rule is cs's" || return 1
     assert_file_contains "$VAULT_HOME/.gemini/GEMINI.md" '^Agent-sessions executable:' "and carries the session's context" || return 1
     assert_not_exists "$(_rule sealed)" "no plaintext rule is left in the session folder" || return 1
+    assert_not_exists "$dir/.agents/rules/.cs-session.Abc123" "no plaintext temporary rule is left" || return 1
     assert_output_contains "$output" 'in the vault' "the launch line names where the context is" || return 1
     assert_eq "$AGY_NEW_ID" "$(_binding sealed)" "the hook binds the conversation" || return 1
     grep -F -q -- "Session started (source: startup, ID: $AGY_NEW_ID)" "$dir/.cs/private/session.log" \
         || { echo "  FAIL: the hook logs into the vault"; return 1; }
     assert_not_exists "$dir/.cs/local/session.log" "and not into .cs/local" || return 1
     assert_not_exists "$HOME/.gemini/antigravity-cli/conversations" "nothing of agy's state lands in the user's ~/.gemini" || return 1
+}
+
+test_an_encrypted_open_refuses_a_linked_workspace_rule_parent() {
+    local output status=0 dir external="$TEST_TMPDIR/other-checkout/.agents"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" linkedrules --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir linkedrules)
+    _vault_session linkedrules
+    mkdir -p "$external"
+    mv "$dir/.agents/rules" "$external/rules"
+    ln -s "$external/rules" "$dir/.agents/rules"
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" linkedrules --fresh 2>&1) || status=$?
+    assert_eq 1 "$status" "an open with a linked rules folder is refused (output: $output)" || return 1
+    assert_file_exists "$external/rules/cs-session.md" "the other checkout's rule stays" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
 }
 
 # A GEMINI.md the user keeps in ~/.gemini follows cs's context in the vault's
@@ -3235,6 +3252,7 @@ run_test test_missing_handoff_is_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_the_vault_checker_starts_python_in_isolated_mode
 run_test test_an_encrypted_session_runs_agy_on_its_vault_home
+run_test test_an_encrypted_open_refuses_a_linked_workspace_rule_parent
 run_test test_the_vault_rule_carries_the_users_own_global_rule
 run_test test_the_vault_home_follows_the_users_home_at_every_open
 run_test test_an_encrypted_open_without_an_agy_login_is_refused
