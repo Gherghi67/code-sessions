@@ -583,8 +583,9 @@ def codex_output(output, code_mode, limit):
             # converted: nothing tells it apart from text(result).
             printed, statuses = codex_script_output(texts[1:])
             text = "\n".join(texts[:1] + printed)
-            if len(statuses) > 1 and limit and len(text) > limit:
-                # The cut could hide a later result's head, and its failure: every status comes first.
+            if len(statuses) > 1 and limit and len(trimmed(text)) > limit:
+                # The cut, made on the trimmed text, could hide a later result's head, and its
+                # failure: every status comes first.
                 index = "[results: " + "; ".join("output {}".format(number) + (", " + status if status else "")
                                                  for number, status in enumerate(statuses, 1)) + "]\n"
                 text = "\n".join(texts[:1] + [index] + printed)

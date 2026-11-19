@@ -1294,6 +1294,17 @@ class TransplantTests(HelperFixture):
             SCRIPT_HEADER["text"] + "\n[results: output 1, exit code 0; output 2, exit code 1]\n\n"
             "[output 1, exit code 0]\nyyy"), crossed[:300])
         self.assertIn("exit code 1", crossed[:4000])
+        # A result that fits once its edge blank lines go needs no index.
+        whole = SCRIPT_HEADER["text"] + "\n[output 1, exit code 0]\none\n\n[output 2, exit code 0]\ntwo"
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", compact(command_result("one\n", exit_code=0)),
+                                                      compact(command_result("two\n", exit_code=0)))),
+        ])
+        result, records = self.export("--clip", str(len(whole)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]).split("\n\n", 1)[1], "[tool result]\n```\n" + whole + "\n```")
 
     def test_a_script_s_own_keys_stay_beside_its_command_result(self):
         # A script that spreads a result into its own object ({...r, label})
