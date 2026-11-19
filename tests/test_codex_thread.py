@@ -88,6 +88,12 @@ for line in sys.stdin:
                 event = r['payload']; item = event['item']
                 if item['type'] == 'UserMessage':
                     item = dict(item, type='userMessage')
+                elif item['type'] == 'CommandExecution':
+                    item = {'type':'commandExecution','id':item['id'],'status':item['status'],
+                            'aggregatedOutput':item['aggregated_output'],'exitCode':item['exit_code'],
+                            'commandActions':[{'type':'unknown','command':item['command'][-1]}]}
+                elif item['type'] == 'McpToolCall':
+                    item = dict(item, type='mcpToolCall')
                 else:
                     item = {'type':'agentMessage','id':item['id'],'text':item['content'][0]['text']}
                 if mode == 'display_corrupt': item['text'] = 'wrong'
@@ -598,7 +604,8 @@ class TransplantTests(HelperFixture):
                     visible = server.request('thread/items/list', {
                         'threadId': thread_id, 'sortDirection': 'asc',
                     })['data']
-                    self.assertEqual(len(visible), 2)
+                    self.assertEqual([entry['item']['type'] for entry in visible],
+                                     ['userMessage', 'agentMessage', 'mcpToolCall', 'agentMessage'])
                     server.request('turn/start', {'threadId': thread_id, 'input': [
                         {'type': 'text', 'text': 'NEW_PROMPT_MARKER', 'text_elements': []}]})
                     self.assertTrue(received.wait(20), 'native Codex never reached the local provider')
@@ -635,7 +642,7 @@ class TransplantTests(HelperFixture):
                 os.environ['CODEX_HOME'] = previous
         items = [item for turn in turns for item in turn['items']]
         self.assertEqual([i['type'] for i in items],
-                         ['userMessage', 'agentMessage', 'userMessage', 'agentMessage'])
+                         ['userMessage', 'agentMessage', 'mcpToolCall', 'agentMessage', 'userMessage', 'agentMessage'])
         self.assertEqual(items[0]['content'][0]['text'], '/color blue\n\nfind the budget')
         self.assertEqual(items[-1]['text'], 'Answer two.')
         rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
@@ -1797,6 +1804,57 @@ class TransplantTests(HelperFixture):
                        'BLOB COPY', 'LOCAL OUTPUT', 'META CAVEAT'):
             self.assertNotIn(absent, whole)
 
+    def test_parallel_claude_tools_have_native_rows_with_their_own_results(self):
+        executable = os.environ.get('CS_CODEX_REAL_BIN', str(self.fake))
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+            '--instructions-file', str(self.instructions), '--history-from-claude',
+            str(SHAPES / 'claude-shapes.jsonl'),
+        ], env=self.env, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        events = [json.loads(line)['payload'] for line in rollout.read_text().splitlines()]
+        rows = [e['item'] for e in events if e.get('type') == 'item_completed']
+        self.assertEqual([row['type'] for row in rows], [
+            'UserMessage', 'AgentMessage', 'McpToolCall', 'CommandExecution', 'McpToolCall', 'AgentMessage',
+            'UserMessage', 'McpToolCall', 'McpToolCall', 'AgentMessage'])
+        self.assertEqual(rows[2]['tool'], 'Read')
+        self.assertEqual(rows[2]['result']['content'][0]['text'], 'MARK-06 notes body')
+        self.assertEqual(rows[3]['command'][-1], 'ls MARK-04')
+        self.assertEqual(rows[3]['aggregated_output'], 'MARK-08 folder listing')
+        self.assertEqual(rows[4]['tool'], 'Grep')
+        self.assertEqual(rows[4]['result']['content'][0]['text'], 'MARK-07 grep hit')
+        self.assertNotIn('[tool call:', str([r for r in rows if r['type'] == 'AgentMessage']))
+
+    def test_failed_and_unmatched_claude_calls_in_the_transcript(self):
+        path = self.root / (CLAUDE_ID + '.jsonl')
+        calls = [
+            {'type': 'tool_use', 'name': 'Bash', 'id': 'a', 'input': {'command': 'false'}},
+            {'type': 'tool_use', 'name': 'mcp__server__lookup', 'id': 'b', 'input': {'key': 'k'}},
+            {'type': 'tool_use', 'name': 'Read', 'id': 'missing', 'input': {'file_path': 'pending'}},
+        ]
+        results = [
+            {'type': 'tool_result', 'tool_use_id': 'b', 'is_error': True, 'content': [
+                {'type': 'text', 'text': 'unavailable'}, {'type': 'image'}]},
+            {'type': 'tool_result', 'tool_use_id': 'a', 'is_error': True, 'content': 'Exit code 2\nmissing'},
+            {'type': 'tool_result', 'tool_use_id': 'other', 'content': 'orphan'},
+        ]
+        path.write_text('\n'.join([claude_record('user', 'go', '1', None),
+                                   claude_record('assistant', calls, '2', '1'),
+                                   claude_record('user', results, '3', '2')]) + '\n')
+        result = self.run_helper('', '--history-from-claude', str(path), '--clip', '6')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line)['payload'] for line in
+                  next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
+        user, bash, lookup, fallback = [e['item'] for e in events if e.get('type') == 'item_completed']
+        self.assertEqual(bash['status'], 'failed')
+        self.assertEqual(bash['exit_code'], 2)
+        self.assertEqual(bash['aggregated_output'], 'Exit c\n[cs cut the remaining 13 characters]')
+        self.assertEqual((lookup['server'], lookup['tool'], lookup['status']), ('server', 'lookup', 'failed'))
+        self.assertEqual(lookup['result']['content'][0]['text'], 'unavai\n[cs cut the remaining 5 characters]\n[image]')
+        self.assertEqual(fallback['content'][0]['text'],
+                         '[tool call: Read]\n```\nfile_path: pending\n```\n\n[tool result]\n```\norphan\n```')
+
     def test_claude_transcript_starts_a_thread_after_the_context(self):
         path = self.sample_transcript()
         result = self.run_helper('', '--history-from-claude', str(path), '--history-source', CLAUDE_ID)
@@ -1873,7 +1931,7 @@ class TransplantTests(HelperFixture):
                     before = path.read_bytes()
                     with self.assertRaises(helper['BootstrapError']):
                         helper['persist_carried_display'](str(target), THREAD_ID,
-                                                          [{'role': 'user', 'text': 'hello'}])
+                                                          [{'role': 'user', 'text': 'hello'}], str(self.cwd))
                     self.assertEqual(path.read_bytes(), before)
         finally:
             if previous is None:

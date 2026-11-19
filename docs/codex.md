@@ -108,20 +108,21 @@ fresh. The carried thread is a new one: cs starts it through app-server, adds
 the session context, then a developer note and Claude's messages as user and
 assistant items, with every tool call and each tool result's first 4,000
 characters (a failed call's result marked `[tool error]`), and binds it.
-A tool call's input crosses as a `key: value` line per field, a multi-line
-value (a heredoc, an edit's text) indented under its name after `|` (one
-final newline), `|-` (none) or `|+` (more), and each call's input and result
-sit in a code fence, so Codex's transcript shows them as written instead of
-as JSON with literal `\n` or as markdown. Codex's model reads the same text,
-so a value that would read as something else (empty, `"2"`, `"true"`, edge
-spaces, a control character) stays quoted as JSON, and levels nested past 32
-cross as JSON.
+In the Codex transcript, a completed Claude Bash call appears as a native
+command row with its output. Other tools appear as named tool rows with
+their arguments, result and failure status. Claude built-ins use the
+`claude` server label and MCP tools keep their server and tool names.
+Parallel results attach to the matching Claude call ID. Calls and results
+without a unique partner in the same reply keep their text representation,
+as do arguments too deeply nested or numerically out of range for native replay.
+The model history retains the original order, with tool inputs laid out as
+fenced `key: value` lines and tool results as fenced text.
 The helper records the carried model messages and transcript display events
 inside matching turn boundaries after the new thread's writer exits, so native
 revert removes both views of an exchange. It then resumes the thread in a
 separate process and checks the visible turns before reporting success. This makes the imported messages visible in the CLI;
-injecting model context alone leaves the transcript blank. The display format is
-verified with Codex `0.167.0-alpha.3.2`. CI pins that version on macOS and Linux
+injecting model context alone leaves the transcript blank. Native tool rows were
+verified in the Codex `0.169.0-alpha.11.1` terminal. CI pins `0.167.0-alpha.3.2` on macOS and Linux
 and checks native display, revert's next model input, and messages above 4 MiB
 using temporary homes and a local mock provider. Existing open threads are not
 rewritten.
