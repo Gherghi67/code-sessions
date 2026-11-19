@@ -23795,7 +23795,8 @@ _antigravity_run_private_dir() {  # session_dir, run_dir
 _antigravity_hook_vault_stop() {  # event, message
     [ "$1" = pre-invocation ] || return 0
     ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$2" '
-        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}')
+        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}') \
+        || ANTIGRAVITY_HOOK_REPLY='{"terminationBehavior":"terminate"}'
 }
 
 # Whether a hook may act on the session's records: it is not encrypted, or
@@ -24095,8 +24096,8 @@ _antigravity_flags_listed() {  # agy_bin, args...
 # Ownership lets the installer repair a partial plugin. Rotation instead
 # needs an enabled PreInvocation command that can actually bind its consumer.
 # With an event and its verb, the same check for that event's command.
-_antigravity_rotation_hook_ready() {  # [event, verb]
-    local dir commands command cs_path event="${1:-PreInvocation}" verb="${2:-pre-invocation}"
+_antigravity_rotation_hook_ready() {  # [event, verb, expected_cs]
+    local dir commands command cs_path event="${1:-PreInvocation}" verb="${2:-pre-invocation}" expected_cs="${3:-}"
     dir=$(_antigravity_plugin_dir)
     _antigravity_plugin_is_cs "$dir" \
         && _antigravity_plugin_manifest_is_cs "$dir/plugin.json" || return 1
@@ -24104,9 +24105,10 @@ _antigravity_rotation_hook_ready() {  # [event, verb]
         jq -e --arg name "$CS_ANTIGRAVITY_PLUGIN" '.plugins[$name].enabled != false' \
             "$HOME/.gemini/config/config.json" >/dev/null 2>&1 || return 1
     fi
-    commands=$(jq -er --arg name "$CS_ANTIGRAVITY_HOOK_NAME" --arg event "$event" --arg tail " -antigravity-hook $verb" '
+    commands=$(jq -er --arg name "$CS_ANTIGRAVITY_HOOK_NAME" --arg event "$event" --arg tail " -antigravity-hook $verb" --arg expected "$expected_cs" '
         .[$name][$event] | arrays | .[]
         | select(type == "object" and .enabled != false)
+        | select($expected == "" or .matcher == null or .matcher == "*")
         | (.hooks // [.]) | arrays | .[]
         | select(type == "object" and .enabled != false and .type == "command")
         | .command | strings | select(endswith($tail))
@@ -24124,7 +24126,8 @@ _antigravity_rotation_hook_ready() {  # [event, verb]
         # hook command to find its path. This includes paths with quotes.
         [ "$(_antigravity_hook_command "$cs_path" "$verb")" = "$command" ] || continue
         case "$cs_path" in /*) ;; *) continue ;; esac
-        [ -f "$cs_path" ] && [ -x "$cs_path" ] && return 0
+        [ -f "$cs_path" ] && [ -x "$cs_path" ] || continue
+        { [ -z "$expected_cs" ] || [ "$cs_path" -ef "$expected_cs" ] || cmp -s "$cs_path" "$expected_cs"; } && return 0
     done < <(printf '%s\n' "$commands")
     return 1
 }
@@ -24249,6 +24252,13 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         return 1
     }
     export CS_BIN
+    if _switch_session_encrypted "$session_dir" && ! {
+        _antigravity_rotation_hook_ready PreInvocation pre-invocation "$CS_BIN" &&
+            _antigravity_rotation_hook_ready PostToolUse post-tool-use "$CS_BIN"
+    }; then
+        _antigravity_launch_error "Encrypted Antigravity requires working PreInvocation and PostToolUse hooks from this cs build. Enable the cs plugin and run setup.sh again to register both."
+        return 1
+    fi
     # -finish starts agy on the finish skill's own file. main has refused
     # already when that cannot work; this is the check for any other caller.
     if [ -n "$merge_feature" ]; then
@@ -24438,7 +24448,7 @@ $prompt"
     # The hook remembers in this run's own directory, out of the session the
     # agent can write, which conversation the run works in; the run's cleanup
     # removes it.
-    if run_dir=$(_antigravity_run_dir_prepare); then
+    if run_dir=$(_antigravity_run_dir_prepare "${vault_home:+protected}" "$session_dir"); then
         _cs_run_helper_dir=$run_dir
         if [ -n "$reopen" ]; then
             printf 'resume\n' > "$run_dir/opened" || true
@@ -24519,7 +24529,7 @@ $prompt"
     # home as HOME, with the shell's beside it for cs to go back to (bin/cs's
     # header); nothing else in this shell changes.
     local -a home_args=()
-    [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home")
+    [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home" CS_ANTIGRAVITY_VAULT_RUN="$CS_RUN_ID")
     cs_run_child ${home_args[@]+"${home_args[@]}"} "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
         ${statusline_args[@]+"${statusline_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
@@ -24560,11 +24570,14 @@ _antigravity_run_mark() {  # file
 
 # A directory already there is not this run's, and one the check refuses is
 # taken back.
-_antigravity_run_dir_prepare() {
+_antigravity_run_dir_prepare() {  # [protected, session_dir]
     local dir
     dir=$(_antigravity_run_dir) || return 1
     ( umask 077 && mkdir -p "${dir%/*}" && mkdir -m 700 "$dir" ) 2>/dev/null || return 1
-    _antigravity_run_dir_ok "$dir" || { rmdir "$dir" 2>/dev/null || true; return 1; }
+    if ! _antigravity_run_dir_ok "$dir" || { [ -n "${1:-}" ] && ! _launch_handoff_receipt_dir_ok "$dir" "$2"; }; then
+        rmdir "$dir" 2>/dev/null || true
+        return 1
+    fi
     printf '%s\n' "$dir"
 }
 
@@ -24576,7 +24589,8 @@ _antigravity_run_dir_prepare() {
 # before the model is called fires none of them. agy reads the hook's stdout
 # as JSON: `{}` decides nothing, and it is the answer on every path but the
 # two the mail takes (a digest injected at a prompt, a wake at a Stop). The
-# hook always exits 0, so it never fails a turn. It acts only in the run cs
+# hook always exits 0. PreInvocation can still stop a turn in its JSON reply.
+# It acts only in the run cs
 # launched; any other agy run passes through.
 #
 # A handler leaves its answer, one JSON object on one line, in
@@ -24607,11 +24621,13 @@ cmd_antigravity_hook() {  # event
     input=$(cat 2>/dev/null) || input=""
     if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
         run_dir=$(_antigravity_run_dir) || run_dir=""
-        if [ -n "$run_dir" ] && { [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; }; then
-            if _cs_private_pin_dir=$(_antigravity_run_private_dir "$CS_SESSION_DIR" "$run_dir"); then
+        if { [ -n "${CS_RUN_ID:-}" ] && [ "${CS_ANTIGRAVITY_VAULT_RUN:-}" = "$CS_RUN_ID" ]; } \
+            || { [ -n "$run_dir" ] && { [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; }; }; then
+            if [ -n "$run_dir" ] && _cs_private_pin_dir=$(_antigravity_run_private_dir "$CS_SESSION_DIR" "$run_dir") \
+                && _antigravity_run_vault_home "$run_dir" >/dev/null && cs_run_lease_owned "$CS_SESSION_DIR/.cs"; then
                 _cs_private_pin_meta="$CS_SESSION_DIR/.cs"
             else
-                _antigravity_hook_vault_stop "$1" 'cs stopped this turn: the encrypted session vault changed or became unavailable. Close and reopen the session to restore it.'
+                _antigravity_hook_vault_stop "$1" 'cs stopped this turn: the encrypted session vault or its run guard changed or became unavailable. Close and reopen the session to restore it.'
                 handler=""
             fi
         fi
@@ -24711,15 +24727,19 @@ _antigravity_hook_session_start() {  # payload
 # unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
     local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop=""
-    _antigravity_payload_read "$1" || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
     # An encrypted session's vault home is checked before every model call of
     # the run that holds the lease; anything a command changed there stops the
     # turn here, before the model can act again (lib/79-antigravity-vault.sh).
-    if [ -n "$run_dir" ] && _antigravity_run_vault_home "$run_dir" >/dev/null && cs_run_lease_owned "$meta"; then
+    if [ -n "${_cs_private_pin_dir:-}" ]; then
         _antigravity_hook_vault_check "$run_dir" || true
         stop=$(_antigravity_hook_vault_report "$run_dir")
+        if [ -n "$stop" ]; then
+            ANTIGRAVITY_HOOK_REPLY=$stop
+            return 0
+        fi
     fi
+    _antigravity_payload_read "$1" || return 0
     if [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; then
         weigh=1
     elif [ -f "$run_dir/held-$AGY_HOOK_ID" ] && [ ! -L "$run_dir/held-$AGY_HOOK_ID" ] \
@@ -24737,14 +24757,10 @@ _antigravity_hook_pre_invocation() {  # payload
             3>&1 >/dev/null 2>&1) || true
     fi
     [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
-    [ -n "$rotation$AGY_HOOK_DIGEST$stop" ] || return 0
-    # The shape measured on 1.5.8, terminationBehavior "" (call the model)
-    # included; a vault check's stop adds its steps and "terminate", from
-    # agy 1.5.10's hooks guide.
-    [ -n "$stop" ] || stop='{"injectSteps": [], "terminationBehavior": ""}'
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" --argjson stop "$stop" '
-        {injectSteps: (([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})) + $stop.injectSteps),
-         terminationBehavior: $stop.terminationBehavior}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
+    [ -n "$rotation$AGY_HOOK_DIGEST" ] || return 0
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" '
+        {injectSteps: ([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})),
+         terminationBehavior: ""}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
@@ -24948,8 +24964,7 @@ _antigravity_hook_post_tool_use() {  # payload
     # An encrypted session's vault home, checked after every tool: what a
     # command changed there is moved aside before anything else runs, and the
     # next model call stops the turn (_antigravity_hook_pre_invocation).
-    if run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" \
-        && _antigravity_run_vault_home "$run_dir" >/dev/null; then
+    if [ -n "${_cs_private_pin_dir:-}" ] && run_dir=$(_antigravity_run_dir); then
         _antigravity_hook_vault_check "$run_dir" || true
     fi
     event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0

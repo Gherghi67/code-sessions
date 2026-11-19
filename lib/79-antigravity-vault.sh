@@ -392,7 +392,8 @@ _antigravity_run_private_dir() {  # session_dir, run_dir
 _antigravity_hook_vault_stop() {  # event, message
     [ "$1" = pre-invocation ] || return 0
     ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$2" '
-        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}')
+        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}') \
+        || ANTIGRAVITY_HOOK_REPLY='{"terminationBehavior":"terminate"}'
 }
 
 # Whether a hook may act on the session's records: it is not encrypted, or

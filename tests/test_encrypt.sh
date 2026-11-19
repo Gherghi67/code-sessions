@@ -3,6 +3,7 @@
 # ABOUTME: and how it stops. hdiutil, uname and mount are PATH stubs that log every call.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGY_ENCRYPT_CACHE_PARENT="$HOME/.cache"
 # shellcheck source=tests/test_lib.sh
 source "$SCRIPT_DIR/test_lib.sh"
 
@@ -359,7 +360,13 @@ EOF
 
     output=$(_encrypt enc 2>&1) || { printf '%s\n' "$output"; return 1; }
     # Accept the default on an ordinary reopen if cs offers to continue.
-    output=$(printf 'y' | CS_ASSUME_TTY=1 AGY_BIN="$TEST_TMPDIR/stub/agy" AGY_TEST_ARGS="$args" "$CS_BIN" enc 2>&1) \
+    output=$(
+        local run_cache
+        mkdir -p "$AGY_ENCRYPT_CACHE_PARENT" || exit 1
+        run_cache=$(mktemp -d "$AGY_ENCRYPT_CACHE_PARENT/cs-agy-encrypt-test.XXXXXX") || exit 1
+        trap 'rm -rf -- "$run_cache"' EXIT
+        printf 'y' | CS_ASSUME_TTY=1 CS_CACHE_DIR="$run_cache" AGY_BIN="$TEST_TMPDIR/stub/agy" AGY_TEST_ARGS="$args" "$CS_BIN" enc 2>&1
+    ) \
         || { printf '%s\n' "$output"; return 1; }
     assert_file_exists "$args" "agy started" || return 1
     assert_eq "" "$(cat "$args")" "agy starts without the pre-encryption conversation ID" || return 1

@@ -122,7 +122,7 @@ done
 # A directory planted at the path AGY_PLANT_DIR names, its missing parents
 # made 0700, as cs makes its own cache directories.
 [ -z "${AGY_PLANT_DIR:-}" ] || ( umask 077 && mkdir -p "$AGY_PLANT_DIR" )
-hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+hooks="${CS_ANTIGRAVITY_SHARED_HOME:-$HOME}/.gemini/config/plugins/cs/hooks.json"
 # The answers of the event fired last, for the Stop loop to read.
 last="$AGY_HOOK_OUT.last"
 hook_out="$AGY_HOOK_OUT"
@@ -132,7 +132,7 @@ fire() {  # event, payload
     [ -f "$hooks" ] || return 0
     # A plugin switched off in agy's config runs no hooks, which is what
     # doctor and the rotation preflight take enabled=false to mean.
-    [ "$(jq -r '.plugins.cs.enabled' "$HOME/.gemini/config/config.json" 2>/dev/null)" != false ] || return 0
+    [ "$(jq -r '.plugins.cs.enabled' "${CS_ANTIGRAVITY_SHARED_HOME:-$HOME}/.gemini/config/config.json" 2>/dev/null)" != false ] || return 0
     jq -r --arg e "$1" '.[] | (.[$e] // [])[] | (.hooks // [.])[] | .command' "$hooks" \
         | while IFS= read -r cmd; do
             printf '%s' "$2" | (cd "${hooks%/*}" && sh -c "$cmd") 2>&1 | tee -a "$hook_out" >> "$last"
@@ -179,6 +179,10 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     if [ -n "${AGY_PRIVATE_CHANGE:-}" ]; then
         unlink "$CS_SESSION_META_DIR/private" || exit 1
         [ "$AGY_PRIVATE_CHANGE" = removed ] || ln -s "$AGY_PRIVATE_CHANGE" "$CS_SESSION_META_DIR/private" || exit 1
+    fi
+    if [ -n "${AGY_VAULT_HOME_CHANGE:-}" ]; then
+        mv "$HOME" "$HOME.old" || exit 1
+        [ "$AGY_VAULT_HOME_CHANGE" = removed ] || ln -s "$HOME.old" "$HOME" || exit 1
     fi
     [ -z "${AGY_ARM:-}" ] || arm "$AGY_ARM"
     [ -z "${AGY_VAULT_PLANT:-}" ] || printf 'planted\n' > "$HOME/$AGY_VAULT_PLANT"
@@ -1678,6 +1682,44 @@ test_an_encrypted_run_stops_when_its_private_directory_changes() {
         assert_eq "$AGY_NEW_ID" "$(_binding "$name")" "the hook leaves the binding alone ($change)" || return 1
         assert_not_exists "$dir/.cs/local/session.log" "no plaintext fallback log" || return 1
         assert_not_exists "$TEST_TMPDIR/replacement/session.log" "no log in the replacement directory" || return 1
+    done
+}
+
+test_an_encrypted_launch_requires_both_vault_hooks() {
+    local output event config="$HOME/.gemini/config/config.json"
+    local hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    AGY_NO_TURN=1 "$CS_BIN" hookcheck --engine antigravity || return 1
+    _vault_session hookcheck
+    cp "$hooks" "$TEST_TMPDIR/hooks.original"
+    for event in PreInvocation PostToolUse disabled filtered outdated; do
+        cp "$TEST_TMPDIR/hooks.original" "$hooks"
+        case "$event" in
+            disabled) printf '{"plugins":{"cs":{"enabled":false}}}\n' > "$config" ;;
+            filtered) jq '.[].PostToolUse[0].matcher = "write_file"' "$TEST_TMPDIR/hooks.original" > "$hooks" ;;
+            outdated) jq '.[].PostToolUse[0].hooks[0].command = "/bin/true -antigravity-hook post-tool-use"' "$TEST_TMPDIR/hooks.original" > "$hooks" ;;
+            *) jq --arg event "$event" 'del(.[][$event])' "$TEST_TMPDIR/hooks.original" > "$hooks" ;;
+        esac
+        : > "$AGY_LOG"
+        if output=$(AGY_NO_TURN=1 "$CS_BIN" hookcheck --fresh 2>&1); then
+            echo "  FAIL: encrypted launch accepted $event"; return 1
+        fi
+        assert_output_contains "$output" 'requires working PreInvocation and PostToolUse hooks' "$event is diagnosed" || return 1
+        assert_eq "" "$(cat "$AGY_LOG")" "agy is not started" || return 1
+        rm -f "$config"
+    done
+}
+
+test_an_encrypted_run_stops_when_its_native_home_is_unavailable() {
+    local output change name
+    for change in removed linked; do
+        name="home-$change"
+        AGY_NO_TURN=1 "$CS_BIN" "$name" --engine antigravity || return 1
+        _vault_session "$name"
+        : > "$AGY_HOOK_OUT"
+        output=$(AGY_VAULT_HOME_CHANGE="$change" "$CS_BIN" "$name" --fresh 2>&1) || {
+            echo "$output"; return 1
+        }
+        assert_file_contains "$AGY_HOOK_OUT" '"terminationBehavior":"terminate"' "the next model call stops ($change)" || return 1
     done
 }
 
@@ -3198,6 +3240,8 @@ run_test test_the_vault_home_follows_the_users_home_at_every_open
 run_test test_an_encrypted_open_without_an_agy_login_is_refused
 run_test test_a_linked_vault_home_stops_the_open
 run_test test_an_encrypted_run_stops_when_its_private_directory_changes
+run_test test_an_encrypted_launch_requires_both_vault_hooks
+run_test test_an_encrypted_run_stops_when_its_native_home_is_unavailable
 run_test test_a_command_that_changes_the_vault_home_stops_the_turn
 run_test test_a_command_that_changes_the_vault_settings_gets_them_put_back
 run_test test_an_untouched_vault_home_never_stops_a_turn
