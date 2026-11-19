@@ -372,9 +372,9 @@ def carried_note(engine, native_id, limit):
     source = ENGINE_NAMES.get(engine, engine)
     kind = "thread" if engine == "codex" else "conversation"
     hidden = "Codex's reasoning is" if engine == "codex" else "Claude's thinking is"
-    # Codex's model reads every carried call as text; Claude's reads a call
-    # cs found the result of as a tool call. No "]": CARRIED_NOTE ends at one.
-    calls = ("A tool call appears as a tool call when its result was found, and as text otherwise"
+    # Codex's model reads every carried call as text; Claude's reads a call cs
+    # can show with its result as a tool call. No "]": CARRIED_NOTE ends at one.
+    calls = ("A tool call appears as a tool call where Claude can show it with its result, and as text otherwise"
              if engine == "codex" else "Tool calls and their results appear as text")
     return ("[cs carried this conversation over from {} {} {}. {}, each result cut to its first {:,} characters; "
             "{} not included. Those tools were {}'s: use your own from here on.]").format(

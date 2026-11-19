@@ -506,9 +506,9 @@ class BootstrapTests(HelperFixture):
 CLAUDE_ID = "a0000000-0000-4000-8000-00000000000a"
 NEW_CLAUDE_ID = "b0000000-0000-4000-8000-00000000000b"
 # What each direction's note says became of the tool calls: Codex's model reads
-# every carried call as text, Claude's reads a call it has the result of as a tool call.
+# every carried call as text, Claude's reads a call it can show with its result as a tool call.
 INTO_CODEX_CALLS = "Tool calls and their results appear as text, each result cut to its first 4,000 characters"
-INTO_CLAUDE_CALLS = ("A tool call appears as a tool call when its result was found, and as text otherwise, "
+INTO_CLAUDE_CALLS = ("A tool call appears as a tool call where Claude can show it with its result, and as text otherwise, "
                      "each result cut to its first 4,000 characters")
 # Record shapes copied from real Claude Code 2.1.319 and Codex 0.160 files,
 # every value in them synthetic.
