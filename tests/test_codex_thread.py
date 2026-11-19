@@ -2023,8 +2023,17 @@ class TransplantTests(HelperFixture):
         filler = (rollout_line("event_msg", {"type": "token_count", "info": "x" * 1000}) + "\n") * 1024
         packed.write_bytes(self.pack(filler.encode()) * 96 + packed.read_bytes())
         peak = self.root / "peak"
-        setup = ("import atexit, resource\natexit.register(lambda: open(%r, 'w').write("
-                 "str(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)))\n" % str(peak))
+        # Linux carries ru_maxrss across exec, so a helper forked from this
+        # test run would report the run's own size; VmHWM is the helper's
+        # peak since exec. Both are in kB there; macOS counts bytes.
+        setup = ("import atexit, resource\n"
+                 "def peak_rss():\n"
+                 "    try:\n"
+                 "        with open('/proc/self/status') as status:\n"
+                 "            return next(int(l.split()[1]) for l in status if l.startswith('VmHWM:'))\n"
+                 "    except (OSError, StopIteration):\n"
+                 "        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+                 "atexit.register(lambda: open(%r, 'w').write(str(peak_rss())))\n" % str(peak))
         unit = 1 if sys.platform == "darwin" else 1024
         for reader in self.available_readers():
             with self.subTest(reader=reader):
