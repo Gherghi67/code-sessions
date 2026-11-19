@@ -951,7 +951,7 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.blocks(records, "tool_use")
         self.assertEqual([(block["name"], block["input"]) for block in calls], [
-            ("Bash", {"command": "git status -sb\ngit log -1", "workdir": "/repo", "yield_time_ms": 1000}),
+            ("Bash", {"command": "cd /repo && git status -sb\ngit log -1"}),
             ("mcp__codex__exec", {"input": script}), ("mcp__codex__update_plan", {}),
             ("mcp__codex__view_image", {"path": "x.png"})])
         self.assertEqual(self.results(records), ["## cs/x...github/cs/x\n- one\nuse ```sh\\\\ here",
@@ -961,6 +961,45 @@ class TransplantTests(HelperFixture):
             "[tool result]\n```\n" + "y" * 100 + "\n```\n[cs cut the remaining 5 characters]",
             "[tool call: shell]\n```\nls -la\n```",
             "[tool call: web_search]\n```\n# codex docs\n```", "Done."]))
+
+    def test_a_carried_bash_call_takes_only_the_input_claude_s_bash_accepts(self):
+        # Claude Code's Bash input is a strict object: a key it does not know
+        # fails the row's parse, and the row does not render. Codex's
+        # execution options stay behind; a directory other than the
+        # session's is folded into the command.
+        session = str(self.cwd.resolve())
+
+        def output(call_id):
+            return rollout_line("response_item", {"type": "function_call_output", "call_id": call_id,
+                                                  "output": "ok " + call_id})
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "build it")),
+            rollout_line("response_item", {"type": "function_call", "name": "exec_command", "call_id": "c1",
+                                           "arguments": json.dumps({
+                                               "cmd": "make", "workdir": "/srv/build", "yield_time_ms": 1000,
+                                               "max_output_tokens": 6000, "sandbox_permissions": "use_default",
+                                               "justification": "build", "prefix_rule": ["make"], "login": True})}),
+            output("c1"),
+            rollout_line("response_item", {"type": "function_call", "name": "shell", "call_id": "c2",
+                                           "arguments": json.dumps({"command": ["ls", "-la"], "workdir": session + "/",
+                                                                    "timeout_ms": 5000})}),
+            output("c2"),
+            rollout_line("response_item", {"type": "local_shell_call", "call_id": "c3", "action": {
+                "type": "exec", "command": ["git", "status"], "working_directory": "/srv/other dir",
+                "timeout_ms": 5000, "env": {"A": "1"}}}),
+            output("c3"),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.blocks(records, "tool_use")
+        self.assertEqual([block["name"] for block in calls], ["Bash"] * 3)
+        accepted = {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox"}
+        for block in calls:
+            self.assertLessEqual(set(block["input"]), accepted, block["input"])
+            self.assertEqual(set(block["input"]), {"command"})
+        self.assertEqual([block["input"]["command"] for block in calls],
+                         ["cd /srv/build && make", "ls -la", "cd '/srv/other dir' && git status"])
+        self.assertEqual(self.results(records), ["ok c1", "ok c2", "ok c3"])
 
     def test_a_shell_call_s_words_keep_their_quoting(self):
         # Joined with spaces, ["bash", "-lc", "echo 'a  b' && ls"] read as

@@ -140,7 +140,10 @@ resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)
 stay behind, while a prompt the user wrapped in a tag crosses. Claude Code shows matching calls and results as native tool rows.
 Direct shell commands appear as Bash, MCP calls retain their server and tool
-names, and other Codex tools use the `codex` server label. A code-mode script
+names, and other Codex tools use the `codex` server label. A Bash row carries
+the command alone: Codex's execution options (timeouts, output limits, sandbox
+and login settings) stay behind, and a working directory other than the
+session's is folded into the command as `cd <directory> && `. A code-mode script
 appears with its original input and decoded output. Expand the transcript
 with Ctrl+O to inspect each row. Parallel results refer to their originating
 call IDs, and a reported tool failure includes its tool name on Claude’s error line.
