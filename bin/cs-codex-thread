@@ -1224,12 +1224,13 @@ def native_tool_item(call, result, cwd):
                                          "isError": result["failed"]}}
 
 
-def display_items(message, cwd):
+def display_items(message, cwd, native=True):
     if message["role"] == "user":
         yield {"type": "UserMessage", "id": str(uuid.uuid4()), "client_id": None,
                "content": [{"type": "text", "text": message["text"], "text_elements": []}]}
         return
-    tools = message.get("tools", {})
+    # Without native rows every part is prose: one reply holding the model's text.
+    tools = message.get("tools", {}) if native else {}
     rows, consumed = {}, set()
     for call, result in matched_tools(tools):
         row = native_tool_item(tools[call], tools[result], cwd)
@@ -1254,7 +1255,7 @@ def display_items(message, cwd):
         yield reply(prose, "final_answer")
 
 
-def carried_records(thread_id, messages, cwd):
+def carried_records(thread_id, messages, cwd, native=True):
     """Put one model message and its display items inside the same revertible turn."""
     turn = None
     last_reply = None
@@ -1279,7 +1280,7 @@ def carried_records(thread_id, messages, cwd):
         model = model_message(message["role"], message["text"])
         model["id"] = "msg_" + str(uuid.uuid4())
         yield "response_item", model
-        for item in display_items(message, cwd):
+        for item in display_items(message, cwd, native):
             last_reply = item["content"][0]["text"] if item["type"] == "AgentMessage" else None
             yield "event_msg", {"type": "item_completed", "thread_id": thread_id, "turn_id": turn,
                                 "item": item, "started_at_ms": imported_at * 1000, "completed_at_ms": imported_at * 1000}
@@ -1287,7 +1288,7 @@ def carried_records(thread_id, messages, cwd):
         yield "event_msg", finished()
 
 
-def persist_carried_display(rollout_path, thread_id, messages, cwd):
+def persist_carried_display(rollout_path, thread_id, messages, cwd, native=True):
     # Only a newly created, not-yet-bound thread is eligible. Its sole writer
     # has exited before we open it, and the verification server has not yet
     # indexed it. Never use this to patch a running or already indexed thread.
@@ -1329,7 +1330,7 @@ def persist_carried_display(rollout_path, thread_id, messages, cwd):
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         expected = []
         handle.seek(0, os.SEEK_END)
-        for kind, payload in carried_records(thread_id, messages, cwd):
+        for kind, payload in carried_records(thread_id, messages, cwd, native):
             ordinal += 1
             if payload["type"] == "item_completed":
                 expected.append((payload["turn_id"], payload["item"]))
@@ -1418,14 +1419,27 @@ def bootstrap(args):
     if len(instructions.encode("utf-8")) > MAX_MESSAGE // 2:
         raise BootstrapError("instructions file is too large")
     # Read before any server starts, so an unreadable conversation creates no thread.
-    messages = []
+    messages, provenance = [], None
     if args.history_from_claude:
         messages = read_claude(args.history_from_claude, args.clip)
         if not messages:
             raise BootstrapError("the Claude conversation has nothing to carry over")
         source = args.history_source or Path(args.history_from_claude).stem
         provenance = model_message("developer", carried_note("claude", source, args.clip))
-    deadline = time.monotonic() + args.timeout
+    thread_id = prepare_thread(args, cwd, instructions, messages, provenance, True, time.monotonic() + args.timeout)
+    if thread_id is None:
+        # Codex did not show the native tool rows back and that thread is gone: carry
+        # the conversation again with its tool calls as reply text, as carries showed before native rows.
+        print("cs-codex-thread: Codex did not keep the carried tool rows; carrying the tool calls as text instead",
+              file=sys.stderr)
+        thread_id = prepare_thread(args, cwd, instructions, messages, provenance, False,
+                                   time.monotonic() + args.timeout)
+    return thread_id
+
+
+def prepare_thread(args, cwd, instructions, messages, provenance, native, deadline):
+    """Start or resume the thread, carry messages into it and check what a fresh server shows.
+    None means a carry with native tool rows failed that check, and its new thread was deleted."""
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
         if args.thread_id:
@@ -1452,7 +1466,7 @@ def bootstrap(args):
         if messages:
             server.request("thread/inject_items", {"threadId": thread_id, "items": [provenance]})
         server.request("thread/unsubscribe", {"threadId": thread_id})
-    visible_items = persist_carried_display(rollout_path, thread_id, messages, cwd) if messages else []
+    visible_items = persist_carried_display(rollout_path, thread_id, messages, cwd, native) if messages else []
     # A successful start/injection response is insufficient proof of durability.
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
@@ -1460,7 +1474,16 @@ def bootstrap(args):
             "threadId": thread_id, "cwd": cwd, "excludeTurns": True,
         }), thread_id)
         if visible_items:
-            verify_carried_display(server, thread_id, visible_items)
+            try:
+                verify_carried_display(server, thread_id, visible_items)
+            except BootstrapError:
+                if not any(item["type"] in ("CommandExecution", "McpToolCall") for _, item in visible_items):
+                    raise
+                try:
+                    server.request("thread/delete", {"threadId": thread_id})
+                except BootstrapError:
+                    pass  # A failed carry left its thread behind before; a refused delete does no worse.
+                return None
         server.request("thread/unsubscribe", {"threadId": thread_id})
     return thread_id
 

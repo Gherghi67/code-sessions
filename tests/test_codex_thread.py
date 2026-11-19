@@ -98,6 +98,9 @@ for line in sys.stdin:
                     item = {'type':'agentMessage','id':item['id'],'text':item['content'][0]['text']}
                 if mode == 'display_corrupt': item['text'] = 'wrong'
                 if mode == 'display_oversize': item['text'] = 'x' * (5 * 1024 * 1024)
+                field = os.environ.get('FAKE_FIELD')
+                if mode == 'tool_field' and item['type'] in ('commandExecution', 'mcpToolCall') and field in item:
+                    item[field] = {'changed': item[field]}
                 items.append({'turnId':event['turn_id'],'item':item})
         start = int(request['params'].get('cursor', '0'))
         end = start + request['params']['limit']
@@ -106,6 +109,11 @@ for line in sys.stdin:
         reply({'result':json.loads(os.environ.get('FAKE_CONFIG', '{}'))});continue
     if method == 'hooks/list':
         reply({'result':json.loads(os.environ.get('FAKE_HOOKS', '{"data": []}'))});continue
+    if method == 'thread/delete':
+        if os.environ.get('FAKE_DELETE') == 'error':
+            reply({'error':{'code':-32600,'message':'cannot delete'}});continue
+        if rollout.exists(): rollout.unlink()
+        reply({'result':{}});continue
     if method in ('thread/start','thread/resume'):
         tid = '01900000-0000-7000-8000-000000000001'
         if mode == 'mismatch' and method == 'thread/resume':
@@ -1952,6 +1960,52 @@ class TransplantTests(HelperFixture):
         for mode in ('display_items_lost', 'display_corrupt'):
             with self.subTest(mode=mode):
                 self.assert_failure(mode, 'visible', '--history-from-claude', str(path))
+
+    TEXT_FALLBACK = 'cs-codex-thread: Codex did not keep the carried tool rows; carrying the tool calls as text instead\n'
+
+    def carry_with_a_changed_tool_field(self, field, **env):
+        for name in ('requests', 'count'):
+            (self.root / name).unlink(missing_ok=True)
+        self.env.update(env, FAKE_FIELD=field)
+        result = self.run_helper('tool_field', '--history-from-claude', str(SHAPES / 'claude-shapes.jsonl'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, THREAD_ID + '\n')
+        self.assertEqual(result.stderr, self.TEXT_FALLBACK)
+        requests = self.requests()
+        # The verifying server deletes the native carry before a second thread carries it as text.
+        self.assertEqual([(r['process'], r['request']['params']) for r in requests
+                          if r['request']['method'] == 'thread/delete'], [(2, {'threadId': THREAD_ID})])
+        self.assertEqual([r['process'] for r in requests if r['request']['method'] == 'thread/start'], [1, 3])
+        records = [json.loads(line) for line in
+                   (self.codex_home / 'sessions/bootstrap-rollout.jsonl').read_text().splitlines()]
+        rows = [r['payload']['item'] for r in records
+                if r['type'] == 'event_msg' and r['payload']['type'] == 'item_completed']
+        # The display base 8bb960b4 wrote: one row per message, each reply its whole model text.
+        self.assertEqual([row['type'] for row in rows], ['UserMessage', 'AgentMessage'] * 2)
+        replies = [row['content'][0]['text'] for row in rows if row['type'] == 'AgentMessage']
+        self.assertEqual(replies, [r['payload']['content'][0]['text'] for r in records
+                                   if r['type'] == 'response_item' and r['payload'].get('role') == 'assistant'])
+        self.assertIn('[tool call: Bash]', replies[0])
+        self.assertEqual({row['phase'] for row in rows if row['type'] == 'AgentMessage'}, {'final_answer'})
+
+    def test_changed_native_tool_rows_fall_back_to_text_rows(self):
+        for field in ('aggregatedOutput', 'status', 'exitCode', 'commandActions',
+                      'server', 'tool', 'arguments', 'result'):
+            with self.subTest(field=field):
+                self.carry_with_a_changed_tool_field(field)
+
+    def test_text_fallback_ignores_a_failed_thread_delete(self):
+        self.carry_with_a_changed_tool_field('aggregatedOutput', FAKE_DELETE='error')
+
+    def test_a_carry_without_tool_rows_fails_verification_without_a_retry(self):
+        path = self.root / (CLAUDE_ID + '.jsonl')
+        path.write_text('\n'.join([claude_record('user', 'hello', '1', None),
+                                   claude_record('assistant', [{'type': 'text', 'text': 'hi'}], '2', '1')]) + '\n')
+        result = self.assert_failure('display_corrupt', 'visible', '--history-from-claude', str(path))
+        self.assertNotIn('as text instead', result.stderr)
+        methods = [r['request']['method'] for r in self.requests()]
+        self.assertNotIn('thread/delete', methods)
+        self.assertEqual(methods.count('thread/start'), 1)
 
     def test_unexpected_large_display_output_is_still_bounded(self):
         source = self.sample_transcript()
