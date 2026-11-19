@@ -176,6 +176,10 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     # inside "$(...)", and a comma there would then brace-expand.
     extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "$steps")
     fire PreInvocation "$(payload "$conversation" "$extra")"
+    if [ -n "${AGY_PRIVATE_CHANGE:-}" ]; then
+        unlink "$CS_SESSION_META_DIR/private" || exit 1
+        [ "$AGY_PRIVATE_CHANGE" = removed ] || ln -s "$AGY_PRIVATE_CHANGE" "$CS_SESSION_META_DIR/private" || exit 1
+    fi
     [ -z "${AGY_ARM:-}" ] || arm "$AGY_ARM"
     [ -z "${AGY_VAULT_PLANT:-}" ] || printf 'planted\n' > "$HOME/$AGY_VAULT_PLANT"
     [ -z "${AGY_VAULT_LINK:-}" ] || ln -sfn "$AGY_VAULT_LINK_TO" "$HOME/$AGY_VAULT_LINK"
@@ -1656,6 +1660,25 @@ test_a_linked_vault_home_stops_the_open() {
     assert_output_contains "$output" 'is a link or not a directory' || return 1
     assert_eq "" "$(ls -A "$victim")" "nothing is written where the link points" || return 1
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+}
+
+test_an_encrypted_run_stops_when_its_private_directory_changes() {
+    local name change dir output cleared=66666666-6666-4666-8666-666666666666
+    mkdir "$TEST_TMPDIR/replacement"
+    for change in removed "$TEST_TMPDIR/replacement"; do
+        name="sealed-${change##*/}"
+        AGY_NO_TURN=1 "$CS_BIN" "$name" --engine antigravity || return 1
+        _vault_session "$name"
+        dir=$(_session_dir "$name")
+        : > "$AGY_HOOK_OUT"
+        output=$(AGY_PRIVATE_CHANGE="$change" AGY_CLEARED="$cleared" "$CS_BIN" "$name" --fresh 2>&1) || {
+            echo "$output"; return 1
+        }
+        assert_file_contains "$AGY_HOOK_OUT" '"terminationBehavior":"terminate"' "the next model call stops ($change)" || return 1
+        assert_eq "$AGY_NEW_ID" "$(_binding "$name")" "the hook leaves the binding alone ($change)" || return 1
+        assert_not_exists "$dir/.cs/local/session.log" "no plaintext fallback log" || return 1
+        assert_not_exists "$TEST_TMPDIR/replacement/session.log" "no log in the replacement directory" || return 1
+    done
 }
 
 # A command that plants a file in agy's home during the run: the PostToolUse
@@ -3174,6 +3197,7 @@ run_test test_the_vault_rule_carries_the_users_own_global_rule
 run_test test_the_vault_home_follows_the_users_home_at_every_open
 run_test test_an_encrypted_open_without_an_agy_login_is_refused
 run_test test_a_linked_vault_home_stops_the_open
+run_test test_an_encrypted_run_stops_when_its_private_directory_changes
 run_test test_a_command_that_changes_the_vault_home_stops_the_turn
 run_test test_a_command_that_changes_the_vault_settings_gets_them_put_back
 run_test test_an_untouched_vault_home_never_stops_a_turn

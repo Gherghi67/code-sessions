@@ -368,9 +368,7 @@ _antigravity_drop_workspace_rule() {  # session_dir
     rm -f -- "$1/$CS_ANTIGRAVITY_RULE"
 }
 
-# The vault home the launch recorded in its run directory, which only cs can
-# write, so a .cs/private the agent pointed elsewhere mid-run changes nothing
-# the hooks check. Fails for a run that is not an encrypted session's.
+# The vault home recorded in the run directory, which only cs can write.
 _antigravity_run_vault_home() {  # run_dir
     local home=""
     [ -n "$1" ] && [ -f "$1/vault" ] && [ ! -L "$1/vault" ] || return 1
@@ -380,10 +378,28 @@ _antigravity_run_vault_home() {  # run_dir
     printf '%s\n' "$home"
 }
 
+# Resolve the private directory once for the hook and check it against the
+# launch's physical path and directory identity before using any records.
+_antigravity_run_private_dir() {  # session_dir, run_dir
+    local home id current
+    _antigravity_run_dir_ok "$2" && [ -f "$2/vault" ] && [ ! -L "$2/vault" ] || return 1
+    { IFS= read -r home && IFS= read -r id; } < "$2/vault" || return 1
+    current=$(_antigravity_vault_home_path "$1") || return 1
+    [ "$current" = "$home" ] && [ -n "$id" ] && [ "$(cs_dir_identity "${current%/*}")" = "$id" ] || return 1
+    printf '%s\n' "${current%/*}"
+}
+
+_antigravity_hook_vault_stop() {  # event, message
+    [ "$1" = pre-invocation ] || return 0
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$2" '
+        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}')
+}
+
 # Whether a hook may act on the session's records: it is not encrypted, or
 # the launch ran it on its vault home. A .cs/private in a run launched without
 # one came mid-run, maybe as a link out of the session, and is left alone.
 _antigravity_vault_ok() {  # session_dir, run_dir
+    [ "${_cs_private_pin_meta:-}" != "$1/.cs" ] || return 0
     _switch_session_encrypted "$1" || return 0
     _antigravity_run_vault_home "$2" >/dev/null
 }
@@ -392,7 +408,7 @@ _antigravity_vault_ok() {  # session_dir, run_dir
 # the vault home, as Codex's hooks log an encrypted session's, else .cs/local,
 # a .cs/private that came mid-run included, which gets nothing.
 _antigravity_log_dir() {  # session_dir, run_dir
-    if _switch_session_encrypted "$1" && _antigravity_run_vault_home "$2" >/dev/null; then
+    if [ "${_cs_private_pin_meta:-}" = "$1/.cs" ]; then
         cs_private_dir "$1/.cs"
     else
         cs_local_dir "$1/.cs"

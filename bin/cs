@@ -2111,10 +2111,12 @@ CS_VAULT_LINKS="memory plans claude-config private"
 # a rotation, and nothing is added beside it. That answer is one hook run's:
 # a value of either name that came in with the environment is dropped here,
 # where cs and every hook that reads these files load this file.
-unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE
+unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE _cs_private_pin_meta _cs_private_pin_dir
 cs_private_dir() {  # meta_dir
     [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
-    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+    if [ "${_cs_private_pin_meta:-}" = "$1" ]; then
+        printf '%s\n' "$_cs_private_pin_dir"
+    elif [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private"
     else
@@ -2465,7 +2467,9 @@ cs_private_state() {  # meta_dir
 # .cs/handoffs in every other. Fails, like cs_private_dir, while .cs/private
 # dangles: a locked vault has no handoffs to offer or consume.
 cs_handoff_dir() {  # meta_dir
-    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+    if [ "${_cs_private_pin_meta:-}" = "$1" ]; then
+        printf '%s/handoffs\n' "$_cs_private_pin_dir"
+    elif [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private/handoffs"
     else
@@ -23759,9 +23763,7 @@ _antigravity_drop_workspace_rule() {  # session_dir
     rm -f -- "$1/$CS_ANTIGRAVITY_RULE"
 }
 
-# The vault home the launch recorded in its run directory, which only cs can
-# write, so a .cs/private the agent pointed elsewhere mid-run changes nothing
-# the hooks check. Fails for a run that is not an encrypted session's.
+# The vault home recorded in the run directory, which only cs can write.
 _antigravity_run_vault_home() {  # run_dir
     local home=""
     [ -n "$1" ] && [ -f "$1/vault" ] && [ ! -L "$1/vault" ] || return 1
@@ -23771,10 +23773,28 @@ _antigravity_run_vault_home() {  # run_dir
     printf '%s\n' "$home"
 }
 
+# Resolve the private directory once for the hook and check it against the
+# launch's physical path and directory identity before using any records.
+_antigravity_run_private_dir() {  # session_dir, run_dir
+    local home id current
+    _antigravity_run_dir_ok "$2" && [ -f "$2/vault" ] && [ ! -L "$2/vault" ] || return 1
+    { IFS= read -r home && IFS= read -r id; } < "$2/vault" || return 1
+    current=$(_antigravity_vault_home_path "$1") || return 1
+    [ "$current" = "$home" ] && [ -n "$id" ] && [ "$(cs_dir_identity "${current%/*}")" = "$id" ] || return 1
+    printf '%s\n' "${current%/*}"
+}
+
+_antigravity_hook_vault_stop() {  # event, message
+    [ "$1" = pre-invocation ] || return 0
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$2" '
+        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}')
+}
+
 # Whether a hook may act on the session's records: it is not encrypted, or
 # the launch ran it on its vault home. A .cs/private in a run launched without
 # one came mid-run, maybe as a link out of the session, and is left alone.
 _antigravity_vault_ok() {  # session_dir, run_dir
+    [ "${_cs_private_pin_meta:-}" != "$1/.cs" ] || return 0
     _switch_session_encrypted "$1" || return 0
     _antigravity_run_vault_home "$2" >/dev/null
 }
@@ -23783,7 +23803,7 @@ _antigravity_vault_ok() {  # session_dir, run_dir
 # the vault home, as Codex's hooks log an encrypted session's, else .cs/local,
 # a .cs/private that came mid-run included, which gets nothing.
 _antigravity_log_dir() {  # session_dir, run_dir
-    if _switch_session_encrypted "$1" && _antigravity_run_vault_home "$2" >/dev/null; then
+    if [ "${_cs_private_pin_meta:-}" = "$1/.cs" ]; then
         cs_private_dir "$1/.cs"
     else
         cs_local_dir "$1/.cs"
@@ -24201,7 +24221,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     }
     # An encrypted session runs agy on a home inside its vault, made below once
     # nothing else refuses; shared_home is the one it links back to.
-    local vault_home="" shared_home="$HOME" rule_shown="$CS_ANTIGRAVITY_RULE"
+    local vault_home="" vault_id shared_home="$HOME" rule_shown="$CS_ANTIGRAVITY_RULE"
     # Both paths are made absolute before the launch changes into the
     # session folder, where a relative one would name another file.
     agy_bin=$(command -v "$agy_bin" 2>/dev/null) || {
@@ -24420,10 +24440,11 @@ $prompt"
         if [ -n "$rotation_handoff" ]; then
             printf '%s\n' "$rotation_handoff" > "$run_dir/handoff" || return 1
         fi
-        # The vault home the hooks check during the run, named where only cs
-        # writes, so a .cs/private pointed elsewhere mid-run changes nothing.
+        # The hook checks both the physical path and its identity against
+        # these launch records, stored outside the session.
         if [ -n "$vault_home" ]; then
-            ( set -C; printf '%s\n' "$vault_home" > "$run_dir/vault" ) 2>/dev/null || {
+            vault_id=$(cs_dir_identity "${vault_home%/*}") &&
+                ( set -C; printf '%s\n' "$vault_home" "$vault_id" > "$run_dir/vault" ) 2>/dev/null || {
                 _antigravity_launch_error "Cannot record the vault Antigravity home in this run's directory; cs does not run agy on it unchecked."
                 return 1
             }
@@ -24555,7 +24576,9 @@ _antigravity_run_dir_prepare() {
 # the answer is out. The handler's own stdout goes nowhere, so nothing it runs
 # can add to the answer or hold agy's pipe open.
 cmd_antigravity_hook() {  # event
-    local handler input
+    local handler input run_dir
+    # Shared mail and handoff helpers use this pin only within this hook.
+    local _cs_private_pin_meta="" _cs_private_pin_dir=""
     ANTIGRAVITY_HOOK_REPLY=""
     ANTIGRAVITY_HOOK_AFTER=""
     case "${1:-}" in
@@ -24574,9 +24597,19 @@ cmd_antigravity_hook() {  # event
     # Read whole first: agy writes the payload into a pipe, and a hook that
     # left before reading it could fail agy's write.
     input=$(cat 2>/dev/null) || input=""
-    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ] \
-        && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
-        "$handler" "$input" </dev/null >/dev/null 2>&1 || true
+    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+        run_dir=$(_antigravity_run_dir) || run_dir=""
+        if [ -n "$run_dir" ] && { [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; }; then
+            if _cs_private_pin_dir=$(_antigravity_run_private_dir "$CS_SESSION_DIR" "$run_dir"); then
+                _cs_private_pin_meta="$CS_SESSION_DIR/.cs"
+            else
+                _antigravity_hook_vault_stop "$1" 'cs stopped this turn: the encrypted session vault changed or became unavailable. Close and reopen the session to restore it.'
+                handler=""
+            fi
+        fi
+        if [ -n "$handler" ] && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
+            "$handler" "$input" </dev/null >/dev/null 2>&1 || true
+        fi
     fi
     if [ -n "$ANTIGRAVITY_HOOK_REPLY" ]; then
         printf '%s\n' "$ANTIGRAVITY_HOOK_REPLY"

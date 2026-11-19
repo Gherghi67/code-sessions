@@ -382,7 +382,7 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
     }
     # An encrypted session runs agy on a home inside its vault, made below once
     # nothing else refuses; shared_home is the one it links back to.
-    local vault_home="" shared_home="$HOME" rule_shown="$CS_ANTIGRAVITY_RULE"
+    local vault_home="" vault_id shared_home="$HOME" rule_shown="$CS_ANTIGRAVITY_RULE"
     # Both paths are made absolute before the launch changes into the
     # session folder, where a relative one would name another file.
     agy_bin=$(command -v "$agy_bin" 2>/dev/null) || {
@@ -601,10 +601,11 @@ $prompt"
         if [ -n "$rotation_handoff" ]; then
             printf '%s\n' "$rotation_handoff" > "$run_dir/handoff" || return 1
         fi
-        # The vault home the hooks check during the run, named where only cs
-        # writes, so a .cs/private pointed elsewhere mid-run changes nothing.
+        # The hook checks both the physical path and its identity against
+        # these launch records, stored outside the session.
         if [ -n "$vault_home" ]; then
-            ( set -C; printf '%s\n' "$vault_home" > "$run_dir/vault" ) 2>/dev/null || {
+            vault_id=$(cs_dir_identity "${vault_home%/*}") &&
+                ( set -C; printf '%s\n' "$vault_home" "$vault_id" > "$run_dir/vault" ) 2>/dev/null || {
                 _antigravity_launch_error "Cannot record the vault Antigravity home in this run's directory; cs does not run agy on it unchecked."
                 return 1
             }
@@ -736,7 +737,9 @@ _antigravity_run_dir_prepare() {
 # the answer is out. The handler's own stdout goes nowhere, so nothing it runs
 # can add to the answer or hold agy's pipe open.
 cmd_antigravity_hook() {  # event
-    local handler input
+    local handler input run_dir
+    # Shared mail and handoff helpers use this pin only within this hook.
+    local _cs_private_pin_meta="" _cs_private_pin_dir=""
     ANTIGRAVITY_HOOK_REPLY=""
     ANTIGRAVITY_HOOK_AFTER=""
     case "${1:-}" in
@@ -755,9 +758,19 @@ cmd_antigravity_hook() {  # event
     # Read whole first: agy writes the payload into a pipe, and a hook that
     # left before reading it could fail agy's write.
     input=$(cat 2>/dev/null) || input=""
-    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ] \
-        && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
-        "$handler" "$input" </dev/null >/dev/null 2>&1 || true
+    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+        run_dir=$(_antigravity_run_dir) || run_dir=""
+        if [ -n "$run_dir" ] && { [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; }; then
+            if _cs_private_pin_dir=$(_antigravity_run_private_dir "$CS_SESSION_DIR" "$run_dir"); then
+                _cs_private_pin_meta="$CS_SESSION_DIR/.cs"
+            else
+                _antigravity_hook_vault_stop "$1" 'cs stopped this turn: the encrypted session vault changed or became unavailable. Close and reopen the session to restore it.'
+                handler=""
+            fi
+        fi
+        if [ -n "$handler" ] && [ -d "$CS_SESSION_DIR/.cs/local" ]; then
+            "$handler" "$input" </dev/null >/dev/null 2>&1 || true
+        fi
     fi
     if [ -n "$ANTIGRAVITY_HOOK_REPLY" ]; then
         printf '%s\n' "$ANTIGRAVITY_HOOK_REPLY"

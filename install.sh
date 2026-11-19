@@ -2115,14 +2115,14 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "d8ebcdf17346968116df2f6283b88858111a3e476a74df44d72486e898183f26  bin/cs"
+    "22a05951f7fb021efa5fef3db0a4c06f678c2933793fff1a6d1dcf7a4eb794d5  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
     "1b0f73bd261d62ef5dce1ee1343352ddef174dd90e65ce007c50b8f19d21182e  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
     "5f8a8f43eabd2c51c81e4b2c53728205231f02fe039fd62463cc6855356e461e  bin/cs-subagent-statusline"
     "b1272ea923569f2c56fcac2900bdb8b52d98a7fe400031fe92ad067ed62aa65d  bin/cs-statusline-agy"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
-    "810b08117eff99f8edda281eb6ddc5f33a74675259d41f3f51917692fe549e52  hooks/cs-shared.sh"
+    "a15e49a9132fcb7f322bc5ebedc592f6678422e29d3a90745ee17c9bcabc1109  hooks/cs-shared.sh"
     "e6d5ae5a6121a17d2935566a0e8c05f60f5d7fa5a2af3266dbe810a3b88c91b7  hooks/cs-engine-events.sh"
     "9b31e11d43edc6f5719933a1480afd9222803565cfc19f466f3735c99c5bce34  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
@@ -2155,7 +2155,7 @@ CS_PAYLOAD_SHA256=(
     "c62e0cec4a71db812b14f2a52711bd64b5045bca6044077b893bd9bbeb284e36  skills/finish/agents/openai.yaml"
     "930ca2e26b381100ebfd9a091f92df85e03517823d51512ff59d7a756c2f05e0  skills/switch/agents/openai.yaml"
     "5363e75503b9ffcbdf0d492cebc5125495fce0be4ebb604534b597b294296f28  skills/sweep/scripts/memory-index-guard.sh"
-    "810b08117eff99f8edda281eb6ddc5f33a74675259d41f3f51917692fe549e52  skills/sweep/scripts/cs-shared.sh"
+    "a15e49a9132fcb7f322bc5ebedc592f6678422e29d3a90745ee17c9bcabc1109  skills/sweep/scripts/cs-shared.sh"
     "a999b85473187e2d79fa94f8e3f5532a4510939114032f692e2e9003a155f40b  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "20d2cdb0d1e6fc5cf787d5144f1c7b22f0648cbcd296ae55482b5131cdcaf1ca  mods/cs/hooks/register.tsx"
