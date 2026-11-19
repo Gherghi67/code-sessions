@@ -808,26 +808,21 @@ cmd_antigravity_hook() {  # event
 # PreInvocation's invocationNum when it is a whole number, else empty;
 # AGY_HOOK_TERMINATION, Stop's terminationReason when it is a word, else
 # empty; AGY_HOOK_STEPS, PreInvocation's initialNumSteps when it is a whole
-# number, else empty; AGY_HOOK_TYPED, 1 when lastUserInput is a string that
-# is not empty, else empty (the prompt itself is never kept); and
-# AGY_HOOK_CWD, the folder agy runs in (cwd) when it is an absolute path of
-# printable characters, else empty.
+# number, else empty; and AGY_HOOK_TYPED, 1 when lastUserInput is a string
+# that is not empty, else empty (the prompt itself is never kept).
 _antigravity_payload_read() {  # payload
     local fields rest
-    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED="" AGY_HOOK_CWD=""
+    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED=""
     # Each field is kept only when every character in it is one its shape
     # allows, judged by what is left once those are deleted (a regex "$"
     # also matches before a newline), so none can carry the separator or a
-    # second line; anything else reads as "". The folder, which may hold the
-    # separator, comes last and is taken whole.
+    # second line; anything else reads as "".
     fields=$(printf '%s' "$1" | jq -r 'if type == "object" then
             [((.conversationId | strings | select(length == 36 and gsub("[0-9A-Fa-f-]"; "") == "")) // ""),
              ((.invocationNum | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
              ((.terminationReason | strings | select(length <= 40 and gsub("[A-Z_]"; "") == "")) // ""),
              ((.initialNumSteps | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
-             (if (.lastUserInput | type) == "string" and (.lastUserInput | length) > 0 then "1" else "" end),
-             ((.cwd | strings | select(length <= 4096 and startswith("/")
-                 and (explode | all(. >= 32 and . != 127)))) // "")]
+             (if (.lastUserInput | type) == "string" and (.lastUserInput | length) > 0 then "1" else "" end)]
             | join("|")
         else "" end' 2>/dev/null) || return 1
     # Split by expansion, not read with a here-document, which bash 3.2
@@ -839,11 +834,9 @@ _antigravity_payload_read() {  # payload
     AGY_HOOK_TERMINATION=${rest%%"|"*}
     rest=${rest#*"|"}
     AGY_HOOK_STEPS=${rest%%"|"*}
-    rest=${rest#*"|"}
-    AGY_HOOK_TYPED=${rest%%"|"*}
-    AGY_HOOK_CWD=${rest#*"|"}
+    AGY_HOOK_TYPED=${rest#*"|"}
     if ! _is_uuid "$AGY_HOOK_ID"; then
-        AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED="" AGY_HOOK_CWD=""
+        AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED=""
         return 1
     fi
 }
@@ -862,8 +855,7 @@ _antigravity_hook_typed() {
 
 # SessionStart fires once for each conversation agy starts: the run's first
 # when the launch opened none, one /clear or /new started, and a subagent's;
-# never for one opened with --conversation or /resume, nor, on agy 1.5.12, for
-# one /fork made (_antigravity_hook_rebind_fork). Once the run has bound
+# never for one opened with --conversation or /resume. Once the run has bound
 # its conversation, a typed one is marked new in the run's directory, for
 # PreInvocation to move the session to it (_antigravity_hook_bind). The mark
 # is all this does: it never binds, and always answers {}.
@@ -884,9 +876,7 @@ _antigravity_hook_session_start() {  # payload
 # model call in the run, so later model calls stop at a file test. A later one
 # takes the session only when /clear or /new started it
 # (_antigravity_hook_rebind_clear), and its first model call is then handed
-# the rotation armed for it, or when /fork made it from the conversation that
-# holds the session (_antigravity_hook_rebind_fork), which leaves the rotation
-# armed. An id already weighed is weighed again only at a
+# the rotation armed for it. An id already weighed is weighed again only at a
 # prompt typed into a conversation that held the session earlier in the run
 # while another holds it: the user went back to it with /resume
 # (_antigravity_hook_retake). The first model call of a turn carries the
@@ -934,9 +924,8 @@ _antigravity_hook_pre_invocation() {  # payload
 # whichever it is: the one a reopen named, a new one, or one opened with
 # /resume before the first turn. Of the conversations the run meets later,
 # only one /clear or /new started may take the binding
-# (_antigravity_hook_rebind_clear), or one /fork made from the conversation
-# holding it (_antigravity_hook_rebind_fork); one that held it earlier in the
-# run takes it back when the user returns to it with /resume
+# (_antigravity_hook_rebind_clear), and one that held it earlier in the run
+# takes it back when the user returns to it with /resume
 # (_antigravity_hook_retake); a subagent's, and one /resume opened that the
 # run never bound, leave it alone. Each conversation the binding moves to is
 # marked held. A run without its directory cannot tell first from later, and
@@ -949,14 +938,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
                 _antigravity_hook_retake "$session_dir" "$id" "$run_dir" || true
                 return 0
             fi
-            # SessionStart marks /clear and /new conversations new, never a
-            # fork: whatever stands at the mark's name, a link included,
-            # leaves the conversation to the /clear rebind alone.
-            if [ -e "$run_dir/new-$id" ] || [ -L "$run_dir/new-$id" ]; then
-                _antigravity_hook_rebind_clear "$session_dir" "$id" "$run_dir" || true
-            else
-                _antigravity_hook_rebind_fork "$session_dir" "$id" "$run_dir" || true
-            fi
+            _antigravity_hook_rebind_clear "$session_dir" "$id" "$run_dir" || true
             _antigravity_run_mark "$run_dir/seen-$id"
             return 0
         fi
@@ -1091,88 +1073,6 @@ $(_handoff_refusal_warning "$shown/$handoff" "$refusal" "$(_codex_marker_shown "
         _timeline_rotated "$session_dir" "$previous" "$id" "$reason" "$handoff" antigravity || true
     fi
     _timeline_started "$session_dir" antigravity "$id" clear || true
-    _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
-}
-
-# How many bytes of the end of agy's history the fork check reads: a prompt
-# pasted between the "/fork" and the fork's own first prompt could be long.
-CS_AGY_HISTORY_TAIL=1048576
-
-# The conversation <id> was forked from, as agy's history records it, printed
-# when it does. agy keeps what was typed into it in history.jsonl, under the
-# run's agy home (<home>: the vault's in an encrypted session, where the hook
-# itself runs on the user's), one JSON object a
-# line: a prompt with the conversation it went to, a slash command (type
-# slash_command) with the one it was typed in, each with the folder agy ran
-# in (workspace, the payload's cwd). Measured on agy 1.5.12, 2026-11-19: a
-# /fork leaves "/fork" typed in the parent, and the fork's first prompt goes
-# in before its first model call. So among this folder's lines, the last must
-# be a prompt typed into <id>, and the line before it, past any slash command
-# typed in <id> itself (a /model, a /btw), a "/fork" typed in another
-# conversation. A history that is missing, a link or not the user's, a line
-# cut by the tail or not JSON, or one agy wrote some other way prints nothing
-# and fails, which leaves the binding where it is.
-_antigravity_forked_from() {  # conversation_id, workspace, home
-    local file="$3/.gemini/antigravity-cli/history.jsonl" parent
-    _is_uuid "$1" && [ -n "$2" ] && [ -n "$3" ] || return 1
-    [ -f "$file" ] && [ ! -L "$file" ] && [ -O "$file" ] || return 1
-    parent=$(tail -c "$CS_AGY_HISTORY_TAIL" -- "$file" 2>/dev/null | jq -R -s -r --arg id "$1" --arg ws "$2" '
-        ([split("\n")[] | fromjson? | objects | select(.workspace == $ws)]) as $l
-        | ($l | length) as $n
-        | if $n < 2 or $l[$n - 1].conversationId != $id or (($l[$n - 1].type // "") != "") then empty
-          else
-            ([range(0; $n - 1)] | reverse
-             | map(select(($l[.].type == "slash_command" and $l[.].conversationId == $id) | not))
-             | first) as $j
-            | if $j == null then empty else $l[$j] end
-            | select(.type == "slash_command" and (.display | strings) == "/fork")
-            | .conversationId | strings | select(length == 36 and gsub("[0-9A-Fa-f-]"; "") == "")
-          end' 2>/dev/null) || return 1
-    _is_uuid "$parent" && [ "$parent" != "$1" ] || return 1
-    printf '%s\n' "$parent"
-}
-
-# Under the run lease, for a conversation the run meets after it has bound
-# its own, at that conversation's first weighing, when SessionStart did not
-# mark it new (/clear and /new conversations are _antigravity_hook_rebind_
-# clear's). It takes the session when /fork made it from the conversation
-# that holds the session: the launch found the rebind usable (clear-rebind),
-# a prompt was typed into it, this is its first model call, its trajectory
-# starts with steps, and agy's history names that conversation as the one
-# it was forked from (_antigravity_forked_from). On agy 1.5.12 /fork fires
-# no SessionStart, and neither its payloads nor agy's conversation index
-# name the parent; the history does. A /btw side question writes no prompt
-# of its own there, and a subagent's has none typed. The binding moves, the
-# conversation is marked held, so that a /resume back to it later in the run
-# takes the session back (_antigravity_hook_retake), and the move and its
-# start are recorded as a fork. A fork carries its parent's whole
-# conversation, so the rotation /cs:rotate armed is not spent there: it
-# stays armed for the next /clear. An encrypted session's whose .cs/private
-# came mid-run is left alone (_antigravity_vault_ok).
-_antigravity_hook_rebind_fork() {  # session_dir, conversation_id, run_dir
-    local session_dir="$1" id="$2" run_dir="$3" previous parent log_dir home="$HOME"
-    [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
-    [ ! -e "$run_dir/new-$id" ] && [ ! -L "$run_dir/new-$id" ] || return 0
-    [ "${AGY_HOOK_INVOCATION:-}" = 0 ] && [ "${AGY_HOOK_TYPED:-}" = 1 ] || return 0
-    [ -n "${AGY_HOOK_STEPS:-}" ] && [ "$AGY_HOOK_STEPS" -ge 1 ] || return 0
-    _antigravity_vault_ok "$session_dir" "$run_dir" || return 0
-    if [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; then
-        home=$(_antigravity_run_vault_home "$run_dir") || return 0
-    fi
-    previous=$(cs_binding_read "$session_dir" antigravity) || return 1
-    _is_uuid "$previous" && [ "$previous" != "$id" ] || return 0
-    parent=$(_antigravity_forked_from "$id" "${AGY_HOOK_CWD:-}" "$home") && [ "$parent" = "$previous" ] || return 0
-    cs_binding_write "$session_dir" antigravity "$id" || return 1
-    _antigravity_run_mark "$run_dir/held-$id"
-    if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
-        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
-            "$(date '+%Y-%m-%d %H:%M:%S')" "$previous" "$id" || true
-        CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: fork, ID: %s)\n' \
-            "$(date '+%Y-%m-%d %H:%M:%S')" "$id" || true
-    fi
-    _timeline_rotated "$session_dir" "$previous" "$id" fork "" antigravity || true
-    _timeline_started "$session_dir" antigravity "$id" fork || true
-    # Last: its state lock (_cs_lock) reopens descriptor 9 and so lets go of the run guard.
     _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
 }
 
