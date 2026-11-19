@@ -250,6 +250,8 @@ BACKTICKS = re.compile(r"`+")
 # fence's holds no backtick), and a closing one, indented up to three spaces.
 FENCE_OPEN = re.compile(r"(`{3,}|~{3,})(.*)")
 FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*\Z")
+# CommonMark's line endings.
+LINE_ENDING = re.compile(r"\r\n?|\n")
 # Levels of a tool input laid out as lines; deeper values cross as JSON, so a
 # nested input costs its own size plus at most two spaces a level a line.
 READABLE_DEPTH = 32
@@ -271,8 +273,10 @@ def open_block(text, closer=None):
     """The line that closes the block text leaves open, starting inside the
     block closer closes: a fence as long as the one that opened it, --> for
     an HTML comment, or None. Only blocks opened at the left margin count: a
-    list item's or a quote's block ends at the next line that starts there."""
-    for line in text.split("\n"):
+    list item's or a quote's block ends at the next line that starts there.
+    So an opener indented one to three spaces outside any list is not seen,
+    a limit kept: telling it from a list item's would mean following lists."""
+    for line in LINE_ENDING.split(text):
         if closer is None:
             opened = FENCE_OPEN.match(line)
             if line.startswith("<!--"):

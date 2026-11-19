@@ -1945,6 +1945,20 @@ class TransplantTests(HelperFixture):
             texts[3][0], "[tool call: X]", ok,
             texts[4][0], "~~~~\n[tool call: X]", ok]))
 
+    def test_open_block_reads_every_line_ending(self):
+        # CommonMark ends a line at \r\n and a lone \r too; a closing fence
+        # read with its \r kept never closed, so cs added a stray fence line.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        open_block = helper['open_block']
+        self.assertIsNone(open_block("a\r\n```\r\nx\r\n```\r\n"))
+        self.assertIsNone(open_block("a\r```\rx\r```\r"))
+        self.assertEqual(open_block("a\r\n````md\r\nx"), "````")
+        self.assertEqual(open_block("a\r\n<!-- x\r\n"), "-->")
+        # A known limit: only blocks opened at the left margin count, since a
+        # list item's block ends at the next margin line. An opener indented
+        # one to three spaces outside any list is not seen.
+        self.assertIsNone(open_block("The file:\n  ```markdown\n  # Doc"))
+
     def test_a_deep_claude_tool_input_carries_bounded_and_never_fails(self):
         # Each level of a nested input used to re-indent every line below it,
         # with no floor: 5,000 levels raised RecursionError and 60 KB of lines
