@@ -1909,6 +1909,13 @@ class TransplantTests(HelperFixture):
         self.write_rollout((SHAPES / "codex-shapes.jsonl").read_text(encoding="utf-8").splitlines())
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
+        # The first prompt, the agent's text, three call and result pairs, the
+        # agent message's text, the last prompt: each record and its first block.
+        self.assertEqual([(r["type"], "str" if isinstance(r["message"]["content"], str)
+                           else r["message"]["content"][0]["type"]) for r in records],
+                         [("user", "str"), ("assistant", "text"), ("assistant", "tool_use"), ("user", "tool_result"),
+                          ("assistant", "tool_use"), ("user", "tool_result"), ("assistant", "tool_use"),
+                          ("user", "tool_result"), ("assistant", "text"), ("user", "str")])
         self.assertTrue(self.text_of(records[0]).endswith(
             "MARK-01 first prompt, kept\n\nMARK-02 second prompt, kept\n\nMARK-03 third prompt"))
         messages = json.dumps([r["message"]["content"] for r in records])
