@@ -127,9 +127,11 @@ The helper records the carried model messages and transcript display events
 inside matching turn boundaries after the new thread's writer exits, so native
 revert removes both views of an exchange. It then resumes the thread in a
 separate process and checks the visible turns before reporting success. This makes the imported messages visible in the CLI;
-injecting model context alone leaves the transcript blank. When that check fails
-for a carry with native tool rows, the helper deletes the new thread, says so in
-one line and carries the conversation again with its tool calls as reply text. Native tool rows were
+injecting model context alone leaves the transcript blank. When that check finds
+a row Codex changed, dropped or added in a carry with native tool rows, the helper
+deletes the new thread, says so in one line and carries the conversation again
+with its tool calls as reply text; a check that times out, loses its server or
+breaks the protocol fails the carry instead. Native tool rows were
 verified in the Codex `0.169.0-alpha.11.1` terminal. CI pins `0.167.0-alpha.3.2` on macOS and Linux
 and checks native display, revert's next model input, and messages above 4 MiB
 using temporary homes and a local mock provider. Existing open threads are not

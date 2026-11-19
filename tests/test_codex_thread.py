@@ -80,6 +80,7 @@ for line in sys.stdin:
                      if r.get('type') == 'event_msg' and r['payload'].get('type') == 'task_started']
         reply({'result':{'data':turns,'nextCursor':None}});continue
     if method == 'thread/items/list':
+        if mode == 'display_hang': time.sleep(60)
         items = []
         if mode not in ('display_lost', 'display_items_lost'):
             for line in rollout.read_text().splitlines():
@@ -102,6 +103,7 @@ for line in sys.stdin:
                 if mode == 'tool_field' and item['type'] in ('commandExecution', 'mcpToolCall') and field in item:
                     item[field] = {'changed': item[field]}
                 items.append({'turnId':event['turn_id'],'item':item})
+        if mode == 'display_extra': items.append(items[-1])
         start = int(request['params'].get('cursor', '0'))
         end = start + request['params']['limit']
         reply({'result':{'data':items[start:end],'nextCursor':str(end) if end < len(items) else None}});continue
@@ -2370,13 +2372,17 @@ class TransplantTests(HelperFixture):
 
     def test_carry_over_checks_visible_turns_before_reporting_success(self):
         path = self.sample_transcript()
-        self.assert_failure('display_lost', 'visible turns', '--history-from-claude', str(path))
+        result = self.assert_failure('display_lost', 'visible turns', '--history-from-claude', str(path))
+        # Codex answered without the rows: the conversation was carried again as text first.
+        self.assertIn(self.TEXT_FALLBACK, result.stderr)
 
     def test_empty_or_corrupt_display_items_cannot_report_success(self):
         path = self.sample_transcript()
-        for mode in ('display_items_lost', 'display_corrupt'):
+        for mode, text in (('display_items_lost', 'visible'), ('display_corrupt', 'visible'),
+                           ('display_extra', 'unexpected carried transcript items')):
             with self.subTest(mode=mode):
-                self.assert_failure(mode, 'visible', '--history-from-claude', str(path))
+                result = self.assert_failure(mode, text, '--history-from-claude', str(path))
+                self.assertIn(self.TEXT_FALLBACK, result.stderr)
 
     TEXT_FALLBACK = 'cs-codex-thread: Codex did not keep the carried tool rows; carrying the tool calls as text instead\n'
 
@@ -2426,7 +2432,25 @@ class TransplantTests(HelperFixture):
 
     def test_unexpected_large_display_output_is_still_bounded(self):
         source = self.sample_transcript()
-        self.assert_failure('display_oversize', 'protocol limit', '--history-from-claude', str(source))
+        result = self.assert_failure('display_oversize', 'protocol limit', '--history-from-claude', str(source))
+        # Codex broke the protocol rather than changing a row: no text carry follows.
+        self.assert_no_text_retry(result)
+
+    def assert_no_text_retry(self, result):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn('as text instead', result.stderr)
+        methods = [r['request']['method'] for r in self.requests()]
+        self.assertIn('thread/items/list', methods)
+        self.assertNotIn('thread/delete', methods)
+        self.assertEqual(methods.count('thread/start'), 1)
+
+    def test_a_display_check_codex_never_answers_fails_without_a_text_carry(self):
+        # Only a row Codex changed falls back to text. A check that runs out of
+        # time cannot delete its thread, and a second carry would take as long again.
+        source = self.sample_transcript()
+        result = self.assert_failure('display_hang', 'timed out', '--history-from-claude', str(source),
+                                     '--timeout', '2')
+        self.assert_no_text_retry(result)
 
     def test_carry_over_refuses_a_rollout_for_another_thread(self):
         path = self.sample_transcript()

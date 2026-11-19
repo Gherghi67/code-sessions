@@ -33,6 +33,10 @@ class BootstrapError(Exception):
     pass
 
 
+class DisplayMismatch(BootstrapError):
+    """Codex answered the display check, and its rows differ from the ones written."""
+
+
 # Codex thread IDs are UUIDs. Reject control characters and accidental selectors.
 THREAD_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
 # A turn ID is compared, never passed on: any short plain token will do.
@@ -1422,10 +1426,10 @@ def verify_carried_display(server, thread_id, expected):
         for entry in data:
             item = entry.get('item', {})
             if not isinstance(item, dict) or index >= len(expected):
-                raise BootstrapError("Codex returned unexpected carried transcript items")
+                raise DisplayMismatch("Codex returned unexpected carried transcript items")
             turn_id, saved = expected[index]
             if entry.get("turnId") != turn_id or not same_display_item(saved, item):
-                raise BootstrapError("Codex did not retain the carried transcript's visible messages")
+                raise DisplayMismatch("Codex did not retain the carried transcript's visible messages")
             index += 1
         cursor = result.get('nextCursor')
         if cursor is None:
@@ -1434,7 +1438,7 @@ def verify_carried_display(server, thread_id, expected):
             raise BootstrapError("Codex returned invalid carry-over pagination")
         cursors.add(cursor)
     if index != len(expected):
-        raise BootstrapError("Codex did not retain the carried transcript's visible turns and messages")
+        raise DisplayMismatch("Codex did not retain the carried transcript's visible turns and messages")
 
 
 def bootstrap(args):
@@ -1511,7 +1515,9 @@ def prepare_thread(args, cwd, instructions, messages, provenance, native, deadli
         if visible_items:
             try:
                 verify_carried_display(server, thread_id, visible_items)
-            except BootstrapError:
+            except DisplayMismatch:
+                # Only a row Codex changed: a check that ran out of time, lost its server or broke
+                # the protocol fails as it did, and a deadline that passed would refuse thread/delete.
                 if not any(item["type"] in ("CommandExecution", "McpToolCall") for _, item in visible_items):
                     raise
                 try:
