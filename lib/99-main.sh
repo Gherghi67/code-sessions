@@ -309,7 +309,7 @@ main() {
     local explicit_engine=""
     local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT="" CS_LAUNCH_APPROVAL=""
     local _cs_switch_next_model="" _cs_switch_next_effort="" _cs_switch_next_approval=""
-    local launch_intent=auto
+    local launch_intent=auto _cs_agy_resume_id=""
     # cs -switch (lib/78-switch.sh): set by its relaunch's hidden flag, and by
     # _switch_settle when the run that ends here armed a switch.
     local _cs_switched_from="" _cs_switch_resume=""
@@ -546,13 +546,24 @@ main() {
                 ;;
             --fresh|--resume)
                 local selected_intent="${1#--}"
+                [ -z "$_cs_agy_resume_id" ] || error "--resume-conversation cannot be combined with $1"
                 [ "$launch_intent" != handoff ] || error "--from-handoff cannot be combined with $1"
                 [ "$launch_intent" = auto ] || [ "$launch_intent" = "$selected_intent" ] \
                     || error "--fresh and --resume cannot be combined"
                 launch_intent="$selected_intent"
                 shift
                 ;;
+            --resume-conversation)
+                _is_uuid "${2:-}" || error "--resume-conversation needs an Antigravity conversation UUID"
+                [ -z "$_cs_agy_resume_id" ] || error "Use --resume-conversation once"
+                [ "$launch_intent" = auto ] || error "--resume-conversation cannot be combined with another launch intent"
+                # The selected UUID is read by the Antigravity adapter in this shell.
+                _cs_agy_resume_id=$(printf '%s' "$2" | tr 'A-F' 'a-f')
+                launch_intent=resume
+                shift 2
+                ;;
             --from-handoff)
+                [ -z "$_cs_agy_resume_id" ] || error "--resume-conversation cannot be combined with $1"
                 [ "$launch_intent" = auto ] || [ "$launch_intent" = handoff ] \
                     || error "--from-handoff cannot be combined with --$launch_intent"
                 launch_intent=handoff
@@ -579,7 +590,7 @@ main() {
                 shift 2
                 ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -config, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, --remote, --permission-mode, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -config, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --resume-conversation, --from-handoff, --remote, --permission-mode, or --force."
                 ;;
         esac
     done
@@ -591,6 +602,7 @@ main() {
         error "--from-handoff cannot be combined with -finish"
     fi
     if [ -n "$_cs_switched_from" ]; then
+        [ -z "$_cs_agy_resume_id" ] || error "--resume-conversation cannot be combined with --switched-from"
         case "$launch_intent" in
             handoff) ;;
             resume) _cs_switch_resume=1 ;;
@@ -622,6 +634,10 @@ main() {
     local session_dir="$SESSIONS_ROOT/$session_name"
     local engine
     engine=$(_session_engine "$session_dir" "$explicit_engine")
+    if [ -n "$_cs_agy_resume_id" ]; then
+        [ "$engine" = antigravity ] || error "--resume-conversation requires --engine antigravity"
+        [ -z "$merge_feature" ] || error "--resume-conversation cannot be combined with -finish"
+    fi
     # Codex runs an encrypted session on a home inside its vault
     # (lib/76-codex-vault.sh), and Antigravity on a $HOME there
     # (lib/79-antigravity-vault.sh). Claude refuses a worktree of an encrypted
@@ -655,6 +671,8 @@ main() {
     # during migration. Validate before any workspace preparation changes.
     if [ "$launch_intent" = resume ]; then
         [ -d "$session_dir" ] || error "Cannot resume: session $session_name does not exist"
+    fi
+    if [ "$launch_intent" = resume ] && [ -z "$_cs_agy_resume_id" ]; then
         local resume_binding
         resume_binding=$(cs_binding_read "$session_dir" "$engine") \
             || error "Cannot read the recorded $engine conversation; repair the binding before resuming"

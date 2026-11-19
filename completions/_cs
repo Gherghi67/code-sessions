@@ -357,6 +357,7 @@ _cs() {
             '--native-approval:Use the native configured approval policy'
             '--fresh:Start a fresh native conversation'
             '--resume:Resume the exact recorded conversation'
+            '--resume-conversation:Open and bind a specific Antigravity conversation by UUID'
             '--from-handoff:Start a fresh conversation from the pending rotation handoff'
             '--force:Override active session lock'
             '--remote:Serve the session through claude remote-control'

@@ -16,6 +16,7 @@ Commands:
   <name>              Create or resume session <name> (locks session)
   <name> --fresh      Start a fresh conversation after native acknowledgement
   <name> --resume     Resume the exact recorded conversation without prompting
+  <name> --resume-conversation UUID  Open and bind the selected Antigravity conversation on its first prompt
   <name> --from-handoff  Start a fresh conversation from the pending rotation handoff without prompting
   <name> --force      Override active session lock
   <name> --engine <claude|codex|antigravity>  Select and remember this session's runtime

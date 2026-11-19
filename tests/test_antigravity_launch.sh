@@ -50,6 +50,8 @@ setup() {
     # /fork. Shared prompt history gets the command and the copy's first
     # prompt. The copy fires PreInvocation and Stop without a SessionStart.
     # Its answers go to AGY_HOOK_OUT.forked.
+    # AGY_BEFORE_RESUME sends a turn from a different conversation before the
+    # one named by --conversation. Its answers go to AGY_HOOK_OUT.before-resume.
     # AGY_RESUMED names one opened with /resume after that, which gets
     # PreInvocation 0 and Stop but no SessionStart, its answers in
     # AGY_HOOK_OUT.resumed; a list names several, opened in turn. AGY_EARLY names one that gets a typed
@@ -186,6 +188,12 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     [ -z "${AGY_EARLY:-}" ] || fire SessionStart "$(payload "$AGY_EARLY")"
     [ -z "$new" ] || fire SessionStart "$(payload "$conversation")"
     if [ -n "$new" ]; then steps=1; else steps=5; fi
+    if [ -n "${AGY_BEFORE_RESUME:-}" ]; then
+        hook_out="$AGY_HOOK_OUT.before-resume"
+        fire PreInvocation "$(payload "$AGY_BEFORE_RESUME" '{"invocationNum": 0, "initialNumSteps": 5}')"
+        fire Stop "$(payload "$AGY_BEFORE_RESUME" '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "fullyIdle": true}')"
+        hook_out="$AGY_HOOK_OUT"
+    fi
     # Each payload's extra JSON is built before the call: bash 3.2 misreads \"
     # inside "$(...)", and a comma there would then brace-expand.
     extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "$steps")
@@ -296,7 +304,7 @@ AGY
     export PATH="$TEST_TMPDIR/bin:$clean"
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA AGY_VERSION CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_FORKED
+    unset AGY_FORKED AGY_BEFORE_RESUME
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
     _install_agy_hook
@@ -315,7 +323,7 @@ teardown() {
     unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_FORKED
+    unset AGY_FORKED AGY_BEFORE_RESUME
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
@@ -2613,6 +2621,74 @@ test_vault_fork_history_cannot_move_the_binding() {
     assert_not_exists "$HOME/.gemini/antigravity-cli/history.jsonl" "agy wrote the history in its vault"
 }
 
+test_explicit_resume_binds_only_the_selected_conversation() {
+    local output dir mail selected=abcdef01-2345-4678-8abc-000000000001 name=2026-11-05-rotate.md
+    output=$("$CS_BIN" adopt-fork --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir adopt-fork)
+    mail=$(_mailbox adopt-fork)
+    _mail_doc "$mail/new/r1.json" peer 'for the selected conversation'
+    _arm_rotation adopt-fork "$name"
+    rm -f "$AGY_HOOK_OUT"
+    output=$(AGY_BEFORE_RESUME=$AGY_NEW_ID "$CS_BIN" adopt-fork --resume-conversation ABCDEF01-2345-4678-8ABC-000000000001 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "--conversation $selected" "$(_agy_argv)" "passes the selected ID to agy" || return 1
+    assert_eq "$selected" "$(_binding adopt-fork)" "the selected conversation holds the session" || return 1
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT.before-resume")" "the prior conversation gets neither digest nor wake" || return 1
+    assert_eq 1 "$(_injected_in "$AGY_HOOK_OUT" | grep -c 'for the selected conversation')" "mail follows the selection" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$AGY_NEW_ID\",\"to\":\"$selected\",\"reason\":\"rebind\"" "records the ownership change" || return 1
+    assert_eq unconsumed "$(_handoff_status adopt-fork "$name")" "the handoff stays available" || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff" "the rotation stays armed" || return 1
+    output=$("$CS_BIN" adopt-fork --resume 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $selected" "$(_agy_argv)" "the next regular resume uses the selection"
+}
+
+test_explicit_resume_without_a_typed_turn_keeps_the_binding() {
+    local output selected=44444444-4444-4444-8444-444444444444 other=77777777-7777-4777-8777-777777777777
+    output=$("$CS_BIN" adopt-cancel --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_NO_TURN=1 "$CS_BIN" adopt-cancel --resume-conversation "$selected" 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding adopt-cancel)" "exiting before a turn leaves the binding" || return 1
+    output=$(AGY_BEFORE_RESUME=$other AGY_PROMPT='' "$CS_BIN" adopt-cancel --resume-conversation "$selected" 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "$AGY_NEW_ID" "$(_binding adopt-cancel)" "an untyped hook leaves the binding"
+}
+
+test_explicit_resume_binds_and_delivers_mail_in_the_vault() {
+    local output selected=44444444-4444-4444-8444-444444444444 dir
+    output=$("$CS_BIN" adopt-vault --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir adopt-vault)
+    _vault_session adopt-vault
+    _mail_doc "$dir/.cs/private/mail/new/r1.json" peer 'for the selected vault conversation'
+    rm -f "$AGY_HOOK_OUT"
+    output=$(AGY_BEFORE_RESUME=$AGY_NEW_ID "$CS_BIN" adopt-vault --resume-conversation "$selected" 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq "$selected" "$(_binding adopt-vault)" "the selected conversation holds the encrypted session" || return 1
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT.before-resume")" "the prior conversation gets no vault mail" || return 1
+    assert_eq 1 "$(_injected_in "$AGY_HOOK_OUT" | grep -c 'for the selected vault conversation')" "vault mail follows the selection"
+}
+
+test_explicit_resume_refuses_unsafe_or_unsupported_launches() {
+    local output selected=44444444-4444-4444-8444-444444444444 dir
+    output=$("$CS_BIN" adopt-guard --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir adopt-guard)
+    rm -f "$AGY_ARGV"
+    if output=$("$CS_BIN" adopt-guard --resume-conversation bad-id 2>&1); then echo "$output"; return 1; fi
+    assert_output_contains "$output" "needs an Antigravity conversation UUID" || return 1
+    if output=$("$CS_BIN" adopt-guard --engine claude --resume-conversation "$selected" 2>&1); then echo "$output"; return 1; fi
+    assert_output_contains "$output" "requires --engine antigravity" || return 1
+    if output=$("$CS_BIN" adopt-guard --resume-conversation "$selected" --fresh 2>&1); then echo "$output"; return 1; fi
+    assert_output_contains "$output" "cannot be combined with --fresh" || return 1
+    if output=$(CS_CACHE_DIR="$dir/.cs/local/cache" "$CS_BIN" adopt-guard --resume-conversation "$selected" 2>&1); then
+        echo "$output"; return 1
+    fi
+    assert_output_contains "$output" "private Antigravity run directory" || return 1
+    rm "$HOME/.gemini/config/plugins/cs/hooks.json"
+    if output=$("$CS_BIN" adopt-guard --resume-conversation "$selected" 2>&1); then echo "$output"; return 1; fi
+    assert_output_contains "$output" "requires the cs Antigravity binding hook" || return 1
+    assert_not_exists "$AGY_ARGV" "agy never started" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding adopt-guard)" "invalid requests leave the binding"
+}
+
 # The /clear rebind stands on payloads measured on agy 1.5.10 and on cs's
 # SessionStart entry. An older agy, or a plugin installed before that entry,
 # keeps the binding with the run's first conversation and the rotation armed
@@ -3437,6 +3513,10 @@ run_test test_a_conversation_the_run_never_bound_keeps_off_on_resume
 run_test test_shared_fork_history_cannot_move_the_binding_or_mail
 run_test test_a_fork_leaves_an_armed_rotation_armed
 run_test test_vault_fork_history_cannot_move_the_binding
+run_test test_explicit_resume_binds_only_the_selected_conversation
+run_test test_explicit_resume_without_a_typed_turn_keeps_the_binding
+run_test test_explicit_resume_binds_and_delivers_mail_in_the_vault
+run_test test_explicit_resume_refuses_unsafe_or_unsupported_launches
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
 run_test test_a_link_planted_at_the_new_conversation_mark_counts_for_nothing
 run_test test_a_clear_in_a_session_with_a_planted_vault_changes_nothing

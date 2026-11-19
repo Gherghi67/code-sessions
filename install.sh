@@ -2115,7 +2115,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "5debd1c9fe3c89de5ac0bd4b68ad7664faa4dfbf17a1bad8fc587c0198445c00  bin/cs"
+    "23a04ee7c7a47447e83f949a873190543a242b500d7fe63eb4fa06224fc04d69  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
     "1b0f73bd261d62ef5dce1ee1343352ddef174dd90e65ce007c50b8f19d21182e  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
@@ -2188,8 +2188,8 @@ CS_PAYLOAD_SHA256=(
     "6cca574728693b2fa8072182015e17d9dce47a3ca8118b41ca0e09928546aa41  mods/cs-filter-chat/hooks/verdict.ts"
     "ef2434b735efc6c5727d230eac9d4f439a9439d59946289b024b6e1bcd8f2c80  mods/cs-filter-chat/hooks/words.ts"
     "a5d9864215c3f7b99a49bd59524b72bbc2a75d8df15c97caa23c1aba31ddb428  mods/cs-filter-chat/hooks/draw.tsx"
-    "872d288e3cdacbd3b92b525b825e3b1908c7f832ce622ea9ebf7ae1f7d688cca  completions/cs.bash"
-    "c1ff1936ff98b18c62bfccec546d26c23e61c273bed503bd84741b1bb8bdf02b  completions/_cs"
+    "5727ad3b07b2466db290b62a43645009f8ac25fba4649d304bd7423cbd6cfc23  completions/cs.bash"
+    "d08cbb537cf91bded49f2862906bbe0fd904385557cbc19c6150e855af3c6cc4  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The

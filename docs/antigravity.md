@@ -214,6 +214,7 @@ records nothing.
 | `cs <name>` unattended (no terminal) | `--conversation <id>` |
 | `cs <name>` in the spawn's own window, its seed staged | `--conversation <id>` when one is bound, then `--prompt-interactive <kickoff>`; asks nothing ([Spawn briefs](#spawn-briefs)) |
 | `cs <name> --resume` | `--conversation <id>`; requires a bound conversation or a recoverable handoff receipt |
+| `cs <name> --resume-conversation <uuid>` | `--conversation <uuid>`; binds the selected conversation when its first prompt reaches the model |
 | `cs <name> --fresh` | a new conversation |
 
 - The run's first conversation to reach the model is the session's: the one a
@@ -500,8 +501,12 @@ named the new conversation, which the next `cs <name>` resumes.
 original conversation keeps the binding, unread cs mail, and any armed
 rotation. Antigravity 1.5.12 gives a fork its own conversation ID without a
 SessionStart hook, and prompt history is shared by terminals in the same
-workspace. To move the session to the fork, exit, reopen with `cs <name>`,
-and select the fork with `/resume` before sending the first prompt.
+workspace. To move the session to the fork, type `/exit` from the fork and
+copy the UUID from agy's printed resume command. Run
+`cs <name> --resume-conversation <uuid>` and send a prompt. When that prompt
+reaches the model, the binding and unread mail follow the selected
+conversation. The rotation stays armed. If you exit before sending a prompt,
+the previous binding stays in place.
 
 ## Switching engines
 

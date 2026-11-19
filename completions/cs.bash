@@ -33,7 +33,7 @@ _cs_completions() {
     local update_cmds="--check -c --force -f"
 
     # Session-level options
-    local session_opts="-secrets -queue -msg -narrative -conversations -config -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --from-handoff --force --remote --permission-mode"
+    local session_opts="-secrets -queue -msg -narrative -conversations -config -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --resume-conversation --from-handoff --force --remote --permission-mode"
     local engine_values="claude codex antigravity"
 
     # Switch targets are engines, independent of session-name completion.
