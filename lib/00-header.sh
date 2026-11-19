@@ -17,6 +17,17 @@ case "${CS_SESSIONS_ROOT:-/}" in
     /*) ;;
     *) export CS_SESSIONS_ROOT="${PWD%/}/$CS_SESSIONS_ROOT" ;;
 esac
+# An encrypted session's agy runs on a home inside its vault, and every
+# command it starts inherits that HOME (lib/79-antigravity-vault.sh). cs run
+# from there (its hooks, the status line, the agent's cs commands) works from
+# the user's own home, which the launch kept beside it, before anything below
+# reads HOME; what cs starts gets that home too.
+if [ -n "${CS_ANTIGRAVITY_SHARED_HOME:-}" ]; then
+    case "$CS_ANTIGRAVITY_SHARED_HOME" in
+        /*) [ ! -d "$CS_ANTIGRAVITY_SHARED_HOME" ] || export HOME="$CS_ANTIGRAVITY_SHARED_HOME" ;;
+    esac
+    unset CS_ANTIGRAVITY_SHARED_HOME
+fi
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}"
 CLAUDE_CODE_BIN="${CLAUDE_CODE_BIN:-claude}"
 CODEX_BIN="${CODEX_BIN:-codex}"

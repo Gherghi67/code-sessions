@@ -290,7 +290,8 @@ live in `.cs/private`, and switching
 or carrying a conversation between Claude and Codex works as in any other
 session. `cs -doctor` checks the vault home's links. `cs -update` or
 `install.sh` run inside an encrypted session installs into the shared home.
-Antigravity still refuses encrypted sessions.
+Antigravity runs an encrypted session on a `$HOME` inside its vault
+([Antigravity: encrypted sessions](antigravity.md#encrypted-sessions)).
 
 ## Workspace preparation and installation
 

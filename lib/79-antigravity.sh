@@ -140,15 +140,6 @@ _cs_antigravity_adapter_launch() {
     _launch_antigravity_bound "$@"
 }
 
-# agy keeps its conversations under ~/.gemini/antigravity-cli, outside an
-# encrypted session's vault, so it opens none. main refuses before the
-# pre-open asks for the vault's password; _launch_antigravity_bound, for any
-# other caller.
-_antigravity_encrypted_refusal() {  # session_name
-    printf '%s is encrypted, and Antigravity keeps its conversations in %s, outside the vault, with no setting to move them. Open it under Claude or Codex: cs %s --engine claude\n' \
-        "$1" "$HOME/.gemini/antigravity-cli" "$1"
-}
-
 # An absolute path with its . and .. levels folded by spelling alone. The
 # links on it stay, so cs_append_inside still sees where a write would land.
 _antigravity_fold_path() {  # absolute path
@@ -381,13 +372,17 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
         _antigravity_launch_error "Session directory does not exist: $session_dir"
         return 1
     }
-    if _switch_session_encrypted "$session_dir"; then
-        _antigravity_launch_error "$(_antigravity_encrypted_refusal "$session_name")"
-        return 1
-    fi
     # A vault home inherited from another encrypted session's launch is never
-    # this session's (lib/76-codex-vault.sh); a codex the agent starts gets the shell's.
+    # this session's (lib/76-codex-vault.sh, lib/79-antigravity-vault.sh); a
+    # codex or agy the agent starts gets the shell's.
     _codex_drop_inherited_vault_home
+    _antigravity_drop_inherited_vault_home || {
+        _antigravity_launch_error "HOME is an encrypted session's Antigravity home, with no home of yours beside it; open this session from a shell whose HOME is your own."
+        return 1
+    }
+    # An encrypted session runs agy on a home inside its vault, made below once
+    # nothing else refuses; shared_home is the one it links back to.
+    local vault_home="" shared_home="$HOME" rule_shown="$CS_ANTIGRAVITY_RULE"
     # Both paths are made absolute before the launch changes into the
     # session folder, where a relative one would name another file.
     agy_bin=$(command -v "$agy_bin" 2>/dev/null) || {
@@ -509,10 +504,12 @@ _launch_antigravity_bound() {  # session_name, session_dir, is_new, force, merge
                 return 1
             }
         actor=$(cs_actor_slug "$session_dir") || return 1
+        # The handoff is named where the conversation finds it: in the vault
+        # (.cs/private/handoffs) for an encrypted session.
         if [ -n "${_cs_switch_resume:-}" ]; then
-            prompt="This conversation resumes after the session ran under ${_cs_switched_from:-another engine}. Read .cs/handoffs/$rotation_handoff first: it carries the work done since you last ran here. Then continue from its next step."
+            prompt="This conversation resumes after the session ran under ${_cs_switched_from:-another engine}. Read $(_codex_handoffs_shown "$session_dir")/$rotation_handoff first: it carries the work done since you last ran here. Then continue from its next step."
         else
-            prompt=$(_rotation_preamble "$rotation_handoff" "$actor") || return 1
+            prompt=$(_rotation_preamble "$rotation_handoff" "$actor" "$(_codex_handoffs_shown "$session_dir")") || return 1
         fi
         [ -z "$rotation_origin" ] || prompt="$rotation_origin
 $prompt"
@@ -544,14 +541,28 @@ $prompt"
         statusline_args=(--settings "$statusline_json")
     fi
 
+    if _switch_session_encrypted "$session_dir"; then
+        vault_home=$(_antigravity_vault_home_prepare "$session_dir" "$shared_home") || return 1
+        rule_shown=".cs/private/antigravity-home/.gemini/GEMINI.md, in the vault"
+    fi
+
     cd -- "$session_dir" || return 1
     cs_unset_claude_env
     actor=$(cs_actor_slug "$session_dir") || return 1
-    # The rule first: a launch refused over a rule of the user's adds no
-    # exclude entry, which would have git ignore their file on cs's say-so.
-    _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || return 1
-    _antigravity_exclude_rule "$session_dir" \
-        || warn "could not add $CS_ANTIGRAVITY_RULE to the checkout's info/exclude; git status will list it"
+    if [ -n "$vault_home" ]; then
+        # An encrypted session's context goes into the vault home as agy's
+        # global rule. A workspace rule of cs's that a run before the
+        # encryption left is that context in plaintext, and goes.
+        _antigravity_write_vault_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" "$vault_home" "$shared_home" || return 1
+        _antigravity_drop_workspace_rule "$session_dir" \
+            || warn "could not remove $CS_ANTIGRAVITY_RULE, cs's session context from before the session was encrypted, in plaintext; remove it by hand"
+    else
+        # The rule first: a launch refused over a rule of the user's adds no
+        # exclude entry, which would have git ignore their file on cs's say-so.
+        _antigravity_write_rule "$session_name" "$session_dir" "$actor" "$CS_BIN" || return 1
+        _antigravity_exclude_rule "$session_dir" \
+            || warn "could not add $CS_ANTIGRAVITY_RULE to the checkout's info/exclude; git status will list it"
+    fi
     # Recorded before agy starts, as Codex does, so cs commands run inside it
     # (cs -doctor, the picker) see the engine the session now runs under.
     cs_run_with_lease "$meta_dir" _cs_set_local_state_unlocked "$meta_dir/local/state" engine antigravity || {
@@ -590,6 +601,14 @@ $prompt"
         if [ -n "$rotation_handoff" ]; then
             printf '%s\n' "$rotation_handoff" > "$run_dir/handoff" || return 1
         fi
+        # The vault home the hooks check during the run, named where only cs
+        # writes, so a .cs/private pointed elsewhere mid-run changes nothing.
+        if [ -n "$vault_home" ]; then
+            ( set -C; printf '%s\n' "$vault_home" > "$run_dir/vault" ) 2>/dev/null || {
+                _antigravity_launch_error "Cannot record the vault Antigravity home in this run's directory; cs does not run agy on it unchecked."
+                return 1
+            }
+        fi
         # Whether /clear may move the session to the conversation it starts,
         # decided once for the run, as the version and the plugin stand now.
         if [ -n "$hooked" ] && _antigravity_clear_rebind_usable "$agy_bin"; then
@@ -598,6 +617,10 @@ $prompt"
     else
         if [ -n "$rotation_handoff" ]; then
             _antigravity_launch_error "Cannot prepare a private Antigravity run directory; the handoff stays pending."
+            return 1
+        fi
+        if [ -n "$vault_home" ]; then
+            _antigravity_launch_error "Cannot prepare a private Antigravity run directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs; an encrypted session's hooks check its vault home from there, so cs does not start agy without it."
             return 1
         fi
         warn "cs could not make a private directory under ${CS_CACHE_DIR:-$HOME/.cache/cs}/antigravity-runs: this run's conversation is recorded for a reopen only if the session has none yet."
@@ -633,9 +656,9 @@ $prompt"
     # _antigravity_run_mark swallows a failed write, and a run whose mark is
     # missing keeps the binding and the mail with its first conversation.
     if [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]; then
-        printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /clear and send go. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /clear and send go. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
     else
-        printf '%s\n' "Antigravity via cs: session context is on ($CS_ANTIGRAVITY_RULE), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
     fi
     if [ -n "$rotation_handoff" ]; then
         cs_run_with_lease "$meta_dir" _launch_handoff_prepare "$session_dir" antigravity "$rotation_handoff" || {
@@ -644,7 +667,12 @@ $prompt"
         }
     fi
     local status=0
-    cs_run_child "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
+    # An encrypted session's agy, and everything it starts, gets the vault
+    # home as HOME, with the shell's beside it for cs to go back to (bin/cs's
+    # header); nothing else in this shell changes.
+    local -a home_args=()
+    [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home")
+    cs_run_child ${home_args[@]+"${home_args[@]}"} "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
         ${statusline_args[@]+"${statusline_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
@@ -822,9 +850,16 @@ _antigravity_hook_session_start() {  # payload
 # (_antigravity_hook_retake). The first model call of a turn carries the
 # unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST=""
+    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop=""
     _antigravity_payload_read "$1" || return 0
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
+    # An encrypted session's vault home is checked before every model call of
+    # the run that holds the lease; anything a command changed there stops the
+    # turn here, before the model can act again (lib/79-antigravity-vault.sh).
+    if [ -n "$run_dir" ] && _antigravity_run_vault_home "$run_dir" >/dev/null && cs_run_lease_owned "$meta"; then
+        _antigravity_hook_vault_check "$run_dir" || true
+        stop=$(_antigravity_hook_vault_report "$run_dir")
+    fi
     if [ -z "$run_dir" ] || [ ! -e "$run_dir/seen-$AGY_HOOK_ID" ]; then
         weigh=1
     elif [ -f "$run_dir/held-$AGY_HOOK_ID" ] && [ ! -L "$run_dir/held-$AGY_HOOK_ID" ] \
@@ -842,11 +877,14 @@ _antigravity_hook_pre_invocation() {  # payload
             3>&1 >/dev/null 2>&1) || true
     fi
     [ "$AGY_HOOK_INVOCATION" != 0 ] || _antigravity_hook_mail_digest "$AGY_HOOK_ID"
-    [ -n "$rotation$AGY_HOOK_DIGEST" ] || return 0
-    # The shape measured on 1.5.8, terminationBehavior "" (call the model) included.
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" '
-        {injectSteps: ([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})),
-         terminationBehavior: ""}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
+    [ -n "$rotation$AGY_HOOK_DIGEST$stop" ] || return 0
+    # The shape measured on 1.5.8, terminationBehavior "" (call the model)
+    # included; a vault check's stop adds its steps and "terminate", from
+    # agy 1.5.10's hooks guide.
+    [ -n "$stop" ] || stop='{"injectSteps": [], "terminationBehavior": ""}'
+    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg r "$rotation" --arg m "$AGY_HOOK_DIGEST" --argjson stop "$stop" '
+        {injectSteps: (([$r, $m] | map(select(. != "") | {systemMessage: {systemMessage: .}})) + $stop.injectSteps),
+         terminationBehavior: $stop.terminationBehavior}' 2>/dev/null) || ANTIGRAVITY_HOOK_REPLY=""
 }
 
 # Under the run lease. The session is bound to its run's first conversation,
@@ -898,12 +936,11 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
             _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine antigravity || return 1
         fi
     fi
-    # Both log lines go to .cs/local (cs_local_dir), never through
-    # cs_private_dir: the launch refuses an encrypted session, so a
-    # .cs/private here came mid-run, maybe as a link out of the session, as
-    # _antigravity_mail_dir says.
+    # Both log lines go to .cs/local, or into the vault for a run the launch
+    # ran on the vault home (_antigravity_log_dir); a .cs/private that came
+    # mid-run, maybe as a link out of the session, gets nothing.
     if [ "$previous" != "$id" ]; then
-        if log_dir=$(cs_local_dir "$session_dir/.cs"); then
+        if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
             CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
                 "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         fi
@@ -913,7 +950,7 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
     fi
     # The rotate skill reads which conversations this checkout ran from this
     # line, as hooks/session-start.sh writes it for Claude.
-    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
+    if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: %s, ID: %s)\n' \
             "$(date '+%Y-%m-%d %H:%M:%S')" "$source" "$id" || true
     fi
@@ -942,8 +979,9 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
 # the rotation /cs:rotate armed is spent for it: its context
 # goes out on descriptor 3 for PreInvocation to hand the model. A spend the
 # store refused keeps the marker for the next /clear and says so there. An
-# encrypted session's (the launch refuses one, so a .cs/private here came
-# mid-run, maybe as a link out of the session) is left alone. So is a marker
+# encrypted session's handoff and marker are the vault's, for a run the launch
+# ran on the vault home; one whose .cs/private came mid-run, maybe as a link
+# out of the session, is left alone (_antigravity_vault_ok). So is a marker
 # in files git tracks, which came with a pull rather than from /cs:rotate
 # here: the binding still moves, nothing is spent, and the conversation is
 # asked on descriptor 3 to tell the user why, in fixed words. The tracked-
@@ -961,11 +999,12 @@ _antigravity_hook_bind() {  # session_dir, conversation_id, run_dir
 # written, and the failure only fails the call.
 _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous handoff="" reason=clear refusal="" context="" log_dir actor
+    local handoffs private shown
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
     [ -f "$run_dir/new-$id" ] && [ ! -L "$run_dir/new-$id" ] || return 0
     [ "$AGY_HOOK_INVOCATION" = 0 ] && _antigravity_hook_typed || return 0
     [ -n "$AGY_HOOK_STEPS" ] && [ "$AGY_HOOK_STEPS" -ge 1 ] || return 0
-    ! _switch_session_encrypted "$session_dir" || return 0
+    _antigravity_vault_ok "$session_dir" "$run_dir" || return 0
     previous=$(cs_binding_read "$session_dir" antigravity) || return 1
     [ "$previous" != "$id" ] || return 0
     if cs_files_tracked_notice "$session_dir/.cs" "$session_dir" >/dev/null; then
@@ -977,19 +1016,21 @@ _antigravity_hook_rebind_clear() {  # session_dir, conversation_id, run_dir
     _antigravity_run_mark "$run_dir/held-$id"
     if [ -n "$handoff" ]; then
         reason=handoff
-        refusal=$(_handoff_spend "$session_dir/.cs/handoffs/$handoff" "$session_dir/.cs/local/pending-handoff" "$id") || true
+        handoffs=$(cs_handoff_dir "$session_dir/.cs") && private=$(cs_private_dir "$session_dir/.cs") || return 1
+        shown=$(_codex_handoffs_shown "$session_dir")
+        refusal=$(_handoff_spend "$handoffs/$handoff" "$private/pending-handoff" "$id") || true
         actor=$(cs_actor_slug "$session_dir" 2>/dev/null) || actor=unknown
-        context=$(_rotation_preamble "$handoff" "$actor" .cs/handoffs)
+        context=$(_rotation_preamble "$handoff" "$actor" "$shown")
         if [ -n "$refusal" ]; then
             context="$context
 
-$(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-handoff)"
+$(_handoff_refusal_warning "$shown/$handoff" "$refusal" "$(_codex_marker_shown "$session_dir")")"
         fi
     fi
     if [ -n "$context" ]; then
         { printf '%s' "$context" >&3; } 2>/dev/null || true
     fi
-    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
+    if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
             "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: clear, ID: %s)\n' \
@@ -1012,19 +1053,19 @@ $(_handoff_refusal_warning ".cs/handoffs/$handoff" "$refusal" .cs/local/pending-
 # lineage is recorded as the run's first bind records a conversation opened
 # with /resume (source resume, reason rebind). Nothing is spent and nothing
 # goes out on descriptor 3: a rotation /cs:rotate armed stays armed for the
-# next /clear. An encrypted session's (the launch refuses one, so a
-# .cs/private here came mid-run) is left alone. A call made without a payload
+# next /clear. An encrypted session's whose .cs/private came mid-run is left
+# alone (_antigravity_vault_ok). A call made without a payload
 # read, with no invocationNum set, is no first model call and takes nothing.
 _antigravity_hook_retake() {  # session_dir, conversation_id, run_dir
     local session_dir="$1" id="$2" run_dir="$3" previous log_dir
     [ -f "$run_dir/held-$id" ] && [ ! -L "$run_dir/held-$id" ] || return 0
     [ "${AGY_HOOK_INVOCATION:-}" = 0 ] && _antigravity_hook_typed || return 0
-    ! _switch_session_encrypted "$session_dir" || return 0
+    _antigravity_vault_ok "$session_dir" "$run_dir" || return 0
     previous=$(cs_binding_read "$session_dir" antigravity) || return 1
     [ "$previous" != "$id" ] || return 0
     cs_binding_write "$session_dir" antigravity "$id" || return 1
     _antigravity_run_mark "$run_dir/held-$id"
-    if log_dir=$(cs_local_dir "$session_dir/.cs"); then
+    if log_dir=$(_antigravity_log_dir "$session_dir" "$run_dir"); then
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Rebound antigravity conversation: %s -> %s\n' \
             "$(date '+%Y-%m-%d %H:%M:%S')" "${previous:-none}" "$id" || true
         CS_WRITE_QUIET=1 cs_append_inside "$log_dir/session.log" printf '%s - Session started (source: resume, ID: %s)\n' \
@@ -1040,9 +1081,17 @@ _antigravity_hook_retake() {  # session_dir, conversation_id, run_dir
 
 # A finished edit in the run that holds the session's lease, translated by
 # the adapter, goes to the recovery consumer the installer put beside the hook.
+# An encrypted session's vault home is checked first.
 _antigravity_hook_post_tool_use() {  # payload
-    local event script
+    local event script run_dir
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
+    # An encrypted session's vault home, checked after every tool: what a
+    # command changed there is moved aside before anything else runs, and the
+    # next model call stops the turn (_antigravity_hook_pre_invocation).
+    if run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" \
+        && _antigravity_run_vault_home "$run_dir" >/dev/null; then
+        _antigravity_hook_vault_check "$run_dir" || true
+    fi
     event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0
     [ -n "$event" ] || return 0
     script="$(_antigravity_plugin_dir)/scripts/autosave-commits.sh"
@@ -1075,13 +1124,15 @@ _antigravity_hook_post_tool_use() {  # payload
 # (_antigravity_hook_retake), both before the digest is read, so the mail
 # follows them. Mail git tracks came with a
 # pull, a merge or a checkout, not from a sender on this machine, so none of
-# it is shown then, as under Claude and Codex. The launch refuses an
-# encrypted session, so a .cs/private there came mid-run, maybe as a link out
-# of the session, and no mail is read through it.
+# it is shown then, as under Claude and Codex. An encrypted session's mail is
+# the vault's, read in a run the launch ran on the vault home; a .cs/private
+# that came mid-run, maybe as a link out of the session, is never read
+# through (_antigravity_vault_ok).
 _antigravity_mail_dir() {  # conversation_id
-    local bound private
+    local bound private run_dir=""
     cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 1
-    ! _switch_session_encrypted "$CS_SESSION_DIR" || return 1
+    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
+    _antigravity_vault_ok "$CS_SESSION_DIR" "$run_dir" || return 1
     bound=$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null) || return 1
     [ "$bound" = "$1" ] || return 1
     ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 1

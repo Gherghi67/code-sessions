@@ -1173,6 +1173,33 @@ _doctor_check_hook_authority() {
 # nothing behind it, and MEMORY.md text-merges on the next pull. The driver is
 # deliberately per-clone and never global — cs does not write to ~/.gitconfig —
 # so a clone cs has not launched in is out of reach; this names the one it can see.
+# An encrypted session's Antigravity home (lib/79-antigravity-vault.sh), when
+# its vault is mounted and agy has run there: what the next Antigravity open
+# would move aside or point back, read without changing anything (the sync's
+# report mode). The home is a plain name, since .cs/private is a link the
+# agent can point elsewhere; the sync escapes control characters in the names
+# it lists, which the agent can choose too.
+_doctor_check_antigravity_vault_home() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" home shown shared report
+    [ -n "$dir" ] || return 0
+    _switch_session_encrypted "$dir" || return 0
+    home=$(_antigravity_vault_home_path "$dir") || return 0
+    shown=$(_cs_plain_name "$home" 160)
+    if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
+        _doctor_warn "Antigravity vault home: $shown is a link or not a directory; cs does not follow a link there. Move it aside; the next Antigravity open makes the vault Antigravity home"
+        return 0
+    fi
+    [ -d "$home" ] || return 0
+    shared=$(_antigravity_shared_home)
+    if ! report=$(_antigravity_vault_sync report "$shared" "$home" 2>/dev/null); then
+        _doctor_warn "Antigravity vault home: cs could not read $shown"
+    elif [ -n "$report" ]; then
+        _doctor_warn "Antigravity vault home: $shown holds entries that are not cs's links to $shared; the next Antigravity open moves them into antigravity-home.moved/ beside it and links the shared ones again: $(printf '%s' "$report" | head -c 600 | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+    else
+        _doctor_ok "Antigravity vault home: $shown links back to $shared"
+    fi
+}
+
 # An encrypted session's Codex home (lib/76-codex-vault.sh), when its vault is
 # mounted and Codex has run there. Each shared name must link into the shared
 # home, and rules/ (a copy), plugins/ and .tmp must be vault directories, the
@@ -1511,6 +1538,7 @@ run_doctor() {
         _doctor_check_shadow_ref
         _doctor_check_merge_driver
         _doctor_check_codex_vault_home
+        _doctor_check_antigravity_vault_home
         _doctor_check_migration_stamp
         _doctor_check_integrate_lock
         _doctor_check_finish_progress
@@ -1568,6 +1596,7 @@ run_doctor() {
             _doctor_check_worktrees
             _doctor_check_narrative_size
             _doctor_check_codex_vault_home
+            _doctor_check_antigravity_vault_home
         fi
     fi
 

@@ -270,7 +270,7 @@ there.
 | `.cs/memory` | Auto-memory and the narratives. |
 | `.cs/plans` | Plans and specs. |
 | `.cs/claude-config` | Claude Code's config dir for this session. cs launches Claude Code with `CLAUDE_CONFIG_DIR` pointing here, so transcripts, prompt history, `.claude.json` and its backups never reach `~/.claude`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the shell's login (empty selects the default keychain entry). On every launch cs links the shell's `settings.json`, `settings.local.json`, `CLAUDE.md`, `AGENTS.md`, `rules/`, `skills/`, `commands/`, `agents/`, `hooks/`, `plugins/`, `output-styles/`, `keybindings.json` and `vale/` into it, skipping any name the session already has. A setting you change inside the session (`/model`, `/config`) writes through the link into the shell's `settings.json`. The first launch seeds `.claude.json` from the shell's copy with `projects` emptied, since each project entry keeps that project's last prompt. cs reads the session's transcripts from `projects/` here, and the picker does not rename such a session, because its links and transcripts name its path. |
-| `.cs/private` | cs's own content files, which a plain session keeps in `.cs/local/`: `session.log`, `scope-prompt.trace`, `memory-index.snapshot`, `memory-archive.snapshot`, `mail/`, the queue files (`queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.done`, `queue.current`, `queue.accepted`, `queue.failed`, `queue.migrating`), `notifications.jsonl`, `notifications.seen`, `failures`, `rewrite.trace`, `finish-progress.json`, the rotation handoffs (`handoffs/`), `pending-handoff`, `pending-switch`, checkpoints (`checkpoints/`), the task archive (`task-archive/`), Codex's home for the session (`codex-home/`, see [Codex: encrypted sessions](codex.md#encrypted-sessions)) and its launch context (`codex-instructions.md`, a plaintext copy of memory in a plain session's `.cs/local/`) and, when `.cs/memory` is a link, the rotated narrative sections (`narrative-archive/`). Numbers the status line writes (`context-pct`, `limits`, `statusline-width`) and ids (`state`, `spawned-by`, `rotate-nudged`, `ctx-warned`) stay in `.cs/local/`. |
+| `.cs/private` | cs's own content files, which a plain session keeps in `.cs/local/`: `session.log`, `scope-prompt.trace`, `memory-index.snapshot`, `memory-archive.snapshot`, `mail/`, the queue files (`queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.done`, `queue.current`, `queue.accepted`, `queue.failed`, `queue.migrating`), `notifications.jsonl`, `notifications.seen`, `failures`, `rewrite.trace`, `finish-progress.json`, the rotation handoffs (`handoffs/`), `pending-handoff`, `pending-switch`, checkpoints (`checkpoints/`), the task archive (`task-archive/`), agy's home for the session (`antigravity-home/`, and `antigravity-home.moved/` with what its checks moved aside, see [Antigravity: encrypted sessions](antigravity.md#encrypted-sessions)), Codex's home for the session (`codex-home/`, see [Codex: encrypted sessions](codex.md#encrypted-sessions)) and its launch context (`codex-instructions.md`, a plaintext copy of memory in a plain session's `.cs/local/`) and, when `.cs/memory` is a link, the rotated narrative sections (`narrative-archive/`). Numbers the status line writes (`context-pct`, `limits`, `statusline-width`) and ids (`state`, `spawned-by`, `rotate-nudged`, `ctx-warned`) stay in `.cs/local/`. |
 
 ### Encrypting a session with `cs -encrypt`
 
@@ -282,7 +282,10 @@ from a terminal, with the session closed. It:
    launch interrupted while it wrote that file left beside it
    (`.cs/local/.codex-instructions.*`, or `codex-instructions.md.tmp.*` from an
    older cs). Anything but a file at one of those names stops `cs -encrypt`
-   before anything changes; move it aside first.
+   before anything changes; move it aside first. It also deletes
+   `.agents/rules/cs-session.md` when cs wrote it: the Antigravity launch's
+   copy of the same context, which the next Antigravity open writes into the
+   vault instead.
 2. Creates an AES-256 encrypted sparse bundle at
    `~/.local/share/cs/vaults/<name>.sparsebundle` (`$CS_DATA_DIR/vaults/` when
    that is set, as the code-sessions profile sets it) with `hdiutil`, which asks
@@ -366,9 +369,9 @@ Codex opens an encrypted session on a Codex home inside its vault; see
 [Codex: encrypted sessions](codex.md#encrypted-sessions). A Codex launch of a
 worktree name whose base is encrypted refuses before the pre-open asks for the
 password, saying that worktrees of an encrypted session are not supported.
-Antigravity still refuses an encrypted session at the same point, because it
-keeps its conversations outside the vault, and names
-`cs <name> --engine claude`.
+Antigravity opens one on a `$HOME` inside the vault; see
+[Antigravity: encrypted sessions](antigravity.md#encrypted-sessions). A
+worktree name whose base is encrypted refuses as under Codex.
 
 Opening an encrypted session also refuses when a plaintext copy of a vault
 file is still outside it: any of the `.cs/private` files above left in

@@ -52,6 +52,14 @@ setup() {
     # SessionStart before the run's first conversation fires anything, and
     # no model call. A run left before any turn (AGY_NO_TURN) fires none.
     # Hook stdout goes to AGY_HOOK_OUT.
+    # In an encrypted session: AGY_MAIL_SUB (local) names the .cs folder the
+    # mail comes into and AGY_ARM_SUB (empty: .cs/handoffs and
+    # .cs/local/pending-handoff) the one AGY_ARM arms in, private for the
+    # vault's; AGY_VAULT_PLANT names a file a command plants (or overwrites)
+    # in agy's home after the prompt's first model call, before the edits'
+    # PostToolUse, and AGY_VAULT_LINK one it replaces with a link to
+    # AGY_VAULT_LINK_TO there; after each edit's PostToolUse, the next tool of
+    # the same step notes in AGY_VAULT_SEEN whether the planted file is there.
     # Payloads carry what agy 1.5.10 was measured to send: lastUserInput, the
     # prompt typed last (AGY_PROMPT, "go") in a main conversation and "" in a
     # subagent's (AGY_SUBAGENT_PROMPT overrides it, AGY_SUBAGENT_NO_LUI drops
@@ -88,7 +96,7 @@ fi
 printf '%s\n' "$*" >> "$AGY_LOG"
 printf '%s\n' "$@" > "$AGY_ARGV"
 pwd -P > "$AGY_PWD"
-env | grep -E '^(CS_|CLAUDE_|CODEX_HOME=)' | sort > "$AGY_ENV"
+env | grep -E '^(CS_|CLAUDE_|CODEX_HOME=|HOME=)' | sort > "$AGY_ENV"
 grep '^engine:' "$CS_SESSION_META_DIR/local/state" > "$AGY_STATE" 2>/dev/null || : > "$AGY_STATE"
 conversation="" new=""
 while [ $# -gt 0 ]; do
@@ -133,8 +141,8 @@ fire() {  # event, payload
 set -- ${AGY_MAIL_DURING_TURN:-}
 mail_comes() {
     [ $# -gt 0 ] || return 0
-    mkdir -p "$CS_SESSION_META_DIR/local/mail/new"
-    cp "$AGY_MAIL_DROP/$1" "$CS_SESSION_META_DIR/local/mail/new/$1"
+    mkdir -p "$CS_SESSION_META_DIR/${AGY_MAIL_SUB:-local}/mail/new"
+    cp "$AGY_MAIL_DROP/$1" "$CS_SESSION_META_DIR/${AGY_MAIL_SUB:-local}/mail/new/$1"
 }
 payload() {  # id, [extra JSON]
     local extra="${2:-}"
@@ -150,10 +158,14 @@ subpayload() {  # id, [extra JSON]
         | if [ -n "${AGY_SUBAGENT_NO_LUI:-}" ]; then jq -c 'del(.lastUserInput)'; else cat; fi
 }
 arm() {  # handoff basename
-    mkdir -p "$CS_SESSION_META_DIR/handoffs"
+    local handoffs="$CS_SESSION_META_DIR/handoffs" marker="$CS_SESSION_META_DIR/local/pending-handoff"
+    if [ -n "${AGY_ARM_SUB:-}" ]; then
+        handoffs="$CS_SESSION_META_DIR/$AGY_ARM_SUB/handoffs" marker="$CS_SESSION_META_DIR/$AGY_ARM_SUB/pending-handoff"
+    fi
+    mkdir -p "$handoffs"
     printf -- '---\nparent: %s\ncreated: 2026-11-17T12:00:00Z\npurpose: continue testing\nstatus: unconsumed\n---\n\n## Next Step\nCheck rotation.\n' \
-        "$conversation" > "$CS_SESSION_META_DIR/handoffs/$1"
-    printf '%s\n' "$1" > "$CS_SESSION_META_DIR/local/pending-handoff"
+        "$conversation" > "$handoffs/$1"
+    printf '%s\n' "$1" > "$marker"
 }
 if [ -z "${AGY_NO_TURN:-}" ]; then
     [ -z "${AGY_TRACK_MAIL:-}" ] || git -C "$CS_SESSION_DIR" add -f .cs/local/mail
@@ -165,6 +177,8 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     extra=$(printf '{"invocationNum": 0, "initialNumSteps": %s}' "$steps")
     fire PreInvocation "$(payload "$conversation" "$extra")"
     [ -z "${AGY_ARM:-}" ] || arm "$AGY_ARM"
+    [ -z "${AGY_VAULT_PLANT:-}" ] || printf 'planted\n' > "$HOME/$AGY_VAULT_PLANT"
+    [ -z "${AGY_VAULT_LINK:-}" ] || ln -sfn "$AGY_VAULT_LINK_TO" "$HOME/$AGY_VAULT_LINK"
     [ -z "${AGY_LOCK_HANDOFFS:-}" ] || chmod 555 "$CS_SESSION_META_DIR/handoffs"
     if [ -n "${AGY_CAP_CS:-}" ]; then
         if "$AGY_CAP_CS" -engine supports clear_rotation >/dev/null 2>&1; then
@@ -185,6 +199,9 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
         printf 'edited\n' > "$edit"
         fire PostToolUse "$(payload "$conversation" "$(jq -nc --arg p "$edit" \
             '{stepIdx: 2, error: "", toolCall: {name: "write_file", args: {Path: $p, Content: "edited\n"}}}')")"
+        if [ -n "${AGY_VAULT_PLANT:-}" ] && [ -n "${AGY_VAULT_SEEN:-}" ]; then
+            if [ -e "$HOME/$AGY_VAULT_PLANT" ]; then echo present >> "$AGY_VAULT_SEEN"; else echo gone >> "$AGY_VAULT_SEEN"; fi
+        fi
     done
     extra=$(printf '{"invocationNum": 1, "initialNumSteps": %s}' "$((steps + 2))")
     fire PreInvocation "$(payload "$conversation" "$extra")"
@@ -247,6 +264,7 @@ AGY
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA AGY_VERSION CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
+    unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
     _install_agy_hook
     unset CS_DEFAULT_ENGINE CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CS_LEAD_PID CLAUDE_PID
     unset CS_RUN_ENGINE CS_RUN_ID CS_SESSION_DIR CS_SESSION_NAME CS_SESSION_META_DIR
@@ -265,6 +283,7 @@ teardown() {
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
+    unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
 }
 
 # cs's plugin as the installer writes it, in the test's HOME.
@@ -1472,15 +1491,284 @@ test_switch_from_antigravity_refuses_a_missing_target() {
     assert_not_exists "$dir/.cs/local/pending-switch" "no switch is armed"
 }
 
-test_an_encrypted_session_is_refused_before_its_vault_opens() {
-    local output status=0 dir
+# An encrypted session: .cs/private links into a vault (vault-mnt, as
+# cs -encrypt makes it, with the pre-open that mounts it, here one that
+# mounts nothing), with the cs files a first open left in .cs/local moved in,
+# and the test home holding agy's login and a few files of the user's.
+# VAULT_HOME is where agy's home goes, as it resolves.
+_vault_session() {  # session_name
+    local dir name files
+    dir=$(_session_dir "$1")
+    mkdir -p "$dir/.cs/vault-mnt/private"
+    files=$(sed -n '/^CS_PRIVATE_LOCAL_FILES="/,/"$/p' "$SCRIPT_DIR/../lib/45-migrate.sh" | tr -d '"' | sed 's/^CS_PRIVATE_LOCAL_FILES=//')
+    for name in $files; do
+        if [ -e "$dir/.cs/local/$name" ]; then mv "$dir/.cs/local/$name" "$dir/.cs/vault-mnt/private/$name"; fi
+    done
+    ln -s vault-mnt/private "$dir/.cs/private"
+    printf '#!/bin/sh\nexit 0\n' > "$dir/.cs/local/pre-open"
+    chmod +x "$dir/.cs/local/pre-open"
+    mkdir -p "$HOME/.gemini/antigravity-cli/cache" "$HOME/Library/Keychains"
+    printf '{"token":"shared"}\n' > "$HOME/.gemini/jetski-standalone-oauth-token"
+    printf '{"trustedWorkspaces":[]}\n' > "$HOME/.gemini/antigravity-cli/settings.json"
+    printf '{"onboardingComplete":true}\n' > "$HOME/.gemini/antigravity-cli/cache/onboarding.json"
+    printf '[user]\n\tname = t\n' > "$HOME/.gitconfig"
+    VAULT_HOME="$(cd -P "$dir/.cs/private" && pwd -P)/antigravity-home"
+}
+
+# An encrypted session runs agy with HOME set to a home inside its vault:
+# every entry of the user's home but .gemini linked back, agy's login, config
+# and sandbox linked into the user's ~/.gemini, its settings and onboarding
+# records copied from there, its state born in the vault, and the session's
+# context as the global rule there. The rule a
+# run before the encryption left in the session folder goes, and the hook
+# binds and logs into the vault, with cs back on the user's home.
+test_an_encrypted_session_runs_agy_on_its_vault_home() {
+    local output dir name
     output=$("$CS_BIN" sealed --engine antigravity 2>&1) || { echo "$output"; return 1; }
     dir=$(_session_dir sealed)
-    mkdir -p "$dir/.cs/private"
+    assert_file_exists "$(_rule sealed)" "an unencrypted open writes the workspace rule" || return 1
+    _vault_session sealed
+    output=$("$CS_BIN" sealed --fresh 2>&1) || { echo "  FAIL: the encrypted open failed: $output"; return 1; }
+    assert_file_contains "$AGY_ENV" "^HOME=$VAULT_HOME\$" "agy runs on the vault home" || return 1
+    assert_file_contains "$AGY_ENV" "^CS_ANTIGRAVITY_SHARED_HOME=$HOME\$" "with the user's home beside it" || return 1
+    assert_eq 700 "$(_file_mode "$VAULT_HOME")" "the home is private" || return 1
+    for name in .gitconfig Library; do
+        assert_eq "$HOME/$name" "$(readlink "$VAULT_HOME/$name")" "$name links into the user's home" || return 1
+    done
+    assert_eq "" "$(readlink "$VAULT_HOME/.gemini")" ".gemini is not a link" || return 1
+    assert_eq 700 "$(_file_mode "$VAULT_HOME/.gemini")" ".gemini is private" || return 1
+    for name in jetski-standalone-oauth-token config sandbox; do
+        assert_eq "$HOME/.gemini/$name" "$(readlink "$VAULT_HOME/.gemini/$name")" ".gemini/$name links into the user's ~/.gemini" || return 1
+    done
+    assert_dir "$HOME/.gemini/sandbox" "the sandbox folder is made in the user's ~/.gemini" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/.gemini/antigravity-cli")" "agy's state folder is the vault's" || return 1
+    for name in hooks.json bin builtin updater installation_id; do
+        assert_eq "$HOME/.gemini/antigravity-cli/$name" "$(readlink "$VAULT_HOME/.gemini/antigravity-cli/$name")" \
+            "antigravity-cli/$name links into the user's ~/.gemini" || return 1
+    done
+    # agy replaces settings.json whenever it saves it (measured on 1.5.10), so
+    # it is a copy, as are the onboarding records that spare a second onboarding.
+    for name in settings.json cache/onboarding.json; do
+        assert_eq "" "$(readlink "$VAULT_HOME/.gemini/antigravity-cli/$name")" "$name is not a link" || return 1
+        assert_eq "$(cat "$HOME/.gemini/antigravity-cli/$name")" "$(cat "$VAULT_HOME/.gemini/antigravity-cli/$name")" \
+            "$name is copied from the user's" || return 1
+    done
+    assert_file_contains "$VAULT_HOME/.gemini/GEMINI.md" '<!-- cs:antigravity-session-context -->' "the rule is cs's" || return 1
+    assert_file_contains "$VAULT_HOME/.gemini/GEMINI.md" '^Agent-sessions executable:' "and carries the session's context" || return 1
+    assert_not_exists "$(_rule sealed)" "no plaintext rule is left in the session folder" || return 1
+    assert_output_contains "$output" 'in the vault' "the launch line names where the context is" || return 1
+    assert_eq "$AGY_NEW_ID" "$(_binding sealed)" "the hook binds the conversation" || return 1
+    grep -F -q -- "Session started (source: startup, ID: $AGY_NEW_ID)" "$dir/.cs/private/session.log" \
+        || { echo "  FAIL: the hook logs into the vault"; return 1; }
+    assert_not_exists "$dir/.cs/local/session.log" "and not into .cs/local" || return 1
+    assert_not_exists "$HOME/.gemini/antigravity-cli/conversations" "nothing of agy's state lands in the user's ~/.gemini" || return 1
+}
+
+# A GEMINI.md the user keeps in ~/.gemini follows cs's context in the vault's
+# rule, since cs's file takes that name there.
+test_the_vault_rule_carries_the_users_own_global_rule() {
+    local output
+    output=$(AGY_NO_TURN=1 "$CS_BIN" ruled --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session ruled
+    printf 'Always answer in haiku.\n' > "$HOME/.gemini/GEMINI.md"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" ruled --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_file_contains "$VAULT_HOME/.gemini/GEMINI.md" '^Always answer in haiku\.$' "the user's rule is carried" || return 1
+    assert_eq "" "$(readlink "$VAULT_HOME/.gemini/GEMINI.md")" "the rule is a file of the vault's, not a link"
+}
+
+# The home follows the user's at every open: a new entry is linked and a gone
+# one unlinked without a word; whatever else stands there (a file planted
+# where a link was, a name the user's home does not have, a link pointing
+# elsewhere) is moved aside into antigravity-home.moved, never deleted, the
+# links restored, and the launch says so.
+test_the_vault_home_follows_the_users_home_at_every_open() {
+    local output moved
+    output=$(AGY_NO_TURN=1 "$CS_BIN" follow --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session follow
+    output=$(AGY_NO_TURN=1 "$CS_BIN" follow --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    printf 'new\n' > "$HOME/.newrc"
+    rm "$HOME/.gitconfig"
+    printf 'theirs\n' > "$HOME/.profile"
+    printf 'planted\n' > "$VAULT_HOME/.zshenv"
+    rm "$VAULT_HOME/.gemini/config"
+    mkdir -p "$VAULT_HOME/.gemini/config/plugins"
+    ln -sfn "$TEST_TMPDIR" "$VAULT_HOME/.gemini/antigravity-cli/hooks.json"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" follow --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq "$HOME/.newrc" "$(readlink "$VAULT_HOME/.newrc")" "a new entry is linked" || return 1
+    assert_not_exists "$VAULT_HOME/.gitconfig" "a gone one is unlinked" || return 1
+    assert_eq "$HOME/.profile" "$(readlink "$VAULT_HOME/.profile")" "an entry made since is linked" || return 1
+    assert_not_exists "$VAULT_HOME/.zshenv" "a planted name is gone from the home" || return 1
+    assert_eq "$HOME/.gemini/config" "$(readlink "$VAULT_HOME/.gemini/config")" "the config link is restored" || return 1
+    assert_eq "$HOME/.gemini/antigravity-cli/hooks.json" "$(readlink "$VAULT_HOME/.gemini/antigravity-cli/hooks.json")" \
+        "a link pointing elsewhere is pointed back" || return 1
+    moved=$(find "${VAULT_HOME%/*}/antigravity-home.moved" -mindepth 2 -maxdepth 3 | sed "s#^${VAULT_HOME%/*}/antigravity-home.moved/[^/]*/##" | LC_ALL=C sort | tr '\n' ' ')
+    assert_eq ".gemini .gemini/config .zshenv " "$moved" "what did not belong is moved aside, not deleted" || return 1
+    assert_output_contains "$output" 'moved .zshenv' "the launch names what it moved" || return 1
+    assert_output_contains "$output" 'relinked .gemini/antigravity-cli/hooks.json' "and what it pointed back" || return 1
+    assert_output_not_contains "$output" '.newrc' "a new entry of the user's is no news"
+}
+
+# agy keeps its login in ~/.gemini; without one the vault home has nothing to
+# link, and the open stops before agy starts.
+test_an_encrypted_open_without_an_agy_login_is_refused() {
+    local output status=0
+    output=$(AGY_NO_TURN=1 "$CS_BIN" nologin --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session nologin
+    rm "$HOME/.gemini/jetski-standalone-oauth-token"
     : > "$AGY_LOG"
-    output=$("$CS_BIN" sealed 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: an encrypted session must be refused"; return 1; }
-    assert_output_contains "$output" 'Antigravity keeps its conversations' || return 1
+    output=$("$CS_BIN" nologin --fresh 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: an open without a login must be refused"; return 1; }
+    assert_output_contains "$output" 'Sign in with agy once outside this session' || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+}
+
+# A home the agent planted as a link (it can write .cs/private) is never
+# followed: the open stops and names it.
+test_a_linked_vault_home_stops_the_open() {
+    local output status=0 victim="$TEST_TMPDIR/victim"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" linkedhome --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session linkedhome
+    mkdir -p "$victim"
+    ln -s "$victim" "$VAULT_HOME"
+    : > "$AGY_LOG"
+    output=$("$CS_BIN" linkedhome --fresh 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a linked home must be refused"; return 1; }
+    assert_output_contains "$output" 'is a link or not a directory' || return 1
+    assert_eq "" "$(ls -A "$victim")" "nothing is written where the link points" || return 1
+    assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
+}
+
+# A command that plants a file in agy's home during the run: the PostToolUse
+# after it moves the file aside and restores the home, so the next tool of
+# the same step finds it gone, and the next model call stops the turn,
+# telling the user (errorMessage) and the model (a system message), as agy
+# 1.5.10's hooks guide says a PreInvocation stops one.
+test_a_command_that_changes_the_vault_home_stops_the_turn() {
+    local output dir answer
+    output=$(AGY_NO_TURN=1 "$CS_BIN" planted --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session planted
+    dir=$(_session_dir planted)
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_VAULT_PLANT=.zshenv AGY_VAULT_SEEN="$TEST_TMPDIR/seen" AGY_EDITS="$dir/edited.txt $dir/second.txt" \
+        "$CS_BIN" planted --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq gone "$(head -1 "$TEST_TMPDIR/seen")" "the next tool of the step finds the plant gone" || return 1
+    assert_not_exists "$VAULT_HOME/.zshenv" "the planted file is out of the home" || return 1
+    assert_eq planted "$(cat "${VAULT_HOME%/*}"/antigravity-home.moved/*/.zshenv)" "and moved aside, not deleted" || return 1
+    answer=$(jq -cR 'fromjson? | objects | select(.terminationBehavior? == "terminate")' "$AGY_HOOK_OUT" | head -1)
+    [ -n "$answer" ] || { echo "  FAIL: no PreInvocation stopped the turn"; cat "$AGY_HOOK_OUT"; return 1; }
+    assert_output_contains "$(printf '%s' "$answer" | jq -r '.injectSteps[] | .errorMessage.userMessage // empty')" \
+        'cs stopped this turn' "the user is told" || return 1
+    assert_output_contains "$(printf '%s' "$answer" | jq -r '.injectSteps[] | .systemMessage.systemMessage // empty')" \
+        'moved .zshenv' "and the model, with what moved" || return 1
+    assert_eq 1 "$(jq -cR 'fromjson? | objects | select(.terminationBehavior? == "terminate")' "$AGY_HOOK_OUT" | wc -l | tr -d ' ')" \
+        "the turn is stopped once" || return 1
+    assert_eq "" "$(find "$CS_CACHE_DIR/antigravity-runs" -name vault-moved 2>/dev/null)" "the record is spent"
+}
+
+# settings.json is the vault's copy, and a command that changes it during the
+# run gets it put back as the run began, without a word: agy saves its own
+# changes there too, so a change is no proof of a plant. A link a command
+# leaves there is moved aside and stops the turn, as anywhere in the home. The
+# next open copies the user's again.
+test_a_command_that_changes_the_vault_settings_gets_them_put_back() {
+    local output dir settings
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vsettings --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session vsettings
+    dir=$(_session_dir vsettings)
+    settings="$VAULT_HOME/.gemini/antigravity-cli/settings.json"
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_VAULT_PLANT=.gemini/antigravity-cli/settings.json AGY_EDITS="$dir/edited.txt" "$CS_BIN" vsettings --fresh 2>&1) \
+        || { echo "  FAIL: $output"; return 1; }
+    assert_eq '{"trustedWorkspaces":[]}' "$(cat "$settings")" "the content is put back" || return 1
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT")" "without stopping the turn" || return 1
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_VAULT_LINK=.gemini/antigravity-cli/settings.json AGY_VAULT_LINK_TO="$TEST_TMPDIR" AGY_EDITS="$dir/edited.txt" \
+        "$CS_BIN" vsettings --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq "" "$(readlink "$settings")" "the link is gone" || return 1
+    assert_eq '{"trustedWorkspaces":[]}' "$(cat "$settings")" "and the run's copy is back" || return 1
+    assert_eq 1 "$(jq -cR 'fromjson? | objects | select(.terminationBehavior? == "terminate")' "$AGY_HOOK_OUT" | wc -l | tr -d ' ')" \
+        "the link stops the turn" || return 1
+    printf '{"trustedWorkspaces":["x"]}\n' > "$HOME/.gemini/antigravity-cli/settings.json"
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vsettings --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq '{"trustedWorkspaces":["x"]}' "$(cat "$settings")" "the next open copies the user's again"
+}
+
+# Without a plant, the checks say nothing and every answer is what it was.
+test_an_untouched_vault_home_never_stops_a_turn() {
+    local output dir
+    output=$(AGY_NO_TURN=1 "$CS_BIN" quiet --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session quiet
+    dir=$(_session_dir quiet)
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_EDITS="$dir/edited.txt" "$CS_BIN" quiet --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT")" "every hook answers {}" || return 1
+    assert_not_exists "${VAULT_HOME%/*}/antigravity-home.moved" "nothing is moved"
+}
+
+# A rotation in an encrypted session: the handoff and its marker are the
+# vault's, and the prompt names them there; the hook spends that handoff.
+test_an_encrypted_handoff_open_reads_the_vault_handoff() {
+    local output dir name=2026-11-19-rotate.md
+    output=$(AGY_NO_TURN=1 "$CS_BIN" shelved --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session shelved
+    dir=$(_session_dir shelved)
+    mkdir -p "$dir/.cs/private/handoffs"
+    printf -- '---\nparent: %s\ncreated: 2026-11-19T12:00:00Z\npurpose: continue testing\nstatus: unconsumed\n---\n\n## Next Step\nCheck rotation.\n' \
+        "$AGY_NEW_ID" > "$dir/.cs/private/handoffs/$name"
+    printf '%s\n' "$name" > "$dir/.cs/private/pending-handoff"
+    output=$("$CS_BIN" shelved --from-handoff 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_output_contains "$(_agy_argv)" "Read .cs/private/handoffs/$name FIRST" "the prompt names the vault's handoff" || return 1
+    assert_file_contains "$dir/.cs/private/handoffs/$name" '^status: consumed$' "the hook spends it" || return 1
+    assert_not_exists "$dir/.cs/private/pending-handoff" "and drops its marker" || return 1
+    assert_not_exists "$dir/.cs/handoffs/$name" "nothing is written outside the vault"
+}
+
+# /clear in an encrypted session takes the rotation armed in the vault, names
+# it there, and spends it.
+test_clear_in_an_encrypted_session_spends_the_vault_rotation() {
+    local output dir cleared=66666666-6666-4666-8666-666666666666 name=2026-11-19-clear.md
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vclear --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session vclear
+    dir=$(_session_dir vclear)
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_ARM=$name AGY_ARM_SUB=private AGY_CLEARED=$cleared "$CS_BIN" vclear --fresh 2>&1) \
+        || { echo "  FAIL: $output"; return 1; }
+    assert_eq "$cleared" "$(_binding vclear)" "the /clear conversation takes the session" || return 1
+    assert_output_contains "$(_injected_in "$AGY_HOOK_OUT.cleared")" "Read .cs/private/handoffs/$name FIRST" \
+        "its first model call is handed the vault's handoff" || return 1
+    assert_file_contains "$dir/.cs/private/handoffs/$name" '^status: consumed$' "which is spent" || return 1
+    assert_not_exists "$dir/.cs/private/pending-handoff" "with its marker"
+}
+
+# Mail in an encrypted session is the vault's, shown at the prompt and woken
+# for as in any session.
+test_mail_in_an_encrypted_session_is_read_from_the_vault() {
+    local output dir
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vmail --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session vmail
+    dir=$(_session_dir vmail)
+    _mail_doc "$dir/.cs/private/mail/new/v1.json" peer 'vault mail one'
+    _mail_doc "$AGY_MAIL_DROP/v2.json" peer 'vault mail two'
+    : > "$AGY_HOOK_OUT"
+    output=$(AGY_MAIL_SUB=private AGY_MAIL_DURING_TURN=v2.json "$CS_BIN" vmail --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_output_contains "$(_injected)" 'vault mail one' "the prompt shows the vault's mail" || return 1
+    assert_output_contains "$(_continued)" 'peer' "and mail that came during the turn wakes it"
+}
+
+# cs started from inside another encrypted session's agy (its HOME that
+# session's vault home) works from the user's home again before it reads
+# anything: the launch it makes runs on that home.
+test_an_inherited_antigravity_vault_home_is_dropped() {
+    local output status=0 other="$TEST_TMPDIR/other/.cs/vault-mnt/private/antigravity-home" mine="$HOME"
+    mkdir -p "$other"
+    output=$(HOME="$other" CS_ANTIGRAVITY_SHARED_HOME="$mine" "$CS_BIN" inner --engine antigravity 2>&1) \
+        || { echo "  FAIL: launch failed: $output"; return 1; }
+    assert_file_contains "$AGY_ENV" "^HOME=$HOME\$" "back on the user's home" || return 1
+    assert_file_not_contains "$AGY_ENV" "^CS_ANTIGRAVITY_SHARED_HOME=" "no vault home here" || return 1
+    : > "$AGY_LOG"
+    output=$(HOME="$other" "$CS_BIN" inner --fresh 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a vault home with no user's home beside it must be refused"; return 1; }
+    assert_output_contains "$output" "an encrypted session's Antigravity home" || return 1
     assert_eq "" "$(cat "$AGY_LOG")" "agy is not started"
 }
 
@@ -1501,6 +1789,35 @@ test_an_inherited_vault_home_is_dropped() {
     output=$("$CS_BIN" inherited --fresh 2>&1) || { echo "  FAIL: launch failed: $output"; return 1; }
     assert_file_not_contains "$AGY_ENV" "^CODEX_HOME=" "Codex's default home" || return 1
     unset CODEX_HOME CS_CODEX_SHARED_HOME
+}
+
+# cs run inside an encrypted session's agy (a hook, the status line, the
+# agent's cs command) inherits the vault home as HOME and works from the
+# user's own, kept beside it, before it reads anything: a setting it saves
+# lands in the user's ~/.config/cs, not in the vault home.
+test_cs_inside_an_encrypted_agy_works_from_the_users_home() {
+    local output vault="$TEST_TMPDIR/v/.cs/vault-mnt/private/antigravity-home"
+    mkdir -p "$vault"
+    output=$(env -u CS_CONFIG_DIR HOME="$vault" CS_ANTIGRAVITY_SHARED_HOME="$HOME" \
+        "$CS_BIN" -config set CS_STATUSLINE_CTX_WARN 41 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_file_contains "$HOME/.config/cs/config" 'CS_STATUSLINE_CTX_WARN=41' "the user's config takes it" || return 1
+    assert_not_exists "$vault/.config" "the vault home gets nothing"
+}
+
+# cs -doctor in an encrypted session names what the next open would move out
+# of agy's vault home, and changes nothing.
+test_doctor_names_what_the_vault_home_holds_that_is_not_cs() {
+    local output dir
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vdoctor --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session vdoctor
+    dir=$(_session_dir vdoctor)
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vdoctor --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Antigravity vault home: .* links back to $HOME" "a sound home is named" || return 1
+    printf 'planted\n' > "$VAULT_HOME/.zshenv"
+    output=$(CS_SESSION_DIR="$dir" CS_SESSION_META_DIR="$dir/.cs" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" 'not cs.s links to .*moved .zshenv' "a planted name is named" || return 1
+    assert_file_exists "$VAULT_HOME/.zshenv" "doctor moves nothing"
 }
 
 test_a_feature_worktree_launches_and_keeps_its_rule_out_of_git() {
@@ -1541,19 +1858,6 @@ test_relative_agy_and_cs_paths_resolve_before_the_launch_changes_folder() {
     assert_file_contains "$AGY_ENV" "^CS_BIN=$cs_dir/$(basename "$CS_BIN")$" "CS_BIN is the running cs, absolute" || return 1
     assert_file_contains "$(_rule relative)" "^Agent-sessions executable: $cs_dir/$(basename "$CS_BIN")$" \
         "the rule names the running cs"
-}
-
-# An encrypted handoff launch is refused before the vault opens.
-test_encrypted_handoff_is_refused_before_the_open_changes_the_session() {
-    local output status=0 dir
-    output=$("$CS_BIN" shelved --engine antigravity 2>&1) || { echo "$output"; return 1; }
-    dir=$(_session_dir shelved)
-    mkdir -p "$dir/.cs/private"
-    : > "$dir/.cs/archived"
-    output=$("$CS_BIN" shelved --from-handoff 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: --from-handoff must be refused"; return 1; }
-    assert_output_contains "$output" 'Antigravity keeps its conversations' || return 1
-    assert_file_exists "$dir/.cs/archived" "the refused open leaves the session archived"
 }
 
 test_doctor_names_antigravity_and_its_binding() {
@@ -2844,12 +3148,24 @@ run_test test_a_rotation_handoff_takes_a_finish_launch
 run_test test_a_finish_open_leaves_a_spawn_seed_staged
 run_test test_missing_handoff_is_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
-run_test test_an_encrypted_session_is_refused_before_its_vault_opens
+run_test test_an_encrypted_session_runs_agy_on_its_vault_home
+run_test test_the_vault_rule_carries_the_users_own_global_rule
+run_test test_the_vault_home_follows_the_users_home_at_every_open
+run_test test_an_encrypted_open_without_an_agy_login_is_refused
+run_test test_a_linked_vault_home_stops_the_open
+run_test test_a_command_that_changes_the_vault_home_stops_the_turn
+run_test test_a_command_that_changes_the_vault_settings_gets_them_put_back
+run_test test_an_untouched_vault_home_never_stops_a_turn
+run_test test_an_encrypted_handoff_open_reads_the_vault_handoff
+run_test test_clear_in_an_encrypted_session_spends_the_vault_rotation
+run_test test_mail_in_an_encrypted_session_is_read_from_the_vault
+run_test test_an_inherited_antigravity_vault_home_is_dropped
+run_test test_cs_inside_an_encrypted_agy_works_from_the_users_home
+run_test test_doctor_names_what_the_vault_home_holds_that_is_not_cs
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_feature_worktree_launches_and_keeps_its_rule_out_of_git
 run_test test_the_engine_is_recorded_before_agy_starts
 run_test test_relative_agy_and_cs_paths_resolve_before_the_launch_changes_folder
-run_test test_encrypted_handoff_is_refused_before_the_open_changes_the_session
 run_test test_doctor_names_antigravity_and_its_binding
 run_test test_a_legacy_latest_binding_starts_fresh_then_resumes_by_id
 run_test test_a_resume_of_a_legacy_latest_binding_leaves_the_session_untouched

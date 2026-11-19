@@ -313,6 +313,26 @@ test_encrypt_removes_the_plaintext_codex_context() {
     assert_not_exists "$s/vault-mnt/private/codex-instructions.md" "nothing carried: the next Codex open writes it" || return 1
 }
 
+# The Antigravity launch's rule, cs's context in the session folder, is
+# removed as the Codex context is: the next Antigravity open writes it into
+# the vault. A rule there without cs's mark is the user's and stays.
+test_encrypt_removes_the_plaintext_antigravity_rule() {
+    _stubs
+    _populated_session enc
+    _populated_session enc2
+    local rule="$CS_SESSIONS_ROOT/enc/.agents/rules/cs-session.md" theirs="$CS_SESSIONS_ROOT/enc2/.agents/rules/cs-session.md" out rc=0
+    mkdir -p "${rule%/*}" "${theirs%/*}"
+    printf -- '---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\n\nmemory excerpt\n' > "$rule"
+    printf 'my own rule\n' > "$theirs"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_not_exists "$rule" "no plaintext Antigravity context" || return 1
+    assert_output_contains "$out" "its Antigravity conversations in ~/.gemini/antigravity-cli" "the list names agy's copies" || return 1
+    out=$(_encrypt enc2 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_eq 'my own rule' "$(cat "$theirs")" "the user's rule stays"
+}
+
 # Anything but a file at that name would stop its removal halfway: refused
 # before the container is made or anything moves.
 test_encrypt_refuses_a_codex_context_that_is_not_a_file() {
@@ -1174,6 +1194,7 @@ run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
+run_test test_encrypt_removes_the_plaintext_antigravity_rule
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_removes_leftover_codex_context_temp_files
 run_test test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file

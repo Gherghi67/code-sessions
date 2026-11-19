@@ -452,9 +452,9 @@ PreInvocation commands. Otherwise `/clear` leaves the session on its first
 conversation, `cs -engine supports clear_rotation` exits 1, `/cs:rotate`
 gives the exit/reopen line, and `cs -doctor` names the cause. A spend the
 handoff store refuses keeps the marker, so the next `/clear` loads the same
-handoff again; the new conversation is told why. An encrypted session (the
-launch refuses one, so a `.cs/private` there came mid-run) is left alone. So
-is a marker in files git tracks, which came with a pull: the session still
+handoff again; the new conversation is told why. In an encrypted session the
+handoff and its marker are the vault's; a `.cs/private` that came mid-run in a
+session launched without one is left alone. So is a marker in files git tracks, which came with a pull: the session still
 moves, nothing is spent, and the new conversation is asked to tell you why,
 in cs's own words. What git tracks and how to stop it stay out of the
 conversation, since the model could act on them; cs refuses the next open of
@@ -522,7 +522,8 @@ replay an ambiguous attempt with `--from-handoff`.
 `cs -switch cancel` removes the switch and keeps the handoff armed. To continue
 it under Antigravity, exit and run `cs <name> --engine antigravity --from-handoff`.
 An unsuccessful source exit leaves the handoff armed without relaunching.
-An Antigravity target refuses encrypted sessions.
+An encrypted session switches to Antigravity like any other; the relaunch runs
+on its vault home ([Encrypted sessions](#encrypted-sessions)).
 
 ## Mail
 
@@ -602,6 +603,82 @@ the prompts typed into the TUI:
 Mail delivery needs `agy` 1.5.9 or later, and mail after `/clear` 1.5.10;
 `cs -doctor` warns below each.
 
+## Encrypted sessions
+
+An encrypted session (`cs -encrypt`) runs `agy` with `HOME` set to
+`.cs/private/antigravity-home`, a folder in its vault. `agy` has no setting
+that moves its state and resolves everything from `$HOME`, so its
+conversations, brain, summaries, history, logs and caches are born in the
+vault and never reach `~/.gemini/antigravity-cli` in plaintext.
+
+Every command `agy` starts inherits that `HOME`. The home therefore holds a
+link to each entry of your own home except `.gemini`, so git, gh and ssh
+find their files, and macOS finds your login keychain through `Library`.
+Inside `.gemini`, everything links back to your `~/.gemini` except agy's own
+state (`antigravity-cli`, `antigravity`, `history`, `tmp`) and `GEMINI.md`.
+In `antigravity-cli`, `hooks.json`, `bin`, `builtin`, `updater` and
+`installation_id` link back. So agy's login, configuration, plugins, hooks,
+skills and sandbox profiles are your own, and stay outside the session, where
+agy's terminal sandbox keeps commands from changing them. A grant you give
+for all projects is saved in your `~/.gemini/config/config.json` in
+plaintext, as in any agy session.
+
+`antigravity-cli/settings.json`, which holds your permission rules and the
+folders you trust, cannot be a link: agy replaces the file whenever it saves
+it, which replaces a link (measured on agy 1.5.10, answering a folder trust).
+Each open copies yours in. What the run saves there (this folder's trust, a
+rule you allow always) stays in the vault, in effect until the next open,
+which copies yours in again; so agy asks to trust the folder at each open,
+as Codex does. The hooks keep the copy as the run began, taken at the
+run's first model call: a command that changes it gets it put back, without a
+word, since agy's own saves change it too. agy did not reload the file when it
+changed on disk mid-run. Each open also copies in agy's onboarding records
+(`cache/onboarding.json`, `cache/nux_state.json`), without which agy runs its
+onboarding again, data-use consent included.
+
+cs run from inside the session (its hooks, the status line, a `cs` command
+the agent runs) goes back to your own home first. The launch passes that home
+as `CS_ANTIGRAVITY_SHARED_HOME`.
+
+The session's context is not written to `.agents/rules/cs-session.md` in an
+encrypted session, where it would sit in the session folder in plaintext. It
+goes into the vault home's `.gemini/GEMINI.md`, which agy loads as a global
+rule, followed by your own `~/.gemini/GEMINI.md` when you have one. The
+launch removes a workspace rule of cs's that a run before the encryption
+left, and `cs -encrypt` removes it first. Handoffs, their marker, mail and the
+session log are the vault's (`.cs/private`), as under Claude and Codex.
+
+agy's terminal sandbox lets commands write anywhere in the workspace, so the
+links in the vault home can be changed by them, though the files they point
+to cannot. A command could swap a link for a file of its own, or plant a name
+your home does not have, such as a `.zshenv` that a command you approve to
+run outside the sandbox would read. cs therefore makes the home match yours
+again at every open, after every tool (PostToolUse) and before every model
+call (PreInvocation). Whatever does not belong is moved aside into
+`.cs/private/antigravity-home.moved/<time>/`, never deleted, and its link is
+restored. The open says what it moved; during a run, the next model call stops
+the turn with an error line for you and a system message for the model. A new
+entry in your home is linked, and a removed one unlinked, without a word. Two
+cases still get through: a command that swaps a link and uses it before its
+tool call ends, and a background process that races the checks; such a
+process could also change the settings copy just before a `/clear`, which
+matters only if agy reloads its settings for a new conversation (not
+measured). `cs -doctor` names what the next open would move.
+
+The open refuses when agy has no login in `~/.gemini`
+(`jetski-standalone-oauth-token`; sign in once outside the session), when the
+vault is not mounted, and when `antigravity-home` is a link or not a folder.
+agy did not rewrite its login file when it refreshed its access token
+(unchanged from 2026-11-09 to 2026-11-19 across daily use), so the link holds;
+a file the next open finds in its place is moved aside like anything else,
+and your login linked again.
+
+Measured on agy 1.5.10 (2026-11-19): agy ran on such a home, listed cs's
+plugin through the links and found the login keychain, and a model turn wrote
+its conversation, brain, summaries and logs into the home and nothing into
+`~/.gemini/antigravity-cli`. A rule linked into `.agents/rules` from outside
+the folder was not loaded in that run, while `~/.gemini/GEMINI.md` was.
+
 ## Capabilities and limits
 
 `cs -engine` under Antigravity reports `launch`, `exact_resume`,
@@ -619,7 +696,6 @@ Skills that check before relying on a capability refuse cleanly
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Mail and the binding in a conversation the run never bound, opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear` and `/new` do move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
 | An automatic `/clear` after a rotation | Codex gets one (cs types `/clear` and `go`); under Antigravity you type them ([Rotation through /clear](#rotation-through-clear)). |
-| Encrypted sessions | Refused before the vault opens: `agy` keeps conversations in `~/.gemini/antigravity-cli`, outside the vault, and has no setting that moves its state (it resolves everything from `$HOME`). Codex runs such a session on a home inside the vault. |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
 
@@ -783,9 +859,7 @@ shape.
 
 ## Follow-ups
 
-These come later as separate changes: encrypted sessions, which need a home
-for agy inside the vault: with no home setting, that means a separate `$HOME`
-for agy that links back to the real one; an automatic `/clear` after a
+These come later as separate changes: an automatic `/clear` after a
 rotation, which cs would have to type into the terminal as it does for Codex;
 and a binding that follows a conversation the run never bound, opened with
 `/resume` mid-run, which cs leaves alone under Codex too (one that held the

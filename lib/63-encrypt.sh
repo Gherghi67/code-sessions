@@ -244,6 +244,15 @@ run_encrypt() {
             || error "$name: could not delete $meta/local/$(_cs_plain_name "${leftover##*/}" 160), a plaintext copy of the Codex context; the session is unchanged. Delete it, then retry."
     done
 
+    # The Antigravity launch's rule: the same context, written into the
+    # session folder for agy to load, plaintext once the session is encrypted.
+    # Deleted when it is cs's (its mark); the next Antigravity open writes it
+    # into the vault instead. A file there that is not cs's is the user's.
+    if _antigravity_rule_is_cs "$SESSIONS_ROOT/$name"; then
+        rm -f "$SESSIONS_ROOT/$name/$CS_ANTIGRAVITY_RULE" \
+            || error "$name: could not delete $CS_ANTIGRAVITY_RULE, a plaintext copy of the Antigravity context; the session is unchanged. Delete it, then retry."
+    fi
+
     mkdir -p "$(dirname "$container")"
     info "Creating the encrypted container; hdiutil asks for the new password."
     hdiutil create -size 50g -type SPARSEBUNDLE -fs APFS -encryption AES-256 \
@@ -282,6 +291,8 @@ run_encrypt() {
     echo "  - its Codex conversations in $codex_shared: rollouts under sessions/ and archived_sessions/,"
     echo "    lines in history.jsonl and session_index.jsonl, rows in its state databases, and its"
     echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
+    echo "  - its Antigravity conversations in ~/.gemini/antigravity-cli: conversations/, brain/, history.jsonl,"
+    echo "    conversation_summaries.db and log/ (from now on agy keeps them in the vault, under .cs/private/antigravity-home)"
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
     echo "  - git history of anything committed before, and backups or snapshots"
 }
