@@ -220,7 +220,9 @@ records nothing.
   reopen named, a new one, or one picked with `/resume` before the first turn.
   Of the conversations the run meets later, one started with `/clear` or
   `/new` takes the session at its first model call
-  ([Rotation through /clear](#rotation-through-clear)), and one that held the
+  ([Rotation through /clear](#rotation-through-clear)), and so does one made
+  with `/fork` from the conversation holding the session ([Forks](#forks));
+  one that held the
   session earlier in the run takes it back when you return to it with
   `/resume` and type a prompt; a subagent's, or any other opened with
   `/resume` mid-run, has its own ID and leaves the binding alone.
@@ -494,6 +496,49 @@ timeline recorded the rotation with reason `handoff`, and the reply began by
 reading the handoff and appended its `## Successor report`. `agy`'s exit line
 named the new conversation, which the next `cs <name>` resumes.
 
+### Forks
+
+`/fork` copies the conversation you are in and switches to the copy (`Forked
+conversation. To go back, use: /resume <id>`). Fork the conversation that
+holds the session and type into the copy, and the copy takes the session at
+that prompt's first model call: the binding, the mail and the next
+`cs <name>` follow it, and `session.log` and the timeline record the move
+with source and reason `fork`. A `/resume` back to the conversation you forked
+from takes the session back, as after a `/clear`. A fork carries the whole
+conversation it came from, so an armed handoff is not spent there; it stays
+armed for the next `/clear`.
+
+`agy` gives the hooks no sign of a fork: on 1.5.12 a `/fork` fires no
+SessionStart, and neither its payloads nor `agy`'s conversation index name the
+conversation it came from. cs reads that from `agy`'s prompt history,
+`~/.gemini/antigravity-cli/history.jsonl` (the vault home's in an encrypted
+session). Among the lines of the session's folder, the last must be the prompt
+just typed into the new conversation, and the one before it, past slash
+commands typed in the copy itself, a `/fork` typed in the conversation holding
+the session. The `/clear` route's own conditions hold too: a run that takes
+that route, a typed prompt, the conversation's first model call in the run.
+A fork of another conversation, a `/fork` into another project, a fork you
+left and came back to with `/resume`, and a history that is missing, a link,
+or written some other way leave the binding where it is. A `/btw` side
+question fires the hooks under an ID of its own but writes no prompt of its
+own to the history, so it never takes the session; neither does a subagent's
+conversation.
+
+In an encrypted session the history sits in the vault home, inside the
+session folder, which the agent can write: a line it plants there can move
+the session to a conversation you typed into, and nothing more. In any other
+session it sits in your `~/.gemini`, outside the session folder.
+
+Checked on 2026-11-19 against `agy` 1.5.12, in one interactive run through cs
+(a scratch session, the TUI in a private tmux server, a temporary logging
+plugin removed afterwards): a first prompt, a `/btw`, `/fork` and a prompt in
+the copy, then `/resume` back. The copy fired PreInvocation (the typed prompt,
+`invocationNum` 0, `initialNumSteps` 3), PostInvocation and Stop; the history
+held `/fork` under the original conversation's ID, then the copy's prompt
+under its own, written before its first model call. The `/btw` fired
+PreInvocation, PostInvocation and Stop with the side question as
+`lastUserInput`, no SessionStart, and no index row.
+
 The route and initial-prompt flag were checked against agy 1.4.12's help,
 embedded exit documentation, and the native command reference. Local
 regressions use fake agy with isolated state. A live model turn exercising
@@ -557,7 +602,8 @@ hook, as it does under Claude and Codex:
 - Only the session's own conversation, in the run that holds its lease, gets
   mail. One started mid-run with `/clear` or `/new` becomes the session's at
   its first model call, before the digest is read, so the mail follows it
-  ([Rotation through /clear](#rotation-through-clear)). One that held the
+  ([Rotation through /clear](#rotation-through-clear)), and so does one made
+  with `/fork` from the session's conversation ([Forks](#forks)). One that held the
   session earlier in the run and that you return to with `/resume` takes it
   back at the first prompt typed into it, before the digest is read, so the
   mail follows it back. A subagent's conversation has an ID of its own, and
@@ -703,7 +749,7 @@ Skills that check before relying on a capability refuse cleanly
 | --- | --- |
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
-| Mail and the binding in a conversation the run never bound, opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear` and `/new` do move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
+| Mail and the binding in a conversation the run never bound, opened with `/resume` after the first turn | Neither the digest nor the wake: the session stays bound to its conversation, as under Codex. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail)). `/clear`, `/new` and a `/fork` of the session's conversation do move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear), [Forks](#forks)). |
 | An automatic `/clear` after a rotation | Codex gets one (cs types `/clear` and `go`); under Antigravity you type them ([Rotation through /clear](#rotation-through-clear)). |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |

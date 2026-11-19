@@ -46,9 +46,21 @@ setup() {
     # AGY_CLEARED_INVOCATION sets that PreInvocation's invocationNum instead
     # of 0, and AGY_DROP_CLEARED_SEEN removes the run's seen mark for it once
     # its hooks have run, as a run directory that lost the mark would read.
+    # AGY_FORKED names one /fork started after that, from the conversation
+    # AGY_FORKED_FROM names (by default the one holding the session by then:
+    # AGY_CLEARED's, else the run's own). As agy 1.5.12 was measured to, its
+    # history.jsonl gets "/fork" as a slash command typed in that conversation
+    # and then the prompt typed into the fork (AGY_FORKED_PROMPT, "go"), and
+    # the fork gets PreInvocation (invocationNum AGY_FORKED_INVOCATION, 0) with
+    # the parent's steps in its trajectory, and Stop, but no SessionStart; its
+    # answers go to AGY_HOOK_OUT.forked. AGY_FORK_HISTORY changes what the
+    # history holds: none, nothing; between, a "/resume" typed in the parent
+    # between the two lines; mine, a "/model" typed in the fork between them;
+    # elsewhere, another workspace's prompt between them; linked, both lines in
+    # a file history.jsonl is a link to.
     # AGY_RESUMED names one opened with /resume after that, which gets
     # PreInvocation 0 and Stop but no SessionStart, its answers in
-    # AGY_HOOK_OUT.resumed. AGY_EARLY names one that gets a typed
+    # AGY_HOOK_OUT.resumed; a list names several, opened in turn. AGY_EARLY names one that gets a typed
     # SessionStart before the run's first conversation fires anything, and
     # no model call. A run left before any turn (AGY_NO_TURN) fires none.
     # Hook stdout goes to AGY_HOOK_OUT.
@@ -148,7 +160,17 @@ payload() {  # id, [extra JSON]
     local extra="${2:-}"
     [ -n "$extra" ] || extra='{}'
     jq -nc --arg id "$1" --arg ws "$(pwd -P)" --arg prompt "${AGY_PROMPT-go}" --argjson extra "$extra" \
-        '{conversationId: $id, workspacePaths: [$ws], modelName: "fake", lastUserInput: $prompt} + $extra'
+        '{conversationId: $id, cwd: $ws, workspacePaths: [$ws], modelName: "fake", lastUserInput: $prompt} + $extra'
+}
+# A line of agy's history.jsonl: a prompt with the conversation it went to,
+# or a slash command (type slash_command) with the one it was typed in, each
+# with the folder agy runs in (workspace, the payload's cwd).
+hist() {  # conversation, display, [type], [workspace], [file]
+    local file="${5:-$HOME/.gemini/antigravity-cli/history.jsonl}"
+    mkdir -p "${file%/*}"
+    jq -nc --arg d "$2" --arg c "$1" --arg t "${3:-}" --arg w "${4:-$(pwd -P)}" \
+        '{display: $d, timestamp: 1795101284411, workspace: $w, conversationId: $c}
+         + (if $t == "" then {} else {type: $t} end)' >> "$file"
 }
 # A subagent's payload: no prompt typed into it.
 subpayload() {  # id, [extra JSON]
@@ -242,11 +264,36 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
         hook_out="$AGY_HOOK_OUT"
         [ -z "${AGY_DROP_CLEARED_SEEN:-}" ] || rm -f "$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID/seen-$AGY_CLEARED"
     fi
+    if [ -n "${AGY_FORKED:-}" ]; then
+        hook_out="$AGY_HOOK_OUT.forked"
+        parent="${AGY_FORKED_FROM:-${AGY_CLEARED:-$conversation}}"
+        history="$HOME/.gemini/antigravity-cli/history.jsonl" lines="$history"
+        if [ "${AGY_FORK_HISTORY:-}" = linked ]; then
+            lines="$AGY_HOOK_OUT.linked-history"
+            mkdir -p "${history%/*}" && ln -sfn "$lines" "$history"
+        fi
+        if [ "${AGY_FORK_HISTORY:-}" != none ]; then
+            hist "$parent" /fork slash_command "" "$lines"
+            case "${AGY_FORK_HISTORY:-}" in
+                between) hist "$parent" "/resume $AGY_FORKED" slash_command "" "$lines" ;;
+                mine) hist "$AGY_FORKED" /model slash_command "" "$lines" ;;
+                elsewhere) hist 99999999-9999-4999-8999-999999999999 'another folder' "" /elsewhere "$lines" ;;
+            esac
+            hist "$AGY_FORKED" "${AGY_FORKED_PROMPT-go}" "" "" "$lines"
+        fi
+        extra=$(printf '{"invocationNum": %s, "initialNumSteps": 3}' "${AGY_FORKED_INVOCATION:-0}")
+        fire PreInvocation "$(AGY_PROMPT="${AGY_FORKED_PROMPT-go}" payload "$AGY_FORKED" "$extra")"
+        fire Stop "$(AGY_PROMPT="${AGY_FORKED_PROMPT-go}" payload "$AGY_FORKED" \
+            '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "error": "", "fullyIdle": true, "continuationActive": false}')"
+        hook_out="$AGY_HOOK_OUT"
+    fi
     if [ -n "${AGY_RESUMED:-}" ]; then
         hook_out="$AGY_HOOK_OUT.resumed"
-        fire PreInvocation "$(payload "$AGY_RESUMED" '{"invocationNum": 0, "initialNumSteps": 7}')"
-        fire Stop "$(payload "$AGY_RESUMED" \
-            '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "error": "", "fullyIdle": true, "continuationActive": false}')"
+        for resumed in $AGY_RESUMED; do
+            fire PreInvocation "$(payload "$resumed" '{"invocationNum": 0, "initialNumSteps": 7}')"
+            fire Stop "$(payload "$resumed" \
+                '{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "error": "", "fullyIdle": true, "continuationActive": false}')"
+        done
         hook_out="$AGY_HOOK_OUT"
     fi
 fi
@@ -271,6 +318,7 @@ AGY
     export PATH="$TEST_TMPDIR/bin:$clean"
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA AGY_VERSION CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
+    unset AGY_FORKED AGY_FORKED_FROM AGY_FORKED_PROMPT AGY_FORKED_INVOCATION AGY_FORK_HISTORY
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
     _install_agy_hook
@@ -289,6 +337,7 @@ teardown() {
     unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
+    unset AGY_FORKED AGY_FORKED_FROM AGY_FORKED_PROMPT AGY_FORKED_INVOCATION AGY_FORK_HISTORY
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
@@ -2542,6 +2591,109 @@ test_a_conversation_the_run_never_bound_keeps_off_on_resume() {
         "and no rebind is logged"
 }
 
+# A conversation /fork started fires no SessionStart and its payloads name no
+# parent (agy 1.5.12): what marks it is agy's history.jsonl, where the "/fork"
+# typed in the conversation holding the session comes right before the fork's
+# first prompt, in the same folder. Typed into, the fork takes the session as
+# a conversation /clear started does: the binding, the unread mail and the
+# next open follow it, and its start and the move are recorded as a fork.
+test_a_conversation_started_with_fork_takes_the_session() {
+    local output dir mail forked=44444444-4444-4444-8444-444444444444
+    output=$("$CS_BIN" forking --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir forking)
+    mail=$(_mailbox forking)
+    _mail_doc "$mail/new/f1.json" peer 'for the forked conversation'
+    rm -f "$AGY_HOOK_OUT.forked"
+    output=$(AGY_FORKED=$forked AGY_STOP_REASON=USER_CANCELED "$CS_BIN" forking 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$forked" "$(_binding forking)" "the binding moves to the fork" || return 1
+    assert_file_contains "$dir/.cs/local/session.log" "Rebound antigravity conversation: $AGY_NEW_ID -> $forked" || return 1
+    assert_eq 1 "$(grep -c -F "Session started (source: fork, ID: $forked)" "$dir/.cs/local/session.log")" \
+        "its start is logged once, as a fork" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$AGY_NEW_ID\",\"to\":\"$forked\",\"reason\":\"fork\"" "the move is on the timeline as a fork" || return 1
+    assert_eq 1 "$(_injected_in "$AGY_HOOK_OUT.forked" | grep -c 'for the forked conversation')" \
+        "the fork's first prompt shows the unread mail" || return 1
+    output=$("$CS_BIN" forking 2>&1) || { echo "$output"; return 1; }
+    assert_eq "--conversation $forked" "$(_agy_argv)" "the next open resumes the fork"
+}
+
+# A fork carries its parent's whole conversation, so the rotation /cs:rotate
+# armed is not spent there: the fork's first model call is handed nothing,
+# and the handoff and its marker stay armed for a /clear.
+test_a_fork_leaves_an_armed_rotation_armed() {
+    local output dir forked=44444444-4444-4444-8444-444444444444 name=2026-11-19-rotate.md
+    output=$("$CS_BIN" forkarmed --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir forkarmed)
+    rm -f "$AGY_HOOK_OUT.forked"
+    output=$(AGY_ARM=$name AGY_FORKED=$forked "$CS_BIN" forkarmed 2>&1) || { echo "$output"; return 1; }
+    assert_eq "$forked" "$(_binding forkarmed)" "the fork takes the session" || return 1
+    assert_eq unconsumed "$(_handoff_status forkarmed "$name")" "but not the armed handoff" || return 1
+    assert_file_exists "$dir/.cs/local/pending-handoff" "whose marker stays" || return 1
+    assert_eq "" "$(grep -v -x -F '{}' "$AGY_HOOK_OUT.forked")" "and every hook in the fork answers {}"
+}
+
+# Only what agy recorded for a fork of the conversation holding the session
+# moves it. Each first variant leaves the binding on the run's own
+# conversation: no history, a "/resume" in the parent between the "/fork" and
+# the prompt (a fork left and come back to), a history that is a link, a
+# "/fork" typed in another conversation, an untyped first call, a fork first
+# weighed past its first call, and an agy older than the rebind was measured
+# on. Lines of another folder between them, and a slash command typed in the
+# fork before its first prompt, do not hide the "/fork".
+test_a_fork_takes_the_session_only_where_agy_recorded_one() {
+    local output forked=44444444-4444-4444-8444-444444444444 other=88888888-8888-4888-8888-888888888888 variant
+    output=$("$CS_BIN" forkguard --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    for variant in none between linked parent untyped later old; do
+        rm -f "$HOME/.gemini/antigravity-cli/history.jsonl"
+        case "$variant" in
+            none | between | linked)
+                output=$(AGY_FORK_HISTORY=$variant AGY_FORKED=$forked "$CS_BIN" forkguard --fresh 2>&1) ;;
+            parent) output=$(AGY_FORKED_FROM=$other AGY_FORKED=$forked "$CS_BIN" forkguard --fresh 2>&1) ;;
+            untyped) output=$(AGY_FORKED_PROMPT='' AGY_FORKED=$forked "$CS_BIN" forkguard --fresh 2>&1) ;;
+            later) output=$(AGY_FORKED_INVOCATION=1 AGY_FORKED=$forked "$CS_BIN" forkguard --fresh 2>&1) ;;
+            old) output=$(AGY_VERSION=1.5.9 AGY_FORKED=$forked "$CS_BIN" forkguard --fresh 2>&1) ;;
+        esac || { echo "$output"; return 1; }
+        assert_eq "$AGY_NEW_ID" "$(_binding forkguard)" "a fork with '$variant' leaves the binding" || return 1
+    done
+    for variant in elsewhere mine; do
+        rm -f "$HOME/.gemini/antigravity-cli/history.jsonl"
+        output=$(AGY_FORK_HISTORY=$variant AGY_FORKED=$forked "$CS_BIN" forkguard --fresh 2>&1) \
+            || { echo "$output"; return 1; }
+        assert_eq "$forked" "$(_binding forkguard)" "a fork with '$variant' lines takes it" || return 1
+    done
+}
+
+# A fork of the conversation /clear started takes the session from it; the
+# /resume back to that conversation, which held the session earlier in the
+# run, takes it back, and a /resume to the fork again takes it once more,
+# since the fork held it too.
+test_a_fork_after_clear_and_the_resumes_back_and_forth() {
+    local output dir forked=44444444-4444-4444-8444-444444444444 cleared=77777777-7777-4777-8777-777777777777
+    output=$("$CS_BIN" forkback --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    dir=$(_session_dir forkback)
+    output=$(AGY_CLEARED=$cleared AGY_FORKED=$forked AGY_RESUMED="$cleared $forked" "$CS_BIN" forkback 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$cleared\",\"to\":\"$forked\",\"reason\":\"fork\"" "the fork took the session from the cleared one" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$forked\",\"to\":\"$cleared\",\"reason\":\"rebind\"" "the resume took it back" || return 1
+    assert_file_contains "$dir/.cs/timeline.jsonl" \
+        "\"from\":\"$cleared\",\"to\":\"$forked\",\"reason\":\"rebind\"" "and the resume to the fork took it again" || return 1
+    assert_eq "$forked" "$(_binding forkback)" "where it stays"
+}
+
+# In an encrypted session agy's history is the vault home's, read there: a
+# fork takes the session as in any other, and nothing is written in the
+# user's own agy home.
+test_a_fork_in_an_encrypted_session_takes_the_session() {
+    local output forked=44444444-4444-4444-8444-444444444444
+    output=$(AGY_NO_TURN=1 "$CS_BIN" vfork --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    _vault_session vfork
+    output=$(AGY_FORKED=$forked "$CS_BIN" vfork --fresh 2>&1) || { echo "  FAIL: $output"; return 1; }
+    assert_eq "$forked" "$(_binding vfork)" "the fork takes the session" || return 1
+    assert_not_exists "$HOME/.gemini/antigravity-cli/history.jsonl" "the history it read was the vault's"
+}
+
 # The /clear rebind stands on payloads measured on agy 1.5.10 and on cs's
 # SessionStart entry. An older agy, or a plugin installed before that entry,
 # keeps the binding with the run's first conversation and the rotation armed
@@ -3363,6 +3515,11 @@ run_test test_a_subagent_never_takes_the_binding_or_an_armed_handoff
 run_test test_a_conversation_opened_with_resume_keeps_the_binding
 run_test test_a_conversation_resumed_after_clear_takes_the_session_back
 run_test test_a_conversation_the_run_never_bound_keeps_off_on_resume
+run_test test_a_conversation_started_with_fork_takes_the_session
+run_test test_a_fork_leaves_an_armed_rotation_armed
+run_test test_a_fork_takes_the_session_only_where_agy_recorded_one
+run_test test_a_fork_after_clear_and_the_resumes_back_and_forth
+run_test test_a_fork_in_an_encrypted_session_takes_the_session
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
 run_test test_a_link_planted_at_the_new_conversation_mark_counts_for_nothing
 run_test test_a_clear_in_a_session_with_a_planted_vault_changes_nothing
