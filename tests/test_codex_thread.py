@@ -825,6 +825,15 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.text_of(records[1]), "[agent message]\n```\n" + short + "\n```")
+        # An image's mark is cs's word, so it follows the fence.
+        self.write_rollout([rollout_line("response_item", codex_message("user", "start the worker")),
+                            rollout_line("response_item", {
+                                "type": "agent_message", "id": "am_1", "author": "/root/worker", "recipient": "/root",
+                                "content": [{"type": "input_text", "text": short},
+                                            {"type": "input_image", "image_url": "data:"}]})])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]), "[agent message]\n```\n" + short + "\n```\n[image]")
 
     def test_codex_tool_calls_and_results_cross_as_written(self):
         # Claude Code's transcript renders an agent message as markdown, as
