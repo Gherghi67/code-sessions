@@ -90,7 +90,7 @@ for line in sys.stdin:
                     item = dict(item, type='userMessage')
                 elif item['type'] == 'CommandExecution':
                     item = {'type':'commandExecution','id':item['id'],'status':item['status'],
-                            'aggregatedOutput':item['aggregated_output'],'exitCode':item['exit_code'],
+                            'aggregatedOutput':item['aggregated_output'] or None,'exitCode':item['exit_code'],
                             'commandActions':[{'type':'unknown','command':item['command'][-1]}]}
                 elif item['type'] == 'McpToolCall':
                     item = dict(item, type='mcpToolCall')
@@ -1839,6 +1839,47 @@ class TransplantTests(HelperFixture):
         self.assertEqual(rows[4]['tool'], 'Grep')
         self.assertEqual(rows[4]['result']['content'][0]['text'], 'MARK-07 grep hit')
         self.assertNotIn('[tool call:', str([r for r in rows if r['type'] == 'AgentMessage']))
+
+    def test_failed_and_empty_claude_rows_round_trip(self):
+        # Codex hands an empty command output back as null; the carry must still verify.
+        executable = os.environ.get('CS_CODEX_REAL_BIN', str(self.fake))
+        path = self.root / (CLAUDE_ID + '.jsonl')
+        calls = [{'type': 'tool_use', 'name': 'Bash', 'id': 'c%d' % n, 'input': {'command': 'step %d' % n}}
+                 for n in range(5)]
+        calls += [{'type': 'tool_use', 'name': 'mcp__server__lookup', 'id': 'c5', 'input': {'key': 'k'}},
+                  {'type': 'tool_use', 'name': 'Read', 'id': 'c6', 'input': {'file_path': 'empty.txt'}}]
+        results = [
+            {'type': 'tool_result', 'tool_use_id': 'c0', 'content': ''},
+            {'type': 'tool_result', 'tool_use_id': 'c1', 'content': '  \n'},
+            {'type': 'tool_result', 'tool_use_id': 'c2', 'is_error': True,
+             'content': '<system-reminder>x</system-reminder>'},
+            {'type': 'tool_result', 'tool_use_id': 'c3', 'is_error': True, 'content': 'Exit code 2\nmissing'},
+            {'type': 'tool_result', 'tool_use_id': 'c4', 'is_error': True, 'content': 'Exit code 127\nnot found'},
+            {'type': 'tool_result', 'tool_use_id': 'c5', 'is_error': True, 'content': 'unavailable'},
+            {'type': 'tool_result', 'tool_use_id': 'c6', 'content': ''},
+        ]
+        path.write_text('\n'.join([claude_record('user', 'go', '1', None),
+                                   claude_record('assistant', calls, '2', '1'),
+                                   claude_record('user', results, '3', '2'),
+                                   claude_record('assistant', [{'type': 'text', 'text': 'Done.'}], '4', '3')]) + '\n')
+        result = subprocess.run([
+            sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
+            '--instructions-file', str(self.instructions), '--history-from-claude', str(path),
+        ], env=self.env, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        events = [json.loads(line)['payload'] for line in rollout.read_text().splitlines()]
+        rows = [e['item'] for e in events if e.get('type') == 'item_completed']
+        self.assertEqual([row['type'] for row in rows], ['UserMessage'] + ['CommandExecution'] * 5 + [
+            'McpToolCall', 'McpToolCall', 'AgentMessage'])
+        commands = rows[1:6]
+        self.assertEqual([(r['aggregated_output'], r['exit_code'], r['status']) for r in commands], [
+            ('', None, 'completed'), ('', None, 'completed'), ('', None, 'failed'),
+            ('Exit code 2\nmissing', 2, 'failed'), ('Exit code 127\nnot found', 127, 'failed')])
+        lookup, read = rows[6:8]
+        self.assertEqual((lookup['server'], lookup['tool'], lookup['status']), ('server', 'lookup', 'failed'))
+        self.assertEqual((read['server'], read['tool'], read['status']), ('claude', 'Read', 'completed'))
+        self.assertEqual(read['result']['content'][0]['text'], '')
 
     def test_failed_and_unmatched_claude_calls_in_the_transcript(self):
         path = self.root / (CLAUDE_ID + '.jsonl')

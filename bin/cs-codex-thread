@@ -1194,6 +1194,10 @@ def native_arguments(value, depth=0):
 
 
 def native_tool_item(call, result, cwd):
+    """A paired Claude call as a native Codex row, spelled as Codex's rollout stores it on disk:
+    PascalCase item types, snake_case aggregated_output, exit_code and parsed_cmd, and cwd as a
+    file:// URI, not the app-server's camelCase that same_display_item reads back.
+    Measured on Codex 0.169.0-alpha.11.1; CI runs the real-Codex cases on its pinned Codex."""
     name, args = call["name"], call["input"]
     status = "failed" if result["failed"] else "completed"
     item_id = str(uuid.uuid4())
@@ -1347,7 +1351,8 @@ def same_display_item(saved, item):
     if item.get("status") != saved["status"]:
         return False
     if kind == "CommandExecution":
-        return (item.get("aggregatedOutput") == saved["aggregated_output"] and
+        # Codex 0.169 hands back null for an empty output.
+        return ((item.get("aggregatedOutput") or "") == saved["aggregated_output"] and
                 item.get("exitCode") == saved["exit_code"] and
                 item.get("commandActions") == [{"type": "unknown", "command": saved["command"][-1]}])
     result = item.get("result")
