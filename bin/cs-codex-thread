@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import stat
@@ -238,6 +239,7 @@ CODEX_COMMAND_RESULT = frozenset((
 # Code mode's tools, whose output starts with how the script ended, then what it printed.
 CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell ID [^\n]*)\nWall time [^\n]*\nOutput:\n\Z")
 CODEX_CODE_MODE = frozenset(("exec", "wait"))
+CODEX_IMAGES = frozenset(("input_image", "output_image", "image"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 LEADING_BLANK_LINES = re.compile(r"\A\s*\n")
@@ -249,6 +251,8 @@ BACKTICKS = re.compile(r"`+")
 # fence's holds no backtick), and a closing one, indented up to three spaces.
 FENCE_OPEN = re.compile(r"(`{3,}|~{3,})(.*)")
 FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*\Z")
+# CommonMark's line endings.
+LINE_ENDING = re.compile(r"\r\n?|\n")
 # Levels of a tool input laid out as lines; deeper values cross as JSON, so a
 # nested input costs its own size plus at most two spaces a level a line.
 READABLE_DEPTH = 32
@@ -270,8 +274,10 @@ def open_block(text, closer=None):
     """The line that closes the block text leaves open, starting inside the
     block closer closes: a fence as long as the one that opened it, --> for
     an HTML comment, or None. Only blocks opened at the left margin count: a
-    list item's or a quote's block ends at the next line that starts there."""
-    for line in text.split("\n"):
+    list item's or a quote's block ends at the next line that starts there.
+    So an opener indented one to three spaces outside any list is not seen,
+    a limit kept: telling it from a list item's would mean following lists."""
+    for line in LINE_ENDING.split(text):
         if closer is None:
             opened = FENCE_OPEN.match(line)
             if line.startswith("<!--"):
@@ -330,21 +336,9 @@ def cut_note(text, limit):
     return "\n[cs cut the remaining {:,} characters]".format(len(text) - limit) if len(text) > limit else ""
 
 
-def clipped(text, limit):
-    return text[:limit] + cut_note(text, limit)
-
-
-def tool_call(name, body):
-    if body is None:
-        body = ""
-    elif not isinstance(body, str):
-        body = json.dumps(body, ensure_ascii=False)
-    label = name if isinstance(name, str) and name else "tool"
-    return ("[tool call: " + label + "]\n" + body).rstrip()
-
-
-def tool_result(text, limit, failed=False):
-    return ("[tool error]\n" if failed else "[tool result]\n") + clipped(text, limit)
+def trimmed(text):
+    # Blank lines around a tool's text go, but not the first line's indent: a fence shows it.
+    return LEADING_BLANK_LINES.sub("", text).rstrip()
 
 
 def history_stats(messages):
@@ -387,9 +381,23 @@ def codex_texts(content):
             continue
         if isinstance(part.get("text"), str):
             texts.append(part["text"])
-        elif part.get("type") in ("input_image", "output_image", "image"):
+        elif part.get("type") in CODEX_IMAGES:
             texts.append("[image]")
     return texts
+
+
+def codex_result_texts(content):
+    # A tool result's or a sub-agent answer's text parts, and how many images
+    # it held: an image's mark is cs's word, so it follows the fence.
+    texts, images = [], 0
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str):
+            texts.append(part["text"])
+        elif part.get("type") in CODEX_IMAGES:
+            images += 1
+    return texts, images
 
 
 def codex_injected(text):
@@ -566,25 +574,44 @@ def codex_script_output(texts):
 
 
 def codex_output(output, code_mode, limit):
+    """A tool's output as text, and how many images it held."""
     if isinstance(output, str):
-        return output
+        return output, 0
     if isinstance(output, list):
-        texts = codex_texts(output)
+        texts, images = codex_result_texts(output)
         if code_mode and texts and CODEX_SCRIPT_HEADER.match(texts[0]):
             # A script printing a command's stdout that is itself a result-shaped object is still
             # converted: nothing tells it apart from text(result).
             printed, statuses = codex_script_output(texts[1:])
             text = "\n".join(texts[:1] + printed)
-            if len(statuses) > 1 and limit and len(text) > limit:
-                # The cut could hide a later result's head, and its failure: every status comes first.
+            if len(statuses) > 1 and limit and len(trimmed(text)) > limit:
+                # The cut, made on the trimmed text, could hide a later result's head, and its
+                # failure: every status comes first.
                 index = "[results: " + "; ".join("output {}".format(number) + (", " + status if status else "")
                                                  for number, status in enumerate(statuses, 1)) + "]\n"
                 text = "\n".join(texts[:1] + [index] + printed)
-            return text
-        return "\n".join(texts)
+            return text, images
+        return "\n".join(texts), images
     if isinstance(output, dict) and isinstance(output.get("content"), (str, list)):
         return codex_output(output["content"], code_mode, limit)
-    return "" if output is None else json.dumps(output, ensure_ascii=False)
+    return ("" if output is None else json.dumps(output, ensure_ascii=False)), 0
+
+
+def codex_function_call(name, arguments):
+    # A function call's arguments are a JSON object in a string, laid out as
+    # Claude's input is. Arguments that read as no object or list, that
+    # repeat a key (the layout would keep one value) or that the layout
+    # cannot reach cross as written, under a head that says so: written, they
+    # could read as other arguments laid out.
+    value = arguments
+    if isinstance(arguments, str):
+        try:
+            value = json.loads(arguments, object_pairs_hook=unique_keys)
+        except (ValueError, RecursionError):
+            value = None
+    if isinstance(value, (dict, list)):
+        return tool_call(name, value, arguments if isinstance(arguments, str) else None)
+    return text_call(name, arguments, "arguments as written")
 
 
 def codex_item(history, item, timestamp, limit):
@@ -594,6 +621,8 @@ def codex_item(history, item, timestamp, limit):
     if kind in ("function_call", "custom_tool_call") and isinstance(item.get("call_id"), str) \
             and isinstance(item.get("name"), str):
         history.calls[item["call_id"]] = item["name"]
+    # Claude Code renders a carried agent message as markdown, so each tool
+    # part is closed: a block the agent's text left open ends before it.
     if kind == "message":
         texts = codex_texts(item.get("content"))
         if item.get("role") == "user":
@@ -603,32 +632,38 @@ def codex_item(history, item, timestamp, limit):
             history.add("assistant", "\n\n".join(texts), timestamp)
         # Developer and system messages are Codex's own instructions.
     elif kind == "function_call":
-        history.add("assistant", tool_call(item.get("name"), item.get("arguments")), timestamp)
+        history.add("assistant", codex_function_call(item.get("name"), item.get("arguments")), timestamp,
+                    closed=True)
     elif kind == "custom_tool_call":
-        history.add("assistant", tool_call(item.get("name"), item.get("input")), timestamp)
+        history.add("assistant", text_call(item.get("name"), item.get("input")), timestamp, closed=True)
     elif kind in ("function_call_output", "custom_tool_call_output"):
         # Codex records no failure flag: a failed call's output says so itself.
         call_id = item.get("call_id")
         code_mode = isinstance(call_id, str) and history.calls.get(call_id) in CODEX_CODE_MODE
-        history.add("assistant", tool_result(codex_output(item.get("output"), code_mode, limit), limit), timestamp)
+        text, images = codex_output(item.get("output"), code_mode, limit)
+        history.add("assistant", tool_result(trimmed(text), images, limit), timestamp, closed=True)
     elif kind == "local_shell_call":
         action = item.get("action")
         command = action.get("command") if isinstance(action, dict) else None
         if isinstance(command, list):
-            command = " ".join(str(word) for word in command)
-        history.add("assistant", tool_call("shell", command if isinstance(command, str) else None), timestamp)
+            # Quoted as a shell would, so each word reads back as itself.
+            command = shlex.join(str(word) for word in command)
+        history.add("assistant", text_call("shell", command if isinstance(command, str) else None), timestamp,
+                    closed=True)
     elif kind == "web_search_call":
         action = item.get("action")
         query = action.get("query") if isinstance(action, dict) else None
-        history.add("assistant", tool_call("web_search", query if isinstance(query, str) else None), timestamp)
+        history.add("assistant", text_call("web_search", query if isinstance(query, str) else None), timestamp,
+                    closed=True)
     elif kind == "agent_message":
         # A sub-agent's final answer is plain text under a short header. Its
         # other messages hold only that header; their payload is encrypted.
         content = item.get("content") if isinstance(item.get("content"), list) else []
-        texts = codex_texts(content)
+        texts, images = codex_result_texts(content)
         encrypted = any(isinstance(part, dict) and part.get("type") == "encrypted_content" for part in content)
         if texts and texts[0].startswith(CODEX_FINAL_ANSWER) and not encrypted:
-            history.add("assistant", "[agent message]\n" + clipped("\n".join(texts), limit), timestamp)
+            answer = fenced_text("[agent message]", trimmed("\n".join(texts)), limit) + "\n[image]" * images
+            history.add("assistant", answer, timestamp, closed=True)
     # Reasoning and the other sub-agent messages (encrypted), tool lists and
     # item kinds not known here stay behind.
 
@@ -733,21 +768,35 @@ def claude_result_text(content):
     parts, images = [], 0
     for block in claude_blocks(content):
         if block.get("type") == "text" and isinstance(block.get("text"), str):
-            # Blank lines go, but not the first line's indent: a fence shows it.
-            parts.append(LEADING_BLANK_LINES.sub("", SYSTEM_REMINDER.sub("", block["text"])).rstrip())
+            parts.append(trimmed(SYSTEM_REMINDER.sub("", block["text"])))
         elif block.get("type") == "image":
             images += 1
     return "\n".join(part for part in parts if part), images
 
 
 def fenced(text):
-    # Codex's transcript renders an agent message as markdown: a result's
-    # "# " lines turn into headings, "- " lines into bullets, and "\\" loses
-    # a backslash. A code fence shows its text as written. A fence closes at
-    # a run of backticks as long as it, so it outruns every run inside.
+    # Each engine's transcript renders a carried agent message as markdown: a
+    # result's "# " lines turn into headings, "- " lines into bullets, and
+    # "\\" loses a backslash. A code fence shows its text as written. A fence
+    # closes at a run of backticks as long as it, so it outruns every run inside.
     longest = max((len(run) for run in BACKTICKS.findall(text)), default=0)
     fence = "`" * max(3, longest + 1)
     return fence + "\n" + text + "\n" + fence
+
+
+def fenced_text(head, text, limit=None):
+    # A tool part: its head, then its text in a fence, cut to limit when one
+    # is given. The cut note is cs's, so it follows the fence.
+    if not text:
+        return head
+    if limit is None:
+        return head + "\n" + fenced(text)
+    return head + "\n" + fenced(text[:limit]) + cut_note(text, limit)
+
+
+def tool_head(name, note=None):
+    label = name if isinstance(name, str) and name else "tool"
+    return "[tool call: " + label + (", " + note if note else "") + "]"
 
 
 def bare(text):
@@ -816,27 +865,41 @@ def readable_lines(value):
     return [one_line(value)]
 
 
-def claude_tool_call(name, value):
-    # Claude's tool input is a JSON object. Written as JSON, a multi-line
-    # command or edit shows as one line of literal \n in Codex's transcript.
-    label = name if isinstance(name, str) and name else "tool"
-    head = "[tool call: " + label + "]"
+def tool_call(name, value, written=None):
+    # A tool input that is JSON: Claude's, or a Codex function call's
+    # arguments, with written the text they were read from. Written as JSON,
+    # a multi-line command or edit shows as one line of literal \n in the
+    # other engine's transcript.
+    head = tool_head(name)
     if value is None or value in ({}, "", []):
         return head
     try:
         body = "\n".join(readable_lines(value))
     except RecursionError:
-        # json.loads read it, so only json.dumps from a deeper stack gets here.
+        # json.loads read it, so only json.dumps from a deeper stack gets
+        # here. Text at hand crosses as written; Claude's input has none.
+        if written is not None:
+            return text_call(name, written, "arguments as written")
         return head + "\n[cs left out this input: it is nested too deeply to show]"
     return head + "\n" + fenced(body)
 
 
-def claude_tool_result(text, images, limit, failed=False):
-    # The cut note and the image markers are cs's, so they follow the fence.
-    head = "[tool error]" if failed else "[tool result]"
-    if text:
-        head += "\n" + fenced(text[:limit]) + cut_note(text, limit)
-    return head + "\n[image]" * images
+def text_call(name, text, note=None):
+    # A tool input that is text: a Codex custom tool's (a code mode script,
+    # a patch), a shell command, a search. It crosses as written, less the
+    # blank lines before it and the whitespace after it; a note goes in the
+    # head when there is text.
+    if text is None:
+        text = ""
+    elif not isinstance(text, str):
+        text = json.dumps(text, ensure_ascii=False)
+    text = trimmed(text)
+    return fenced_text(tool_head(name, note if text else None), text)
+
+
+def tool_result(text, images, limit, failed=False):
+    # The image marks are cs's, like the cut note, so they follow the fence.
+    return fenced_text("[tool error]" if failed else "[tool result]", text, limit) + "\n[image]" * images
 
 
 def claude_user_text(text):
@@ -929,8 +992,8 @@ def read_claude(path, limit):
                 if kind == "text" and isinstance(block.get("text"), str):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
-                    history.add("assistant", claude_tool_result(*claude_result_text(block.get("content")), limit,
-                                                                failed=block.get("is_error") is True),
+                    history.add("assistant", tool_result(*claude_result_text(block.get("content")), limit,
+                                                         failed=block.get("is_error") is True),
                                 stamp, closed=True)
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
@@ -938,8 +1001,7 @@ def read_claude(path, limit):
                 if kind == "text":
                     history.add("assistant", block.get("text"), stamp)
                 elif kind == "tool_use":
-                    history.add("assistant", claude_tool_call(block.get("name"), block.get("input")), stamp,
-                                closed=True)
+                    history.add("assistant", tool_call(block.get("name"), block.get("input")), stamp, closed=True)
                 # Thinking is signed for the model that wrote it and stays behind.
     return history.export()
 

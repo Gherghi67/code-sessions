@@ -683,6 +683,21 @@ class TransplantTests(HelperFixture):
         content = record["message"]["content"]
         return content if isinstance(content, str) else content[0]["text"]
 
+    @staticmethod
+    def unfenced(text):
+        # A carried tool result's text, its fence taken off; cs's cut note
+        # after the fence stays.
+        fence = re.match(r"`{3,}\n", text)
+        if not fence:
+            return text
+        mark = fence.group(0)[:-1]
+        end = text.index("\n" + mark, len(mark))
+        return text[len(mark) + 1:end] + text[end + 1 + len(mark):]
+
+    def results(self, agent):
+        # Each tool result in an agent message, whole and unfenced, in order.
+        return [self.unfenced(call.split("\n\n[tool result]\n", 1)[1]) for call in agent.split("\n\n[tool call: ")]
+
     def sample_rollout(self):
         return [
             rollout_line("session_meta", {"id": THREAD_ID, "cwd": "/x"}),
@@ -737,11 +752,11 @@ class TransplantTests(HelperFixture):
         self.assertTrue(first.endswith("what is the codename?"))
         agent = self.text_of(records[1])
         self.assertIn("Checking the notes.", agent)
-        self.assertIn("[tool call: exec]\ncat notes.txt", agent)
-        self.assertIn("[tool result]\nAMBER-FALCON " + "x" * (4000 - len("AMBER-FALCON ")), agent)
-        self.assertIn("[cs cut the remaining 1,013 characters]", agent)
-        self.assertIn('[tool call: shell]\n{"cmd": "ls"}', agent)
-        self.assertIn("[tool result]\nnotes.txt", agent)
+        self.assertIn("[tool call: exec]\n```\ncat notes.txt\n```", agent)
+        self.assertIn("[tool result]\n```\nAMBER-FALCON " + "x" * (4000 - len("AMBER-FALCON "))
+                      + "\n```\n[cs cut the remaining 1,013 characters]", agent)
+        self.assertIn('[tool call: shell]\n```\ncmd: ls\n```', agent)
+        self.assertIn("[tool result]\n```\nnotes.txt\n```", agent)
         self.assertIn("The codename is AMBER-FALCON.", agent)
         self.assertEqual(self.text_of(records[2]), "$wrap")
         whole = json.dumps(records)
@@ -799,10 +814,196 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        self.assertIn("[agent message]\n" + answer[:4000] + "\n[cs cut the remaining", agent)
+        self.assertIn("[agent message]\n```\n" + answer[:4000] + "\n```\n[cs cut the remaining", agent)
         self.assertTrue(agent.endswith("Done."))
         for absent in ("NEW_TASK", "ENCRYPTED TASK"):
             self.assertNotIn(absent, json.dumps(records))
+        # Blank lines and spaces at its end go, as a result's do.
+        short = "Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker\nPayload:\nSHORT"
+        self.write_rollout([rollout_line("response_item", codex_message("user", "start the worker")),
+                            agent_message(short + "  \n\n \n")])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]), "[agent message]\n```\n" + short + "\n```")
+        # An image's mark is cs's word, so it follows the fence.
+        self.write_rollout([rollout_line("response_item", codex_message("user", "start the worker")),
+                            rollout_line("response_item", {
+                                "type": "agent_message", "id": "am_1", "author": "/root/worker", "recipient": "/root",
+                                "content": [{"type": "input_text", "text": short},
+                                            {"type": "input_image", "image_url": "data:"}]})])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]), "[agent message]\n```\n" + short + "\n```\n[image]")
+
+    def test_codex_tool_calls_and_results_cross_as_written(self):
+        # Claude Code's transcript renders an agent message as markdown, as
+        # Codex's does. A function call's arguments carried as JSON showed a
+        # multi-line command as one line of literal \n, and a result's "## "
+        # and "- " lines and "\\" escapes came out styled. Arguments cross as
+        # Claude's input does, a field a line; a custom tool's input (a code
+        # mode script, a patch) and a shell command as written; and each one,
+        # each result and a sub-agent's answer sit in a fence longer than any
+        # backtick run inside, cs's cut note and image marks after it.
+        def call(name, arguments, call_id):
+            return rollout_line("response_item", {"type": "function_call", "name": name, "call_id": call_id,
+                                                  "arguments": arguments})
+
+        def output(call_id, value, kind="function_call_output"):
+            return rollout_line("response_item", {"type": kind, "call_id": call_id, "output": value})
+        script = 'const r = await tools.exec_command({cmd: "ls *.md"});\ntext(r.output);\n'
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "tidy notes")),
+            rollout_line("response_item", codex_message("assistant", "Looking.")),
+            call("exec_command", json.dumps({"cmd": "git status -sb\ngit log -1", "workdir": "/repo",
+                                             "yield_time_ms": 1000}), "c1"),
+            output("c1", "## cs/x...github/cs/x\n- one\nuse ```sh\\\\ here\n"),
+            rollout_line("response_item", {"type": "custom_tool_call", "name": "exec", "call_id": "c2",
+                                           "input": script}),
+            output("c2", [SCRIPT_HEADER, {"type": "input_text", "text": "**a.md**"}], "custom_tool_call_output"),
+            call("update_plan", "{}", "c3"),
+            output("c3", ""),
+            call("view_image", '{"path": "x.png"}', "c4"),
+            output("c4", [{"type": "input_text", "text": "x.png"}, {"type": "input_image", "image_url": "data:"}]),
+            call("broken", "not {json", "c5"),
+            output("c5", "y" * 105),
+            rollout_line("response_item", {"type": "local_shell_call", "call_id": "c6",
+                                           "action": {"type": "exec", "command": ["ls", "-la"]}}),
+            rollout_line("response_item", {"type": "web_search_call", "action": {"query": "# codex docs"}}),
+            rollout_line("response_item", codex_message("assistant", "Done.")),
+        ])
+        result, records = self.export("--clip", "100")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]), "\n\n".join([
+            "Looking.",
+            "[tool call: exec_command]\n```\ncmd: |-\n  git status -sb\n  git log -1\nworkdir: /repo\n"
+            "yield_time_ms: 1000\n```",
+            "[tool result]\n````\n## cs/x...github/cs/x\n- one\nuse ```sh\\\\ here\n````",
+            "[tool call: exec]\n```\n" + script.rstrip() + "\n```",
+            "[tool result]\n```\n" + SCRIPT_HEADER["text"] + "\n**a.md**\n```",
+            "[tool call: update_plan]",
+            "[tool result]",
+            "[tool call: view_image]\n```\npath: x.png\n```",
+            "[tool result]\n```\nx.png\n```\n[image]",
+            "[tool call: broken, arguments as written]\n```\nnot {json\n```",
+            "[tool result]\n```\n" + "y" * 100 + "\n```\n[cs cut the remaining 5 characters]",
+            "[tool call: shell]\n```\nls -la\n```",
+            "[tool call: web_search]\n```\n# codex docs\n```",
+            "Done.",
+        ]))
+
+    def test_a_shell_call_s_words_keep_their_quoting(self):
+        # Joined with spaces, ["bash", "-lc", "echo 'a  b' && ls"] read as
+        # a different command; quoted as a shell would, it reads back.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "go")),
+            rollout_line("response_item", {"type": "local_shell_call", "call_id": "c1", "action": {
+                "type": "exec", "command": ["bash", "-lc", "echo 'a  b' && ls", 7]}}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]),
+                         "[tool call: shell]\n```\nbash -lc 'echo '\"'\"'a  b'\"'\"' && ls' 7\n```")
+
+    def test_a_block_codex_left_open_is_closed_before_a_tool_part(self):
+        # A reply that ends inside a fence would pair with cs's fences and
+        # leave the call's input outside them, rendered as markdown.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "go")),
+            rollout_line("response_item", codex_message("assistant", "The file:\n```markdown\n# Doc")),
+            rollout_line("response_item", {"type": "function_call", "name": "X", "call_id": "c1",
+                                           "arguments": '{"n": 1}'}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "c1", "output": "# HEADING"}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]), "\n\n".join([
+            "The file:\n```markdown\n# Doc", "```\n[tool call: X]\n```\nn: 1\n```",
+            "[tool result]\n```\n# HEADING\n```"]))
+        # Every kind of tool part closes it, each on its own.
+        answer = "Message Type: FINAL_ANSWER\nTask name: /root/w\nSender: /root/w\nPayload:\nok"
+        parts = {
+            "function_call": ({"type": "function_call", "name": "X", "call_id": "c1", "arguments": '{"n": 1}'},
+                              "[tool call: X]"),
+            "custom_tool_call": ({"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "run()"},
+                                 "[tool call: exec]"),
+            "function_call_output": ({"type": "function_call_output", "call_id": "c1", "output": "# H"},
+                                     "[tool result]"),
+            "custom_tool_call_output": ({"type": "custom_tool_call_output", "call_id": "c1",
+                                         "output": [{"type": "input_text", "text": "# H"}]}, "[tool result]"),
+            "local_shell_call": ({"type": "local_shell_call", "call_id": "c1",
+                                  "action": {"type": "exec", "command": ["ls"]}}, "[tool call: shell]"),
+            "web_search_call": ({"type": "web_search_call", "action": {"query": "# q"}}, "[tool call: web_search]"),
+            "agent_message": ({"type": "agent_message", "id": "am_1", "author": "/root/w", "recipient": "/root",
+                               "content": [{"type": "input_text", "text": answer}]}, "[agent message]"),
+        }
+        for kind, (item, head) in parts.items():
+            with self.subTest(kind=kind):
+                self.write_rollout([
+                    rollout_line("response_item", codex_message("user", "go")),
+                    rollout_line("response_item", codex_message("assistant", "The file:\n```markdown\n# Doc")),
+                    rollout_line("response_item", item),
+                ])
+                result, records = self.export()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                text, part = self.text_of(records[1]).split("\n\n", 1)
+                self.assertEqual(text, "The file:\n```markdown\n# Doc")
+                self.assertTrue(part.startswith("```\n" + head + "\n```\n"), part)
+
+    def test_a_codex_call_s_arguments_read_back_to_one_input(self):
+        # Arguments that are not one JSON object or list, or that repeat a
+        # key (the layout would keep one value), cross as written, under a
+        # head that says so: written, they could read as other arguments
+        # laid out.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        call = helper['codex_function_call']
+        written = '[tool call: X, arguments as written]\n```\n'
+        self.assertEqual(call('X', '{"a": 1, "a": 2}'), written + '{"a": 1, "a": 2}\n```')
+        self.assertEqual(call('X', '"ls"'), written + '"ls"\n```')
+        self.assertEqual(call('X', 'cmd: rm -rf ~'), written + 'cmd: rm -rf ~\n```')
+        self.assertEqual(call('X', '{"cmd": "rm -rf ~"}'), '[tool call: X]\n```\ncmd: rm -rf ~\n```')
+        self.assertEqual(call('X', '[1, "b"]'), '[tool call: X]\n```\n- 1\n- b\n```')
+        self.assertEqual(call('X', '{"v": "2"}'), '[tool call: X]\n```\nv: "2"\n```')
+        self.assertEqual(call('X', ''), '[tool call: X]')
+        self.assertEqual(call('X', None), '[tool call: X]')
+        # A custom tool's input is text; anything else crosses as its JSON.
+        self.assertEqual(helper['text_call']('X', {"a": 1}), '[tool call: X]\n```\n{"a": 1}\n```')
+
+    def test_a_codex_call_nested_too_deeply_still_crosses(self):
+        # Too deep for json.loads on one Python, for the layout's json.dumps
+        # on another: the call crosses either way, bounded. The helper runs
+        # in its own process: a parse this deep grows this runner's stack,
+        # and on Linux a child's peak RSS starts at its parent's, which the
+        # streaming test measures.
+        deep = '[' * 100000 + ']' * 100000
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "go")),
+            rollout_line("response_item", {"type": "function_call", "name": "X", "call_id": "c1",
+                                           "arguments": deep}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1])
+        self.assertTrue(crossed.startswith('[tool call: X'), crossed[:100])
+        self.assertLess(len(crossed), 3 * len(deep))
+        # Laid out or written, the brackets cross: none is left out.
+        self.assertIn('[' * 99000, crossed)
+        self.assertIn(']' * 99000, crossed)
+
+    def test_a_codex_call_the_layout_cannot_reach_crosses_as_written(self):
+        # json.loads can read a level that json.dumps, from the layout's
+        # deeper stack, cannot (3.9.6: 992 to 994 levels). A function call's
+        # arguments are text at hand, so they cross as written; Claude's
+        # input has no text of its own and is left out with a note.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+
+        def too_deep(value):
+            raise RecursionError
+        helper['tool_call'].__globals__['readable_lines'] = too_deep
+        self.assertEqual(helper['codex_function_call']('X', '{"a": [1]}'),
+                         '[tool call: X, arguments as written]\n```\n{"a": [1]}\n```')
+        left_out = '[tool call: X]\n[cs left out this input: it is nested too deeply to show]'
+        self.assertEqual(helper['codex_function_call']('X', {"a": [1]}), left_out)
+        self.assertEqual(helper['tool_call']('X', {"a": [1]}), left_out)
 
     def test_compaction_keeps_only_what_codex_kept(self):
         lines = self.sample_rollout()[:7] + [
@@ -899,17 +1100,17 @@ class TransplantTests(HelperFixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
         # Each tool result whole, so nothing can follow an output unseen.
-        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        crossed = self.results(agent)
         top = "Script completed\nWall time 0.7 seconds\nOutput:\n\n"
         self.assertEqual(crossed, [
-            top + "A  one.md\nA  two.md\n",
+            top + "A  one.md\nA  two.md",
             top + "[exit code 2]\nboom",
-            top + "[still running in Codex, session 38455]\nWarning: added host\r\n",
+            top + "[still running in Codex, session 38455]\nWarning: added host",
             top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
-                  "[output 1, exit code 0]\n## cs/bots\nA  three.md\n",
+                  "[output 1, exit code 0]\n## cs/bots\nA  three.md",
             top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
                   ' {"i":1,"status":"rejected","reason":"no such file"}]\n'
-                  "[output 1, exit code 0, no output]\n",
+                  "[output 1, exit code 0, no output]",
             top + '{"task": "a23", "title": "Wrap WaW bot session"}',
             top + own,
         ])
@@ -1015,19 +1216,19 @@ class TransplantTests(HelperFixture):
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        crossed = self.results(agent)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed, [
             top + "[output 1, exit code 0]\nalpha\n\n[output 2, exit code 1, no output]\n\n"
-                  "[output 3, exit code 0]\nbeta\n",
+                  "[output 3, exit code 0]\nbeta",
             top + '[{"i":0,"status":"fulfilled","value":<output 1, exit code 0>},\n'
                   ' {"i":1,"status":"fulfilled","value":<output 2, exit code 1>},\n'
                   ' {"i":2,"status":"rejected","reason":"no such file"}]\n'
-                  "[output 1, exit code 0]\nA  one.md\nA  two.md\n\n[output 2, exit code 1]\nfatal: x\n",
+                  "[output 1, exit code 0]\nA  one.md\nA  two.md\n\n[output 2, exit code 1]\nfatal: x",
             top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
-                  "[output 1, exit code 0]\n## cs/bots\nA  three.md\n",
+                  "[output 1, exit code 0]\n## cs/bots\nA  three.md",
             top + '{"status":"fulfilled","value":<output 1, exit code 0>}\n'
-                  "[output 1, exit code 0]\nstatus: rejected\nreason: boom\n",
+                  "[output 1, exit code 0]\nstatus: rejected\nreason: boom",
         ])
         self.assertNotRegex(agent, r"(?m)^[ \t]+$")
 
@@ -1055,10 +1256,10 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        crossed = self.results(agent)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed[:2], [
-            top + warning + "[output 1, exit code 0]\nfirst\n\n[output 2, exit code 2]\nboom\n\n",
+            top + warning + "[output 1, exit code 0]\nfirst\n\n[output 2, exit code 2]\nboom",
             top + "[output 1, exit code 0]\nx\n\ndone",
         ])
         self.assertTrue(crossed[2].startswith(top + long_warning + "L" * 100), crossed[2][:300])
@@ -1081,7 +1282,7 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        crossed = self.results(agent)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed, [
             top + "[output 1, exit code 1, no output]\n\ndone",
@@ -1101,11 +1302,22 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
         self.assertTrue(crossed.startswith(
             SCRIPT_HEADER["text"] + "\n[results: output 1, exit code 0; output 2, exit code 1]\n\n"
             "[output 1, exit code 0]\nyyy"), crossed[:300])
         self.assertIn("exit code 1", crossed[:4000])
+        # A result that fits once its edge blank lines go needs no index.
+        whole = SCRIPT_HEADER["text"] + "\n[output 1, exit code 0]\none\n\n[output 2, exit code 0]\ntwo"
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            rollout_line("response_item", exec_call("c0")),
+            rollout_line("response_item", exec_output("c0", compact(command_result("one\n", exit_code=0)),
+                                                      compact(command_result("two\n", exit_code=0)))),
+        ])
+        result, records = self.export("--clip", str(len(whole)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]).split("\n\n", 1)[1], "[tool result]\n```\n" + whole + "\n```")
 
     def test_a_script_s_own_keys_stay_beside_its_command_result(self):
         # A script that spreads a result into its own object ({...r, label})
@@ -1123,12 +1335,12 @@ class TransplantTests(HelperFixture):
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        crossed = self.results(agent)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(crossed, [
-            top + '{"label":"lint","output":<output 1, exit code 3>}\n[output 1, exit code 3]\nx\n',
+            top + '{"label":"lint","output":<output 1, exit code 3>}\n[output 1, exit code 3]\nx',
             top + '[<output 1, exit code 0>,\n {"gate":"lint","output":<output 2, exit code 1>}]\n'
-                  "[output 1, exit code 0]\nok\n\n[output 2, exit code 1]\nbad\n",
+                  "[output 1, exit code 0]\nok\n\n[output 2, exit code 1]\nbad",
         ])
 
     def test_real_code_mode_result_shapes_cross_whole(self):
@@ -1156,19 +1368,20 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        crossed = [call.split("\n\n[tool result]\n", 1)[1] for call in agent.split("\n\n[tool call: ")]
+        crossed = self.results(agent)
         top = SCRIPT_HEADER["text"] + "\n"
         self.assertEqual(len(long_output), 5000)
         self.assertEqual(crossed, [
             top + "[output 1, exit code 0]\none\n\n[output 2, still running in Codex, session 7, no output]\n\n"
-                  "[output 3, exit code 0]\ntwo\n",
+                  "[output 3, exit code 0]\ntwo",
             top + '[{"status":"fulfilled","value":<output 1, exit code 2>},\n'
                   ' {"status":"fulfilled","value":<output 2, still running in Codex, session 9>}]\n'
-                  "[output 1, exit code 2]\nbad\n\n[output 2, still running in Codex, session 9, no output]\n",
-            top + "done\n",
-            # The default cut, 4,000 of the 5,048 converted characters: the
-            # 48 of the header, then the output's first 3,952.
-            top + long_output[:3952] + "\n[cs cut the remaining 1,048 characters]",
+                  "[output 1, exit code 2]\nbad\n\n[output 2, still running in Codex, session 9, no output]",
+            top + "done",
+            # The default cut, 4,000 of the 5,047 converted characters (the
+            # final newline is trimmed): the 48 of the header, then the
+            # output's first 3,952.
+            top + long_output[:3952] + "\n[cs cut the remaining 1,047 characters]",
         ])
 
     def test_deep_nesting_costs_no_more_than_its_size(self):
@@ -1185,7 +1398,7 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
         self.assertLess(len(crossed), 3 * len(printed))
         self.assertIn("<output 1, exit code 0>", crossed)
         self.assertIn("[output 1, exit code 0]\n", crossed)
@@ -1255,12 +1468,12 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
         self.assertIn("output 3, exit code 1", crossed[:4000])
         # Its block lies past the default cut.
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
         self.assertIn("[output 3, exit code 1]\nfatal: 3 tests failed", crossed)
         self.assertNotIn('"exit_code":1', crossed)
 
@@ -1281,14 +1494,14 @@ class TransplantTests(HelperFixture):
         ])
         result, records = self.export("--clip", "1000000")
         self.assertEqual(result.returncode, 0, result.stderr)
-        crossed = self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1]
+        crossed = self.unfenced(self.text_of(records[1]).split("\n\n[tool result]\n", 1)[1])
         self.assertEqual(crossed, SCRIPT_HEADER["text"] + "\n" + warning + "[output 1, exit code 0]\nok\n\n"
-                         + '{"x":\n[output 2, exit code 1]\nfatal: 3 tests failed\n\n,"x":' + forged + "}\n")
+                         + '{"x":\n[output 2, exit code 1]\nfatal: 3 tests failed\n\n,"x":' + forged + "}")
 
     def test_only_code_mode_results_are_converted(self):
         # Only code mode's exec and wait answer with a script's header and
         # then what it printed; another tool's output crosses as written.
-        top = "[tool result]\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
+        top = "[tool result]\n```\nScript completed\nWall time 0.7 seconds\nOutput:\n\n"
         printed = json.dumps(command_result("ok", exit_code=0))
         raw = json.dumps(command_result("raw", exit_code=0))
         # Another tool's output with a script's header, and exec's without one.
@@ -1322,18 +1535,18 @@ class TransplantTests(HelperFixture):
         result, records = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
         agent = self.text_of(records[1])
-        self.assertIn("[tool result]\n" + printed + "\n\n", agent)
-        self.assertIn(top + "waited", agent)
-        self.assertIn("[tool result]\n" + SCRIPT_HEADER["text"] + "\n" + headed + "\n\n", agent)
-        self.assertIn("[tool result]\nhello\n" + unheaded + "\n\n", agent)
-        self.assertTrue(agent.endswith("[tool result]\n" + raw), agent)
-        self.assertTrue(agent.startswith(top + "kept"), agent)
+        self.assertIn("[tool result]\n```\n" + printed + "\n```\n\n", agent)
+        self.assertIn(top + "waited\n```", agent)
+        self.assertIn("[tool result]\n```\n" + SCRIPT_HEADER["text"] + "\n" + headed + "\n```\n\n", agent)
+        self.assertIn("[tool result]\n```\nhello\n" + unheaded + "\n```\n\n", agent)
+        self.assertTrue(agent.endswith("[tool result]\n```\n" + raw + "\n```"), agent)
+        self.assertTrue(agent.startswith(top + "kept\n```"), agent)
 
     def test_clip_is_adjustable(self):
         self.write_rollout(self.sample_rollout())
         result, records = self.export("--clip", "5")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[tool result]\nAMBER\n[cs cut the remaining", self.text_of(records[1]))
+        self.assertIn("[tool result]\n```\nAMBER\n```\n[cs cut the remaining", self.text_of(records[1]))
         self.assertIn("first 5 characters", self.text_of(records[0]))
 
     def test_a_thread_with_nothing_to_carry_writes_nothing(self):
@@ -1508,13 +1721,13 @@ class TransplantTests(HelperFixture):
         self.assertTrue(texts[0].endswith(
             "MARK-01 first prompt, kept\n\nMARK-02 second prompt, kept\n\nMARK-03 third prompt"))
         self.assertEqual(re.findall(r"MARK-\d+", "\n".join(texts)), ["MARK-%02d" % n for n in range(1, 13)])
-        self.assertIn("[tool call: exec]\ncat MARK-05.txt", texts[1])
-        self.assertIn("[tool result]\nMARK-06 exit 0\nnotes", texts[1])
-        self.assertIn('[tool call: lookup]\n{"q": "MARK-07"}', texts[1])
-        self.assertIn("[tool result]\nMARK-08 found", texts[1])
-        self.assertIn("[tool result]\nMARK-10 image\n[image]", texts[1])
-        self.assertIn("[agent message]\nMessage Type: FINAL_ANSWER\nTask name: /root/worker\n"
-                      "Sender: /root/worker\nPayload:\nWORKER ANSWER notes read\n\nVerified: yes", texts[1])
+        self.assertIn("[tool call: exec]\n```\ncat MARK-05.txt\n```", texts[1])
+        self.assertIn("[tool result]\n```\nMARK-06 exit 0\nnotes\n```", texts[1])
+        self.assertIn('[tool call: lookup]\n```\nq: MARK-07\n```', texts[1])
+        self.assertIn("[tool result]\n```\nMARK-08 found\n```", texts[1])
+        self.assertIn("[tool result]\n```\nMARK-10 image\n```\n[image]", texts[1])
+        self.assertIn("[agent message]\n```\nMessage Type: FINAL_ANSWER\nTask name: /root/worker\n"
+                      "Sender: /root/worker\nPayload:\nWORKER ANSWER notes read\n\nVerified: yes\n```", texts[1])
         self.assertEqual(texts[2], "MARK-12 fourth prompt")
         whole = json.dumps(records)
         for absent in ("BEFORE COMPACTION", "ENC", "DEVELOPER TEXT", "AGENTS", "environment_context",
@@ -1738,7 +1951,7 @@ class TransplantTests(HelperFixture):
 
     def test_claude_tool_parts_at_their_edges(self):
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
-        call, result = helper['claude_tool_call'], helper['claude_tool_result']
+        call, result = helper['tool_call'], helper['tool_result']
         # An input's own fence is outrun, as a result's is.
         self.assertEqual(call('X', {"code": "```py\nx\n```"}), '[tool call: X]\n````\ncode: |-\n  ```py\n  x\n  ```\n````')
         # Claude's inputs are objects; anything else still crosses whole.
@@ -1757,7 +1970,7 @@ class TransplantTests(HelperFixture):
                                                                        "<system-reminder>R</system-reminder>\n"}])
         self.assertEqual(text, ("     1\tfirst\n     2\tsecond", 0))
         # An image alone needs no fence.
-        self.assertEqual(helper['claude_tool_result'](*helper['claude_result_text']([{"type": "image"}]), 40),
+        self.assertEqual(helper['tool_result'](*helper['claude_result_text']([{"type": "image"}]), 40),
                          '[tool result]\n[image]')
 
     def test_a_block_claude_left_open_is_closed_before_a_tool_part(self):
@@ -1788,6 +2001,20 @@ class TransplantTests(HelperFixture):
             texts[2][0], texts[2][1], "[tool call: X]", ok,
             texts[3][0], "[tool call: X]", ok,
             texts[4][0], "~~~~\n[tool call: X]", ok]))
+
+    def test_open_block_reads_every_line_ending(self):
+        # CommonMark ends a line at \r\n and a lone \r too; a closing fence
+        # read with its \r kept never closed, so cs added a stray fence line.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        open_block = helper['open_block']
+        self.assertIsNone(open_block("a\r\n```\r\nx\r\n```\r\n"))
+        self.assertIsNone(open_block("a\r```\rx\r```\r"))
+        self.assertEqual(open_block("a\r\n````md\r\nx"), "````")
+        self.assertEqual(open_block("a\r\n<!-- x\r\n"), "-->")
+        # A known limit: only blocks opened at the left margin count, since a
+        # list item's block ends at the next margin line. An opener indented
+        # one to three spaces outside any list is not seen.
+        self.assertIsNone(open_block("The file:\n  ```markdown\n  # Doc"))
 
     def test_a_deep_claude_tool_input_carries_bounded_and_never_fails(self):
         # Each level of a nested input used to re-indent every line below it,
@@ -1822,30 +2049,30 @@ class TransplantTests(HelperFixture):
                  (["a", "b"], "- a\n- b"), (["x\n"], ["x"]), ("a\rb", "a\nb")]
         for left, right in pairs:
             with self.subTest(left=left, right=right):
-                self.assertNotEqual(helper['claude_tool_call']('X', {"v": left}),
-                                    helper['claude_tool_call']('X', {"v": right}))
-        self.assertEqual(helper['claude_tool_call']('X', {
+                self.assertNotEqual(helper['tool_call']('X', {"v": left}),
+                                    helper['tool_call']('X', {"v": right}))
+        self.assertEqual(helper['tool_call']('X', {
             "plain": "a b", "clip": "two\nlines\n", "strip": "two\nlines", "keep": "two\n\n", "empty": "",
             "space": "\n", "number": "2", "literal": "{}", "control": "a\x1bb", "k\ney": 1, "": "",
             "list": ["x\ny", "", "-"]}),
             '[tool call: X]\n```\nplain: a b\nclip: |\n  two\n  lines\nstrip: |-\n  two\n  lines\n'
             'keep: |+\n  two\n\nempty: ""\nspace: "\\n"\nnumber: "2"\nliteral: "{}"\ncontrol: "a\\u001bb"\n'
             '"k\\ney": 1\n"": ""\nlist:\n  - |-\n    x\n    y\n  - ""\n  - -\n```')
-        self.assertEqual(helper['claude_tool_call']('X', "\n"), '[tool call: X]\n```\n"\\n"\n```')
+        self.assertEqual(helper['tool_call']('X', "\n"), '[tool call: X]\n```\n"\\n"\n```')
 
     def test_a_claude_tool_input_is_laid_out_to_a_fixed_depth(self):
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
         value = "leaf"
         for _ in range(40):
             value = {"a": value}
-        lines = helper['claude_tool_call']('X', value).split('\n')
+        lines = helper['tool_call']('X', value).split('\n')
         indents = [len(line) - len(line.lstrip(' ')) for line in lines[2:-1]]
         self.assertEqual(indents, list(range(0, 64, 2)))
         self.assertEqual(lines[-2].strip(), 'a: ' + json.dumps(json.loads('{"a": ' * 8 + '"leaf"' + '}' * 8)))
         # json.loads read the input, so json.dumps fails only from a deeper
         # stack; the call still crosses, without its input.
         with patch.object(helper['json'], 'dumps', side_effect=RecursionError):
-            self.assertEqual(helper['claude_tool_call']('X', {"n": 1}),
+            self.assertEqual(helper['tool_call']('X', {"n": 1}),
                              '[tool call: X]\n[cs left out this input: it is nested too deeply to show]')
 
     def test_claude_compaction_starts_at_its_summary(self):
