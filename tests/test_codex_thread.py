@@ -1102,6 +1102,93 @@ class TransplantTests(HelperFixture):
                          ["mcp__example__lookup", "mcp__codex__update_plan", "Bash"])
         self.assertEqual(self.results(records), ["Paris", "Plan updated", "/project"])
 
+    def test_only_an_unambiguous_codex_shell_call_becomes_bash(self):
+        # cs reads the "functions" namespace as none, so exec_command there is
+        # still the shell. Arguments holding both cmd and command leave which
+        # one ran unclear: that call keeps its own name and input.
+        def call(call_id, arguments, **extra):
+            return rollout_line("response_item", dict({"type": "function_call", "name": "exec_command",
+                                                       "call_id": call_id, "arguments": arguments}, **extra))
+
+        def output(call_id):
+            return rollout_line("response_item", {"type": "function_call_output", "call_id": call_id,
+                                                  "output": "ok " + call_id})
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "run them")),
+            call("c1", '{"cmd":"pwd"}', namespace="functions"), output("c1"),
+            call("c2", '{"cmd":"pwd","command":"ls"}'), output("c2"),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(block["name"], block["input"]) for block in self.blocks(records, "tool_use")], [
+            ("Bash", {"command": "pwd"}), ("mcp__codex__exec_command", {"cmd": "pwd", "command": "ls"})])
+        self.assertEqual(self.results(records), ["ok c1", "ok c2"])
+
+    def test_a_codex_call_claude_cannot_name_stays_text(self):
+        # A Claude tool name is letters, digits, _ and -: a call named "web.run"
+        # crosses as fenced text, while the namespace web's tool run is a row.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "search")),
+            rollout_line("response_item", {"type": "function_call", "namespace": "web", "name": "run",
+                                           "call_id": "w1", "arguments": '{"q":"codex"}'}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "w1", "output": "found 1"}),
+            rollout_line("response_item", {"type": "function_call", "name": "web.run", "call_id": "w2",
+                                           "arguments": '{"q":"codex"}'}),
+            rollout_line("response_item", {"type": "function_call_output", "call_id": "w2", "output": "found 2"}),
+            rollout_line("response_item", codex_message("assistant", "Done.")),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([block["name"] for block in self.blocks(records, "tool_use")], ["mcp__codex__web__run"])
+        self.assertEqual(self.results(records), ["found 1"])
+        self.assertEqual(self.text_of(records[-1]), "\n\n".join([
+            "[tool call: web.run]\n```\nq: codex\n```", "[tool result]\n```\nfound 2\n```", "Done."]))
+
+    def test_a_codex_result_before_its_call_stays_text(self):
+        # A tool row's result answers a call made before it: an output written
+        # ahead of the call with its ID pairs with nothing, and both stay text.
+        def call(call_id):
+            return rollout_line("response_item", {"type": "function_call", "name": "exec_command",
+                                                  "call_id": call_id, "arguments": '{"cmd":"pwd"}'})
+
+        def output(call_id):
+            return rollout_line("response_item", {"type": "function_call_output", "call_id": call_id,
+                                                  "output": "/" + call_id})
+        self.write_rollout([rollout_line("response_item", codex_message("user", "go")),
+                            output("early"), call("early"), call("late"), output("late")])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(block["name"], block["input"]) for block in self.blocks(records, "tool_use")],
+                         [("Bash", {"command": "pwd"})])
+        self.assertEqual(self.results(records), ["/late"])
+        self.assertEqual(self.text_of(records[1]),
+                         "[tool result]\n```\n/early\n```\n\n[tool call: exec_command]\n```\ncmd: pwd\n```")
+
+    def test_codex_arguments_too_deep_or_too_large_to_replay_stay_text(self):
+        # In either direction, arguments nested past 32 levels or holding an
+        # integer beyond 64 bits keep the fenced text form, not a tool row.
+        def nested(levels, leaf):
+            for _ in range(levels):
+                leaf = {"a": leaf}
+            return leaf
+        cases = [("big", {"n": 2 ** 64}), ("deep", nested(33, 1)), ("shallow", nested(32, 1))]
+        lines = [rollout_line("response_item", codex_message("user", "look them up"))]
+        for call_id, arguments in cases:
+            lines += [rollout_line("response_item", {"type": "function_call", "name": "lookup", "call_id": call_id,
+                                                     "arguments": json.dumps(arguments)}),
+                      rollout_line("response_item", {"type": "function_call_output", "call_id": call_id,
+                                                     "output": "ok " + call_id})]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(block["name"], block["input"]) for block in self.blocks(records, "tool_use")],
+                         [("mcp__codex__lookup", cases[2][1])])
+        self.assertEqual(self.results(records), ["ok shallow"])
+        text = self.text_of(records[1])
+        self.assertEqual(text.count("[tool call: lookup]"), 2)
+        self.assertIn("[tool call: lookup]\n```\nn: 18446744073709551616\n```\n\n[tool result]\n```\nok big\n```", text)
+        self.assertIn("[tool result]\n```\nok deep\n```", text)
+
     def test_a_shell_call_s_words_keep_their_quoting(self):
         # Joined with spaces, ["bash", "-lc", "echo 'a  b' && ls"] read as
         # a different command; quoted as a shell would, it reads back.
@@ -2048,6 +2135,9 @@ class TransplantTests(HelperFixture):
         self.assertEqual(rows[4]['tool'], 'Grep')
         self.assertEqual(rows[4]['result']['content'][0]['text'], 'MARK-07 grep hit')
         self.assertNotIn('[tool call:', str([r for r in rows if r['type'] == 'AgentMessage']))
+        # Text before a tool row is commentary; a turn's last reply is its answer.
+        self.assertEqual([row['phase'] for row in rows if row['type'] == 'AgentMessage'],
+                         ['commentary', 'final_answer', 'final_answer'])
 
     def test_prose_a_native_result_closes_ends_its_reply_first(self):
         # The line closing the fence the prose left open goes on the result's
@@ -2146,6 +2236,56 @@ class TransplantTests(HelperFixture):
         self.assertEqual(lookup['result']['content'][0]['text'], 'unavai\n[cs cut the remaining 5 characters]\n[image]')
         self.assertEqual(call['content'][0]['text'], '[tool call: Read]\n```\nfile_path: pending\n```')
         self.assertEqual(orphan['content'][0]['text'], '[tool result]\n```\norphan\n```')
+
+    def carried_rows(self, records):
+        """Carry a Claude transcript of these records and read the rows written to the new thread."""
+        path = self.root / (CLAUDE_ID + '.jsonl')
+        path.write_text('\n'.join(records) + '\n')
+        result = self.run_helper('', '--history-from-claude', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line)['payload'] for line in
+                  next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
+        return [e['item'] for e in events if e.get('type') == 'item_completed']
+
+    def claude_calls(self, calls):
+        """Records of a prompt, then each (id, name, input, cwd) call and its result "ok <id>" in turn."""
+        records, parent = [claude_record('user', 'go', 'u0', None)], 'u0'
+        for call_id, name, value, folder in calls:
+            extra = {} if folder is None else {'cwd': folder}
+            use = {'type': 'tool_use', 'id': call_id, 'name': name, 'input': value}
+            result = {'type': 'tool_result', 'tool_use_id': call_id, 'content': 'ok ' + call_id}
+            records += [claude_record('assistant', [use], 'a-' + call_id, parent, **extra),
+                        claude_record('user', [result], 'r-' + call_id, 'a-' + call_id)]
+            parent = 'r-' + call_id
+        return records
+
+    def test_claude_inputs_too_deep_or_too_large_to_replay_stay_text(self):
+        # Codex reads a tool row's arguments back with its own JSON reader: an
+        # input nested past 32 levels, or holding an integer beyond 64 bits,
+        # stays in the reply's text, with no tool row.
+        def nested(levels, leaf):
+            for _ in range(levels):
+                leaf = {'a': leaf}
+            return leaf
+        inputs = [('big', {'n': 2 ** 64}), ('deep', nested(33, 1)), ('shallow', nested(32, 1))]
+        rows = self.carried_rows(self.claude_calls([(call_id, 'mcp__server__lookup', value, None)
+                                                    for call_id, value in inputs]))
+        self.assertEqual([row['type'] for row in rows], ['UserMessage', 'AgentMessage', 'McpToolCall'])
+        self.assertEqual((rows[2]['tool'], rows[2]['arguments']), ('lookup', inputs[2][1]))
+        self.assertEqual(rows[2]['result']['content'][0]['text'], 'ok shallow')
+        text = rows[1]['content'][0]['text']
+        self.assertEqual(text.count('[tool call: mcp__server__lookup]'), 2)
+        self.assertIn('[tool call: mcp__server__lookup]\n```\nn: 18446744073709551616\n```\n\n'
+                      '[tool result]\n```\nok big\n```', text)
+        self.assertIn('[tool result]\n```\nok deep\n```', text)
+
+    def test_a_claude_bash_row_runs_in_its_record_s_folder(self):
+        # Claude Code writes the folder a call ran in on its record. A relative
+        # one, which no file:// URI spells, gives way to the session's folder.
+        rows = self.carried_rows(self.claude_calls([('c1', 'Bash', {'command': 'pwd'}, '/srv/other'),
+                                                    ('c2', 'Bash', {'command': 'pwd'}, 'relative/dir')]))
+        self.assertEqual([row['type'] for row in rows], ['UserMessage', 'CommandExecution', 'CommandExecution'])
+        self.assertEqual([row['cwd'] for row in rows[1:]], ['file:///srv/other', self.cwd.resolve().as_uri()])
 
     def test_claude_transcript_starts_a_thread_after_the_context(self):
         path = self.sample_transcript()
