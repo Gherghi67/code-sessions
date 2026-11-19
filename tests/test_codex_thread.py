@@ -818,6 +818,13 @@ class TransplantTests(HelperFixture):
         self.assertTrue(agent.endswith("Done."))
         for absent in ("NEW_TASK", "ENCRYPTED TASK"):
             self.assertNotIn(absent, json.dumps(records))
+        # Blank lines and spaces at its end go, as a result's do.
+        short = "Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker\nPayload:\nSHORT"
+        self.write_rollout([rollout_line("response_item", codex_message("user", "start the worker")),
+                            agent_message(short + "  \n\n \n")])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]), "[agent message]\n```\n" + short + "\n```")
 
     def test_codex_tool_calls_and_results_cross_as_written(self):
         # Claude Code's transcript renders an agent message as markdown, as
@@ -890,6 +897,35 @@ class TransplantTests(HelperFixture):
         self.assertEqual(self.text_of(records[1]), "\n\n".join([
             "The file:\n```markdown\n# Doc", "```\n[tool call: X]\n```\nn: 1\n```",
             "[tool result]\n```\n# HEADING\n```"]))
+        # Every kind of tool part closes it, each on its own.
+        answer = "Message Type: FINAL_ANSWER\nTask name: /root/w\nSender: /root/w\nPayload:\nok"
+        parts = {
+            "function_call": ({"type": "function_call", "name": "X", "call_id": "c1", "arguments": '{"n": 1}'},
+                              "[tool call: X]"),
+            "custom_tool_call": ({"type": "custom_tool_call", "name": "exec", "call_id": "c1", "input": "run()"},
+                                 "[tool call: exec]"),
+            "function_call_output": ({"type": "function_call_output", "call_id": "c1", "output": "# H"},
+                                     "[tool result]"),
+            "custom_tool_call_output": ({"type": "custom_tool_call_output", "call_id": "c1",
+                                         "output": [{"type": "input_text", "text": "# H"}]}, "[tool result]"),
+            "local_shell_call": ({"type": "local_shell_call", "call_id": "c1",
+                                  "action": {"type": "exec", "command": ["ls"]}}, "[tool call: shell]"),
+            "web_search_call": ({"type": "web_search_call", "action": {"query": "# q"}}, "[tool call: web_search]"),
+            "agent_message": ({"type": "agent_message", "id": "am_1", "author": "/root/w", "recipient": "/root",
+                               "content": [{"type": "input_text", "text": answer}]}, "[agent message]"),
+        }
+        for kind, (item, head) in parts.items():
+            with self.subTest(kind=kind):
+                self.write_rollout([
+                    rollout_line("response_item", codex_message("user", "go")),
+                    rollout_line("response_item", codex_message("assistant", "The file:\n```markdown\n# Doc")),
+                    rollout_line("response_item", item),
+                ])
+                result, records = self.export()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                text, part = self.text_of(records[1]).split("\n\n", 1)
+                self.assertEqual(text, "The file:\n```markdown\n# Doc")
+                self.assertTrue(part.startswith("```\n" + head + "\n```\n"), part)
 
     def test_a_codex_call_s_arguments_read_back_to_one_input(self):
         # Arguments that are not one JSON object or list, or that repeat a
@@ -902,6 +938,8 @@ class TransplantTests(HelperFixture):
         self.assertEqual(call('X', '{"v": "2"}'), '[tool call: X]\n```\nv: "2"\n```')
         self.assertEqual(call('X', ''), '[tool call: X]')
         self.assertEqual(call('X', None), '[tool call: X]')
+        # A custom tool's input is text; anything else crosses as its JSON.
+        self.assertEqual(helper['text_call']('X', {"a": 1}), '[tool call: X]\n```\n{"a": 1}\n```')
 
     def test_a_codex_call_nested_too_deeply_still_crosses(self):
         # Too deep for json.loads on one Python, for the layout's json.dumps
