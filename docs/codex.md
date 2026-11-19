@@ -159,7 +159,8 @@ call IDs, and a reported tool failure includes its tool name on Claude’s error
 A result counts as failed when code mode's header says `Script failed` or
 `exec_command` reports a non-zero exit code; its text fallback then reads `[tool error]`.
 A carried result's `<system-reminder` tags arrive with `<` written as `&lt;`,
-as Claude Code writes them in content its own tools did not produce.
+as Claude Code writes them in content its own tools did not produce; so do
+those in a carried user message, where a `!` command's output is kept.
 Calls without a matching result, orphaned results, and inputs Claude cannot
 represent as a tool argument object use the fenced text format. Sub-agent
 final answers also cross as fenced text. In that format a function call's JSON
