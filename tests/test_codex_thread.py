@@ -503,6 +503,11 @@ class BootstrapTests(HelperFixture):
 
 CLAUDE_ID = "a0000000-0000-4000-8000-00000000000a"
 NEW_CLAUDE_ID = "b0000000-0000-4000-8000-00000000000b"
+# What each direction's note says became of the tool calls: Codex's model reads
+# every carried call as text, Claude's reads a call it has the result of as a tool call.
+INTO_CODEX_CALLS = "Tool calls and their results appear as text, each result cut to its first 4,000 characters"
+INTO_CLAUDE_CALLS = ("A tool call appears as a tool call when its result was found, and as text otherwise, "
+                     "each result cut to its first 4,000 characters")
 # Record shapes copied from real Claude Code 2.1.319 and Codex 0.160 files,
 # every value in them synthetic.
 SHAPES = Path(__file__).resolve().parent / "fixtures" / "transplant"
@@ -759,6 +764,7 @@ class TransplantTests(HelperFixture):
         first = self.text_of(records[0])
         self.assertTrue(first.startswith("[cs carried this conversation over from Codex thread " + THREAD_ID))
         self.assertIn("4,000 characters", first)
+        self.assertIn(INTO_CLAUDE_CALLS, first)
         self.assertTrue(first.endswith("what is the codename?"))
         self.assertEqual(self.text_of(records[1]), "Checking the notes.")
         use1, use2 = self.blocks(records, "tool_use")
@@ -1251,6 +1257,9 @@ class TransplantTests(HelperFixture):
         self.assertTrue(texts[0].startswith('[cs carried this conversation over from Claude conversation'))
         self.assertEqual(texts[1], 'what is the codename?')
         self.assertEqual(sum(t.count('[cs carried') for t in texts), 1)
+        # Each note goes whole: the two say different things about the tool calls.
+        self.assertEqual(sum(t.count(INTO_CODEX_CALLS) for t in texts), 1)
+        self.assertNotIn(INTO_CLAUDE_CALLS, json.dumps(items))
         # A thread an earlier carry left the note in starts from the prompt too.
         note = texts[0]
         self.write_rollout([rollout_line("response_item", codex_message("user", note + "\n\nfirst prompt")),
@@ -1261,6 +1270,9 @@ class TransplantTests(HelperFixture):
         self.assertTrue(first.startswith("[cs carried this conversation over from Codex thread"))
         self.assertTrue(first.endswith("]\n\nfirst prompt"))
         self.assertEqual(first.count("[cs carried"), 1)
+        self.assertEqual(first.count(INTO_CLAUDE_CALLS), 1)
+        self.assertNotIn(INTO_CODEX_CALLS, first)
+        self.assertEqual(first.count("use your own from here on"), 1)
 
     def test_a_thread_that_starts_with_the_agent_gets_a_user_note_first(self):
         self.write_rollout([rollout_line("response_item", codex_message("assistant", "Hello."))])
@@ -2102,6 +2114,7 @@ class TransplantTests(HelperFixture):
             ('user', 'input_text'), ('assistant', 'output_text')])
         texts = [i['content'][0]['text'] for i in items]
         self.assertTrue(texts[0].startswith('[cs carried this conversation over from Claude conversation ' + CLAUDE_ID))
+        self.assertIn(INTO_CODEX_CALLS, texts[0])
         self.assertIn("Claude's thinking is not included", texts[0])
         self.assertEqual(texts[1], '/color blue\n\nfind the budget')
         self.assertIn('Reading notes.', texts[2])

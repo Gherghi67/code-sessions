@@ -117,6 +117,12 @@ without a unique partner in the same reply keep their text representation,
 as do arguments too deeply nested or numerically out of range for native replay.
 The model history retains the original order, with tool inputs laid out as
 fenced `key: value` lines and tool results as fenced text.
+There, and in any call kept as text in the transcript, an input crosses as a
+`key: value` line per field, a multi-line value (a heredoc, an edit's text)
+indented under its name after `|` (one final newline), `|-` (none) or `|+`
+(more). Codex's model reads this text, so a value that would read as something
+else (empty, `"2"`, `"true"`, edge spaces, a control character) stays quoted
+as JSON, and levels nested past 32 cross as JSON.
 The helper records the carried model messages and transcript display events
 inside matching turn boundaries after the new thread's writer exits, so native
 revert removes both views of an exchange. It then resumes the thread in a
@@ -156,7 +162,15 @@ A carried result's `<system-reminder` tags arrive with `<` written as `&lt;`,
 as Claude Code writes them in content its own tools did not produce.
 Calls without a matching result, orphaned results, and inputs Claude cannot
 represent as a tool argument object use the fenced text format. Sub-agent
-final answers also cross as fenced text. In code mode,
+final answers also cross as fenced text. In that format a function call's JSON
+arguments cross as `key: value` lines (arguments that are not one JSON object
+or list, that repeat a key, or that are nested too deeply to lay out, cross as
+written, under a `[tool call: <name>, arguments as written]` head), a custom
+tool's input (a code-mode script, a patch), a shell command (its words quoted
+as a shell would) and a search cross as written, and each input, each result
+and a sub-agent's final answer sit in a code fence, with cs's cut note and
+`[image]` marks after it. Text in a fence loses the blank lines before it and
+the whitespace after it. In code mode,
 Codex's `exec` and `wait` tools record what a script passes to `text()`, as JSON
 when it is not a string, so a command run from a script arrives as
 `exec_command`'s result object. cs carries a single such result, when nothing is
