@@ -243,6 +243,9 @@ CODEX_CODE_MODE = frozenset(("exec", "wait"))
 CODEX_IMAGES = frozenset(("input_image", "output_image", "image"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
+# The opening of a system-reminder tag, either end, which Claude Code defangs in content its
+# own tools did not write, as cs does in a carried tool result.
+REMINDER_TAG = re.compile(r"<(?=\s*(?:/\s*)?system-reminder\b)", re.I)
 LEADING_BLANK_LINES = re.compile(r"\A\s*\n")
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -1113,7 +1116,7 @@ def claude_messages(message):
             yield "assistant", [use], {"uuid": assistant_id, "requestId": request_id}
             index += 1
         for result, use, failed, assistant_id in sorted(batch, key=lambda entry: entry[0]):
-            output = tools[result]["output"]
+            output = REMINDER_TAG.sub("&lt;", tools[result]["output"])
             if failed:
                 # Claude's detailed transcript can render only the error line
                 # for a failed tool, even when a parallel call succeeded.

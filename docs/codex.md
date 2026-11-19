@@ -144,6 +144,8 @@ names, and other Codex tools use the `codex` server label. A code-mode script
 appears with its original input and decoded output. Expand the transcript
 with Ctrl+O to inspect each row. Parallel results refer to their originating
 call IDs, and a reported tool failure includes its tool name on Claude’s error line.
+A carried result's `<system-reminder` tags arrive with `<` written as `&lt;`,
+as Claude Code writes them in content its own tools did not produce.
 Calls without a matching result, orphaned results, and inputs Claude cannot
 represent as a tool argument object use the fenced text format. Sub-agent
 final answers also cross as fenced text. In code mode,
