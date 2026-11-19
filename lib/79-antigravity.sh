@@ -781,7 +781,9 @@ cmd_antigravity_hook() {  # event
                 && _antigravity_run_vault_home "$run_dir" >/dev/null && cs_run_lease_owned "$CS_SESSION_DIR/.cs"; then
                 _cs_private_pin_meta="$CS_SESSION_DIR/.cs"
             else
-                _antigravity_hook_vault_stop "$1" 'cs stopped this turn: the encrypted session vault or its run guard changed or became unavailable. Close and reopen the session to restore it.'
+                if [ "$1" = pre-invocation ]; then
+                    ANTIGRAVITY_HOOK_REPLY=$(_antigravity_hook_vault_error 'cs stopped this turn: the encrypted session vault or its run guard changed or became unavailable. Close and reopen the session to restore it.')
+                fi
                 handler=""
             fi
         fi
@@ -880,14 +882,15 @@ _antigravity_hook_session_start() {  # payload
 # (_antigravity_hook_retake). The first model call of a turn carries the
 # unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop=""
+    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop="" failed=""
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
     # An encrypted session's vault home is checked before every model call of
     # the run that holds the lease; anything a command changed there stops the
     # turn here, before the model can act again (lib/79-antigravity-vault.sh).
     if [ -n "${_cs_private_pin_dir:-}" ]; then
-        _antigravity_hook_vault_check "$run_dir" || true
+        _antigravity_hook_vault_check "$run_dir" || failed=1
         stop=$(_antigravity_hook_vault_report "$run_dir")
+        [ -z "$failed" ] || stop=$(_antigravity_hook_vault_error "$CS_AGY_VAULT_CHECK_FAILURE")
         if [ -n "$stop" ]; then
             ANTIGRAVITY_HOOK_REPLY=$stop
             return 0
@@ -1119,7 +1122,7 @@ _antigravity_hook_post_tool_use() {  # payload
     # command changed there is moved aside before anything else runs, and the
     # next model call stops the turn (_antigravity_hook_pre_invocation).
     if [ -n "${_cs_private_pin_dir:-}" ] && run_dir=$(_antigravity_run_dir); then
-        _antigravity_hook_vault_check "$run_dir" || true
+        _antigravity_hook_vault_check "$run_dir" || return 0
     fi
     event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0
     [ -n "$event" ] || return 0

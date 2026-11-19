@@ -454,12 +454,13 @@ _antigravity_run_private_dir() {  # session_dir, run_dir
     printf '%s\n' "${current%/*}"
 }
 
-_antigravity_hook_vault_stop() {  # event, message
-    [ "$1" = pre-invocation ] || return 0
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$2" '
-        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}') \
-        || ANTIGRAVITY_HOOK_REPLY='{"terminationBehavior":"terminate"}'
+_antigravity_hook_vault_error() {  # message
+    jq -nc --arg m "$1" '
+        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}' \
+        || printf '{"terminationBehavior":"terminate"}\n'
 }
+
+CS_AGY_VAULT_CHECK_FAILURE="cs stopped this turn: it could not verify or repair agy's vault home. Close the session and inspect the vault home before reopening."
 
 # Whether a hook may act on the session's records: it is not encrypted, or
 # the launch ran it on its vault home. A .cs/private in a run launched without
@@ -487,12 +488,15 @@ _antigravity_log_dir() {  # session_dir, run_dir
 # PreInvocation to stop the turn with (_antigravity_hook_vault_report). Fails
 # when the run has no vault home.
 _antigravity_hook_vault_check() {  # run_dir
-    local home private_id changes
+    local home private_id changes status=0
     home=$(_antigravity_run_vault_home "$1") || return 1
     { IFS= read -r _ && IFS= read -r private_id; } < "$1/vault" || return 1
-    changes=$(_antigravity_vault_sync check "$(_antigravity_shared_home)" "$home" "$1/settings.json" "$private_id" 2>/dev/null) || changes="failed"
-    [ -n "$changes" ] || return 0
-    printf '%s\n' "$changes" >> "$1/vault-moved" 2>/dev/null || true
+    changes=$(_antigravity_vault_sync check "$(_antigravity_shared_home)" "$home" "$1/settings.json" "$private_id" 2>/dev/null) || {
+        changes=failed
+        status=1
+    }
+    [ -z "$changes" ] || { printf '%s\n' "$changes" >> "$1/vault-moved"; } 2>/dev/null || return 1
+    return "$status"
 }
 
 # The PreInvocation answer that stops a turn after a check moved something
@@ -502,6 +506,11 @@ _antigravity_hook_vault_check() {  # run_dir
 _antigravity_hook_vault_report() {  # run_dir
     local home moved="" shown_moved
     [ -f "$1/vault-moved" ] && [ ! -L "$1/vault-moved" ] || return 0
+    if grep -Fxq failed "$1/vault-moved"; then
+        rm -f "$1/vault-moved" 2>/dev/null || true
+        _antigravity_hook_vault_error "$CS_AGY_VAULT_CHECK_FAILURE"
+        return 0
+    fi
     moved=$(head -c 2000 "$1/vault-moved" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/; /g') || moved=""
     rm -f "$1/vault-moved" 2>/dev/null || true
     [ -n "$moved" ] || return 0

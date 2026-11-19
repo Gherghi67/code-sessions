@@ -1802,6 +1802,8 @@ test_an_encrypted_turn_stops_on_a_link_in_native_state() {
     output=$(AGY_VAULT_LINK=.gemini/antigravity-cli/history.jsonl AGY_VAULT_LINK_TO="$TEST_TMPDIR/external/history.jsonl" \
         "$CS_BIN" statecheck --fresh 2>&1) || { echo "$output"; return 1; }
     assert_file_contains "$AGY_HOOK_OUT" '"terminationBehavior":"terminate"' "the next model call stops" || return 1
+    assert_file_contains "$AGY_HOOK_OUT" "could not verify or repair agy's vault home" "the user sees that the check failed" || return 1
+    assert_output_not_contains "$(cat "$AGY_HOOK_OUT")" 'restored the links' "a failed check reports no successful repair" || return 1
     assert_eq "$TEST_TMPDIR/external/history.jsonl" "$(readlink "$state/history.jsonl")" "the unsafe path is left for inspection" || return 1
     assert_not_exists "$TEST_TMPDIR/external/history.jsonl" "the link target is untouched"
 }

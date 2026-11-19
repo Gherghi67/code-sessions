@@ -23853,12 +23853,13 @@ _antigravity_run_private_dir() {  # session_dir, run_dir
     printf '%s\n' "${current%/*}"
 }
 
-_antigravity_hook_vault_stop() {  # event, message
-    [ "$1" = pre-invocation ] || return 0
-    ANTIGRAVITY_HOOK_REPLY=$(jq -nc --arg m "$2" '
-        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}') \
-        || ANTIGRAVITY_HOOK_REPLY='{"terminationBehavior":"terminate"}'
+_antigravity_hook_vault_error() {  # message
+    jq -nc --arg m "$1" '
+        {injectSteps: [{errorMessage: {userMessage: $m}}], terminationBehavior: "terminate"}' \
+        || printf '{"terminationBehavior":"terminate"}\n'
 }
+
+CS_AGY_VAULT_CHECK_FAILURE="cs stopped this turn: it could not verify or repair agy's vault home. Close the session and inspect the vault home before reopening."
 
 # Whether a hook may act on the session's records: it is not encrypted, or
 # the launch ran it on its vault home. A .cs/private in a run launched without
@@ -23886,12 +23887,15 @@ _antigravity_log_dir() {  # session_dir, run_dir
 # PreInvocation to stop the turn with (_antigravity_hook_vault_report). Fails
 # when the run has no vault home.
 _antigravity_hook_vault_check() {  # run_dir
-    local home private_id changes
+    local home private_id changes status=0
     home=$(_antigravity_run_vault_home "$1") || return 1
     { IFS= read -r _ && IFS= read -r private_id; } < "$1/vault" || return 1
-    changes=$(_antigravity_vault_sync check "$(_antigravity_shared_home)" "$home" "$1/settings.json" "$private_id" 2>/dev/null) || changes="failed"
-    [ -n "$changes" ] || return 0
-    printf '%s\n' "$changes" >> "$1/vault-moved" 2>/dev/null || true
+    changes=$(_antigravity_vault_sync check "$(_antigravity_shared_home)" "$home" "$1/settings.json" "$private_id" 2>/dev/null) || {
+        changes=failed
+        status=1
+    }
+    [ -z "$changes" ] || { printf '%s\n' "$changes" >> "$1/vault-moved"; } 2>/dev/null || return 1
+    return "$status"
 }
 
 # The PreInvocation answer that stops a turn after a check moved something
@@ -23901,6 +23905,11 @@ _antigravity_hook_vault_check() {  # run_dir
 _antigravity_hook_vault_report() {  # run_dir
     local home moved="" shown_moved
     [ -f "$1/vault-moved" ] && [ ! -L "$1/vault-moved" ] || return 0
+    if grep -Fxq failed "$1/vault-moved"; then
+        rm -f "$1/vault-moved" 2>/dev/null || true
+        _antigravity_hook_vault_error "$CS_AGY_VAULT_CHECK_FAILURE"
+        return 0
+    fi
     moved=$(head -c 2000 "$1/vault-moved" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/; /g') || moved=""
     rm -f "$1/vault-moved" 2>/dev/null || true
     [ -n "$moved" ] || return 0
@@ -24691,7 +24700,9 @@ cmd_antigravity_hook() {  # event
                 && _antigravity_run_vault_home "$run_dir" >/dev/null && cs_run_lease_owned "$CS_SESSION_DIR/.cs"; then
                 _cs_private_pin_meta="$CS_SESSION_DIR/.cs"
             else
-                _antigravity_hook_vault_stop "$1" 'cs stopped this turn: the encrypted session vault or its run guard changed or became unavailable. Close and reopen the session to restore it.'
+                if [ "$1" = pre-invocation ]; then
+                    ANTIGRAVITY_HOOK_REPLY=$(_antigravity_hook_vault_error 'cs stopped this turn: the encrypted session vault or its run guard changed or became unavailable. Close and reopen the session to restore it.')
+                fi
                 handler=""
             fi
         fi
@@ -24790,14 +24801,15 @@ _antigravity_hook_session_start() {  # payload
 # (_antigravity_hook_retake). The first model call of a turn carries the
 # unread mail, after the rotation, in one answer.
 _antigravity_hook_pre_invocation() {  # payload
-    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop=""
+    local run_dir meta="$CS_SESSION_DIR/.cs" rotation="" weigh="" AGY_HOOK_DIGEST="" stop="" failed=""
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || run_dir=""
     # An encrypted session's vault home is checked before every model call of
     # the run that holds the lease; anything a command changed there stops the
     # turn here, before the model can act again (lib/79-antigravity-vault.sh).
     if [ -n "${_cs_private_pin_dir:-}" ]; then
-        _antigravity_hook_vault_check "$run_dir" || true
+        _antigravity_hook_vault_check "$run_dir" || failed=1
         stop=$(_antigravity_hook_vault_report "$run_dir")
+        [ -z "$failed" ] || stop=$(_antigravity_hook_vault_error "$CS_AGY_VAULT_CHECK_FAILURE")
         if [ -n "$stop" ]; then
             ANTIGRAVITY_HOOK_REPLY=$stop
             return 0
@@ -25029,7 +25041,7 @@ _antigravity_hook_post_tool_use() {  # payload
     # command changed there is moved aside before anything else runs, and the
     # next model call stops the turn (_antigravity_hook_pre_invocation).
     if [ -n "${_cs_private_pin_dir:-}" ] && run_dir=$(_antigravity_run_dir); then
-        _antigravity_hook_vault_check "$run_dir" || true
+        _antigravity_hook_vault_check "$run_dir" || return 0
     fi
     event=$(printf '%s' "$1" | cs_engine_call antigravity files_changed) || return 0
     [ -n "$event" ] || return 0
