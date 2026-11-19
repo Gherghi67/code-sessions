@@ -246,8 +246,10 @@ CODEX_IMAGES = frozenset(("input_image", "output_image", "image"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
 # The opening of a system-reminder tag, either end, which Claude Code defangs in content its
-# own tools did not write, as cs does in a carried tool result.
-REMINDER_TAG = re.compile(r"<(?=\s*(?:/\s*)?system-reminder\b)", re.I)
+# own tools did not write, as cs does in a carried tool result. Its pattern is JavaScript's,
+# so the classes are widened to its \s (which takes U+FEFF) and its ASCII-only \b, kept out
+# of re.I's Unicode folds; Python's extra whitespace and the folds in the name only defang more.
+REMINDER_TAG = re.compile(r"<(?=[\s\ufeff]*(?:/[\s\ufeff]*)?system-reminder(?-i:(?![A-Za-z0-9_])))", re.I)
 LEADING_BLANK_LINES = re.compile(r"\A\s*\n")
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
