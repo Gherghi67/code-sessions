@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import stat
@@ -645,7 +646,8 @@ def codex_item(history, item, timestamp, limit):
         action = item.get("action")
         command = action.get("command") if isinstance(action, dict) else None
         if isinstance(command, list):
-            command = " ".join(str(word) for word in command)
+            # Quoted as a shell would, so each word reads back as itself.
+            command = shlex.join(str(word) for word in command)
         history.add("assistant", text_call("shell", command if isinstance(command, str) else None), timestamp,
                     closed=True)
     elif kind == "web_search_call":
@@ -884,8 +886,9 @@ def tool_call(name, value, written=None):
 
 def text_call(name, text, note=None):
     # A tool input that is text: a Codex custom tool's (a code mode script,
-    # a patch), a shell command, a search. It crosses as written; a note
-    # goes in the head when there is text.
+    # a patch), a shell command, a search. It crosses as written, less the
+    # blank lines before it and the whitespace after it; a note goes in the
+    # head when there is text.
     if text is None:
         text = ""
     elif not isinstance(text, str):

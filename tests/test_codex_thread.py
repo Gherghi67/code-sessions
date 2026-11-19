@@ -891,6 +891,19 @@ class TransplantTests(HelperFixture):
             "Done.",
         ]))
 
+    def test_a_shell_call_s_words_keep_their_quoting(self):
+        # Joined with spaces, ["bash", "-lc", "echo 'a  b' && ls"] read as
+        # a different command; quoted as a shell would, it reads back.
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "go")),
+            rollout_line("response_item", {"type": "local_shell_call", "call_id": "c1", "action": {
+                "type": "exec", "command": ["bash", "-lc", "echo 'a  b' && ls", 7]}}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text_of(records[1]),
+                         "[tool call: shell]\n```\nbash -lc 'echo '\"'\"'a  b'\"'\"' && ls' 7\n```")
+
     def test_a_block_codex_left_open_is_closed_before_a_tool_part(self):
         # A reply that ends inside a fence would pair with cs's fences and
         # leave the call's input outside them, rendered as markdown.

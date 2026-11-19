@@ -142,9 +142,10 @@ same way: a function call's JSON arguments cross as `key: value` lines
 are nested too deeply to lay out, cross as written, under a
 `[tool call: <name>, arguments as written]` head), a
 custom tool's input (a code-mode script, a patch), a shell
-command and a search cross as written, and each input, each result and a
-sub-agent's final answer sit in a code fence, with cs's cut note and `[image]`
-marks after it. In code mode,
+command (its words quoted as a shell would) and a search cross as written,
+and each input, each result and a sub-agent's final answer sit in a code
+fence, with cs's cut note and `[image]` marks after it. Text in a fence loses
+the blank lines before it and the whitespace after it. In code mode,
 Codex's `exec` and `wait` tools record what a script passes to `text()`, as JSON
 when it is not a string, so a command run from a script arrives as
 `exec_command`'s result object. cs carries a single such result, when nothing is
