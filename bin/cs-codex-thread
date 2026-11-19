@@ -7,6 +7,7 @@
 """Requires Codex app-server's experimental thread/inject_items API."""
 
 import argparse
+from collections import defaultdict
 import contextlib
 import datetime
 import io
@@ -30,6 +31,10 @@ import uuid
 
 class BootstrapError(Exception):
     pass
+
+
+class DisplayMismatch(BootstrapError):
+    """Codex answered the display check, and its rows differ from the ones written."""
 
 
 # Codex thread IDs are UUIDs. Reject control characters and accidental selectors.
@@ -238,10 +243,17 @@ CODEX_COMMAND_RESULT = frozenset((
     "chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count", "output"))
 # Code mode's tools, whose output starts with how the script ended, then what it printed.
 CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell ID [^\n]*)\nWall time [^\n]*\nOutput:\n\Z")
+# exec_command's result head when its command exited with a code other than 0.
+CODEX_COMMAND_FAILED = re.compile(r"Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess exited with code [1-9][0-9]*\n")
 CODEX_CODE_MODE = frozenset(("exec", "wait"))
 CODEX_IMAGES = frozenset(("input_image", "output_image", "image"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.S)
+# The opening of a system-reminder tag, either end, which Claude Code defangs in content its
+# own tools did not write, as cs does in a carried tool result and user message. Its pattern is JavaScript's,
+# so the classes are widened to its \s (which takes U+FEFF) and its ASCII-only \b, kept out
+# of re.I's Unicode folds; Python's extra whitespace and the folds in the name only defang more.
+REMINDER_TAG = re.compile(r"<(?=[\s\ufeff]*(?:/[\s\ufeff]*)?system-reminder(?-i:(?![A-Za-z0-9_])))", re.I)
 LEADING_BLANK_LINES = re.compile(r"\A\s*\n")
 COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -268,6 +280,9 @@ CARRIED_MODEL = "<synthetic>"
 # carried conversation is carried on. Only the newest note goes with it.
 CARRIED_NOTE = re.compile(r"\A\s*\[cs carried this conversation over from [^\]]*\]\s*")
 DEFAULT_CLAUDE_VERSION = "2.1.0"
+# The oldest Claude Code checked to render a display-only MCP tool, the row it draws for a tool
+# it does not have. Without one it draws nothing, so below this only Bash, its own, is a row.
+NATIVE_TOOL_ROWS_SINCE = (2, 1, 326)
 
 
 def open_block(text, closer=None):
@@ -304,7 +319,7 @@ class History:
         # outputs whose calls came before it.
         self.calls = {}
 
-    def add(self, role, text, timestamp=None, closed=False):
+    def add(self, role, text, timestamp=None, closed=False, tool=None):
         # A closed part is cs's own markdown, every block in it closed. A
         # message is one markdown document, so a block the text before it
         # left open is closed first, or the two would pair up.
@@ -314,6 +329,8 @@ class History:
         if last is None or last["role"] != role:
             last = {"role": role, "parts": [], "timestamp": timestamp, "closed": 0}
             self.messages.append(last)
+        if tool is not None:
+            last.setdefault("tools", {})[len(last["parts"])] = tool
         if closed:
             closer = None
             for part in last["parts"][last["closed"]:]:
@@ -327,8 +344,13 @@ class History:
         self.messages = []
 
     def export(self):
-        return [{"role": m["role"], "text": "\n\n".join(m["parts"]), "timestamp": m["timestamp"]}
-                for m in self.messages]
+        messages = []
+        for m in self.messages:
+            message = {"role": m["role"], "text": "\n\n".join(m["parts"]), "timestamp": m["timestamp"]}
+            if "tools" in m:
+                message.update(parts=m["parts"], tools=m["tools"])
+            messages.append(message)
+        return messages
 
 
 def cut_note(text, limit):
@@ -350,9 +372,13 @@ def carried_note(engine, native_id, limit):
     source = ENGINE_NAMES.get(engine, engine)
     kind = "thread" if engine == "codex" else "conversation"
     hidden = "Codex's reasoning is" if engine == "codex" else "Claude's thinking is"
-    return ("[cs carried this conversation over from {} {} {}. Tool calls and their results appear "
-            "as text, each result cut to its first {:,} characters; {} not included. Those tools "
-            "were {}'s: use your own from here on.]").format(source, kind, native_id, limit, hidden, source)
+    # Codex's model reads every carried call as text; Claude's reads a call cs
+    # can show with its result as a tool call. No "]": CARRIED_NOTE ends at one.
+    calls = ("A tool call appears as a tool call where Claude can show it with its result, and as text otherwise"
+             if engine == "codex" else "Tool calls and their results appear as text")
+    return ("[cs carried this conversation over from {} {} {}. {}, each result cut to its first {:,} characters; "
+            "{} not included. Those tools were {}'s: use your own from here on.]").format(
+                source, kind, native_id, calls, limit, hidden, source)
 
 
 def write_private(path, text):
@@ -610,8 +636,8 @@ def codex_function_call(name, arguments):
         except (ValueError, RecursionError):
             value = None
     if isinstance(value, (dict, list)):
-        return tool_call(name, value, arguments if isinstance(arguments, str) else None)
-    return text_call(name, arguments, "arguments as written")
+        return tool_call(name, value, arguments if isinstance(arguments, str) else None), value
+    return text_call(name, arguments, "arguments as written"), None
 
 
 def codex_item(history, item, timestamp, limit):
@@ -626,30 +652,50 @@ def codex_item(history, item, timestamp, limit):
     if kind == "message":
         texts = codex_texts(item.get("content"))
         if item.get("role") == "user":
-            prompts = [CARRIED_NOTE.sub("", t) for t in texts if not codex_injected(t)]
+            # A ! command's output is in a user message, so its reminder tags are defanged as a result's are.
+            prompts = [REMINDER_TAG.sub("&lt;", CARRIED_NOTE.sub("", t)) for t in texts if not codex_injected(t)]
             history.add("user", "\n\n".join(p for p in prompts if p), timestamp)
         elif item.get("role") == "assistant":
             history.add("assistant", "\n\n".join(texts), timestamp)
         # Developer and system messages are Codex's own instructions.
-    elif kind == "function_call":
-        history.add("assistant", codex_function_call(item.get("name"), item.get("arguments")), timestamp,
-                    closed=True)
-    elif kind == "custom_tool_call":
-        history.add("assistant", text_call(item.get("name"), item.get("input")), timestamp, closed=True)
+    elif kind in ("function_call", "custom_tool_call", "local_shell_call"):
+        name = item.get("name")
+        if kind == "function_call":
+            text, args = codex_function_call(name, item.get("arguments"))
+        elif kind == "custom_tool_call":
+            raw = item.get("input")
+            text = text_call(name, raw)
+            args = {"input": raw} if isinstance(raw, str) else None
+        else:
+            name = "shell"
+            action = item.get("action")
+            args = action if isinstance(action, dict) else {}
+            command = args.get("command")
+            if isinstance(command, list):
+                command = shlex.join(str(word) for word in command)
+            text = text_call(name, command if isinstance(command, str) else None)
+        history.add("assistant", text, timestamp, closed=True, tool={
+            "call": item.get("call_id") or item.get("id"), "name": name, "input": args,
+            "namespace": item.get("namespace")})
     elif kind in ("function_call_output", "custom_tool_call_output"):
-        # Codex records no failure flag: a failed call's output says so itself.
+        # Codex records no failure flag on a call or its output. A failed result says so in its text:
+        # code mode's "Script failed" header, or exec_command's "Process exited with code N" with N not 0.
         call_id = item.get("call_id")
-        code_mode = isinstance(call_id, str) and history.calls.get(call_id) in CODEX_CODE_MODE
-        text, images = codex_output(item.get("output"), code_mode, limit)
-        history.add("assistant", tool_result(trimmed(text), images, limit), timestamp, closed=True)
-    elif kind == "local_shell_call":
-        action = item.get("action")
-        command = action.get("command") if isinstance(action, dict) else None
-        if isinstance(command, list):
-            # Quoted as a shell would, so each word reads back as itself.
-            command = shlex.join(str(word) for word in command)
-        history.add("assistant", text_call("shell", command if isinstance(command, str) else None), timestamp,
-                    closed=True)
+        name = history.calls.get(call_id) if isinstance(call_id, str) else None
+        code_mode = name in CODEX_CODE_MODE
+        output = item.get("output")
+        text, images = codex_output(output, code_mode, limit)
+        text = trimmed(text)
+        failed = False
+        if code_mode and isinstance(output, list) and output and isinstance(output[0], dict):
+            header = output[0].get("text")
+            failed |= isinstance(header, str) and header.startswith("Script failed\n") \
+                and bool(CODEX_SCRIPT_HEADER.fullmatch(header))
+        if name == "exec_command" and isinstance(output, str):
+            failed |= bool(CODEX_COMMAND_FAILED.match(output))
+        history.add("assistant", tool_result(text, images, limit, failed), timestamp, closed=True, tool={
+            "result": call_id, "failed": failed,
+            "output": text[:limit] + cut_note(text, limit) + "\n[image]" * images})
     elif kind == "web_search_call":
         action = item.get("action")
         query = action.get("query") if isinstance(action, dict) else None
@@ -750,6 +796,8 @@ def read_codex(path, limit):
                         codex_item(history, entry, stamp, limit)
                 elif isinstance(summary, str) and summary.strip():
                     history.reset()
+                    # A user message like any other: its reminder tags are defanged.
+                    summary = REMINDER_TAG.sub("&lt;", summary)
                     history.add("user", "[Summary of the earlier conversation]\n" + summary, stamp)
             elif record.get("type") == "response_item":
                 codex_item(history, item, stamp, limit)
@@ -992,18 +1040,127 @@ def read_claude(path, limit):
                 if kind == "text" and isinstance(block.get("text"), str):
                     history.add("user", claude_user_text(block["text"]), stamp)
                 elif kind == "tool_result":
-                    history.add("assistant", tool_result(*claude_result_text(block.get("content")), limit,
-                                                         failed=block.get("is_error") is True),
-                                stamp, closed=True)
+                    text, images = claude_result_text(block.get("content"))
+                    failed = block.get("is_error") is True
+                    output = text[:limit] + cut_note(text, limit) + "\n[image]" * images
+                    # Claude prefixes failed shell output with its exit code. Read
+                    # it before clipping; Codex otherwise displays status 1.
+                    exit_status = re.match(r"Exit code ([1-9][0-9]{0,2})(?:\r?\n|$)", text) if failed else None
+                    exit_code = int(exit_status[1]) if exit_status else None
+                    history.add("assistant", tool_result(text, images, limit, failed), stamp, closed=True,
+                                tool={"result": block.get("tool_use_id"), "output": output, "failed": failed,
+                                      "exit_code": exit_code})
                 elif kind == "image":
                     history.add("user", "[image]", stamp)
             elif record.get("type") == "assistant":
                 if kind == "text":
                     history.add("assistant", block.get("text"), stamp)
                 elif kind == "tool_use":
-                    history.add("assistant", tool_call(block.get("name"), block.get("input")), stamp, closed=True)
+                    history.add("assistant", tool_call(block.get("name"), block.get("input")), stamp, closed=True,
+                                tool={"call": block.get("id"), "name": block.get("name"), "input": block.get("input"),
+                                      "cwd": record.get("cwd")})
                 # Thinking is signed for the model that wrote it and stays behind.
     return history.export()
+
+
+def matched_tools(tools):
+    calls, results = defaultdict(list), defaultdict(list)
+    for index, tool in tools.items():
+        key = tool.get("call") if "call" in tool else tool["result"]
+        if isinstance(key, str) and key:
+            (calls if "call" in tool else results)[key].append(index)
+
+    # Match only unambiguous pairs within this assistant reply. Missing,
+    # duplicate and orphaned parts keep their original position and text.
+    for key, indices in calls.items():
+        matches = results.get(key, [])
+        if len(indices) == len(matches) == 1 and indices[0] < matches[0]:
+            yield indices[0], matches[0]
+
+
+def claude_tool_use(call, cwd, version):
+    name, args, namespace = call["name"], call["input"], call["namespace"]
+    if not isinstance(name, str) or not isinstance(args, dict) or not native_arguments(args):
+        return None
+    tool_name = name if name.startswith("mcp__") else "mcp__codex__" + name
+    if isinstance(namespace, str) and namespace not in ("", "functions"):
+        prefix = namespace if namespace.startswith("mcp__") else "mcp__codex__" + namespace
+        tool_name = prefix + "__" + name
+    elif name in ("exec_command", "shell", "shell_command"):
+        command = args.get("command", args.get("cmd"))
+        if isinstance(command, list):
+            command = shlex.join(str(word) for word in command)
+        if isinstance(command, str) and not ("cmd" in args and "command" in args):
+            # Claude's Bash input is a strict object; Codex's execution options
+            # stay behind, and a directory other than the session's goes into the command.
+            directory = args.get("workdir", args.get("working_directory"))
+            if isinstance(directory, str) and directory and os.path.normpath(directory) != os.path.normpath(cwd):
+                command = "cd " + shlex.quote(directory) + " && " + command
+            args = {"command": command}
+            tool_name = "Bash"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tool_name):
+        return None
+    leading = re.match(r"(\d+)\.(\d+)\.(\d+)", version or "")
+    if tool_name != "Bash" and not (leading and tuple(map(int, leading.groups())) >= NATIVE_TOOL_ROWS_SINCE):
+        return None
+    return {"type": "tool_use", "id": "toolu_cs_" + uuid.uuid4().hex, "name": tool_name, "input": args}
+
+
+def claude_messages(message, cwd, version):
+    """Emit complete Claude tool exchanges. Parallel calls share an assistant
+    message; their results follow in original completion order. Never leave a
+    pending tool request at the end of history for the next engine to run."""
+    tools = message.get("tools", {})
+    pairs = {}
+    for call, result in matched_tools(tools):
+        use = claude_tool_use(tools[call], cwd, version)
+        if use is not None:
+            pairs[call] = (result, use)
+    if not pairs:
+        yield message["role"], message["text"], {}
+        return
+    results = {result for result, _ in pairs.values()}
+    parts = message["parts"]
+    index = 0
+    prose = []
+    while index < len(parts):
+        if index not in pairs:
+            if index not in results:
+                prose.append(parts[index])
+            elif prose:
+                # A result's part opens with the line closing a block the prose
+                # left open (History.add); without it, the prose ends here.
+                yield "assistant", "\n\n".join(prose), {}
+                prose = []
+            index += 1
+            continue
+        if prose:
+            yield "assistant", "\n\n".join(prose), {}
+            prose = []
+        # Claude displays one tool row per assistant record. Its parallel
+        # tool blocks share the API message ID, each with its own record UUID
+        # for sourceToolAssistantUUID on the corresponding result.
+        batch = []
+        request_id = "req_cs_" + uuid.uuid4().hex
+        while index in pairs:
+            result, use = pairs[index]
+            assistant_id = str(uuid.uuid4())
+            failed = tools[result]["failed"]
+            batch.append((result, use, failed, assistant_id))
+            yield "assistant", [use], {"uuid": assistant_id, "requestId": request_id}
+            index += 1
+        for result, use, failed, assistant_id in sorted(batch, key=lambda entry: entry[0]):
+            output = REMINDER_TAG.sub("&lt;", tools[result]["output"])
+            if failed:
+                # Claude's detailed transcript can render only the error line
+                # for a failed tool, even when a parallel call succeeded.
+                output = "[" + use["name"] + "] " + output
+            block = {"type": "tool_result", "tool_use_id": use["id"], "content": output, "is_error": failed}
+            detail = ({"stdout": output, "stderr": "", "interrupted": False, "isImage": False,
+                       "noOutputExpected": False} if use["name"] == "Bash" and not failed else output)
+            yield "user", [block], {"sourceToolAssistantUUID": assistant_id, "toolUseResult": detail}
+    if prose:
+        yield "assistant", "\n\n".join(prose), {}
 
 
 def claude_transcript(messages, session_id, cwd, version, branch, note):
@@ -1015,23 +1172,26 @@ def claude_transcript(messages, session_id, cwd, version, branch, note):
     now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
     lines, parent = [], None
     for message in messages:
-        record_id = str(uuid.uuid4())
-        record = {"parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd,
-                  "sessionId": session_id, "version": version, "gitBranch": branch,
-                  "type": message["role"], "uuid": record_id, "timestamp": message["timestamp"] or now}
-        if message["role"] == "user":
-            record["message"] = {"role": "user", "content": message["text"]}
-        else:
-            record["message"] = {
-                "id": "msg_cs_" + uuid.uuid4().hex, "type": "message", "role": "assistant",
-                "model": CARRIED_MODEL, "content": [{"type": "text", "text": message["text"]}],
-                "stop_reason": "end_turn", "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0,
-                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
-            }
-            record["requestId"] = "req_cs_" + uuid.uuid4().hex
-        lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-        parent = record_id
+        for role, content, extra in claude_messages(message, cwd, version):
+            record_id = extra.get("uuid") or str(uuid.uuid4())
+            record = {"parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd,
+                      "sessionId": session_id, "version": version, "gitBranch": branch,
+                      **extra, "type": role, "uuid": record_id, "timestamp": message["timestamp"] or now}
+            if role == "user":
+                record["message"] = {"role": "user", "content": content}
+            else:
+                request_id = extra.get("requestId") or "req_cs_" + uuid.uuid4().hex
+                record["requestId"] = request_id
+                record["message"] = {
+                    "id": "msg_" + request_id[4:], "type": "message", "role": "assistant",
+                    "model": CARRIED_MODEL,
+                    "content": content if isinstance(content, list) else [{"type": "text", "text": content}],
+                    "stop_reason": "tool_use" if isinstance(content, list) else "end_turn", "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0,
+                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                }
+            lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            parent = record_id
     return "\n".join(lines) + "\n"
 
 
@@ -1054,26 +1214,90 @@ def read_claude_stats(args):
     return history_stats(read_claude(args.read_claude, args.clip))
 
 
-def carried_items(messages, note):
-    items = [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": note}]}]
-    for message in messages:
-        if message["role"] == "user":
-            items.append({"type": "message", "role": "user",
-                          "content": [{"type": "input_text", "text": message["text"]}]})
-        else:
-            items.append({"type": "message", "role": "assistant",
-                          "content": [{"type": "output_text", "text": message["text"]}]})
-    return items
+def model_message(role, text):
+    content = "output_text" if role == "assistant" else "input_text"
+    return {"type": "message", "role": role, "content": [{"type": content, "text": text}]}
 
 
-def carried_display_events(thread_id, messages):
-    """Native rollout events for the TUI, separate from model-visible items.
+def native_arguments(value, depth=0):
+    # Codex's JSON reader has nesting and number limits. Use the existing
+    # text fallback for inputs that would be rejected or rounded on replay.
+    if isinstance(value, (dict, list)):
+        children = value.values() if isinstance(value, dict) else value
+        return depth < READABLE_DEPTH and all(native_arguments(v, depth + 1) for v in children)
+    if isinstance(value, int):
+        return -(2**63) <= value < 2**64
+    return not isinstance(value, float) or math.isfinite(value)
 
-    thread/inject_items only writes ResponseItems. Since Codex's paginated
-    transcript reads completed items inside turns, those alone render blank.
-    These are the on-disk enum names (UserMessage/Text), not the app-server
-    response names (userMessage/text). Verified with Codex 0.167.0-alpha.3.2.
-    """
+
+def native_tool_item(call, result, cwd):
+    """A paired Claude call as a native Codex row, spelled as Codex's rollout stores it on disk:
+    PascalCase item types, snake_case aggregated_output, exit_code and parsed_cmd, and cwd as a
+    file:// URI, not the app-server's camelCase that same_display_item reads back.
+    Measured on Codex 0.169.0-alpha.11.1; CI runs the real-Codex cases on its pinned Codex."""
+    name, args = call["name"], call["input"]
+    status = "failed" if result["failed"] else "completed"
+    item_id = str(uuid.uuid4())
+    if name == "Bash" and isinstance(args, dict) and isinstance(args.get("command"), str):
+        command = args["command"]
+        directory = call["cwd"]
+        if not isinstance(directory, str) or not Path(directory).is_absolute():
+            directory = cwd
+        return {"type": "CommandExecution", "id": item_id, "command": ["bash", "-lc", command],
+                "cwd": Path(directory).as_uri(), "source": "agent", "status": status,
+                "parsed_cmd": [{"type": "unknown", "cmd": command}], "aggregated_output": result["output"],
+                "exit_code": result["exit_code"]}
+    # Keep Claude's built-ins identifiable and restore MCP tools' actual server and tool names.
+    server = "claude"
+    name = name if isinstance(name, str) and name else "tool"
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            server, name = parts[1:]
+    if not native_arguments(args):
+        return None
+    return {"type": "McpToolCall", "id": item_id, "server": server, "tool": name, "arguments": args,
+            "status": status, "result": {"content": [{"type": "text", "text": result["output"]}],
+                                         "isError": result["failed"]}}
+
+
+def display_items(message, cwd, native=True):
+    if message["role"] == "user":
+        yield {"type": "UserMessage", "id": str(uuid.uuid4()), "client_id": None,
+               "content": [{"type": "text", "text": message["text"], "text_elements": []}]}
+        return
+    # Without native rows every part is prose: one reply holding the model's text.
+    tools = message.get("tools", {}) if native else {}
+    rows, consumed = {}, set()
+    for call, result in matched_tools(tools):
+        row = native_tool_item(tools[call], tools[result], cwd)
+        if row is not None:
+            rows[call] = row
+            consumed.add(result)
+
+    def reply(parts, phase):
+        return {"type": "AgentMessage", "id": str(uuid.uuid4()), "phase": phase,
+                "content": [{"type": "Text", "text": "\n\n".join(parts)}]}
+
+    prose = []
+    for index, part in enumerate(message.get("parts", [message["text"]])):
+        if index in rows:
+            if prose:
+                yield reply(prose, "commentary")
+                prose = []
+            yield rows[index]
+        elif index not in consumed:
+            prose.append(part)
+        elif prose:
+            # The result's part may hold the line closing a block the prose left open.
+            yield reply(prose, "commentary")
+            prose = []
+    if prose:
+        yield reply(prose, "final_answer")
+
+
+def carried_records(thread_id, messages, cwd, native=True):
+    """Put one model message and its display items inside the same revertible turn."""
     turn = None
     last_reply = None
     imported_at = int(time.time())
@@ -1086,28 +1310,26 @@ def carried_display_events(thread_id, messages):
     for message in messages:
         if turn is None or message["role"] == "user":
             if turn is not None:
-                yield finished()
+                yield "event_msg", finished()
             turn, last_reply = str(uuid.uuid4()), None
-            yield {"type": "task_started", "turn_id": turn, "root_turn_id": turn,
-                   "turn_attribution": {"turn_id": turn, "root_turn_id": turn,
+            yield "event_msg", {
+                "type": "task_started", "turn_id": turn, "root_turn_id": turn,
+                "turn_attribution": {"turn_id": turn, "root_turn_id": turn,
                                         "turn_trigger": "user", "parent_turn_id": None,
                                         "initiating_agent_path": None},
-                   "started_at": imported_at, "model_context_window": 0,
-                   "collaboration_mode_kind": "default"}
-        if message["role"] == "user":
-            item = {"type": "UserMessage", "id": str(uuid.uuid4()), "client_id": None,
-                    "content": [{"type": "text", "text": message["text"], "text_elements": []}]}
-        else:
-            last_reply = message["text"]
-            item = {"type": "AgentMessage", "id": str(uuid.uuid4()), "phase": "final_answer",
-                    "content": [{"type": "Text", "text": last_reply}]}
-        yield {"type": "item_completed", "thread_id": thread_id, "turn_id": turn,
-               "item": item, "started_at_ms": imported_at * 1000, "completed_at_ms": imported_at * 1000}
+                "started_at": imported_at, "model_context_window": 0, "collaboration_mode_kind": "default"}
+        model = model_message(message["role"], message["text"])
+        model["id"] = "msg_" + str(uuid.uuid4())
+        yield "response_item", model
+        for item in display_items(message, cwd, native):
+            last_reply = item["content"][0]["text"] if item["type"] == "AgentMessage" else None
+            yield "event_msg", {"type": "item_completed", "thread_id": thread_id, "turn_id": turn,
+                                "item": item, "started_at_ms": imported_at * 1000, "completed_at_ms": imported_at * 1000}
     if turn is not None:
-        yield finished()
+        yield "event_msg", finished()
 
 
-def persist_carried_display(rollout_path, thread_id, messages):
+def persist_carried_display(rollout_path, thread_id, messages, cwd, native=True):
     # Only a newly created, not-yet-bound thread is eligible. Its sole writer
     # has exited before we open it, and the verification server has not yet
     # indexed it. Never use this to patch a running or already indexed thread.
@@ -1147,57 +1369,69 @@ def persist_carried_display(rollout_path, thread_id, messages):
         if not matched:
             raise BootstrapError("Carry-over rollout does not identify the new thread")
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        turns = set()
-        items = iter(carried_items(messages, '')[1:])
+        expected = []
         handle.seek(0, os.SEEK_END)
-        for event in carried_display_events(thread_id, messages):
-            if event['type'] == 'item_completed':
-                ordinal += 1
-                item = next(items)
-                item['id'] = 'msg_' + str(uuid.uuid4())
-                handle.write(json.dumps({'timestamp': timestamp, 'ordinal': ordinal,
-                                         'type': 'response_item', 'payload': item}) + '\n')
+        for kind, payload in carried_records(thread_id, messages, cwd, native):
             ordinal += 1
-            if event['type'] == 'task_started':
-                turns.add(event['turn_id'])
-            handle.write(json.dumps({'timestamp': timestamp, 'ordinal': ordinal,
-                                     'type': 'event_msg', 'payload': event}) + '\n')
+            if payload["type"] == "item_completed":
+                expected.append((payload["turn_id"], payload["item"]))
+            handle.write(json.dumps({"timestamp": timestamp, "ordinal": ordinal,
+                                     "type": kind, "payload": payload}) + '\n')
         handle.flush()
         os.fsync(handle.fileno())
-    return turns
+    return expected
 
 
-def verify_carried_display(server, thread_id, expected, messages):
-    # One item per page bounds each response by the expected serialized text
-    # plus the normal protocol allowance for its envelope and notifications.
-    # Verify text as well as turns: a changed native item format can
-    # otherwise leave valid but empty turns and falsely report success again.
-    seen, cursor, cursors, index = set(), None, set(), 0
+def same_display_item(saved, item):
+    kind = saved["type"]
+    if item.get("type") != kind[0].lower() + kind[1:] or item.get("id") != saved["id"]:
+        return False
+    if kind == "AgentMessage":
+        return item.get("text") == saved["content"][0]["text"]
+    if kind == "UserMessage":
+        return item.get("content") == saved["content"]
+    if item.get("status") != saved["status"]:
+        return False
+    if kind == "CommandExecution":
+        # Codex 0.169 hands back null for an empty output.
+        return ((item.get("aggregatedOutput") or "") == saved["aggregated_output"] and
+                item.get("exitCode") == saved["exit_code"] and
+                item.get("commandActions") == [{"type": "unknown", "command": saved["command"][-1]}])
+    result = item.get("result")
+    return (all(item.get(k) == saved[k] for k in ("server", "tool", "arguments"))
+            and isinstance(result, dict) and result.get("content") == saved["result"]["content"])
+
+
+def verify_carried_display(server, thread_id, expected):
+    # Page through a new server as a native resume does. Batch small rows:
+    # a long Claude reply can contain hundreds of calls. An oversized row
+    # gets a page to itself and an allowance based on its serialized size.
+    cursor, cursors, index = None, set(), 0
     while True:
-        params = {'threadId': thread_id, 'sortDirection': 'asc', 'limit': 1}
+        count, text_size = 0, 0
+        for _, saved in expected[index:index + 32]:
+            size = len(json.dumps(saved))
+            if saved["type"] == "CommandExecution":
+                # The API also shell-quotes the command to build its display string.
+                size += 4 * len(saved["command"][-1])
+            if count and text_size + size > MAX_MESSAGE // 4:
+                break
+            text_size += size
+            count += 1
+        params = {'threadId': thread_id, 'sortDirection': 'asc', 'limit': max(1, count)}
         if cursor is not None:
             params['cursor'] = cursor
-        text_size = len(json.dumps(messages[index]['text']).encode('utf-8')) if index < len(messages) else 0
         result = server.request('thread/items/list', params, max_message=MAX_MESSAGE + text_size)
         data = result.get('data')
         if not isinstance(data, list) or any(not isinstance(t, dict) for t in data):
             raise BootstrapError("Codex could not verify the carried transcript's display")
         for entry in data:
             item = entry.get('item', {})
-            if not isinstance(item, dict) or index >= len(messages):
-                raise BootstrapError("Codex returned unexpected carried transcript items")
-            message = messages[index]
-            expected_type = 'userMessage' if message['role'] == 'user' else 'agentMessage'
-            content = item.get('content')
-            text = item.get('text') if expected_type == 'agentMessage' else (
-                content[0].get('text') if isinstance(content, list) and len(content) == 1
-                and isinstance(content[0], dict) else None)
-            if item.get('type') != expected_type or text != message['text']:
-                raise BootstrapError("Codex did not retain the carried transcript's visible messages")
-            turn_id = entry.get('turnId')
-            if not isinstance(turn_id, str):
-                raise BootstrapError("Codex returned an invalid carried transcript turn")
-            seen.add(turn_id)
+            if not isinstance(item, dict) or index >= len(expected):
+                raise DisplayMismatch("Codex returned unexpected carried transcript items")
+            turn_id, saved = expected[index]
+            if entry.get("turnId") != turn_id or not same_display_item(saved, item):
+                raise DisplayMismatch("Codex did not retain the carried transcript's visible messages")
             index += 1
         cursor = result.get('nextCursor')
         if cursor is None:
@@ -1205,8 +1439,8 @@ def verify_carried_display(server, thread_id, expected, messages):
         if not isinstance(cursor, str) or cursor in cursors or not data:
             raise BootstrapError("Codex returned invalid carry-over pagination")
         cursors.add(cursor)
-    if seen != expected or index != len(messages):
-        raise BootstrapError("Codex did not retain the carried transcript's visible turns and messages")
+    if index != len(expected):
+        raise DisplayMismatch("Codex did not retain the carried transcript's visible turns and messages")
 
 
 def bootstrap(args):
@@ -1226,14 +1460,27 @@ def bootstrap(args):
     if len(instructions.encode("utf-8")) > MAX_MESSAGE // 2:
         raise BootstrapError("instructions file is too large")
     # Read before any server starts, so an unreadable conversation creates no thread.
-    carried = []
+    messages, provenance = [], None
     if args.history_from_claude:
         messages = read_claude(args.history_from_claude, args.clip)
         if not messages:
             raise BootstrapError("the Claude conversation has nothing to carry over")
         source = args.history_source or Path(args.history_from_claude).stem
-        carried = carried_items(messages, carried_note("claude", source, args.clip))
-    deadline = time.monotonic() + args.timeout
+        provenance = model_message("developer", carried_note("claude", source, args.clip))
+    thread_id = prepare_thread(args, cwd, instructions, messages, provenance, True, time.monotonic() + args.timeout)
+    if thread_id is None:
+        # Codex did not show the native tool rows back and that thread is gone: carry
+        # the conversation again with its tool calls as reply text, as carries showed before native rows.
+        print("cs-codex-thread: Codex did not keep the carried tool rows; carrying the tool calls as text instead",
+              file=sys.stderr)
+        thread_id = prepare_thread(args, cwd, instructions, messages, provenance, False,
+                                   time.monotonic() + args.timeout)
+    return thread_id
+
+
+def prepare_thread(args, cwd, instructions, messages, provenance, native, deadline):
+    """Start or resume the thread, carry messages into it and check what a fresh server shows.
+    None means a carry with native tool rows failed that check, and its new thread was deleted."""
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
         if args.thread_id:
@@ -1257,18 +1504,29 @@ def bootstrap(args):
         # Only the provenance note belongs outside turns. The conversation
         # is persisted with its display events after this writer has exited,
         # so native revert removes both views at the same turn boundary.
-        if carried:
-            server.request("thread/inject_items", {"threadId": thread_id, "items": carried[:1]})
+        if messages:
+            server.request("thread/inject_items", {"threadId": thread_id, "items": [provenance]})
         server.request("thread/unsubscribe", {"threadId": thread_id})
-    visible_turns = persist_carried_display(rollout_path, thread_id, messages) if carried else set()
+    visible_items = persist_carried_display(rollout_path, thread_id, messages, cwd, native) if messages else []
     # A successful start/injection response is insufficient proof of durability.
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
         exact_id(server.request("thread/resume", {
             "threadId": thread_id, "cwd": cwd, "excludeTurns": True,
         }), thread_id)
-        if visible_turns:
-            verify_carried_display(server, thread_id, visible_turns, messages)
+        if visible_items:
+            try:
+                verify_carried_display(server, thread_id, visible_items)
+            except DisplayMismatch:
+                # Only a row Codex changed: a check that ran out of time, lost its server or broke
+                # the protocol fails as it did, and a deadline that passed would refuse thread/delete.
+                if not any(item["type"] in ("CommandExecution", "McpToolCall") for _, item in visible_items):
+                    raise
+                try:
+                    server.request("thread/delete", {"threadId": thread_id})
+                except BootstrapError:
+                    pass  # A failed carry left its thread behind before; a refused delete does no worse.
+                return None
         server.request("thread/unsubscribe", {"threadId": thread_id})
     return thread_id
 

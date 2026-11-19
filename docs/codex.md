@@ -108,20 +108,31 @@ fresh. The carried thread is a new one: cs starts it through app-server, adds
 the session context, then a developer note and Claude's messages as user and
 assistant items, with every tool call and each tool result's first 4,000
 characters (a failed call's result marked `[tool error]`), and binds it.
-A tool call's input crosses as a `key: value` line per field, a multi-line
-value (a heredoc, an edit's text) indented under its name after `|` (one
-final newline), `|-` (none) or `|+` (more), and each call's input and result
-sit in a code fence, so Codex's transcript shows them as written instead of
-as JSON with literal `\n` or as markdown. Codex's model reads the same text,
-so a value that would read as something else (empty, `"2"`, `"true"`, edge
-spaces, a control character) stays quoted as JSON, and levels nested past 32
-cross as JSON.
+In the Codex transcript, a completed Claude Bash call appears as a native
+command row with its output. Other tools appear as named tool rows with
+their arguments, result and failure status. Claude built-ins use the
+`claude` server label and MCP tools keep their server and tool names.
+Parallel results attach to the matching Claude call ID. Calls and results
+without a unique partner in the same reply keep their text representation,
+as do arguments too deeply nested or numerically out of range for native replay.
+The model history retains the original order, with tool inputs laid out as
+fenced `key: value` lines and tool results as fenced text.
+There, and in any call kept as text in the transcript, an input crosses as a
+`key: value` line per field, a multi-line value (a heredoc, an edit's text)
+indented under its name after `|` (one final newline), `|-` (none) or `|+`
+(more). Codex's model reads this text, so a value that would read as something
+else (empty, `"2"`, `"true"`, edge spaces, a control character) stays quoted
+as JSON, and levels nested past 32 cross as JSON.
 The helper records the carried model messages and transcript display events
 inside matching turn boundaries after the new thread's writer exits, so native
 revert removes both views of an exchange. It then resumes the thread in a
 separate process and checks the visible turns before reporting success. This makes the imported messages visible in the CLI;
-injecting model context alone leaves the transcript blank. The display format is
-verified with Codex `0.167.0-alpha.3.2`. CI pins that version on macOS and Linux
+injecting model context alone leaves the transcript blank. When that check finds
+a row Codex changed, dropped or added in a carry with native tool rows, the helper
+deletes the new thread, says so in one line and carries the conversation again
+with its tool calls as reply text; a check that times out, loses its server or
+breaks the protocol fails the carry instead. Native tool rows were
+verified in the Codex `0.169.0-alpha.11.1` terminal. CI pins `0.167.0-alpha.3.2` on macOS and Linux
 and checks native display, revert's next model input, and messages above 4 MiB
 using temporary homes and a local mock provider. Existing open threads are not
 rewritten.
@@ -135,17 +146,34 @@ the launch resumes the earlier thread, or starts a fresh one when there is none.
 The other direction writes the Codex thread as a Claude transcript that Claude
 resumes; Codex's encrypted reasoning and its injected context (AGENTS.md,
 `<environment_context>`, skill bodies and the other tags cs knows as Codex's)
-stay behind, while a prompt the user wrapped in a tag crosses. Claude Code
-renders the carried messages as markdown too, so tool parts are laid out the
-same way: a function call's JSON arguments cross as `key: value` lines
-(arguments that are not one JSON object or list, that repeat a key, or that
-are nested too deeply to lay out, cross as written, under a
-`[tool call: <name>, arguments as written]` head), a
-custom tool's input (a code-mode script, a patch), a shell
-command (its words quoted as a shell would) and a search cross as written,
-and each input, each result and a sub-agent's final answer sit in a code
-fence, with cs's cut note and `[image]` marks after it. Text in a fence loses
-the blank lines before it and the whitespace after it. In code mode,
+stay behind, while a prompt the user wrapped in a tag crosses. Claude Code shows matching calls and results as native tool rows.
+Direct shell commands appear as Bash, MCP calls retain their server and tool
+names, and other Codex tools use the `codex` server label. MCP and Codex tool
+rows need Claude Code 2.1.326 or later, the oldest checked to draw a tool it
+does not have; below it, or when cs cannot read Claude's version, those calls
+cross as fenced text and only Bash rows stay native. A Bash row carries
+the command alone: Codex's execution options (timeouts, output limits, sandbox
+and login settings) stay behind, and a working directory other than the
+session's is folded into the command as `cd <directory> && `. A code-mode script
+appears with its original input and decoded output. Expand the transcript
+with Ctrl+O to inspect each row. Parallel results refer to their originating
+call IDs, and a reported tool failure includes its tool name on Claude’s error line.
+A result counts as failed when code mode's header says `Script failed` or
+`exec_command` reports a non-zero exit code; its text fallback then reads `[tool error]`.
+A carried result's `<system-reminder` tags arrive with `<` written as `&lt;`,
+as Claude Code writes them in content its own tools did not produce; so do
+those in a carried user message, where a `!` command's output is kept.
+Calls without a matching result, orphaned results, and inputs Claude cannot
+represent as a tool argument object use the fenced text format. Sub-agent
+final answers also cross as fenced text. In that format a function call's JSON
+arguments cross as `key: value` lines (arguments that are not one JSON object
+or list, that repeat a key, or that are nested too deeply to lay out, cross as
+written, under a `[tool call: <name>, arguments as written]` head), a custom
+tool's input (a code-mode script, a patch), a shell command (its words quoted
+as a shell would) and a search cross as written, and each input, each result
+and a sub-agent's final answer sit in a code fence, with cs's cut note and
+`[image]` marks after it. Text in a fence loses the blank lines before it and
+the whitespace after it. In code mode,
 Codex's `exec` and `wait` tools record what a script passes to `text()`, as JSON
 when it is not a string, so a command run from a script arrives as
 `exec_command`'s result object. cs carries a single such result, when nothing is
