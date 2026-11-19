@@ -796,6 +796,8 @@ def read_codex(path, limit):
                         codex_item(history, entry, stamp, limit)
                 elif isinstance(summary, str) and summary.strip():
                     history.reset()
+                    # A user message like any other: its reminder tags are defanged.
+                    summary = REMINDER_TAG.sub("&lt;", summary)
                     history.add("user", "[Summary of the earlier conversation]\n" + summary, stamp)
             elif record.get("type") == "response_item":
                 codex_item(history, item, stamp, limit)
