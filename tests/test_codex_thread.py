@@ -566,6 +566,16 @@ class TransplantTests(HelperFixture):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
+    def assert_native_carry(self, result):
+        """Check a carry kept its native tool rows, and return its thread's rollout, the only one."""
+        # A failed check becomes a text carry that succeeds. When Codex refuses to delete the
+        # native thread, its rollout stays beside the text one and glob order picks which is read.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('carrying the tool calls as text instead', result.stderr)
+        rollouts = list(self.codex_home.glob('sessions/**/*.jsonl'))
+        self.assertEqual(len(rollouts), 1, rollouts)
+        return rollouts[0]
+
     @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
     def test_real_revert_removes_carried_turn_from_next_model_input(self):
         captured, received = [], threading.Event()
@@ -598,7 +608,7 @@ class TransplantTests(HelperFixture):
                 sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
                 '--instructions-file', str(self.instructions), '--history-from-claude', str(source),
             ], env=self.env, capture_output=True, text=True, timeout=40)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assert_native_carry(result)
             thread_id = result.stdout.strip()
             helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
             with patch.dict(os.environ, CODEX_HOME=str(self.codex_home)):
@@ -637,7 +647,7 @@ class TransplantTests(HelperFixture):
             sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
             '--instructions-file', str(self.instructions), '--history-from-claude', str(source),
         ], env=self.env, capture_output=True, text=True, timeout=40)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        rollout = self.assert_native_carry(result)
         helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
         # Read through a separate server, as the TUI does on its next resume.
         previous = os.environ.get('CODEX_HOME')
@@ -658,7 +668,6 @@ class TransplantTests(HelperFixture):
                          ['userMessage', 'agentMessage', 'mcpToolCall', 'agentMessage', 'userMessage', 'agentMessage'])
         self.assertEqual(items[0]['content'][0]['text'], '/color blue\n\nfind the budget')
         self.assertEqual(items[-1]['text'], 'Answer two.')
-        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
         records = [json.loads(line) for line in rollout.read_text().splitlines()]
         model = [r['payload'] for r in records if r['type'] == 'response_item']
         self.assertEqual(sum(i.get('role') == 'assistant' for i in model), 2)
@@ -2162,8 +2171,7 @@ class TransplantTests(HelperFixture):
             '--instructions-file', str(self.instructions), '--history-from-claude',
             str(SHAPES / 'claude-shapes.jsonl'),
         ], env=self.env, capture_output=True, text=True, timeout=40)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        rollout = self.assert_native_carry(result)
         events = [json.loads(line)['payload'] for line in rollout.read_text().splitlines()]
         rows = [e['item'] for e in events if e.get('type') == 'item_completed']
         self.assertEqual([row['type'] for row in rows], [
@@ -2196,8 +2204,7 @@ class TransplantTests(HelperFixture):
             sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
             '--instructions-file', str(self.instructions), '--history-from-claude', str(path),
         ], env=self.env, capture_output=True, text=True, timeout=40)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        rollout = self.assert_native_carry(result)
         events = [json.loads(line)['payload'] for line in rollout.read_text().splitlines()]
         rows = [e['item'] for e in events if e.get('type') == 'item_completed']
         # A native carry, not the text one a failed check falls back to.
@@ -2233,8 +2240,7 @@ class TransplantTests(HelperFixture):
             sys.executable, str(HELPER), '--codex-bin', executable, '--cwd', str(self.cwd),
             '--instructions-file', str(self.instructions), '--history-from-claude', str(path),
         ], env=self.env, capture_output=True, text=True, timeout=40)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        rollout = next(self.codex_home.glob('sessions/**/*.jsonl'))
+        rollout = self.assert_native_carry(result)
         events = [json.loads(line)['payload'] for line in rollout.read_text().splitlines()]
         rows = [e['item'] for e in events if e.get('type') == 'item_completed']
         self.assertEqual([row['type'] for row in rows], ['UserMessage'] + ['CommandExecution'] * 5 + [
@@ -2265,9 +2271,9 @@ class TransplantTests(HelperFixture):
                                    claude_record('assistant', calls, '2', '1'),
                                    claude_record('user', results, '3', '2')]) + '\n')
         result = self.run_helper('', '--history-from-claude', str(path), '--clip', '6')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        rollout = self.assert_native_carry(result)
         events = [json.loads(line)['payload'] for line in
-                  next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
+                  rollout.read_text().splitlines()]
         # The unmatched call came before the matched results and the orphan after them.
         user, bash, lookup, call, orphan = [e['item'] for e in events if e.get('type') == 'item_completed']
         self.assertEqual(bash['status'], 'failed')
@@ -2283,9 +2289,9 @@ class TransplantTests(HelperFixture):
         path = self.root / (CLAUDE_ID + '.jsonl')
         path.write_text('\n'.join(records) + '\n')
         result = self.run_helper('', '--history-from-claude', str(path))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        rollout = self.assert_native_carry(result)
         events = [json.loads(line)['payload'] for line in
-                  next(self.codex_home.glob('sessions/**/*.jsonl')).read_text().splitlines()]
+                  rollout.read_text().splitlines()]
         return [e['item'] for e in events if e.get('type') == 'item_completed']
 
     def claude_calls(self, calls):
