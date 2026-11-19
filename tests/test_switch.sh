@@ -1326,10 +1326,12 @@ test_antigravity_preflight_and_settle_keep_unsupported_targets_safe() {
     _enable_antigravity || return 1
     _fake_run preflight claude
     dir="$CS_SESSION_DIR"
+    # An encrypted session switches to Antigravity, which runs it on a home
+    # inside its vault (lib/79-antigravity-vault.sh); --check writes nothing.
     mkdir -p "$dir/.cs/private"
     out=$("$CS_BIN" -switch antigravity --check 2>&1) || status=$?
-    assert_eq 1 "$status" || return 1
-    assert_output_contains "$out" 'this session is encrypted' || return 1
+    assert_eq 0 "$status" "an encrypted session may switch to Antigravity: $out" || return 1
+    assert_output_not_contains "$out" 'this session is encrypted' || return 1
     assert_not_exists "$dir/.cs/private/pending-switch" || return 1
     rmdir "$dir/.cs/private"
     _arm

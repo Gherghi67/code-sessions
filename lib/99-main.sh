@@ -623,18 +623,16 @@ main() {
     local engine
     engine=$(_session_engine "$session_dir" "$explicit_engine")
     # Codex runs an encrypted session on a home inside its vault
-    # (lib/76-codex-vault.sh). Antigravity has no home setting to point there
-    # (_antigravity_encrypted_refusal), so it stays refused, before the pre-open
-    # asks for the vault's password. Claude refuses a worktree of an encrypted
-    # base too, so that one is not pointed at it.
+    # (lib/76-codex-vault.sh), and Antigravity on a $HOME there
+    # (lib/79-antigravity-vault.sh). Claude refuses a worktree of an encrypted
+    # base, so neither is pointed at one.
     if [ "$engine" != claude ]; then
         if [ -n "$wt_base" ] && _switch_session_encrypted "$(_resolve_session_dir "$wt_base")"; then
             error "$wt_base is encrypted, and feature worktrees of an encrypted session are not supported yet."
         fi
         if _switch_session_encrypted "$session_dir"; then
             case "$engine" in
-                codex) ;;
-                antigravity) error "$(_antigravity_encrypted_refusal "$session_name")" ;;
+                codex|antigravity) ;;
                 *) error "$session_name is encrypted, and $engine keeps its state outside the vault. Open it under Claude: cs $session_name --engine claude" ;;
             esac
         fi

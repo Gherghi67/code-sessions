@@ -239,7 +239,7 @@ refuses, naming the fix, outside a session or a live run of it (its
 `CS_RUN_ID` must match `.cs/local/run-lease.json`), for an unknown engine or the
 current one, for a target the install did not set up or whose CLI is missing,
 for a source or target adapter without `engine_switch` or `rotation`, for a switch already pending, for an
-encrypted session whose vault is locked, whose target is Antigravity,
+encrypted session whose vault is locked
 or whose open would refuse the relaunch
 (`_refuse_unmounted_meta`, for example a plaintext `.cs/local/session.log` an
 older Codex run left there), and when no unconsumed handoff is armed.
@@ -330,9 +330,12 @@ Codex runs an encrypted session on a `CODEX_HOME` inside its vault
 exports it for the run, `_codex_vault_check` refuses what cs cannot confine, and
 `_codex_vault_profile_args` adds the permissions profile that keeps the agent
 out of it ([Codex: encrypted sessions](codex.md#encrypted-sessions)).
-Antigravity refuses encrypted sessions before the pre-open
-(`_antigravity_encrypted_refusal`): agy resolves everything from `$HOME`, with
-no setting that moves its state.
+Antigravity runs one on a `$HOME` inside its vault
+(lib/79-antigravity-vault.sh), since agy resolves everything from `$HOME`:
+`_antigravity_vault_home_prepare` links it back to the user's home at each
+open, the launch passes it to agy alone, and the PreInvocation and
+PostToolUse hooks check it during the run
+([Antigravity: encrypted sessions](antigravity.md#encrypted-sessions)).
 Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 `~/.gemini/config/plugins/cs/`, and cs's status line, which each launch passes with
 `agy --settings` for that run only. The same hook brings `cs -msg` mail into the

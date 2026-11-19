@@ -68,6 +68,13 @@ _encrypt_moves() {  # meta_dir
     for f in handoffs checkpoints narrative-archive; do
         [ -e "$meta/$f" ] && echo "$f private/$f"
     done
+    # agy starts from an empty vault home. Keep the previous ID for reference
+    # but remove it from the active bindings, since its transcript stays in
+    # the shared home.
+    f=$(_cs_binding_file antigravity)
+    if [ -e "$meta/local/$f" ] || [ -L "$meta/local/$f" ]; then
+        printf 'local/%s private/%s-before-encryption\n' "$f" "$f"
+    fi
     return 0
 }
 
@@ -230,6 +237,11 @@ run_encrypt() {
     mnt="$meta/vault-mnt"
     container=$(_encrypt_container_path "$name")
 
+    # The next Antigravity open writes its context in the vault. Remove
+    # marked workspace copies before creating the container or moving data.
+    _antigravity_drop_workspace_rule "$SESSIONS_ROOT/$name" \
+        || error "$name: could not safely remove plaintext Antigravity context from .agents/rules. Check for linked or inaccessible paths there, then retry."
+
     # The Codex launch's context, built from memory and the narrative: nothing
     # but a copy, written again inside the vault at the next Codex open.
     # Deleted, not carried, and before the container is made, so a failure
@@ -282,6 +294,9 @@ run_encrypt() {
     echo "  - its Codex conversations in $codex_shared: rollouts under sessions/ and archived_sessions/,"
     echo "    lines in history.jsonl and session_index.jsonl, rows in its state databases, and its"
     echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
+    echo "  - its Antigravity conversations in ~/.gemini/antigravity-cli: conversations/, brain/, history.jsonl,"
+    echo "    conversation_summaries.db and log/ (from now on agy keeps them in the vault, under .cs/private/antigravity-home)"
+    echo "    Any previous Antigravity binding is archived in .cs/private/antigravity-conversation-before-encryption."
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
     echo "  - git history of anything committed before, and backups or snapshots"
 }

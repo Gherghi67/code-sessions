@@ -114,12 +114,11 @@ _switch_session_encrypted() {  # session_dir
     [ -e "$1/.cs/private" ] || [ -L "$1/.cs/private" ]
 }
 
-# Claude and Codex start from a handoff kept in the vault, and keep their
-# conversations there (.cs/claude-config, .cs/private/codex-home).
-# Antigravity has no home setting to point into the vault and refuses
-# encrypted sessions altogether.
+# Every engine starts from a handoff kept in the vault, and keeps its
+# conversations there (.cs/claude-config, .cs/private/codex-home,
+# .cs/private/antigravity-home).
 _switch_engine_reads_vault() {  # engine
-    case "$1" in claude|codex) return 0 ;; esac
+    case "$1" in claude|codex|antigravity) return 0 ;; esac
     return 1
 }
 

@@ -100,10 +100,13 @@ CS_VAULT_LINKS="memory plans claude-config private"
 # a rotation, and nothing is added beside it. That answer is one hook run's:
 # a value of either name that came in with the environment is dropped here,
 # where cs and every hook that reads these files load this file.
-unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE
+unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE _cs_private_pin_meta _cs_private_pin_dir
 cs_private_dir() {  # meta_dir
     [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
-    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+    if [ "${_cs_private_pin_meta:-}" = "$1" ]; then
+        # shellcheck disable=SC2154  # set by Antigravity's hook dispatch
+        printf '%s\n' "$_cs_private_pin_dir"
+    elif [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private"
     else
@@ -454,7 +457,10 @@ cs_private_state() {  # meta_dir
 # .cs/handoffs in every other. Fails, like cs_private_dir, while .cs/private
 # dangles: a locked vault has no handoffs to offer or consume.
 cs_handoff_dir() {  # meta_dir
-    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+    if [ "${_cs_private_pin_meta:-}" = "$1" ]; then
+        # shellcheck disable=SC2154  # set by Antigravity's hook dispatch
+        printf '%s/handoffs\n' "$_cs_private_pin_dir"
+    elif [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private/handoffs"
     else

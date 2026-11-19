@@ -3,6 +3,7 @@
 # ABOUTME: and how it stops. hdiutil, uname and mount are PATH stubs that log every call.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGY_ENCRYPT_CACHE_PARENT="$HOME/.cache"
 # shellcheck source=tests/test_lib.sh
 source "$SCRIPT_DIR/test_lib.sh"
 
@@ -311,6 +312,94 @@ test_encrypt_removes_the_plaintext_codex_context() {
     assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
     assert_not_exists "$s/local/codex-instructions.md" "no plaintext Codex context" || return 1
     assert_not_exists "$s/vault-mnt/private/codex-instructions.md" "nothing carried: the next Codex open writes it" || return 1
+}
+
+# The Antigravity launch's rule, cs's context in the session folder, is
+# removed as the Codex context is: the next Antigravity open writes it into
+# the vault. A rule there without cs's mark is the user's and stays.
+test_encrypt_removes_the_plaintext_antigravity_rule() {
+    _stubs
+    _populated_session enc
+    _populated_session enc2
+    local rule="$CS_SESSIONS_ROOT/enc/.agents/rules/cs-session.md" theirs="$CS_SESSIONS_ROOT/enc2/.agents/rules/cs-session.md" out rc=0
+    mkdir -p "${rule%/*}" "${theirs%/*}"
+    printf -- '---\ntrigger: always_on\n---\n<!-- cs:antigravity-session-context -->\n\nmemory excerpt\n' > "$rule"
+    cp "$rule" "${rule%/*}/.cs-session.Abc123"
+    printf 'user temporary file\n' > "${rule%/*}/.cs-session.Xyz987"
+    printf 'my own rule\n' > "$theirs"
+    out=$(_encrypt enc 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_not_exists "$rule" "no plaintext Antigravity context" || return 1
+    assert_not_exists "${rule%/*}/.cs-session.Abc123" "the marked interrupted write is removed" || return 1
+    assert_eq "user temporary file" "$(cat "${rule%/*}/.cs-session.Xyz987")" "the unmarked file is left alone" || return 1
+    assert_output_contains "$out" "its Antigravity conversations in ~/.gemini/antigravity-cli" "the list names agy's copies" || return 1
+    out=$(_encrypt enc2 2>&1) || rc=$?
+    assert_eq "0" "$rc" "exit 0 (output: $out)" || return 1
+    assert_eq 'my own rule' "$(cat "$theirs")" "the user's rule stays"
+}
+
+test_encrypt_refuses_linked_antigravity_rule_parents() {
+    _stubs
+    local external="$TEST_TMPDIR/other-checkout/.agents" name parent out rc
+    mkdir -p "$external/rules"
+    printf '<!-- cs:antigravity-session-context -->\n' > "$external/rules/cs-session.md"
+    for parent in .agents rules; do
+        name="linked-${parent#.}"
+        _populated_session "$name"
+        if [ "$parent" = .agents ]; then
+            ln -s "$external" "$CS_SESSIONS_ROOT/$name/.agents"
+        else
+            mkdir "$CS_SESSIONS_ROOT/$name/.agents"
+            ln -s "$external/rules" "$CS_SESSIONS_ROOT/$name/.agents/rules"
+        fi
+        rc=0
+        out=$(_encrypt "$name" 2>&1) || rc=$?
+        assert_eq 1 "$rc" "conversion stops at linked $parent (output: $out)" || return 1
+        assert_file_exists "$external/rules/cs-session.md" "the other checkout's rule stays" || return 1
+        _assert_nothing_written "$name" || return 1
+    done
+}
+
+test_antigravity_reopen_after_encryption_starts_a_new_conversation() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" old_id=11111111-1111-4111-8111-111111111111 output
+    local transcript="$HOME/.gemini/antigravity-cli/conversations/$old_id.json"
+    local args="$TEST_TMPDIR/agy-args"
+    rm -f "$meta/local/pending-handoff"
+    printf 'engine: antigravity\n' > "$meta/local/state"
+    printf '%s\n' "$old_id" > "$meta/local/antigravity-conversation"
+    mkdir -p "${transcript%/*}"
+    printf 'old conversation\n' > "$transcript"
+    printf '{"token":"test"}\n' > "$HOME/.gemini/jetski-standalone-oauth-token"
+    ( source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$CS_BIN" ) || return 1
+
+    cat > "$TEST_TMPDIR/stub/agy" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    --version) printf '1.5.10\n'; exit 0 ;;
+    --help) printf '  --conversation ID\n'; exit 0 ;;
+esac
+printf '%s\n' "$@" > "$AGY_TEST_ARGS"
+EOF
+    chmod +x "$TEST_TMPDIR/stub/agy"
+
+    output=$(_encrypt enc 2>&1) || { printf '%s\n' "$output"; return 1; }
+    # Accept the default on an ordinary reopen if cs offers to continue.
+    output=$(
+        local run_cache
+        mkdir -p "$AGY_ENCRYPT_CACHE_PARENT" || exit 1
+        run_cache=$(mktemp -d "$AGY_ENCRYPT_CACHE_PARENT/cs-agy-encrypt-test.XXXXXX") || exit 1
+        trap 'rm -rf -- "$run_cache"' EXIT
+        printf 'y' | CS_ASSUME_TTY=1 CS_CACHE_DIR="$run_cache" AGY_BIN="$TEST_TMPDIR/stub/agy" AGY_TEST_ARGS="$args" "$CS_BIN" enc 2>&1
+    ) \
+        || { printf '%s\n' "$output"; return 1; }
+    assert_file_exists "$args" "agy started" || return 1
+    assert_eq "" "$(cat "$args")" "agy starts without the pre-encryption conversation ID" || return 1
+    assert_eq "$old_id" "$(cat "$meta/private/antigravity-conversation-before-encryption")" \
+        "the vault records the previous binding" || return 1
+    assert_not_exists "$meta/local/antigravity-conversation" "the old ID is no longer an active binding" || return 1
+    assert_eq "old conversation" "$(cat "$transcript")" "the old transcript remains in the shared home"
 }
 
 # Anything but a file at that name would stop its removal halfway: refused
@@ -1174,6 +1263,9 @@ run_test test_encrypt_refuses_a_relative_cs_data_dir
 run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
+run_test test_encrypt_removes_the_plaintext_antigravity_rule
+run_test test_encrypt_refuses_linked_antigravity_rule_parents
+run_test test_antigravity_reopen_after_encryption_starts_a_new_conversation
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_removes_leftover_codex_context_temp_files
 run_test test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file
