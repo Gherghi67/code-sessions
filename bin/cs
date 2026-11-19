@@ -17281,6 +17281,13 @@ _encrypt_moves() {  # meta_dir
     for f in handoffs checkpoints narrative-archive; do
         [ -e "$meta/$f" ] && echo "$f private/$f"
     done
+    # agy starts from an empty vault home. Keep the previous ID for reference
+    # but remove it from the active bindings, since its transcript stays in
+    # the shared home.
+    f=$(_cs_binding_file antigravity)
+    if [ -e "$meta/local/$f" ] || [ -L "$meta/local/$f" ]; then
+        printf 'local/%s private/%s-before-encryption\n' "$f" "$f"
+    fi
     return 0
 }
 
@@ -17506,6 +17513,7 @@ run_encrypt() {
     echo "    cs-rotation-*.config.toml (from now on Codex keeps them in the vault, under .cs/private/codex-home)"
     echo "  - its Antigravity conversations in ~/.gemini/antigravity-cli: conversations/, brain/, history.jsonl,"
     echo "    conversation_summaries.db and log/ (from now on agy keeps them in the vault, under .cs/private/antigravity-home)"
+    echo "    Any previous Antigravity binding is archived in .cs/private/antigravity-conversation-before-encryption."
     echo "  - .cs/summary.md and .cs/brief.md, which stay plaintext"
     echo "  - git history of anything committed before, and backups or snapshots"
 }

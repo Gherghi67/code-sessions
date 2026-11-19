@@ -333,6 +333,42 @@ test_encrypt_removes_the_plaintext_antigravity_rule() {
     assert_eq 'my own rule' "$(cat "$theirs")" "the user's rule stays"
 }
 
+test_antigravity_reopen_after_encryption_starts_a_new_conversation() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" old_id=11111111-1111-4111-8111-111111111111 output
+    local transcript="$HOME/.gemini/antigravity-cli/conversations/$old_id.json"
+    local args="$TEST_TMPDIR/agy-args"
+    rm -f "$meta/local/pending-handoff"
+    printf 'engine: antigravity\n' > "$meta/local/state"
+    printf '%s\n' "$old_id" > "$meta/local/antigravity-conversation"
+    mkdir -p "${transcript%/*}"
+    printf 'old conversation\n' > "$transcript"
+    printf '{"token":"test"}\n' > "$HOME/.gemini/jetski-standalone-oauth-token"
+    ( source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_plugin_register "$CS_BIN" ) || return 1
+
+    cat > "$TEST_TMPDIR/stub/agy" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    --version) printf '1.5.10\n'; exit 0 ;;
+    --help) printf '  --conversation ID\n'; exit 0 ;;
+esac
+printf '%s\n' "$@" > "$AGY_TEST_ARGS"
+EOF
+    chmod +x "$TEST_TMPDIR/stub/agy"
+
+    output=$(_encrypt enc 2>&1) || { printf '%s\n' "$output"; return 1; }
+    # Accept the default on an ordinary reopen if cs offers to continue.
+    output=$(printf 'y' | CS_ASSUME_TTY=1 AGY_BIN="$TEST_TMPDIR/stub/agy" AGY_TEST_ARGS="$args" "$CS_BIN" enc 2>&1) \
+        || { printf '%s\n' "$output"; return 1; }
+    assert_file_exists "$args" "agy started" || return 1
+    assert_eq "" "$(cat "$args")" "agy starts without the pre-encryption conversation ID" || return 1
+    assert_eq "$old_id" "$(cat "$meta/private/antigravity-conversation-before-encryption")" \
+        "the vault records the previous binding" || return 1
+    assert_not_exists "$meta/local/antigravity-conversation" "the old ID is no longer an active binding" || return 1
+    assert_eq "old conversation" "$(cat "$transcript")" "the old transcript remains in the shared home"
+}
+
 # Anything but a file at that name would stop its removal halfway: refused
 # before the container is made or anything moves.
 test_encrypt_refuses_a_codex_context_that_is_not_a_file() {
@@ -1195,6 +1231,7 @@ run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_names_the_shared_codex_home_from_inside_a_vault
 run_test test_encrypt_removes_the_plaintext_codex_context
 run_test test_encrypt_removes_the_plaintext_antigravity_rule
+run_test test_antigravity_reopen_after_encryption_starts_a_new_conversation
 run_test test_encrypt_refuses_a_codex_context_that_is_not_a_file
 run_test test_encrypt_removes_leftover_codex_context_temp_files
 run_test test_encrypt_refuses_a_codex_context_leftover_that_is_not_a_file
