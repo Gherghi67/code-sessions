@@ -335,8 +335,12 @@ vault is locked: tell the user to mount it and stop.
    `cs -engine supports clear_rotation`. If it exits 0, say: after `/clear`
    (alias `/new`) they send one message, and `go` is enough; cs's hooks
    point the session at the new conversation and hand it this handoff. A
-   message with its own content takes precedence. There is no automatic
-   count. If it exits non-zero (`agy` older than 1.5.10, or a cs plugin
+   message with its own content takes precedence. If
+   `cs -engine supports auto_clear` exits 0 too, add: about twenty seconds
+   after this turn ends, once nothing runs in the background, cs types
+   `/clear` and `go` itself, once; a message they send first stops it, and
+   a draft left in the composer would be sent. If `clear_rotation` exits
+   non-zero (`agy` older than 1.5.10, or a cs plugin
    without its SessionStart entry; `cs -doctor` names which), tell them to
    exit with `/exit` and reopen with `cs <session-name> --from-handoff`
    (substitute the session name): cs starts a fresh conversation with the

@@ -694,9 +694,17 @@ _codex_autoclear_terminal() {
 # waited for, so a TERM, from the launcher's stop or anyone's, ends that child
 # first and the watcher straight after: keys typed after the CLI is gone would
 # land in the shell, and nothing outside the watcher has to find its children.
-_codex_autoclear_watch() {  # session_dir, run_dir
-    local session_dir="$1" run_dir="$2" stamp typing keys_sent native deadline handoff action run status child=""
+#
+# The Antigravity launch runs the same watcher (engine antigravity), on its
+# own run directory, where cs's agy hooks keep the deadline
+# (lib/79-antigravity.sh). There a pending switch is never typed for: the
+# action is clear or hold (_antigravity_autoclear_action), and the exit
+# toward the switch is the user's /exit.
+_codex_autoclear_watch() {  # session_dir, run_dir, [engine]
+    local session_dir="$1" run_dir="$2" engine="${3:-codex}" cli=Codex
+    local stamp typing keys_sent native deadline handoff action run status child=""
     local pid_file errors cause keys
+    [ "$engine" = codex ] || cli=Antigravity
     trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
     # The watcher says it is there, for the Stop hook, and takes that back as
     # it ends, a TERM included.
@@ -755,10 +763,18 @@ _codex_autoclear_watch() {  # session_dir, run_dir
             rm -f "$typing" 2>/dev/null || true
             continue
         fi
-        action=$(_codex_autoclear_action "$session_dir")
+        if [ "$engine" = codex ]; then
+            action=$(_codex_autoclear_action "$session_dir")
+        else
+            action=$(_antigravity_autoclear_action "$session_dir")
+        fi
         if [ "${action%% *}" = hold ]; then
             rm -f "$typing" 2>/dev/null || true
-            _codex_autoclear_log "$session_dir" "Automatic /quit: this run has native approval, so the exit to ${action#hold } is yours"
+            if [ "$engine" = codex ]; then
+                _codex_autoclear_log "$session_dir" "Automatic /quit: this run has native approval, so the exit to ${action#hold } is yours"
+            else
+                _codex_autoclear_log "$session_dir" "Automatic /clear: a switch to ${action#hold } is pending, so cs typed nothing; /exit to take it, or cs -switch cancel to stay"
+            fi
             continue
         fi
         # A prompt that went in during these checks took the marker: its turn
@@ -795,7 +811,7 @@ _codex_autoclear_watch() {  # session_dir, run_dir
                 ;;
             # Codex was gone, or the watcher was: nothing refused the keys,
             # and there is nothing left to type them into.
-            3) _codex_autoclear_log "$session_dir" "Automatic $keys: Codex had already exited; nothing more typed" ;;
+            3) _codex_autoclear_log "$session_dir" "Automatic $keys: $cli had already exited; nothing more typed" ;;
             # The keys did not land: the person still has them, as before.
             *)
                 cause=$(tail -n 1 "$errors" 2>/dev/null) || cause=""

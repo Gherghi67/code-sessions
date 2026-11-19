@@ -38,7 +38,8 @@ describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `mail_delivery`, `recovery_autosave`, and `clear_rotation`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
 `spawn_brief`, `feature_finish`, and `mail_delivery`, and `clear_rotation` inside a run whose launch found
-`agy` 1.5.10 or later and cs's SessionStart hook ([Antigravity sessions](antigravity.md)). These
+`agy` 1.5.10 or later and cs's SessionStart hook, and `auto_clear` inside one whose watcher types that
+`/clear` for you ([Antigravity sessions](antigravity.md)). These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -50,6 +51,7 @@ The session-manager capabilities name what the shipped skills rely on:
 | --- | --- | --- |
 | `rotation` | a fresh conversation consumes the handoff and binds its exact ID: `/clear` under Claude/Codex, exit/reopen under Antigravity | the rotate skill |
 | `clear_rotation` | `/clear` in the running CLI carries the armed handoff into the new conversation, which takes the binding (Claude, Codex; Antigravity per run) | the rotate skill, under Antigravity |
+| `auto_clear` | cs types `/clear` and `go` itself once a turn ends with a handoff armed, once for each handoff (Antigravity, in a run whose watcher lives; Codex's count is described in its own docs) | the rotate skill, under Antigravity |
 | `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude, Codex and Antigravity) | the switch skill and verb |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |
