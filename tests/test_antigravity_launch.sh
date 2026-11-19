@@ -1515,6 +1515,26 @@ _vault_session() {  # session_name
     VAULT_HOME="$(cd -P "$dir/.cs/private" && pwd -P)/antigravity-home"
 }
 
+test_the_vault_checker_starts_python_in_isolated_mode() {
+    (
+        source "$SCRIPT_DIR/../lib/79-antigravity-vault.sh"
+        # The interpreter boundary is exercised with real Python. Check the
+        # launch flags without installing a module in the checkout.
+        python3() {
+            if [ "$1" = -I ] && [ "$2" = -c ]; then
+                command python3 "$@"
+            else
+                echo "  FAIL: vault checker did not start Python in isolated mode" >&2
+                return 1
+            fi
+        }
+        local vault="$TEST_TMPDIR/antigravity-home"
+        mkdir "$vault" || return 1
+        _antigravity_vault_sync open "$HOME" "$vault" || return 1
+        _antigravity_vault_sync check "$HOME" "$vault" "$TEST_TMPDIR/settings.json"
+    )
+}
+
 # An encrypted session runs agy with HOME set to a home inside its vault:
 # every entry of the user's home but .gemini linked back, agy's login, config
 # and sandbox linked into the user's ~/.gemini, its settings and onboarding
@@ -3148,6 +3168,7 @@ run_test test_a_rotation_handoff_takes_a_finish_launch
 run_test test_a_finish_open_leaves_a_spawn_seed_staged
 run_test test_missing_handoff_is_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
+run_test test_the_vault_checker_starts_python_in_isolated_mode
 run_test test_an_encrypted_session_runs_agy_on_its_vault_home
 run_test test_the_vault_rule_carries_the_users_own_global_rule
 run_test test_the_vault_home_follows_the_users_home_at_every_open

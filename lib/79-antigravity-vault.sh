@@ -277,7 +277,8 @@ except OSError as e:
 
 _antigravity_vault_sync() {  # open|check|report, shared_home, vault_home, [snapshot]
     local moved="${3%/*}/antigravity-home.moved"
-    python3 -c "$CS_AGY_VAULT_SYNC_PY" "$1" "$2" "$3" "$moved" \
+    # The hook can run from the checkout, which must not supply Python imports.
+    python3 -I -c "$CS_AGY_VAULT_SYNC_PY" "$1" "$2" "$3" "$moved" \
         "$CS_AGY_VAULT_GEMINI_PRIVATE" "$CS_AGY_VAULT_CLI_LINKS" "$CS_AGY_VAULT_GEMINI_DIRS" "$CS_AGY_VAULT_CLI_DIRS" \
         "$CS_AGY_VAULT_CLI_COPIES" "${4:-}"
 }
