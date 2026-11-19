@@ -1543,6 +1543,42 @@ test_the_vault_checker_starts_python_in_isolated_mode() {
     )
 }
 
+test_the_vault_checker_refuses_a_linked_quarantine() {
+    (
+        source "$SCRIPT_DIR/../lib/79-antigravity-vault.sh"
+        local vault="$TEST_TMPDIR/private" native_home="$TEST_TMPDIR/private/antigravity-home"
+        local outside="$TEST_TMPDIR/neighbor" copy="$TEST_TMPDIR/settings.json"
+        mkdir -p "$native_home" "$outside" || return 1
+        _antigravity_vault_sync open "$HOME" "$native_home" || return 1
+        ln -s "$outside" "$vault/antigravity-home.moved" || return 1
+        printf 'fixture\n' > "$native_home/unexpected"
+        if _antigravity_vault_sync check "$HOME" "$native_home" "$copy" >/dev/null 2>&1; then
+            echo "  FAIL: the vault checker accepted a symlink as its quarantine directory"
+            return 1
+        fi
+        assert_eq fixture "$(cat "$native_home/unexpected")" "the entry remains in the vault" || return 1
+        assert_eq "" "$(ls -A "$outside")" "the neighbor stays empty"
+    )
+}
+
+test_the_vault_checker_preserves_paths_within_quarantine() {
+    (
+        source "$SCRIPT_DIR/../lib/79-antigravity-vault.sh"
+        local native_home="$TEST_TMPDIR/antigravity-home" copy="$TEST_TMPDIR/settings.json"
+        mkdir "$native_home" || return 1
+        _antigravity_vault_sync open "$HOME" "$native_home" || return 1
+        printf 'top\n' > "$native_home/unexpected"
+        printf 'nested\n' > "$native_home/.gemini/unexpected"
+        _antigravity_vault_sync check "$HOME" "$native_home" "$copy" || return 1
+        set -- "$native_home.moved"/*
+        assert_eq 1 "$#" "one quarantine folder for the check" || return 1
+        assert_eq top "$(cat "$1/unexpected")" "top-level entry is preserved" || return 1
+        assert_eq nested "$(cat "$1/.gemini/unexpected")" "nested entry is preserved" || return 1
+        assert_not_exists "$native_home/unexpected" "top-level entry is removed from the native home" || return 1
+        assert_not_exists "$native_home/.gemini/unexpected" "nested entry is removed from the native home"
+    )
+}
+
 # An encrypted session runs agy with HOME set to a home inside its vault:
 # every entry of the user's home but .gemini linked back, agy's login, config
 # and sandbox linked into the user's ~/.gemini, its settings and onboarding
@@ -3281,6 +3317,8 @@ run_test test_a_finish_open_leaves_a_spawn_seed_staged
 run_test test_missing_handoff_is_refused
 run_test test_switch_from_antigravity_refuses_a_missing_target
 run_test test_the_vault_checker_starts_python_in_isolated_mode
+run_test test_the_vault_checker_refuses_a_linked_quarantine
+run_test test_the_vault_checker_preserves_paths_within_quarantine
 run_test test_an_encrypted_session_runs_agy_on_its_vault_home
 run_test test_an_encrypted_open_refuses_a_linked_workspace_rule_parent
 run_test test_the_vault_rule_carries_the_users_own_global_rule

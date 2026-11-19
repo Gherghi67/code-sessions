@@ -23506,7 +23506,8 @@ _antigravity_vault_home_path() {  # session_dir
 # stderr, when it cannot finish.
 CS_AGY_VAULT_SYNC_PY='
 import os, sys, time, tempfile
-(mode, shared, home, moved_root, gem_private, cli_links, gem_dirs, cli_dirs,
+from contextlib import ExitStack
+(mode, shared, home, private_id, gem_private, cli_links, gem_dirs, cli_dirs,
  cli_copies, snapshot) = sys.argv[1:11]
 gem_private = set(gem_private.split())
 cli_links = cli_links.split()
@@ -23514,7 +23515,8 @@ gem_dirs = gem_dirs.split()
 cli_dirs = cli_dirs.split()
 cli_copies = cli_copies.split()
 report = mode == "report"
-stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + str(os.getpid())
+quarantine = None
+source_home = None
 
 def shown(rel):
     return "".join(c if c.isprintable() else "\\x%02x" % ord(c) for c in rel)
@@ -23522,13 +23524,41 @@ def shown(rel):
 def say(kind, rel):
     print(kind + " " + shown(rel))
 
+def open_directory(stack, name, parent=None, create=False):
+    if create:
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    stack.callback(os.close, fd)
+    return fd
+
 def move_aside(rel):
-    say("moved", rel)
+    global quarantine, source_home
     if report:
+        say("moved", rel)
         return
-    dest = os.path.join(moved_root, stamp, rel)
-    os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
-    os.rename(os.path.join(home, rel), dest)
+    if quarantine is None:
+        vault = open_directory(repair_fds, os.path.dirname(home))
+        st = os.fstat(vault)
+        if private_id and private_id != "%s-%s" % (st.st_dev, st.st_ino):
+            raise OSError("the pinned vault changed before quarantine repair")
+        name = os.path.basename(home)
+        source_home = open_directory(repair_fds, name, vault)
+        root = open_directory(repair_fds, name + ".moved", vault, create=True)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + os.urandom(8).hex()
+        os.mkdir(stamp, 0o700, dir_fd=root)
+        quarantine = open_directory(repair_fds, stamp, root)
+
+    with ExitStack() as entry_fds:
+        source, destination = source_home, quarantine
+        *parents, leaf = rel.split(os.sep)
+        for part in parents:
+            source = open_directory(entry_fds, part, source)
+            destination = open_directory(entry_fds, part, destination, create=True)
+        os.rename(leaf, leaf, src_dir_fd=source, dst_dir_fd=destination)
+    say("moved", rel)
 
 def is_dir(path):
     return os.path.isdir(path) and not os.path.islink(path)
@@ -23689,15 +23719,15 @@ def main():
         check_private_state(os.path.join(home, cli), cli, exclude=cli_links)
 
 try:
-    main()
+    with ExitStack() as repair_fds:
+        main()
 except OSError as e:
     sys.exit("cs: the vault Antigravity home: " + shown(str(e)))
 '
 
-_antigravity_vault_sync() {  # open|check|report, shared_home, vault_home, [snapshot]
-    local moved="${3%/*}/antigravity-home.moved"
+_antigravity_vault_sync() {  # open|check|report, shared_home, vault_home, [snapshot, private_id]
     # The hook can run from the checkout, which must not supply Python imports.
-    python3 -I -c "$CS_AGY_VAULT_SYNC_PY" "$1" "$2" "$3" "$moved" \
+    python3 -I -c "$CS_AGY_VAULT_SYNC_PY" "$1" "$2" "$3" "${5:-}" \
         "$CS_AGY_VAULT_GEMINI_PRIVATE" "$CS_AGY_VAULT_CLI_LINKS" "$CS_AGY_VAULT_GEMINI_DIRS" "$CS_AGY_VAULT_CLI_DIRS" \
         "$CS_AGY_VAULT_CLI_COPIES" "${4:-}"
 }
@@ -23856,9 +23886,10 @@ _antigravity_log_dir() {  # session_dir, run_dir
 # PreInvocation to stop the turn with (_antigravity_hook_vault_report). Fails
 # when the run has no vault home.
 _antigravity_hook_vault_check() {  # run_dir
-    local home changes
+    local home private_id changes
     home=$(_antigravity_run_vault_home "$1") || return 1
-    changes=$(_antigravity_vault_sync check "$(_antigravity_shared_home)" "$home" "$1/settings.json" 2>/dev/null) || changes="failed"
+    { IFS= read -r _ && IFS= read -r private_id; } < "$1/vault" || return 1
+    changes=$(_antigravity_vault_sync check "$(_antigravity_shared_home)" "$home" "$1/settings.json" "$private_id" 2>/dev/null) || changes="failed"
     [ -n "$changes" ] || return 0
     printf '%s\n' "$changes" >> "$1/vault-moved" 2>/dev/null || true
 }
