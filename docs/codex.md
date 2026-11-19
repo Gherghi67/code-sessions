@@ -150,6 +150,8 @@ session's is folded into the command as `cd <directory> && `. A code-mode script
 appears with its original input and decoded output. Expand the transcript
 with Ctrl+O to inspect each row. Parallel results refer to their originating
 call IDs, and a reported tool failure includes its tool name on Claude’s error line.
+A result counts as failed when code mode's header says `Script failed` or
+`exec_command` reports a non-zero exit code; its text fallback then reads `[tool error]`.
 A carried result's `<system-reminder` tags arrive with `<` written as `&lt;`,
 as Claude Code writes them in content its own tools did not produce.
 Calls without a matching result, orphaned results, and inputs Claude cannot

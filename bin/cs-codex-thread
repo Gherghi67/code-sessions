@@ -239,6 +239,8 @@ CODEX_COMMAND_RESULT = frozenset((
     "chunk_id", "wall_time_seconds", "exit_code", "session_id", "original_token_count", "output"))
 # Code mode's tools, whose output starts with how the script ended, then what it printed.
 CODEX_SCRIPT_HEADER = re.compile(r"Script (?:completed|failed|running with cell ID [^\n]*)\nWall time [^\n]*\nOutput:\n\Z")
+# exec_command's result head when its command exited with a code other than 0.
+CODEX_COMMAND_FAILED = re.compile(r"Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess exited with code [1-9][0-9]*\n")
 CODEX_CODE_MODE = frozenset(("exec", "wait"))
 CODEX_IMAGES = frozenset(("input_image", "output_image", "image"))
 LONE_SURROGATE = re.compile("[\ud800-\udfff]")
@@ -662,20 +664,23 @@ def codex_item(history, item, timestamp, limit):
             text = text_call(name, command if isinstance(command, str) else None)
         history.add("assistant", text, timestamp, closed=True, tool={
             "call": item.get("call_id") or item.get("id"), "name": name, "input": args,
-            "namespace": item.get("namespace"), "failed": item.get("status") == "failed"})
+            "namespace": item.get("namespace")})
     elif kind in ("function_call_output", "custom_tool_call_output"):
+        # Codex records no failure flag on a call or its output. A failed result says so in its text:
+        # code mode's "Script failed" header, or exec_command's "Process exited with code N" with N not 0.
         call_id = item.get("call_id")
         name = history.calls.get(call_id) if isinstance(call_id, str) else None
         code_mode = name in CODEX_CODE_MODE
         output = item.get("output")
         text, images = codex_output(output, code_mode, limit)
         text = trimmed(text)
-        failed = item.get("status") == "failed" or (isinstance(output, dict) and output.get("isError") is True)
+        failed = False
         if code_mode and isinstance(output, list) and output and isinstance(output[0], dict):
             header = output[0].get("text")
-            failed |= isinstance(header, str) and header.startswith("Script failed\n") and bool(CODEX_SCRIPT_HEADER.fullmatch(header))
+            failed |= isinstance(header, str) and header.startswith("Script failed\n") \
+                and bool(CODEX_SCRIPT_HEADER.fullmatch(header))
         if name == "exec_command" and isinstance(output, str):
-            failed |= bool(re.match(r"Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess exited with code [1-9][0-9]*\n", output))
+            failed |= bool(CODEX_COMMAND_FAILED.match(output))
         history.add("assistant", tool_result(text, images, limit, failed), timestamp, closed=True, tool={
             "result": call_id, "failed": failed,
             "output": text[:limit] + cut_note(text, limit) + "\n[image]" * images})
@@ -1121,7 +1126,7 @@ def claude_messages(message, cwd, version):
         while index in pairs:
             result, use = pairs[index]
             assistant_id = str(uuid.uuid4())
-            failed = tools[index]["failed"] or tools[result]["failed"]
+            failed = tools[result]["failed"]
             batch.append((result, use, failed, assistant_id))
             yield "assistant", [use], {"uuid": assistant_id, "requestId": request_id}
             index += 1

@@ -782,25 +782,83 @@ class TransplantTests(HelperFixture):
         shell = {"type": "function_call", "call_id": "a", "name": "exec_command", "arguments": '{"cmd":"pwd"}'}
         lookup = {"type": "function_call", "call_id": "b", "namespace": "mcp__example",
                   "name": "lookup", "arguments": '{"key":"town"}'}
+        failed = ("Chunk ID: c1\nWall time: 0.0000 seconds\nProcess exited with code 1\n"
+                  "Original token count: 1\nOutput:\nboom")
         items = [codex_message("user", "look up both"), shell, lookup,
-                 {"type": "function_call_output", "call_id": "b", "output": {"isError": True, "content": "missing"}},
-                 {"type": "function_call_output", "call_id": "a", "output": "/project"},
+                 {"type": "function_call_output", "call_id": "b", "output": "missing"},
+                 {"type": "function_call_output", "call_id": "a", "output": failed},
                  codex_message("assistant", "Done.")]
         self.write_rollout([rollout_line("response_item", item) for item in items])
         result, rows = self.export()
         self.assertEqual(result.returncode, 0, result.stderr)
-        first, second, failure, success = rows[1:5]
+        first, second, found, failure = rows[1:5]
         self.assertEqual(first["message"]["id"], second["message"]["id"])
         self.assertEqual(first["requestId"], second["requestId"])
         self.assertNotEqual(first["uuid"], second["uuid"])
-        self.assertEqual(failure["sourceToolAssistantUUID"], second["uuid"])
-        self.assertEqual(success["sourceToolAssistantUUID"], first["uuid"])
-        for use, output in [(first, success), (second, failure)]:
+        self.assertEqual(found["sourceToolAssistantUUID"], second["uuid"])
+        self.assertEqual(failure["sourceToolAssistantUUID"], first["uuid"])
+        for use, output in [(first, failure), (second, found)]:
             self.assertEqual(output["message"]["content"][0]["tool_use_id"], use["message"]["content"][0]["id"])
-        self.assertEqual(success["toolUseResult"]["stdout"], "/project")
-        self.assertEqual(failure["toolUseResult"], "[mcp__example__lookup] missing")
+        self.assertEqual(found["toolUseResult"], "missing")
+        self.assertFalse(found["message"]["content"][0]["is_error"])
+        self.assertEqual(failure["toolUseResult"], "[Bash] " + failed)
+        self.assertEqual(failure["message"]["content"][0]["content"], "[Bash] " + failed)
         self.assertTrue(failure["message"]["content"][0]["is_error"])
         self.assertEqual(self.text_of(rows[-1]), "Done.")
+
+    def test_a_codex_result_fails_only_where_its_text_says_so(self):
+        # Codex records no failure flag on a call or its output. Code mode's
+        # header says "Script failed"; exec_command's head names a nonzero exit.
+        helper = runpy.run_path(str(HELPER), run_name='cs_test_helper')
+        headers = {"failed": "Script failed\nWall time 0.1 seconds\nOutput:\n",
+                   "completed": "Script completed\nWall time 0.1 seconds\nOutput:\n"}
+        for header in headers.values():
+            self.assertTrue(helper["CODEX_SCRIPT_HEADER"].fullmatch(header), header)
+
+        def script_output(call_id, ending):
+            return {"type": "custom_tool_call_output", "call_id": call_id, "output": [
+                {"type": "input_text", "text": headers[ending]}, {"type": "input_text", "text": "Error: boom"}]}
+
+        def command(code):
+            return ("Chunk ID: c1\nWall time: 0.0000 seconds\nProcess exited with code %d\n"
+                    "Original token count: 1\nOutput:\nboom" % code)
+
+        def shell(call_id):
+            return {"type": "function_call", "call_id": call_id, "name": "exec_command", "arguments": '{"cmd":"make"}'}
+
+        def shell_output(call_id, code):
+            return {"type": "function_call_output", "call_id": call_id, "output": command(code)}
+
+        # A compaction replays an output whose call came before it: the result
+        # crosses with no call, as text.
+        lines = [rollout_line("response_item", item) for item in [codex_message("user", "build it"), shell("e")]]
+        lines.append(rollout_line("compacted", {"message": "", "replacement_history": [
+            codex_message("user", "build it"), shell_output("e", 1), codex_message("assistant", "It failed.")]}))
+        lines += [rollout_line("response_item", item) for item in [
+            codex_message("user", "try both ways"), exec_call("a"), script_output("a", "failed"),
+            exec_call("b"), script_output("b", "completed"), shell("c"), shell_output("c", 1),
+            shell("d"), shell_output("d", 0), codex_message("assistant", "Done.")]]
+        self.write_rollout(lines)
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        script_failed, script_completed, command_failed, command_passed = [r for r in records if "toolUseResult" in r]
+        with self.subTest("a: Script failed"):
+            block = script_failed["message"]["content"][0]
+            self.assertTrue(block["is_error"])
+            self.assertTrue(block["content"].startswith("[mcp__codex__exec] Script failed\n"), block["content"])
+        with self.subTest("b: Script completed"):
+            self.assertFalse(script_completed["message"]["content"][0]["is_error"])
+        with self.subTest("c: Process exited with code 1"):
+            block = command_failed["message"]["content"][0]
+            self.assertTrue(block["is_error"])
+            self.assertEqual(block["content"], "[Bash] " + command(1))
+        with self.subTest("d: Process exited with code 0"):
+            self.assertFalse(command_passed["message"]["content"][0]["is_error"])
+            self.assertEqual(command_passed["toolUseResult"]["stdout"], command(0))
+        with self.subTest("e: a result with no call"):
+            self.assertEqual(records[1]["type"], "assistant")
+            self.assertTrue(self.text_of(records[1]).startswith("[tool error]\n"), self.text_of(records[1]))
+            self.assertIn(command(1), self.text_of(records[1]))
 
     def test_a_carried_codex_result_cannot_pass_as_a_claude_reminder(self):
         # Claude Code reads a <system-reminder> tag in a tool result as its
