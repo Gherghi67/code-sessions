@@ -900,13 +900,26 @@ class TransplantTests(HelperFixture):
         self.assertEqual(call('X', '"ls"'), '[tool call: X]\n```\n"ls"\n```')
         self.assertEqual(call('X', '[1, "b"]'), '[tool call: X]\n```\n- 1\n- b\n```')
         self.assertEqual(call('X', '{"v": "2"}'), '[tool call: X]\n```\nv: "2"\n```')
-        # Too deep for json.loads on one Python, for the layout's json.dumps
-        # on another: the call crosses either way, bounded.
-        deep = call('X', '[' * 100000 + ']' * 100000)
-        self.assertTrue(deep.startswith('[tool call: X]\n'), deep[:100])
-        self.assertLess(len(deep), 3 * 200000)
         self.assertEqual(call('X', ''), '[tool call: X]')
         self.assertEqual(call('X', None), '[tool call: X]')
+
+    def test_a_codex_call_nested_too_deeply_still_crosses(self):
+        # Too deep for json.loads on one Python, for the layout's json.dumps
+        # on another: the call crosses either way, bounded. The helper runs
+        # in its own process: a parse this deep grows this runner's stack,
+        # and on Linux a child's peak RSS starts at its parent's, which the
+        # streaming test measures.
+        deep = '[' * 100000 + ']' * 100000
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "go")),
+            rollout_line("response_item", {"type": "function_call", "name": "X", "call_id": "c1",
+                                           "arguments": deep}),
+        ])
+        result, records = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        crossed = self.text_of(records[1])
+        self.assertTrue(crossed.startswith('[tool call: X]\n'), crossed[:100])
+        self.assertLess(len(crossed), 3 * len(deep))
 
     def test_compaction_keeps_only_what_codex_kept(self):
         lines = self.sample_rollout()[:7] + [
