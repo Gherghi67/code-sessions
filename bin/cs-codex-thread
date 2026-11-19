@@ -272,6 +272,9 @@ CARRIED_MODEL = "<synthetic>"
 # carried conversation is carried on. Only the newest note goes with it.
 CARRIED_NOTE = re.compile(r"\A\s*\[cs carried this conversation over from [^\]]*\]\s*")
 DEFAULT_CLAUDE_VERSION = "2.1.0"
+# The oldest Claude Code checked to render a display-only MCP tool, the row it draws for a tool
+# it does not have. Without one it draws nothing, so below this only Bash, its own, is a row.
+NATIVE_TOOL_ROWS_SINCE = (2, 1, 326)
 
 
 def open_block(text, closer=None):
@@ -1056,7 +1059,7 @@ def matched_tools(tools):
             yield indices[0], matches[0]
 
 
-def claude_tool_use(call, cwd):
+def claude_tool_use(call, cwd, version):
     name, args, namespace = call["name"], call["input"], call["namespace"]
     if not isinstance(name, str) or not isinstance(args, dict) or not native_arguments(args):
         return None
@@ -1078,17 +1081,20 @@ def claude_tool_use(call, cwd):
             tool_name = "Bash"
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tool_name):
         return None
+    leading = re.match(r"(\d+)\.(\d+)\.(\d+)", version or "")
+    if tool_name != "Bash" and not (leading and tuple(map(int, leading.groups())) >= NATIVE_TOOL_ROWS_SINCE):
+        return None
     return {"type": "tool_use", "id": "toolu_cs_" + uuid.uuid4().hex, "name": tool_name, "input": args}
 
 
-def claude_messages(message, cwd):
+def claude_messages(message, cwd, version):
     """Emit complete Claude tool exchanges. Parallel calls share an assistant
     message; their results follow in original completion order. Never leave a
     pending tool request at the end of history for the next engine to run."""
     tools = message.get("tools", {})
     pairs = {}
     for call, result in matched_tools(tools):
-        use = claude_tool_use(tools[call], cwd)
+        use = claude_tool_use(tools[call], cwd, version)
         if use is not None:
             pairs[call] = (result, use)
     if not pairs:
@@ -1142,7 +1148,7 @@ def claude_transcript(messages, session_id, cwd, version, branch, note):
     now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
     lines, parent = [], None
     for message in messages:
-        for role, content, extra in claude_messages(message, cwd):
+        for role, content, extra in claude_messages(message, cwd, version):
             record_id = extra.get("uuid") or str(uuid.uuid4())
             record = {"parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd,
                       "sessionId": session_id, "version": version, "gitBranch": branch,

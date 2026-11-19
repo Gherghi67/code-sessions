@@ -664,7 +664,7 @@ class TransplantTests(HelperFixture):
         if out.exists():
             out.unlink()
         arguments = ["--export-claude", "--thread-id", THREAD_ID, "--session-id", NEW_CLAUDE_ID,
-                     "--cwd", str(self.cwd), "--out", str(out), "--claude-version", "2.1.300",
+                     "--cwd", str(self.cwd), "--out", str(out), "--claude-version", "2.1.328",
                      "--git-branch", "cs/x", *extra]
         command, env = [sys.executable, str(HELPER), *arguments], self.env
         if hide or setup:
@@ -748,7 +748,7 @@ class TransplantTests(HelperFixture):
         for record in records:
             self.assertEqual(record["sessionId"], NEW_CLAUDE_ID)
             self.assertEqual(record["cwd"], str(self.cwd.resolve()))
-            self.assertEqual(record["version"], "2.1.300")
+            self.assertEqual(record["version"], "2.1.328")
             self.assertEqual(record["gitBranch"], "cs/x")
             self.assertFalse(record["isSidechain"])
         for record in (r for r in records if r["type"] == "assistant"):
@@ -1000,6 +1000,43 @@ class TransplantTests(HelperFixture):
         self.assertEqual([block["input"]["command"] for block in calls],
                          ["cd /srv/build && make", "ls -la", "cd '/srv/other dir' && git status"])
         self.assertEqual(self.results(records), ["ok c1", "ok c2", "ok c3"])
+
+    def test_only_bash_is_a_row_for_a_claude_code_without_display_only_tools(self):
+        # Claude Code draws a tool it does not have (an MCP server's, Codex's
+        # own) through its display-only MCP tool, checked from 2.1.326; below
+        # that, and at 2.1.0 (cs could not read the version), it draws no row,
+        # so those calls stay text. Bash is Claude's own on every version.
+        def call(call_id, name, arguments, **extra):
+            return rollout_line("response_item", dict({"type": "function_call", "name": name, "call_id": call_id,
+                                                       "arguments": arguments}, **extra))
+
+        def output(call_id, text):
+            return rollout_line("response_item", {"type": "function_call_output", "call_id": call_id, "output": text})
+        self.write_rollout([
+            rollout_line("response_item", codex_message("user", "plan and look")),
+            call("c1", "lookup", '{"key":"town"}', namespace="mcp__example"), output("c1", "Paris"),
+            call("c2", "update_plan", '{"plan":[]}'), output("c2", "Plan updated"),
+            call("c3", "exec_command", '{"cmd":"pwd"}'), output("c3", "/project"),
+            rollout_line("response_item", codex_message("assistant", "Done.")),
+        ])
+        for version in ("2.1.325", "2.1.0"):
+            with self.subTest(version=version):
+                result, records = self.export("--claude-version", version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual({record["version"] for record in records}, {version})
+                names = [block["name"] for block in self.blocks(records, "tool_use")]
+                self.assertEqual(names, ["Bash"])
+                self.assertFalse(any(name.startswith("mcp__") for name in names))
+                self.assertEqual(self.results(records), ["/project"])
+                text = "\n\n".join(block["text"] for block in self.blocks(records, "text"))
+                self.assertIn("[tool call: lookup]\n```\nkey: town\n```\n\n[tool result]\n```\nParis\n```", text)
+                self.assertIn("[tool call: update_plan]", text)
+                self.assertIn("[tool result]\n```\nPlan updated\n```", text)
+        result, records = self.export("--claude-version", "2.1.326")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([block["name"] for block in self.blocks(records, "tool_use")],
+                         ["mcp__example__lookup", "mcp__codex__update_plan", "Bash"])
+        self.assertEqual(self.results(records), ["Paris", "Plan updated", "/project"])
 
     def test_a_shell_call_s_words_keep_their_quoting(self):
         # Joined with spaces, ["bash", "-lc", "echo 'a  b' && ls"] read as
