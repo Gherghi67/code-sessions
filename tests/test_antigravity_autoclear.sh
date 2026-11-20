@@ -360,6 +360,36 @@ test_an_unreadable_payload_still_stops_the_count() {
     done
 }
 
+test_a_newer_hook_prevents_an_older_stop_from_arming() {
+    local stop_pid status=0 i
+    export AGY_TEST_STOP_READY="$TEST_TMPDIR/stop-ready" AGY_TEST_STOP_RELEASE="$TEST_TMPDIR/stop-release"
+    AGY_TEST_STUB='_antigravity_hook_mail_wake() {
+        local i
+        : > "$AGY_TEST_STOP_READY"
+        for ((i = 0; i < 100; i++)); do
+            [ ! -f "$AGY_TEST_STOP_RELEASE" ] || return 0
+            sleep 0.1
+        done
+    }' _agy_hook stop "$(_stop "$BOUND")" >/dev/null &
+    stop_pid=$!
+    for ((i = 0; i < 40; i++)); do
+        [ ! -f "$AGY_TEST_STOP_READY" ] || break
+        sleep 0.1
+    done
+    if [ -f "$AGY_TEST_STOP_READY" ]; then
+        AGY_TEST_KEEP_NATIVE=1 _agy_hook pre-invocation "$(_pre "$SUB")" >/dev/null || status=$?
+    else
+        echo "  FAIL: Stop did not reach the barrier"
+        status=1
+    fi
+    : > "$AGY_TEST_STOP_RELEASE"
+    wait "$stop_pid" || status=$?
+    [ "$status" -eq 0 ] || return "$status"
+    assert_not_exists "$STAMP" "a superseded Stop cannot publish a deadline" || return 1
+    _agy_hook stop "$(_stop "$BOUND")" >/dev/null || return 1
+    assert_file_exists "$STAMP" "a subsequent idle Stop can still count"
+}
+
 # Another run's hooks, and an agy cs did not launch, leave this run's count.
 test_hooks_of_another_run_or_outside_a_run_leave_the_count() {
     _stale_stamp
@@ -482,6 +512,7 @@ run_test test_a_mail_wake_starts_no_count
 run_test test_a_run_dir_the_agent_can_write_gets_no_count
 run_test test_every_hook_event_of_the_run_stops_the_count_and_the_typing
 run_test test_an_unreadable_payload_still_stops_the_count
+run_test test_a_newer_hook_prevents_an_older_stop_from_arming
 run_test test_hooks_of_another_run_or_outside_a_run_leave_the_count
 run_test test_auto_clear_is_claimed_only_while_the_watcher_lives
 run_test test_the_watcher_types_clear_then_go_for_antigravity

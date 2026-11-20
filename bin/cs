@@ -24755,6 +24755,7 @@ _antigravity_run_dir_prepare() {  # [protected, session_dir]
 # can add to the answer or hold agy's pipe open.
 cmd_antigravity_hook() {  # event
     local handler input run_dir
+    local AGY_AUTOCLEAR_GENERATION=""
     # Shared mail and handoff helpers use this pin only within this hook.
     local _cs_private_pin_meta="" _cs_private_pin_dir=""
     ANTIGRAVITY_HOOK_REPLY=""
@@ -24772,16 +24773,14 @@ cmd_antigravity_hook() {  # event
             handler=""
             ;;
     esac
-    # Read whole first: agy writes the payload into a pipe, and a hook that
-    # left before reading it could fail agy's write.
+    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+        # Register before reading the payload. Even a malformed event
+        # cancels the count and typing, and supersedes an overlapping Stop.
+        AGY_AUTOCLEAR_GENERATION=$(_antigravity_autoclear_begin 2>/dev/null) || AGY_AUTOCLEAR_GENERATION=""
+    fi
+    # Always drain the pipe, even when this is not a managed run.
     input=$(cat 2>/dev/null) || input=""
     if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
-        # Any event of the run, whatever its conversation or payload, stops
-        # the automatic /clear's count and cs's typing first: agy fires
-        # PreInvocation before every model call, and an approval prompt only
-        # comes from a model call, so no key of cs's can follow into one. A
-        # Stop may then start a count again (_antigravity_hook_stop).
-        _antigravity_autoclear_cancel
         run_dir=$(_antigravity_run_dir) || run_dir=""
         if { [ -n "${CS_RUN_ID:-}" ] && [ "${CS_ANTIGRAVITY_VAULT_RUN:-}" = "$CS_RUN_ID" ]; } \
             || { [ -n "$run_dir" ] && { [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; }; }; then
@@ -25350,13 +25349,22 @@ _antigravity_autoclear_on() {
     _antigravity_autoclear_grace >/dev/null && _codex_watcher_alive "$run_dir"
 }
 
-# Stops a running count and cs's typing. Removing only, it is safe whatever
-# called it; a link at either name goes, never what it names.
-_antigravity_autoclear_cancel() {
+# A new hook invalidates any older Stop before handling its payload. The
+# hook's pid is unique while that hook can still publish a deadline. Keep the
+# generation and cancellation under the same lock as publication.
+_antigravity_autoclear_begin() (
     local run_dir
-    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 0
-    rm -f "$(_codex_autoclear_file "$run_dir")" "$(_codex_typing_file "$run_dir")" 2>/dev/null || true
-}
+    run_dir=$(_antigravity_run_dir) && [ -f "$run_dir/watcher.pid" ] \
+        && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 1
+    umask 077
+    _cs_lock "$run_dir/autoclear.lock" || {
+        rm -f "$run_dir/autoclear-generation" "$run_dir/autoclear" "$run_dir/typing"
+        return 1
+    }
+    rm -f "$run_dir/autoclear-generation" "$run_dir/autoclear" "$run_dir/typing" || return 1
+    _antigravity_mail_state_write "$run_dir/autoclear-generation" "$$"$'\n' || return 1
+    printf '%s\n' "$$"
+)
 
 # Whether the hook runs for the agy this launch started: agy runs a hook's
 # command through sh -c, which hands it the process, so every hook's parent
@@ -25392,8 +25400,8 @@ _antigravity_autoclear_counted() {  # run_dir, handoff
 # written, so a record that cannot be written starts no count. Every path
 # returns 0: the hook never fails a turn.
 _antigravity_autoclear_arm() {
-    local run_dir stamp grace bound handoff deadline tmp nl='
-'
+    local run_dir grace bound handoff
+    [ -n "$AGY_AUTOCLEAR_GENERATION" ] || return 0
     [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] && [ "$AGY_HOOK_IDLE" = 1 ] || return 0
     run_dir=$(_antigravity_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
@@ -25410,18 +25418,22 @@ _antigravity_autoclear_arm() {
     handoff=$(_rotation_armed_handoff "$CS_SESSION_DIR")
     [ -n "$handoff" ] || return 0
     [ "$(_antigravity_autoclear_action "$CS_SESSION_DIR")" = clear ] || return 0
-    ! _antigravity_autoclear_counted "$run_dir" "$handoff" || return 0
-    _antigravity_mail_state_write "$run_dir/autoclear-counted" "$handoff$nl" || return 0
-    stamp=$(_codex_autoclear_file "$run_dir")
-    deadline=$(( $(date +%s) + grace ))
-    # mktemp makes the file 0600, the mode the watcher requires.
-    tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
-    if ! { printf 'deadline=%s\nhandoff=%s\nrun=%s\n' "$deadline" "$handoff" "${CS_RUN_ID:-}" > "$tmp" \
-        && mv "$tmp" "$stamp"; } 2>/dev/null; then
-        rm -f "$tmp" 2>/dev/null
-    fi
-    return 0
+    _antigravity_autoclear_publish "$run_dir" "$handoff" "$grace" || true
 }
+
+_antigravity_autoclear_publish() (  # run_dir, handoff, grace
+    local run_dir="$1" handoff="$2" generation deadline contents
+    umask 077
+    _cs_lock "$run_dir/autoclear.lock" || return 0
+    IFS= read -r generation < "$run_dir/autoclear-generation" || return 0
+    [ "$generation" = "$AGY_AUTOCLEAR_GENERATION" ] || return 0
+    ! _antigravity_autoclear_counted "$run_dir" "$handoff" || return 0
+    _antigravity_mail_state_write "$run_dir/autoclear-counted" "$handoff"$'\n' || return 0
+    deadline=$(( $(date +%s) + $3 ))
+    printf -v contents 'deadline=%s\nhandoff=%s\nrun=%s\ngeneration=%s\n' \
+        "$deadline" "$handoff" "${CS_RUN_ID:-}" "$generation"
+    _antigravity_mail_state_write "$run_dir/autoclear" "$contents"
+)
 run_secrets() {
     local secrets_script
     secrets_script=$(find_secrets_script) || error "cs-secrets not found. Try reinstalling with: cs -update --force"
