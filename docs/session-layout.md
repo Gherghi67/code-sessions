@@ -229,6 +229,12 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 
 The queue files and `failures` live in the session's cs-files directory: `.cs/private/` in an encrypted session, `.cs/local/` otherwise. `spawned-by`, `context-pct`, `limits` and `statusline-width` are always in `.cs/local/`. An absent `queue.state` reads as `idle`.
 
+Codex uses the same queue files. Its per-run continuation receipt, completed
+task count, and approval notice marker live in the private Codex run cache.
+It verifies delivery from the bound rollout and parks an interrupted task
+when a later Stop cannot confirm completion. The table describes Claude's
+Stop hook. See [Codex queue delivery](hooks.md#codex-queue-delivery).
+
 The `Stop` rows run only on the lead's `Stop`, and only while `queue/` holds at least one task. A teammate's `Stop`, or a `Stop` on an empty queue, writes nothing and leaves `queue.state` unchanged, `armed` included. A `Stop` on an `idle` queue that holds tasks also writes nothing. Each pop moves the task that `queue.current` names to `queue.popping.<pid>`, reads it, and removes it.
 
 | Trigger | Writer | State | Writes | Removes | Answer |

@@ -349,6 +349,23 @@ On `Stop`, also:
 - When idle with tasks queued, ends the turn without asking and writes nothing: the `cs` mod's band offers the start through its `▤ run N queued tasks` press. Task text is arbitrary, so the `block` reason a drain injects is emitted via `jq -nc --arg` rather than string interpolation, keeping the JSON valid regardless of quotes or newlines in the task
 - Approves silently inside subagents and outside cs sessions
 
+### Codex queue delivery
+
+`cs -codex-hook stop` drains the same task files in the bound Codex thread
+under the run lease. Each continuation records a private receipt. To mark
+that task done, a later Stop must find the native continuation and a final
+assistant response in the same turn's active rollout. Context and fresh
+five-hour usage come from the rollout's token count event. Recognizable shell
+and patch failures come from tool results after the continuation. A breaker,
+an unconfirmed continuation, or a missing final message keeps unfinished
+tasks available for another run. A Stop that dispatches work or a debrief
+cancels automatic rotation typing. An armed rotation proceeds between tasks
+and leaves the remaining queue armed.
+
+`cs -codex-hook permission-request` cancels rotation typing and tells the
+spawner once when a native approval holds up its drain. Codex still waits for
+the user to decide.
+
 ## stop-notices.sh (Stop, async)
 
 The turn-end notices: the rotation nudge, the context warning and the narrative reminder with its advisor note. cs registers the hook with `"async": true`, and it hands its text over as `hookSpecificOutput.additionalContext`, so Claude Code draws no `Ran N stop hooks` row in the chat for it, and the text reaches Claude as context at the start of the user's next prompt. A synchronous `Stop` hook that returns text, as a block's reason or as `additionalContext`, always draws that row, and nothing a hook prints hides it. The trade is that a notice never forces a turn: Claude acts on it at the next prompt, not at the end of the turn that raised it. Whatever must continue the turn (the queue drain, the staged retire, the mail wake) stays a `block` in [stop-blocks.sh](#stop-blockssh-stop-filechanged-cwdchanged). The hook prints at most one notice per run, exactly one JSON object or nothing, and exits 0 on every path it owns: Claude Code takes the first object it can parse from the hook's stdout and drops the rest, and a non-zero exit reaches Claude as a hook error carrying the stderr. Its registered timeout is 10 s; past it Claude Code kills the process and drops whatever it printed, so the hook runs inside a budget of 8 s counted from its start: the narrative scan (one `stat` and one `wc` per `narrative*.md`), the work count (one `tail` and one `jq` over at most 4 MB of transcript) and the plugin probe (one `jq` over `installed_plugins.json`) run first, the verdict wait below ends at the budget, and the lock below waits only for what is left of it, so the print is the last thing before exit. A run that is killed costs one notice, never a duplicate. It stands down, printing nothing, while the task queue is armed or draining: on the lead's `Stop`, with a task queued and `queue.state` reading `armed` or `draining`. An empty queue never gates, whatever `queue.state` records, and a tmux teammate's `Stop`, which never drains, is not gated.

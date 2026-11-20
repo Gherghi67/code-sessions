@@ -1451,13 +1451,10 @@ test_spawn_propagates_the_selected_engine_and_inherits_the_current_run() {
     assert_output_contains "$(cat "$FAKE_TMUX_DIR/log")" "--engine 'claude'" || return 1
 }
 
-test_codex_task_queue_spawn_refuses_before_staging_anything() {
-    local out status=0
-    out=$("$CS_BIN" -spawn worker --engine codex --task 'do something' 2>&1) || status=$?
-    [ "$status" -ne 0 ] || return 1
-    assert_output_contains "$out" 'use --brief without --task' || return 1
-    assert_not_exists "$(SEED)" || return 1
-    assert_not_exists "$FAKE_TMUX_DIR/session-exists" || return 1
+test_codex_task_queue_spawn_stages_the_seed() {
+    "$CS_BIN" -spawn worker --engine codex --task 'do something' --task 'check it' >/dev/null || return 1
+    assert_eq $'do something\ncheck it' "$(tail -n +3 "$(SEED)")" || return 1
+    assert_output_contains "$(cat "$FAKE_TMUX_DIR/log")" "--engine 'codex'"
 }
 
 # cs -spawn under an engine cs does not ship, for the refusals no shipped
@@ -1478,9 +1475,9 @@ _spawn_under_a_stub_engine() {  # capabilities, cs -spawn arguments...
     ' _ "$TEST_TMPDIR/cs-functions.sh" "$@"
 }
 
-# Only Claude's hooks drain the walk-away queue, so a new adapter that takes
+# A new adapter that takes
 # a brief still refuses tasks, and nothing is staged.
-test_a_task_queue_is_refused_under_any_engine_but_claude() {
+test_a_task_queue_is_refused_without_the_capability() {
     local out status=0
     out=$(_spawn_under_a_stub_engine 'launch spawn_brief' worker --engine stub --task 'do something' 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: --task under an engine without the queue must be refused: $out"; return 1; }
@@ -1502,8 +1499,8 @@ test_a_brief_is_refused_under_an_engine_without_spawn_brief() {
 }
 
 run_test test_spawn_propagates_the_selected_engine_and_inherits_the_current_run
-run_test test_codex_task_queue_spawn_refuses_before_staging_anything
-run_test test_a_task_queue_is_refused_under_any_engine_but_claude
+run_test test_codex_task_queue_spawn_stages_the_seed
+run_test test_a_task_queue_is_refused_without_the_capability
 run_test test_a_brief_is_refused_under_an_engine_without_spawn_brief
 
 report_results

@@ -706,7 +706,7 @@ _cs_claude_adapter_capabilities() {
     # mail_delivery: hooks surface `cs -msg` mail inside the conversation.
     # clear_rotation: /clear carries the armed rotation into the new session.
     printf '%s\n' launch exact_resume startup_context feature_finish \
-        rotation engine_switch spawn_brief memory_index mail_delivery recovery_autosave clear_rotation
+        rotation engine_switch spawn_brief memory_index mail_delivery recovery_autosave clear_rotation task_queue
 }
 
 # Where the installer puts cs's skills for Claude Code. CS_SKILLS_DIR replaces

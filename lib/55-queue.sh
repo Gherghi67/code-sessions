@@ -351,7 +351,14 @@ run_queue() {
         list|ls) _queue_list "$qdir" | _scrub_controls;;
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear) _queue_clear "$qdir";;
-        start) shift; _queue_start "$qdir" "${1:-}";;
+        start)
+            shift
+            if [ "${1:-}" = workflow ] && [ -n "${CS_SESSION_DIR:-}" ] \
+                && [ "$(_session_engine "$CS_SESSION_DIR" "${CS_RUN_ENGINE:-}")" = codex ]; then
+                error "Codex queues run in the conversation or in subagents. Use cs -queue start or cs -queue start subagents."
+            fi
+            _queue_start "$qdir" "${1:-}"
+            ;;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac

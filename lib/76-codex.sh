@@ -117,7 +117,7 @@ _cs_codex_adapter_capabilities() {
     # Claude's starts on /finish <task>.
     # clear_rotation: the same session-start hook hands the new thread the
     # armed rotation at /clear.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation task_queue
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -729,7 +729,7 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled. Automatic recovery is enabled. Use cs -queue for walk-away tasks.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
@@ -786,12 +786,16 @@ _launch_codex_bound() {
     # left there is removed and never read.
     local autoclear_dir refusal
     rm -f "$session_dir/.cs/local/codex-autoclear" 2>/dev/null || true
+    # Queue receipts need the same private directory, even without a tty or a
+    # rotation countdown. The run supervisor owns its lifetime in both cases.
+    if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
+        _cs_run_helper_dir=$autoclear_dir
+    fi
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
         if ! refusal=$(_codex_autoclear_probe); then
             printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
             _codex_autoclear_log "$session_dir" "Automatic /clear is off for this run: $refusal"
-        elif autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
-            _cs_run_helper_dir=$autoclear_dir
+        elif [ -n "$autoclear_dir" ]; then
             _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &
             _cs_run_helper_pid=$!
         else

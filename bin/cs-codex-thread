@@ -729,6 +729,133 @@ def codex_rollout(thread_id):
     return max(found, key=lambda path: (path.suffix == ".jsonl", path.stat().st_mtime))
 
 
+def queue_rollout_records(path, thread_id):
+    """Read a bounded snapshot of the running thread, discarding a torn tail."""
+    sessions = (Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions").resolve()
+    path = Path(path)
+    if (not path.is_absolute() or path.is_symlink() or sessions not in path.resolve().parents
+            or not path.name.endswith("-" + thread_id + ".jsonl")
+            or not path.name.startswith("rollout-")):
+        raise BootstrapError("unexpected active rollout path")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise BootstrapError("unexpected active rollout file")
+        header = json.loads(handle.readline(1024 * 1024))
+        if header.get("type") != "session_meta" or header.get("payload", {}).get("id") != thread_id:
+            raise BootstrapError("unexpected active rollout session")
+        start = max(handle.tell(), info.st_size - 8 * 1024 * 1024)
+        if start > handle.tell():
+            handle.seek(start - 1)
+            if handle.read(1) != b"\n":
+                handle.readline(info.st_size - start)
+        # Bound reads to the file size sampled at open, even when Codex appends.
+        lines = handle.read(max(0, info.st_size - handle.tell())).split(b"\n")
+        for line in lines[:-1]:
+            record = json.loads(line)
+            if isinstance(record, dict):
+                yield record
+
+
+def queue_usage(record):
+    payload = record["payload"]
+    usage = payload.get("info") or {}
+    latest = (usage.get("last_token_usage") or {}).get("total_tokens")
+    window = usage.get("model_context_window")
+    # Match the TUI's latest-context calculation and its rounding of percent left.
+    context = None
+    if type(latest) is int and latest >= 0 and type(window) is int and window > 12000:
+        remaining = max(0, window - max(latest, 12000))
+        context = 100 - math.floor(remaining * 100 / (window - 12000) + 0.5)
+    five_hour = None
+    quota = payload.get("rate_limits") or {}
+    if quota.get("limit_id") == "codex":
+        for key in ("primary", "secondary"):
+            bucket = quota.get(key) or {}
+            used, resets = bucket.get("used_percent"), bucket.get("resets_at")
+            if (bucket.get("window_minutes") == 300 and type(used) in (float, int)
+                    and 0 <= used <= 100 and type(resets) is int):
+                now = time.time()
+                try:
+                    stamped = datetime.datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
+                except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
+                    continue
+                if resets > now and 0 <= now - stamped <= 1800:
+                    five_hour = used
+                    break
+    return context, five_hour
+
+
+QUEUE_TOOL_STATUS = re.compile(
+    r"\A(?:Chunk ID: [^\n]+\nWall time: [\d.]+ seconds\nProcess exited with code (-?\d+)\n"
+    r"|Exit code: (-?\d+)\nWall time: [\d.]+ seconds\n)")
+
+
+def queue_tool_failed(tool, output):
+    if tool not in ("exec_command", "shell_command", "shell", "write_stdin", "apply_patch"):
+        return False
+    if not isinstance(output, str):
+        return False
+    status = QUEUE_TOOL_STATUS.match(output)
+    if status:
+        return int(status[1] or status[2]) != 0
+    return tool == "apply_patch" and output.startswith("apply_patch verification failed:")
+
+
+def queue_snapshot(args):
+    delivered = False
+    final_assistant = False
+    current_turn = False
+    calls = {}
+    failures = 0
+    context, five_hour = None, None
+    receipt = re.compile(r'\A<hook_prompt hook_run_id="stop:[^"\n]+">cs task queue \['
+                         + re.escape(args.queue_receipt or "") + r'\]:')
+    try:
+        for record in queue_rollout_records(args.queue_snapshot, args.thread_id):
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            kind = payload.get("type")
+            if record.get("type") == "event_msg":
+                if kind == "task_started":
+                    current_turn = payload.get("turn_id") == args.queue_turn
+                    delivered, final_assistant, context, five_hour = False, False, None, None
+                    calls.clear()
+                    failures = 0
+                elif kind == "task_complete":
+                    current_turn = False
+                elif kind == "token_count" and current_turn and (not args.queue_receipt or delivered):
+                    context, five_hour = queue_usage(record)
+            if record.get("type") != "response_item":
+                continue
+            metadata = payload.get("internal_chat_message_metadata_passthrough") or {}
+            if metadata.get("turn_id", args.queue_turn if current_turn else None) != args.queue_turn:
+                continue
+            if not delivered and args.queue_receipt and payload.get("role") == "user":
+                for part, info in zip(payload.get("content", []), metadata.get("content_item_metadata", [])):
+                    if (info.get("provenance") == {"type": "harness", "hook": True}
+                            and receipt.match(part.get("text", ""))):
+                        delivered = current_turn = True
+                        break
+            if not delivered:
+                continue
+            if payload.get("role") == "assistant" and payload.get("phase") == "final_answer":
+                final_assistant = any(part.get("type") == "output_text" and part.get("text")
+                                      for part in payload.get("content", []))
+            call_id = payload.get("call_id")
+            if isinstance(call_id, str):
+                if kind in ("function_call", "custom_tool_call"):
+                    calls[call_id] = payload.get("name")
+                elif kind in ("function_call_output", "custom_tool_call_output"):
+                    if queue_tool_failed(calls.pop(call_id, None), payload.get("output")):
+                        failures += 1
+    except (ValueError, AttributeError, TypeError, OverflowError) as exc:
+        raise BootstrapError("unreadable active rollout") from exc
+    return json.dumps(dict(delivered=delivered, final_assistant=final_assistant,
+                           failures=failures, context=context, five_hour=five_hour))
+
+
 @contextlib.contextmanager
 def open_rollout(path):
     # The rollout is read a line at a time. A compressed one is unpacked as it
@@ -1851,6 +1978,10 @@ def main():
                         help="print, as JSON, the model settings a project layer sets for --cwd")
     parser.add_argument("--has-thread", action="store_true",
                         help="print yes when CODEX_HOME keeps --thread-id's history, else no")
+    parser.add_argument("--queue-snapshot", metavar="ROLLOUT",
+                        help="read the active rollout for a queue Stop hook")
+    parser.add_argument("--queue-turn")
+    parser.add_argument("--queue-receipt")
     parser.add_argument("--seed-config", action="store_true",
                         help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
     parser.add_argument("--vault-check", action="store_true",
@@ -1889,6 +2020,9 @@ def main():
     elif args.has_thread:
         if args.thread_id is None:
             parser.error("--has-thread needs --thread-id")
+    elif args.queue_snapshot is not None:
+        if args.thread_id is None or not THREAD_ID.fullmatch(args.queue_turn or ""):
+            parser.error("--queue-snapshot needs --thread-id and --queue-turn")
     elif args.seed_config:
         if args.shared_home is None or args.home is None or args.cwd is None:
             parser.error("--seed-config needs --shared-home, --home and --cwd")
@@ -1921,6 +2055,8 @@ def main():
             printed = project_config(args)
         elif args.has_thread:
             printed = has_thread(args)
+        elif args.queue_snapshot is not None:
+            printed = queue_snapshot(args)
         elif args.seed_config:
             printed = seed_config(args)
         elif args.vault_check:
@@ -1937,6 +2073,7 @@ def main():
             else "could not read the project's configuration" if args.project_config or args.vault_check
             else "could not write the vault Codex home's config.toml" if args.seed_config
             else "could not look for the thread's history" if args.has_thread
+            else "could not read the active rollout" if args.queue_snapshot is not None
             else "could not write the Claude transcript" if args.export_claude
             else "could not read the Claude transcript" if args.read_claude is not None
             else "could not read bootstrap inputs")
