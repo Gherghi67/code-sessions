@@ -420,7 +420,8 @@ explicit model/effort options follow the ordinary launch behavior.
 ### Rotation through /clear
 
 With `agy` 1.5.10 or later and a cs plugin that has its SessionStart entry,
-`/cs:rotate` ends with **Run `/clear` now, then send `go`**. Antigravity starts
+`/cs:rotate` can carry the handoff through `/clear`. For a manual rotation,
+it ends with **Run `/clear` now, then send `go`**. Antigravity starts
 no turn by itself after `/clear`, so the message is needed; any message works,
 and one with its own content takes precedence over the handoff. At that
 message's first model call cs points the session at the new conversation,
@@ -430,8 +431,8 @@ the same rotation context a `--from-handoff` launch gives. A `/clear` with
 nothing armed moves the session the same way, quietly: the always-on rule
 already restores the session's context in every conversation. Either way the
 mail follows the session, and the next `cs <name>` resumes the new
-conversation. You need not type the `/clear` and `go` either: cs types them
-for you, once for each handoff ([Automatic /clear](#automatic-clear)).
+conversation. When [automatic rotation](#automatic-clear) is available,
+the final line gives the configured delay before cs types `/clear` and `go`.
 
 cs tells the conversation `/clear` started from a subagent's by what `agy`
 1.5.10 was measured to send ([below](#checked-against-agy-1510)): SessionStart
@@ -545,7 +546,7 @@ Where the keys land
 - Approval prompts can appear even in Antigravity's Auto mode. The watcher
   sends ordinary terminal input. If an approval prompt takes focus, it can
   receive Enter. Use `CS_ANTIGRAVITY_CLEAR_GRACE=0` at launch for manual rotation.
-- The screen. A draft you typed and did not send when the count ends gets
+- An unsent draft in the composer when the count ends gets
   `/clear` appended and goes to the conversation you are in; that prompt then
   stops the typing, so no `go` follows. Send or clear a draft first. An
   overlay open at that moment, such as `/tasks`, takes the keys instead of
@@ -555,14 +556,15 @@ Where the keys land
 
 `CS_ANTIGRAVITY_CLEAR_GRACE` sets the seconds (default 20, `0` turns the
 count off), and `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off as
-under Claude and Codex. The watcher runs only in a run that carries a
-rotation through `/clear` (`clear_rotation`), with a terminal attached that
-takes simulated input, which the launch asks once before `agy` starts
+under Claude and Codex. The watcher requires `clear_rotation`, four enabled
+hooks from the launching cs build, and a terminal that takes simulated
+input. The launch probes the terminal before `agy` starts
 (`python3` with TIOCSTI; Linux refuses a user who is not root while
 `dev.tty.legacy_tiocsti` is 0). Otherwise the launch prints one line saying
 why, `session.log` keeps it, and the `/clear` stays yours.
-`cs -engine supports auto_clear` exits 0 only inside a run whose watcher
-lives. The launch stops the watcher as soon as `agy` exits and flushes the
+`cs -engine supports auto_clear` exits 0 inside a run with a live watcher.
+`cs -engine auto-clear-grace` prints the effective delay in seconds there.
+The launch stops the watcher as soon as `agy` exits and flushes the
 terminal's input then only when keys of cs's may still be unread (from its
 first key until half a second after its last Enter), so they do not run in
 your shell.
@@ -965,8 +967,6 @@ shape.
 
 ## Follow-ups
 
-These come later as separate changes: an automatic `/clear` after a
-rotation, which cs would have to type into the terminal as it does for Codex;
-and a binding that follows a conversation the run never bound, opened with
-`/resume` mid-run, which cs leaves alone under Codex too (one that held the
-session earlier in the run already takes it back).
+A future change could follow the binding when `/resume` opens a conversation
+the run has never bound. A conversation that held the session earlier in the
+run can already take it back.

@@ -404,15 +404,34 @@ test_hooks_of_another_run_or_outside_a_run_leave_the_count() {
 
 # auto_clear is claimed only in a run whose watcher lives, so the rotate
 # skill promises the count only where cs will type.
+_agy_engine() {
+    env CS_RUN_ENGINE=antigravity CS_RUN_ID="$RUN" CS_RUN_OWNER_PID="$$" CS_SESSION_DIR="$SESSION" \
+        CS_SESSION_NAME=demo bash -c '
+            eval "$(sed "\$d" "$1")"
+            _codex_run_dir_in_sandbox_root() { return 1; }
+            shift
+            main "$@"' cs "$CS_BIN" -engine "$@"
+}
+
+test_engine_reports_the_effective_automatic_clear_grace() {
+    local grace
+    grace=$(CS_ANTIGRAVITY_CLEAR_GRACE=08 _agy_engine auto-clear-grace 2>/dev/null) || grace=""
+    assert_eq 8 "$grace" "a configured grace is parsed as decimal" || return 1
+    grace=$(CS_ANTIGRAVITY_CLEAR_GRACE=invalid _agy_engine auto-clear-grace) || return 1
+    assert_eq 20 "$grace" "invalid grace uses the same default as the watcher" || return 1
+    if CS_ANTIGRAVITY_CLEAR_GRACE=0 _agy_engine auto-clear-grace >/dev/null 2>&1; then
+        echo "  FAIL: an off countdown must leave the final instruction manual"
+        return 1
+    fi
+    rm -f "$RUN_DIR/watcher.pid"
+    if _agy_engine auto-clear-grace >/dev/null 2>&1; then
+        echo "  FAIL: a launch without a watcher must leave the final instruction manual"
+        return 1
+    fi
+}
+
 test_auto_clear_is_claimed_only_while_the_watcher_lives() {
-    _supports() {
-        env CS_RUN_ENGINE=antigravity CS_RUN_ID="$RUN" CS_RUN_OWNER_PID="$$" CS_SESSION_DIR="$SESSION" \
-            CS_SESSION_NAME=demo bash -c '
-                eval "$(sed "\$d" "$1")"
-                _codex_run_dir_in_sandbox_root() { return 1; }
-                shift
-                main "$@"' cs "$CS_BIN" -engine supports auto_clear >/dev/null 2>&1
-    }
+    _supports() { _agy_engine supports auto_clear >/dev/null 2>&1; }
     _supports || { echo "  FAIL: a run with a live watcher does not claim auto_clear"; return 1; }
     rm -f "$RUN_DIR/watcher.pid"
     if _supports; then echo "  FAIL: auto_clear claimed with no watcher"; return 1; fi
@@ -614,6 +633,7 @@ run_test test_an_unreadable_payload_still_stops_the_count
 run_test test_a_newer_hook_prevents_an_older_stop_from_arming
 run_test test_hooks_of_another_run_or_outside_a_run_leave_the_count
 run_test test_auto_clear_is_claimed_only_while_the_watcher_lives
+run_test test_engine_reports_the_effective_automatic_clear_grace
 run_test test_the_watcher_types_clear_then_go_for_antigravity
 run_test test_the_watcher_leaves_a_stale_handoff_marker_untouched
 run_test test_the_watcher_refuses_a_replaced_vault_even_at_the_same_path

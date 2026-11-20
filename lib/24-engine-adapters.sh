@@ -95,10 +95,11 @@ _cs_current_engine() {
 # native conversation the session has bound for it, and what it supports.
 # `supports <capability>` answers by exit status alone, so a skill can refuse
 # cleanly under an engine that lacks the feature instead of half-running.
+# `auto-clear-grace` prints the active Antigravity watcher's delay in seconds.
 # `skill-dir <skill>` prints the folder this install put that skill in for the
 # engine: a skill handed over without its folder (agy's typed /cs:finish)
 # reaches its scripts from cs's answer, never from a search of the disk.
-cmd_engine() {  # [supports <capability> | skill-dir <skill>]
+cmd_engine() {  # [supports <capability> | auto-clear-grace | skill-dir <skill>]
     local engine conversation="" capabilities
     engine=$(_cs_current_engine) || exit 1
     case "${1:-}" in
@@ -116,6 +117,11 @@ cmd_engine() {  # [supports <capability> | skill-dir <skill>]
             cs_engine_supports "$engine" "$2" && return 0
             printf '%s is not supported under %s in cs\n' "$2" "$engine" >&2
             return 1
+            ;;
+        auto-clear-grace)
+            [ $# -eq 1 ] || error "Usage: cs -engine auto-clear-grace"
+            [ "$engine" = antigravity ] || return 1
+            _antigravity_autoclear_available_grace
             ;;
         skill-dir)
             [ $# -eq 2 ] && [[ "${2:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \

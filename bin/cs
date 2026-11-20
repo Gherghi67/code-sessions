@@ -6065,10 +6065,11 @@ _cs_current_engine() {
 # native conversation the session has bound for it, and what it supports.
 # `supports <capability>` answers by exit status alone, so a skill can refuse
 # cleanly under an engine that lacks the feature instead of half-running.
+# `auto-clear-grace` prints the active Antigravity watcher's delay in seconds.
 # `skill-dir <skill>` prints the folder this install put that skill in for the
 # engine: a skill handed over without its folder (agy's typed /cs:finish)
 # reaches its scripts from cs's answer, never from a search of the disk.
-cmd_engine() {  # [supports <capability> | skill-dir <skill>]
+cmd_engine() {  # [supports <capability> | auto-clear-grace | skill-dir <skill>]
     local engine conversation="" capabilities
     engine=$(_cs_current_engine) || exit 1
     case "${1:-}" in
@@ -6086,6 +6087,11 @@ cmd_engine() {  # [supports <capability> | skill-dir <skill>]
             cs_engine_supports "$engine" "$2" && return 0
             printf '%s is not supported under %s in cs\n' "$2" "$engine" >&2
             return 1
+            ;;
+        auto-clear-grace)
+            [ $# -eq 1 ] || error "Usage: cs -engine auto-clear-grace"
+            [ "$engine" = antigravity ] || return 1
+            _antigravity_autoclear_available_grace
             ;;
         skill-dir)
             [ $# -eq 2 ] && [[ "${2:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
@@ -24054,9 +24060,8 @@ _cs_antigravity_adapter_capabilities() {
     # auto_clear: once a turn of the session's conversation ends with a
     # handoff armed and nothing left running, cs types /clear and go itself,
     # once for each handoff. Claimed only while this run's watcher lives
-    # (_antigravity_autoclear_on), so the rotate skill promises the count only
-    # where cs will type.
-    if _antigravity_autoclear_on; then
+    # so the rotate skill promises the count only where cs will type.
+    if _antigravity_autoclear_available_grace >/dev/null; then
         printf '%s\n' auto_clear
     fi
 }
@@ -25418,13 +25423,13 @@ _antigravity_autoclear_handoff() {  # session_dir, run_dir
     fi
 }
 
-# Whether this run counts down: the launch found the /clear route usable
-# (clear-rebind), the count is on, and the watcher it started still lives.
-_antigravity_autoclear_on() {
+# The active delay in seconds. Rotation reports it only with the /clear
+# route, the count enabled and a live watcher.
+_antigravity_autoclear_available_grace() {
     local run_dir
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 1
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 1
-    _antigravity_autoclear_grace >/dev/null && _codex_watcher_alive "$run_dir"
+    _codex_watcher_alive "$run_dir" && _antigravity_autoclear_grace
 }
 
 # A new hook invalidates any older Stop before handling its payload. The

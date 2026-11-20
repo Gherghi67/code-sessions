@@ -64,9 +64,8 @@ _cs_antigravity_adapter_capabilities() {
     # auto_clear: once a turn of the session's conversation ends with a
     # handoff armed and nothing left running, cs types /clear and go itself,
     # once for each handoff. Claimed only while this run's watcher lives
-    # (_antigravity_autoclear_on), so the rotate skill promises the count only
-    # where cs will type.
-    if _antigravity_autoclear_on; then
+    # so the rotate skill promises the count only where cs will type.
+    if _antigravity_autoclear_available_grace >/dev/null; then
         printf '%s\n' auto_clear
     fi
 }
@@ -1428,13 +1427,13 @@ _antigravity_autoclear_handoff() {  # session_dir, run_dir
     fi
 }
 
-# Whether this run counts down: the launch found the /clear route usable
-# (clear-rebind), the count is on, and the watcher it started still lives.
-_antigravity_autoclear_on() {
+# The active delay in seconds. Rotation reports it only with the /clear
+# route, the count enabled and a live watcher.
+_antigravity_autoclear_available_grace() {
     local run_dir
     run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 1
     [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 1
-    _antigravity_autoclear_grace >/dev/null && _codex_watcher_alive "$run_dir"
+    _codex_watcher_alive "$run_dir" && _antigravity_autoclear_grace
 }
 
 # A new hook invalidates any older Stop before handling its payload. The
