@@ -163,7 +163,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         current=$(jq -er --arg s "$thread" --arg t "$turn" 'select(.thread==$s and .turn==$t) | .task' \
             "$run_dir/queue-task.json" 2>/dev/null) || current=""
         case "$current" in
-            ''|*/*|.|..) _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0; return 0 ;;
+            ''|*/*|.|..) _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0; [ -z "$handoff" ] || return 4; return 0 ;;
         esac
         token=$(jq -er .token "$run_dir/queue-task.json" 2>/dev/null) || token=""
         roll=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
@@ -178,11 +178,13 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         fi
         if ! printf '%s' "$snapshot" | jq -e '.delivered and .final_assistant' >/dev/null; then
             _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0
+            [ -z "$handoff" ] || return 4
             return 0
         fi
         msg=$(printf '%s' "$input" | jq -r '.last_assistant_message // empty')
         if [ -z "$msg" ]; then
             _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0
+            [ -z "$handoff" ] || return 4
             return 0
         fi
         if printf '%s\n' "$msg" | grep -Eq '^(cs-task-failed|`cs-task-failed`)$'; then
@@ -240,7 +242,8 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
 }
 
 # Returns 0 when it answered the Stop with what it printed, 3 when it yielded
-# to the armed rotation and printed nothing, and 1 when it did nothing.
+# to the armed rotation and printed nothing, 4 when it printed one message and
+# the armed rotation still runs, and 1 when it did nothing.
 _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     local qdir run_dir turn rollouts_dir="${CODEX_HOME:-$HOME/.codex}/sessions"
     qdir=$(_codex_queue_dir "$1") && _codex_queue_state "$qdir" >/dev/null || return 1
@@ -248,11 +251,13 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     turn=$(printf '%s' "$4" | jq -r '.turn_id // empty' 2>/dev/null) && _is_uuid "$turn" || return 1
     if ! run_dir=$(_codex_run_dir) || ! _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then
         _codex_queue_message "cs task queue: a private run directory is required. The queued tasks are still available."
+        [ -z "$3" ] || return 4
         return 0
     fi
     if [ -d "$rollouts_dir" ] && { _codex_run_dir_in_sandbox_root "$rollouts_dir" "$CS_SESSION_DIR" \
         || _codex_run_dir_in_config_root "$rollouts_dir" "$CS_SESSION_DIR"; }; then
         _codex_queue_message "cs task queue: Codex's active history must be outside its writable workspace. The queued tasks are still available."
+        [ -z "$3" ] || return 4
         return 0
     fi
     cs_run_with_lease "$1" _codex_queue_stop_owned "$qdir" "$run_dir" "$2" "$turn" "$3" "$4"

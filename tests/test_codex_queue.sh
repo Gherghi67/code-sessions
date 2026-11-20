@@ -269,6 +269,35 @@ test_rotation_with_a_live_watcher_does_not_notify() (
     assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" '/clear and go in 20 s'
 )
 
+# A Stop from a turn the queue never handed a task: the park is a message,
+# and the armed rotation still counts down.
+test_unconfirmed_park_still_counts_down_an_armed_rotation() (
+    local first out message
+    first=$(_stop)
+    _deliver "$first"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=20
+    _live_watcher
+    out=$(_stop false hi "$THREAD" "$(_alloc_uuid)")
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_file_exists "$CS_CACHE_DIR/codex-runs/$RUN/autoclear" "the armed rotation still counts down" || return 1
+    assert_eq 1 "$(printf '%s\n' "$out" | jq -s length)" "one message for the Stop" || return 1
+    message=$(printf '%s\n' "$out" | jq -r .systemMessage)
+    assert_output_contains "$message" 'could not confirm' || return 1
+    assert_output_contains "$message" '/clear and go'
+)
+
+test_missing_run_dir_still_saves_the_rotation_model() (
+    local out
+    _arm_handoff
+    rm -rf "$CS_CACHE_DIR/codex-runs/$RUN"
+    export CS_CODEX_ROTATION_PROFILE="$CODEX_HOME/cs-rotation-test.config.toml"
+    _codex_rotation_model_save() { printf 'saved %s\n' "$2" >> "$TEST_TMPDIR/model-saves"; }
+    out=$(_stop true)
+    assert_eq 1 "$(wc -l < "$TEST_TMPDIR/model-saves" | tr -d ' ')" "the rotation model is saved" || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'private run directory is required'
+)
+
 run_test test_drains_and_notifies_once
 run_test test_unbound_and_undelivered_tasks_cannot_complete
 run_test test_reported_failure_keeps_the_task
@@ -281,4 +310,6 @@ run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
+run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
+run_test test_missing_run_dir_still_saves_the_rotation_model
 report_results
