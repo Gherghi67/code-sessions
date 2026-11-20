@@ -6,9 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 source "$SCRIPT_DIR/../lib/01-manifests.sh"
 source "$SCRIPT_DIR/../lib/02-shared.sh"
+source "$SCRIPT_DIR/../lib/05-term.sh"
 source "$SCRIPT_DIR/../lib/15-lock.sh"
 source "$SCRIPT_DIR/../lib/16-lifecycle.sh"
 source "$SCRIPT_DIR/../lib/24-engine-adapters.sh"
+source "$SCRIPT_DIR/../lib/25-deps.sh"
+source "$SCRIPT_DIR/../lib/30-worktree.sh"
 source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/40-state.sh"
 source "$SCRIPT_DIR/../lib/41-bindings.sh"
@@ -18,6 +21,7 @@ source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
 source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
+source "$SCRIPT_DIR/../lib/77-codex-queue.sh"
 source "$SCRIPT_DIR/../lib/78-switch.sh"
 
 _set_local_state() {  # state key value
@@ -27,6 +31,7 @@ cs_interactive() { return 1; }
 # The launch prompt's palette; empty keeps escape codes out of asserted output.
 DIM='' NC='' BOLD='' WHITE='' GREEN='' GOLD='' COMMENT='' ORANGE=''
 warn() { printf 'Warning: %s\n' "$1" >&2; }
+notice() { :; }
 cs_actor_slug() { printf '%s\n' "${CS_ACTOR:-test-actor}"; }
 
 setup() {
@@ -319,7 +324,7 @@ test_new_thread_binding_and_context() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" '^1. .cs/summary.md — read in full' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "The current user's request is the active task" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'Agent-sessions executable:' || return 1
-    assert_output_contains "$output" 'automatic recovery is enabled' "feature scope notice" || return 1
+    assert_output_contains "$output" 'Automatic recovery is enabled' "feature scope notice" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/state" 'engine: codex' || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "lock released after CLI exit" || return 1
     assert_output_contains "$(cat "$CS_CODEX_ENV")" 'CS_SESSION_NAME=demo' "neutral identity exported" || return 1
@@ -1689,6 +1694,18 @@ _codex_brief_seed() {
         > "$SESSIONS_ROOT/.spawn/demo.seed"
 }
 
+test_codex_task_seed_arms_the_queue_and_submits_the_kickoff() {
+    _codex_brief_seed
+    printf '%s\nboss\nfirst task\nsecond task\n' "$CS_SPAWN_TOKEN" > "$SESSIONS_ROOT/.spawn/demo.seed"
+    export CS_CODEX_TURN=1
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null || return 1
+    assert_output_contains "$(cat "$CS_CODEX_LOG")" 'Your walk-away queue is armed with 2 task(s)' || return 1
+    assert_eq armed "$(cat "$CS_TEST_SESSION_DIR/.cs/local/queue.state")" || return 1
+    assert_eq $'first task\nsecond task' "$(cat "$CS_TEST_SESSION_DIR/.cs/local/queue/"*)" || return 1
+    assert_eq boss "$(cat "$CS_TEST_SESSION_DIR/.cs/local/spawned-by")" || return 1
+    assert_not_exists "$SESSIONS_ROOT/.spawn/demo.seed"
+}
+
 test_codex_spawn_acknowledges_a_started_brief_and_never_replays_it() {
     _codex_brief_seed
     export CS_CODEX_TURN=1
@@ -1752,6 +1769,7 @@ test_spawn_receipt_recovers_after_an_interrupted_launcher() {
 
 run_test test_startup_refreshes_the_memory_index_on_fresh_and_resume
 run_test test_codex_spawn_acknowledges_a_started_brief_and_never_replays_it
+run_test test_codex_task_seed_arms_the_queue_and_submits_the_kickoff
 run_test test_failed_codex_spawn_retains_the_kickoff_until_a_turn_starts
 run_test test_a_brief_that_started_before_failure_is_not_replayed
 run_test test_ambiguous_spawn_history_stops_replay_and_keeps_the_receipt

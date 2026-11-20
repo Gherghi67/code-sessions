@@ -33,9 +33,9 @@ The capability check `cs_engine_supports <engine> <capability>` performs an
 exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`,
-`memory_index`, `mail_delivery`, `recovery_autosave`, and `clear_rotation`; Codex supports `launch`, `exact_resume`,
+`memory_index`, `mail_delivery`, `recovery_autosave`, `clear_rotation`, and `task_queue`; Codex supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `engine_switch`, `spawn_brief`, `memory_index`,
-`mail_delivery`, `recovery_autosave`, and `clear_rotation`; Antigravity supports `launch`,
+`mail_delivery`, `recovery_autosave`, `clear_rotation`, and `task_queue`; Antigravity supports `launch`,
 `exact_resume`, `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
 `spawn_brief`, `feature_finish`, and `mail_delivery`, and `clear_rotation` inside a run whose launch found
 `agy` 1.5.10 or later and cs's SessionStart hook, and `auto_clear` inside one whose watcher types that
@@ -54,6 +54,7 @@ The session-manager capabilities name what the shipped skills rely on:
 | `auto_clear` | cs types `/clear` and `go` itself once a turn ends with a handoff armed, once for each handoff (Antigravity, in a run whose watcher lives; Codex's count is described in its own docs) | the rotate skill, under Antigravity |
 | `engine_switch` | a managed exit can relaunch under another engine from the handoff (Claude, Codex and Antigravity) | the switch skill and verb |
 | `spawn_brief` | a spawned session's first turn reads `.cs/brief.md` | the feature skill |
+| `task_queue` | the owning conversation's Stop hook advances the armed walk-away queue | `cs -spawn --task` and seed delivery |
 | `memory_index` | `.cs/memory/MEMORY.md` loads at every session start, against a byte budget | the sweep skill |
 | `mail_delivery` | `cs -msg` unread mail surfaces on the next prompt (idle wake is separate) | the feature skill |
 
@@ -325,8 +326,8 @@ Usage and TUI runtime observations retain their Claude
 integration. Most hooks are not a normalized
 core event bus yet. A full move to
 `core/` and `adapters/` directories should follow these behavior boundaries.
-Codex has native session, prompt and stop hooks; its walk-away queue and idle
-mail wake remain separate work.
+Codex has native session, prompt and stop hooks and a Stop-driven walk-away
+queue. Idle mail wake remains separate work.
 Codex runs an encrypted session on a `CODEX_HOME` inside its vault
 (lib/76-codex-vault.sh): `_export_session_codex_home` links and seeds it and
 exports it for the run, `_codex_vault_check` refuses what cs cannot confine, and
@@ -344,9 +345,9 @@ Antigravity has a launch, one hook and cs's skills, all in cs's plugin under
 session's conversation (see `docs/antigravity.md`, Mail). Rotation uses `/clear` then `go` in a
 run that claims `clear_rotation`, otherwise `/exit` then a fresh managed launch with
 `--from-handoff`. `cs -switch` refuses to leave an engine without
-`rotation` and `engine_switch`, as it refuses to enter one, and `cs -spawn` refuses a brief or task
-for an engine without `spawn_brief` before staging a seed. Antigravity takes a brief but no
-`--task`, as Codex does: its launch consumes the seed through the shared reader and sends the
+`rotation` and `engine_switch`, as it refuses to enter one. Before staging a
+seed, `cs -spawn` requires `spawn_brief`. A seed with tasks also requires `task_queue`.
+Antigravity takes a brief through the shared reader and sends the
 kickoff once with `--prompt-interactive`. Its
 `files_changed` reads the payload of `agy`'s PostToolUse hook and keeps
 `write_file` and `edit_file` calls that succeeded. Its rule `.agents/rules/cs-session.md` counts as cs's own

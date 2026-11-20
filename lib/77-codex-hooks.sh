@@ -488,6 +488,9 @@ _codex_hook_stop() {
     bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
     [ "$bound" = "$session_id" ] || return 0
     handoff=$(_rotation_armed_handoff "$session_dir")
+    if _codex_queue_stop "$meta" "$session_id" "$handoff" "$input"; then
+        return 0
+    fi
     # A choice /clear would drop gets no count toward that /clear.
     if [ -n "$handoff" ] && ! note=$(_codex_rotation_model_save "$session_dir" "$session_id" "$input"); then
         jq -n --arg m "${note:-cs: could not preserve the selected model for rotation; select it again with /model after /clear.}" \
@@ -575,9 +578,11 @@ _codex_hook_user_prompt_submit() {
 # output carries a decision only under hookSpecificOutput), on every path, and
 # exits 0, never 2, which Codex reads as a denial.
 _codex_hook_permission_request() {
-    cat >/dev/null 2>&1 || true
+    local input
+    input=$(cat 2>/dev/null) || input=""
     if [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ]; then
         _codex_cancel_autoclear
+        _codex_queue_permission "$input" || true
     fi
     printf '{}\n'
     return 0
