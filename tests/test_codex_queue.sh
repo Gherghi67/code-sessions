@@ -209,7 +209,9 @@ test_rotation_commits_the_boundary_then_resumes_the_next_task() (
     printf 'continue.md\n' > "$QDIR/pending-handoff"
     export CS_CODEX_CLEAR_GRACE=0
     during=$(_stop true)
-    assert_eq "" "$during" "rotation owns the Stop" || return 1
+    assert_eq 1 "$(printf '%s\n' "$during" | jq -s length)" "one message for the Stop" || return 1
+    assert_eq "cs task queue: the walk-away run is waiting for this rotation. Run /clear to continue from continue.md; the queue resumes in the new conversation." \
+        "$(printf '%s\n' "$during" | jq -r .systemMessage)" "the run waits for /clear by hand" || return 1
     assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
     assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
     assert_not_exists "$QDIR/queue.current" || return 1
@@ -218,6 +220,53 @@ test_rotation_commits_the_boundary_then_resumes_the_next_task() (
     after=$(_stop false go "$OTHER" "$OTHER")
     assert_output_contains "$after" 'second task' || return 1
     assert_eq 1 "$(jq -s '[.[] | select(.event=="drain_started")]|length' "$QDIR/notifications.jsonl")"
+)
+
+_arm_handoff() {
+    mkdir -p "$CS_SESSION_DIR/.cs/handoffs"
+    printf -- '---\nstatus: unconsumed\n---\n' > "$CS_SESSION_DIR/.cs/handoffs/continue.md"
+    printf 'continue.md\n' > "$QDIR/pending-handoff"
+}
+
+# A watcher of this run's, which this shell stands in for, and no pending
+# switch (lib/78-switch.sh is not sourced here).
+_live_watcher() {
+    printf '%s %s\n' "$$" "$RUN" > "$CS_CACHE_DIR/codex-runs/$RUN/watcher.pid"
+    _switch_file() { return 1; }
+}
+
+# The count is off, so nothing types /clear: the run waits for it by hand,
+# and the spawner hears once.
+test_rotation_without_a_countdown_notifies_the_spawner() (
+    local first out
+    first=$(_stop)
+    _deliver "$first"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=0
+    out=$(_stop true)
+    assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the wait" || return 1
+    assert_output_contains "$(cat "$CS_CACHE_DIR/notify.log")" '/clear' || return 1
+    assert_eq 1 "$(printf '%s\n' "$out" | jq -s length)" "one message for the Stop" || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'waiting for this rotation' || return 1
+    _stop true >/dev/null
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one notice a drain"
+)
+
+test_rotation_with_a_live_watcher_does_not_notify() (
+    local first out
+    first=$(_stop)
+    _deliver "$first"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=20
+    _live_watcher
+    out=$(_stop true)
+    [ ! -s "$CS_CACHE_DIR/notify.log" ] || { echo "  FAIL: the spawner heard of a /clear the watcher types"; return 1; }
+    assert_file_exists "$CS_CACHE_DIR/codex-runs/$RUN/autoclear" || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" '/clear and go in 20 s'
 )
 
 run_test test_drains_and_notifies_once
@@ -230,4 +279,6 @@ run_test test_native_approval_notifies_once_without_deciding
 run_test test_receipt_without_a_new_final_answer_parks
 run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
+run_test test_rotation_without_a_countdown_notifies_the_spawner
+run_test test_rotation_with_a_live_watcher_does_not_notify
 report_results

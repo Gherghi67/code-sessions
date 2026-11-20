@@ -568,8 +568,10 @@ its active history, the task stays queued for inspection and re-arming.
 A native approval prompt waits for your answer. The first such prompt during
 a spawned drain sends the spawner a notice. An armed rotation takes priority
 before dispatching the next task, and the fresh conversation resumes the
-queue after rebind. Native hook continuation and rollout support were
-verified on Codex CLI 0.169.0-alpha.11.1.
+queue after rebind. When nothing will type /clear (the automatic /clear is
+off, there is no watcher, or a switch is held under native approval), the run
+waits for you to type /clear and the spawner gets one notice. Native hook
+continuation and rollout support were verified on Codex CLI 0.169.0-alpha.11.1.
 
 Codex retains a durable kickoff receipt in `.cs/local/spawn-kick.json` until
 native thread history confirms a turn started. A launch that fails before a turn

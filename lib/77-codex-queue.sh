@@ -48,7 +48,7 @@ _codex_queue_event() {  # queue_dir, jq options and expression
 _codex_queue_reset() {  # queue_dir, private_run_dir
     _queue_set_state "$1" idle || return 1
     rm -f "$1/queue.current" "$1/queue.failed" "$1/failures" \
-        "$2/queue-task.json" "$2/queue-count" "$2/queue-approval" 2>/dev/null || true
+        "$2/queue-task.json" "$2/queue-count" "$2/queue-approval" "$2/queue-rotation-wait" 2>/dev/null || true
 }
 
 _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading, limit
@@ -227,7 +227,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     fi
     if [ -n "$handoff" ]; then
         _queue_set_state "$qdir" armed || { _codex_queue_write_error; return 0; }
-        return 1                       # the existing Stop path owns rotation
+        return 3                       # the existing Stop path owns rotation
     fi
     if [ -f "$qdir/queue.mode" ] && [ ! -L "$qdir/queue.mode" ] && [ "$(cat "$qdir/queue.mode")" = workflow ]; then
         _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; return 0; }
@@ -239,6 +239,8 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     return 0
 }
 
+# Returns 0 when it answered the Stop with what it printed, 3 when it yielded
+# to the armed rotation and printed nothing, and 1 when it did nothing.
 _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     local qdir run_dir turn rollouts_dir="${CODEX_HOME:-$HOME/.codex}/sessions"
     qdir=$(_codex_queue_dir "$1") && _codex_queue_state "$qdir" >/dev/null || return 1
@@ -254,6 +256,17 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
         return 0
     fi
     cs_run_with_lease "$1" _codex_queue_stop_owned "$qdir" "$run_dir" "$2" "$turn" "$3" "$4"
+}
+
+# The line for a run that yielded to an armed rotation with no count toward
+# its /clear: the automatic /clear is off, no watcher runs, or a switch holds.
+# The spawner hears once a drain.
+_codex_queue_rotation_wait() {  # handoff
+    local run_dir
+    printf '%s\n' "cs task queue: the walk-away run is waiting for this rotation. Run /clear to continue from $1; the queue resumes in the new conversation."
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
+    ( set -C; : > "$run_dir/queue-rotation-wait" ) 2>/dev/null || return 0
+    _codex_queue_notify "$CS_SESSION_DIR/.cs/local" "cs task queue in ${CS_SESSION_NAME:-the spawned session} is waiting for /clear to take an armed rotation; the queued tasks continue after it."
 }
 
 _codex_queue_permission() {  # PermissionRequest JSON
