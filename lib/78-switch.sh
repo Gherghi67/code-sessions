@@ -231,7 +231,9 @@ cmd_switch() {
     handoff=$(_rotation_armed_handoff "$session_dir")
     [ -n "$handoff" ] \
         || error "No rotation handoff is armed; write and arm one first (rotate's steps 1-9), then run cs -switch again"
-    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\nmodel=%s\neffort=%s\napproval=%s\n' \
+    local write_switch=cs_write_atomic
+    [ "$current" != antigravity ] || write_switch=_antigravity_autoclear_write_switch
+    "$write_switch" "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\nmodel=%s\neffort=%s\napproval=%s\n' \
         "$target" "$mode" "$handoff" "$CS_RUN_ID" "$model" "$effort" "$approval" \
         || error "Could not write $file"
     local how="a fresh $target conversation"

@@ -61,6 +61,13 @@ _cs_antigravity_adapter_capabilities() {
     if _antigravity_clear_rebind_on; then
         printf '%s\n' clear_rotation
     fi
+    # auto_clear: once a turn of the session's conversation ends with a
+    # handoff armed and nothing left running, cs types /clear and go itself,
+    # once for each handoff. Claimed only while this run's watcher lives
+    # so the rotate skill promises the count only where cs will type.
+    if _antigravity_autoclear_available_grace >/dev/null; then
+        printf '%s\n' auto_clear
+    fi
 }
 
 # The oldest agy on which invocationNum was measured going back to 0 at each
@@ -292,6 +299,15 @@ _antigravity_clear_rebind_usable() {  # agy_bin
     local version
     version=$(_antigravity_version "$1") && _version_at_least "$version" "$CS_ANTIGRAVITY_CLEAR_MIN_VERSION" || return 1
     _antigravity_rotation_hook_ready && _antigravity_rotation_hook_ready SessionStart session-start
+}
+
+_antigravity_autoclear_hooks_ready() {  # cs_bin
+    # Stop arms the watcher. Each of these events also cancels a count or
+    # typing, so all four must run a cs build that knows this protocol.
+    _antigravity_rotation_hook_ready SessionStart session-start "$1" &&
+        _antigravity_rotation_hook_ready PreInvocation pre-invocation "$1" &&
+        _antigravity_rotation_hook_ready PostToolUse post-tool-use "$1" &&
+        _antigravity_rotation_hook_ready Stop stop "$1"
 }
 
 # Whether this run's launch found the /clear rebind usable and said so in the
@@ -679,10 +695,37 @@ $prompt"
         [ -z "$spawn_wait" ] \
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
     fi
+    # The automatic /clear after a rotation: a watcher beside agy types
+    # /clear and go once a turn ends with a handoff armed
+    # (_antigravity_autoclear_arm). It runs only where the /clear route
+    # works, the plugin uses this cs build for all four hooks, a terminal
+    # takes simulated input, and this run's directory lies where the agent
+    # cannot write. Otherwise the launch says why and /clear stays manual.
+    # The launch stops it as soon as agy exits, and the run's cleanup removes
+    # its directory (lib/16-lifecycle.sh).
+    local autoclear="" refusal="" grace=""
+    if [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] \
+        && [ -t 0 ] && [ -t 1 ] && grace=$(_antigravity_autoclear_grace); then
+        if ! _antigravity_autoclear_hooks_ready "$CS_BIN"; then
+            refusal="the cs plugin needs enabled SessionStart, PreInvocation, PostToolUse, and Stop hooks from this cs build. Enable the hooks and run setup.sh again."
+        elif ! _codex_run_dir_ok "$run_dir" "$session_dir" || ! _launch_handoff_receipt_dir_ok "$run_dir" "$session_dir"; then
+            refusal="this run's directory under ${CS_CACHE_DIR:-$HOME/.cache/cs} lies where the agent can write (the session, /tmp or \$TMPDIR)"
+        elif refusal=$(_codex_autoclear_probe); then
+            _codex_autoclear_watch "$session_dir" "$run_dir" antigravity </dev/null >/dev/null 2>&1 &
+            _cs_run_helper_pid=$!
+            autoclear=1
+        fi
+        if [ -z "$autoclear" ]; then
+            printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
+            _codex_autoclear_log "$session_dir" "Automatic /clear is off for this run: $refusal"
+        fi
+    fi
     # The line names the route this run takes, read from the mark itself:
     # _antigravity_run_mark swallows a failed write, and a run whose mark is
     # missing keeps the binding and the mail with its first conversation.
-    if [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]; then
+    if [ -n "$autoclear" ]; then
+        printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, and cs types /clear and go for you $grace s after that turn ends. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
+    elif [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ]; then
         printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /clear and send go. The task queue is not available under Antigravity yet. A conversation started with /clear or /new takes over the session and its cs mail."
     else
         printf '%s\n' "Antigravity via cs: session context is on ($rule_shown), $reopens. Rotate with /cs:rotate, then /exit and cs $session_name --from-handoff. The task queue is not available under Antigravity yet. A conversation started with /clear or /new gets no cs mail until you reopen the session."
@@ -701,6 +744,15 @@ $prompt"
     [ -z "$vault_home" ] || home_args=(env HOME="$vault_home" CS_ANTIGRAVITY_SHARED_HOME="$shared_home" CS_ANTIGRAVITY_VAULT_RUN="$CS_RUN_ID")
     cs_run_child ${home_args[@]+"${home_args[@]}"} "$agy_bin" ${reopen_args[@]+"${reopen_args[@]}"} ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} \
         ${statusline_args[@]+"${statusline_args[@]}"} ${prompt_args[@]+"${prompt_args[@]}"} || status=$?
+    # The watcher goes as soon as agy does, before anything else the run does
+    # (a switch's relaunch would otherwise get its keys). Keys it typed just
+    # before agy exited can wait unread in the terminal and would run in the
+    # shell, so the input is flushed then, and only then: the flush would eat
+    # ordinary type-ahead.
+    _cs_run_end_helper
+    if [ -n "$autoclear" ] && [ -e "$(_codex_keys_sent_file "$run_dir")" ]; then
+        _codex_flush_input
+    fi
     if [ -n "$rotation_handoff" ] && _handoff_is_unconsumed "$pending_handoff"; then
         warn "The Antigravity handoff attempt needs recovery. Reopen with: cs $session_name --resume. If no consumer was recorded, inspect native agy history first; do not replay with --from-handoff."
     fi
@@ -775,6 +827,7 @@ _antigravity_run_dir_prepare() {  # [protected, session_dir]
 # can add to the answer or hold agy's pipe open.
 cmd_antigravity_hook() {  # event
     local handler input run_dir
+    local AGY_AUTOCLEAR_GENERATION=""
     # Shared mail and handoff helpers use this pin only within this hook.
     local _cs_private_pin_meta="" _cs_private_pin_dir=""
     ANTIGRAVITY_HOOK_REPLY=""
@@ -792,8 +845,12 @@ cmd_antigravity_hook() {  # event
             handler=""
             ;;
     esac
-    # Read whole first: agy writes the payload into a pipe, and a hook that
-    # left before reading it could fail agy's write.
+    if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+        # Register before reading the payload. Even a malformed event
+        # cancels the count and typing, and supersedes an overlapping Stop.
+        AGY_AUTOCLEAR_GENERATION=$(_antigravity_autoclear_begin 2>/dev/null) || AGY_AUTOCLEAR_GENERATION=""
+    fi
+    # Always drain the pipe, even when this is not a managed run.
     input=$(cat 2>/dev/null) || input=""
     if [ -n "$handler" ] && [ "${CS_RUN_ENGINE:-}" = antigravity ] && [ -n "${CS_SESSION_DIR:-}" ]; then
         run_dir=$(_antigravity_run_dir) || run_dir=""
@@ -830,11 +887,13 @@ cmd_antigravity_hook() {  # event
 # PreInvocation's invocationNum when it is a whole number, else empty;
 # AGY_HOOK_TERMINATION, Stop's terminationReason when it is a word, else
 # empty; AGY_HOOK_STEPS, PreInvocation's initialNumSteps when it is a whole
-# number, else empty; and AGY_HOOK_TYPED, 1 when lastUserInput is a string
-# that is not empty, else empty (the prompt itself is never kept).
+# number, else empty; AGY_HOOK_TYPED, 1 when lastUserInput is a string
+# that is not empty, else empty (the prompt itself is never kept); and
+# AGY_HOOK_IDLE, 1 when Stop's fullyIdle is true, else empty (agy 1.5.12 sent
+# false while a background command still ran).
 _antigravity_payload_read() {  # payload
     local fields rest
-    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED=""
+    AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED="" AGY_HOOK_IDLE=""
     # Each field is kept only when every character in it is one its shape
     # allows, judged by what is left once those are deleted (a regex "$"
     # also matches before a newline), so none can carry the separator or a
@@ -844,7 +903,8 @@ _antigravity_payload_read() {  # payload
              ((.invocationNum | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
              ((.terminationReason | strings | select(length <= 40 and gsub("[A-Z_]"; "") == "")) // ""),
              ((.initialNumSteps | numbers | select(. >= 0 and . == floor and . < 1e9) | tostring) // ""),
-             (if (.lastUserInput | type) == "string" and (.lastUserInput | length) > 0 then "1" else "" end)]
+             (if (.lastUserInput | type) == "string" and (.lastUserInput | length) > 0 then "1" else "" end),
+             (if .fullyIdle == true then "1" else "" end)]
             | join("|")
         else "" end' 2>/dev/null) || return 1
     # Split by expansion, not read with a here-document, which bash 3.2
@@ -856,9 +916,11 @@ _antigravity_payload_read() {  # payload
     AGY_HOOK_TERMINATION=${rest%%"|"*}
     rest=${rest#*"|"}
     AGY_HOOK_STEPS=${rest%%"|"*}
-    AGY_HOOK_TYPED=${rest#*"|"}
+    rest=${rest#*"|"}
+    AGY_HOOK_TYPED=${rest%%"|"*}
+    AGY_HOOK_IDLE=${rest#*"|"}
     if ! _is_uuid "$AGY_HOOK_ID"; then
-        AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED=""
+        AGY_HOOK_ID="" AGY_HOOK_INVOCATION="" AGY_HOOK_TERMINATION="" AGY_HOOK_STEPS="" AGY_HOOK_TYPED="" AGY_HOOK_IDLE=""
         return 1
     fi
 }
@@ -1273,13 +1335,21 @@ _antigravity_hook_mail_digest() {  # conversation_id
 # CS_MAIL_WAKE_MAX (5), which ends a volley between two unattended sessions.
 # No usable directory there, no wake. CS_NO_MAIL_WAKE turns the wake off. The
 # digest names nothing in woke, so mail a prompt showed and the turn left
-# unread still wakes it once.
+# unread still wakes it once. A turn that ends without a wake may start the
+# automatic /clear's count (_antigravity_autoclear_arm).
 _antigravity_hook_stop() {  # payload
+    _antigravity_payload_read "$1" || return 0
+    _antigravity_hook_mail_wake
+    [ -n "$ANTIGRAVITY_HOOK_REPLY" ] || _antigravity_autoclear_arm
+}
+
+# The mail wake for the Stop _antigravity_hook_stop has read: its answer goes
+# to ANTIGRAVITY_HOOK_REPLY, or none.
+_antigravity_hook_mail_wake() {
     local mail state answer nl='
 '
     # shellcheck disable=SC2034  # set and read by cs_mail_wake_* (lib/02-shared.sh)
     local MAIL_UNREAD=0 MAIL_FRESH=0 MAIL_NAMES="" MAIL_FROM="" MAIL_WAKES=0
-    _antigravity_payload_read "$1" || return 0
     [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 0
     mail=$(_antigravity_mail_dir "$AGY_HOOK_ID") || return 0
     [ -d "$mail/new" ] || return 0
@@ -1302,3 +1372,194 @@ _antigravity_hook_stop() {  # payload
 _antigravity_mail_wake_record() {
     _antigravity_mail_state_write "$AGY_MAIL_WAKE_DIR/woke" "$AGY_MAIL_WAKE_NAMES" || true
 }
+
+# The automatic /clear after a rotation, as cs gives Codex
+# (lib/77-codex-hooks.sh): a watcher the launch runs beside agy types /clear
+# and then go into the terminal, at typing speed, through TIOCSTI, once a
+# turn of the session's conversation ends with a handoff armed. agy 1.5.12
+# took both from the keyboard that way (measured live, 2026-11-19): the slash
+# menu offered /clear, the Enter ran it, and go started the new
+# conversation, which cs's hooks then bind and hand the handoff
+# (_antigravity_hook_rebind_clear). Measured the same day:
+# - agy's Stop hook can show nothing: its answer continues the turn or
+#   nothing. So the count runs once for each handoff, announced by the
+#   rotate skill's last line, rather than again after every turn.
+# - Every model call fires PreInvocation first, the one a finished
+#   background task or subagent wakes included, and an approval prompt comes
+#   from a model call, and the approval prompt has no hook of its own. Every
+#   event cancels the count and remaining keys (cmd_antigravity_hook). The
+#   typist checks the marker under the same lock before sending each key.
+#   agy supplies no way to verify which part of the UI receives the input.
+# - Stop's fullyIdle was false while a background command ran; such work
+#   wakes the conversation later and can ask for approval then, so no count
+#   starts until a turn ends with nothing left running.
+# The deadline, the typing marker and the record of the counted handoff live
+# in the run's own directory in cs's cache, outside the session, /tmp and
+# $TMPDIR, where the agent writes only through a command or edit agy lets
+# it run there.
+
+# The seconds the count runs: CS_ANTIGRAVITY_CLEAR_GRACE (default 20, 0
+# turns it off), read as Codex's grace is; CS_ROTATE_FORCE_CTX=off or 0 turns
+# it off too. Codex's own setting does not reach it.
+_antigravity_autoclear_grace() {
+    CS_CODEX_CLEAR_GRACE="${CS_ANTIGRAVITY_CLEAR_GRACE:-20}" _codex_autoclear_grace
+}
+
+# What the count does at its end: clear, or hold when a switch this run
+# recorded is pending. Unlike Codex's, it never quits: nobody is at the keys,
+# and a switch's exit stays the user's /exit, as a native-approval Codex
+# run's does (_codex_autoclear_action).
+_antigravity_autoclear_action() {  # session_dir
+    CS_RUN_APPROVAL=native _codex_autoclear_action "$1"
+}
+
+# At the deadline, read the handoff from the store the launch used. A vault
+# remount, replacement at the same path, or one added to a running session
+# cannot give the watcher permission to type.
+_antigravity_autoclear_handoff() {  # session_dir, run_dir
+    local session_dir="$1" run_dir="$2" private
+    if [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; then
+        private=$(_antigravity_run_private_dir "$session_dir" "$run_dir") || return 1
+        _rotation_peek_armed_handoff "$private/handoffs" "$private/pending-handoff"
+    else
+        ! _switch_session_encrypted "$session_dir" || return 1
+        _rotation_peek_armed_handoff "$session_dir/.cs/handoffs" "$session_dir/.cs/local/pending-handoff"
+    fi
+}
+
+# The active delay in seconds. Rotation reports it only with the /clear
+# route, the count enabled and a live watcher.
+_antigravity_autoclear_available_grace() {
+    local run_dir
+    run_dir=$(_antigravity_run_dir) && _antigravity_run_dir_ok "$run_dir" || return 1
+    [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 1
+    _codex_watcher_alive "$run_dir" && _antigravity_autoclear_grace
+}
+
+# A new hook invalidates any older Stop before handling its payload. The
+# hook's pid is unique while that hook can still publish a deadline. Keep the
+# generation and cancellation under the same lock as publication.
+_antigravity_autoclear_begin() (
+    local run_dir
+    run_dir=$(_antigravity_run_dir) && [ -f "$run_dir/watcher.pid" ] \
+        && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 1
+    umask 077
+    _cs_lock "$run_dir/autoclear.lock" || {
+        _antigravity_autoclear_cancel "$run_dir"
+        return 1
+    }
+    _antigravity_autoclear_cancel "$run_dir" || return 1
+    _antigravity_mail_state_write "$run_dir/autoclear-generation" "$$"$'\n' || return 1
+    printf '%s\n' "$$"
+)
+
+_antigravity_autoclear_cancel() {  # run_dir
+    rm -f "$1/autoclear-generation" "$1/autoclear" "$1/typing"
+}
+
+# Cancel a count or remaining keys before publishing a switch. Holding the
+# same lock as the typist and Stop makes this one change for the watcher.
+_antigravity_autoclear_write_switch() (  # switch_file, command [args...]
+    local run_dir
+    if run_dir=$(_antigravity_run_dir) && [ -f "$run_dir/watcher.pid" ] \
+        && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then
+        umask 077
+        _cs_lock "$run_dir/autoclear.lock" || return 1
+        _antigravity_autoclear_cancel "$run_dir" || return 1
+    fi
+    cs_write_atomic "$@"
+)
+
+# Read, validate and claim the deadline under one lock. An overlapping
+# hook can cancel the old stamp and publish a new one while a poll waits.
+_antigravity_autoclear_take_stamp() (  # run_dir
+    local run_dir="$1" stamp="$1/autoclear" deadline handoff scheduled current
+    umask 077
+    _cs_lock "$run_dir/autoclear.lock" 0 || return 1
+    if ! _codex_stamp_ok "$stamp" || [ "$(_switch_field "$stamp" run)" != "${CS_RUN_ID:-}" ]; then
+        rm -f "$stamp" 2>/dev/null
+        return 1
+    fi
+    deadline=$(_switch_field "$stamp" deadline)
+    if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+        rm -f "$stamp" 2>/dev/null
+        return 1
+    fi
+    [ "$(date +%s)" -ge "$deadline" ] || return 1
+    handoff=$(_switch_field "$stamp" handoff)
+    scheduled=$(_switch_field "$stamp" generation)
+    rm -f "$stamp" || return 1
+    { IFS= read -r current < "$run_dir/autoclear-generation"; } 2>/dev/null || return 1
+    [ -n "$handoff" ] && [ -n "$scheduled" ] && [ "$scheduled" = "$current" ] || return 1
+    ( set -C; printf '%s\n' "$current" > "$run_dir/typing" ) 2>/dev/null || return 2
+    printf '%s\n' "$handoff"
+)
+
+# Whether the hook runs for the agy this launch started: agy runs a hook's
+# command through sh -c, which hands it the process, so every hook's parent
+# was agy's own pid on 1.5.12, the pid cs_run_child records in the run's
+# directory (native.pid). An agy the agent starts inside the run inherits the
+# run's environment, but its hooks' parent is that agy. A shell that forks
+# instead of handing over makes every hook fail this, and the count stays
+# off: a grandparent is no proof, since agy may start the agent's commands
+# through such a shell too.
+_antigravity_hook_from_native() {  # run_dir
+    local native=""
+    [ -f "$1/native.pid" ] && [ ! -L "$1/native.pid" ] || return 1
+    { IFS= read -r native < "$1/native.pid"; } 2>/dev/null || return 1
+    [[ "$native" =~ ^[0-9]+$ ]] && [ "$PPID" = "$native" ]
+}
+
+# Whether the handoff has had its count in this run, read only from a regular
+# file in the run's directory.
+_antigravity_autoclear_counted() {  # run_dir, handoff
+    local counted=""
+    [ -f "$1/autoclear-counted" ] && [ ! -L "$1/autoclear-counted" ] || return 1
+    IFS= read -r counted < "$1/autoclear-counted" 2>/dev/null || true
+    [ "$counted" = "$2" ]
+}
+
+# At the end of a turn _antigravity_hook_stop has read, with no mail wake:
+# starts the count when the turn ended normally (NO_TOOL_CALL) with nothing
+# left running (fullyIdle), in the conversation the session is bound to, in
+# the agy this launch started (_antigravity_hook_from_native), in the run
+# that holds the session, with a handoff armed that has not had its
+# count in this run, no switch of this run's pending, and this run's watcher
+# alive to type. The handoff is recorded as counted before the deadline is
+# written, so a record that cannot be written starts no count. Every path
+# returns 0: the hook never fails a turn.
+_antigravity_autoclear_arm() {
+    local run_dir grace bound handoff
+    [ -n "$AGY_AUTOCLEAR_GENERATION" ] || return 0
+    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] && [ "$AGY_HOOK_IDLE" = 1 ] || return 0
+    run_dir=$(_antigravity_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
+    [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] || return 0
+    grace=$(_antigravity_autoclear_grace) || return 0
+    _codex_watcher_alive "$run_dir" || return 0
+    _antigravity_hook_from_native "$run_dir" || return 0
+    cs_run_lease_owned "$CS_SESSION_DIR/.cs" || return 0
+    ! _antigravity_explicit_resume_pending "$run_dir" || return 0
+    _antigravity_vault_ok "$CS_SESSION_DIR" "$run_dir" || return 0
+    bound=$(cs_binding_read "$CS_SESSION_DIR" antigravity 2>/dev/null) || return 0
+    [ "$bound" = "$AGY_HOOK_ID" ] || return 0
+    # A /clear there would carry no rotation (_antigravity_hook_rebind_clear).
+    ! cs_files_tracked_notice "$CS_SESSION_DIR/.cs" "$CS_SESSION_DIR" >/dev/null || return 0
+    handoff=$(_rotation_armed_handoff "$CS_SESSION_DIR")
+    [ -n "$handoff" ] || return 0
+    [ "$(_antigravity_autoclear_action "$CS_SESSION_DIR")" = clear ] || return 0
+    _antigravity_autoclear_publish "$run_dir" "$handoff" "$grace" || true
+}
+
+_antigravity_autoclear_publish() (  # run_dir, handoff, grace
+    local run_dir="$1" handoff="$2" generation deadline contents
+    umask 077
+    _cs_lock "$run_dir/autoclear.lock" || return 0
+    IFS= read -r generation < "$run_dir/autoclear-generation" || return 0
+    [ "$generation" = "$AGY_AUTOCLEAR_GENERATION" ] || return 0
+    ! _antigravity_autoclear_counted "$run_dir" "$handoff" || return 0
+    _antigravity_mail_state_write "$run_dir/autoclear-counted" "$handoff"$'\n' || return 0
+    deadline=$(( $(date +%s) + $3 ))
+    printf -v contents 'deadline=%s\nhandoff=%s\nrun=%s\ngeneration=%s\n' \
+        "$deadline" "$handoff" "${CS_RUN_ID:-}" "$generation"
+    _antigravity_mail_state_write "$run_dir/autoclear" "$contents"
+)

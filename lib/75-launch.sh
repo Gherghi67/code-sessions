@@ -87,13 +87,27 @@ _pending_handoff_pick() {  # session_dir
 # The basename the pending-handoff marker names, or nothing when there is no
 # marker or it names something with a path separator.
 _rotation_marker_basename() {  # session_dir
-    local marker armed=""
+    local marker
     marker="$(cs_private_dir "$1/.cs")/pending-handoff" || return 0
-    [ -f "$marker" ] || return 0
-    armed=$(tr -d '[:space:]' < "$marker" 2>/dev/null) || armed=""
+    _rotation_read_marker "$marker"
+}
+
+_rotation_read_marker() {  # marker
+    local armed=""
+    [ -f "$1" ] || return 0
+    armed=$(tr -d '[:space:]' < "$1" 2>/dev/null) || armed=""
     case "$armed" in */*|*\\*) armed="" ;; esac
     _cs_is_plain_name "$armed" || armed=""
     printf '%s' "$armed"
+}
+
+# A liveness check has no reason to remove a stale marker.
+_rotation_peek_armed_handoff() {  # handoffs_dir, marker
+    local armed
+    armed=$(_rotation_read_marker "$2")
+    if [ -n "$armed" ] && [ -f "$1/$armed" ] && _handoff_is_unconsumed "$1/$armed"; then
+        printf '%s' "$armed"
+    fi
 }
 
 # The handoff an armed marker names while it is still unconsumed. A marker
@@ -103,9 +117,8 @@ _rotation_armed_handoff() {  # session_dir
     local armed handoffs private
     handoffs=$(cs_handoff_dir "$1/.cs") || return 0
     private=$(cs_private_dir "$1/.cs") || return 0
-    armed=$(_rotation_marker_basename "$1")
-    if [ -n "$armed" ] && [ -f "$handoffs/$armed" ] \
-        && _handoff_is_unconsumed "$handoffs/$armed"; then
+    armed=$(_rotation_peek_armed_handoff "$handoffs" "$private/pending-handoff")
+    if [ -n "$armed" ]; then
         printf '%s' "$armed"
         return 0
     fi

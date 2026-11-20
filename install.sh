@@ -2115,7 +2115,7 @@ CS_KNOWN_SHA256=(
 # runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "23a04ee7c7a47447e83f949a873190543a242b500d7fe63eb4fa06224fc04d69  bin/cs"
+    "5d3963614e5f6d064d2dd5269e08539f59fe23563a6bd54a1e7fcff879093167  bin/cs"
     "daa73d86fbf428a84f5ef4c1f8fa355d6295c056dbc690eb2e433a8ff03f8437  bin/cs-secrets"
     "aa3bcc2d0d44aa535f8190cbfacc06b4bdde601d7e61ac80cf4dfac84a5ce1a8  bin/cs-codex-thread"
     "2816876778f291ffbeca8191e798dc807fb68953ef4ecf454cfa974113cd3fd3  bin/cs-statusline"
@@ -2123,7 +2123,7 @@ CS_PAYLOAD_SHA256=(
     "b1272ea923569f2c56fcac2900bdb8b52d98a7fe400031fe92ad067ed62aa65d  bin/cs-statusline-agy"
     "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
     "1c11f6b964d6828e20886da10ea052db28ee13f8627685bfbdba3ef16d762ce7  hooks/cs-shared.sh"
-    "e6d5ae5a6121a17d2935566a0e8c05f60f5d7fa5a2af3266dbe810a3b88c91b7  hooks/cs-engine-events.sh"
+    "8398f3da05d09f13e480f2f15d3babd518ab7c6b5b94b397f0de6f5e313ca6d9  hooks/cs-engine-events.sh"
     "9b31e11d43edc6f5719933a1480afd9222803565cfc19f466f3735c99c5bce34  hooks/cs-config.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "0df470229aed0ca15acdd0ab115d6633dbcd1542e30b64936df5124045f4e6ee  hooks/prompt-rewriter.sh"
@@ -2140,7 +2140,7 @@ CS_PAYLOAD_SHA256=(
     "12a1d214de1fc27b2ad9b7210df72a96e0fddca969f95e569f71356cbf6d40a4  hooks/scope-prompt.sh"
     "51c551abcbccfe720c35026bfb73abe8acb952a61f5ff9cb242822db2b4208cb  skills/store-secret/SKILL.md"
     "804d2c54095b2c4a475b8ea606f1286cd88191e183f9cf488997bb0592ad7214  skills/prose-hygiene/SKILL.md"
-    "6c4e4db4118a77494c022f0ddb3edbdee011da96a0a24a56d77f4cc640b8a3bb  skills/rotate/SKILL.md"
+    "3b1de268dea9201b7d49b586b0da2c551ed3fcb1906c16e88d65759b1cbfa932  skills/rotate/SKILL.md"
     "60d31e44f63ef96e367eb75ae2e367f267fd42480752d645231f803181732bc9  skills/switch/SKILL.md"
     "567e7ac3d7a346edaaf6230cd264f21cd8d2d5febf3da012a98dd2aa779ddf68  skills/finish/SKILL.md"
     "3b3d3cf069960d15cb81213c430e43482fc372c813470598d5371f03e2f5f5fa  skills/feature/SKILL.md"

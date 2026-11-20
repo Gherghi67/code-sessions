@@ -420,7 +420,8 @@ explicit model/effort options follow the ordinary launch behavior.
 ### Rotation through /clear
 
 With `agy` 1.5.10 or later and a cs plugin that has its SessionStart entry,
-`/cs:rotate` ends with **Run `/clear` now, then send `go`**. Antigravity starts
+`/cs:rotate` can carry the handoff through `/clear`. For a manual rotation,
+it ends with **Run `/clear` now, then send `go`**. Antigravity starts
 no turn by itself after `/clear`, so the message is needed; any message works,
 and one with its own content takes precedence over the handoff. At that
 message's first model call cs points the session at the new conversation,
@@ -430,8 +431,8 @@ the same rotation context a `--from-handoff` launch gives. A `/clear` with
 nothing armed moves the session the same way, quietly: the always-on rule
 already restores the session's context in every conversation. Either way the
 mail follows the session, and the next `cs <name>` resumes the new
-conversation. There is no automatic countdown or terminal input, as cs gives
-Codex.
+conversation. When [automatic rotation](#automatic-clear) is available,
+the final line gives the configured delay before cs types `/clear` and `go`.
 
 cs tells the conversation `/clear` started from a subagent's by what `agy`
 1.5.10 was measured to send ([below](#checked-against-agy-1510)): SessionStart
@@ -494,6 +495,95 @@ conversation, the handoff was `consumed` by it and its marker gone, the
 timeline recorded the rotation with reason `handoff`, and the reply began by
 reading the handoff and appended its `## Successor report`. `agy`'s exit line
 named the new conversation, which the next `cs <name>` resumes.
+
+### Automatic /clear
+
+As cs does under Codex ([Codex](codex.md)), a watcher cs runs beside `agy`
+types `/clear` and then `go` into the terminal for you, at typing speed,
+through the terminal's simulated-input call (TIOCSTI). It waits twenty
+seconds after a turn of the session's conversation ends with a handoff armed
+and nothing left running in the background. `agy`'s slash menu offers
+`/clear` as the letters arrive and the Enter runs it; `go` starts the new
+conversation, which takes the session and the handoff as described above.
+
+The count runs once for each handoff. `agy`'s Stop hook cannot show you
+anything, so no line announces the count at the end of each turn, as Codex
+shows one: `/cs:rotate`'s last message says it is coming. A message you send
+first stops it for good, and the `/clear` is then yours. Anything else that
+starts a model call stops it the same way, such as a background task or a
+subagent that finishes and wakes the conversation. A handoff armed later
+gets its own count.
+
+How the watcher decides when to type
+
+- All four hook events (SessionStart, PreInvocation, PostToolUse, and Stop)
+  cancel the deadline and remaining keys. A newer event also prevents an
+  overlapping Stop from publishing its deadline. The typist holds the same
+  lock when checking cancellation and sending each key. PreInvocation runs
+  before each model call. A turn has to report `fullyIdle` to start a count.
+- **Only the session's conversation counts**, only a turn that ended
+  normally (`NO_TOOL_CALL`), only in the `agy` this launch started, and only
+  while this run holds the session's lease. Subagents, `/btw` side questions
+  and conversations opened with `/resume` that do not hold the session start
+  none. Neither does an `agy` the agent starts inside the run, which inherits
+  the run's environment: cs counts only a Stop whose hook `agy` itself ran
+  (its parent process is the one the launch started).
+- **Arming a switch** with `cs -switch` cancels the count and any keys still
+  to be sent, including `go` if only `/clear` has gone in. Use `/exit` to
+  take the switch.
+- **The deadline is kept out of the agent's way**, in the run's own directory
+  in cs's cache (`antigravity-runs/<run id>` under `CS_CACHE_DIR`, by default
+  `~/.cache/cs`), made mode 700 before `agy` starts and removed when the run
+  ends. When that directory lies in the session, `/tmp` or `$TMPDIR`, which
+  `agy` can let the agent write without asking, the launch says the automatic
+  `/clear` is off for that run. `agy` has no OS sandbox by default, so the
+  agent can still write cs's cache through a command or edit that `agy`
+  approves or that you approve: approving one that writes there would let it
+  plant a deadline.
+
+Where the keys land
+
+- Approval prompts can appear even in Antigravity's Auto mode. The watcher
+  sends ordinary terminal input. If an approval prompt takes focus, it can
+  receive Enter. Use `CS_ANTIGRAVITY_CLEAR_GRACE=0` at launch for manual rotation.
+- An unsent draft in the composer when the count ends gets
+  `/clear` appended and goes to the conversation you are in; that prompt then
+  stops the typing, so no `go` follows. Send or clear a draft first. An
+  overlay open at that moment, such as `/tasks`, takes the keys instead of
+  the composer.
+- A model call that comes while cs types stops its remaining keys; the ones
+  already typed stay in the composer.
+
+`CS_ANTIGRAVITY_CLEAR_GRACE` sets the seconds (default 20, `0` turns the
+count off), and `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off as
+under Claude and Codex. The watcher requires `clear_rotation`, four enabled
+hooks from the launching cs build, and a terminal that takes simulated
+input. The launch probes the terminal before `agy` starts
+(`python3` with TIOCSTI; Linux refuses a user who is not root while
+`dev.tty.legacy_tiocsti` is 0). Otherwise the launch prints one line saying
+why, `session.log` keeps it, and the `/clear` stays yours.
+`cs -engine supports auto_clear` exits 0 inside a run with a live watcher.
+`cs -engine auto-clear-grace` prints the effective delay in seconds there.
+The launch stops the watcher as soon as `agy` exits and flushes the
+terminal's input then only when keys of cs's may still be unread (from its
+first key until half a second after its last Enter), so they do not run in
+your shell.
+
+#### Checked against agy 1.5.12
+
+On 2026-11-19, in one interactive run (`agy` 1.5.12 in a private tmux
+server, a temporary plugin that logged every hook's payload, removed
+afterwards): a background process in the terminal typed `/clear` at 100 ms a
+key and Enter half a second later, and the slash menu ran it; `go` two
+seconds later started a new conversation, whose first PreInvocation carried
+`lastUserInput` `go`, `invocationNum` 0 and `initialNumSteps` 1. A turn that
+left a background command running ended with `fullyIdle` false; when the
+command finished, PostToolUse and then PreInvocation fired for the turn it
+woke. In the mode that asks before commands, the approval prompt appeared
+about two seconds after its PreInvocation with no hook in between, its
+default choice running the command. A Stop answer cannot show text without
+continuing the turn; a PostInvocation `errorMessage` can, but that hook does
+not say which model call ends the turn.
 
 ### Forks
 
@@ -703,7 +793,8 @@ the folder was not loaded in that run, while `~/.gemini/GEMINI.md` was.
 `startup_context`, `recovery_autosave`, `memory_index`, `rotation`, `engine_switch`,
 `spawn_brief`, `feature_finish`, and `mail_delivery`, plus `clear_rotation`
 inside a run whose launch found rotation through `/clear` usable
-([Rotation through /clear](#rotation-through-clear)).
+([Rotation through /clear](#rotation-through-clear)), and `auto_clear` inside
+one whose watcher types the `/clear` for you ([Automatic /clear](#automatic-clear)).
 `cs -engine supports <capability>` exits 1 for everything else.
 Skills that check before relying on a capability refuse cleanly
 ([Skills](#skills)).
@@ -713,7 +804,6 @@ Skills that check before relying on a capability refuse cleanly
 | The walk-away task queue (`cs -spawn --task`) | Refused before anything is staged, as under Codex; use `--brief`. A seed with tasks, staged for Claude, is neither taken nor offered at an Antigravity open: it stays staged, and the open goes on without it and names `cs <name> --engine claude`, which takes it. |
 | A wake for mail that comes while the conversation sits idle at its prompt | `agy` has no event for that moment, so the mail shows at the next prompt ([Mail](#mail)). |
 | Mail and the binding in a conversation the run never bound, opened with `/resume` or `/fork` after the first turn | The bound conversation keeps the digest and wake. Reopen and pick the conversation with `/resume` before the first turn ([Mail](#mail), [Forks](#forks)). `/clear` and `/new` move the session, and a conversation that held it earlier in the run takes it back when you return to it with `/resume` ([Rotation through /clear](#rotation-through-clear)). |
-| An automatic `/clear` after a rotation | Codex gets one (cs types `/clear` and `go`); under Antigravity you type them ([Rotation through /clear](#rotation-through-clear)). |
 | Crash-recovery prompt | Edits are snapshotted ([Recovery copies](#recovery-copies)), but nothing offers them back; restore by hand. |
 | `--remote` | Claude only. |
 
@@ -877,8 +967,6 @@ shape.
 
 ## Follow-ups
 
-These come later as separate changes: an automatic `/clear` after a
-rotation, which cs would have to type into the terminal as it does for Codex;
-and a binding that follows a conversation the run never bound, opened with
-`/resume` mid-run, which cs leaves alone under Codex too (one that held the
-session earlier in the run already takes it back).
+A future change could follow the binding when `/resume` opens a conversation
+the run has never bound. A conversation that held the session earlier in the
+run can already take it back.

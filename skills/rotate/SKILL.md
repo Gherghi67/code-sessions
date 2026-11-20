@@ -331,21 +331,19 @@ vault is locked: tell the user to mount it and stop.
    interrupted.
 10. Tell the user what the rotation now does for their engine.
 
-   Under Antigravity (`engine: antigravity`), run
-   `cs -engine supports clear_rotation`. If it exits 0, say: after `/clear`
-   (alias `/new`) they send one message, and `go` is enough; cs's hooks
-   point the session at the new conversation and hand it this handoff. A
-   message with its own content takes precedence. There is no automatic
-   count. If it exits non-zero (`agy` older than 1.5.10, or a cs plugin
-   without its SessionStart entry; `cs -doctor` names which), tell them to
-   exit with `/exit` and reopen with `cs <session-name> --from-handoff`
-   (substitute the session name): cs starts a fresh conversation with the
-   handoff as its first prompt and consumes it once, no `go` needed. A
-   launch cancelled before its first turn leaves the handoff pending.
-   Reopening normally and answering `r` works too; `Y`, Enter, `n` or
-   `--fresh` keep the handoff pending and disarm its marker, `d` discards
-   it. Either way, skip the Claude and Codex guidance below and use
-   Antigravity's line in step 11.
+   Under Antigravity, run `cs -engine auto-clear-grace` and
+   `cs -engine supports clear_rotation`. A delay in seconds selects the
+   automatic ending in step 11. The countdown runs once after an idle
+   turn. A message sent first cancels it. Send or clear any draft before
+   the deadline to keep it out of the prompt.
+   With only `clear_rotation`, tell them that sending a message after
+   `/clear` (or `/new`) carries the handoff. `go` is enough, and a
+   message with its own content takes precedence.
+   With neither route, use `/exit` and reopen with
+   `cs <session-name> --from-handoff` to start from the handoff. A launch
+   cancelled before its first turn leaves it pending. Reopening normally
+   and answering `r` works too. `Y`, Enter, `n` and `--fresh` disarm its
+   marker and keep the handoff pending. `d` discards it.
 
    Under Claude, tell the user what the rotation now does on its own: the fresh
    conversation picks up this handoff and begins its next step by itself, a
@@ -382,14 +380,18 @@ vault is locked: tell the user to mount it and stop.
 
    **Run `/clear` now, then send `go`** — this conversation is ready to rotate.
 
-   Under Antigravity it is Codex's line when `clear_rotation` was
-   supported in step 10; otherwise substitute the session name and end with:
+   Under Antigravity, substitute the delay from `auto-clear-grace` in this
+   final line when available.
+
+   **cs will type `/clear` and `go` <seconds> seconds after this turn ends.**
+
+   With `clear_rotation` alone, use the Codex line. For the exit route,
+   substitute the session name in the line below.
 
    **Run `/exit`, then `cs <session-name> --from-handoff`** — this conversation is ready to rotate.
 
-   This is the one step you cannot take for the user. A hook cannot submit
-   to Claude Code's command queue (it accepts the TUI's own input only); the
-   `cs` mod's button can, and once the marker is armed it reads
+   Under Claude, the `cs` mod's button submits to the TUI's command queue
+   and once the marker is armed it reads
    `/clear and continue from the handoff`. Forced rotation is on by
    default (at 80% context), and while it is on, the mod counts twenty
    seconds down once this turn ends with the handoff armed and runs the

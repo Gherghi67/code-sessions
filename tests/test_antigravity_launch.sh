@@ -76,8 +76,12 @@ setup() {
     # the prompt's first model call, as /cs:rotate in the conversation would;
     # AGY_LOCK_HANDOFFS then makes .cs/handoffs read-only (555), so the store
     # refuses to spend it.
-    # AGY_CAP_CS names the cs the run asks `-engine supports clear_rotation`,
-    # its answer (yes or no) in AGY_CAP_OUT. With AGY_DOCTOR_OUT the run also
+    # AGY_CAP_CS names the cs the run asks `-engine supports clear_rotation`
+    # (or the capability AGY_CAP_NAME names), its answer (yes or no) in
+    # AGY_CAP_OUT. AGY_WATCH_OUT gets alive once a watcher of the automatic
+    # /clear has published itself in the run's directory (it waits up to 3 s
+    # for one), else none; AGY_WATCH_OUT.pid and .dir get its pid and that
+    # directory. With AGY_DOCTOR_OUT the run also
     # has that cs run -doctor, its output in AGY_DOCTOR_OUT; AGY_DOCTOR_VERSION,
     # when set, is the version --version prints to that doctor, which runs
     # after the launch has read AGY_VERSION, as an agy updated mid-run would.
@@ -112,6 +116,16 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$conversation" ] || { conversation="$AGY_NEW_ID"; new=1; }
+if [ -n "${AGY_WATCH_OUT:-}" ]; then
+    run_dir="$CS_CACHE_DIR/antigravity-runs/$CS_RUN_ID" watcher="" tries=0
+    printf '%s\n' "$run_dir" > "$AGY_WATCH_OUT.dir"
+    while [ "$tries" -lt 30 ]; do
+        { read -r watcher _ < "$run_dir/watcher.pid"; } 2>/dev/null && [ -n "$watcher" ] && break
+        sleep 0.1; tries=$((tries + 1))
+    done
+    printf '%s\n' "$watcher" > "$AGY_WATCH_OUT.pid"
+    if [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null; then echo alive; else echo none; fi > "$AGY_WATCH_OUT"
+fi
 # A link planted in the run's directory, as a process with the user's rights
 # could: cs's marks must never write through it.
 [ -z "${AGY_PLANT_LINK:-}" ] \
@@ -211,7 +225,7 @@ if [ -z "${AGY_NO_TURN:-}" ]; then
     [ -z "${AGY_VAULT_LINK:-}" ] || ln -sfn "$AGY_VAULT_LINK_TO" "$HOME/$AGY_VAULT_LINK"
     [ -z "${AGY_LOCK_HANDOFFS:-}" ] || chmod 555 "$CS_SESSION_META_DIR/handoffs"
     if [ -n "${AGY_CAP_CS:-}" ]; then
-        if "$AGY_CAP_CS" -engine supports clear_rotation >/dev/null 2>&1; then
+        if "$AGY_CAP_CS" -engine supports "${AGY_CAP_NAME:-clear_rotation}" >/dev/null 2>&1; then
             echo yes > "$AGY_CAP_OUT"
         else
             echo no > "$AGY_CAP_OUT"
@@ -304,7 +318,7 @@ AGY
     export PATH="$TEST_TMPDIR/bin:$clean"
     unset XDG_CONFIG_HOME AGY_BIN AGY_EXIT AGY_HELP_OMIT AGY_HELP_EXTRA AGY_VERSION CS_STATUSLINE_DISABLE AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_FORKED AGY_BEFORE_RESUME
+    unset AGY_FORKED AGY_BEFORE_RESUME AGY_WATCH_OUT AGY_CAP_NAME CS_TIOCSTI_SYSCTL CS_CODEX_PROBE_OS CS_ANTIGRAVITY_CLEAR_GRACE
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
     _install_agy_hook
@@ -323,7 +337,7 @@ teardown() {
     unset STATUSLINE_DIR CS_STATUSLINE_DISABLE
     unset AGY_HOOK_OUT AGY_MAIL_DROP AGY_NEW_ID AGY_NO_TURN AGY_EDITS AGY_SUBAGENTS AGY_PLANT_LINK AGY_PLANT_LOG AGY_PLANT_BOUND AGY_PLANT_VAULT AGY_PLANT_DIR AGY_RAW_SWITCH
     unset AGY_STOP_REASON AGY_MAIL_DURING_TURN AGY_TRACK_MAIL AGY_CLEARED CS_NO_MAIL_WAKE CS_MAIL_WAKE_MAX
-    unset AGY_FORKED AGY_BEFORE_RESUME
+    unset AGY_FORKED AGY_BEFORE_RESUME AGY_WATCH_OUT AGY_CAP_NAME CS_TIOCSTI_SYSCTL CS_CODEX_PROBE_OS CS_ANTIGRAVITY_CLEAR_GRACE
     unset AGY_RESUMED AGY_ARM AGY_PROMPT AGY_SUBAGENT_PROMPT AGY_SUBAGENT_STEPS AGY_SUBAGENT_NO_LUI AGY_CLEARED_PROMPT AGY_PLANT_NEW AGY_CAP_CS AGY_CAP_OUT AGY_DOCTOR_OUT AGY_DOCTOR_VERSION AGY_LOCK_HANDOFFS AGY_CLEARED_INVOCATION AGY_DROP_CLEARED_SEEN AGY_EARLY
     unset CS_TMUX_BIN AGY_TMUX_LOG CODEX_HOME CS_CODEX_SHARED_HOME
     unset AGY_MAIL_SUB AGY_ARM_SUB AGY_VAULT_PLANT AGY_VAULT_LINK AGY_VAULT_LINK_TO AGY_VAULT_SEEN CS_ANTIGRAVITY_SHARED_HOME VAULT_HOME
@@ -2720,6 +2734,111 @@ test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry() {
     assert_eq unconsumed "$(_handoff_status gated "$name")" "and the armed handoff"
 }
 
+# The automatic /clear's watcher, under a terminal on an agy whose /clear
+# carries a rotation: it runs for exactly as long as agy, published in the
+# run's directory before agy starts, claimed as auto_clear inside the run,
+# stopped once agy exits, and its directory goes with the run. The launch
+# line says cs types the /clear. CS_TIOCSTI_SYSCTL stands in for a Linux
+# kernel that lets a user type into a terminal; macOS ignores it.
+test_the_autoclear_watcher_runs_beside_agy_under_a_terminal() {
+    local output sysctl="$TEST_TMPDIR/legacy-tiocsti" watcher
+    printf '1\n' > "$sysctl"
+    output=$("$CS_BIN" watched --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(CS_TIOCSTI_SYSCTL="$sysctl" AGY_WATCH_OUT="$TEST_TMPDIR/watch" AGY_CAP_CS="$CS_BIN" \
+        AGY_CAP_NAME=auto_clear AGY_CAP_OUT="$TEST_TMPDIR/cap" _pty_run "$CS_BIN" watched --fresh 2>&1)
+    assert_eq alive "$(cat "$TEST_TMPDIR/watch" 2>/dev/null)" "a watcher runs beside agy: $output" || return 1
+    assert_eq yes "$(cat "$TEST_TMPDIR/cap")" "the run claims auto_clear" || return 1
+    watcher=$(cat "$TEST_TMPDIR/watch.pid")
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null; echo "  FAIL: the watcher outlived agy"; return 1
+    fi
+    assert_not_exists "$(cat "$TEST_TMPDIR/watch.dir")" "the run's directory goes with the run" || return 1
+    assert_output_contains "$output" "cs types /clear and go for you 20 s after that turn ends" || return 1
+}
+
+_assert_manual_clear_without_watcher() {  # session, failed prerequisite
+    local output sysctl="$TEST_TMPDIR/legacy-tiocsti"
+    printf '1\n' > "$sysctl"
+    output=$(CS_TIOCSTI_SYSCTL="$sysctl" AGY_WATCH_OUT="$TEST_TMPDIR/watch" AGY_CAP_CS="$CS_BIN" \
+        AGY_CAP_NAME=auto_clear AGY_CAP_OUT="$TEST_TMPDIR/cap" _pty_run "$CS_BIN" "$1" --fresh 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq no "$(cat "$TEST_TMPDIR/cap")" "$2 prevents auto_clear" || return 1
+    assert_eq none "$(cat "$TEST_TMPDIR/watch")" "$2 prevents the watcher from starting" || return 1
+    assert_output_contains "$output" 'then /clear and send go' "$2 preserves manual rotation"
+}
+
+test_a_missing_stop_hook_keeps_rotation_manual() {
+    local output hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    output=$("$CS_BIN" manual --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    jq 'del(."cs-session".Stop)' "$hooks" > "$hooks.new" && mv "$hooks.new" "$hooks" || return 1
+    _assert_manual_clear_without_watcher manual "missing Stop"
+}
+
+test_each_autoclear_hook_must_use_this_cs_build() {
+    local output event verb command older="$TEST_TMPDIR/bin/older-cs"
+    local hooks="$HOME/.gemini/config/plugins/cs/hooks.json" good="$TEST_TMPDIR/good-hooks.json"
+    output=$("$CS_BIN" manual --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    cp "$hooks" "$good" || return 1
+    printf '%s\n' '#!/bin/sh' 'echo "{}"' > "$older"
+    chmod +x "$older" || return 1
+
+    for event in SessionStart PreInvocation PostToolUse Stop; do
+        case "$event" in
+            SessionStart) verb='session-start' ;;
+            PreInvocation) verb='pre-invocation' ;;
+            PostToolUse) verb='post-tool-use' ;;
+            Stop) verb=stop ;;
+        esac
+        command=$(source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_hook_command "$older" "$verb") || return 1
+        jq --arg event "$event" --arg cmd "$command" \
+            '."cs-session"[$event][0] |= if .hooks then .hooks[0].command = $cmd else .command = $cmd end' \
+            "$good" > "$hooks" || return 1
+        _assert_manual_clear_without_watcher manual "$event on a different cs build" || return 1
+    done
+}
+
+# Without a terminal there is nothing to type into: no watcher, no claim.
+test_no_autoclear_watcher_without_a_terminal() {
+    local output
+    output=$("$CS_BIN" unwatched --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_WATCH_OUT="$TEST_TMPDIR/watch" AGY_CAP_CS="$CS_BIN" AGY_CAP_NAME=auto_clear \
+        AGY_CAP_OUT="$TEST_TMPDIR/cap" "$CS_BIN" unwatched --fresh 2>&1) || { echo "$output"; return 1; }
+    assert_eq none "$(cat "$TEST_TMPDIR/watch")" "no terminal, no watcher" || return 1
+    assert_eq no "$(cat "$TEST_TMPDIR/cap")" "and no auto_clear" || return 1
+    assert_output_contains "$output" "then /clear and send go" "the /clear stays the user's" || return 1
+    assert_output_not_contains "$output" "no automatic /clear" "and nothing is said about a count no one could see" || return 1
+}
+
+# A terminal that will not take simulated input gets no watcher, and the
+# launch says why before agy starts, in session.log too. Root may type into
+# any terminal, so the refusal cannot be shown as root.
+test_a_refused_probe_starts_no_autoclear_watcher_and_says_why() {
+    local output sysctl="$TEST_TMPDIR/legacy-tiocsti"
+    if [ "$(id -u)" = 0 ]; then echo "  SKIP: root may type into any terminal"; return 77; fi
+    printf '0\n' > "$sysctl"
+    output=$("$CS_BIN" refused --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(CS_CODEX_PROBE_OS=Linux CS_TIOCSTI_SYSCTL="$sysctl" AGY_WATCH_OUT="$TEST_TMPDIR/watch" \
+        _pty_run "$CS_BIN" refused --fresh 2>&1)
+    assert_eq none "$(cat "$TEST_TMPDIR/watch" 2>/dev/null)" "a watcher started where it cannot type: $output" || return 1
+    assert_output_contains "$output" \
+        "cs: no automatic /clear after a rotation: this kernel refuses simulated terminal input (dev.tty.legacy_tiocsti is 0)" || return 1
+    assert_file_contains "$(_session_dir refused)/.cs/local/session.log" \
+        "Automatic /clear is off for this run: this kernel refuses simulated terminal input" || return 1
+}
+
+# On an agy whose /clear carries no rotation, a typed /clear would leave it
+# behind: no watcher, and no line about one.
+test_no_autoclear_watcher_without_the_clear_route() {
+    local output sysctl="$TEST_TMPDIR/legacy-tiocsti"
+    printf '1\n' > "$sysctl"
+    output=$("$CS_BIN" oldagy --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    output=$(AGY_VERSION=1.5.9 CS_TIOCSTI_SYSCTL="$sysctl" AGY_WATCH_OUT="$TEST_TMPDIR/watch" \
+        _pty_run "$CS_BIN" oldagy --fresh 2>&1)
+    assert_eq none "$(cat "$TEST_TMPDIR/watch" 2>/dev/null)" "a watcher on agy 1.5.9: $output" || return 1
+    assert_output_not_contains "$output" "automatic /clear" "no line about a count that cannot run" || return 1
+    assert_output_contains "$output" "/exit and cs oldagy --from-handoff" || return 1
+}
+
 # The mark SessionStart leaves for a new conversation is made where nothing
 # stands yet, and only a regular file counts: a link planted at its name,
 # whatever it points at, is neither written through nor taken for the mark.
@@ -3518,6 +3637,12 @@ run_test test_explicit_resume_without_a_typed_turn_keeps_the_binding
 run_test test_explicit_resume_binds_and_delivers_mail_in_the_vault
 run_test test_explicit_resume_refuses_unsafe_or_unsupported_launches
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
+run_test test_the_autoclear_watcher_runs_beside_agy_under_a_terminal
+run_test test_a_missing_stop_hook_keeps_rotation_manual
+run_test test_each_autoclear_hook_must_use_this_cs_build
+run_test test_no_autoclear_watcher_without_a_terminal
+run_test test_a_refused_probe_starts_no_autoclear_watcher_and_says_why
+run_test test_no_autoclear_watcher_without_the_clear_route
 run_test test_a_link_planted_at_the_new_conversation_mark_counts_for_nothing
 run_test test_a_clear_in_a_session_with_a_planted_vault_changes_nothing
 run_test test_a_tracked_marker_moves_the_binding_and_keeps_the_handoff
