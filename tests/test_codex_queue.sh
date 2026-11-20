@@ -31,7 +31,8 @@ setup() {
     cs_binding_write "$CS_SESSION_DIR" codex "$THREAD"
     jq -nc --arg id "$THREAD" '{type:"session_meta",payload:{id:$id}}' > "$ROLLOUT"
     _record event_msg "$(jq -nc --arg t "$TURN" '{type:"task_started",turn_id:$t}')"
-    _codex_run_dir_in_sandbox_root() { return 1; }
+    # $TMPDIR and /tmp are left out only because the fixture lives under them.
+    _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
     _codex_run_dir_prepare "$CS_SESSION_DIR" >/dev/null
     CS_BIN="$TEST_TMPDIR/spawner"
     cat > "$CS_BIN" <<'EOF'
@@ -298,6 +299,35 @@ test_missing_run_dir_still_saves_the_rotation_model() (
     assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'private run directory is required'
 )
 
+# Codex's history in another home: the rollout is rebuilt there as setup
+# writes it.
+_rollout_under() {  # codex_home
+    export CODEX_HOME="$1"
+    ROLLOUT="$CODEX_HOME/sessions/2026/11/20/rollout-2026-11-20T00-00-00-$THREAD.jsonl"
+    mkdir -p "${ROLLOUT%/*}"
+    jq -nc --arg id "$THREAD" '{type:"session_meta",payload:{id:$id}}' > "$ROLLOUT"
+    _record event_msg "$(jq -nc --arg t "$TURN" '{type:"task_started",turn_id:$t}')"
+}
+
+test_codex_history_inside_the_session_is_refused() (
+    local out
+    _rollout_under "$CS_SESSION_DIR/codex"
+    out=$(_stop)
+    assert_output_contains "$out" 'active history must be outside its writable workspace' || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_not_exists "$QDIR/queue.done"
+)
+
+test_codex_history_under_a_writable_root_is_refused() (
+    local out
+    printf '[sandbox_workspace_write]\nwritable_roots = ["%s/sessions"]\n' \
+        "$(cd -P "$CODEX_HOME" && pwd -P)" > "$CODEX_HOME/config.toml"
+    out=$(_stop)
+    assert_output_contains "$out" 'active history must be outside its writable workspace' || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_not_exists "$QDIR/queue.done"
+)
+
 run_test test_drains_and_notifies_once
 run_test test_unbound_and_undelivered_tasks_cannot_complete
 run_test test_reported_failure_keeps_the_task
@@ -312,4 +342,6 @@ run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
 run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
 run_test test_missing_run_dir_still_saves_the_rotation_model
+run_test test_codex_history_inside_the_session_is_refused
+run_test test_codex_history_under_a_writable_root_is_refused
 report_results
