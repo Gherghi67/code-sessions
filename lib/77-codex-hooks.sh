@@ -600,10 +600,11 @@ _codex_hook_permission_request() {
 # It replaces the shell it runs in with python, so the watcher, which starts
 # it in the background, holds python's own pid and can end it at once.
 # CS_CODEX_TYPE_SINK names a file the keys are appended to instead, for tests.
-_codex_type_keys() {  # text, typing_marker, native_pid_file
+_codex_type_keys() {  # text, typing_marker, native_pid_file, [input_lock]
     exec python3 -I -c '
 import errno, fcntl, os, sys, termios, time
 marker = sys.argv[2]
+lock_path = sys.argv[4]
 if not os.path.exists(marker):
     sys.exit(4)
 parent = os.getppid()
@@ -622,6 +623,26 @@ def check():
     except OSError:
         sys.exit(3)
 def type_keys():
+    input_lock = None
+    if lock_path:
+        input_lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    def send(key):
+        if input_lock is not None:
+            fcntl.flock(input_lock, fcntl.LOCK_EX)
+        try:
+            check()
+            if input_lock is not None:
+                generation = os.path.join(os.path.dirname(marker), "autoclear-generation")
+                try:
+                    with open(marker) as typing, open(generation) as current:
+                        if typing.read() != current.read():
+                            sys.exit(4)
+                except FileNotFoundError:
+                    sys.exit(4)
+            put(key)
+        finally:
+            if input_lock is not None:
+                fcntl.flock(input_lock, fcntl.LOCK_UN)
     sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
     if sink:
         fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -631,12 +652,10 @@ def type_keys():
         put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
     try:
         for ch in sys.argv[1].encode():
-            check()
-            put(bytes([ch]))
+            send(bytes([ch]))
             time.sleep(0.1)
         time.sleep(0.5)
-        check()
-        put(b"\r")
+        send(b"\r")
     finally:
         os.close(fd)
 try:
@@ -644,7 +663,7 @@ try:
 except OSError as e:
     sys.stderr.write("%s: %s\n" % (errno.errorcode.get(e.errno, "OSError"), e.strerror or e))
     sys.exit(1)
-' "$1" "$2" "${3:-}"
+' "$1" "$2" "${3:-}" "${4:-}"
 }
 
 # The CLI's pid, as the launch wrote it (lib/16-lifecycle.sh).
@@ -703,8 +722,11 @@ _codex_autoclear_terminal() {
 _codex_autoclear_watch() {  # session_dir, run_dir, [engine]
     local session_dir="$1" run_dir="$2" engine="${3:-codex}" cli=Codex
     local stamp typing keys_sent native deadline handoff armed action run status child=""
-    local pid_file errors cause keys
-    [ "$engine" = codex ] || cli=Antigravity
+    local pid_file errors cause keys input_lock=""
+    if [ "$engine" = antigravity ]; then
+        cli=Antigravity
+        input_lock="$run_dir/autoclear.lock"
+    fi
     trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
     # The watcher says it is there, for the Stop hook, and takes that back as
     # it ends, a TERM included.
@@ -724,33 +746,40 @@ _codex_autoclear_watch() {  # session_dir, run_dir, [engine]
             return 0
         fi
         [ -e "$stamp" ] || [ -L "$stamp" ] || continue
-        if ! _codex_stamp_ok "$stamp"; then
+        if [ "$engine" = antigravity ]; then
+            status=0
+            handoff=$(_antigravity_autoclear_take_stamp "$run_dir") || status=$?
+            if [ "$status" -ne 0 ]; then
+                [ "$status" -ne 2 ] || _codex_autoclear_log "$session_dir" \
+                    "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
+                continue
+            fi
+        else
+            if ! _codex_stamp_ok "$stamp"; then
+                rm -f "$stamp" 2>/dev/null || true
+                continue
+            fi
+            run=$(_switch_field "$stamp" run)
+            deadline=$(_switch_field "$stamp" deadline)
+            if [ "$run" != "${CS_RUN_ID:-}" ] || ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+                rm -f "$stamp" 2>/dev/null || true
+                continue
+            fi
+            [ "$(date +%s)" -ge "$deadline" ] || continue
+            handoff=$(_switch_field "$stamp" handoff)
+            # Set the typing marker before consuming the deadline. A Codex
+            # prompt removes both, so it can cancel typing on either side.
+            if ! { ( umask 077 && : > "$typing" ); } 2>/dev/null; then
+                rm -f "$stamp" 2>/dev/null || true
+                _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
+                continue
+            fi
+            if [ ! -e "$stamp" ]; then
+                rm -f "$typing" 2>/dev/null || true
+                continue
+            fi
             rm -f "$stamp" 2>/dev/null || true
-            continue
         fi
-        run=$(_switch_field "$stamp" run)
-        deadline=$(_switch_field "$stamp" deadline)
-        if [ "$run" != "${CS_RUN_ID:-}" ] || ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
-            rm -f "$stamp" 2>/dev/null || true
-            continue
-        fi
-        [ "$(date +%s)" -ge "$deadline" ] || continue
-        handoff=$(_switch_field "$stamp" handoff)
-        # The marker goes down before the deadline is spent, and the typist
-        # checks it before every key and Enter; go waits on it too, since the
-        # prompt that removed it may have landed during the pause after /clear.
-        # A prompt removes both, so one that lands before the marker leaves no
-        # deadline, and one after it leaves no marker: either way no key follows.
-        if ! { ( umask 077 && : > "$typing" ); } 2>/dev/null; then
-            rm -f "$stamp" 2>/dev/null || true
-            _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
-            continue
-        fi
-        if [ ! -e "$stamp" ]; then
-            rm -f "$typing" 2>/dev/null || true
-            continue
-        fi
-        rm -f "$stamp" 2>/dev/null || true
         # A forced launch can take the session over while this CLI stays
         # open: its deadline, set before the takeover, is no longer this
         # run's to act on, as the cs mod checks it still owns the rotation.
@@ -790,11 +819,11 @@ _codex_autoclear_watch() {  # session_dir, run_dir, [engine]
         if [ "${action%% *}" = quit ]; then
             _codex_autoclear_child _codex_type_keys /quit "$typing" "$native" 2>>"$errors"; status=$?
         else
-            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native" 2>>"$errors"; status=$?
+            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native" "$input_lock" 2>>"$errors"; status=$?
             if [ "$status" = 0 ]; then
                 _codex_autoclear_child sleep 2
                 if [ -e "$typing" ]; then
-                    _codex_autoclear_child _codex_type_keys go "$typing" "$native" 2>>"$errors"; status=$?
+                    _codex_autoclear_child _codex_type_keys go "$typing" "$native" "$input_lock" 2>>"$errors"; status=$?
                 else
                     status=4
                 fi
@@ -810,6 +839,8 @@ _codex_autoclear_watch() {  # session_dir, run_dir, [engine]
             4)
                 if [ "$keys" = /quit ]; then
                     _codex_autoclear_log "$session_dir" "Automatic /quit: a prompt went in while cs was typing; Enter not sent"
+                elif [ "$engine" = antigravity ]; then
+                    _codex_autoclear_log "$session_dir" "Automatic /clear: remaining keys were cancelled"
                 else
                     _codex_autoclear_log "$session_dir" "Automatic /clear: a prompt went in while cs was typing; go not sent"
                 fi

@@ -513,16 +513,13 @@ starts a model call stops it the same way, such as a background task or a
 subagent that finishes and wakes the conversation. A handoff armed later
 gets its own count.
 
-What cs makes sure of:
+How the watcher decides when to type
 
-- **No key of cs's lands in an approval prompt.** `agy` asks for approval
-  only for a tool call a model call made, and fires no hook of its own for the
-  prompt, but every model call fires PreInvocation first. Every hook event of
-  the run, in any conversation (SessionStart, PreInvocation, PostToolUse,
-  Stop), removes the deadline and the marker cs keeps while it types, and cs
-  checks that marker before each key, before Enter and before `go`. A turn
-  that ends with work still running (Stop's `fullyIdle` false) starts no
-  count, since that work can wake the conversation and ask for approval later.
+- All four hook events (SessionStart, PreInvocation, PostToolUse, and Stop)
+  cancel the deadline and remaining keys. A newer event also prevents an
+  overlapping Stop from publishing its deadline. The typist holds the same
+  lock when checking cancellation and sending each key. PreInvocation runs
+  before each model call. A turn has to report `fullyIdle` to start a count.
 - **Only the session's conversation counts**, only a turn that ended
   normally (`NO_TOOL_CALL`), only in the `agy` this launch started, and only
   while this run holds the session's lease. Subagents, `/btw` side questions
@@ -530,9 +527,9 @@ What cs makes sure of:
   none. Neither does an `agy` the agent starts inside the run, which inherits
   the run's environment: cs counts only a Stop whose hook `agy` itself ran
   (its parent process is the one the launch started).
-- **No switch is typed for.** With a switch pending (`cs -switch`), cs types
-  nothing: `/clear` would spend the handoff the switch carries, and the
-  `/exit` toward the other engine stays yours.
+- **Arming a switch** with `cs -switch` cancels the count and any keys still
+  to be sent, including `go` if only `/clear` has gone in. Use `/exit` to
+  take the switch.
 - **The deadline is kept out of the agent's way**, in the run's own directory
   in cs's cache (`antigravity-runs/<run id>` under `CS_CACHE_DIR`, by default
   `~/.cache/cs`), made mode 700 before `agy` starts and removed when the run
@@ -543,8 +540,11 @@ What cs makes sure of:
   approves or that you approve: approving one that writes there would let it
   plant a deadline.
 
-What cs cannot see:
+Where the keys land
 
+- Approval prompts can appear even in Antigravity's Auto mode. The watcher
+  sends ordinary terminal input. If an approval prompt takes focus, it can
+  receive Enter. Use `CS_ANTIGRAVITY_CLEAR_GRACE=0` at launch for manual rotation.
 - The screen. A draft you typed and did not send when the count ends gets
   `/clear` appended and goes to the conversation you are in; that prompt then
   stops the typing, so no `go` follows. Send or clear a draft first. An

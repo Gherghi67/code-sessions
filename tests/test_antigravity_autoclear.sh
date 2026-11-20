@@ -124,10 +124,13 @@ _pre() {  # conversation, [typed], [invocation], [steps]
 
 _stamp_field() { awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2) }' "$STAMP"; }
 
-_stale_stamp() {
-    printf 'deadline=1\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$RUN" > "$STAMP"
+_stamp_at() {  # deadline
+    printf '12345\n' > "$RUN_DIR/autoclear-generation"
+    printf 'deadline=%s\nhandoff=%s\nrun=%s\ngeneration=12345\n' "$1" "$HANDOFF" "$RUN" > "$STAMP"
     chmod 600 "$STAMP"
 }
+
+_stale_stamp() { _stamp_at 1; }
 
 # --- the count: started by the bound conversation's Stop ---
 
@@ -431,9 +434,11 @@ _watcher_stubs() {
 }
 
 _watch() {
-    _watcher_stubs
     export CS_RUN_ID=$RUN CS_RUN_ENGINE=antigravity CS_RUN_OWNER_PID=$$
-    _codex_autoclear_watch "$SESSION" "$RUN_DIR" antigravity & WATCHER=$!
+    (
+        _watcher_stubs
+        _codex_autoclear_watch "$SESSION" "$RUN_DIR" antigravity
+    ) & WATCHER=$!
 }
 
 _polls() {  # n
@@ -457,8 +462,7 @@ _keys_after() {  # seconds, lines
 }
 
 test_the_watcher_types_clear_then_go_for_antigravity() {
-    printf 'deadline=%s\nhandoff=%s\nrun=%s\n' "$(date +%s)" "$HANDOFF" "$RUN" > "$STAMP"
-    chmod 600 "$STAMP"
+    _stamp_at "$(date +%s)"
     _watch
     _keys_after 6 2 || { echo "  FAIL: expected two prompts, got: $(cat "$KEYS" 2>/dev/null)"; return 1; }
     assert_eq $'/clear\ngo' "$(cat "$KEYS")" || return 1
@@ -500,8 +504,7 @@ test_the_watcher_refuses_a_replaced_vault_even_at_the_same_path() {
 test_a_switch_pending_at_the_deadline_types_nothing() {
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=\neffort=\napproval=auto\n' "$HANDOFF" "$RUN" \
         > "$SESSION/.cs/local/pending-switch"
-    printf 'deadline=%s\nhandoff=%s\nrun=%s\n' "$(date +%s)" "$HANDOFF" "$RUN" > "$STAMP"
-    chmod 600 "$STAMP"
+    _stamp_at "$(date +%s)"
     _watch
     _polls 3 || return 1
     assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' 2>/dev/null < "$KEYS")" || return 1
@@ -511,9 +514,67 @@ test_a_switch_pending_at_the_deadline_types_nothing() {
         "Automatic /clear: a switch to claude (its default model, automatic approval) is pending, so cs typed nothing; /exit to take it, or cs -switch cancel to stay" || return 1
 }
 
+test_switch_cancels_between_clear_and_go() {
+    local status=0 i
+    _stale_stamp
+    mkfifo "$TEST_TMPDIR/resume-watch" || return 1
+    exec 8<>"$TEST_TMPDIR/resume-watch" || return 1
+    _codex_run_dir_in_sandbox_root() { return 1; }
+    export CS_RUN_ID=$RUN CS_RUN_ENGINE=antigravity CS_RUN_OWNER_PID=$$
+    (
+        _watcher_stubs
+        sleep() {
+            if [ "$1" = 2 ]; then
+                : > "$TEST_TMPDIR/waiting-for-go"
+                IFS= read -r -t 10 _ <&8
+            else
+                command sleep "$@"
+            fi
+        }
+        _codex_autoclear_watch "$SESSION" "$RUN_DIR" antigravity
+    ) & WATCHER=$!
+    for ((i = 0; i < 50; i++)); do
+        [ ! -f "$TEST_TMPDIR/waiting-for-go" ] || break
+        sleep 0.1
+    done
+    if [ -f "$TEST_TMPDIR/waiting-for-go" ]; then
+        CS_SESSION_DIR="$SESSION" CS_SESSION_NAME=demo CS_INSTALL_DIR="$TEST_TMPDIR" \
+            CODEX_BIN=/usr/bin/true cmd_switch codex >/dev/null || status=$?
+    else
+        echo "  FAIL: watcher did not reach the pause after /clear"
+        status=1
+    fi
+    printf 'resume\n' >&8
+    exec 8>&-
+    [ "$status" -eq 0 ] || return "$status"
+    _polls 3 || return 1
+    assert_eq '/clear' "$(cat "$KEYS")" "the switch interrupts the clear before go" || return 1
+    assert_file_exists "$SESSION/.cs/local/pending-switch"
+}
+
+test_typist_checks_cancellation_under_the_antigravity_lock() {
+    local lock="$RUN_DIR/autoclear.lock" typing="$RUN_DIR/typing" pid status=0 i
+    printf '12345\n' > "$typing"
+    printf '12345\n' > "$RUN_DIR/autoclear-generation"
+    printf '%s\n' "$$" > "$RUN_DIR/native.pid"
+    _cs_lock "$lock" || return 1
+    ( exec 9>&-; CS_CODEX_TYPE_SINK="$KEYS" _codex_type_keys /clear "$typing" "$RUN_DIR/native.pid" "$lock" ) &
+    pid=$!
+    for ((i = 0; i < 30; i++)); do
+        [ ! -f "$KEYS" ] || break
+        sleep 0.1
+    done
+    sleep 0.2
+    rm -f "$typing"
+    _cs_unlock "$lock"
+    wait "$pid" || status=$?
+    assert_eq 4 "$status" "the typist reports cancellation" || return 1
+    assert_file_exists "$KEYS" "the typist reached its sink" || return 1
+    assert_eq '' "$(cat "$KEYS")" "no key can go in while cancellation holds the lock"
+}
+
 test_a_gone_agy_is_named_in_the_log() {
-    printf 'deadline=%s\nhandoff=%s\nrun=%s\n' "$(date +%s)" "$HANDOFF" "$RUN" > "$STAMP"
-    chmod 600 "$STAMP"
+    _stamp_at "$(date +%s)"
     _watcher_stubs
     _codex_type_keys() { printf '%s\n' "$1" >> "$KEYS"; return 3; }
     export CS_RUN_ID=$RUN CS_RUN_ENGINE=antigravity CS_RUN_OWNER_PID=$$
@@ -557,6 +618,8 @@ run_test test_the_watcher_types_clear_then_go_for_antigravity
 run_test test_the_watcher_leaves_a_stale_handoff_marker_untouched
 run_test test_the_watcher_refuses_a_replaced_vault_even_at_the_same_path
 run_test test_a_switch_pending_at_the_deadline_types_nothing
+run_test test_switch_cancels_between_clear_and_go
+run_test test_typist_checks_cancellation_under_the_antigravity_lock
 run_test test_a_gone_agy_is_named_in_the_log
 run_test test_autoclear_diagnostics_do_not_follow_a_link_outside_the_session
 

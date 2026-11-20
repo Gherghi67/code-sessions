@@ -1387,9 +1387,10 @@ _antigravity_mail_wake_record() {
 #   rotate skill's last line, rather than again after every turn.
 # - Every model call fires PreInvocation first, the one a finished
 #   background task or subagent wakes included, and an approval prompt comes
-#   only from a model call, with no hook of its own. So every hook event of
-#   the run stops the count and the typing (cmd_antigravity_hook), and the
-#   typist checks its marker before each key and the Enter.
+#   from a model call, and the approval prompt has no hook of its own. Every
+#   event cancels the count and remaining keys (cmd_antigravity_hook). The
+#   typist checks the marker under the same lock before sending each key.
+#   agy supplies no way to verify which part of the UI receives the input.
 # - Stop's fullyIdle was false while a background command ran; such work
 #   wakes the conversation later and can ask for approval then, so no count
 #   starts until a turn ends with nothing left running.
@@ -1445,12 +1446,54 @@ _antigravity_autoclear_begin() (
         && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 1
     umask 077
     _cs_lock "$run_dir/autoclear.lock" || {
-        rm -f "$run_dir/autoclear-generation" "$run_dir/autoclear" "$run_dir/typing"
+        _antigravity_autoclear_cancel "$run_dir"
         return 1
     }
-    rm -f "$run_dir/autoclear-generation" "$run_dir/autoclear" "$run_dir/typing" || return 1
+    _antigravity_autoclear_cancel "$run_dir" || return 1
     _antigravity_mail_state_write "$run_dir/autoclear-generation" "$$"$'\n' || return 1
     printf '%s\n' "$$"
+)
+
+_antigravity_autoclear_cancel() {  # run_dir
+    rm -f "$1/autoclear-generation" "$1/autoclear" "$1/typing"
+}
+
+# Cancel a count or remaining keys before publishing a switch. Holding the
+# same lock as the typist and Stop makes this one change for the watcher.
+_antigravity_autoclear_write_switch() (  # switch_file, command [args...]
+    local run_dir
+    if run_dir=$(_antigravity_run_dir) && [ -f "$run_dir/watcher.pid" ] \
+        && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then
+        umask 077
+        _cs_lock "$run_dir/autoclear.lock" || return 1
+        _antigravity_autoclear_cancel "$run_dir" || return 1
+    fi
+    cs_write_atomic "$@"
+)
+
+# Read, validate and claim the deadline under one lock. An overlapping
+# hook can cancel the old stamp and publish a new one while a poll waits.
+_antigravity_autoclear_take_stamp() (  # run_dir
+    local run_dir="$1" stamp="$1/autoclear" deadline handoff scheduled current
+    umask 077
+    _cs_lock "$run_dir/autoclear.lock" 0 || return 1
+    if ! _codex_stamp_ok "$stamp" || [ "$(_switch_field "$stamp" run)" != "${CS_RUN_ID:-}" ]; then
+        rm -f "$stamp" 2>/dev/null
+        return 1
+    fi
+    deadline=$(_switch_field "$stamp" deadline)
+    if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+        rm -f "$stamp" 2>/dev/null
+        return 1
+    fi
+    [ "$(date +%s)" -ge "$deadline" ] || return 1
+    handoff=$(_switch_field "$stamp" handoff)
+    scheduled=$(_switch_field "$stamp" generation)
+    rm -f "$stamp" || return 1
+    { IFS= read -r current < "$run_dir/autoclear-generation"; } 2>/dev/null || return 1
+    [ -n "$handoff" ] && [ -n "$scheduled" ] && [ "$scheduled" = "$current" ] || return 1
+    ( set -C; printf '%s\n' "$current" > "$run_dir/typing" ) 2>/dev/null || return 2
+    printf '%s\n' "$handoff"
 )
 
 # Whether the hook runs for the agy this launch started: agy runs a hook's
