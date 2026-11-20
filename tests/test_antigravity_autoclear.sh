@@ -495,6 +495,15 @@ test_a_gone_agy_is_named_in_the_log() {
         "Automatic /clear: Antigravity had already exited; nothing more typed" || return 1
 }
 
+test_autoclear_diagnostics_do_not_follow_a_link_outside_the_session() {
+    local log="$TEST_TMPDIR/unrelated.log"
+    printf '%s\n' 'unrelated log' > "$log"
+    ln -s "$log" "$SESSION/.cs/local/session.log" || return 1
+
+    _codex_autoclear_log "$SESSION" 'Automatic /clear: test diagnostic'
+    assert_eq 'unrelated log' "$(cat "$log")" "the outside log is untouched"
+}
+
 run_test test_an_idle_turn_end_with_a_handoff_armed_starts_the_count
 run_test test_a_turn_end_with_work_still_running_starts_no_count
 run_test test_a_turn_that_did_not_end_normally_starts_no_count
@@ -518,5 +527,6 @@ run_test test_auto_clear_is_claimed_only_while_the_watcher_lives
 run_test test_the_watcher_types_clear_then_go_for_antigravity
 run_test test_a_switch_pending_at_the_deadline_types_nothing
 run_test test_a_gone_agy_is_named_in_the_log
+run_test test_autoclear_diagnostics_do_not_follow_a_link_outside_the_session
 
 report_results

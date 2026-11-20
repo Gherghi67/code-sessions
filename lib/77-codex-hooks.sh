@@ -849,6 +849,7 @@ _codex_autoclear_child() {  # command, arguments...
 _codex_autoclear_log() {  # session_dir, line
     local log_dir
     if log_dir=$(cs_private_dir "$1/.cs"); then
-        { printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$2" >> "$log_dir/session.log"; } 2>/dev/null || true
+        cs_append_inside "$log_dir/session.log" printf '%s - %s\n' \
+            "$(date '+%Y-%m-%d %H:%M:%S')" "$2" 2>/dev/null || true
     fi
 }
