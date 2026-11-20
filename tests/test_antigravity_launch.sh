@@ -2756,6 +2756,47 @@ test_the_autoclear_watcher_runs_beside_agy_under_a_terminal() {
     assert_output_contains "$output" "cs types /clear and go for you 20 s after that turn ends" || return 1
 }
 
+_assert_manual_clear_without_watcher() {  # session, failed prerequisite
+    local output sysctl="$TEST_TMPDIR/legacy-tiocsti"
+    printf '1\n' > "$sysctl"
+    output=$(CS_TIOCSTI_SYSCTL="$sysctl" AGY_WATCH_OUT="$TEST_TMPDIR/watch" AGY_CAP_CS="$CS_BIN" \
+        AGY_CAP_NAME=auto_clear AGY_CAP_OUT="$TEST_TMPDIR/cap" _pty_run "$CS_BIN" "$1" --fresh 2>&1) \
+        || { echo "$output"; return 1; }
+    assert_eq no "$(cat "$TEST_TMPDIR/cap")" "$2 prevents auto_clear" || return 1
+    assert_eq none "$(cat "$TEST_TMPDIR/watch")" "$2 prevents the watcher from starting" || return 1
+    assert_output_contains "$output" 'then /clear and send go' "$2 preserves manual rotation"
+}
+
+test_a_missing_stop_hook_keeps_rotation_manual() {
+    local output hooks="$HOME/.gemini/config/plugins/cs/hooks.json"
+    output=$("$CS_BIN" manual --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    jq 'del(."cs-session".Stop)' "$hooks" > "$hooks.new" && mv "$hooks.new" "$hooks" || return 1
+    _assert_manual_clear_without_watcher manual "missing Stop"
+}
+
+test_each_autoclear_hook_must_use_this_cs_build() {
+    local output event verb command older="$TEST_TMPDIR/bin/older-cs"
+    local hooks="$HOME/.gemini/config/plugins/cs/hooks.json" good="$TEST_TMPDIR/good-hooks.json"
+    output=$("$CS_BIN" manual --engine antigravity 2>&1) || { echo "$output"; return 1; }
+    cp "$hooks" "$good" || return 1
+    printf '%s\n' '#!/bin/sh' 'echo "{}"' > "$older"
+    chmod +x "$older" || return 1
+
+    for event in SessionStart PreInvocation PostToolUse Stop; do
+        case "$event" in
+            SessionStart) verb='session-start' ;;
+            PreInvocation) verb='pre-invocation' ;;
+            PostToolUse) verb='post-tool-use' ;;
+            Stop) verb=stop ;;
+        esac
+        command=$(source "$SCRIPT_DIR/../lib/01-manifests.sh" && _antigravity_hook_command "$older" "$verb") || return 1
+        jq --arg event "$event" --arg cmd "$command" \
+            '."cs-session"[$event][0] |= if .hooks then .hooks[0].command = $cmd else .command = $cmd end' \
+            "$good" > "$hooks" || return 1
+        _assert_manual_clear_without_watcher manual "$event on a different cs build" || return 1
+    done
+}
+
 # Without a terminal there is nothing to type into: no watcher, no claim.
 test_no_autoclear_watcher_without_a_terminal() {
     local output
@@ -3597,6 +3638,8 @@ run_test test_explicit_resume_binds_and_delivers_mail_in_the_vault
 run_test test_explicit_resume_refuses_unsafe_or_unsupported_launches
 run_test test_clear_rotation_needs_agy_1_5_10_and_the_session_start_entry
 run_test test_the_autoclear_watcher_runs_beside_agy_under_a_terminal
+run_test test_a_missing_stop_hook_keeps_rotation_manual
+run_test test_each_autoclear_hook_must_use_this_cs_build
 run_test test_no_autoclear_watcher_without_a_terminal
 run_test test_a_refused_probe_starts_no_autoclear_watcher_and_says_why
 run_test test_no_autoclear_watcher_without_the_clear_route

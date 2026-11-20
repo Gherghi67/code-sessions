@@ -24259,6 +24259,15 @@ _antigravity_clear_rebind_usable() {  # agy_bin
     _antigravity_rotation_hook_ready && _antigravity_rotation_hook_ready SessionStart session-start
 }
 
+_antigravity_autoclear_hooks_ready() {  # cs_bin
+    # Stop arms the watcher. Each of these events also cancels a count or
+    # typing, so all four must run a cs build that knows this protocol.
+    _antigravity_rotation_hook_ready SessionStart session-start "$1" &&
+        _antigravity_rotation_hook_ready PreInvocation pre-invocation "$1" &&
+        _antigravity_rotation_hook_ready PostToolUse post-tool-use "$1" &&
+        _antigravity_rotation_hook_ready Stop stop "$1"
+}
+
 # Whether this run's launch found the /clear rebind usable and said so in the
 # run's directory.
 _antigravity_clear_rebind_on() {
@@ -24647,15 +24656,17 @@ $prompt"
     # The automatic /clear after a rotation: a watcher beside agy types
     # /clear and go once a turn ends with a handoff armed
     # (_antigravity_autoclear_arm). It runs only where the /clear route
-    # works, a terminal is attached that takes simulated input, which is
-    # asked once here, and this run's directory lies where the agent cannot
-    # write; otherwise the launch says why and the /clear stays the user's.
+    # works, the plugin uses this cs build for all four hooks, a terminal
+    # takes simulated input, and this run's directory lies where the agent
+    # cannot write. Otherwise the launch says why and /clear stays manual.
     # The launch stops it as soon as agy exits, and the run's cleanup removes
     # its directory (lib/16-lifecycle.sh).
     local autoclear="" refusal="" grace=""
     if [ -n "$run_dir" ] && [ -f "$run_dir/clear-rebind" ] && [ ! -L "$run_dir/clear-rebind" ] \
         && [ -t 0 ] && [ -t 1 ] && grace=$(_antigravity_autoclear_grace); then
-        if ! _codex_run_dir_ok "$run_dir" "$session_dir" || ! _launch_handoff_receipt_dir_ok "$run_dir" "$session_dir"; then
+        if ! _antigravity_autoclear_hooks_ready "$CS_BIN"; then
+            refusal="the cs plugin needs enabled SessionStart, PreInvocation, PostToolUse, and Stop hooks from this cs build. Enable the hooks and run setup.sh again."
+        elif ! _codex_run_dir_ok "$run_dir" "$session_dir" || ! _launch_handoff_receipt_dir_ok "$run_dir" "$session_dir"; then
             refusal="this run's directory under ${CS_CACHE_DIR:-$HOME/.cache/cs} lies where the agent can write (the session, /tmp or \$TMPDIR)"
         elif refusal=$(_codex_autoclear_probe); then
             _codex_autoclear_watch "$session_dir" "$run_dir" antigravity </dev/null >/dev/null 2>&1 &
