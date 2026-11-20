@@ -465,6 +465,35 @@ test_the_watcher_types_clear_then_go_for_antigravity() {
     assert_not_exists "$STAMP" "the deadline is consumed once" || return 1
 }
 
+test_the_watcher_leaves_a_stale_handoff_marker_untouched() {
+    _arm "$OTHER_HANDOFF"
+    _stale_stamp
+    _watch
+    _polls 2 || return 1
+    assert_not_exists "$KEYS" "a stale marker does not license typing" || return 1
+    assert_eq "$OTHER_HANDOFF" "$(cat "$SESSION/.cs/local/pending-handoff" 2>/dev/null)" \
+        "the watcher only reads the pending marker"
+}
+
+test_the_watcher_refuses_a_replaced_vault_even_at_the_same_path() {
+    local vault
+    mkdir -p "$TEST_TMPDIR/vault/antigravity-home" || return 1
+    vault=$(cd -P "$TEST_TMPDIR/vault" && pwd -P) || return 1
+    ln -s "$vault" "$SESSION/.cs/private" || return 1
+    printf '%s\n%s\n' "$vault/antigravity-home" "$(cs_dir_identity "$vault")" > "$RUN_DIR/vault"
+    _stale_stamp
+
+    mv "$vault" "$vault.before" || return 1
+    mkdir -p "$vault/antigravity-home" "$vault/handoffs" || return 1
+    cp "$SESSION/.cs/handoffs/$HANDOFF" "$vault/handoffs/$HANDOFF" || return 1
+    printf '%s\n' "$HANDOFF" > "$vault/pending-handoff"
+
+    _watch
+    _polls 3 || return 1
+    assert_not_exists "$KEYS" "matching names in a different vault cannot license typing" || return 1
+    assert_file_exists "$vault/pending-handoff"
+}
+
 # A switch recorded during the count carries the handoff to the other engine:
 # cs types neither /clear, which would spend it here, nor /exit, which is the
 # user's to type.
@@ -525,6 +554,8 @@ run_test test_a_newer_hook_prevents_an_older_stop_from_arming
 run_test test_hooks_of_another_run_or_outside_a_run_leave_the_count
 run_test test_auto_clear_is_claimed_only_while_the_watcher_lives
 run_test test_the_watcher_types_clear_then_go_for_antigravity
+run_test test_the_watcher_leaves_a_stale_handoff_marker_untouched
+run_test test_the_watcher_refuses_a_replaced_vault_even_at_the_same_path
 run_test test_a_switch_pending_at_the_deadline_types_nothing
 run_test test_a_gone_agy_is_named_in_the_log
 run_test test_autoclear_diagnostics_do_not_follow_a_link_outside_the_session

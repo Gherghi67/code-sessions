@@ -1402,6 +1402,20 @@ _antigravity_autoclear_action() {  # session_dir
     CS_RUN_APPROVAL=native _codex_autoclear_action "$1"
 }
 
+# At the deadline, read the handoff from the store the launch used. A vault
+# remount, replacement at the same path, or one added to a running session
+# cannot give the watcher permission to type.
+_antigravity_autoclear_handoff() {  # session_dir, run_dir
+    local session_dir="$1" run_dir="$2" private
+    if [ -e "$run_dir/vault" ] || [ -L "$run_dir/vault" ]; then
+        private=$(_antigravity_run_private_dir "$session_dir" "$run_dir") || return 1
+        _rotation_peek_armed_handoff "$private/handoffs" "$private/pending-handoff"
+    else
+        ! _switch_session_encrypted "$session_dir" || return 1
+        _rotation_peek_armed_handoff "$session_dir/.cs/handoffs" "$session_dir/.cs/local/pending-handoff"
+    fi
+}
+
 # Whether this run counts down: the launch found the /clear route usable
 # (clear-rebind), the count is on, and the watcher it started still lives.
 _antigravity_autoclear_on() {

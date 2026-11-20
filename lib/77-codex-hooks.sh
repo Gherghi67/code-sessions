@@ -702,7 +702,7 @@ _codex_autoclear_terminal() {
 # toward the switch is the user's /exit.
 _codex_autoclear_watch() {  # session_dir, run_dir, [engine]
     local session_dir="$1" run_dir="$2" engine="${3:-codex}" cli=Codex
-    local stamp typing keys_sent native deadline handoff action run status child=""
+    local stamp typing keys_sent native deadline handoff armed action run status child=""
     local pid_file errors cause keys
     [ "$engine" = codex ] || cli=Antigravity
     trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
@@ -759,7 +759,12 @@ _codex_autoclear_watch() {  # session_dir, run_dir, [engine]
             _codex_autoclear_log "$session_dir" "Automatic /clear: another cs run owns this session now; nothing typed"
             continue
         fi
-        if ! { [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ]; }; then
+        case "$engine:$handoff" in
+            *:) armed="" ;;
+            codex:*) armed=$(_rotation_armed_handoff "$session_dir") ;;
+            *) armed=$(_antigravity_autoclear_handoff "$session_dir" "$run_dir") || armed="" ;;
+        esac
+        if [ -z "$armed" ] || [ "$armed" != "$handoff" ]; then
             rm -f "$typing" 2>/dev/null || true
             continue
         fi
