@@ -22980,6 +22980,13 @@ _codex_queue_write_error() {
     _codex_queue_message "cs task queue: could not update queue state. Inspect it with cs -queue list before resuming."
 }
 
+# The status of a Stop that printed only a message: 4 while a handoff is
+# armed, so the armed rotation still runs, else 0.
+_codex_queue_msg_exit() {  # handoff
+    [ -z "$1" ] || return 4
+    return 0
+}
+
 _codex_queue_event() {  # queue_dir, jq options and expression
     local file="$1/notifications.jsonl"
     shift
@@ -22991,6 +22998,7 @@ _codex_queue_event() {  # queue_dir, jq options and expression
 # The run's record of a drain: the delivery outstanding, the count, and the
 # one-time notices.
 _codex_queue_forget_run() {  # private_run_dir
+    [ -n "$1" ] || return 0
     rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
 }
 
@@ -23014,9 +23022,10 @@ _codex_queue_reset() {  # queue_dir, private_run_dir
     _codex_queue_forget_run "$2"
 }
 
+# Returns 0 when it printed a block, 1 when it printed only a message.
 _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading, limit
     local reason="cs task queue: $5" notice=""
-    _codex_queue_reset "$1" "$2" || { _codex_queue_write_error; return 0; }
+    _codex_queue_reset "$1" "$2" || { _codex_queue_write_error; return 1; }
     _codex_queue_event "$1" --arg kind "$5" --argjson reading "$6" --argjson limit "$7" --argjson remaining "$4" \
         '{ts:$ts,event:"breaker_tripped",reason:$kind,reading:$reading,limit:$limit,remaining:$remaining}'
     case "$5" in
@@ -23029,6 +23038,9 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
         codex_version)
             reason="cs task queue: walk-away tasks need Codex $CS_CODEX_QUEUE_MIN_VERSION or later, which records the hook provenance cs confirms each task by."
             ;;
+        run_dir)
+            reason="cs task queue: a private run directory is required to confirm tasks, and this run has none."
+            ;;
         task_failed)
             reason="cs task queue: you reported the task as not completed (cs-task-failed)."
             notice="task reported failed, $4 task(s) remaining"
@@ -23040,7 +23052,7 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
     reason="$reason Parked with $4 task(s) remaining. Re-arm with cs -queue start."
     _codex_queue_notify "$3" "${notice:-$reason}"
     case "$5" in
-        unconfirmed|history|codex_version) _codex_queue_message "$reason" ;;
+        unconfirmed|history|codex_version|run_dir) _codex_queue_message "$reason"; return 1 ;;
         *) _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention." ;;
     esac
 }
@@ -23127,17 +23139,18 @@ _codex_queue_history_protected() {  # dir
     _CS_QUEUE_VAULT_HOME=$home _CS_QUEUE_VAULT_ID=$id
 }
 
-# Parks a queue whose Codex history the agent could rewrite: no receipt read
-# from it can be trusted.
-_codex_queue_refuse_history() {  # queue_dir, run_dir, handoff
+# Parks a queue no task of which can be confirmed: its Codex history is the
+# agent's to rewrite (history), or the run has no private directory to hold
+# the receipt (run_dir).
+_codex_queue_refuse() {  # queue_dir, run_dir, handoff, kind
     local file remaining=0
     _codex_queue_state "$1" >/dev/null || return 1
     for file in "$1/queue/"*; do
         [ -f "$file" ] && [ ! -L "$file" ] || continue
         remaining=$((remaining + 1))
     done
-    _codex_queue_park "$1" "$2" "$CS_SESSION_DIR/.cs/local" "$remaining" history 0 0
-    [ -z "$3" ] || return 4
+    _codex_queue_park "$1" "$2" "$CS_SESSION_DIR/.cs/local" "$remaining" "$4" 0 0 \
+        || { _codex_queue_msg_exit "$3"; return; }
     return 0
 }
 
@@ -23179,21 +23192,25 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         remaining=$((remaining + 1))
     done
     if [ "$remaining" = 0 ]; then
-        _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; return 0; }
+        _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         return 1
     fi
     # The launch records a Codex that writes the hook provenance a task is
     # confirmed by (lib/76-codex.sh); no record, no task can be confirmed.
     if [ ! -f "$run_dir/queue-version-ok" ] || [ -L "$run_dir/queue-version-ok" ]; then
-        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" codex_version 0 0
-        [ -z "$handoff" ] || return 4
+        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" codex_version 0 0 \
+            || { _codex_queue_msg_exit "$handoff"; return; }
         return 0
     fi
     if [ "$state" = draining ]; then
         current=$(jq -er --arg s "$thread" --arg t "$turn" 'select(.thread==$s and .turn==$t) | .task' \
             "$run_dir/queue-task.json" 2>/dev/null) || current=""
         case "$current" in
-            ''|*/*|.|..) _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0; [ -z "$handoff" ] || return 4; return 0 ;;
+            ''|*/*|.|..)
+                _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0 \
+                    || { _codex_queue_msg_exit "$handoff"; return; }
+                return 0
+                ;;
         esac
         token=$(jq -er .token "$run_dir/queue-task.json" 2>/dev/null) || token=""
         offset=$(jq -er '.offset | numbers' "$run_dir/queue-task.json" 2>/dev/null) || offset=""
@@ -23210,35 +23227,38 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
                 2>/dev/null) || snapshot='{}'
         fi
         if ! printf '%s' "$snapshot" | jq -e '.delivered and .final_assistant' >/dev/null; then
-            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0
-            [ -z "$handoff" ] || return 4
+            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0 \
+                || { _codex_queue_msg_exit "$handoff"; return; }
             return 0
         fi
         msg=$(printf '%s' "$input" | jq -r '.last_assistant_message // empty')
         if [ -z "$msg" ]; then
-            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0
-            [ -z "$handoff" ] || return 4
+            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0 \
+                || { _codex_queue_msg_exit "$handoff"; return; }
             return 0
         fi
         if printf '%s\n' "$msg" | grep -Eq '^(cs-task-failed|`cs-task-failed`)$'; then
-            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" task_failed 1 1
+            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" task_failed 1 1 \
+                || { _codex_queue_msg_exit "$handoff"; return; }
             return 0
         fi
         [ ! -f "$run_dir/queue-count" ] || IFS= read -r count < "$run_dir/queue-count" || count=0
         count=$((count + 1))
         read -r trip reading limit < <(_codex_queue_breaker "$snapshot" "$count") || true
         if [ "$trip" = failures ]; then
-            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" "$trip" "$reading" "$limit"
+            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" "$trip" "$reading" "$limit" \
+                || { _codex_queue_msg_exit "$handoff"; return; }
             return 0
         fi
         if ! _codex_queue_finish_task "$qdir" "$current"; then
             _codex_queue_reset "$qdir" "$run_dir" || true
             _codex_queue_write_error
-            return 0
+            _codex_queue_msg_exit "$handoff"
+            return
         fi
         rm -f "$run_dir/queue-task.json" "$qdir/queue.current" || true
         (umask 077; cs_write_atomic "$run_dir/queue-count" printf '%s\n' "$count") \
-            || { _codex_queue_write_error; return 0; }
+            || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         first=""
         remaining=0
         for file in "$qdir/queue/"*; do
@@ -23247,7 +23267,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             remaining=$((remaining + 1))
         done
         if [ "$remaining" = 0 ]; then
-            _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; return 0; }
+            _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
             rm -f "$qdir/queue.mode" || true
             _codex_queue_event "$qdir" --argjson completed "$count" '{ts:$ts,event:"drain_finished",done:$completed}'
             _codex_queue_notify "$local_dir" "queue drained: $count task(s) done"
@@ -23256,16 +23276,17 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             return 0
         fi
         if [ -n "$trip" ]; then
-            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" "$trip" "$reading" "$limit"
+            _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" "$trip" "$reading" "$limit" \
+                || { _codex_queue_msg_exit "$handoff"; return; }
             return 0
         fi
     fi
     if [ -n "$handoff" ]; then
-        _queue_set_state "$qdir" armed || { _codex_queue_write_error; return 0; }
+        _queue_set_state "$qdir" armed || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         return 3                       # the existing Stop path owns rotation
     fi
     if [ -f "$qdir/queue.mode" ] && [ ! -L "$qdir/queue.mode" ] && [ "$(cat "$qdir/queue.mode")" = workflow ]; then
-        _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; return 0; }
+        _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         _codex_queue_message "cs task queue: workflow mode is available under Claude. Re-arm with cs -queue start or cs -queue start subagents."
         return 0
     fi
@@ -23279,8 +23300,13 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         offset=$(wc -c < "$roll" 2>/dev/null | tr -d ' ')
         [[ "$offset" =~ ^[0-9]+$ ]] || offset=""
     fi
-    _codex_queue_deliver "$qdir" "$run_dir" "$thread" "$turn" "$first" "$remaining" "$state" "$offset" \
-        || _codex_queue_write_error
+    if ! _codex_queue_deliver "$qdir" "$run_dir" "$thread" "$turn" "$first" "$remaining" "$state" "$offset"; then
+        _codex_queue_reset "$qdir" "$run_dir" || true
+        _codex_queue_notify "$local_dir" "cs task queue in ${CS_SESSION_NAME:-the spawned session} could not hand out its next task and is parked. Inspect it with cs -queue list."
+        _codex_queue_write_error
+        _codex_queue_msg_exit "$handoff"
+        return
+    fi
     return 0
 }
 
@@ -23298,12 +23324,11 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     ! cs_files_tracked_notice "$1" "$CS_SESSION_DIR" >/dev/null || return 1
     turn=$(printf '%s' "$4" | jq -r '.turn_id // empty' 2>/dev/null) && _is_uuid "$turn" || return 1
     if ! run_dir=$(_codex_run_dir) || ! _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then
-        _codex_queue_message "cs task queue: a private run directory is required. The queued tasks are still available."
-        [ -z "$3" ] || return 4
-        return 0
+        cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "" "$3" run_dir
+        return
     fi
     if [ -d "$rollouts_dir" ] && ! _codex_queue_history_protected "$rollouts_dir"; then
-        cs_run_with_lease "$1" _codex_queue_refuse_history "$qdir" "$run_dir" "$3"
+        cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "$run_dir" "$3" history
         return
     fi
     cs_run_with_lease "$1" _codex_queue_stop_owned "$qdir" "$run_dir" "$2" "$turn" "$3" "$4"

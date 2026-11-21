@@ -569,6 +569,52 @@ test_missing_run_dir_still_saves_the_rotation_model() (
     assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'private run directory is required'
 )
 
+# No private run directory, no task can be confirmed: the queue parks once,
+# the spawner hears once, and later Stops find it idle.
+test_a_missing_run_dir_parks_once() {
+    local out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    rm -rf "$CS_CACHE_DIR/codex-runs/$RUN"
+    out=$(_stop)
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'private run directory is required' || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the park" || return 1
+    assert_eq '' "$(_stop)" "the next Stop prints nothing" || return 1
+    assert_eq '' "$(_stop)" "nor does the one after it" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one notice a drain"
+}
+
+# A task the Stop cannot read is never handed out: the queue parks, and the
+# spawner hears once.
+test_an_unreadable_next_task_parks() {
+    local out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    : > "$QDIR/queue/000"
+    out=$(_stop)
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'could not update queue state' || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one notice" || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'could not hand out'
+}
+
+# A Stop that cannot update the queue says so, and the armed rotation still
+# counts down.
+test_a_write_error_still_counts_down_an_armed_rotation() (
+    local first out outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside"
+    first=$(_stop)
+    _deliver "$first"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=20
+    _live_watcher
+    _helper_swapping_queue_for "$outside"
+    out=$(CS_CODEX_THREAD_BIN="$TEST_TMPDIR/helper" _stop true)
+    assert_file_exists "$CS_CACHE_DIR/codex-runs/$RUN/autoclear" "the armed rotation still counts down" || return 1
+    assert_eq 1 "$(printf '%s\n' "$out" | jq -s length)" "one message for the Stop" || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'could not update queue state'
+)
+
 # Codex's history in another home: the rollout is rebuilt there as setup
 # writes it.
 _rollout_under() {  # codex_home
@@ -696,6 +742,9 @@ run_test test_rotation_with_a_live_watcher_does_not_notify
 run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
 run_test test_an_old_codex_parks_the_queue
 run_test test_missing_run_dir_still_saves_the_rotation_model
+run_test test_a_missing_run_dir_parks_once
+run_test test_an_unreadable_next_task_parks
+run_test test_a_write_error_still_counts_down_an_armed_rotation
 run_test test_codex_history_inside_the_session_is_refused
 run_test test_codex_history_under_a_writable_root_is_refused
 run_test test_an_encrypted_vault_home_drains
