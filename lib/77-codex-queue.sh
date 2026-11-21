@@ -150,9 +150,13 @@ Scope: complete the behavior the task asks for. When the task is ambiguous, foll
 # and /tmp, or else in the encrypted session's vault home that this run's
 # launch recorded as kept read-only by cs's permissions profile. The record is
 # in the run's private directory: the vault home's resolved path, then the
-# identity of the directory holding it.
+# identity of the directory holding it. That directory lies in the session,
+# where the agent can swap it after this check, so a vault home passes the
+# record on in _CS_QUEUE_VAULT_HOME and _CS_QUEUE_VAULT_ID for the helper to
+# check again where it opens the rollout.
 _codex_queue_history_protected() {  # dir
     local run_dir record home="" id="" actual
+    _CS_QUEUE_VAULT_HOME="" _CS_QUEUE_VAULT_ID=""
     ! _codex_run_dir_in_config_root "$1" "$CS_SESSION_DIR" || return 1
     _codex_run_dir_in_sandbox_root "$1" "$CS_SESSION_DIR" || return 0
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 1
@@ -162,7 +166,8 @@ _codex_queue_history_protected() {  # dir
     [ -n "$home" ] && _codex_dir_under "$1" "$home" || return 1
     [ "$home" -ef "$(_codex_vault_home_path "$CS_SESSION_DIR")" ] || return 1
     [ "$home" -ef "${CODEX_HOME:-}" ] || return 1
-    actual=$(cs_dir_identity "${home%/*}") && [ "$actual" = "$id" ]
+    actual=$(cs_dir_identity "${home%/*}") && [ "$actual" = "$id" ] || return 1
+    _CS_QUEUE_VAULT_HOME=$home _CS_QUEUE_VAULT_ID=$id
 }
 
 # Parks a queue whose Codex history the agent could rewrite: no receipt read
@@ -241,7 +246,9 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             && _codex_queue_history_protected "${roll%/*}" \
             && printf '%s' "$input" | jq -e '.stop_hook_active == true' >/dev/null; then
             snapshot=$("$helper" --queue-snapshot "$roll" --thread-id "$thread" --queue-turn "$turn" \
-                --queue-receipt "$token" ${offset:+--queue-offset "$offset"} 2>/dev/null) || snapshot='{}'
+                --queue-receipt "$token" ${offset:+--queue-offset "$offset"} \
+                ${_CS_QUEUE_VAULT_HOME:+--queue-home "$_CS_QUEUE_VAULT_HOME" --queue-home-id "$_CS_QUEUE_VAULT_ID"} \
+                2>/dev/null) || snapshot='{}'
         fi
         if ! printf '%s' "$snapshot" | jq -e '.delivered and .final_assistant' >/dev/null; then
             _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" unconfirmed 0 0
@@ -304,6 +311,9 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         return 0
     fi
     # The rollout's size now: the next Stop reads this task's records from it.
+    # Read by path: a size taken from a swapped rollout can only make that read
+    # miss the receipt, which parks, or read more of the rollout, and the
+    # helper checks the vault home where it opens the rollout.
     offset=""
     roll=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
     if [ -n "$roll" ] && [ -f "$roll" ] && [ ! -L "$roll" ] && _codex_queue_history_protected "${roll%/*}"; then

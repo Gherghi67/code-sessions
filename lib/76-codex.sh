@@ -769,15 +769,13 @@ _launch_codex_bound() {
     fi
     # The vault home stays out of the agent's reach (lib/76-codex-vault.sh).
     # The queue reads Codex's history there only when cs's profile is on the
-    # command line, or the native read-only sandbox leaves nothing writable.
+    # command line: a native sandbox the user can switch mid-session keeps
+    # nothing read-only.
     local vault_protected="" vault_resolved="" vault_id vault_args
     if [ -n "$vault_home" ]; then
         vault_args=${#CS_NATIVE_LAUNCH_ARGS[@]}
         _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" || return 1
         if [ "${#CS_NATIVE_LAUNCH_ARGS[@]}" -gt "$vault_args" ]; then
-            vault_protected=1
-        elif [ "${CS_LAUNCH_APPROVAL:-auto}" = native ] \
-            && [ "$(printf '%s' "$vault_check" | jq -r '.sandbox_mode // ""')" = read-only ]; then
             vault_protected=1
         fi
         vault_resolved=$(cd -P -- "$vault_home" 2>/dev/null && pwd -P) || vault_protected=""

@@ -694,14 +694,25 @@ FAKE
     assert_file_exists "$record.run-dir" "the run had a private directory" || return 1
     assert_eq "$VAULT_HOME
 $(cs_dir_identity "${VAULT_HOME%/*}")" "$(cat "$record" 2>/dev/null)" "automatic approval records the vault home" || return 1
-    rm -f "$record" "$record.run-dir"
     export CS_LAUNCH_APPROVAL=native
-    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":"danger-full-access","default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
+    # Read-only and full access get no profile, so a sandbox the user can
+    # switch mid-session never leaves a writable home recorded as kept.
+    local mode
+    for mode in read-only danger-full-access; do
+        rm -f "$record" "$record.run-dir"
+        export CS_HELPER_VAULT_CHECK="{\"sandbox_mode\":\"$mode\",\"default_permissions\":null,\"sandbox_workspace_write\":{},\"profile_defined\":false,\"untrusted\":[]}"
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+        assert_eq 0 "$status" "$mode launch failed: $output" || return 1
+        assert_file_exists "$record.run-dir" "the run had a private directory" || return 1
+        assert_not_exists "$record" "$mode leaves the vault home unrecorded" || return 1
+    done
+    rm -f "$record" "$record.run-dir"
+    export CS_HELPER_VAULT_CHECK='{"sandbox_mode":"workspace-write","default_permissions":null,"sandbox_workspace_write":{},"profile_defined":false,"untrusted":[]}'
     status=0
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
-    assert_eq 0 "$status" "full-access launch failed: $output" || return 1
-    assert_file_exists "$record.run-dir" "the run had a private directory" || return 1
-    assert_not_exists "$record" "full access leaves the vault home unrecorded"
+    assert_eq 0 "$status" "workspace launch failed: $output" || return 1
+    assert_file_exists "$record" "cs's profile on the workspace sandbox records the vault home"
 )
 
 # The queue confirms each task by the hook provenance Codex writes from

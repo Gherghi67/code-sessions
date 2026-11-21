@@ -568,8 +568,9 @@ its active history, the task stays queued for inspection and re-arming.
 next Stop parks the queue, and `cs -queue start` re-arms it then.
 An encrypted session drains when cs's permissions profile keeps the vault
 Codex home read-only: under automatic approval, or under native approval with
-the workspace or read-only sandbox. Under native approval with full access, or
-with a writable root over Codex's history, the queue parks with a notice.
+the workspace sandbox. Under native approval with the read-only sandbox or full
+access, which get no profile, or with a writable root over Codex's history, the
+queue parks with a notice.
 
 A native approval prompt waits for your answer. The first such prompt during
 a spawned drain sends the spawner a notice. An armed rotation takes priority

@@ -548,14 +548,14 @@ test_codex_history_under_a_writable_root_is_refused() (
 )
 
 # An encrypted session: .cs/private links into the vault, which holds the
-# queue and, unless another is named, Codex's home.
+# queue and, unless another is named, Codex's home, spelled as cs exports it.
 _vault_layout() {  # [codex_home]
     local vault="$CS_SESSION_DIR/.cs/vault-mnt/private"
     mkdir -p "$vault"
     mv "$QDIR/queue" "$QDIR/queue.state" "$vault/"
     ln -s vault-mnt/private "$CS_SESSION_DIR/.cs/private"
     QDIR="$CS_SESSION_DIR/.cs/private"
-    _rollout_under "${1:-$vault/codex-home}"
+    _rollout_under "${1:-$(_codex_vault_home_path "$CS_SESSION_DIR")}"
 }
 
 # The record a launch leaves in the run directory when cs's permissions
@@ -566,16 +566,29 @@ _vault_record() {  # home
     printf '%s\n' "$home" "$(cs_dir_identity "${home%/*}")" > "$CS_CACHE_DIR/codex-runs/$RUN/vault-home"
 }
 
+# The helper checks the recorded home again where it opens the rollout; the
+# wrapper logs what the snapshot was given.
 test_an_encrypted_vault_home_drains() (
     local first second
     _vault_layout
     _vault_record "$CODEX_HOME"
+    export CS_REAL_HELPER="$CS_CODEX_THREAD_BIN" CS_HELPER_ARGV="$TEST_TMPDIR/helper-argv"
+    CS_CODEX_THREAD_BIN="$TEST_TMPDIR/helper logging argv"
+    cat > "$CS_CODEX_THREAD_BIN" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CS_HELPER_ARGV"
+exec "$CS_REAL_HELPER" "$@"
+EOF
+    chmod +x "$CS_CODEX_THREAD_BIN"
     first=$(_stop)
     assert_output_contains "$first" 'first task' || return 1
     _deliver "$first"
     second=$(_stop true)
     assert_output_contains "$second" 'second task' || return 1
-    assert_eq 'first task' "$(cat "$QDIR/queue.done")"
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
+    assert_output_contains "$(grep -F -e --queue-snapshot "$CS_HELPER_ARGV")" \
+        "--queue-home $CODEX_HOME --queue-home-id $(sed -n 2p "$CS_CACHE_DIR/codex-runs/$RUN/vault-home")\$" \
+        "the snapshot checks the recorded home"
 )
 
 test_an_unrecorded_vault_home_parks_once() (
