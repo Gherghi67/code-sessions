@@ -3127,5 +3127,70 @@ class VaultHomeTests(HelperFixture):
         self.assertNotEqual(self.helper('--has-thread', env=env).returncode, 0)
 
 
+class QueueSnapshotTests(unittest.TestCase):
+    """The queue Stop hook's read of the active rollout from a task's delivery offset."""
+
+    TURN = OTHER_ID
+    TOKEN = "11111111-1111-4111-8111-111111111111"
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="cs-codex-queue-test-")
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name) / 'codex'
+        self.rollout = home / 'sessions' / ('rollout-2026-11-20T00-00-00-' + THREAD_ID + '.jsonl')
+        self.rollout.parent.mkdir(parents=True)
+        self.env = dict(os.environ, CODEX_HOME=str(home))
+
+    def write(self, *records):
+        with self.rollout.open('a', encoding='utf-8') as handle:
+            for record in records:
+                handle.write(json.dumps({'type': record[0], 'payload': record[1]}) + '\n')
+
+    def snapshot(self, *extra):
+        return subprocess.run([sys.executable, str(HELPER), '--queue-snapshot', str(self.rollout),
+                               '--thread-id', THREAD_ID, '--queue-turn', self.TURN,
+                               '--queue-receipt', self.TOKEN, *extra],
+                              env=self.env, capture_output=True, text=True, timeout=10)
+
+    def task_with_large_output(self):
+        """A delivered task that writes 9 MiB after its receipt; returns the offset at delivery."""
+        self.write(('session_meta', {'id': THREAD_ID}),
+                   ('event_msg', {'type': 'task_started', 'turn_id': self.TURN}))
+        offset = self.rollout.stat().st_size
+        receipt = '<hook_prompt hook_run_id="stop:4:hooks.json">cs task queue [' + self.TOKEN + ']: next task</hook_prompt>'
+        self.write(('response_item', {
+                       'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': receipt}],
+                       'internal_chat_message_metadata_passthrough': {
+                           'turn_id': self.TURN,
+                           'content_item_metadata': [{'provenance': {'type': 'harness', 'hook': True}}]}}),
+                   ('response_item', {'type': 'function_call_output', 'call_id': 'big',
+                                      'output': 'x' * (9 * 1024 * 1024)}),
+                   ('response_item', {'type': 'message', 'role': 'assistant', 'phase': 'final_answer',
+                                      'content': [{'type': 'output_text', 'text': 'finished'}]}))
+        return offset
+
+    def test_queue_offset_finds_a_receipt_before_the_last_8_mib(self):
+        offset = self.task_with_large_output()
+        result = self.snapshot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)['delivered'], 'without an offset only the last 8 MiB is read')
+        result = self.snapshot('--queue-offset', str(offset))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        snapshot = json.loads(result.stdout)
+        self.assertTrue(snapshot['delivered'])
+        self.assertTrue(snapshot['final_assistant'])
+
+    def test_queue_offset_beyond_the_rollout_is_an_error(self):
+        self.task_with_large_output()
+        result = self.snapshot('--queue-offset', str(self.rollout.stat().st_size + 1))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('unexpected active rollout size', result.stderr)
+        result = self.snapshot('--queue-offset', '-1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('--queue-offset must not be negative', result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -729,8 +729,10 @@ def codex_rollout(thread_id):
     return max(found, key=lambda path: (path.suffix == ".jsonl", path.stat().st_mtime))
 
 
-def queue_rollout_records(path, thread_id):
-    """Read a bounded snapshot of the running thread, discarding a torn tail."""
+def queue_rollout_records(path, thread_id, offset=None):
+    """Read a bounded snapshot of the running thread, discarding a torn tail.
+
+    From the task's delivery offset when given, else the last 8 MiB."""
     sessions = (Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions").resolve()
     path = Path(path)
     if (not path.is_absolute() or path.is_symlink() or sessions not in path.resolve().parents
@@ -744,14 +746,18 @@ def queue_rollout_records(path, thread_id):
         header = json.loads(handle.readline(1024 * 1024))
         if header.get("type") != "session_meta" or header.get("payload", {}).get("id") != thread_id:
             raise BootstrapError("unexpected active rollout session")
-        start = max(handle.tell(), info.st_size - 8 * 1024 * 1024)
+        if offset is not None and offset > info.st_size:
+            raise BootstrapError("unexpected active rollout size")
+        start = max(handle.tell(), info.st_size - 8 * 1024 * 1024 if offset is None else offset)
         if start > handle.tell():
             handle.seek(start - 1)
             if handle.read(1) != b"\n":
                 handle.readline(info.st_size - start)
         # Bound reads to the file size sampled at open, even when Codex appends.
-        lines = handle.read(max(0, info.st_size - handle.tell())).split(b"\n")
-        for line in lines[:-1]:
+        while handle.tell() < info.st_size:
+            line = handle.readline(info.st_size - handle.tell())
+            if not line.endswith(b"\n"):
+                break
             record = json.loads(line)
             if isinstance(record, dict):
                 yield record
@@ -812,7 +818,7 @@ def queue_snapshot(args):
     receipt = re.compile(r'\A<hook_prompt hook_run_id="stop:[^"\n]+">cs task queue \['
                          + re.escape(args.queue_receipt or "") + r'\]:')
     try:
-        for record in queue_rollout_records(args.queue_snapshot, args.thread_id):
+        for record in queue_rollout_records(args.queue_snapshot, args.thread_id, args.queue_offset):
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 continue
@@ -1985,6 +1991,8 @@ def main():
                         help="read the active rollout for a queue Stop hook")
     parser.add_argument("--queue-turn")
     parser.add_argument("--queue-receipt")
+    parser.add_argument("--queue-offset", type=int, metavar="BYTES",
+                        help="read the rollout from the current task's delivery, not its last 8 MiB")
     parser.add_argument("--seed-config", action="store_true",
                         help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
     parser.add_argument("--vault-check", action="store_true",
@@ -2026,6 +2034,8 @@ def main():
     elif args.queue_snapshot is not None:
         if args.thread_id is None or not THREAD_ID.fullmatch(args.queue_turn or ""):
             parser.error("--queue-snapshot needs --thread-id and --queue-turn")
+        if args.queue_offset is not None and args.queue_offset < 0:
+            parser.error("--queue-offset must not be negative")
     elif args.seed_config:
         if args.shared_home is None or args.home is None or args.cwd is None:
             parser.error("--seed-config needs --shared-home, --home and --cwd")
