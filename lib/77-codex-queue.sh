@@ -330,13 +330,12 @@ _codex_queue_rotation_wait() {  # handoff
 }
 
 _codex_queue_permission() {  # PermissionRequest JSON
-    local meta="$CS_SESSION_DIR/.cs" qdir run_dir thread bound
+    local meta="$CS_SESSION_DIR/.cs" qdir run_dir thread
     [ "${CS_RUN_APPROVAL:-}" = native ] || return 0
     qdir=$(_codex_queue_dir "$meta") && _codex_queue_state "$qdir" >/dev/null || return 0
     ! cs_files_tracked_notice "$meta" "$CS_SESSION_DIR" >/dev/null || return 0
     thread=$(printf '%s' "$1" | jq -r '.session_id // empty' 2>/dev/null) && _is_uuid "$thread" || return 0
     cs_run_lease_owned "$meta" || return 0
-    bound=$(cs_binding_read "$CS_SESSION_DIR" codex) && [ "$bound" = "$thread" ] || return 0
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
     [ -s "$meta/local/spawned-by" ] || return 0
     (set -C; : > "$run_dir/queue-approval") 2>/dev/null || return 0

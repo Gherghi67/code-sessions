@@ -180,8 +180,26 @@ test_native_approval_notifies_once_without_deciding() {
     assert_output_contains "$(cat "$CS_CACHE_DIR/notify.log")" 'waiting for native approval'
 }
 
-_permission() {
-    jq -nc --arg s "$THREAD" --arg t "$TURN" '{session_id:$s,turn_id:$t}' | cmd_codex_hook permission-request
+_permission() {  # [session_id, agent_id]
+    jq -nc --arg s "${1:-$THREAD}" --arg t "$TURN" --arg a "${2:-}" \
+        '{session_id:$s,turn_id:$t} + (if $a == "" then {} else {agent_id:$a} end)' \
+        | cmd_codex_hook permission-request
+}
+
+# A native subagent asks from its own thread, and its request is the drain's
+# first.
+test_subagent_approval_notifies_once() {
+    local first out
+    printf 'subagents\n' > "$QDIR/queue.mode"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    first=$(_stop)
+    _deliver "$first"
+    out=$(_permission "$OTHER" worker)
+    assert_eq '{}' "$out" || return 1
+    assert_eq 1 "$(grep -c -F 'waiting for native approval' "$CS_CACHE_DIR/notify.log" 2>/dev/null)" \
+        "the subagent's request notifies the spawner" || return 1
+    _permission >/dev/null
+    assert_eq 1 "$(grep -c -F 'waiting for native approval' "$CS_CACHE_DIR/notify.log")" "one notice a drain"
 }
 
 # A batch armed after cs -queue clear is a new drain: it starts, counts and
@@ -493,6 +511,7 @@ run_test test_shell_and_patch_failures_count_from_this_task_only
 run_test test_missing_or_expired_usage_uses_the_cap
 run_test test_fresh_quota_trips_and_context_uses_the_latest_reading
 run_test test_native_approval_notifies_once_without_deciding
+run_test test_subagent_approval_notifies_once
 run_test test_clear_mid_drain_starts_a_fresh_drain
 run_test test_clear_and_restart_inside_one_turn
 run_test test_receipt_without_a_new_final_answer_parks
