@@ -558,6 +558,22 @@ test_an_old_codex_parks_the_queue() {
     assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the park"
 }
 
+# An older Codex may send its Stop without a turn_id: the queue parks before
+# it reads one.
+test_an_old_codex_parks_without_a_turn_id() {
+    local out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    rm -f "$CS_CACHE_DIR/codex-runs/$RUN/queue-version-ok"
+    out=$(jq -nc --arg s "$THREAD" --arg t "$TURN" --arg p "$ROLLOUT" \
+        '{hook_event_name:"Stop",session_id:$s,turn_id:$t,transcript_path:$p,
+          last_assistant_message:"finished",stop_hook_active:false} | del(.turn_id)' | cmd_codex_hook stop)
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" \
+        "walk-away tasks need Codex ${CS_CODEX_QUEUE_MIN_VERSION:-<unset>} or later" || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the park"
+}
+
 test_missing_run_dir_still_saves_the_rotation_model() (
     local out
     _arm_handoff
@@ -741,6 +757,7 @@ run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
 run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
 run_test test_an_old_codex_parks_the_queue
+run_test test_an_old_codex_parks_without_a_turn_id
 run_test test_missing_run_dir_still_saves_the_rotation_model
 run_test test_a_missing_run_dir_parks_once
 run_test test_an_unreadable_next_task_parks

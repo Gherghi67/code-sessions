@@ -197,8 +197,8 @@ _codex_queue_history_protected() {  # dir
 }
 
 # Parks a queue no task of which can be confirmed: its Codex history is the
-# agent's to rewrite (history), or the run has no private directory to hold
-# the receipt (run_dir).
+# agent's to rewrite (history), the run has no private directory to hold the
+# receipt (run_dir), or its Codex records no hook provenance (codex_version).
 _codex_queue_refuse() {  # queue_dir, run_dir, handoff, kind
     local file remaining=0
     _codex_queue_state "$1" >/dev/null || return 1
@@ -251,13 +251,6 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     if [ "$remaining" = 0 ]; then
         _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         return 1
-    fi
-    # The launch records a Codex that writes the hook provenance a task is
-    # confirmed by (lib/76-codex.sh); no record, no task can be confirmed.
-    if [ ! -f "$run_dir/queue-version-ok" ] || [ -L "$run_dir/queue-version-ok" ]; then
-        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" codex_version 0 0 \
-            || { _codex_queue_msg_exit "$handoff"; return; }
-        return 0
     fi
     if [ "$state" = draining ]; then
         current=$(jq -er --arg s "$thread" --arg t "$turn" 'select(.thread==$s and .turn==$t) | .task' \
@@ -379,11 +372,18 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
         return 1
     fi
     ! cs_files_tracked_notice "$1" "$CS_SESSION_DIR" >/dev/null || return 1
-    turn=$(printf '%s' "$4" | jq -r '.turn_id // empty' 2>/dev/null) && _is_uuid "$turn" || return 1
     if ! run_dir=$(_codex_run_dir) || ! _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then
         cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "" "$3" run_dir
         return
     fi
+    # The launch records a Codex that writes the hook provenance a task is
+    # confirmed by (lib/76-codex.sh); no record, no task can be confirmed.
+    # Checked before the turn: an older Codex's Stop may carry none.
+    if [ ! -f "$run_dir/queue-version-ok" ] || [ -L "$run_dir/queue-version-ok" ]; then
+        cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "$run_dir" "$3" codex_version
+        return
+    fi
+    turn=$(printf '%s' "$4" | jq -r '.turn_id // empty' 2>/dev/null) && _is_uuid "$turn" || return 1
     if [ -d "$rollouts_dir" ] && ! _codex_queue_history_protected "$rollouts_dir"; then
         cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "$run_dir" "$3" history
         return

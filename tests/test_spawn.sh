@@ -1481,6 +1481,17 @@ test_a_task_queue_is_refused_under_an_old_codex() {
     assert_eq 'do something' "$(tail -n +3 "$(SEED)")"
 }
 
+# A Codex cs cannot run is named as such, not as one too old.
+test_a_task_queue_is_refused_when_codex_is_missing() {
+    local out status=0
+    export CODEX_BIN="$TEST_TMPDIR/no-such-codex"
+    out=$("$CS_BIN" -spawn worker --engine codex --task 'do something' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --task without a Codex must be refused: $out"; return 1; }
+    assert_output_contains "$out" "cs could not read the version of $CODEX_BIN (its --version failed or printed no version), and the walk-away task queue needs Codex 0.167.0 or later. Check that Codex is installed, or use --brief without --task\$" || return 1
+    assert_output_not_contains "$out" 'older than' || return 1
+    assert_not_exists "$(SEED)" "no seed is staged"
+}
+
 # cs -spawn under an engine cs does not ship, for the refusals no shipped
 # engine reaches: bin/cs sourced without its closing main call, with a stub
 # adapter that declares the capabilities given. bash 3.2 sources nothing from
@@ -1525,6 +1536,7 @@ test_a_brief_is_refused_under_an_engine_without_spawn_brief() {
 run_test test_spawn_propagates_the_selected_engine_and_inherits_the_current_run
 run_test test_codex_task_queue_spawn_stages_the_seed
 run_test test_a_task_queue_is_refused_under_an_old_codex
+run_test test_a_task_queue_is_refused_when_codex_is_missing
 run_test test_a_task_queue_is_refused_without_the_capability
 run_test test_a_brief_is_refused_under_an_engine_without_spawn_brief
 

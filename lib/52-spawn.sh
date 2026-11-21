@@ -600,10 +600,14 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
 
 # An adapter must own a drain before a seed is written or spent.
 _spawn_refuse_queue() {  # engine, suffix
+    local status=0
     if cs_engine_supports "$1" task_queue; then
-        if [ "$1" = codex ] && ! _codex_queue_version_ok; then
-            error "Codex older than $CS_CODEX_QUEUE_MIN_VERSION does not host the walk-away task queue: cs confirms each task by hook provenance that build does not record. Upgrade Codex, or use --brief without --task$2"
-        fi
+        [ "$1" != codex ] || _codex_queue_version_ok || status=$?
+        case "$status" in
+            0) ;;
+            2) error "cs could not read the version of ${CODEX_BIN:-codex} (its --version failed or printed no version), and the walk-away task queue needs Codex $CS_CODEX_QUEUE_MIN_VERSION or later. Check that Codex is installed, or use --brief without --task$2" ;;
+            *) error "Codex older than $CS_CODEX_QUEUE_MIN_VERSION does not host the walk-away task queue: cs confirms each task by hook provenance that build does not record. Upgrade Codex, or use --brief without --task$2" ;;
+        esac
         return 0
     fi
     case "$1" in

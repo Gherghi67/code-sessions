@@ -126,13 +126,15 @@ _cs_codex_adapter_capabilities() {
 CS_CODEX_QUEUE_MIN_VERSION=0.167.0
 
 # Whether a Codex build is CS_CODEX_QUEUE_MIN_VERSION or later, read from the
-# first three dot-separated numbers its --version prints; an unreadable
-# version fails. A spawner inside Codex's sandbox runs this too, where bash
-# 3.2 cannot make a here-string's temp file, so nothing here uses one.
+# first three dot-separated numbers its --version prints: 1 for an older
+# build, 2 for a version it cannot read (the binary is missing, --version
+# fails, or it prints no x.y.z). A spawner inside Codex's sandbox runs this
+# too, where bash 3.2 cannot make a here-string's temp file, so nothing here
+# uses one.
 _codex_queue_version_ok() {  # [codex_bin]
     local re='([0-9]+)\.([0-9]+)\.([0-9]+)' out h1 h2 h3 w1 w2 w3
-    out=$("${1:-${CODEX_BIN:-codex}}" --version 2>/dev/null) || return 1
-    [[ "$out" =~ $re ]] || return 1
+    out=$("${1:-${CODEX_BIN:-codex}}" --version 2>/dev/null) || return 2
+    [[ "$out" =~ $re ]] || return 2
     h1=$((10#${BASH_REMATCH[1]})) h2=$((10#${BASH_REMATCH[2]})) h3=$((10#${BASH_REMATCH[3]}))
     [[ "$CS_CODEX_QUEUE_MIN_VERSION" =~ $re ]] || return 1
     w1=$((10#${BASH_REMATCH[1]})) w2=$((10#${BASH_REMATCH[2]})) w3=$((10#${BASH_REMATCH[3]}))
