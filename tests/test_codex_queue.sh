@@ -359,15 +359,16 @@ test_a_queue_swapped_for_a_link_before_the_pop() {
     assert_output_contains "$out" 'could not update queue state'
 }
 
-# Run as a DEBUG trap: once the pop has moved the task out of queue/, swap
-# queue/ for a link to $SWAP_OUTSIDE, as a process racing the Stop could.
+# Run as a DEBUG trap: as the pop reads the task, swap queue/ for a link to
+# $SWAP_OUTSIDE, as a process racing the Stop could.
 _swap_queue_mid_pop() {
-    [ -e "$QDIR/queue.popping.codex.001" ] && [ ! -L "$QDIR/queue" ] || return 0
+    case $BASH_COMMAND in *'read -r body'*) ;; *) return 0 ;; esac
+    [ ! -L "$QDIR/queue" ] || return 0
     mv "$QDIR/queue" "$QDIR/queue.real" && ln -s "$SWAP_OUTSIDE" "$QDIR/queue"
 }
 
-# A task with no trailing newline fails the read, so the pop puts it back.
-test_the_take_back_never_lands_outside() {
+# A task with no trailing newline fails the read, so the pop leaves it.
+test_a_failed_read_mid_pop_never_lands_outside() {
     local first SWAP_OUTSIDE="$TEST_TMPDIR/outside"
     mkdir -p "$SWAP_OUTSIDE"
     first=$(_stop)
@@ -376,8 +377,25 @@ test_the_take_back_never_lands_outside() {
     (set -T; trap _swap_queue_mid_pop DEBUG; _stop true) >/dev/null
     assert_symlink "$QDIR/queue" "queue/ was swapped mid-pop" || return 1
     assert_eq '' "$(ls -A "$SWAP_OUTSIDE")" "nothing lands outside the session" || return 1
-    assert_eq 'first task' "$(cat "$QDIR/queue.real/001" 2>/dev/null)" "the task is put back"
+    assert_eq 'first task' "$(cat "$QDIR/queue.real/001" 2>/dev/null)" "the task stays in queue/"
 }
+
+# An external mv follows a destination that is a link to a directory. This mv
+# first plants one where a pop renaming the task aside would land, as an agent
+# racing the Stop could.
+test_a_link_planted_at_pop_time_gets_nothing() (
+    local first outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside"
+    first=$(_stop)
+    _deliver "$first"
+    mv() {
+        [ -L "$QDIR/queue.popping.codex.001" ] || ln -s "$outside" "$QDIR/queue.popping.codex.001"
+        command mv "$@"
+    }
+    _stop true >/dev/null
+    assert_eq '' "$(ls -A "$outside")" "nothing lands outside the session" || return 1
+    assert_eq 'first task' "$(cat "$QDIR/queue.done" 2>/dev/null)" "queue.done holds the first task once"
+)
 
 test_rotation_commits_the_boundary_then_resumes_the_next_task() (
     local first during after
@@ -597,7 +615,8 @@ run_test test_clear_and_restart_inside_one_turn
 run_test test_receipt_without_a_new_final_answer_parks
 run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_a_queue_swapped_for_a_link_before_the_pop
-run_test test_the_take_back_never_lands_outside
+run_test test_a_failed_read_mid_pop_never_lands_outside
+run_test test_a_link_planted_at_pop_time_gets_nothing
 run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify

@@ -181,23 +181,21 @@ _codex_queue_refuse_history() {  # queue_dir, run_dir, handoff
 
 # The pop runs inside queue/, entered by its physical path and checked again
 # there: queue/ can be swapped for a link after the Stop's entry check, so
-# every name below is taken from that directory, never through queue/.
+# every name below is taken from that directory, never through queue/. It
+# creates nothing in a directory the agent can write, and it unlinks the task
+# rather than renaming it aside, since a rename follows a link planted at its
+# destination; the run lease keeps a second drain from popping alongside.
 _codex_queue_finish_task() (  # queue_dir, task_basename
-    local moved="../queue.popping.codex.$2" body
+    local body
     cd -P -- "$1/queue" 2>/dev/null || return 1
     [ -d "$1/queue" ] && [ ! -L "$1/queue" ] && [ . -ef "$1/queue" ] && [ .. -ef "$1" ] || return 1
     ! _cs_refuses_write cs-queue "$1/queue" || return 1
-    [ -e "./$2" ] || return 0           # withdrawn while it was running
+    [ -e "./$2" ] || [ -L "./$2" ] || return 0      # withdrawn while it was running
     [ -f "./$2" ] && [ ! -L "./$2" ] || return 1
-    [ ! -e "$moved" ] && [ ! -L "$moved" ] || return 1
-    [ ! -L ../queue.done ] && { [ ! -e ../queue.done ] || [ -f ../queue.done ]; } || return 1
-    mv -- "./$2" "$moved" || return 1
-    if ! IFS= read -r body < "$moved" || ! cs_append_inside "$1/queue.done" printf '%s\n' "$body"; then
-        [ -e "./$2" ] || mv -n -- "$moved" "./$2" || true
-        return 1
-    fi
-    _codex_queue_event "$1" --arg task "$body" '{ts:$ts,event:"task_done",task:$task}'
-    rm -f -- "$moved" || true
+    IFS= read -r body < "./$2" || return 1
+    cs_append_inside "$1/queue.done" printf '%s\n' "$body" || return 1
+    rm -f -- "./$2" || return 1
+    _codex_queue_event "$1" --arg task "$body" '{ts:$ts,event:"task_done",task:$task}' || true
 )
 
 _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop JSON
