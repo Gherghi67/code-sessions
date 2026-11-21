@@ -826,7 +826,10 @@ def queue_snapshot(args):
                 elif kind == "task_complete":
                     current_turn = False
                 elif kind == "token_count" and current_turn and (not args.queue_receipt or delivered):
-                    context, five_hour = queue_usage(record)
+                    # A record without a reading keeps the last valid one.
+                    latest_context, latest_five_hour = queue_usage(record)
+                    context = context if latest_context is None else latest_context
+                    five_hour = five_hour if latest_five_hour is None else latest_five_hour
             if record.get("type") != "response_item":
                 continue
             metadata = payload.get("internal_chat_message_metadata_passthrough") or {}

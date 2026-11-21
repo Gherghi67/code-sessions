@@ -170,6 +170,31 @@ test_fresh_quota_trips_and_context_uses_the_latest_reading() {
     assert_file_exists "$QDIR/queue/002"
 }
 
+# A later reading for another limit carries no five-hour quota of Codex's.
+test_a_later_reading_of_another_limit_keeps_the_quota() {
+    local first parked reset
+    reset=$(( $(date +%s) + 3600 ))
+    first=$(_stop)
+    _deliver "$first"
+    _usage 12480 90 "$reset"
+    _record event_msg "$(jq -nc --argjson reset "$reset" \
+        '{type:"token_count",info:{last_token_usage:{total_tokens:12480},model_context_window:95000},
+          rate_limits:{limit_id:"codex_other",primary:{window_minutes:300,used_percent:10,resets_at:$reset}}}')"
+    parked=$(_stop true)
+    assert_output_contains "$parked" 'five_hour at 90' || return 1
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")"
+}
+
+test_a_later_empty_reading_keeps_the_context() {
+    local first parked
+    first=$(_stop)
+    _deliver "$first"
+    _usage 90000
+    _record event_msg '{"type":"token_count","info":null,"rate_limits":null}'
+    parked=$(_stop true)
+    assert_output_contains "$parked" 'context at 94'
+}
+
 test_native_approval_notifies_once_without_deciding() {
     local first input out
     first=$(_stop)
@@ -513,6 +538,8 @@ run_test test_reported_failure_keeps_the_task
 run_test test_shell_and_patch_failures_count_from_this_task_only
 run_test test_missing_or_expired_usage_uses_the_cap
 run_test test_fresh_quota_trips_and_context_uses_the_latest_reading
+run_test test_a_later_reading_of_another_limit_keeps_the_quota
+run_test test_a_later_empty_reading_keeps_the_context
 run_test test_native_approval_notifies_once_without_deciding
 run_test test_subagent_approval_notifies_once
 run_test test_clear_mid_drain_starts_a_fresh_drain
