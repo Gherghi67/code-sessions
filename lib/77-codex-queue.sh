@@ -165,20 +165,26 @@ _codex_queue_refuse_history() {  # queue_dir, run_dir, handoff
     return 0
 }
 
-_codex_queue_finish_task() {  # queue_dir, task_basename
-    local task="$1/queue/$2" moved="$1/queue.popping.codex.$2" done="$1/queue.done" body
-    [ -e "$task" ] || return 0          # withdrawn while it was running
-    [ -f "$task" ] && [ ! -L "$task" ] || return 1
+# The pop runs inside queue/, entered by its physical path and checked again
+# there: queue/ can be swapped for a link after the Stop's entry check, so
+# every name below is taken from that directory, never through queue/.
+_codex_queue_finish_task() (  # queue_dir, task_basename
+    local moved="../queue.popping.codex.$2" body
+    cd -P -- "$1/queue" 2>/dev/null || return 1
+    [ -d "$1/queue" ] && [ ! -L "$1/queue" ] && [ . -ef "$1/queue" ] && [ .. -ef "$1" ] || return 1
+    ! _cs_refuses_write cs-queue "$1/queue" || return 1
+    [ -e "./$2" ] || return 0           # withdrawn while it was running
+    [ -f "./$2" ] && [ ! -L "./$2" ] || return 1
     [ ! -e "$moved" ] && [ ! -L "$moved" ] || return 1
-    [ ! -L "$done" ] && { [ ! -e "$done" ] || [ -f "$done" ]; } || return 1
-    mv "$task" "$moved" || return 1
-    if ! IFS= read -r body < "$moved" || ! cs_append_inside "$done" printf '%s\n' "$body"; then
-        [ -e "$task" ] || mv -n "$moved" "$task" || true
+    [ ! -L ../queue.done ] && { [ ! -e ../queue.done ] || [ -f ../queue.done ]; } || return 1
+    mv -- "./$2" "$moved" || return 1
+    if ! IFS= read -r body < "$moved" || ! cs_append_inside "$1/queue.done" printf '%s\n' "$body"; then
+        [ -e "./$2" ] || mv -n -- "$moved" "./$2" || true
         return 1
     fi
     _codex_queue_event "$1" --arg task "$body" '{ts:$ts,event:"task_done",task:$task}'
-    rm -f "$moved" || true
-}
+    rm -f -- "$moved" || true
+)
 
 _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop JSON
     local qdir="$1" run_dir="$2" thread="$3" turn="$4" handoff="$5" input="$6"
