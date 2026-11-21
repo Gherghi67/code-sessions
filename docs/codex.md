@@ -564,6 +564,10 @@ task and park the remainder. If either usage reading is unavailable, the drain
 can finish up to `CS_CODEX_QUEUE_MAX_TASKS` tasks before parking, with a
 default of 10. If Codex cannot confirm a task handoff and final response from
 its active history, the task stays queued for inspection and re-arming.
+An encrypted session drains when cs's permissions profile keeps the vault
+Codex home read-only: under automatic approval, or under native approval with
+the workspace or read-only sandbox. Under native approval with full access, or
+with a writable root over Codex's history, the queue parks with a notice.
 
 A native approval prompt waits for your answer. The first such prompt during
 a spawned drain sends the spawner a notice. An armed rotation takes priority

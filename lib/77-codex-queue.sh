@@ -60,17 +60,19 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
         unconfirmed)
             reason="cs task queue: could not confirm that Codex received and finished the current task."
             ;;
+        history)
+            reason="cs task queue: Codex's active history must be outside its writable workspace, so cs cannot confirm tasks here."
+            ;;
         *)
             reason="$reason at $6 (threshold $7)."
             ;;
     esac
     reason="$reason Parked with $4 task(s) remaining. Re-arm with cs -queue start."
     _codex_queue_notify "$3" "$reason"
-    if [ "$5" = unconfirmed ]; then
-        _codex_queue_message "$reason"
-    else
-        _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention."
-    fi
+    case "$5" in
+        unconfirmed|history) _codex_queue_message "$reason" ;;
+        *) _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention." ;;
+    esac
 }
 
 _codex_queue_number() {  # environment setting, fallback
@@ -129,6 +131,40 @@ Scope: complete the behavior the task asks for. When the task is ambiguous, foll
     _codex_queue_block "$reason"
 }
 
+# Whether the agent cannot write Codex's history in a directory: it lies
+# under no writable root Codex's config adds, and outside the session, $TMPDIR
+# and /tmp, or else in the encrypted session's vault home that this run's
+# launch recorded as kept read-only by cs's permissions profile. The record is
+# in the run's private directory: the vault home's resolved path, then the
+# identity of the directory holding it.
+_codex_queue_history_protected() {  # dir
+    local run_dir record home="" id="" actual
+    ! _codex_run_dir_in_config_root "$1" "$CS_SESSION_DIR" || return 1
+    _codex_run_dir_in_sandbox_root "$1" "$CS_SESSION_DIR" || return 0
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 1
+    record="$run_dir/vault-home"
+    [ -f "$record" ] && [ ! -L "$record" ] || return 1
+    { IFS= read -r home && IFS= read -r id; } < "$record" || return 1
+    [ -n "$home" ] && _codex_dir_under "$1" "$home" || return 1
+    [ "$home" -ef "$(_codex_vault_home_path "$CS_SESSION_DIR")" ] || return 1
+    [ "$home" -ef "${CODEX_HOME:-}" ] || return 1
+    actual=$(cs_dir_identity "${home%/*}") && [ "$actual" = "$id" ]
+}
+
+# Parks a queue whose Codex history the agent could rewrite: no receipt read
+# from it can be trusted.
+_codex_queue_refuse_history() {  # queue_dir, run_dir, handoff
+    local file remaining=0
+    _codex_queue_state "$1" >/dev/null || return 1
+    for file in "$1/queue/"*; do
+        [ -f "$file" ] && [ ! -L "$file" ] || continue
+        remaining=$((remaining + 1))
+    done
+    _codex_queue_park "$1" "$2" "$CS_SESSION_DIR/.cs/local" "$remaining" history 0 0
+    [ -z "$3" ] || return 4
+    return 0
+}
+
 _codex_queue_finish_task() {  # queue_dir, task_basename
     local task="$1/queue/$2" moved="$1/queue.popping.codex.$2" done="$1/queue.done" body
     [ -e "$task" ] || return 0          # withdrawn while it was running
@@ -170,8 +206,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         helper=$(_codex_thread_helper) || helper=""
         snapshot='{}'
         if _is_uuid "$token" && [ -n "$roll" ] && [ -n "$helper" ] \
-            && ! _codex_run_dir_in_sandbox_root "${roll%/*}" "$CS_SESSION_DIR" \
-            && ! _codex_run_dir_in_config_root "${roll%/*}" "$CS_SESSION_DIR" \
+            && _codex_queue_history_protected "${roll%/*}" \
             && printf '%s' "$input" | jq -e '.stop_hook_active == true' >/dev/null; then
             snapshot=$("$helper" --queue-snapshot "$roll" --thread-id "$thread" \
                 --queue-turn "$turn" --queue-receipt "$token" 2>/dev/null) || snapshot='{}'
@@ -254,11 +289,9 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
         [ -z "$3" ] || return 4
         return 0
     fi
-    if [ -d "$rollouts_dir" ] && { _codex_run_dir_in_sandbox_root "$rollouts_dir" "$CS_SESSION_DIR" \
-        || _codex_run_dir_in_config_root "$rollouts_dir" "$CS_SESSION_DIR"; }; then
-        _codex_queue_message "cs task queue: Codex's active history must be outside its writable workspace. The queued tasks are still available."
-        [ -z "$3" ] || return 4
-        return 0
+    if [ -d "$rollouts_dir" ] && ! _codex_queue_history_protected "$rollouts_dir"; then
+        cs_run_with_lease "$1" _codex_queue_refuse_history "$qdir" "$run_dir" "$3"
+        return
     fi
     cs_run_with_lease "$1" _codex_queue_stop_owned "$qdir" "$run_dir" "$2" "$turn" "$3" "$4"
 }

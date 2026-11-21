@@ -747,8 +747,19 @@ _launch_codex_bound() {
         CS_NATIVE_LAUNCH_ARGS+=(--profile "${profile_name%.config.toml}")
     fi
     # The vault home stays out of the agent's reach (lib/76-codex-vault.sh).
+    # The queue reads Codex's history there only when cs's profile is on the
+    # command line, or the native read-only sandbox leaves nothing writable.
+    local vault_protected="" vault_resolved="" vault_id vault_args
     if [ -n "$vault_home" ]; then
+        vault_args=${#CS_NATIVE_LAUNCH_ARGS[@]}
         _codex_vault_profile_args "$vault_check" "$vault_home" "${CS_LAUNCH_APPROVAL:-auto}" || return 1
+        if [ "${#CS_NATIVE_LAUNCH_ARGS[@]}" -gt "$vault_args" ]; then
+            vault_protected=1
+        elif [ "${CS_LAUNCH_APPROVAL:-auto}" = native ] \
+            && [ "$(printf '%s' "$vault_check" | jq -r '.sandbox_mode // ""')" = read-only ]; then
+            vault_protected=1
+        fi
+        vault_resolved=$(cd -P -- "$vault_home" 2>/dev/null && pwd -P) || vault_protected=""
     fi
     # The run's approval, for its hooks and the automatic /clear's watcher: a
     # run with native approval never quits for a switch unattended.
@@ -790,6 +801,10 @@ _launch_codex_bound() {
     # rotation countdown. The run supervisor owns its lifetime in both cases.
     if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
         _cs_run_helper_dir=$autoclear_dir
+        # Without the record the queue refuses; the launch goes on.
+        if [ -n "$vault_protected" ] && vault_id=$(cs_dir_identity "${vault_resolved%/*}"); then
+            ( set -C; printf '%s\n' "$vault_resolved" "$vault_id" > "$autoclear_dir/vault-home" ) 2>/dev/null || true
+        fi
     fi
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
         if ! refusal=$(_codex_autoclear_probe); then
