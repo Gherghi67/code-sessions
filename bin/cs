@@ -13975,9 +13975,10 @@ _queue_clear() {  # qdir
 # with no live lock holder is left by a crash or a close, with no turn in
 # progress to run twice, so it re-arms like any other state. The read and the
 # writes are not one step: a drain that ends in between costs one more start,
-# never a task.
-_queue_start() {  # qdir, [mode]
-    local qdir="$1" mode="${2:-}" state pid
+# never a task. Codex parks instead after an interrupted turn, so its refusal
+# says what re-arming does then.
+_queue_start() {  # qdir, [mode], [engine]
+    local qdir="$1" mode="${2:-}" engine="${3:-}" state pid
     case "$mode" in
         ''|subagents|workflow) ;;
         *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
@@ -13985,6 +13986,9 @@ _queue_start() {  # qdir, [mode]
     state=$(cat "$qdir/queue.state" 2>/dev/null | tr -d '[:space:]' || true)
     if [ "$state" = draining ]; then
         pid=$(live_lock_pid "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")
+        if [ -n "$pid" ] && [ "$engine" = codex ]; then
+            error "the queue is draining in the running session (pid $pid). Codex hands out the next task when the current one's response completes; if that turn was interrupted, the next Stop parks the queue, and cs -queue start re-arms it then. To stop the run, cs -queue clear removes the queued tasks with it."
+        fi
         [ -z "$pid" ] || error "the queue is draining in the running session (pid $pid); the next Stop hands out the next task by itself. To stop the run, cs -queue clear removes the queued tasks with it."
     fi
     cs_mkdir_inside "$qdir"
@@ -14043,11 +14047,14 @@ run_queue() {
         clear) _queue_clear "$qdir";;
         start)
             shift
-            if [ "${1:-}" = workflow ] && [ -n "${CS_SESSION_DIR:-}" ] \
-                && [ "$(_session_engine "$CS_SESSION_DIR" "${CS_RUN_ENGINE:-}")" = codex ]; then
+            local engine=""
+            if [ -n "${CS_SESSION_DIR:-}" ]; then
+                engine=$(_session_engine "$CS_SESSION_DIR" "${CS_RUN_ENGINE:-}") || engine=""
+            fi
+            if [ "${1:-}" = workflow ] && [ "$engine" = codex ]; then
                 error "Codex queues run in the conversation or in subagents. Use cs -queue start or cs -queue start subagents."
             fi
-            _queue_start "$qdir" "${1:-}"
+            _queue_start "$qdir" "${1:-}" "$engine"
             ;;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;

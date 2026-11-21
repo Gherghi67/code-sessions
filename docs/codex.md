@@ -564,6 +564,8 @@ task and park the remainder. If either usage reading is unavailable, the drain
 can finish up to `CS_CODEX_QUEUE_MAX_TASKS` tasks before parking, with a
 default of 10. If Codex cannot confirm a task handoff and final response from
 its active history, the task stays queued for inspection and re-arming.
+`cs -queue start` refuses while the drain runs; after an interrupted turn the
+next Stop parks the queue, and `cs -queue start` re-arms it then.
 An encrypted session drains when cs's permissions profile keeps the vault
 Codex home read-only: under automatic approval, or under native approval with
 the workspace or read-only sandbox. Under native approval with full access, or
