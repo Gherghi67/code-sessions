@@ -11,11 +11,20 @@ HOOKS_DIR="$SCRIPT_DIR/../hooks"
 # repo build for the whole suite.
 export PATH="$SCRIPT_DIR/../bin:$PATH"
 
+# A Codex whose --version names the build given, as codex-cli prints it.
+_fake_codex_version() {  # version
+    export CODEX_BIN="$TEST_TMPDIR/codex"
+    printf '#!/bin/sh\n[ "$1" != --version ] || echo "codex-cli %s"\n' "$1" > "$CODEX_BIN"
+    chmod +x "$CODEX_BIN"
+}
+
 setup() {
     TEST_TMPDIR="$(mktemp -d)"
     export CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions"
     mkdir -p "$CS_SESSIONS_ROOT"
     export CLAUDE_CODE_BIN="echo"
+    # A build that hosts the walk-away queue, for spawns with --task under Codex.
+    _fake_codex_version 0.167.0-alpha.3.2
     # The attach hint keys on $TMUX; unset it so the baseline is deterministic
     # regardless of whether the suite itself runs inside tmux.
     unset TMUX 2>/dev/null || true
@@ -59,7 +68,7 @@ FAKE
 }
 teardown() {
     [ -n "${TEST_TMPDIR:-}" ] && [ -d "$TEST_TMPDIR" ] && rm -rf "$TEST_TMPDIR"
-    unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_TMUX_BIN FAKE_TMUX_DIR 2>/dev/null || true
+    unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CODEX_BIN CS_TMUX_BIN FAKE_TMUX_DIR 2>/dev/null || true
     unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 }
 
@@ -1457,6 +1466,21 @@ test_codex_task_queue_spawn_stages_the_seed() {
     assert_output_contains "$(cat "$FAKE_TMUX_DIR/log")" "--engine 'codex'"
 }
 
+# cs confirms each Codex task by the hook provenance Codex records, which
+# 0.162 and older do not: tasks for one are refused before a seed is staged.
+test_a_task_queue_is_refused_under_an_old_codex() {
+    local out status=0
+    _fake_codex_version 0.162.0-alpha.17.2
+    out=$("$CS_BIN" -spawn worker --engine codex --task 'do something' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: --task under Codex 0.162 must be refused: $out"; return 1; }
+    assert_output_contains "$out" 'Codex older than 0.167.0 does not host the walk-away task queue: cs confirms each task by hook provenance that build does not record. Upgrade Codex, or use --brief without --task$' || return 1
+    assert_not_exists "$(SEED)" "no seed is staged" || return 1
+    assert_not_exists "$FAKE_TMUX_DIR/session-exists" "no window opens" || return 1
+    _fake_codex_version 0.167.0-alpha.3.2
+    "$CS_BIN" -spawn worker --engine codex --task 'do something' >/dev/null || return 1
+    assert_eq 'do something' "$(tail -n +3 "$(SEED)")"
+}
+
 # cs -spawn under an engine cs does not ship, for the refusals no shipped
 # engine reaches: bin/cs sourced without its closing main call, with a stub
 # adapter that declares the capabilities given. bash 3.2 sources nothing from
@@ -1500,6 +1524,7 @@ test_a_brief_is_refused_under_an_engine_without_spawn_brief() {
 
 run_test test_spawn_propagates_the_selected_engine_and_inherits_the_current_run
 run_test test_codex_task_queue_spawn_stages_the_seed
+run_test test_a_task_queue_is_refused_under_an_old_codex
 run_test test_a_task_queue_is_refused_without_the_capability
 run_test test_a_brief_is_refused_under_an_engine_without_spawn_brief
 

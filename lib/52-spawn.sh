@@ -600,7 +600,12 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
 
 # An adapter must own a drain before a seed is written or spent.
 _spawn_refuse_queue() {  # engine, suffix
-    cs_engine_supports "$1" task_queue && return 0
+    if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = codex ] && ! _codex_queue_version_ok; then
+            error "Codex older than $CS_CODEX_QUEUE_MIN_VERSION does not host the walk-away task queue: cs confirms each task by hook provenance that build does not record. Upgrade Codex, or use --brief without --task$2"
+        fi
+        return 0
+    fi
     case "$1" in
         antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
         *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;

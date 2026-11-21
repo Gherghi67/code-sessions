@@ -69,6 +69,9 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
         history)
             reason="cs task queue: Codex's active history must be outside its writable workspace, so cs cannot confirm tasks here."
             ;;
+        codex_version)
+            reason="cs task queue: walk-away tasks need Codex $CS_CODEX_QUEUE_MIN_VERSION or later, which records the hook provenance cs confirms each task by."
+            ;;
         task_failed)
             reason="cs task queue: you reported the task as not completed (cs-task-failed)."
             notice="task reported failed, $4 task(s) remaining"
@@ -80,7 +83,7 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
     reason="$reason Parked with $4 task(s) remaining. Re-arm with cs -queue start."
     _codex_queue_notify "$3" "${notice:-$reason}"
     case "$5" in
-        unconfirmed|history) _codex_queue_message "$reason" ;;
+        unconfirmed|history|codex_version) _codex_queue_message "$reason" ;;
         *) _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention." ;;
     esac
 }
@@ -216,6 +219,13 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     if [ "$remaining" = 0 ]; then
         _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; return 0; }
         return 1
+    fi
+    # The launch records a Codex that writes the hook provenance a task is
+    # confirmed by (lib/76-codex.sh); no record, no task can be confirmed.
+    if [ ! -f "$run_dir/queue-version-ok" ] || [ -L "$run_dir/queue-version-ok" ]; then
+        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" codex_version 0 0
+        [ -z "$handoff" ] || return 4
+        return 0
     fi
     if [ "$state" = draining ]; then
         current=$(jq -er --arg s "$thread" --arg t "$turn" 'select(.thread==$s and .turn==$t) | .task' \

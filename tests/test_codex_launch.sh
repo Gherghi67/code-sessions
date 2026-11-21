@@ -47,6 +47,7 @@ setup() {
     export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc
     export CS_HELPER_EXIT=0 CS_CODEX_EXIT=0
     export CS_CODEX_HELP='--approve-for-me' CS_CODEX_HELP_EXIT=0
+    export CS_CODEX_VERSION=0.167.0-alpha.3.2
     unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
@@ -65,6 +66,10 @@ setup() {
 if [ "${1:-}" = --help ]; then
     printf '      %s\n' "$CS_CODEX_HELP"
     exit "$CS_CODEX_HELP_EXIT"
+fi
+if [ "${1:-}" = --version ]; then
+    printf 'codex-cli %s\n' "$CS_CODEX_VERSION"
+    exit 0
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
 env | grep -E '^(CODEX_HOME=|CS_CODEX_SHARED_HOME=|CS_SESSION_|CS_RUN_APPROVAL=|CS_CODEX_ROTATION_FIXED=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
@@ -699,6 +704,43 @@ $(cs_dir_identity "${VAULT_HOME%/*}")" "$(cat "$record" 2>/dev/null)" "automatic
     assert_not_exists "$record" "full access leaves the vault home unrecorded"
 )
 
+# The queue confirms each task by the hook provenance Codex writes from
+# CS_CODEX_QUEUE_MIN_VERSION on, so its Stop parks unless the launch recorded
+# such a build in the run's private directory. The fake Codex notes the
+# record while the run directory stands.
+test_a_codex_that_hosts_the_queue_is_recorded() (
+    local output status version record="$TEST_TMPDIR/version-record"
+    # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
+    _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
+    export CS_REAL_CODEX="$CODEX_BIN" CS_VERSION_RECORD="$record"
+    export CODEX_BIN="$TEST_TMPDIR/codex recording"
+    cat > "$CODEX_BIN" <<'FAKE'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --help|--version) ;;
+    *)
+        run_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$CS_RUN_ID"
+        [ ! -d "$run_dir" ] || touch "$CS_VERSION_RECORD.run-dir"
+        [ ! -f "$run_dir/queue-version-ok" ] || touch "$CS_VERSION_RECORD"
+        ;;
+esac
+exec "$CS_REAL_CODEX" "$@"
+FAKE
+    chmod +x "$CODEX_BIN"
+    for version in 0.167.0-alpha.3.2 0.162.0-alpha.17.2; do
+        rm -f "$record" "$record.run-dir"
+        export CS_CODEX_VERSION="$version"
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+        assert_eq 0 "$status" "launch under $version failed: $output" || return 1
+        assert_file_exists "$record.run-dir" "the run under $version had a private directory" || return 1
+        case "$version" in
+            0.167.*) assert_file_exists "$record" "$version is recorded" || return 1 ;;
+            *) assert_not_exists "$record" "$version is not recorded" || return 1 ;;
+        esac
+    done
+)
+
 # What cs cannot confine stops the open before anything is bound: a profile a
 # file already defines under cs's name (cs's would merge into it), a project
 # config Codex loads only once the folder is trusted (after cs has chosen its
@@ -1173,6 +1215,10 @@ _autoclear_launch_fixture() {
 #!/usr/bin/env bash
 if [ "${1:-}" = --help ]; then
     printf '      --approve-for-me\n'
+    exit 0
+fi
+if [ "${1:-}" = --version ]; then
+    printf 'codex-cli %s\n' "$CS_CODEX_VERSION"
     exit 0
 fi
 source "$CS_TEST_LIB_DIR/../lib/02-shared.sh"
@@ -1930,6 +1976,7 @@ run_test test_vault_home_refusals_name_the_home_as_a_plain_name
 run_test test_the_vault_profile_keeps_the_users_workspace_settings
 run_test test_native_approval_follows_the_users_sandbox
 run_test test_a_read_only_vault_home_is_recorded_for_the_queue
+run_test test_a_codex_that_hosts_the_queue_is_recorded
 run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_binding_from_before_the_vault_starts_a_vault_thread

@@ -576,8 +576,13 @@ a spawned drain sends the spawner a notice. An armed rotation takes priority
 before dispatching the next task, and the fresh conversation resumes the
 queue after rebind. When nothing will type /clear (the automatic /clear is
 off, there is no watcher, or a switch is held under native approval), the run
-waits for you to type /clear and the spawner gets one notice. Native hook
-continuation and rollout support were verified on Codex CLI 0.169.0-alpha.11.1.
+waits for you to type /clear and the spawner gets one notice.
+
+The queue needs Codex 0.167.0 or later: cs confirms each task by the hook
+provenance Codex records on the continuation prompt, measured on
+0.167.0-alpha.3.2 and 0.169.0-alpha.11.1. Codex 0.158 and 0.162 do not record
+it, so `cs -spawn --task` refuses under them and an armed queue parks with a
+notice.
 
 Codex retains a durable kickoff receipt in `.cs/local/spawn-kick.json` until
 native thread history confirms a turn started. A launch that fails before a turn

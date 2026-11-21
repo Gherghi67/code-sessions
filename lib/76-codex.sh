@@ -120,6 +120,27 @@ _cs_codex_adapter_capabilities() {
     printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation task_queue
 }
 
+# The queue confirms each task by the provenance Codex records on a Stop
+# hook's continuation prompt ({type:harness, hook:true}). Measured on
+# 0.167.0-alpha.3.2 and 0.169.0-alpha.11.1; 0.158 and 0.162 record none.
+CS_CODEX_QUEUE_MIN_VERSION=0.167.0
+
+# Whether a Codex build is CS_CODEX_QUEUE_MIN_VERSION or later, read from the
+# first three dot-separated numbers its --version prints; an unreadable
+# version fails. A spawner inside Codex's sandbox runs this too, where bash
+# 3.2 cannot make a here-string's temp file, so nothing here uses one.
+_codex_queue_version_ok() {  # [codex_bin]
+    local re='([0-9]+)\.([0-9]+)\.([0-9]+)' out h1 h2 h3 w1 w2 w3
+    out=$("${1:-${CODEX_BIN:-codex}}" --version 2>/dev/null) || return 1
+    [[ "$out" =~ $re ]] || return 1
+    h1=$((10#${BASH_REMATCH[1]})) h2=$((10#${BASH_REMATCH[2]})) h3=$((10#${BASH_REMATCH[3]}))
+    [[ "$CS_CODEX_QUEUE_MIN_VERSION" =~ $re ]] || return 1
+    w1=$((10#${BASH_REMATCH[1]})) w2=$((10#${BASH_REMATCH[2]})) w3=$((10#${BASH_REMATCH[3]}))
+    [ "$h1" -eq "$w1" ] || return $(( h1 > w1 ? 0 : 1 ))
+    [ "$h2" -eq "$w2" ] || return $(( h2 > w2 ? 0 : 1 ))
+    [ "$h3" -ge "$w3" ]
+}
+
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
     # Startup context is refreshed at launch. No native project configuration
     # or instruction files are required, including a user-owned AGENTS.md.
@@ -804,6 +825,11 @@ _launch_codex_bound() {
         # Without the record the queue refuses; the launch goes on.
         if [ -n "$vault_protected" ] && vault_id=$(cs_dir_identity "${vault_resolved%/*}"); then
             ( set -C; printf '%s\n' "$vault_resolved" "$vault_id" > "$autoclear_dir/vault-home" ) 2>/dev/null || true
+        fi
+        # Without this record the queue parks: an older Codex keeps no hook
+        # provenance for its Stop to confirm a task by.
+        if _codex_queue_version_ok "$codex_bin"; then
+            ( set -C; : > "$autoclear_dir/queue-version-ok" ) 2>/dev/null || true
         fi
     fi
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then

@@ -35,6 +35,8 @@ setup() {
     # $TMPDIR and /tmp are left out only because the fixture lives under them.
     _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
     _codex_run_dir_prepare "$CS_SESSION_DIR" >/dev/null
+    # What a launch records for a Codex that writes the hook provenance.
+    : > "$CS_CACHE_DIR/codex-runs/$RUN/queue-version-ok"
     CS_BIN="$TEST_TMPDIR/spawner"
     cat > "$CS_BIN" <<'EOF'
 #!/bin/bash
@@ -464,6 +466,22 @@ test_unconfirmed_park_still_counts_down_an_armed_rotation() (
     assert_output_contains "$message" '/clear and go'
 )
 
+# A launch under a Codex older than CS_CODEX_QUEUE_MIN_VERSION leaves no
+# record: that build writes no hook provenance to confirm a task by, so the
+# queue parks before it hands one over.
+test_an_old_codex_parks_the_queue() {
+    local out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    rm -f "$CS_CACHE_DIR/codex-runs/$RUN/queue-version-ok"
+    out=$(_stop)
+    assert_eq 1 "$(printf '%s\n' "$out" | jq -s length)" "one message for the Stop" || return 1
+    assert_eq "cs task queue: walk-away tasks need Codex ${CS_CODEX_QUEUE_MIN_VERSION:-<unset>} or later, which records the hook provenance cs confirms each task by. Parked with 2 task(s) remaining. Re-arm with cs -queue start." \
+        "$(printf '%s\n' "$out" | jq -r .systemMessage)" || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the park"
+}
+
 test_missing_run_dir_still_saves_the_rotation_model() (
     local out
     _arm_handoff
@@ -584,6 +602,7 @@ run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
 run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
+run_test test_an_old_codex_parks_the_queue
 run_test test_missing_run_dir_still_saves_the_rotation_model
 run_test test_codex_history_inside_the_session_is_refused
 run_test test_codex_history_under_a_writable_root_is_refused

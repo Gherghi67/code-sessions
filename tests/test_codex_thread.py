@@ -2,6 +2,7 @@
 # ABOUTME: Exercises Codex bootstrap protocol, exact identity, persistence, and cleanup.
 # ABOUTME: Uses an isolated fake server and an optional real Codex no-model smoke test.
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import runpy
+import shlex
 import shutil
 import signal
 import subprocess
@@ -3190,6 +3192,100 @@ class QueueSnapshotTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, '')
         self.assertIn('--queue-offset must not be negative', result.stderr)
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_stop_continuation_is_confirmed(self):
+        """A real Codex continues its turn from a Stop hook's block, and the snapshot finds the
+        receipt by the hook provenance Codex records, then the final answer after it."""
+        temp = tempfile.TemporaryDirectory(prefix="cs-codex-queue-native-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        home, work, user_home = root / 'codex', root / 'work', root / 'home'
+        for folder in (home, work, user_home):
+            folder.mkdir()
+        stops, hook = root / 'stops.jsonl', root / 'stop-hook.py'
+        # The first Stop hands over a task as the queue does; later ones let the turn end.
+        hook.write_text(
+            'import json, sys\n'
+            'data = json.load(sys.stdin)\n'
+            'with open(sys.argv[1], "a") as log:\n'
+            '    log.write(json.dumps(data) + "\\n")\n'
+            'with open(sys.argv[1]) as log:\n'
+            '    first = sum(1 for _ in log) == 1\n'
+            'if first:\n'
+            '    print(json.dumps({"decision": "block", "reason": "cs task queue [" + sys.argv[2]\n'
+            '                      + "]: next task (1 remaining). Reply with done, then finish your response."}))\n')
+        answers = []
+
+        class Provider(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                answers.append(None)
+                number = len(answers)
+                base = {'id': 'resp_%d' % number, 'object': 'response', 'created_at': 1795129400,
+                        'model': 'gpt-6.2-sol', 'error': None}
+                item = {'id': 'msg_%d' % number, 'type': 'message', 'role': 'assistant',
+                        'phase': 'final_answer', 'status': 'completed',
+                        'content': [{'type': 'output_text', 'text': 'done %d' % number, 'annotations': []}]}
+                usage = {'input_tokens': 12345, 'input_tokens_details': {'cached_tokens': 0},
+                         'output_tokens': 135, 'output_tokens_details': {'reasoning_tokens': 0},
+                         'total_tokens': 12480}
+                records = [
+                    {'type': 'response.created', 'response': dict(base, status='in_progress', output=[])},
+                    {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+                    {'type': 'response.completed',
+                     'response': dict(base, status='completed', output=[item], usage=usage)},
+                ]
+                wire = ''.join('event: %s\ndata: %s\n\n' % (r['type'], json.dumps(r)) for r in records).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(wire)))
+                self.end_headers()
+                self.wfile.write(wire)
+
+            def log_message(self, *_):
+                pass
+
+        with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider) as provider:
+            listener = threading.Thread(target=provider.serve_forever, daemon=True)
+            listener.start()
+            self.addCleanup(listener.join, 2)
+            self.addCleanup(provider.shutdown)
+            # Codex runs a new hook only once its hash is trusted: the sha256 of its sorted JSON.
+            handler = {'command': shlex.join([sys.executable, '-I', str(hook), str(stops), self.TOKEN]),
+                       'type': 'command'}
+            hashed = {'event_name': 'stop', 'hooks': [dict(handler, timeout=600, **{'async': False})]}
+            digest = hashlib.sha256(json.dumps(hashed, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            (home / 'hooks.json').write_text(json.dumps({'hooks': {'Stop': [{'hooks': [handler]}]}}))
+            (home / 'config.toml').write_text(
+                'model = "gpt-6.2-sol"\nmodel_provider = "capture"\nmodel_context_window = 100000\n'
+                'approval_policy = "never"\n[analytics]\nenabled = false\n[model_providers.capture]\n'
+                'name = "Local test capture"\nwire_api = "responses"\nrequires_openai_auth = false\n'
+                'base_url = "http://127.0.0.1:{}/v1"\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+                '[projects.{}]\ntrust_level = "trusted"\n'
+                '[hooks.state.{}]\ntrusted_hash = "sha256:{}"\n'.format(
+                    provider.server_port, json.dumps(str(work)),
+                    json.dumps(str(home / 'hooks.json') + ':stop:0:0'), digest))
+            env = {'CODEX_HOME': str(home), 'HOME': str(user_home), 'PATH': os.environ['PATH'],
+                   'LANG': 'en_US.UTF-8', 'TMPDIR': str(root)}
+            result = subprocess.run([os.environ['CS_CODEX_REAL_BIN'], 'exec', '--json', '--skip-git-repo-check',
+                                     '--cd', str(work), 'offline queue test'], env=env, cwd=str(work),
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        records = [json.loads(line) for line in stops.read_text().splitlines()] if stops.exists() else []
+        self.assertGreaterEqual(len(records), 2, 'the Stop hook did not continue the turn: ' + result.stderr[-2000:])
+        first, second = records[0], records[1]
+        self.assertTrue(second['stop_hook_active'])
+        self.assertEqual(second['turn_id'], first['turn_id'], 'the continuation runs in the same turn')
+        snapshot = subprocess.run([sys.executable, str(HELPER), '--queue-snapshot', second['transcript_path'],
+                                   '--thread-id', first['session_id'], '--queue-turn', first['turn_id'],
+                                   '--queue-receipt', self.TOKEN],
+                                  env=dict(os.environ, CODEX_HOME=str(home)), capture_output=True, text=True,
+                                  timeout=20)
+        self.assertEqual(snapshot.returncode, 0, snapshot.stderr)
+        reading = json.loads(snapshot.stdout)
+        self.assertTrue(reading['delivered'], 'no hook prompt with harness provenance carries the receipt')
+        self.assertTrue(reading['final_assistant'], 'no final answer after the receipt')
 
 
 if __name__ == '__main__':

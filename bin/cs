@@ -13144,7 +13144,12 @@ _spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
 
 # An adapter must own a drain before a seed is written or spent.
 _spawn_refuse_queue() {  # engine, suffix
-    cs_engine_supports "$1" task_queue && return 0
+    if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = codex ] && ! _codex_queue_version_ok; then
+            error "Codex older than $CS_CODEX_QUEUE_MIN_VERSION does not host the walk-away task queue: cs confirms each task by hook provenance that build does not record. Upgrade Codex, or use --brief without --task$2"
+        fi
+        return 0
+    fi
     case "$1" in
         antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
         *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;
@@ -21009,6 +21014,27 @@ _cs_codex_adapter_capabilities() {
     printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation task_queue
 }
 
+# The queue confirms each task by the provenance Codex records on a Stop
+# hook's continuation prompt ({type:harness, hook:true}). Measured on
+# 0.167.0-alpha.3.2 and 0.169.0-alpha.11.1; 0.158 and 0.162 record none.
+CS_CODEX_QUEUE_MIN_VERSION=0.167.0
+
+# Whether a Codex build is CS_CODEX_QUEUE_MIN_VERSION or later, read from the
+# first three dot-separated numbers its --version prints; an unreadable
+# version fails. A spawner inside Codex's sandbox runs this too, where bash
+# 3.2 cannot make a here-string's temp file, so nothing here uses one.
+_codex_queue_version_ok() {  # [codex_bin]
+    local re='([0-9]+)\.([0-9]+)\.([0-9]+)' out h1 h2 h3 w1 w2 w3
+    out=$("${1:-${CODEX_BIN:-codex}}" --version 2>/dev/null) || return 1
+    [[ "$out" =~ $re ]] || return 1
+    h1=$((10#${BASH_REMATCH[1]})) h2=$((10#${BASH_REMATCH[2]})) h3=$((10#${BASH_REMATCH[3]}))
+    [[ "$CS_CODEX_QUEUE_MIN_VERSION" =~ $re ]] || return 1
+    w1=$((10#${BASH_REMATCH[1]})) w2=$((10#${BASH_REMATCH[2]})) w3=$((10#${BASH_REMATCH[3]}))
+    [ "$h1" -eq "$w1" ] || return $(( h1 > w1 ? 0 : 1 ))
+    [ "$h2" -eq "$w2" ] || return $(( h2 > w2 ? 0 : 1 ))
+    [ "$h3" -ge "$w3" ]
+}
+
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
     # Startup context is refreshed at launch. No native project configuration
     # or instruction files are required, including a user-owned AGENTS.md.
@@ -21693,6 +21719,11 @@ _launch_codex_bound() {
         # Without the record the queue refuses; the launch goes on.
         if [ -n "$vault_protected" ] && vault_id=$(cs_dir_identity "${vault_resolved%/*}"); then
             ( set -C; printf '%s\n' "$vault_resolved" "$vault_id" > "$autoclear_dir/vault-home" ) 2>/dev/null || true
+        fi
+        # Without this record the queue parks: an older Codex keeps no hook
+        # provenance for its Stop to confirm a task by.
+        if _codex_queue_version_ok "$codex_bin"; then
+            ( set -C; : > "$autoclear_dir/queue-version-ok" ) 2>/dev/null || true
         fi
     fi
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
@@ -22977,6 +23008,9 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
         history)
             reason="cs task queue: Codex's active history must be outside its writable workspace, so cs cannot confirm tasks here."
             ;;
+        codex_version)
+            reason="cs task queue: walk-away tasks need Codex $CS_CODEX_QUEUE_MIN_VERSION or later, which records the hook provenance cs confirms each task by."
+            ;;
         task_failed)
             reason="cs task queue: you reported the task as not completed (cs-task-failed)."
             notice="task reported failed, $4 task(s) remaining"
@@ -22988,7 +23022,7 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
     reason="$reason Parked with $4 task(s) remaining. Re-arm with cs -queue start."
     _codex_queue_notify "$3" "${notice:-$reason}"
     case "$5" in
-        unconfirmed|history) _codex_queue_message "$reason" ;;
+        unconfirmed|history|codex_version) _codex_queue_message "$reason" ;;
         *) _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention." ;;
     esac
 }
@@ -23124,6 +23158,13 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     if [ "$remaining" = 0 ]; then
         _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; return 0; }
         return 1
+    fi
+    # The launch records a Codex that writes the hook provenance a task is
+    # confirmed by (lib/76-codex.sh); no record, no task can be confirmed.
+    if [ ! -f "$run_dir/queue-version-ok" ] || [ -L "$run_dir/queue-version-ok" ]; then
+        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" codex_version 0 0
+        [ -z "$handoff" ] || return 4
+        return 0
     fi
     if [ "$state" = draining ]; then
         current=$(jq -er --arg s "$thread" --arg t "$turn" 'select(.thread==$s and .turn==$t) | .task' \
