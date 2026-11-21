@@ -14049,7 +14049,13 @@ run_queue() {
         # never calls error() — so the pipeline eats nothing cs owns.
         list|ls) _queue_list "$qdir" | _scrub_controls;;
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
-        clear) _queue_clear "$qdir";;
+        clear)
+            _queue_clear "$qdir"
+            # A Codex run's drain record lives in its private cache.
+            if declare -F _codex_queue_forget_session_run >/dev/null; then
+                _codex_queue_forget_session_run "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+            fi
+            ;;
         start)
             shift
             local engine=""
@@ -22988,6 +22994,20 @@ _codex_queue_forget_run() {  # private_run_dir
     rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
 }
 
+# cs -queue clear forgets the drain record of the session's Codex run, so the
+# next batch starts afresh. Only a process outside Codex's sandbox can write
+# the run's directory: the agent cannot reset its own count this way. Best
+# effort, and prints nothing.
+_codex_queue_forget_session_run() {  # meta_dir
+    local lease="$1/local/run-lease.json" id dir
+    [ -f "$lease" ] && [ ! -L "$lease" ] || return 0
+    id=$(jq -r 'select(.engine=="codex") | .run_id' "$lease" 2>/dev/null) && _is_uuid "$id" || return 0
+    dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$id"
+    cs_cache_dir_private "$dir" && _codex_run_dir_ok "$dir" "${1%/.cs}" || return 0
+    _codex_queue_forget_run "$dir"
+    return 0
+}
+
 _codex_queue_reset() {  # queue_dir, private_run_dir
     _queue_set_state "$1" idle || return 1
     rm -f "$1/queue.current" "$1/queue.failed" "$1/failures" 2>/dev/null || true
@@ -23146,10 +23166,12 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     local offset="" local_dir="$CS_SESSION_DIR/.cs/local"
     bound=$(cs_binding_read "$CS_SESSION_DIR" codex) && [ "$bound" = "$thread" ] || return 1
     state=$(_codex_queue_state "$qdir") || return 1
-    # Armed with a delivery outstanding: cs -queue clear and start ran inside
-    # one turn, so this is a new drain. A rotation boundary leaves none.
+    # Armed with a delivery outstanding: someone re-armed mid-task, and the
+    # agent can write queue.state. The outstanding task is finished first,
+    # counted and checked against every breaker. A cs -queue clear has already
+    # emptied the run's record (_codex_queue_forget_session_run).
     if [ "$state" = armed ] && [ -f "$run_dir/queue-task.json" ]; then
-        _codex_queue_forget_run "$run_dir"
+        state=draining
     fi
     for file in "$qdir/queue/"*; do
         [ -f "$file" ] && [ ! -L "$file" ] || continue

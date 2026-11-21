@@ -354,7 +354,13 @@ run_queue() {
         # never calls error() — so the pipeline eats nothing cs owns.
         list|ls) _queue_list "$qdir" | _scrub_controls;;
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
-        clear) _queue_clear "$qdir";;
+        clear)
+            _queue_clear "$qdir"
+            # A Codex run's drain record lives in its private cache.
+            if declare -F _codex_queue_forget_session_run >/dev/null; then
+                _codex_queue_forget_session_run "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+            fi
+            ;;
         start)
             shift
             local engine=""

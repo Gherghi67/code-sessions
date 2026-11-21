@@ -262,6 +262,11 @@ test_subagent_approval_notifies_once() {
     assert_eq 1 "$(grep -c -F 'waiting for native approval' "$CS_CACHE_DIR/notify.log")" "one notice a drain"
 }
 
+# cs -queue as the user runs it in this session.
+_cs_queue() {
+    CS_SESSION_META_DIR="$CS_SESSION_DIR/.cs" run_queue "$@"
+}
+
 # A batch armed after cs -queue clear is a new drain: it starts, counts and
 # sends its approval notice afresh.
 _assert_fresh_drain() {
@@ -279,8 +284,8 @@ _assert_fresh_drain() {
     assert_eq '-msg boss -k notify queue drained: 1 task(s) done' "$(tail -n 1 "$CS_CACHE_DIR/notify.log")"
 }
 
-# Cleared at a rotation boundary, the first task done and none delivered: the
-# Stop that finds no queue ends the drain.
+# Cleared at a rotation boundary, the first task done and none delivered, then
+# a Stop that finds no queue.
 test_clear_mid_drain_starts_a_fresh_drain() (
     local first
     printf 'boss\n' > "$QDIR/spawned-by"
@@ -291,7 +296,7 @@ test_clear_mid_drain_starts_a_fresh_drain() (
     export CS_CODEX_CLEAR_GRACE=0
     _stop true >/dev/null
     rm "$QDIR/pending-handoff"
-    _queue_clear "$QDIR"
+    _cs_queue clear
     assert_eq '' "$(_stop true)" "a Stop after the clear does nothing" || return 1
     _assert_fresh_drain
 )
@@ -306,9 +311,62 @@ test_clear_and_restart_inside_one_turn() (
     second=$(_stop true)
     _deliver "$second"
     _permission >/dev/null
-    _queue_clear "$QDIR"
+    _cs_queue clear
     _assert_fresh_drain
 )
+
+# Cleared and re-armed at a rotation boundary, with no Stop in between: the
+# next bound conversation opens a new drain.
+test_clear_at_a_rotation_boundary_starts_a_fresh_drain() (
+    local first out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    first=$(_stop)
+    _deliver "$first"
+    _permission >/dev/null
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=0
+    _stop true >/dev/null
+    _cs_queue clear
+    mkdir -p "$QDIR/queue"
+    printf 'new task\n' > "$QDIR/queue/010"
+    _session_engine() { printf 'codex\n'; }     # lib/25-deps.sh is not sourced
+    _cs_queue start || return 1
+    rm "$QDIR/pending-handoff"
+    THREAD=$OTHER TURN=$OTHER
+    _rollout_under "$CODEX_HOME"
+    cs_binding_write "$CS_SESSION_DIR" codex "$OTHER"
+    out=$(_stop)
+    assert_output_contains "$out" 'starting a walk-away run' || return 1
+    assert_eq 2 "$(jq -s '[.[] | select(.event=="drain_started")]|length' "$QDIR/notifications.jsonl")" || return 1
+    _permission >/dev/null
+    assert_eq 2 "$(grep -c -F 'waiting for native approval' "$CS_CACHE_DIR/notify.log")" "one notice each drain" || return 1
+    _deliver "$out"
+    _stop true >/dev/null
+    assert_eq '-msg boss -k notify queue drained: 1 task(s) done' "$(tail -n 1 "$CS_CACHE_DIR/notify.log")"
+)
+
+# queue.state is the agent's to write: re-armed mid-task, the drain still
+# finishes and counts the task outstanding.
+test_an_agent_written_armed_state_keeps_the_count() {
+    local out n=0
+    CS_CODEX_QUEUE_MAX_TASKS=2
+    printf 'third task\n' > "$QDIR/queue/003"
+    printf 'fourth task\n' > "$QDIR/queue/004"
+    out=$(_stop)
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'second task' || return 1
+    _deliver "$out"
+    printf 'armed\n' > "$QDIR/queue.state"
+    out=$(_stop true)
+    while [ "$n" -lt 4 ] && printf '%s\n' "$out" | jq -e '.reason | startswith("cs task queue [")' >/dev/null 2>&1; do
+        _deliver "$out"
+        out=$(_stop true)
+        n=$((n + 1))
+    done
+    assert_output_contains "$out" 'task_cap at 2' || return 1
+    assert_eq $'first task\nsecond task' "$(cat "$QDIR/queue.done")" "two tasks done"
+}
 
 test_receipt_without_a_new_final_answer_parks() {
     local first parked
@@ -625,6 +683,8 @@ run_test test_native_approval_notifies_once_without_deciding
 run_test test_subagent_approval_notifies_once
 run_test test_clear_mid_drain_starts_a_fresh_drain
 run_test test_clear_and_restart_inside_one_turn
+run_test test_clear_at_a_rotation_boundary_starts_a_fresh_drain
+run_test test_an_agent_written_armed_state_keeps_the_count
 run_test test_receipt_without_a_new_final_answer_parks
 run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_a_queue_swapped_for_a_link_before_the_pop
