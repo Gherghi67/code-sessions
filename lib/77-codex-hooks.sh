@@ -472,8 +472,9 @@ except (OSError, ValueError, TypeError):
 
 # Starts the count toward the automatic /clear (or /quit) of an armed
 # rotation, and prints the line that says so, or the line that says a pending
-# switch holds. Succeeds only when it put a deadline in place, the one thing
-# that has the watcher type the keys.
+# switch holds. Returns 0 only when it put a deadline in place, the one thing
+# that has the watcher type the keys, 2 when it printed the hold line, and 1
+# otherwise.
 _codex_rotation_countdown() {  # session_dir, handoff
     local session_dir="$1" handoff="$2" run_dir stamp grace tmp deadline action
     # No private directory, no watcher: nothing would type the keys, so the
@@ -490,7 +491,7 @@ _codex_rotation_countdown() {  # session_dir, handoff
     if [ "${action%% *}" = hold ]; then
         rm -f "$stamp" 2>/dev/null
         printf '%s\n' "cs: a switch to ${action#hold } is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
-        return 1
+        return 2
     fi
     # The deadline is worked out before the temp file exists, so nothing that
     # fails here can leave one behind.
@@ -516,7 +517,7 @@ _codex_rotation_countdown() {  # session_dir, handoff
 # must never fail a turn, so every path returns 0. It prints at most one JSON
 # object: the queue's answer, or the Stop's lines joined in one systemMessage.
 _codex_hook_stop() {
-    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" stamped=""
+    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" crc=1 hold=""
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     session_dir="$CS_SESSION_DIR"
@@ -544,13 +545,15 @@ _codex_hook_stop() {
     # A choice /clear would drop gets no count toward that /clear.
     if [ -n "$handoff" ] && ! note=$(_codex_rotation_model_save "$session_dir" "$session_id" "$input"); then
         line="${note:-cs: could not preserve the selected model for rotation; select it again with /model after /clear.}"
-    elif line=$(_codex_rotation_countdown "$session_dir" "$handoff"); then
-        stamped=1
+    else
+        crc=0
+        line=$(_codex_rotation_countdown "$session_dir" "$handoff") || crc=$?
     fi
     # A queue that yielded to a rotation nothing will take waits for /clear
-    # by hand.
-    if [ "$qrc" = 3 ] && [ -z "$stamped" ]; then
-        qwait=$(_codex_queue_rotation_wait "$handoff") || qwait=""
+    # and go by hand, or for a held switch to be taken or cancelled.
+    if [ "$qrc" = 3 ] && [ "$crc" != 0 ]; then
+        [ "$crc" != 2 ] || hold=hold
+        qwait=$(_codex_queue_rotation_wait "$handoff" "$hold") || qwait=""
     fi
     jq -n --arg q "$qmsg" --arg l "$line" --arg w "$qwait" \
         '[$q, $l, $w] | map(select(length > 0)) | if length > 0 then {systemMessage: join("\n")} else empty end' \

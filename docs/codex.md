@@ -576,8 +576,10 @@ A native approval prompt waits for your answer. The first such prompt during
 a spawned drain sends the spawner a notice. An armed rotation takes priority
 before dispatching the next task, and the fresh conversation resumes the
 queue after rebind. When nothing will type /clear (the automatic /clear is
-off, there is no watcher, or a switch is held under native approval), the run
-waits for you to type /clear and the spawner gets one notice.
+off or there is no watcher), the run waits for you to type /clear and then
+send go, and the spawner gets one notice. A switch held under native approval
+waits instead until you take it with /quit or drop it with cs -switch cancel,
+with the same one notice.
 
 The queue needs Codex 0.167.0 or later: cs confirms each task by the hook
 provenance Codex records on the continuation prompt, measured on

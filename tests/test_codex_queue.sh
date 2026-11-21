@@ -465,8 +465,8 @@ test_rotation_commits_the_boundary_then_resumes_the_next_task() (
     export CS_CODEX_CLEAR_GRACE=0
     during=$(_stop true)
     assert_eq 1 "$(printf '%s\n' "$during" | jq -s length)" "one message for the Stop" || return 1
-    assert_eq "cs task queue: the walk-away run is waiting for this rotation. Run /clear to continue from continue.md; the queue resumes in the new conversation." \
-        "$(printf '%s\n' "$during" | jq -r .systemMessage)" "the run waits for /clear by hand" || return 1
+    assert_eq "cs task queue: the walk-away run is waiting for this rotation. Run /clear, then send go, to continue from continue.md; the queue resumes when that turn ends." \
+        "$(printf '%s\n' "$during" | jq -r .systemMessage)" "the run waits for /clear and go by hand" || return 1
     assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
     assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
     assert_not_exists "$QDIR/queue.current" || return 1
@@ -503,7 +503,7 @@ test_rotation_without_a_countdown_notifies_the_spawner() (
     assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
     assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
     assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the wait" || return 1
-    assert_output_contains "$(cat "$CS_CACHE_DIR/notify.log")" '/clear' || return 1
+    assert_output_contains "$(cat "$CS_CACHE_DIR/notify.log")" '/clear and go' || return 1
     assert_eq 1 "$(printf '%s\n' "$out" | jq -s length)" "one message for the Stop" || return 1
     assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'waiting for this rotation' || return 1
     _stop true >/dev/null
@@ -522,6 +522,27 @@ test_rotation_with_a_live_watcher_does_not_notify() (
     [ ! -s "$CS_CACHE_DIR/notify.log" ] || { echo "  FAIL: the spawner heard of a /clear the watcher types"; return 1; }
     assert_file_exists "$CS_CACHE_DIR/codex-runs/$RUN/autoclear" || return 1
     assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" '/clear and go in 20 s'
+)
+
+# A switch held under native approval is taken by /quit or cancelled, never
+# by /clear: the wait says so, and so does the spawner's notice.
+test_a_held_switch_wait_does_not_say_clear() (
+    local first out message
+    first=$(_stop)
+    _deliver "$first"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=20
+    _live_watcher
+    _codex_autoclear_action() { printf 'hold Claude\n'; }
+    out=$(_stop true)
+    assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
+    assert_not_exists "$CS_CACHE_DIR/codex-runs/$RUN/autoclear" "a held switch counts nothing down" || return 1
+    message=$(printf '%s\n' "$out" | jq -r .systemMessage)
+    assert_output_contains "$message" 'pending switch' || return 1
+    assert_output_not_contains "$message" 'Run /clear' || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the wait" || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'pending engine switch'
 )
 
 # A Stop from a turn the queue never handed a task: the park is a message,
@@ -755,6 +776,7 @@ run_test test_a_link_planted_at_pop_time_gets_nothing
 run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
+run_test test_a_held_switch_wait_does_not_say_clear
 run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
 run_test test_an_old_codex_parks_the_queue
 run_test test_an_old_codex_parks_without_a_turn_id

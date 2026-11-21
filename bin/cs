@@ -22503,8 +22503,9 @@ except (OSError, ValueError, TypeError):
 
 # Starts the count toward the automatic /clear (or /quit) of an armed
 # rotation, and prints the line that says so, or the line that says a pending
-# switch holds. Succeeds only when it put a deadline in place, the one thing
-# that has the watcher type the keys.
+# switch holds. Returns 0 only when it put a deadline in place, the one thing
+# that has the watcher type the keys, 2 when it printed the hold line, and 1
+# otherwise.
 _codex_rotation_countdown() {  # session_dir, handoff
     local session_dir="$1" handoff="$2" run_dir stamp grace tmp deadline action
     # No private directory, no watcher: nothing would type the keys, so the
@@ -22521,7 +22522,7 @@ _codex_rotation_countdown() {  # session_dir, handoff
     if [ "${action%% *}" = hold ]; then
         rm -f "$stamp" 2>/dev/null
         printf '%s\n' "cs: a switch to ${action#hold } is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
-        return 1
+        return 2
     fi
     # The deadline is worked out before the temp file exists, so nothing that
     # fails here can leave one behind.
@@ -22547,7 +22548,7 @@ _codex_rotation_countdown() {  # session_dir, handoff
 # must never fail a turn, so every path returns 0. It prints at most one JSON
 # object: the queue's answer, or the Stop's lines joined in one systemMessage.
 _codex_hook_stop() {
-    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" stamped=""
+    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" crc=1 hold=""
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     session_dir="$CS_SESSION_DIR"
@@ -22575,13 +22576,15 @@ _codex_hook_stop() {
     # A choice /clear would drop gets no count toward that /clear.
     if [ -n "$handoff" ] && ! note=$(_codex_rotation_model_save "$session_dir" "$session_id" "$input"); then
         line="${note:-cs: could not preserve the selected model for rotation; select it again with /model after /clear.}"
-    elif line=$(_codex_rotation_countdown "$session_dir" "$handoff"); then
-        stamped=1
+    else
+        crc=0
+        line=$(_codex_rotation_countdown "$session_dir" "$handoff") || crc=$?
     fi
     # A queue that yielded to a rotation nothing will take waits for /clear
-    # by hand.
-    if [ "$qrc" = 3 ] && [ -z "$stamped" ]; then
-        qwait=$(_codex_queue_rotation_wait "$handoff") || qwait=""
+    # and go by hand, or for a held switch to be taken or cancelled.
+    if [ "$qrc" = 3 ] && [ "$crc" != 0 ]; then
+        [ "$crc" != 2 ] || hold=hold
+        qwait=$(_codex_queue_rotation_wait "$handoff" "$hold") || qwait=""
     fi
     jq -n --arg q "$qmsg" --arg l "$line" --arg w "$qwait" \
         '[$q, $l, $w] | map(select(length > 0)) | if length > 0 then {systemMessage: join("\n")} else empty end' \
@@ -23341,14 +23344,22 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
 }
 
 # The line for a run that yielded to an armed rotation with no count toward
-# its /clear: the automatic /clear is off, no watcher runs, or a switch holds.
-# The spawner hears once a drain.
-_codex_queue_rotation_wait() {  # handoff
-    local run_dir
-    printf '%s\n' "cs task queue: the walk-away run is waiting for this rotation. Run /clear to continue from $1; the queue resumes in the new conversation."
+# its /clear: the automatic /clear is off or no watcher runs, so /clear and go
+# are the user's to send, or a switch holds (hold), which /quit takes and
+# cs -switch cancel drops. The spawner hears once a drain.
+_codex_queue_rotation_wait() {  # handoff, [hold]
+    local run_dir line notice
+    if [ "${2:-}" = hold ]; then
+        line="cs task queue: the walk-away run is waiting until the pending switch is taken (/quit) or cancelled (cs -switch cancel)."
+        notice="cs task queue in ${CS_SESSION_NAME:-the spawned session} is waiting for its pending engine switch to be taken or cancelled; the queued tasks stay armed."
+    else
+        line="cs task queue: the walk-away run is waiting for this rotation. Run /clear, then send go, to continue from $1; the queue resumes when that turn ends."
+        notice="cs task queue in ${CS_SESSION_NAME:-the spawned session} is waiting for /clear and go to take an armed rotation; the queued tasks continue after it."
+    fi
+    printf '%s\n' "$line"
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
     ( set -C; : > "$run_dir/queue-rotation-wait" ) 2>/dev/null || return 0
-    _codex_queue_notify "$CS_SESSION_DIR/.cs/local" "cs task queue in ${CS_SESSION_NAME:-the spawned session} is waiting for /clear to take an armed rotation; the queued tasks continue after it."
+    _codex_queue_notify "$CS_SESSION_DIR/.cs/local" "$notice"
 }
 
 _codex_queue_permission() {  # PermissionRequest JSON
