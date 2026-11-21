@@ -22946,10 +22946,16 @@ _codex_queue_event() {  # queue_dir, jq options and expression
     _append_record "$file" --argjson ts "$(date +%s)" "$@"
 }
 
+# The run's record of a drain: the delivery outstanding, the count, and the
+# one-time notices.
+_codex_queue_forget_run() {  # private_run_dir
+    rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
+}
+
 _codex_queue_reset() {  # queue_dir, private_run_dir
     _queue_set_state "$1" idle || return 1
-    rm -f "$1/queue.current" "$1/queue.failed" "$1/failures" \
-        "$2/queue-task.json" "$2/queue-count" "$2/queue-approval" "$2/queue-rotation-wait" 2>/dev/null || true
+    rm -f "$1/queue.current" "$1/queue.failed" "$1/failures" 2>/dev/null || true
+    _codex_queue_forget_run "$2"
 }
 
 _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading, limit
@@ -23093,6 +23099,11 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
     local local_dir="$CS_SESSION_DIR/.cs/local"
     bound=$(cs_binding_read "$CS_SESSION_DIR" codex) && [ "$bound" = "$thread" ] || return 1
     state=$(_codex_queue_state "$qdir") || return 1
+    # Armed with a delivery outstanding: cs -queue clear and start ran inside
+    # one turn, so this is a new drain. A rotation boundary leaves none.
+    if [ "$state" = armed ] && [ -f "$run_dir/queue-task.json" ]; then
+        _codex_queue_forget_run "$run_dir"
+    fi
     for file in "$qdir/queue/"*; do
         [ -f "$file" ] && [ ! -L "$file" ] || continue
         first="${first:-$file}"
@@ -23188,7 +23199,12 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
 # the armed rotation still runs, and 1 when it did nothing.
 _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     local qdir run_dir turn rollouts_dir="${CODEX_HOME:-$HOME/.codex}/sessions"
-    qdir=$(_codex_queue_dir "$1") && _codex_queue_state "$qdir" >/dev/null || return 1
+    # No drain (cs -queue clear ended one): the next armed batch starts afresh.
+    if ! qdir=$(_codex_queue_dir "$1") || ! _codex_queue_state "$qdir" >/dev/null; then
+        run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" \
+            && _codex_queue_forget_run "$run_dir"
+        return 1
+    fi
     ! cs_files_tracked_notice "$1" "$CS_SESSION_DIR" >/dev/null || return 1
     turn=$(printf '%s' "$4" | jq -r '.turn_id // empty' 2>/dev/null) && _is_uuid "$turn" || return 1
     if ! run_dir=$(_codex_run_dir) || ! _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR"; then

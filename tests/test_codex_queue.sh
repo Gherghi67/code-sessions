@@ -180,6 +180,58 @@ test_native_approval_notifies_once_without_deciding() {
     assert_output_contains "$(cat "$CS_CACHE_DIR/notify.log")" 'waiting for native approval'
 }
 
+_permission() {
+    jq -nc --arg s "$THREAD" --arg t "$TURN" '{session_id:$s,turn_id:$t}' | cmd_codex_hook permission-request
+}
+
+# A batch armed after cs -queue clear is a new drain: it starts, counts and
+# sends its approval notice afresh.
+_assert_fresh_drain() {
+    local out
+    mkdir -p "$QDIR/queue"
+    printf 'new task\n' > "$QDIR/queue/010"
+    CS_SESSION_META_DIR="$CS_SESSION_DIR/.cs" _queue_start "$QDIR" || return 1
+    out=$(_stop)
+    assert_output_contains "$out" 'starting a walk-away run' || return 1
+    assert_eq 2 "$(jq -s '[.[] | select(.event=="drain_started")]|length' "$QDIR/notifications.jsonl")" || return 1
+    _permission >/dev/null
+    assert_eq 2 "$(grep -c -F 'waiting for native approval' "$CS_CACHE_DIR/notify.log")" "one notice each drain" || return 1
+    _deliver "$out"
+    _stop true >/dev/null
+    assert_eq '-msg boss -k notify queue drained: 1 task(s) done' "$(tail -n 1 "$CS_CACHE_DIR/notify.log")"
+}
+
+# Cleared at a rotation boundary, the first task done and none delivered: the
+# Stop that finds no queue ends the drain.
+test_clear_mid_drain_starts_a_fresh_drain() (
+    local first
+    printf 'boss\n' > "$QDIR/spawned-by"
+    first=$(_stop)
+    _deliver "$first"
+    _permission >/dev/null
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=0
+    _stop true >/dev/null
+    rm "$QDIR/pending-handoff"
+    _queue_clear "$QDIR"
+    assert_eq '' "$(_stop true)" "a Stop after the clear does nothing" || return 1
+    _assert_fresh_drain
+)
+
+# Cleared and re-armed with the second task's delivery outstanding, and no
+# Stop in between.
+test_clear_and_restart_inside_one_turn() (
+    local first second
+    printf 'boss\n' > "$QDIR/spawned-by"
+    first=$(_stop)
+    _deliver "$first"
+    second=$(_stop true)
+    _deliver "$second"
+    _permission >/dev/null
+    _queue_clear "$QDIR"
+    _assert_fresh_drain
+)
+
 test_receipt_without_a_new_final_answer_parks() {
     local first parked
     first=$(_stop)
@@ -441,6 +493,8 @@ run_test test_shell_and_patch_failures_count_from_this_task_only
 run_test test_missing_or_expired_usage_uses_the_cap
 run_test test_fresh_quota_trips_and_context_uses_the_latest_reading
 run_test test_native_approval_notifies_once_without_deciding
+run_test test_clear_mid_drain_starts_a_fresh_drain
+run_test test_clear_and_restart_inside_one_turn
 run_test test_receipt_without_a_new_final_answer_parks
 run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_a_queue_swapped_for_a_link_before_the_pop
