@@ -22959,7 +22959,7 @@ _codex_queue_reset() {  # queue_dir, private_run_dir
 }
 
 _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading, limit
-    local reason="cs task queue: $5"
+    local reason="cs task queue: $5" notice=""
     _codex_queue_reset "$1" "$2" || { _codex_queue_write_error; return 0; }
     _codex_queue_event "$1" --arg kind "$5" --argjson reading "$6" --argjson limit "$7" --argjson remaining "$4" \
         '{ts:$ts,event:"breaker_tripped",reason:$kind,reading:$reading,limit:$limit,remaining:$remaining}'
@@ -22970,12 +22970,16 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
         history)
             reason="cs task queue: Codex's active history must be outside its writable workspace, so cs cannot confirm tasks here."
             ;;
+        task_failed)
+            reason="cs task queue: you reported the task as not completed (cs-task-failed)."
+            notice="task reported failed, $4 task(s) remaining"
+            ;;
         *)
             reason="$reason at $6 (threshold $7)."
             ;;
     esac
     reason="$reason Parked with $4 task(s) remaining. Re-arm with cs -queue start."
-    _codex_queue_notify "$3" "$reason"
+    _codex_queue_notify "$3" "${notice:-$reason}"
     case "$5" in
         unconfirmed|history) _codex_queue_message "$reason" ;;
         *) _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention." ;;

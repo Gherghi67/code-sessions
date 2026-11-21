@@ -117,10 +117,13 @@ test_unbound_and_undelivered_tasks_cannot_complete() {
 
 test_reported_failure_keeps_the_task() {
     local first parked
+    printf 'boss\n' > "$QDIR/spawned-by"
     first=$(_stop)
     _deliver "$first"
     parked=$(_stop true $'summary\ncs-task-failed')
-    assert_output_contains "$parked" 'task_failed' || return 1
+    assert_output_contains "$parked" 'reported the task as not completed' || return 1
+    assert_output_not_contains "$parked" 'threshold' || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'task reported failed, 2 task(s) remaining' || return 1
     assert_file_exists "$QDIR/queue/001" || return 1
     assert_not_exists "$QDIR/queue.done"
 }
