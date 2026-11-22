@@ -165,7 +165,7 @@ test_terminal_stop_parks_and_allows_rearm_with_a_live_lease() {
         assert_not_exists "$QDIR/queue.done" || return 1
         assert_file_exists "$QDIR/queue/001" || return 1
         assert_file_contains "$QDIR/notifications.jsonl" "interrupted .*$reason" || return 1
-        CS_RUN_ENGINE= run_queue start || return 1
+        CS_RUN_ENGINE='' run_queue start || return 1
         assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
     done
 }
@@ -179,11 +179,11 @@ test_rearm_keeps_the_protected_record_if_the_workspace_write_fails() {
     before=$(cat "$cache/drain.json")
     rm "$QDIR/queue.state"
     mkdir "$QDIR/queue.state"
-    (CS_RUN_ENGINE= run_queue start) || rc=$?
+    (CS_RUN_ENGINE='' run_queue start) || rc=$?
     assert_eq 1 "$rc" "a refused workspace write fails queue start" || return 1
     assert_eq "$before" "$(cat "$cache/drain.json")" || return 1
     rmdir "$QDIR/queue.state"
-    CS_RUN_ENGINE= run_queue start || return 1
+    CS_RUN_ENGINE='' run_queue start || return 1
     assert_eq armed "$(cat "$QDIR/queue.state")"
 }
 
@@ -195,11 +195,11 @@ test_rearm_keeps_the_queue_idle_if_the_protected_write_fails() {
     rm "$cache/drain.json"
     mkdir "$cache/drain.json"
     printf 'idle\n' > "$QDIR/queue.state"
-    (CS_RUN_ENGINE= run_queue start) || rc=$?
+    (CS_RUN_ENGINE='' run_queue start) || rc=$?
     assert_eq 1 "$rc" "a refused protected write fails queue start" || return 1
     assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
     rmdir "$cache/drain.json"
-    CS_RUN_ENGINE= run_queue start || return 1
+    CS_RUN_ENGINE='' run_queue start || return 1
     assert_eq armed "$(cat "$QDIR/queue.state")"
 }
 
@@ -269,7 +269,7 @@ test_keeps_remainder_after_eight_deliveries() {
     assert_file_exists "$QDIR/queue/002" || return 1
     assert_file_contains "$QDIR/notifications.jsonl" 'continuation budget reached' || return 1
     printf 'engine: antigravity\n' > "$QDIR/state"
-    CS_RUN_ENGINE= run_queue start || return 1
+    CS_RUN_ENGINE='' run_queue start || return 1
     assert_output_contains "$(stop 0)" 'second task'
 }
 
