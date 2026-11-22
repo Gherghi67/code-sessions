@@ -421,18 +421,18 @@ test_a_queue_swapped_for_a_link_before_the_pop() {
 # Run as a DEBUG trap: as the pop reads the task, swap queue/ for a link to
 # $SWAP_OUTSIDE, as a process racing the Stop could.
 _swap_queue_mid_pop() {
-    case $BASH_COMMAND in *'read -r body'*) ;; *) return 0 ;; esac
+    case $BASH_COMMAND in *'first-line'*) ;; *) return 0 ;; esac
     [ ! -L "$QDIR/queue" ] || return 0
     mv "$QDIR/queue" "$QDIR/queue.real" && ln -s "$SWAP_OUTSIDE" "$QDIR/queue"
 }
 
-# A task with no trailing newline fails the read, so the pop leaves it.
+# The helper's walk refuses the swapped queue/, so the read fails and the pop
+# leaves the task.
 test_a_failed_read_mid_pop_never_lands_outside() {
     local first SWAP_OUTSIDE="$TEST_TMPDIR/outside"
     mkdir -p "$SWAP_OUTSIDE"
     first=$(_stop)
     _deliver "$first"
-    printf 'first task' > "$QDIR/queue/001"
     (set -T; trap _swap_queue_mid_pop DEBUG; _stop true) >/dev/null
     assert_symlink "$QDIR/queue" "queue/ was swapped mid-pop" || return 1
     assert_eq '' "$(ls -A "$SWAP_OUTSIDE")" "nothing lands outside the session" || return 1
@@ -454,6 +454,88 @@ test_a_link_planted_at_pop_time_gets_nothing() (
     _stop true >/dev/null
     assert_eq '' "$(ls -A "$outside")" "nothing lands outside the session" || return 1
     assert_eq 'first task' "$(cat "$QDIR/queue.done" 2>/dev/null)" "queue.done holds the first task once"
+)
+
+# <name> in .cs/local made a hard link to <outside>/target, on the same
+# filesystem: every check by path sees a regular file inside the session.
+_hard_link_at() {  # name, outside
+    printf 'outside\n' > "$2/target"
+    rm -f "$QDIR/$1"
+    ln "$2/target" "$QDIR/$1"
+}
+
+# <name> in .cs/local swapped for a link to <outside>/target once a writer has
+# checked it and before it writes, as an agent racing the Stop could: from
+# _cs_refuses_write, the check the shared writers make just before they write
+# by path, and from the helper, just before it opens the name.
+_link_flipped_after_the_check() {  # name, outside
+    FLIP_NAME=$1 FLIP_TARGET="$2/target"
+    printf 'outside\n' > "$FLIP_TARGET"
+    _cs_refuses_write() {
+        [ "$2" != "$QDIR/$FLIP_NAME" ] || [ -L "$2" ] || { rm -f "$2"; ln -s "$FLIP_TARGET" "$2"; }
+        return 1
+    }
+    cat > "$TEST_TMPDIR/helper" <<HELPER
+#!/bin/bash
+case " \$* " in
+    *" --queue-file append $1 "*)
+        [ -L "$QDIR/$1" ] || { rm -f "$QDIR/$1"; ln -s "$FLIP_TARGET" "$QDIR/$1"; } ;;
+esac
+exec "$CS_CODEX_THREAD_BIN" "\$@"
+HELPER
+    chmod +x "$TEST_TMPDIR/helper"
+    CS_CODEX_THREAD_BIN="$TEST_TMPDIR/helper"
+}
+
+test_a_hard_linked_queue_done_gets_nothing() {
+    local first out outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside"
+    first=$(_stop)
+    _deliver "$first"
+    _hard_link_at queue.done "$outside"
+    out=$(_stop true)
+    assert_eq outside "$(cat "$outside/target")" "the outside file is left alone" || return 1
+    assert_file_exists "$QDIR/queue/001" "the task stays queued" || return 1
+    assert_output_contains "$out" 'could not update queue state'
+}
+
+test_a_link_flipped_after_the_check_gets_nothing() (
+    local first out outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside"
+    first=$(_stop)
+    _deliver "$first"
+    _link_flipped_after_the_check queue.done "$outside"
+    out=$(_stop true)
+    assert_symlink "$QDIR/queue.done" "queue.done was swapped for a link" || return 1
+    assert_eq outside "$(cat "$outside/target")" "the outside file is left alone" || return 1
+    assert_file_exists "$QDIR/queue/001" "the task stays queued" || return 1
+    assert_output_contains "$out" 'could not update queue state'
+)
+
+# The journal is best effort: a refused task_done line leaves the drain going.
+test_a_hard_linked_notifications_file_gets_nothing() {
+    local first out outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside"
+    first=$(_stop)
+    _deliver "$first"
+    _hard_link_at notifications.jsonl "$outside"
+    out=$(_stop true)
+    assert_eq outside "$(cat "$outside/target")" "the outside file is left alone" || return 1
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
+    assert_output_contains "$out" 'second task'
+}
+
+test_a_notifications_link_flipped_after_the_check_gets_nothing() (
+    local first out outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside"
+    first=$(_stop)
+    _deliver "$first"
+    _link_flipped_after_the_check notifications.jsonl "$outside"
+    out=$(_stop true)
+    assert_symlink "$QDIR/notifications.jsonl" "notifications.jsonl was swapped for a link" || return 1
+    assert_eq outside "$(cat "$outside/target")" "the outside file is left alone" || return 1
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")" || return 1
+    assert_output_contains "$out" 'second task'
 )
 
 test_rotation_commits_the_boundary_then_resumes_the_next_task() (
@@ -740,6 +822,10 @@ run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_a_queue_swapped_for_a_link_before_the_pop
 run_test test_a_failed_read_mid_pop_never_lands_outside
 run_test test_a_link_planted_at_pop_time_gets_nothing
+run_test test_a_hard_linked_queue_done_gets_nothing
+run_test test_a_link_flipped_after_the_check_gets_nothing
+run_test test_a_hard_linked_notifications_file_gets_nothing
+run_test test_a_notifications_link_flipped_after_the_check_gets_nothing
 run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify

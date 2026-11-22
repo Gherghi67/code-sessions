@@ -865,6 +865,102 @@ def queue_snapshot(args):
                            failures=failures, context=context, five_hour=five_hour))
 
 
+class QueueFileMissing(BootstrapError):
+    """The file --queue-file first-line reads is not there."""
+
+
+QUEUE_FILE_OPS = ("append", "replace", "unlink", "first-line")
+QUEUE_FILE_MISSING = 3
+
+
+def queue_file_parts(name):
+    """The folders below .cs/local and the file a --queue-file NAME names: a plain
+    file name, or queue/<basename>."""
+    parts = name.split("/")
+    if len(parts) == 2 and parts[0] == "queue":
+        folders, base = ["queue"], parts[1]
+    elif len(parts) == 1:
+        folders, base = [], parts[0]
+    else:
+        raise BootstrapError("unexpected queue file name")
+    if base in ("", ".", ".."):
+        raise BootstrapError("unexpected queue file name")
+    return folders, base
+
+
+def queue_file_dir(session_dir, folders):
+    """A descriptor for the session's .cs/local, or a folder in it, opened a level at a
+    time below the session without following a link: the agent can write every level
+    there, the session's parent is not its to write."""
+    fd = os.open(session_dir, os.O_RDONLY | os.O_DIRECTORY)
+    for folder in [".cs", "local"] + folders:
+        try:
+            child = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        finally:
+            os.close(fd)
+        fd = child
+    return fd
+
+
+def queue_file_write(fd, data):
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+def queue_file(args):
+    """The Codex queue's own writes into .cs/local, and its read of a task. The Stop hook
+    runs outside the sandbox, and the agent can swap any name there for a link, or a hard
+    link to a file outside, between a check and a write by path: every name is opened from
+    a descriptor of its folder, and none is followed."""
+    op, name = args.queue_file
+    folders, base = queue_file_parts(name)
+    data = sys.stdin.buffer.read() if op in ("append", "replace") else b""
+    folder = queue_file_dir(args.session_dir, folders)
+    try:
+        if op == "append":
+            fd = os.open(base, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         0o644, dir_fd=folder)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                    raise BootstrapError("unexpected queue file")
+                queue_file_write(fd, data)
+            finally:
+                os.close(fd)
+        elif op == "replace":
+            # rename never follows the name it replaces; onto a folder it fails.
+            temp = ".cs-tmp.%s.%s" % (base, uuid.uuid4().hex)
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=folder)
+            try:
+                try:
+                    queue_file_write(fd, data)
+                finally:
+                    os.close(fd)
+                os.rename(temp, base, src_dir_fd=folder, dst_dir_fd=folder)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(temp, dir_fd=folder)
+                raise
+        elif op == "unlink":
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(base, dir_fd=folder)
+        else:
+            try:
+                fd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+            except FileNotFoundError as exc:
+                raise QueueFileMissing("no such queue file") from exc
+            with os.fdopen(fd, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise BootstrapError("unexpected queue file")
+                line = handle.readline()
+            if not line:
+                raise BootstrapError("empty queue file")
+            sys.stdout.buffer.write(line[:-1] if line.endswith(b"\n") else line)
+    finally:
+        os.close(folder)
+
+
 @contextlib.contextmanager
 def open_rollout(path):
     # The rollout is read a line at a time. A compressed one is unpacked as it
@@ -1993,6 +2089,11 @@ def main():
     parser.add_argument("--queue-receipt")
     parser.add_argument("--queue-offset", type=int, metavar="BYTES",
                         help="read the rollout from the current task's delivery, not its last 8 MiB")
+    parser.add_argument("--queue-file", nargs=2, metavar=("OP", "NAME"),
+                        help="append stdin to, replace with stdin, unlink or print the first line of NAME "
+                             "in --session-dir's .cs/local, following no link; OP is append, replace, "
+                             "unlink or first-line, NAME a file name or queue/<name>")
+    parser.add_argument("--session-dir")
     parser.add_argument("--seed-config", action="store_true",
                         help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
     parser.add_argument("--vault-check", action="store_true",
@@ -2036,6 +2137,9 @@ def main():
             parser.error("--queue-snapshot needs --thread-id and --queue-turn")
         if args.queue_offset is not None and args.queue_offset < 0:
             parser.error("--queue-offset must not be negative")
+    elif args.queue_file is not None:
+        if args.queue_file[0] not in QUEUE_FILE_OPS or args.session_dir is None:
+            parser.error("--queue-file needs append, replace, unlink or first-line, a name and --session-dir")
     elif args.seed_config:
         if args.shared_home is None or args.home is None or args.cwd is None:
             parser.error("--seed-config needs --shared-home, --home and --cwd")
@@ -2070,6 +2174,9 @@ def main():
             printed = has_thread(args)
         elif args.queue_snapshot is not None:
             printed = queue_snapshot(args)
+        elif args.queue_file is not None:
+            queue_file(args)
+            return 0
         elif args.seed_config:
             printed = seed_config(args)
         elif args.vault_check:
@@ -2087,11 +2194,13 @@ def main():
             else "could not write the vault Codex home's config.toml" if args.seed_config
             else "could not look for the thread's history" if args.has_thread
             else "could not read the active rollout" if args.queue_snapshot is not None
+            else "could not read the queue file" if args.queue_file and args.queue_file[0] == "first-line"
+            else "could not write the queue file" if args.queue_file is not None
             else "could not write the Claude transcript" if args.export_claude
             else "could not read the Claude transcript" if args.read_claude is not None
             else "could not read bootstrap inputs")
         print("cs-codex-thread: " + message, file=sys.stderr)
-        return 1
+        return QUEUE_FILE_MISSING if isinstance(exc, QueueFileMissing) else 1
     print(printed)
     return 0
 

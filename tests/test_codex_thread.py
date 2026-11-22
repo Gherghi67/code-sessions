@@ -3292,5 +3292,158 @@ class QueueSnapshotTests(unittest.TestCase):
         self.assertTrue(reading['final_assistant'], 'no final answer after the receipt')
 
 
+class QueueFileTests(unittest.TestCase):
+    """The Codex queue's writes into .cs/local, and its read of a task, by descriptor."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="cs-codex-queue-file-test-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.session = self.root / 'session'
+        self.local = self.session / '.cs' / 'local'
+        (self.local / 'queue').mkdir(parents=True)
+        self.outside = self.root / 'outside'
+        self.outside.mkdir()
+        self.target = self.outside / 'target'
+        self.target.write_bytes(b'outside\n')
+
+    def queue_file(self, op, name, data=b''):
+        return subprocess.run([sys.executable, str(HELPER), '--queue-file', op, name,
+                               '--session-dir', str(self.session)],
+                              input=data, capture_output=True, timeout=10)
+
+    def assert_refused(self, result):
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(b'cs-codex-thread: ', result.stderr)
+
+    def test_append_creates_then_appends(self):
+        self.assertEqual(self.queue_file('append', 'queue.done', b'first\n').returncode, 0)
+        result = self.queue_file('append', 'queue.done', b'second\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.local / 'queue.done').read_bytes(), b'first\nsecond\n')
+
+    def test_replace_writes_a_new_file_and_leaves_no_temp(self):
+        (self.local / 'queue.state').write_bytes(b'armed\n')
+        result = self.queue_file('replace', 'queue.state', b'draining\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.local / 'queue.state').read_bytes(), b'draining\n')
+        self.assertEqual(sorted(os.listdir(self.local)), ['queue', 'queue.state'])
+
+    def test_replace_takes_the_place_of_a_link_without_following_it(self):
+        (self.local / 'queue.current').symlink_to(self.target)
+        result = self.queue_file('replace', 'queue.current', b'001\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.local / 'queue.current').is_symlink())
+        self.assertEqual((self.local / 'queue.current').read_bytes(), b'001\n')
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_replace_onto_a_directory_is_refused(self):
+        (self.local / 'queue.state').mkdir()
+        self.assert_refused(self.queue_file('replace', 'queue.state', b'idle\n'))
+        self.assertTrue((self.local / 'queue.state').is_dir())
+        self.assertEqual(sorted(os.listdir(self.local)), ['queue', 'queue.state'], 'no temp file is left')
+
+    def test_unlink_removes_and_a_missing_file_is_success(self):
+        (self.local / 'queue' / '001').write_bytes(b'task\n')
+        self.assertEqual(self.queue_file('unlink', 'queue/001').returncode, 0)
+        self.assertFalse((self.local / 'queue' / '001').exists())
+        self.assertEqual(self.queue_file('unlink', 'queue/001').returncode, 0)
+        self.assertEqual(self.queue_file('unlink', 'spawned-by').returncode, 0)
+
+    def test_unlink_of_a_directory_is_an_error(self):
+        (self.local / 'queue.mode').mkdir()
+        self.assert_refused(self.queue_file('unlink', 'queue.mode'))
+        self.assertTrue((self.local / 'queue.mode').is_dir())
+
+    def test_unlink_of_a_link_removes_only_the_link(self):
+        (self.local / 'spawned-by').symlink_to(self.target)
+        self.assertEqual(self.queue_file('unlink', 'spawned-by').returncode, 0)
+        self.assertFalse((self.local / 'spawned-by').is_symlink())
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_first_line_prints_the_line_without_its_newline(self):
+        (self.local / 'queue' / '001').write_bytes(b'first task\nmore\n')
+        (self.local / 'queue' / '002').write_bytes(b'no newline')
+        result = self.queue_file('first-line', 'queue/001')
+        self.assertEqual((result.returncode, result.stdout), (0, b'first task'), result.stderr)
+        result = self.queue_file('first-line', 'queue/002')
+        self.assertEqual((result.returncode, result.stdout), (0, b'no newline'), result.stderr)
+
+    def test_first_line_of_an_empty_or_missing_file_fails(self):
+        (self.local / 'queue' / '001').write_bytes(b'')
+        empty = self.queue_file('first-line', 'queue/001')
+        self.assert_refused(empty)
+        missing = self.queue_file('first-line', 'queue/002')
+        self.assertEqual(missing.returncode, 3, 'a missing file has its own status')
+        self.assertNotEqual(empty.returncode, 3)
+        self.assertEqual(empty.stdout + missing.stdout, b'')
+
+    def test_first_line_does_not_follow_a_link(self):
+        (self.local / 'queue' / '001').symlink_to(self.target)
+        result = self.queue_file('first-line', 'queue/001')
+        self.assert_refused(result)
+        self.assertNotEqual(result.returncode, 3)
+        self.assertEqual(result.stdout, b'')
+
+    def test_append_does_not_follow_a_link(self):
+        (self.local / 'queue.done').symlink_to(self.target)
+        self.assert_refused(self.queue_file('append', 'queue.done', b'task\n'))
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_append_refuses_a_hard_linked_file(self):
+        os.link(self.target, self.local / 'notifications.jsonl')
+        self.assert_refused(self.queue_file('append', 'notifications.jsonl', b'{}\n'))
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_append_refuses_a_file_that_is_not_regular(self):
+        os.mkfifo(self.local / 'queue.done')
+        self.assert_refused(self.queue_file('append', 'queue.done', b'task\n'))
+
+    def test_a_linked_level_of_the_path_is_refused(self):
+        """A link at .cs, local or queue/ is refused for every op, and nothing is written through it."""
+        levels = (('.cs', self.session / '.cs', 'local/queue'), ('local', self.local, 'queue'),
+                  ('queue', self.local / 'queue', ''))
+        for level, real, below in levels:
+            with self.subTest(level=level):
+                elsewhere = self.root / ('elsewhere-' + level.lstrip('.'))
+                planted = elsewhere / below / '001'
+                planted.parent.mkdir(parents=True)
+                planted.write_bytes(b'planted\n')
+                aside = real.with_name(real.name + '.real')
+                real.rename(aside)
+                real.symlink_to(elsewhere)
+                try:
+                    names = ['queue/001'] + (['queue.done', 'queue.state'] if level != 'queue' else [])
+                    for op in ('append', 'replace', 'unlink', 'first-line'):
+                        for name in names:
+                            result = self.queue_file(op, name, b'written\n')
+                            self.assert_refused(result)
+                            self.assertNotEqual(result.returncode, 3)
+                    self.assertEqual(planted.read_bytes(), b'planted\n')
+                    self.assertEqual([p.name for p in elsewhere.rglob('*') if p.is_file()], ['001'],
+                                     'nothing is written through the link')
+                finally:
+                    real.unlink()
+                    aside.rename(real)
+
+    def test_names_outside_local_and_its_queue_are_refused(self):
+        for name in ('', '.', '..', '/', 'queue', 'queue/', 'queue/.', 'queue/..', 'a/b', '../x',
+                     '/etc/passwd', 'queue/a/b', 'other/001', '//x'):
+            with self.subTest(name=name):
+                result = self.queue_file('append', name, b'x\n')
+                self.assert_refused(result)
+        self.assertEqual(sorted(p.name for p in self.root.rglob('*')),
+                         ['.cs', 'local', 'outside', 'queue', 'session', 'target'])
+
+    def test_an_unknown_op_or_a_missing_session_dir_is_refused(self):
+        result = subprocess.run([sys.executable, str(HELPER), '--queue-file', 'chmod', 'queue.done',
+                                 '--session-dir', str(self.session)], capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        result = subprocess.run([sys.executable, str(HELPER), '--queue-file', 'append', 'queue.done'],
+                                input=b'x\n', capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.local / 'queue.done').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

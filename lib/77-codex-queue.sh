@@ -44,12 +44,47 @@ _codex_queue_msg_exit() {  # handoff
     return 0
 }
 
+# The Codex queue's own writes into .cs/local, and its read of a finished
+# task, go through the helper, which opens .cs/local a level at a time from
+# the session and follows no link. The hook runs outside the sandbox, and the
+# agent can swap any name there for a link, or a hard link to a file outside,
+# between a check here and a write by path. With an encrypted session refused,
+# a Codex drain's queue is always .cs/local. first-line fails with status 3
+# when the file is not there.
+_codex_queue_fs() {  # queue_dir, append|replace|unlink|first-line, name; stdin is the content
+    local helper
+    [ -n "${CS_SESSION_DIR:-}" ] && [ "$1" = "$CS_SESSION_DIR/.cs/local" ] || return 1
+    helper=$(_codex_thread_helper) || return 1
+    "$helper" --queue-file "$2" "$3" --session-dir "$CS_SESSION_DIR" 2>/dev/null
+}
+
+# rm -f by the helper: a name that is not there needs no call.
+_codex_queue_rm() {  # queue_dir, name...
+    local qdir="$1" name
+    shift
+    for name in "$@"; do
+        [ -e "$qdir/$name" ] || [ -L "$qdir/$name" ] || continue
+        _codex_queue_fs "$qdir" unlink "$name" </dev/null || true
+    done
+    return 0
+}
+
+# queue.state, written as _queue_set_state writes it.
+_codex_queue_set_state() {  # queue_dir, idle|armed|draining
+    case "$2" in idle|armed|draining) ;; *) return 1 ;; esac
+    printf '%s\n' "$2" | _codex_queue_fs "$1" replace queue.state
+}
+
+# A line in the queue's journal, terminated first as _append_record does.
+# Best effort, like every journal write.
 _codex_queue_event() {  # queue_dir, jq options and expression
-    local file="$1/notifications.jsonl"
+    local qdir="$1" file="$1/notifications.jsonl" line
     shift
     [ ! -e "$file" ] || [ -f "$file" ] || return 0
     [ ! -L "$file" ] || return 0
-    _append_record "$file" --argjson ts "$(date +%s)" "$@"
+    line=$(jq -nc --argjson ts "$(date +%s)" "$@") || return 0
+    { [ -z "$(tail -c 1 "$file" 2>/dev/null)" ] || printf '\n'; printf '%s\n' "$line"; } \
+        | _codex_queue_fs "$qdir" append notifications.jsonl || true
 }
 
 # The run's record of a drain: the delivery outstanding, the count, and the
@@ -74,8 +109,8 @@ _codex_queue_forget_session_run() {  # meta_dir
 }
 
 _codex_queue_reset() {  # queue_dir, private_run_dir
-    _queue_set_state "$1" idle || return 1
-    rm -f "$1/queue.current" "$1/queue.failed" "$1/failures" 2>/dev/null || true
+    _codex_queue_set_state "$1" idle || return 1
+    _codex_queue_rm "$1" queue.current queue.failed failures
     _codex_queue_forget_run "$2"
 }
 
@@ -163,8 +198,8 @@ Scope: complete the behavior the task asks for. When the task is ambiguous, foll
     (umask 077; cs_write_atomic "$2/queue-task.json" jq -nc --arg task "$name" --arg token "$token" \
         --arg thread "$3" --arg turn "$4" --arg offset "${8:-}" '{task:$task, token:$token, thread:$thread, turn:$turn}
         + (if $offset == "" then {} else {offset:($offset | tonumber)} end)') || return 1
-    cs_write_atomic "$1/queue.current" printf '%s\n' "$name" || return 1
-    _queue_set_state "$1" draining || return 1
+    printf '%s\n' "$name" | _codex_queue_fs "$1" replace queue.current || return 1
+    _codex_queue_set_state "$1" draining || return 1
     if [ "$7" = armed ] && [ ! -f "$2/queue-count" ]; then
         _codex_queue_event "$1" --argjson queued "$6" '{ts:$ts,event:"drain_started",queued:$queued}'
     fi
@@ -207,24 +242,24 @@ _codex_queue_refuse_encrypted() {
     _codex_queue_notify "$CS_SESSION_DIR/.cs/local" "$reason"
 }
 
-# The pop runs inside queue/, entered by its physical path and checked again
-# there: queue/ can be swapped for a link after the Stop's entry check, so
-# every name below is taken from that directory, never through queue/. It
-# creates nothing in a directory the agent can write, and it unlinks the task
-# rather than renaming it aside, since a rename follows a link planted at its
-# destination; the run lease keeps a second drain from popping alongside.
-_codex_queue_finish_task() (  # queue_dir, task_basename
-    local body
-    cd -P -- "$1/queue" 2>/dev/null || return 1
-    [ -d "$1/queue" ] && [ ! -L "$1/queue" ] && [ . -ef "$1/queue" ] && [ .. -ef "$1" ] || return 1
-    ! _cs_refuses_write cs-queue "$1/queue" || return 1
-    [ -e "./$2" ] || [ -L "./$2" ] || return 0      # withdrawn while it was running
-    [ -f "./$2" ] && [ ! -L "./$2" ] || return 1
-    IFS= read -r body < "./$2" || return 1
-    cs_append_inside "$1/queue.done" printf '%s\n' "$body" || return 1
-    rm -f -- "./$2" || return 1
+# The pop reads the task, logs it in queue.done and unlinks it, each through
+# the helper: queue/ or any name in it can be swapped for a link after the
+# Stop's entry check. It creates nothing in a directory the agent can write
+# and never renames the task aside; the run lease keeps a second drain from
+# popping alongside. Returns 0 when the task is done or was withdrawn while it
+# ran, 1 otherwise.
+_codex_queue_finish_task() {  # queue_dir, task_basename
+    local body rc=0
+    body=$(_codex_queue_fs "$1" first-line "queue/$2" </dev/null) || rc=$?
+    case "$rc" in
+        0) ;;
+        3) return 0 ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n' "$body" | _codex_queue_fs "$1" append queue.done || return 1
+    _codex_queue_fs "$1" unlink "queue/$2" </dev/null || return 1
     _codex_queue_event "$1" --arg task "$body" '{ts:$ts,event:"task_done",task:$task}' || true
-)
+}
 
 _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop JSON
     local qdir="$1" run_dir="$2" thread="$3" turn="$4" handoff="$5" input="$6"
@@ -300,7 +335,8 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             _codex_queue_msg_exit "$handoff"
             return
         fi
-        rm -f "$run_dir/queue-task.json" "$qdir/queue.current" || true
+        rm -f "$run_dir/queue-task.json" || true
+        _codex_queue_rm "$qdir" queue.current
         (umask 077; cs_write_atomic "$run_dir/queue-count" printf '%s\n' "$count") \
             || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         first=""
@@ -312,10 +348,10 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         done
         if [ "$remaining" = 0 ]; then
             _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
-            rm -f "$qdir/queue.mode" || true
+            _codex_queue_rm "$qdir" queue.mode
             _codex_queue_event "$qdir" --argjson completed "$count" '{ts:$ts,event:"drain_finished",done:$completed}'
             _codex_queue_notify "$local_dir" "queue drained: $count task(s) done"
-            rm -f "$local_dir/spawned-by" || true
+            _codex_queue_rm "$local_dir" spawned-by
             _codex_queue_block "cs task queue: all tasks complete. Summarize what the walk-away run accomplished and what needs attention."
             return 0
         fi
@@ -326,7 +362,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         fi
     fi
     if [ -n "$handoff" ]; then
-        _queue_set_state "$qdir" armed || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
+        _codex_queue_set_state "$qdir" armed || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
         return 3                       # the existing Stop path owns rotation
     fi
     if [ -f "$qdir/queue.mode" ] && [ ! -L "$qdir/queue.mode" ] && [ "$(cat "$qdir/queue.mode")" = workflow ]; then
