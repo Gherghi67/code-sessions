@@ -562,7 +562,9 @@ rollout records. A task that reports `cs-task-failed` or trips the failure
 breaker stays queued. Context and five-hour quota trips record the completed
 task and park the remainder. If either usage reading is unavailable, the drain
 can finish up to `CS_CODEX_QUEUE_MAX_TASKS` tasks before parking, with a
-default of 10. If Codex cannot confirm a task handoff and final response from
+default of 10. The cap counts every task since your last `cs -queue start` or
+`cs -queue clear` in your own shell, and a re-arm from inside the conversation
+keeps counting. If Codex cannot confirm a task handoff and final response from
 its active history, the task stays queued for inspection and re-arming.
 `cs -queue start` refuses while the drain runs; after an interrupted turn the
 next Stop parks the queue, and `cs -queue start` re-arms it then.

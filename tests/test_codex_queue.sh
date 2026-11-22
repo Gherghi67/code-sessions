@@ -38,6 +38,8 @@ setup() {
     _codex_run_dir_prepare "$CS_SESSION_DIR" >/dev/null
     # What a launch records for a Codex that writes the hook provenance.
     : > "$CS_CACHE_DIR/codex-runs/$RUN/queue-version-ok"
+    # And the session it serves, by its physical path.
+    (cd -P "$CS_SESSION_DIR" && pwd -P) > "$CS_CACHE_DIR/codex-runs/$RUN/session"
     CS_BIN="$TEST_TMPDIR/spawner"
     cat > "$CS_BIN" <<'EOF'
 #!/bin/bash
@@ -367,6 +369,101 @@ test_an_agent_written_armed_state_keeps_the_count() {
     done
     assert_output_contains "$out" 'task_cap at 2' || return 1
     assert_eq $'first task\nsecond task' "$(cat "$QDIR/queue.done")" "two tasks done"
+}
+
+# Written idle mid-task, the Stop finds no drain; written armed again, the
+# drain finishes the task outstanding and still counts the first.
+test_an_agent_idle_write_keeps_the_count() {
+    local out n=0
+    CS_CODEX_QUEUE_MAX_TASKS=2
+    printf 'third task\n' > "$QDIR/queue/003"
+    printf 'fourth task\n' > "$QDIR/queue/004"
+    out=$(_stop)
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'second task' || return 1
+    _deliver "$out"
+    printf 'idle\n' > "$QDIR/queue.state"
+    assert_eq '' "$(_stop true)" "a Stop with no drain does nothing" || return 1
+    printf 'armed\n' > "$QDIR/queue.state"
+    out=$(_stop true)
+    while [ "$n" -lt 4 ] && printf '%s\n' "$out" | jq -e '.reason | startswith("cs task queue [")' >/dev/null 2>&1; do
+        _deliver "$out"
+        out=$(_stop true)
+        n=$((n + 1))
+    done
+    assert_output_contains "$out" 'task_cap at 2' || return 1
+    assert_eq $'first task\nsecond task' "$(cat "$QDIR/queue.done")" "two tasks done"
+}
+
+# A cap park leaves the turn to the agent, which can write armed again each
+# time: the run stays capped, and each re-armed Stop parks with no task more.
+test_a_rearm_after_a_cap_park_stays_capped() {
+    local out first="" n=0
+    CS_CODEX_QUEUE_MAX_TASKS=2
+    printf 'third task\n' > "$QDIR/queue/003"
+    printf 'fourth task\n' > "$QDIR/queue/004"
+    printf 'fifth task\n' > "$QDIR/queue/005"
+    out=$(_stop)
+    _deliver "$out"
+    out=$(_stop true)
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'task_cap at 2' || return 1
+    printf 'armed\n' > "$QDIR/queue.state"
+    while [ "$n" -lt 6 ]; do
+        out=$(_stop true)
+        n=$((n + 1))
+        [ "$n" -gt 1 ] || first=$out
+        if printf '%s\n' "$out" | jq -e '.reason | startswith("cs task queue [")' >/dev/null 2>&1; then
+            _deliver "$out"
+        elif printf '%s\n' "$out" | grep -qF 'task_cap at 2'; then
+            printf 'armed\n' > "$QDIR/queue.state"
+        fi
+    done
+    assert_eq 2 "$(wc -l < "$QDIR/queue.done" | tr -d ' ')" "tasks done under a cap of 2" || return 1
+    assert_output_contains "$first" 'task_cap at 2' "the re-armed drain parks at its next Stop"
+}
+
+# The user's own cs -queue start, run outside the sandbox, forgets the run's
+# record: the next batch starts a walk-away run and counts afresh.
+test_a_user_start_resets_the_count() (
+    local out
+    CS_CODEX_QUEUE_MAX_TASKS=2
+    printf 'third task\n' > "$QDIR/queue/003"
+    printf 'fourth task\n' > "$QDIR/queue/004"
+    out=$(_stop)
+    _deliver "$out"
+    out=$(_stop true)
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'task_cap at 2' || return 1
+    _session_engine() { printf 'codex\n'; }     # lib/25-deps.sh is not sourced
+    _cs_queue start || return 1
+    out=$(_stop true)
+    assert_output_contains "$out" 'starting a walk-away run' || return 1
+    assert_output_contains "$out" 'third task' || return 1
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'fourth task' "the count restarted" || return 1
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'all tasks complete' || return 1
+    assert_eq 2 "$(jq -s '[.[] | select(.event=="drain_finished")][0].done' "$QDIR/notifications.jsonl")" \
+        "the new drain counts only its own tasks"
+)
+
+# The lease is the agent's to rewrite: one naming the run of another session
+# leaves that run's record alone.
+test_clear_ignores_a_run_of_another_session() {
+    local other_run=44444444-4444-4444-8444-444444444444 other_dir
+    other_dir=$(CS_RUN_ID=$other_run _codex_run_dir_prepare "$CS_SESSION_DIR") || return 77
+    mkdir -p "$TEST_TMPDIR/other"
+    (cd -P "$TEST_TMPDIR/other" && pwd -P) > "$other_dir/session"
+    printf '2\n' > "$other_dir/queue-count"
+    jq -n --arg run "$other_run" --argjson owner "$$" '{run_id:$run,engine:"codex",owner_pid:$owner}' > "$QDIR/run-lease.json"
+    _cs_queue clear
+    assert_eq 2 "$(cat "$other_dir/queue-count" 2>/dev/null)" "the other session's count stays"
 }
 
 test_receipt_without_a_new_final_answer_parks() {
@@ -817,6 +914,10 @@ run_test test_clear_mid_drain_starts_a_fresh_drain
 run_test test_clear_and_restart_inside_one_turn
 run_test test_clear_at_a_rotation_boundary_starts_a_fresh_drain
 run_test test_an_agent_written_armed_state_keeps_the_count
+run_test test_an_agent_idle_write_keeps_the_count
+run_test test_a_rearm_after_a_cap_park_stays_capped
+run_test test_a_user_start_resets_the_count
+run_test test_clear_ignores_a_run_of_another_session
 run_test test_receipt_without_a_new_final_answer_parks
 run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
 run_test test_a_queue_swapped_for_a_link_before_the_pop

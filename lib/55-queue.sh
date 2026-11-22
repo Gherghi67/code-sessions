@@ -374,6 +374,9 @@ run_queue() {
                 error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. The queued tasks stay; run them under Claude, or move them to an unencrypted session."
             fi
             _queue_start "$qdir" "${1:-}" "$engine"
+            if declare -F _codex_queue_forget_session_run >/dev/null; then
+                _codex_queue_forget_session_run "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+            fi
             ;;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;

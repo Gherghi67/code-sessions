@@ -813,6 +813,10 @@ _launch_codex_bound() {
     # rotation countdown. The run supervisor owns its lifetime in both cases.
     if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
         _cs_run_helper_dir=$autoclear_dir
+        # The session the run serves, by its physical path: cs -queue clear
+        # and start forget only their own session's drain record.
+        ( set -C; physical=$(cd -P "$session_dir" && pwd -P) \
+            && printf '%s\n' "$physical" > "$autoclear_dir/session" ) 2>/dev/null || true
         # Without this record the queue parks: an older Codex keeps no hook
         # provenance for its Stop to confirm a task by.
         if _codex_queue_version_ok "$codex_bin"; then

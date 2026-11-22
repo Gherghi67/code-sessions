@@ -87,37 +87,48 @@ _codex_queue_event() {  # queue_dir, jq options and expression
         | _codex_queue_fs "$qdir" append notifications.jsonl || true
 }
 
-# The run's record of a drain: the delivery outstanding, the count, and the
-# one-time notices.
+# The run's record of a drain: the delivery outstanding, the count, whether
+# the task cap parked it, and the one-time notices.
 _codex_queue_forget_run() {  # private_run_dir
     [ -n "$1" ] || return 0
-    rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
+    rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-capped" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
 }
 
-# cs -queue clear forgets the drain record of the session's Codex run, so the
-# next batch starts afresh. Only a process outside Codex's sandbox can write
-# the run's directory: the agent cannot reset its own count this way. Best
-# effort, and prints nothing.
+# cs -queue clear and start forget the drain record of the session's Codex
+# run, so the next batch starts afresh. Only a process outside Codex's sandbox
+# can write the run's directory: the agent cannot reset its own count this
+# way, and inside the sandbox this fails unseen. The lease is the agent's to
+# rewrite, so the run must be this session's by the record its launch wrote.
+# Best effort, and prints nothing.
 _codex_queue_forget_session_run() {  # meta_dir
-    local lease="$1/local/run-lease.json" id dir
+    local lease="$1/local/run-lease.json" id dir session
     [ -f "$lease" ] && [ ! -L "$lease" ] || return 0
     id=$(jq -r 'select(.engine=="codex") | .run_id' "$lease" 2>/dev/null) && _is_uuid "$id" || return 0
     dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$id"
     cs_cache_dir_private "$dir" && _codex_run_dir_ok "$dir" "${1%/.cs}" || return 0
+    [ -f "$dir/session" ] && [ ! -L "$dir/session" ] || return 0
+    session=$(cd -P "${1%/.cs}" 2>/dev/null && pwd -P) || return 0
+    [ "$(cat "$dir/session" 2>/dev/null)" = "$session" ] || return 0
     _codex_queue_forget_run "$dir"
     return 0
 }
 
+# Parks the queue and drops the delivery outstanding. The rest of the run's
+# record stays: only the user's own cs -queue clear or start forgets it
+# (_codex_queue_forget_session_run), so an agent's re-arm keeps counting.
 _codex_queue_reset() {  # queue_dir, private_run_dir
     _codex_queue_set_state "$1" idle || return 1
     _codex_queue_rm "$1" queue.current queue.failed failures
-    _codex_queue_forget_run "$2"
+    [ -z "$2" ] || rm -f "$2/queue-task.json" 2>/dev/null || true
 }
 
 # Returns 0 when it printed a block, 1 when it printed only a message.
 _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading, limit
     local reason="cs task queue: $5" notice=""
     _codex_queue_reset "$1" "$2" || { _codex_queue_write_error; return 1; }
+    if [ "$5" = task_cap ] && [ -n "$2" ]; then
+        (umask 077; : > "$2/queue-capped") 2>/dev/null || true
+    fi
     _codex_queue_event "$1" --arg kind "$5" --argjson reading "$6" --argjson limit "$7" --argjson remaining "$4" \
         '{ts:$ts,event:"breaker_tripped",reason:$kind,reading:$reading,limit:$limit,remaining:$remaining}'
     case "$5" in
@@ -347,6 +358,8 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             remaining=$((remaining + 1))
         done
         if [ "$remaining" = 0 ]; then
+            # The count, and so the done the notice reports, covers every
+            # task since the user's last cs -queue start or clear.
             _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
             _codex_queue_rm "$qdir" queue.mode
             _codex_queue_event "$qdir" --argjson completed "$count" '{ts:$ts,event:"drain_finished",done:$completed}'
@@ -360,6 +373,15 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
                 || { _codex_queue_msg_exit "$handoff"; return; }
             return 0
         fi
+    fi
+    # A run the task cap parked stays capped, re-armed or not, until the
+    # user's own cs -queue start or clear: it parks again and hands out none.
+    if [ -f "$run_dir/queue-capped" ]; then
+        [ ! -f "$run_dir/queue-count" ] || IFS= read -r count < "$run_dir/queue-count" || count=0
+        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" task_cap "$count" \
+            "$(_codex_queue_number "${CS_CODEX_QUEUE_MAX_TASKS:-}" 10)" \
+            || { _codex_queue_msg_exit "$handoff"; return; }
+        return 0
     fi
     if [ -n "$handoff" ]; then
         _codex_queue_set_state "$qdir" armed || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
@@ -392,12 +414,7 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
 # the armed rotation still runs, and 1 when it did nothing.
 _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     local qdir run_dir turn rollouts_dir="${CODEX_HOME:-$HOME/.codex}/sessions"
-    # No drain (cs -queue clear ended one): the next armed batch starts afresh.
-    if ! qdir=$(_codex_queue_dir "$1") || ! _codex_queue_state "$qdir" >/dev/null; then
-        run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" \
-            && _codex_queue_forget_run "$run_dir"
-        return 1
-    fi
+    qdir=$(_codex_queue_dir "$1") && _codex_queue_state "$qdir" >/dev/null || return 1
     ! cs_files_tracked_notice "$1" "$CS_SESSION_DIR" >/dev/null || return 1
     if _switch_session_encrypted "$CS_SESSION_DIR"; then
         _codex_queue_refuse_encrypted

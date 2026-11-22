@@ -671,9 +671,10 @@ test_native_approval_follows_the_users_sandbox() {
 # The queue confirms each task by the hook provenance Codex writes from
 # CS_CODEX_QUEUE_MIN_VERSION on, so its Stop parks unless the launch recorded
 # such a build in the run's private directory. The fake Codex notes the
-# record while the run directory stands.
+# record while the run directory stands, and the session the run serves, which
+# cs -queue clear and start check before they forget the run's count.
 test_a_codex_that_hosts_the_queue_is_recorded() (
-    local output status version record="$TEST_TMPDIR/version-record"
+    local output status version record="$TEST_TMPDIR/version-record" session
     # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
     _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
     export CS_REAL_CODEX="$CODEX_BIN" CS_VERSION_RECORD="$record"
@@ -686,18 +687,21 @@ case "${1:-}" in
         run_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$CS_RUN_ID"
         [ ! -d "$run_dir" ] || touch "$CS_VERSION_RECORD.run-dir"
         [ ! -f "$run_dir/queue-version-ok" ] || touch "$CS_VERSION_RECORD"
+        [ ! -f "$run_dir/session" ] || cp "$run_dir/session" "$CS_VERSION_RECORD.session"
         ;;
 esac
 exec "$CS_REAL_CODEX" "$@"
 FAKE
     chmod +x "$CODEX_BIN"
+    session=$(cd -P "$CS_TEST_SESSION_DIR" && pwd -P)
     for version in 0.167.0-alpha.3.2 0.162.0-alpha.17.2; do
-        rm -f "$record" "$record.run-dir"
+        rm -f "$record" "$record.run-dir" "$record.session"
         export CS_CODEX_VERSION="$version"
         status=0
         output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
         assert_eq 0 "$status" "launch under $version failed: $output" || return 1
         assert_file_exists "$record.run-dir" "the run under $version had a private directory" || return 1
+        assert_eq "$session" "$(cat "$record.session" 2>/dev/null)" "the run under $version records its session" || return 1
         case "$version" in
             0.167.*) assert_file_exists "$record" "$version is recorded" || return 1 ;;
             *) assert_not_exists "$record" "$version is not recorded" || return 1 ;;
