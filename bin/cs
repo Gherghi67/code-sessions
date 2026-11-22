@@ -23044,11 +23044,11 @@ _codex_queue_event() {  # queue_dir, jq options and expression
         | _codex_queue_fs "$qdir" append notifications.jsonl || true
 }
 
-# The run's record of a drain: the delivery outstanding, the count, whether
-# the task cap parked it, and the one-time notices.
+# The run's record of a drain: the delivery outstanding, the count, the park
+# that holds it, and the one-time notices.
 _codex_queue_forget_run() {  # private_run_dir
     [ -n "$1" ] || return 0
-    rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-capped" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
+    rm -f "$1/queue-task.json" "$1/queue-count" "$1/queue-parked" "$1/queue-approval" "$1/queue-rotation-wait" 2>/dev/null || true
 }
 
 # cs -queue clear and start forget the drain record of the session's Codex
@@ -23079,13 +23079,24 @@ _codex_queue_reset() {  # queue_dir, private_run_dir
     [ -z "$2" ] || rm -f "$2/queue-task.json" 2>/dev/null || true
 }
 
-# Returns 0 when it printed a block, 1 when it printed only a message.
+# Holds a run parked, by the kind that parked it first, until the user's own
+# cs -queue start or clear forgets it (_codex_queue_forget_session_run).
+_codex_queue_mark_parked() {  # run_dir, kind
+    [ -n "$1" ] || return 0
+    (umask 077; set -C; printf '%s\n' "$2" > "$1/queue-parked") 2>/dev/null || true
+}
+
+# Returns 0 when it printed a block, 1 when it printed only a message. A block
+# leaves the turn to the agent, which can write queue.state, so that park
+# holds the run until the user re-arms it. A message ends the turn, and a
+# re-arm from the conversation then waits for the user's next prompt.
 _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading, limit
     local reason="cs task queue: $5" notice=""
     _codex_queue_reset "$1" "$2" || { _codex_queue_write_error; return 1; }
-    if [ "$5" = task_cap ] && [ -n "$2" ]; then
-        (umask 077; : > "$2/queue-capped") 2>/dev/null || true
-    fi
+    case "$5" in
+        unconfirmed|history|codex_version|run_dir) ;;
+        *) _codex_queue_mark_parked "$2" "$5" ;;
+    esac
     _codex_queue_event "$1" --arg kind "$5" --argjson reading "$6" --argjson limit "$7" --argjson remaining "$4" \
         '{ts:$ts,event:"breaker_tripped",reason:$kind,reading:$reading,limit:$limit,remaining:$remaining}'
     case "$5" in
@@ -23103,18 +23114,23 @@ _codex_queue_park() {  # queue_dir, run_dir, local_dir, remaining, kind, reading
             ;;
         task_failed)
             reason="cs task queue: you reported the task as not completed (cs-task-failed)."
-            notice="task reported failed, $4 task(s) remaining"
+            notice="task reported failed, $4 task(s) remaining."
             ;;
         *)
             reason="$reason at $6 (threshold $7)."
             ;;
     esac
-    reason="$reason Parked with $4 task(s) remaining. Re-arm with cs -queue start."
-    _codex_queue_notify "$3" "${notice:-$reason}"
+    reason="$reason Parked with $4 task(s) remaining."
     case "$5" in
-        unconfirmed|history|codex_version|run_dir) _codex_queue_message "$reason"; return 1 ;;
-        *) _codex_queue_block "$reason Summarize the walk-away run and any work that needs attention." ;;
+        unconfirmed|history|codex_version|run_dir)
+            reason="$reason Re-arm with cs -queue start."
+            _codex_queue_notify "$3" "${notice:-$reason}"
+            _codex_queue_message "$reason"
+            return 1
+            ;;
     esac
+    _codex_queue_notify "$3" "${notice:-$reason} The run waits for the user. The user re-arms it with cs -queue start in their own shell."
+    _codex_queue_block "$reason The user re-arms it with cs -queue start in their own shell. Summarize the walk-away run and any work that needs attention."
 }
 
 _codex_queue_number() {  # environment setting, fallback
@@ -23231,7 +23247,7 @@ _codex_queue_finish_task() {  # queue_dir, task_basename
 
 _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop JSON
     local qdir="$1" run_dir="$2" thread="$3" turn="$4" handoff="$5" input="$6"
-    local state bound first="" file remaining=0 count=0 current token roll helper snapshot trip="" reading=0 limit=0 msg
+    local state bound first="" file remaining=0 count=0 current token roll helper snapshot trip="" reading=0 limit=0 msg parked=""
     local offset="" local_dir="$CS_SESSION_DIR/.cs/local"
     bound=$(cs_binding_read "$CS_SESSION_DIR" codex) && [ "$bound" = "$thread" ] || return 1
     state=$(_codex_queue_state "$qdir") || return 1
@@ -23324,6 +23340,9 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             # The count, and so the done the notice reports, covers every
             # task since the user's last cs -queue start or clear.
             _codex_queue_reset "$qdir" "$run_dir" || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
+            # A breaker that tripped on the last task parks the run all the
+            # same, for the next task the agent queues and arms.
+            [ -z "$trip" ] || _codex_queue_mark_parked "$run_dir" "$trip"
             _codex_queue_rm "$qdir" queue.mode
             _codex_queue_event "$qdir" --argjson completed "$count" '{ts:$ts,event:"drain_finished",done:$completed}'
             _codex_queue_notify "$local_dir" "queue drained: $count task(s) done"
@@ -23337,14 +23356,15 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
             return 0
         fi
     fi
-    # A run the task cap parked stays capped, re-armed or not, until the
-    # user's own cs -queue start or clear: it parks again and hands out none.
-    if [ -f "$run_dir/queue-capped" ]; then
-        [ ! -f "$run_dir/queue-count" ] || IFS= read -r count < "$run_dir/queue-count" || count=0
-        _codex_queue_park "$qdir" "$run_dir" "$local_dir" "$remaining" task_cap "$count" \
-            "$(_codex_queue_number "${CS_CODEX_QUEUE_MAX_TASKS:-}" 10)" \
-            || { _codex_queue_msg_exit "$handoff"; return; }
-        return 0
+    # A run a block parked stays parked, re-armed or not, until the user's own
+    # cs -queue start or clear. A re-arm hears so as a message, which ends the
+    # turn, and nobody else hears again.
+    if [ -f "$run_dir/queue-parked" ]; then
+        IFS= read -r parked < "$run_dir/queue-parked" || true
+        _codex_queue_set_state "$qdir" idle || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
+        _codex_queue_message "cs task queue: this walk-away run is parked ($parked). The user re-arms it with cs -queue start in their own shell; a re-arm from inside this conversation stays parked."
+        _codex_queue_msg_exit "$handoff"
+        return
     fi
     if [ -n "$handoff" ]; then
         _codex_queue_set_state "$qdir" armed || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }

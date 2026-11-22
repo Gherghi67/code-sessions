@@ -397,7 +397,7 @@ test_an_agent_idle_write_keeps_the_count() {
 }
 
 # A cap park leaves the turn to the agent, which can write armed again each
-# time: the run stays capped, and each re-armed Stop parks with no task more.
+# time: the run stays parked, and a re-armed Stop says so and hands out none.
 test_a_rearm_after_a_cap_park_stays_capped() {
     local out first="" n=0
     CS_CODEX_QUEUE_MAX_TASKS=2
@@ -417,12 +417,12 @@ test_a_rearm_after_a_cap_park_stays_capped() {
         [ "$n" -gt 1 ] || first=$out
         if printf '%s\n' "$out" | jq -e '.reason | startswith("cs task queue [")' >/dev/null 2>&1; then
             _deliver "$out"
-        elif printf '%s\n' "$out" | grep -qF 'task_cap at 2'; then
+        elif printf '%s\n' "$out" | grep -qF 'is parked (task_cap)'; then
             printf 'armed\n' > "$QDIR/queue.state"
         fi
     done
     assert_eq 2 "$(wc -l < "$QDIR/queue.done" | tr -d ' ')" "tasks done under a cap of 2" || return 1
-    assert_output_contains "$first" 'task_cap at 2' "the re-armed drain parks at its next Stop"
+    assert_output_contains "$first" 'this walk-away run is parked (task_cap)' "the re-armed drain stays parked at its next Stop"
 }
 
 # The user's own cs -queue start, run outside the sandbox, forgets the run's
@@ -452,6 +452,148 @@ test_a_user_start_resets_the_count() (
     assert_eq 2 "$(jq -s '[.[] | select(.event=="drain_finished")][0].done' "$QDIR/notifications.jsonl")" \
         "the new drain counts only its own tasks"
 )
+
+# Five tasks queued, and a spawner listening.
+_five_tasks() {
+    printf 'third task\n' > "$QDIR/queue/003"
+    printf 'fourth task\n' > "$QDIR/queue/004"
+    printf 'fifth task\n' > "$QDIR/queue/005"
+    printf 'boss\n' > "$QDIR/spawned-by"
+}
+
+_quota_90() { _usage 12480 90 "$(( $(date +%s) + 3600 ))"; }
+_context_94() { _usage 90000; }
+
+# A park that answers with a block leaves the turn to the agent, which writes
+# armed again, three times. A task handed out is finished, with <recorder>
+# run before its Stop. Each re-arm Stop's output lands in rearms.jsonl.
+_agent_rearms() {  # recorder...
+    local out n=0
+    while [ "$n" -lt 3 ]; do
+        printf 'armed\n' > "$QDIR/queue.state"
+        out=$(_stop true)
+        printf '%s\n' "$out" | jq -c . >> "$TEST_TMPDIR/rearms.jsonl" 2>/dev/null
+        if printf '%s\n' "$out" | jq -e '.reason | startswith("cs task queue [")' >/dev/null 2>&1; then
+            _deliver "$out"
+            "$@"
+            _stop true >/dev/null
+        fi
+        n=$((n + 1))
+    done
+}
+
+# Each re-arm Stop says the run is parked, as a message, and hands out none.
+_assert_rearms_stay_parked() {  # kind
+    assert_eq 3 "$(jq -s --arg m "cs task queue: this walk-away run is parked ($1). The user re-arms it with cs -queue start in their own shell; a re-arm from inside this conversation stays parked." \
+        '[.[] | select((has("decision") | not) and .systemMessage == $m)] | length' "$TEST_TMPDIR/rearms.jsonl" 2>/dev/null)" \
+        "each re-arm gets the parked message and no block" || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")"
+}
+
+# A quota park leaves the turn to the agent, which re-arms: the run stays
+# parked, nobody hears again, and the park tells the agent the user re-arms.
+test_a_five_hour_park_stays_parked_through_agent_rearms() {
+    local out
+    _five_tasks
+    out=$(_stop)
+    _deliver "$out"
+    _quota_90
+    out=$(_stop true)
+    assert_output_contains "$out" 'five_hour at 90' || return 1
+    _agent_rearms _quota_90
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")" "one task done" || return 1
+    _assert_rearms_stay_parked five_hour || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one park notice" || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'five_hour at 90' || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'The run waits for the user.' || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .reason)" \
+        'Parked with 4 task(s) remaining. The user re-arms it with cs -queue start in their own shell.' || return 1
+    assert_output_not_contains "$out" 'Re-arm with cs -queue start'
+}
+
+test_a_context_park_stays_parked() {
+    local out
+    _five_tasks
+    out=$(_stop)
+    _deliver "$out"
+    _context_94
+    out=$(_stop true)
+    assert_output_contains "$out" 'context at 94' || return 1
+    _agent_rearms _context_94
+    assert_eq 'first task' "$(cat "$QDIR/queue.done")" "one task done" || return 1
+    _assert_rearms_stay_parked context || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one park notice"
+}
+
+# The cap reached on the last task finishes the drain, and parks the run all
+# the same: a task the agent queues and arms next is not handed out.
+test_a_cap_on_the_last_task_stays_parked() {
+    local out
+    CS_CODEX_QUEUE_MAX_TASKS=2
+    out=$(_stop)
+    _deliver "$out"
+    out=$(_stop true)
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'all tasks complete' || return 1
+    printf 'third task\n' > "$QDIR/queue/003"
+    printf 'armed\n' > "$QDIR/queue.state"
+    out=$(_stop true)
+    assert_output_not_contains "$out" 'third task' "nothing is handed out" || return 1
+    assert_eq 'false' "$(printf '%s\n' "$out" | jq 'has("decision")')" "no block" || return 1
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'this walk-away run is parked (task_cap)' || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_file_exists "$QDIR/queue/003"
+}
+
+# Re-armed after a park, a run says once more that it is parked: no block for
+# the agent to re-arm from again, and no notice more.
+test_a_parked_run_does_not_loop() {
+    local out
+    CS_CODEX_QUEUE_MAX_TASKS=1
+    _five_tasks
+    out=$(_stop)
+    _deliver "$out"
+    out=$(_stop true)
+    assert_output_contains "$out" 'task_cap at 1' || return 1
+    _agent_rearms :
+    assert_eq 0 "$(jq -s '[.[] | select(has("decision"))] | length' "$TEST_TMPDIR/rearms.jsonl")" "no re-arm gets a block" || return 1
+    _assert_rearms_stay_parked task_cap || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one park notice" || return 1
+    assert_eq task_cap "$(cat "$CS_CACHE_DIR/codex-runs/$RUN/queue-parked" 2>/dev/null)" "the run is parked by the cap"
+}
+
+# The user's own cs -queue start, outside the sandbox, lifts the park.
+test_the_user_start_unparks() (
+    local out
+    out=$(_stop)
+    _deliver "$out"
+    _quota_90
+    out=$(_stop true)
+    assert_output_contains "$out" 'five_hour at 90' || return 1
+    printf 'armed\n' > "$QDIR/queue.state"
+    out=$(_stop true)
+    assert_output_contains "$out" 'this walk-away run is parked (five_hour)' "an agent's re-arm stays parked" || return 1
+    _session_engine() { printf 'codex\n'; }     # lib/25-deps.sh is not sourced
+    _cs_queue start || return 1
+    out=$(_stop true)
+    assert_output_contains "$out" 'starting a walk-away run' || return 1
+    assert_output_contains "$out" 'second task'
+)
+
+# A park that prints only a message ends the turn: the re-arm needs the user's
+# next prompt, and the conversation's re-arm hands the task out again.
+test_an_unconfirmed_park_rearms_from_the_conversation() {
+    local out
+    out=$(_stop)
+    _deliver "$out" false
+    out=$(_stop true)
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'could not confirm' || return 1
+    assert_output_contains "$out" 'Re-arm with cs -queue start.' || return 1
+    printf 'armed\n' > "$QDIR/queue.state"
+    out=$(_stop)
+    assert_output_contains "$out" 'first task' "the re-arm hands the task out again"
+}
 
 # The lease is the agent's to rewrite: one naming the run of another session
 # leaves that run's record alone.
@@ -986,6 +1128,12 @@ run_test test_an_agent_written_armed_state_keeps_the_count
 run_test test_an_agent_idle_write_keeps_the_count
 run_test test_a_rearm_after_a_cap_park_stays_capped
 run_test test_a_user_start_resets_the_count
+run_test test_a_five_hour_park_stays_parked_through_agent_rearms
+run_test test_a_context_park_stays_parked
+run_test test_a_cap_on_the_last_task_stays_parked
+run_test test_a_parked_run_does_not_loop
+run_test test_the_user_start_unparks
+run_test test_an_unconfirmed_park_rearms_from_the_conversation
 run_test test_clear_ignores_a_run_of_another_session
 run_test test_receipt_without_a_new_final_answer_parks
 run_test test_torn_rollout_tail_leaves_the_last_complete_context_reading
