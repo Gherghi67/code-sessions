@@ -1348,15 +1348,19 @@ test_spawn_task_enters_a_queue_enabled_agy() {
     # writable temporary directory for a queue-enabled launch.
     export HOME="$TEST_CACHE_DIR/agy-home" AGY_VERSION=1.5.13 AGY_HELP_EXTRA=--sandbox
     mkdir -p "$HOME"
-    _install_agy_hook || return 1
+    output=$(CS_INSTALL_ENGINES=claude bash "$SCRIPT_DIR/../install.sh" 2>&1 </dev/null) ||
+        { echo "$output"; return 1; }
+    local installed_cs="$HOME/.local/bin/cs"
+    export CS_STATUSLINE_DISABLE=1
     _fake_tmux
-    output=$(CS_SESSION_NAME=boss "$CS_BIN" -spawn worker --engine antigravity --task 'run the tests' 2>&1) ||
+    output=$(CS_SESSION_NAME=boss "$installed_cs" -spawn worker --engine antigravity --task 'run the tests' 2>&1) ||
         { echo "$output"; return 1; }
     assert_file_exists "$seed" || return 1
     IFS= read -r token < "$seed"
-    output=$(CS_SPAWN_TOKEN=$token AGY_NO_TURN=1 "$CS_BIN" worker --engine antigravity 2>&1) ||
+    output=$(CS_SPAWN_TOKEN=$token AGY_NO_TURN=1 "$installed_cs" worker --engine antigravity 2>&1) ||
         { echo "$output"; return 1; }
-    assert_output_contains "$(_agy_argv)" '^--sandbox --prompt-interactive ' || return 1
+    assert_output_contains "$(_agy_argv)" '^--sandbox --prompt-interactive ' "a Claude-only install can launch the queue" ||
+        { echo "$output"; return 1; }
     assert_not_exists "$seed" || return 1
     qdir="$(_session_dir worker)/.cs/local"
     assert_file_contains "$qdir/queue.state" '^armed$' || return 1
