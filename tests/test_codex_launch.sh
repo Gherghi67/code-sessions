@@ -709,6 +709,43 @@ FAKE
     done
 )
 
+# A vault launch records the encryption in the run's private directory, where
+# the agent cannot remove it as it can .cs/private, and the queue's Stop
+# refuses by it. A plain launch records none. The fake Codex notes the record
+# while the run directory stands.
+test_a_vault_launch_records_its_encryption() (
+    local output status record="$TEST_TMPDIR/encrypted-record"
+    # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
+    _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
+    export CS_REAL_CODEX="$CODEX_BIN" CS_ENCRYPTED_RECORD="$record"
+    export CODEX_BIN="$TEST_TMPDIR/codex recording"
+    cat > "$CODEX_BIN" <<'FAKE'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --help|--version) ;;
+    *)
+        run_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$CS_RUN_ID"
+        [ ! -d "$run_dir" ] || touch "$CS_ENCRYPTED_RECORD.run-dir"
+        [ ! -f "$run_dir/encrypted" ] || [ -L "$run_dir/encrypted" ] || touch "$CS_ENCRYPTED_RECORD"
+        ;;
+esac
+exec "$CS_REAL_CODEX" "$@"
+FAKE
+    chmod +x "$CODEX_BIN"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "plain launch failed: $output" || return 1
+    assert_file_exists "$record.run-dir" "the plain run had a private directory" || return 1
+    assert_not_exists "$record" "a plain launch records no encryption" || return 1
+    rm -f "$record.run-dir" "$CS_CODEX_LOG" "$CS_HELPER_COUNT" "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    _vault_fixture
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "vault launch failed: $output" || return 1
+    assert_file_exists "$record.run-dir" "the vault run had a private directory" || return 1
+    assert_file_exists "$record" "a vault launch records the encryption"
+)
+
 # What cs cannot confine stops the open before anything is bound: a profile a
 # file already defines under cs's name (cs's would merge into it), a project
 # config Codex loads only once the folder is trusted (after cs has chosen its
@@ -1944,6 +1981,7 @@ run_test test_vault_home_refusals_name_the_home_as_a_plain_name
 run_test test_the_vault_profile_keeps_the_users_workspace_settings
 run_test test_native_approval_follows_the_users_sandbox
 run_test test_a_codex_that_hosts_the_queue_is_recorded
+run_test test_a_vault_launch_records_its_encryption
 run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_binding_from_before_the_vault_starts_a_vault_thread

@@ -235,8 +235,14 @@ Scope: complete the behavior the task asks for. When the task is ambiguous, foll
 
 # Whether the agent cannot write Codex's history in a directory: it lies
 # under no writable root Codex's config adds, and outside the session, $TMPDIR
-# and /tmp.
+# and /tmp. A directory spelled inside the session fails before anything is
+# resolved: the agent can swap a link under the session between this check
+# and the read, but not how CODEX_HOME or the transcript path is spelled.
 _codex_queue_history_protected() {  # dir
+    local session
+    case "$1" in "$CS_SESSION_DIR"|"$CS_SESSION_DIR"/*) return 1 ;; esac
+    session=$(cd -P "$CS_SESSION_DIR" 2>/dev/null && pwd -P) || return 1
+    case "$1" in "$session"|"$session"/*) return 1 ;; esac
     ! _codex_run_dir_in_config_root "$1" "$CS_SESSION_DIR" \
         && ! _codex_run_dir_in_sandbox_root "$1" "$CS_SESSION_DIR"
 }
@@ -267,6 +273,19 @@ _codex_queue_refuse_encrypted() {
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
     ( set -C; : > "$run_dir/queue-encrypted" ) 2>/dev/null || return 0
     _codex_queue_notify "$CS_SESSION_DIR/.cs/local" "$reason"
+}
+
+# Whether the session is encrypted, as its launch left it: only a vault launch
+# exports the shell's Codex home beside the vault's, which the hook inherits,
+# and records the vault in the run's private directory. The agent can remove
+# .cs/private and make the session look plain, but neither of these.
+_codex_queue_encrypted() {
+    local run_dir
+    [ -z "${CS_CODEX_SHARED_HOME:-}" ] || return 0
+    if run_dir=$(_codex_run_dir) && [ -f "$run_dir/encrypted" ] && [ ! -L "$run_dir/encrypted" ]; then
+        return 0
+    fi
+    _switch_session_encrypted "$CS_SESSION_DIR"
 }
 
 # The pop reads the task, logs it in queue.done and unlinks it, each through
@@ -442,7 +461,7 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
     local qdir run_dir turn rollouts_dir="${CODEX_HOME:-$HOME/.codex}/sessions"
     qdir=$(_codex_queue_dir "$1") && _codex_queue_state "$qdir" >/dev/null || return 1
     ! cs_files_tracked_notice "$1" "$CS_SESSION_DIR" >/dev/null || return 1
-    if _switch_session_encrypted "$CS_SESSION_DIR"; then
+    if _codex_queue_encrypted; then
         _codex_queue_refuse_encrypted
         _codex_queue_msg_exit "$3"
         return
@@ -459,7 +478,8 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
         return
     fi
     turn=$(printf '%s' "$4" | jq -r '.turn_id // empty' 2>/dev/null) && _is_uuid "$turn" || return 1
-    if [ -d "$rollouts_dir" ] && ! _codex_queue_history_protected "$rollouts_dir"; then
+    # A history folder that is not there cannot be checked.
+    if [ ! -d "$rollouts_dir" ] || ! _codex_queue_history_protected "$rollouts_dir"; then
         cs_run_with_lease "$1" _codex_queue_refuse "$qdir" "$run_dir" "$3" history
         return
     fi

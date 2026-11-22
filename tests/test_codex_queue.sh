@@ -1079,6 +1079,29 @@ test_codex_history_under_a_writable_root_is_refused() (
     _assert_history_park "$out"
 )
 
+# The agent can swap a name under the session for a link between the check
+# and the read, but not how CODEX_HOME is spelled: a home spelled inside the
+# session is refused even while its sessions/ links outside.
+test_a_codex_home_spelled_inside_the_session_is_refused() (
+    local out outside="$TEST_TMPDIR/outside codex"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    mkdir -p "$outside" "$CS_SESSION_DIR/codex"
+    ln -s "$outside" "$CS_SESSION_DIR/codex/sessions"
+    _rollout_under "$CS_SESSION_DIR/codex"
+    out=$(_stop)
+    _assert_history_park "$out"
+)
+
+# A history folder that is not there cannot be checked.
+test_a_missing_rollouts_folder_is_refused() (
+    local out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    export CODEX_HOME="$TEST_TMPDIR/empty codex"
+    mkdir -p "$CODEX_HOME"
+    out=$(_stop)
+    _assert_history_park "$out"
+)
+
 # An encrypted session: .cs/private links into the vault, which holds the
 # queue and Codex's home, spelled as cs exports it.
 _vault_layout() {
@@ -1107,6 +1130,37 @@ test_an_encrypted_session_hands_out_no_task() (
     out=$(_stop)
     assert_eq "$reason" "$(printf '%s\n' "$out" | jq -r .systemMessage)" "every Stop says so" || return 1
     assert_eq "-msg boss -k notify $reason" "$(cat "$CS_CACHE_DIR/notify.log")" "the spawner hears once a run"
+)
+
+# The Stop refuses an encrypted launch's queue, which here lies in .cs/local
+# with no .cs/private: the agent can remove that name, so the launch decides.
+_assert_encrypted_refusal() {  # Stop output
+    assert_eq "cs task queue: an encrypted session cannot host a Codex walk-away queue, so cs hands out no tasks here. The queued tasks are still available; run them under Claude, or move them to an unencrypted session." \
+        "$(printf '%s\n' "$1" | jq -r .systemMessage)" || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
+    assert_eq armed "$(cat "$QDIR/queue.state")" "no queue state is written" || return 1
+    assert_not_exists "$QDIR/queue.current"
+}
+
+# Only a vault launch exports the shell's Codex home beside the vault's, and
+# the hook inherits it.
+test_an_encrypted_launch_refuses_without_the_private_name() (
+    local out
+    export CS_CODEX_SHARED_HOME="$TEST_TMPDIR/shell codex"
+    mkdir -p "$CS_CODEX_SHARED_HOME"
+    assert_not_exists "$CS_SESSION_DIR/.cs/private" || return 1
+    out=$(_stop)
+    _assert_encrypted_refusal "$out"
+)
+
+# The vault launch's record in the run's private directory.
+test_an_encrypted_run_record_refuses() (
+    local out
+    unset CS_CODEX_SHARED_HOME
+    : > "$CS_CACHE_DIR/codex-runs/$RUN/encrypted"
+    assert_not_exists "$CS_SESSION_DIR/.cs/private" || return 1
+    out=$(_stop)
+    _assert_encrypted_refusal "$out"
 )
 
 run_test test_drains_and_notifies_once
@@ -1161,5 +1215,9 @@ run_test test_an_unrecorded_task_count_parks
 run_test test_a_write_error_still_counts_down_an_armed_rotation
 run_test test_codex_history_inside_the_session_is_refused
 run_test test_codex_history_under_a_writable_root_is_refused
+run_test test_a_codex_home_spelled_inside_the_session_is_refused
+run_test test_a_missing_rollouts_folder_is_refused
 run_test test_an_encrypted_session_hands_out_no_task
+run_test test_an_encrypted_launch_refuses_without_the_private_name
+run_test test_an_encrypted_run_record_refuses
 report_results

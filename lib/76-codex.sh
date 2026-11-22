@@ -817,6 +817,12 @@ _launch_codex_bound() {
         # and start forget only their own session's drain record.
         ( set -C; physical=$(cd -P "$session_dir" && pwd -P) \
             && printf '%s\n' "$physical" > "$autoclear_dir/session" ) 2>/dev/null || true
+        # And that it runs on the vault home: the queue's Stop refuses an
+        # encrypted session by this, which the agent cannot remove as it can
+        # .cs/private.
+        if [ -n "$vault_home" ]; then
+            ( set -C; : > "$autoclear_dir/encrypted" ) 2>/dev/null || true
+        fi
         # Without this record the queue parks: an older Codex keeps no hook
         # provenance for its Stop to confirm a task by.
         if _codex_queue_version_ok "$codex_bin"; then
