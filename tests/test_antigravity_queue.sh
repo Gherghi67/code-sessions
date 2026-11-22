@@ -86,6 +86,27 @@ test_drains_two_tasks_with_provenance() {
     assert_not_exists "$QDIR/queue/002"
 }
 
+test_reuses_confirmation_to_deliver_the_next_task() {
+    local first next
+    first=$(stop 0)
+    receipt "$first" 2
+    record 3 MODEL PLANNER_RESPONSE "first complete"
+    export CS_TEST_THREAD_HELPER="$CS_CODEX_THREAD_BIN"
+    export CS_TEST_SNAPSHOTS="$TEST_TMPDIR/snapshots"
+    export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/thread-helper"
+    cat > "$CS_CODEX_THREAD_BIN" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = --antigravity-queue-snapshot ]; then
+    printf 'snapshot\n' >> "$CS_TEST_SNAPSHOTS"
+fi
+exec "$CS_TEST_THREAD_HELPER" "$@"
+SH
+    chmod +x "$CS_CODEX_THREAD_BIN"
+    next=$(stop 1)
+    assert_output_contains "$next" 'second task' || return 1
+    assert_eq snapshot "$(cat "$CS_TEST_SNAPSHOTS")" "one snapshot confirms and advances the queue"
+}
+
 test_leaves_an_interrupted_delivery_queued() {
     local first
     first=$(stop 0)
@@ -241,6 +262,7 @@ test_rejects_a_link_in_native_history() {
 }
 
 run_test test_drains_two_tasks_with_provenance
+run_test test_reuses_confirmation_to_deliver_the_next_task
 run_test test_leaves_an_interrupted_delivery_queued
 run_test test_ignores_busy_and_unrelated_stops
 run_test test_terminal_stop_parks_and_allows_rearm_with_a_live_lease
