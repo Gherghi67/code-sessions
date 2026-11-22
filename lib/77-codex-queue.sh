@@ -448,8 +448,8 @@ _codex_queue_stop() {  # session metadata, thread, handoff, Stop JSON
 
 # The line for a run that yielded to an armed rotation with no count toward
 # its /clear: the automatic /clear is off or no watcher runs, so /clear and go
-# are the user's to send, or a switch holds (hold), which /quit takes and
-# cs -switch cancel drops. The spawner hears once a drain.
+# are the user's to send, or a switch is pending (hold), which /quit takes
+# and cs -switch cancel drops. The spawner hears once a drain.
 _codex_queue_rotation_wait() {  # handoff, [hold]
     local run_dir line notice
     if [ "${2:-}" = hold ]; then

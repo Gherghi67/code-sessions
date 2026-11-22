@@ -517,7 +517,7 @@ _codex_rotation_countdown() {  # session_dir, handoff
 # must never fail a turn, so every path returns 0. It prints at most one JSON
 # object: the queue's answer, or the Stop's lines joined in one systemMessage.
 _codex_hook_stop() {
-    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" crc=1 hold=""
+    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" crc=1 hold="" action
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     session_dir="$CS_SESSION_DIR"
@@ -550,9 +550,13 @@ _codex_hook_stop() {
         line=$(_codex_rotation_countdown "$session_dir" "$handoff") || crc=$?
     fi
     # A queue that yielded to a rotation nothing will take waits for /clear
-    # and go by hand, or for a held switch to be taken or cancelled.
+    # and go by hand, or for a pending switch to be taken or cancelled. The
+    # switch decides, not the count's return: with the count off or no
+    # watcher, the count never reaches its action check, and /clear would
+    # spend the handoff the switch carries.
     if [ "$qrc" = 3 ] && [ "$crc" != 0 ]; then
-        [ "$crc" != 2 ] || hold=hold
+        action=$(_codex_autoclear_action "$session_dir")
+        case "${action%% *}" in hold|quit) hold=hold ;; esac
         qwait=$(_codex_queue_rotation_wait "$handoff" "$hold") || qwait=""
     fi
     jq -n --arg q "$qmsg" --arg l "$line" --arg w "$qwait" \

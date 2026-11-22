@@ -725,6 +725,46 @@ test_a_held_switch_wait_does_not_say_clear() (
     assert_file_contains "$CS_CACHE_DIR/notify.log" 'pending engine switch'
 )
 
+# A switch waits for /quit or cs -switch cancel whether or not a count runs:
+# the wait and the spawner's notice name the switch, and nothing counts down.
+_assert_switch_wait() {  # Stop output
+    local message
+    assert_eq armed "$(cat "$QDIR/queue.state")" || return 1
+    assert_not_exists "$CS_CACHE_DIR/codex-runs/$RUN/autoclear" "nothing counts down" || return 1
+    message=$(printf '%s\n' "$1" | jq -r .systemMessage)
+    assert_output_contains "$message" 'pending switch' || return 1
+    assert_output_not_contains "$message" 'Run /clear' || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "the spawner hears of the wait" || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'pending engine switch'
+}
+
+# The automatic /clear is off, so the count never reaches the switch.
+test_a_held_switch_wait_with_the_count_off_does_not_say_clear() (
+    local first out
+    first=$(_stop)
+    _deliver "$first"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=0
+    _live_watcher
+    _codex_autoclear_action() { printf 'hold Claude\n'; }
+    out=$(_stop true)
+    _assert_switch_wait "$out"
+)
+
+# No watcher runs, so nothing would type the /quit the switch counts toward.
+test_a_switch_wait_without_a_watcher_does_not_say_clear() (
+    local first out
+    first=$(_stop)
+    _deliver "$first"
+    printf 'boss\n' > "$QDIR/spawned-by"
+    _arm_handoff
+    export CS_CODEX_CLEAR_GRACE=20
+    _codex_autoclear_action() { printf 'quit Claude\n'; }
+    out=$(_stop true)
+    _assert_switch_wait "$out"
+)
+
 # A Stop from a turn the queue never handed a task: the park is a message,
 # and the armed rotation still counts down.
 test_unconfirmed_park_still_counts_down_an_armed_rotation() (
@@ -960,6 +1000,8 @@ run_test test_rotation_commits_the_boundary_then_resumes_the_next_task
 run_test test_rotation_without_a_countdown_notifies_the_spawner
 run_test test_rotation_with_a_live_watcher_does_not_notify
 run_test test_a_held_switch_wait_does_not_say_clear
+run_test test_a_held_switch_wait_with_the_count_off_does_not_say_clear
+run_test test_a_switch_wait_without_a_watcher_does_not_say_clear
 run_test test_unconfirmed_park_still_counts_down_an_armed_rotation
 run_test test_an_old_codex_parks_the_queue
 run_test test_an_old_codex_parks_without_a_turn_id
