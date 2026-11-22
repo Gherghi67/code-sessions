@@ -417,7 +417,7 @@ test_a_rearm_after_a_cap_park_stays_capped() {
         [ "$n" -gt 1 ] || first=$out
         if printf '%s\n' "$out" | jq -e '.reason | startswith("cs task queue [")' >/dev/null 2>&1; then
             _deliver "$out"
-        elif printf '%s\n' "$out" | grep -qF 'is parked (task_cap)'; then
+        elif grep -qF 'is parked (task_cap)' <<< "$out"; then
             printf 'armed\n' > "$QDIR/queue.state"
         fi
     done
