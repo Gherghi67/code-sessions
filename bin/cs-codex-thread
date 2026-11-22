@@ -866,7 +866,11 @@ def queue_snapshot(args):
 
 
 class QueueFileMissing(BootstrapError):
-    """The file --queue-file first-line reads is not there."""
+    """The queue item has been withdrawn."""
+
+
+class QueueTaskChanged(BootstrapError):
+    """The claimed queue item differs from the one sent to the model."""
 
 
 def antigravity_queue_snapshot(args):
@@ -945,8 +949,9 @@ def antigravity_shell_failed(kind, content):
                for line in header.splitlines())
 
 
-QUEUE_FILE_OPS = ("append", "replace", "unlink", "first-line")
+QUEUE_FILE_OPS = ("append", "replace", "unlink", "first-line", "complete")
 QUEUE_FILE_MISSING = 3
+QUEUE_TASK_CHANGED = 4
 
 
 def queue_file_parts(name):
@@ -984,6 +989,48 @@ def queue_file_write(fd, data):
         view = view[os.write(fd, view):]
 
 
+def queue_file_append(folder, base, data):
+    fd = os.open(base, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                 0o644, dir_fd=folder)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            raise BootstrapError("unexpected queue file")
+        queue_file_write(fd, data)
+    finally:
+        os.close(fd)
+
+
+def queue_complete(local, base, expected):
+    queue = os.open("queue", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=local)
+    try:
+        # In the same directory the rename claims exactly one item, even on
+        # a different mount from the cache. A crash or refusal leaves the
+        # claim visible in the queue. Work added at the old name stays there.
+        claimed = f"{base}.cs-claim-{uuid.uuid4().hex}"
+        try:
+            os.rename(base, claimed, src_dir_fd=queue, dst_dir_fd=queue)
+        except FileNotFoundError as exc:
+            raise QueueFileMissing("no such queue file") from exc
+        fd = os.open(claimed, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=queue)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                raise BootstrapError("unexpected queue file")
+            line = stream.readline()
+            body = line[:-1] if line.endswith(b"\n") else line
+            if body != expected or stream.read(1):
+                raise QueueTaskChanged("the active task changed while it ran")
+            queue_file_append(local, "queue.done", body + b"\n")
+            current = os.stat(claimed, dir_fd=queue, follow_symlinks=False)
+            if not os.path.samestat(info, current):
+                raise QueueTaskChanged("the claimed task was replaced")
+            os.unlink(claimed, dir_fd=queue)
+        return body
+    finally:
+        os.close(queue)
+
+
 def queue_file(args):
     """The Codex queue's own writes into .cs/local, and its read of a task. The Stop hook
     runs outside the sandbox, and the agent can swap any name there for a link, or a hard
@@ -991,19 +1038,20 @@ def queue_file(args):
     a descriptor of its folder, and none is followed."""
     op, name = args.queue_file
     folders, base = queue_file_parts(name)
+    if op == "complete":
+        if folders != ["queue"]:
+            raise BootstrapError("complete requires a queue item")
+        local = queue_file_dir(args.session_dir, [])
+        try:
+            sys.stdout.buffer.write(queue_complete(local, base, sys.stdin.buffer.read()))
+        finally:
+            os.close(local)
+        return
     data = sys.stdin.buffer.read() if op in ("append", "replace") else b""
     folder = queue_file_dir(args.session_dir, folders)
     try:
         if op == "append":
-            fd = os.open(base, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                         0o644, dir_fd=folder)
-            try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
-                    raise BootstrapError("unexpected queue file")
-                queue_file_write(fd, data)
-            finally:
-                os.close(fd)
+            queue_file_append(folder, base, data)
         elif op == "replace":
             # rename never follows the name it replaces; onto a folder it fails.
             temp = ".cs-tmp.%s.%s" % (base, uuid.uuid4().hex)
@@ -2168,9 +2216,9 @@ def main():
     parser.add_argument("--queue-offset", type=int, metavar="BYTES",
                         help="read the rollout from the current task's delivery, not its last 8 MiB")
     parser.add_argument("--queue-file", nargs=2, metavar=("OP", "NAME"),
-                        help="append stdin to, replace with stdin, unlink or print the first line of NAME "
-                             "in --session-dir's .cs/local, following no link; OP is append, replace, "
-                             "unlink or first-line, NAME a file name or queue/<name>")
+                        help="operate on a file in --session-dir's .cs/local without following links; "
+                             "OP is append, replace, unlink, first-line, or complete; "
+                             "NAME is a file name or queue/<name>")
     parser.add_argument("--session-dir")
     parser.add_argument("--seed-config", action="store_true",
                         help="copy --shared-home's config.toml and rules/ into --home, the config's hook trust re-keyed")
@@ -2224,7 +2272,7 @@ def main():
             parser.error("--queue-offset must not be negative")
     elif args.queue_file is not None:
         if args.queue_file[0] not in QUEUE_FILE_OPS or args.session_dir is None:
-            parser.error("--queue-file needs append, replace, unlink or first-line, a name and --session-dir")
+            parser.error("--queue-file needs a valid operation, a name and --session-dir")
     elif args.seed_config:
         if args.shared_home is None or args.home is None or args.cwd is None:
             parser.error("--seed-config needs --shared-home, --home and --cwd")
@@ -2288,7 +2336,11 @@ def main():
             else "could not read the Claude transcript" if args.read_claude is not None
             else "could not read bootstrap inputs")
         print("cs-codex-thread: " + message, file=sys.stderr)
-        return QUEUE_FILE_MISSING if isinstance(exc, QueueFileMissing) else 1
+        if isinstance(exc, QueueFileMissing):
+            return QUEUE_FILE_MISSING
+        if isinstance(exc, QueueTaskChanged):
+            return QUEUE_TASK_CHANGED
+        return 1
     print(printed)
     return 0
 

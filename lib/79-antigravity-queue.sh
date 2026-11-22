@@ -146,7 +146,7 @@ The text inside the tags is the task to complete within this session's scope."
 }
 
 _antigravity_queue_finish() {  # cache, qdir, state, snapshot
-    local name body current state failures limit rc=0
+    local name body completed state failures limit rc=0
     name=$(printf '%s\n' "$3" | jq -er .task.name) || return 1
     body=$(printf '%s\n' "$3" | jq -er .task.body) || return 1
     failures=$(printf '%s\n' "$3" | jq -r --argjson snapshot "$4" \
@@ -160,20 +160,23 @@ _antigravity_queue_finish() {  # cache, qdir, state, snapshot
         _antigravity_queue_park "$1" "$2" "$3" "the task reported failure"
         return 1
     fi
-    current=$(_codex_queue_fs "$2" first-line "queue/$name" </dev/null) || rc=$?
-    if [ "$rc" = 0 ] && [ "$current" = "$body" ]; then
-        # An interrupted pop needs inspection. Never append the same receipt
-        # again after a crash between the append and unlink.
-        state=$(printf '%s\n' "$3" | jq -c '.finishing = true') || return 1
-        _antigravity_queue_record "$1" "$state" || return 1
-        if ! _codex_queue_finish_task "$2" "$name"; then
+    # An interrupted pop needs inspection. Never append the same receipt
+    # again after a crash between the append and unlink.
+    state=$(printf '%s\n' "$3" | jq -c '.finishing = true') || return 1
+    _antigravity_queue_record "$1" "$state" || return 1
+    completed=$(printf '%s' "$body" | _codex_queue_fs "$2" complete "queue/$name") || rc=$?
+    case "$rc" in
+        0) _codex_queue_event "$2" --arg task "$completed" '{ts:$ts,event:"task_done",task:$task}' ;;
+        3) ;;  # withdrawn while it ran
+        4)
+            _antigravity_queue_park "$1" "$2" "$state" "the active task changed while it ran"
+            return 1
+            ;;
+        *)
             _antigravity_queue_park "$1" "$2" "$state" "could not record the completed task"
             return 1
-        fi
-    elif [ "$rc" != 3 ]; then
-        _antigravity_queue_park "$1" "$2" "$3" "the active task changed while it ran"
-        return 1
-    fi
+            ;;
+    esac
     state=$(printf '%s\n' "$3" | jq -c 'del(.task,.finishing)') || return 1
     _antigravity_queue_record "$1" "$state" || return 1
     _codex_queue_rm "$2" queue.current
