@@ -342,14 +342,20 @@ _codex_queue_stop_owned() {  # queue_dir, run_dir, thread, turn, handoff, Stop J
         fi
         if ! _codex_queue_finish_task "$qdir" "$current"; then
             _codex_queue_reset "$qdir" "$run_dir" || true
+            _codex_queue_notify "$local_dir" "cs task queue in ${CS_SESSION_NAME:-the spawned session} could not record its finished task and is parked. Inspect it with cs -queue list."
             _codex_queue_write_error
             _codex_queue_msg_exit "$handoff"
             return
         fi
         rm -f "$run_dir/queue-task.json" || true
         _codex_queue_rm "$qdir" queue.current
-        (umask 077; cs_write_atomic "$run_dir/queue-count" printf '%s\n' "$count") \
-            || { _codex_queue_write_error; _codex_queue_msg_exit "$handoff"; return; }
+        if ! (umask 077; cs_write_atomic "$run_dir/queue-count" printf '%s\n' "$count"); then
+            _codex_queue_reset "$qdir" "$run_dir" || true
+            _codex_queue_notify "$local_dir" "cs task queue in ${CS_SESSION_NAME:-the spawned session} could not record its finished task and is parked. Inspect it with cs -queue list."
+            _codex_queue_write_error
+            _codex_queue_msg_exit "$handoff"
+            return
+        fi
         first=""
         remaining=0
         for file in "$qdir/queue/"*; do

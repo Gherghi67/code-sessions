@@ -815,6 +815,35 @@ test_an_unreadable_next_task_parks() {
     assert_file_contains "$CS_CACHE_DIR/notify.log" 'could not hand out'
 }
 
+# A finished task the pop refuses, here one emptied while it ran: the queue
+# parks, and the spawner hears once.
+test_an_unpoppable_finished_task_parks() {
+    local first out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    first=$(_stop)
+    _deliver "$first"
+    : > "$QDIR/queue/001"
+    out=$(_stop true)
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'could not update queue state' || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one notice" || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'could not record its finished task'
+}
+
+# A count the Stop cannot write parks the queue the same way.
+test_an_unrecorded_task_count_parks() {
+    local first out
+    printf 'boss\n' > "$QDIR/spawned-by"
+    first=$(_stop)
+    _deliver "$first"
+    mkdir "$CS_CACHE_DIR/codex-runs/$RUN/queue-count"
+    out=$(_stop true 2>/dev/null)
+    assert_output_contains "$(printf '%s\n' "$out" | jq -r .systemMessage)" 'could not update queue state' || return 1
+    assert_eq idle "$(cat "$QDIR/queue.state")" || return 1
+    assert_eq 1 "$(wc -l < "$CS_CACHE_DIR/notify.log" | tr -d ' ')" "one notice" || return 1
+    assert_file_contains "$CS_CACHE_DIR/notify.log" 'could not record its finished task'
+}
+
 # A Stop that cannot update the queue says so, and the armed rotation still
 # counts down.
 test_a_write_error_still_counts_down_an_armed_rotation() (
@@ -937,6 +966,8 @@ run_test test_an_old_codex_parks_without_a_turn_id
 run_test test_missing_run_dir_still_saves_the_rotation_model
 run_test test_a_missing_run_dir_parks_once
 run_test test_an_unreadable_next_task_parks
+run_test test_an_unpoppable_finished_task_parks
+run_test test_an_unrecorded_task_count_parks
 run_test test_a_write_error_still_counts_down_an_armed_rotation
 run_test test_codex_history_inside_the_session_is_refused
 run_test test_codex_history_under_a_writable_root_is_refused
