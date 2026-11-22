@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
 source "$SCRIPT_DIR/../lib/77-codex-queue.sh"
 source "$SCRIPT_DIR/../lib/78-switch.sh"
 source "$SCRIPT_DIR/../lib/79-antigravity-queue.sh"
+source "$SCRIPT_DIR/../lib/79-antigravity-vault.sh"
 source "$SCRIPT_DIR/../lib/79-antigravity.sh"
 
 THREAD=11111111-1111-4111-8111-111111111111
@@ -131,11 +132,15 @@ test_finishes_on_a_background_wake() {
     first=$(stop 0)
     receipt "$first" 2
     record 3 MODEL PLANNER_RESPONSE "waiting for background work"
-    assert_eq '{}' "$(stop 1 false)" || return 1
+    mkdir -p "$QDIR/mail/new"
+    printf '%s\n' '{"from":"peer","body":"Please check the update"}' > "$QDIR/mail/new/update.json"
+    assert_eq '{}' "$(stop 1 false)" "an outstanding task defers the mail wake" || return 1
+    assert_file_exists "$QDIR/queue/001" || return 1
     assert_not_exists "$QDIR/queue.done" || return 1
     record 4 SYSTEM SYSTEM_MESSAGE "background tool has completed"
     record 5 MODEL PLANNER_RESPONSE "task complete"
-    assert_output_contains "$(stop 0)" 'second task'
+    assert_output_contains "$(stop 0)" 'second task' || return 1
+    assert_file_contains "$QDIR/queue.done" '^first task$'
 }
 
 test_counts_nonzero_shell_exit_before_final_response() {

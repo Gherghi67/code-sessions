@@ -172,9 +172,17 @@ _antigravity_queue_owned() {  # event payload, run dir, execution
     [ -f "$2/held-$AGY_HOOK_ID" ] && [ ! -L "$2/held-$AGY_HOOK_ID" ] || return 1
     qdir=$(_codex_queue_dir "$CS_SESSION_DIR/.cs") || return 1
     [ "$qdir" = "$CS_SESSION_DIR/.cs/local" ] || return 1
-    phase=$(_codex_queue_state "$qdir") || return 1
     cache=$(_antigravity_queue_cache "$CS_SESSION_DIR") || return 1
     state=$(_antigravity_queue_read "$cache") || return 1
+    if [ "$AGY_HOOK_IDLE" != 1 ]; then
+        # A mail continuation here could supply the next planner response
+        # while the task is still waiting for its background work.
+        printf '%s\n' "$state" | jq -e --arg run "$CS_RUN_ID" --arg cid "$AGY_HOOK_ID" \
+            '.task.run == $run and .task.cid == $cid' >/dev/null || return 1
+        printf '{}\n'
+        return 0
+    fi
+    phase=$(_codex_queue_state "$qdir") || return 1
     if printf '%s\n' "$state" | jq -e '.park != null' >/dev/null; then
         _codex_queue_set_state "$qdir" idle || true
         return 1
@@ -192,7 +200,8 @@ _antigravity_queue_owned() {  # event payload, run dir, execution
         if ! printf '%s\n' "$snapshot" | jq -e '.delivered and .final' >/dev/null; then
             if [ "$(printf '%s\n' "$snapshot" | jq -r .last_step)" = "$baseline" ] &&
                 [ "$(printf '%s\n' "$state" | jq -r .task.execution)" = "$3" ]; then
-                return 1
+                printf '{}\n'
+                return 0
             fi
             _antigravity_queue_park "$cache" "$qdir" "$state" "could not confirm the task's delivery and final response"
             return 1
@@ -255,7 +264,7 @@ _antigravity_queue_run() {  # verified native hook
 
 _antigravity_queue_stop() {  # payload
     local run execution
-    [ "$AGY_HOOK_IDLE" = 1 ] && [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 1
+    [ "$AGY_HOOK_TERMINATION" = NO_TOOL_CALL ] || return 1
     [ -f "$CS_SESSION_DIR/.cs/local/queue.state" ] || return 1
     run=$(_antigravity_queue_run) || return 1
     execution=$(printf '%s\n' "$1" | jq -er '.executionNum | numbers | select(. == floor and . >= 0 and . <= 100)') || return 1
