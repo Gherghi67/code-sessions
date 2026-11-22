@@ -229,11 +229,17 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 
 The queue files and `failures` live in the session's cs-files directory: `.cs/private/` in an encrypted session, `.cs/local/` otherwise. `spawned-by`, `context-pct`, `limits` and `statusline-width` are always in `.cs/local/`. An absent `queue.state` reads as `idle`.
 
+Codex uses the same queue files. Its per-run continuation receipt, completed
+task count, and approval notice marker live in the private Codex run cache.
+It verifies delivery from the bound rollout and parks an interrupted task
+when a later Stop cannot confirm completion. The table describes Claude's
+Stop hook. See [Codex queue delivery](hooks.md#codex-queue-delivery).
+
 The `Stop` rows run only on the lead's `Stop`, and only while `queue/` holds at least one task. A teammate's `Stop`, or a `Stop` on an empty queue, writes nothing and leaves `queue.state` unchanged, `armed` included. A `Stop` on an `idle` queue that holds tasks also writes nothing. Each pop moves the task that `queue.current` names to `queue.popping.<pid>`, reads it, and removes it.
 
 | Trigger | Writer | State | Writes | Removes | Answer |
 |---------|--------|-------|--------|---------|--------|
-| `cs -queue start`, with or without `subagents` or `workflow`. The cs mod's band runs the same command when you press Start (`offerToStart` in `mods/cs/hooks/register.tsx`). | `lib/55-queue.sh:_queue_start` | any to `armed`, except `draining` while `session.lock` names a running process (`live_lock_pid`): then it exits 1 and writes nothing. | `queue.mode` when you give a mode, then `queue.state`. | `queue.mode` when you give no mode. | The refusal names the pid, says the next `Stop` hands out the next task by itself, and that `cs -queue clear` is the stop, which removes the queued tasks with it. |
+| `cs -queue start`, with or without `subagents` or `workflow`. The cs mod's band runs the same command when you press Start (`offerToStart` in `mods/cs/hooks/register.tsx`). | `lib/55-queue.sh:_queue_start` | any to `armed`, except `draining` while `session.lock` names a running process (`live_lock_pid`): then it exits 1 and writes nothing. | `queue.mode` when you give a mode, then `queue.state`. | `queue.mode` when you give no mode. | The refusal names the pid, says the next `Stop` hands out the next task by itself, and that `cs -queue clear` is the stop, which removes the queued tasks with it. Under Codex it says instead that the next `Stop` after an interrupted turn parks the queue, for `cs -queue start` to re-arm. |
 | The open of a `cs -spawn`ed session whose seed holds tasks. | `lib/75-launch.sh:launch_claude_code`, through `_queue_set_state` | any to `armed` | `spawned-by` when the seed names a spawner, one file per task in `queue/`, then `queue.state`. | Nothing. `queue.mode` keeps whatever it held. | |
 | `cs -queue clear`. | `lib/55-queue.sh:_queue_clear` | any to absent | Nothing. | `queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.failed` and `queue.current`. `queue.done`, `failures` and `spawned-by` stay. | |
 | The lead's `Stop` while `armed`. | `hooks/stop-blocks.sh`, the armed branch (`_qcurrent_write`, `_qstate_write`) | `armed` to `draining` | `queue.current` (the first task's file name), then `queue.state`, then a `drain_started` line in `notifications.jsonl`. | `failures` and `queue.failed`. | Blocks with the first task. |

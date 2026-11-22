@@ -470,11 +470,54 @@ except (OSError, ValueError, TypeError):
     [ "$status" -eq 0 ] || { printf '%s\n' "$note"; return 1; }
 }
 
+# Starts the count toward the automatic /clear (or /quit) of an armed
+# rotation, and prints the line that says so, or the line that says a pending
+# switch holds. Returns 0 only when it put a deadline in place, the one thing
+# that has the watcher type the keys, 2 when it printed the hold line, and 1
+# otherwise.
+_codex_rotation_countdown() {  # session_dir, handoff
+    local session_dir="$1" handoff="$2" run_dir stamp grace tmp deadline action
+    # No private directory, no watcher: nothing would type the keys, so the
+    # turn ends without a count or a line promising one.
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$session_dir" || return 1
+    stamp=$(_codex_autoclear_file "$run_dir")
+    grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 1; }
+    [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 1; }
+    # No live watcher of this run's, nothing to type the keys: a terminal that
+    # refuses simulated input gets none, and the launch said why.
+    _codex_watcher_alive "$run_dir" || { rm -f "$stamp" 2>/dev/null; return 1; }
+    # Only the wording: the watcher decides again at the deadline.
+    action=$(_codex_autoclear_action "$session_dir")
+    if [ "${action%% *}" = hold ]; then
+        rm -f "$stamp" 2>/dev/null
+        printf '%s\n' "cs: a switch to ${action#hold } is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
+        return 2
+    fi
+    # The deadline is worked out before the temp file exists, so nothing that
+    # fails here can leave one behind.
+    deadline=$(( $(date +%s) + grace ))
+    # mktemp makes the file 0600, the mode the watcher requires.
+    tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 1
+    if ! { printf 'deadline=%s\nhandoff=%s\nrun=%s\n' \
+        "$deadline" "$handoff" "${CS_RUN_ID:-}" > "$tmp" \
+        && mv "$tmp" "$stamp"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    if [ "${action%% *}" = quit ]; then
+        printf '%s\n' "cs: /quit in $grace s, and cs reopens this session under ${action#quit } from $handoff. Send a message first to stay; unsent text in the composer would be sent."
+    else
+        printf '%s\n' "cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation; unsent text in the composer would be sent."
+    fi
+    return 0
+}
+
 # Only the conversation this run launched and the session is bound to counts
 # down; a turn in any other thread, or a teammate's, never clears it. The hook
-# must never fail a turn, so every path returns 0.
+# must never fail a turn, so every path returns 0. It prints at most one JSON
+# object: the queue's answer, or the Stop's lines joined in one systemMessage.
 _codex_hook_stop() {
-    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline action sysmsg note=""
+    local input session_id session_dir meta bound handoff qout qrc=0 qmsg="" note="" line="" qwait="" crc=1 hold="" action
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     session_dir="$CS_SESSION_DIR"
@@ -488,46 +531,37 @@ _codex_hook_stop() {
     bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
     [ "$bound" = "$session_id" ] || return 0
     handoff=$(_rotation_armed_handoff "$session_dir")
+    # 0: the queue answered this Stop. 3: it yielded to the armed rotation.
+    # 4: it printed a line, and the armed rotation still runs. Anything else:
+    # it did nothing.
+    qout=$(_codex_queue_stop "$meta" "$session_id" "$handoff" "$input") || qrc=$?
+    case "$qrc" in
+        0)
+            [ -z "$qout" ] || printf '%s\n' "$qout"
+            return 0
+            ;;
+        3|4) qmsg=$(printf '%s' "$qout" | jq -r '.systemMessage // empty' 2>/dev/null) || qmsg="" ;;
+    esac
     # A choice /clear would drop gets no count toward that /clear.
     if [ -n "$handoff" ] && ! note=$(_codex_rotation_model_save "$session_dir" "$session_id" "$input"); then
-        jq -n --arg m "${note:-cs: could not preserve the selected model for rotation; select it again with /model after /clear.}" \
-            '{systemMessage: $m}' 2>/dev/null || true
-        return 0
-    fi
-    # No private directory, no watcher: nothing would type the keys, so the
-    # turn ends without a count or a line promising one.
-    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$session_dir" || return 0
-    stamp=$(_codex_autoclear_file "$run_dir")
-    grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 0; }
-    [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
-    # No live watcher of this run's, nothing to type the keys: a terminal that
-    # refuses simulated input gets none, and the launch said why.
-    _codex_watcher_alive "$run_dir" || { rm -f "$stamp" 2>/dev/null; return 0; }
-    # Only the wording: the watcher decides again at the deadline.
-    action=$(_codex_autoclear_action "$session_dir")
-    if [ "${action%% *}" = hold ]; then
-        rm -f "$stamp" 2>/dev/null
-        sysmsg="cs: a switch to ${action#hold } is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
-        jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
-        return 0
-    fi
-    # The deadline is worked out before the temp file exists, so nothing that
-    # fails here can leave one behind.
-    deadline=$(( $(date +%s) + grace ))
-    # mktemp makes the file 0600, the mode the watcher requires.
-    tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
-    if ! { printf 'deadline=%s\nhandoff=%s\nrun=%s\n' \
-        "$deadline" "$handoff" "${CS_RUN_ID:-}" > "$tmp" \
-        && mv "$tmp" "$stamp"; } 2>/dev/null; then
-        rm -f "$tmp" 2>/dev/null
-        return 0
-    fi
-    if [ "${action%% *}" = quit ]; then
-        sysmsg="cs: /quit in $grace s, and cs reopens this session under ${action#quit } from $handoff. Send a message first to stay; unsent text in the composer would be sent."
+        line="${note:-cs: could not preserve the selected model for rotation; select it again with /model after /clear.}"
     else
-        sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation; unsent text in the composer would be sent."
+        crc=0
+        line=$(_codex_rotation_countdown "$session_dir" "$handoff") || crc=$?
     fi
-    jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
+    # A queue that yielded to a rotation nothing will take waits for /clear
+    # and go by hand, or for a pending switch to be taken or cancelled. The
+    # switch decides, not the count's return: with the count off or no
+    # watcher, the count never reaches its action check, and /clear would
+    # spend the handoff the switch carries.
+    if [ "$qrc" = 3 ] && [ "$crc" != 0 ]; then
+        action=$(_codex_autoclear_action "$session_dir")
+        case "${action%% *}" in hold|quit) hold=hold ;; esac
+        qwait=$(_codex_queue_rotation_wait "$handoff" "$hold") || qwait=""
+    fi
+    jq -n --arg q "$qmsg" --arg l "$line" --arg w "$qwait" \
+        '[$q, $l, $w] | map(select(length > 0)) | if length > 0 then {systemMessage: join("\n")} else empty end' \
+        2>/dev/null || true
     return 0
 }
 
@@ -575,9 +609,11 @@ _codex_hook_user_prompt_submit() {
 # output carries a decision only under hookSpecificOutput), on every path, and
 # exits 0, never 2, which Codex reads as a denial.
 _codex_hook_permission_request() {
-    cat >/dev/null 2>&1 || true
+    local input
+    input=$(cat 2>/dev/null) || input=""
     if [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ]; then
         _codex_cancel_autoclear
+        _codex_queue_permission "$input" || true
     fi
     printf '{}\n'
     return 0

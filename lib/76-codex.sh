@@ -117,7 +117,30 @@ _cs_codex_adapter_capabilities() {
     # Claude's starts on /finish <task>.
     # clear_rotation: the same session-start hook hands the new thread the
     # armed rotation at /clear.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation engine_switch recovery_autosave memory_index mail_delivery spawn_brief clear_rotation task_queue
+}
+
+# The queue confirms each task by the provenance Codex records on a Stop
+# hook's continuation prompt ({type:harness, hook:true}). Measured on
+# 0.167.0-alpha.3.2 and 0.169.0-alpha.11.1; 0.158 and 0.162 record none.
+CS_CODEX_QUEUE_MIN_VERSION=0.167.0
+
+# Whether a Codex build is CS_CODEX_QUEUE_MIN_VERSION or later, read from the
+# first three dot-separated numbers its --version prints: 1 for an older
+# build, 2 for a version it cannot read (the binary is missing, --version
+# fails, or it prints no x.y.z). A spawner inside Codex's sandbox runs this
+# too, where bash 3.2 cannot make a here-string's temp file, so nothing here
+# uses one.
+_codex_queue_version_ok() {  # [codex_bin]
+    local re='([0-9]+)\.([0-9]+)\.([0-9]+)' out h1 h2 h3 w1 w2 w3
+    out=$("${1:-${CODEX_BIN:-codex}}" --version 2>/dev/null) || return 2
+    [[ "$out" =~ $re ]] || return 2
+    h1=$((10#${BASH_REMATCH[1]})) h2=$((10#${BASH_REMATCH[2]})) h3=$((10#${BASH_REMATCH[3]}))
+    [[ "$CS_CODEX_QUEUE_MIN_VERSION" =~ $re ]] || return 1
+    w1=$((10#${BASH_REMATCH[1]})) w2=$((10#${BASH_REMATCH[2]})) w3=$((10#${BASH_REMATCH[3]}))
+    [ "$h1" -eq "$w1" ] || return $(( h1 > w1 ? 0 : 1 ))
+    [ "$h2" -eq "$w2" ] || return $(( h2 > w2 ? 0 : 1 ))
+    [ "$h3" -ge "$w3" ]
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -729,7 +752,7 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled. Automatic recovery is enabled. Use cs -queue for walk-away tasks.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
@@ -786,12 +809,31 @@ _launch_codex_bound() {
     # left there is removed and never read.
     local autoclear_dir refusal
     rm -f "$session_dir/.cs/local/codex-autoclear" 2>/dev/null || true
+    # Queue receipts need the same private directory, even without a tty or a
+    # rotation countdown. The run supervisor owns its lifetime in both cases.
+    if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
+        _cs_run_helper_dir=$autoclear_dir
+        # The session the run serves, by its physical path: cs -queue clear
+        # and start forget only their own session's drain record.
+        ( set -C; physical=$(cd -P -- "$session_dir" && pwd -P) \
+            && printf '%s\n' "$physical" > "$autoclear_dir/session" ) 2>/dev/null || true
+        # And that it runs on the vault home: the queue's Stop refuses an
+        # encrypted session by this, which the agent cannot remove as it can
+        # .cs/private.
+        if [ -n "$vault_home" ]; then
+            ( set -C; : > "$autoclear_dir/encrypted" ) 2>/dev/null || true
+        fi
+        # Without this record the queue parks: an older Codex keeps no hook
+        # provenance for its Stop to confirm a task by.
+        if _codex_queue_version_ok "$codex_bin"; then
+            ( set -C; : > "$autoclear_dir/queue-version-ok" ) 2>/dev/null || true
+        fi
+    fi
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
         if ! refusal=$(_codex_autoclear_probe); then
             printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
             _codex_autoclear_log "$session_dir" "Automatic /clear is off for this run: $refusal"
-        elif autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
-            _cs_run_helper_dir=$autoclear_dir
+        elif [ -n "$autoclear_dir" ]; then
             _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &
             _cs_run_helper_pid=$!
         else

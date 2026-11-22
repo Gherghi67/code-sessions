@@ -6,9 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 source "$SCRIPT_DIR/../lib/01-manifests.sh"
 source "$SCRIPT_DIR/../lib/02-shared.sh"
+source "$SCRIPT_DIR/../lib/05-term.sh"
 source "$SCRIPT_DIR/../lib/15-lock.sh"
 source "$SCRIPT_DIR/../lib/16-lifecycle.sh"
 source "$SCRIPT_DIR/../lib/24-engine-adapters.sh"
+source "$SCRIPT_DIR/../lib/25-deps.sh"
+source "$SCRIPT_DIR/../lib/30-worktree.sh"
 source "$SCRIPT_DIR/../lib/36-context.sh"
 source "$SCRIPT_DIR/../lib/40-state.sh"
 source "$SCRIPT_DIR/../lib/41-bindings.sh"
@@ -18,6 +21,7 @@ source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
 source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
+source "$SCRIPT_DIR/../lib/77-codex-queue.sh"
 source "$SCRIPT_DIR/../lib/78-switch.sh"
 
 _set_local_state() {  # state key value
@@ -27,6 +31,7 @@ cs_interactive() { return 1; }
 # The launch prompt's palette; empty keeps escape codes out of asserted output.
 DIM='' NC='' BOLD='' WHITE='' GREEN='' GOLD='' COMMENT='' ORANGE=''
 warn() { printf 'Warning: %s\n' "$1" >&2; }
+notice() { :; }
 cs_actor_slug() { printf '%s\n' "${CS_ACTOR:-test-actor}"; }
 
 setup() {
@@ -42,6 +47,7 @@ setup() {
     export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc
     export CS_HELPER_EXIT=0 CS_CODEX_EXIT=0
     export CS_CODEX_HELP='--approve-for-me' CS_CODEX_HELP_EXIT=0
+    export CS_CODEX_VERSION=0.167.0-alpha.3.2
     unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
@@ -60,6 +66,10 @@ setup() {
 if [ "${1:-}" = --help ]; then
     printf '      %s\n' "$CS_CODEX_HELP"
     exit "$CS_CODEX_HELP_EXIT"
+fi
+if [ "${1:-}" = --version ]; then
+    printf 'codex-cli %s\n' "$CS_CODEX_VERSION"
+    exit 0
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
 env | grep -E '^(CODEX_HOME=|CS_CODEX_SHARED_HOME=|CS_SESSION_|CS_RUN_APPROVAL=|CS_CODEX_ROTATION_FIXED=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
@@ -319,7 +329,7 @@ test_new_thread_binding_and_context() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" '^1. .cs/summary.md — read in full' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "The current user's request is the active task" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'Agent-sessions executable:' || return 1
-    assert_output_contains "$output" 'automatic recovery is enabled' "feature scope notice" || return 1
+    assert_output_contains "$output" 'Automatic recovery is enabled' "feature scope notice" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/state" 'engine: codex' || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "lock released after CLI exit" || return 1
     assert_output_contains "$(cat "$CS_CODEX_ENV")" 'CS_SESSION_NAME=demo' "neutral identity exported" || return 1
@@ -657,6 +667,84 @@ test_native_approval_follows_the_users_sandbox() {
     assert_not_exists "$CS_HELPER_COUNT" "no thread prepared" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
 }
+
+# The queue confirms each task by the hook provenance Codex writes from
+# CS_CODEX_QUEUE_MIN_VERSION on, so its Stop parks unless the launch recorded
+# such a build in the run's private directory. The fake Codex notes the
+# record while the run directory stands, and the session the run serves, which
+# cs -queue clear and start check before they forget the run's count.
+test_a_codex_that_hosts_the_queue_is_recorded() (
+    local output status version record="$TEST_TMPDIR/version-record" session
+    # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
+    _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
+    export CS_REAL_CODEX="$CODEX_BIN" CS_VERSION_RECORD="$record"
+    export CODEX_BIN="$TEST_TMPDIR/codex recording"
+    cat > "$CODEX_BIN" <<'FAKE'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --help|--version) ;;
+    *)
+        run_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$CS_RUN_ID"
+        [ ! -d "$run_dir" ] || touch "$CS_VERSION_RECORD.run-dir"
+        [ ! -f "$run_dir/queue-version-ok" ] || touch "$CS_VERSION_RECORD"
+        [ ! -f "$run_dir/session" ] || cp "$run_dir/session" "$CS_VERSION_RECORD.session"
+        ;;
+esac
+exec "$CS_REAL_CODEX" "$@"
+FAKE
+    chmod +x "$CODEX_BIN"
+    session=$(cd -P "$CS_TEST_SESSION_DIR" && pwd -P)
+    for version in 0.167.0-alpha.3.2 0.162.0-alpha.17.2; do
+        rm -f "$record" "$record.run-dir" "$record.session"
+        export CS_CODEX_VERSION="$version"
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+        assert_eq 0 "$status" "launch under $version failed: $output" || return 1
+        assert_file_exists "$record.run-dir" "the run under $version had a private directory" || return 1
+        assert_eq "$session" "$(cat "$record.session" 2>/dev/null)" "the run under $version records its session" || return 1
+        case "$version" in
+            0.167.*) assert_file_exists "$record" "$version is recorded" || return 1 ;;
+            *) assert_not_exists "$record" "$version is not recorded" || return 1 ;;
+        esac
+    done
+)
+
+# A vault launch records the encryption in the run's private directory, where
+# the agent cannot remove it as it can .cs/private, and the queue's Stop
+# refuses by it. A plain launch records none. The fake Codex notes the record
+# while the run directory stands.
+test_a_vault_launch_records_its_encryption() (
+    local output status record="$TEST_TMPDIR/encrypted-record"
+    # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
+    _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
+    export CS_REAL_CODEX="$CODEX_BIN" CS_ENCRYPTED_RECORD="$record"
+    export CODEX_BIN="$TEST_TMPDIR/codex recording"
+    cat > "$CODEX_BIN" <<'FAKE'
+#!/usr/bin/env bash
+case "${1:-}" in
+    --help|--version) ;;
+    *)
+        run_dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$CS_RUN_ID"
+        [ ! -d "$run_dir" ] || touch "$CS_ENCRYPTED_RECORD.run-dir"
+        [ ! -f "$run_dir/encrypted" ] || [ -L "$run_dir/encrypted" ] || touch "$CS_ENCRYPTED_RECORD"
+        ;;
+esac
+exec "$CS_REAL_CODEX" "$@"
+FAKE
+    chmod +x "$CODEX_BIN"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "plain launch failed: $output" || return 1
+    assert_file_exists "$record.run-dir" "the plain run had a private directory" || return 1
+    assert_not_exists "$record" "a plain launch records no encryption" || return 1
+    rm -f "$record.run-dir" "$CS_CODEX_LOG" "$CS_HELPER_COUNT" "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    _vault_fixture
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "vault launch failed: $output" || return 1
+    assert_file_exists "$record.run-dir" "the vault run had a private directory" || return 1
+    assert_file_exists "$record" "a vault launch records the encryption"
+)
 
 # What cs cannot confine stops the open before anything is bound: a profile a
 # file already defines under cs's name (cs's would merge into it), a project
@@ -1132,6 +1220,10 @@ _autoclear_launch_fixture() {
 #!/usr/bin/env bash
 if [ "${1:-}" = --help ]; then
     printf '      --approve-for-me\n'
+    exit 0
+fi
+if [ "${1:-}" = --version ]; then
+    printf 'codex-cli %s\n' "$CS_CODEX_VERSION"
     exit 0
 fi
 source "$CS_TEST_LIB_DIR/../lib/02-shared.sh"
@@ -1689,6 +1781,18 @@ _codex_brief_seed() {
         > "$SESSIONS_ROOT/.spawn/demo.seed"
 }
 
+test_codex_task_seed_arms_the_queue_and_submits_the_kickoff() {
+    _codex_brief_seed
+    printf '%s\nboss\nfirst task\nsecond task\n' "$CS_SPAWN_TOKEN" > "$SESSIONS_ROOT/.spawn/demo.seed"
+    export CS_CODEX_TURN=1
+    launch_codex demo "$CS_TEST_SESSION_DIR" true false >/dev/null || return 1
+    assert_output_contains "$(cat "$CS_CODEX_LOG")" 'Your walk-away queue is armed with 2 task(s)' || return 1
+    assert_eq armed "$(cat "$CS_TEST_SESSION_DIR/.cs/local/queue.state")" || return 1
+    assert_eq $'first task\nsecond task' "$(cat "$CS_TEST_SESSION_DIR/.cs/local/queue/"*)" || return 1
+    assert_eq boss "$(cat "$CS_TEST_SESSION_DIR/.cs/local/spawned-by")" || return 1
+    assert_not_exists "$SESSIONS_ROOT/.spawn/demo.seed"
+}
+
 test_codex_spawn_acknowledges_a_started_brief_and_never_replays_it() {
     _codex_brief_seed
     export CS_CODEX_TURN=1
@@ -1752,6 +1856,7 @@ test_spawn_receipt_recovers_after_an_interrupted_launcher() {
 
 run_test test_startup_refreshes_the_memory_index_on_fresh_and_resume
 run_test test_codex_spawn_acknowledges_a_started_brief_and_never_replays_it
+run_test test_codex_task_seed_arms_the_queue_and_submits_the_kickoff
 run_test test_failed_codex_spawn_retains_the_kickoff_until_a_turn_starts
 run_test test_a_brief_that_started_before_failure_is_not_replayed
 run_test test_ambiguous_spawn_history_stops_replay_and_keeps_the_receipt
@@ -1875,6 +1980,8 @@ run_test test_a_linked_vault_home_stops_the_open
 run_test test_vault_home_refusals_name_the_home_as_a_plain_name
 run_test test_the_vault_profile_keeps_the_users_workspace_settings
 run_test test_native_approval_follows_the_users_sandbox
+run_test test_a_codex_that_hosts_the_queue_is_recorded
+run_test test_a_vault_launch_records_its_encryption
 run_test test_the_vault_check_refuses_what_cs_cannot_confine
 run_test test_an_inherited_vault_home_is_dropped
 run_test test_a_binding_from_before_the_vault_starts_a_vault_thread

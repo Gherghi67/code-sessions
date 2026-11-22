@@ -499,7 +499,7 @@ save a recovery copy through the same shadow-ref consumer as Claude edits.
 The installer registers `cs -codex-hook files-changed` for PostToolUse and
 deploys its recovery files to `$CODEX_HOME/hooks/cs/`; see
 [Completed file changes and recovery copies](engine-adapters.md#completed-file-changes-and-recovery-copies).
-Codex does not yet participate in Claude's automatic recovery prompt, queue delivery, usage
+Codex does not yet participate in Claude's automatic recovery prompt, usage
 reporting (`cs -usage`), observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
@@ -536,18 +536,65 @@ The owning thread's UserPromptSubmit hook shows the same bounded unread-mail
 preview as Claude: up to five messages with sender, kind and a 160-character
 body preview. Mail is labeled as text from other sessions. It remains unread
 until `cs -msg` consumes it. This is next-prompt delivery; it does not wake an
-idle Codex session. Permission hooks only cancel rotation typing. As under
+idle Codex session. As under
 Claude, the hook shows no mail while git tracks a file in the session's control
 directory, even one a pull brought after launch.
 
 
-## Feature briefs
+## Feature briefs and task queues
 
 `cs -spawn <name> --brief <file>` inherits the spawning run's engine. An explicit
 `--engine claude|codex` wins; outside a run the target's preference/default applies.
 Both adapters use the same seed consent and brief delivery code. Codex starts
-its first turn with the prompt to read `.cs/brief.md` and begin. `--task` needs
-Claude's walk-away queue and is refused for Codex before a seed or window exists.
+its first turn with a prompt for the brief, the queue, or both.
+
+`cs -spawn <name> --engine codex --task "first" --task "second"` queues the
+tasks, arms the drain, and submits its kickoff. To use an existing session,
+add tasks with `cs <name> -queue add "task"` and arm them with
+`cs <name> -queue start`. The next completed Codex response starts the drain.
+If Codex is idle, send one prompt to get it started. Use `cs -queue log` to
+see completed tasks and breaker trips. The default runs tasks in the
+conversation. `cs -queue start subagents` delegates each task to a native
+subagent. Workflow mode is available under Claude.
+
+Codex counts recognizable shell and patch failures from the current task's
+rollout records. A task that reports `cs-task-failed` or trips the failure
+breaker stays queued. Context and five-hour quota trips record the completed
+task and park the remainder. If either usage reading is unavailable, the drain
+can finish up to `CS_CODEX_QUEUE_MAX_TASKS` tasks before parking, with a
+default of 10. The cap counts every task since your last `cs -queue start` or
+`cs -queue clear` in your own shell, and a re-arm from inside the conversation
+keeps counting. After a breaker park, re-arm from your own shell with
+`cs <session> -queue start`; a re-arm from inside the conversation stays
+parked. If Codex cannot confirm a task handoff and final response from
+its active history, the task stays queued for inspection and re-arming.
+`cs -queue start` refuses while the drain runs; after an interrupted turn the
+next Stop parks the queue, and `cs -queue start` re-arms it then.
+An encrypted session cannot host a Codex walk-away queue. Codex's home lies
+in the vault, inside the session, and on macOS the agent can move it out from
+under cs's read-only rule and rewrite the history cs confirms tasks by.
+`cs -spawn --task` and `cs -queue start` refuse there, and an armed queue
+hands out no tasks: each Stop says so, the spawner gets one notice, and the
+tasks stay queued for Claude or an unencrypted session. Removing `.cs/private`
+from inside the run does not lift this: cs goes by how the run was launched.
+Elsewhere, a writable root over Codex's history parks the queue with a
+notice, judged both by how the history's path is spelled and by where its
+links lead, and so does a missing history folder.
+
+A native approval prompt waits for your answer. The first such prompt during
+a spawned drain sends the spawner a notice. An armed rotation takes priority
+before dispatching the next task, and the fresh conversation resumes the
+queue after rebind. When nothing will type /clear (the automatic /clear is
+off or there is no watcher), the run waits for you to type /clear and then
+send go, and the spawner gets one notice. A switch held under native approval
+waits instead until you take it with /quit or drop it with cs -switch cancel,
+with the same one notice.
+
+The queue needs Codex 0.167.0 or later: cs confirms each task by the hook
+provenance Codex records on the continuation prompt, measured on
+0.167.0-alpha.3.2 and 0.169.0-alpha.11.1. Codex 0.158 and 0.162 do not record
+it, so `cs -spawn --task` refuses under them and an armed queue parks with a
+notice.
 
 Codex retains a durable kickoff receipt in `.cs/local/spawn-kick.json` until
 native thread history confirms a turn started. A launch that fails before a turn

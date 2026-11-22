@@ -16,7 +16,7 @@ Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 | `cs -narrative rotate` | Archives the oldest narrative sections past the size budget. `cs <name> -narrative rotate` targets a named session. |
 | `cs -queue add "<task>"` | Adds a task. Other actions are `accept <id>`, `list`, `start [subagents\|workflow]`, `rm <n>`, `clear`, and `log`. |
 | `cs -msg <session> "note"` | Sends mail. Bare `cs -msg` reads unread mail. Use `log`, `thread <id>`, or `--reply <thread> "note"` for history and replies. |
-| `cs -spawn <name> [--engine claude|codex|antigravity] [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue (Codex and Antigravity take a brief only, and refuse `--task`). Attach with `tmux attach -t cs`. A feature's brief (`<base>@<task>`) carries `## Goal`, `## Done when`, `## Constraints`, `## Context`, `## Review` and `## Report back`, each heading on its own line; one missing refuses the spawn and is named. |
+| `cs -spawn <name> [--engine claude|codex|antigravity] [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief, an armed task queue, or both. Claude and Codex support `--task`. Antigravity supports `--brief`. Attach with `tmux attach -t cs`. A feature's brief (`<base>@<task>`) carries `## Goal`, `## Done when`, `## Constraints`, `## Context`, `## Review` and `## Report back`, each heading on its own line. A missing heading refuses the spawn. |
 | `cs -conversations` | Shows the conversation chain. `cs <name> -conversations` targets another session. |
 | `cs -tag add\|rm <tag>` | Edits README frontmatter tags. Use `-tag list` or `cs <name> -tag ...` to inspect or target another session. |
 | `cs -archive <name>...`, `cs -unarchive <name>...` | Hides or restores sessions. Opening an archived session restores it. |
@@ -187,7 +187,7 @@ newer release is asked about afresh. Off a terminal nothing is asked.
 | Show the run journal | `cs -queue log` |
 
 - Adding from another session sends task mail requiring acceptance.
-- `cs -queue start` while the queue drains in a running session exits 1 and changes nothing; the next turn end hands out the next task by itself. `cs -queue clear` stops the run and removes the queued tasks with it. A drain left behind by a crashed or closed session re-arms.
+- `cs -queue start` while the queue drains in a running session exits 1 and changes nothing; the next turn end hands out the next task by itself. Under Codex, the turn end after an interrupted turn parks the queue instead, and `cs -queue start` re-arms it then. `cs -queue clear` stops the run and removes the queued tasks with it. A drain left behind by a crashed or closed session re-arms.
 - See [queue controls](hooks.md#cs-not-a-hook-script--a-claude-code-mod) for mid-turn `/queue`, Start/Not yet/Compact, and conversation/subagent/workflow execution. Choosing workflows authorizes that tool.
 - Bare `/cs` opens the settings pane; see [the panel mod](hooks.md#cs-panel-not-a-hook-script--a-claude-code-mod). `/cs next|prev|first|last|<n>` scrolls the transcript along the band's rail of prompts (one tick per prompt the person sent), mid-turn too; see [the rail](hooks.md#cs-not-a-hook-script--a-claude-code-mod).
 - See [queue drain and breakers](hooks.md#stop-blockssh-stop-filechanged-cwdchanged) for listed-order turn boundaries, native-task mirroring, the default five-failure/85%-context/85%-quota limits, rearming, and the return digest.

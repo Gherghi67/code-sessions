@@ -158,6 +158,21 @@ test_queue_start_refuses_while_a_live_session_drains() {
     assert_eq "workflow" "$(cat "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/queue.mode")" "the mode file is left as it was" || return 1
 }
 
+# Under Codex the next Stop after an interrupted turn parks the queue rather
+# than hand out a task, so the refusal says what re-arming does then.
+test_queue_start_refuses_a_live_codex_drain() {
+    local out rc=0
+    "$CS_BIN" -queue add "x" >/dev/null 2>&1
+    printf 'engine: codex\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    printf 'draining\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/queue.state"
+    printf '%s\n' "$$" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/session.lock"
+    out=$("$CS_BIN" -queue start 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a start during a live Codex drain fails" || return 1
+    assert_output_contains "$out" "parks the queue" "the error names what an interrupted turn does" || return 1
+    assert_output_contains "$out" "cs -queue start re-arms it" "the error names when to re-arm" || return 1
+    assert_eq "draining" "$(cat "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/queue.state")" "the state is left as it was" || return 1
+}
+
 # A draining state whose session is gone (a crash, a close) is stale: no turn
 # is in progress to run twice, so start re-arms it as it does any other state.
 test_queue_start_rearms_a_drain_whose_session_is_gone() {
@@ -412,6 +427,7 @@ run_test test_queue_start_sets_armed
 run_test test_queue_start_records_how_the_tasks_run
 run_test test_queue_start_refuses_an_unknown_mode
 run_test test_queue_start_refuses_while_a_live_session_drains
+run_test test_queue_start_refuses_a_live_codex_drain
 run_test test_queue_start_rearms_a_drain_whose_session_is_gone
 run_test test_queue_clear_forgets_the_mode
 run_test test_queue_defer_is_not_a_verb
@@ -1645,6 +1661,23 @@ test_queue_in_an_encrypted_session_lives_in_its_vault() {
     done
 }
 
+# On macOS the agent can move an encrypted session's Codex home out from
+# under cs's read-only rule and rewrite the history cs confirms tasks by, so
+# cs -queue start arms no Codex queue there.
+test_queue_start_refuses_an_encrypted_codex_session() {
+    local out rc=0
+    _make_private_queue
+    "$CS_BIN" -queue add "sealed task" >/dev/null 2>&1 || return 1
+    printf 'engine: codex\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    out=$("$CS_BIN" -queue start 2>&1) || rc=$?
+    assert_eq "1" "$rc" "start in an encrypted Codex session fails" || return 1
+    assert_eq "Error: An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. The queued tasks stay; run them under Claude, or move them to an unencrypted session." \
+        "$out" "the refusal names the reason" || return 1
+    assert_not_exists "$TEST_TMPDIR/vault/private/queue.state" "nothing is armed" || return 1
+    assert_file_contains "$TEST_TMPDIR/vault/private/queue/$(ls "$TEST_TMPDIR/vault/private/queue")" \
+        "sealed task" "the task stays queued"
+}
+
 test_queue_in_a_locked_session_is_refused() {
     ln -s "$TEST_TMPDIR/unmounted/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
     local out rc=0
@@ -1676,6 +1709,7 @@ test_queue_names_a_locked_vault_by_a_plain_target() {
 }
 
 run_test test_queue_in_an_encrypted_session_lives_in_its_vault
+run_test test_queue_start_refuses_an_encrypted_codex_session
 run_test test_queue_in_a_locked_session_is_refused
 run_test test_queue_names_a_locked_vault_by_a_plain_target
 

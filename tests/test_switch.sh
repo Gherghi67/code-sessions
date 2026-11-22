@@ -118,6 +118,12 @@ if [ "${1:-}" = --help ]; then
     printf '      --approve-for-me\n'
     exit 0
 fi
+# A launch asks the version (the walk-away queue needs 0.167.0); like --help,
+# that starts no run, so it is neither recorded nor planned.
+if [ "${1:-}" = --version ]; then
+    printf 'codex-cli 0.167.0-alpha.3.2\n'
+    exit 0
+fi
 STUB_PPID=$PPID "$CS_STUB_DIR/record" codex "$@"
 if [ -f "$CS_STUB_DIR/codex.fail-early" ]; then
     rc=$(cat "$CS_STUB_DIR/codex.fail-early"); rm -f "$CS_STUB_DIR/codex.fail-early"; exit "$rc"

@@ -2,6 +2,7 @@
 # ABOUTME: Exercises Codex bootstrap protocol, exact identity, persistence, and cleanup.
 # ABOUTME: Uses an isolated fake server and an optional real Codex no-model smoke test.
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import runpy
+import shlex
 import shutil
 import signal
 import subprocess
@@ -3125,6 +3127,322 @@ class VaultHomeTests(HelperFixture):
         self.assertEqual(self.helper('--has-thread', '--thread-id', THREAD_ID, env=env).stdout, 'yes\n')
         self.assertEqual(self.helper('--has-thread', '--thread-id', OTHER_ID, env=env).stdout, 'no\n')
         self.assertNotEqual(self.helper('--has-thread', env=env).returncode, 0)
+
+
+class QueueSnapshotTests(unittest.TestCase):
+    """The queue Stop hook's read of the active rollout from a task's delivery offset."""
+
+    TURN = OTHER_ID
+    TOKEN = "11111111-1111-4111-8111-111111111111"
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="cs-codex-queue-test-")
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name) / 'codex'
+        self.rollout = home / 'sessions' / ('rollout-2026-11-20T00-00-00-' + THREAD_ID + '.jsonl')
+        self.rollout.parent.mkdir(parents=True)
+        self.env = dict(os.environ, CODEX_HOME=str(home))
+
+    def write(self, *records):
+        with self.rollout.open('a', encoding='utf-8') as handle:
+            for record in records:
+                handle.write(json.dumps({'type': record[0], 'payload': record[1]}) + '\n')
+
+    def snapshot(self, *extra):
+        return subprocess.run([sys.executable, str(HELPER), '--queue-snapshot', str(self.rollout),
+                               '--thread-id', THREAD_ID, '--queue-turn', self.TURN,
+                               '--queue-receipt', self.TOKEN, *extra],
+                              env=self.env, capture_output=True, text=True, timeout=10)
+
+    def receipt_record(self):
+        """The hook prompt that hands the task over, as Codex records it."""
+        receipt = '<hook_prompt hook_run_id="stop:4:hooks.json">cs task queue [' + self.TOKEN + ']: next task</hook_prompt>'
+        return ('response_item', {
+            'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': receipt}],
+            'internal_chat_message_metadata_passthrough': {
+                'turn_id': self.TURN,
+                'content_item_metadata': [{'provenance': {'type': 'harness', 'hook': True}}]}})
+
+    def task_with_large_output(self):
+        """A delivered task that writes 9 MiB after its receipt; returns the offset at delivery."""
+        self.write(('session_meta', {'id': THREAD_ID}),
+                   ('event_msg', {'type': 'task_started', 'turn_id': self.TURN}))
+        offset = self.rollout.stat().st_size
+        self.write(self.receipt_record(),
+                   ('response_item', {'type': 'function_call_output', 'call_id': 'big',
+                                      'output': 'x' * (9 * 1024 * 1024)}),
+                   ('response_item', {'type': 'message', 'role': 'assistant', 'phase': 'final_answer',
+                                      'content': [{'type': 'output_text', 'text': 'finished'}]}))
+        return offset
+
+    def test_queue_offset_finds_a_receipt_before_the_last_8_mib(self):
+        offset = self.task_with_large_output()
+        result = self.snapshot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)['delivered'], 'without an offset only the last 8 MiB is read')
+        result = self.snapshot('--queue-offset', str(offset))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        snapshot = json.loads(result.stdout)
+        self.assertTrue(snapshot['delivered'])
+        self.assertTrue(snapshot['final_assistant'])
+
+    def test_queue_offset_beyond_the_rollout_is_an_error(self):
+        self.task_with_large_output()
+        result = self.snapshot('--queue-offset', str(self.rollout.stat().st_size + 1))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('unexpected active rollout size', result.stderr)
+        result = self.snapshot('--queue-offset', '-1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('--queue-offset must not be negative', result.stderr)
+
+    @unittest.skipUnless(os.environ.get('CS_CODEX_REAL_BIN'), 'set CS_CODEX_REAL_BIN for no-model smoke test')
+    def test_real_stop_continuation_is_confirmed(self):
+        """A real Codex continues its turn from a Stop hook's block, and the snapshot finds the
+        receipt by the hook provenance Codex records, then the final answer after it."""
+        temp = tempfile.TemporaryDirectory(prefix="cs-codex-queue-native-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        home, work, user_home = root / 'codex', root / 'work', root / 'home'
+        for folder in (home, work, user_home):
+            folder.mkdir()
+        stops, hook = root / 'stops.jsonl', root / 'stop-hook.py'
+        # The first Stop hands over a task as the queue does; later ones let the turn end.
+        hook.write_text(
+            'import json, sys\n'
+            'data = json.load(sys.stdin)\n'
+            'with open(sys.argv[1], "a") as log:\n'
+            '    log.write(json.dumps(data) + "\\n")\n'
+            'with open(sys.argv[1]) as log:\n'
+            '    first = sum(1 for _ in log) == 1\n'
+            'if first:\n'
+            '    print(json.dumps({"decision": "block", "reason": "cs task queue [" + sys.argv[2]\n'
+            '                      + "]: next task (1 remaining). Reply with done, then finish your response."}))\n')
+        answers = []
+
+        class Provider(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                answers.append(None)
+                number = len(answers)
+                base = {'id': 'resp_%d' % number, 'object': 'response', 'created_at': 1795129400,
+                        'model': 'gpt-6.2-sol', 'error': None}
+                item = {'id': 'msg_%d' % number, 'type': 'message', 'role': 'assistant',
+                        'phase': 'final_answer', 'status': 'completed',
+                        'content': [{'type': 'output_text', 'text': 'done %d' % number, 'annotations': []}]}
+                usage = {'input_tokens': 12345, 'input_tokens_details': {'cached_tokens': 0},
+                         'output_tokens': 135, 'output_tokens_details': {'reasoning_tokens': 0},
+                         'total_tokens': 12480}
+                records = [
+                    {'type': 'response.created', 'response': dict(base, status='in_progress', output=[])},
+                    {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+                    {'type': 'response.completed',
+                     'response': dict(base, status='completed', output=[item], usage=usage)},
+                ]
+                wire = ''.join('event: %s\ndata: %s\n\n' % (r['type'], json.dumps(r)) for r in records).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(wire)))
+                self.end_headers()
+                self.wfile.write(wire)
+
+            def log_message(self, *_):
+                pass
+
+        with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider) as provider:
+            listener = threading.Thread(target=provider.serve_forever, daemon=True)
+            listener.start()
+            self.addCleanup(listener.join, 2)
+            self.addCleanup(provider.shutdown)
+            # Codex runs a new hook only once its hash is trusted: the sha256 of its sorted JSON.
+            handler = {'command': shlex.join([sys.executable, '-I', str(hook), str(stops), self.TOKEN]),
+                       'type': 'command'}
+            hashed = {'event_name': 'stop', 'hooks': [dict(handler, timeout=600, **{'async': False})]}
+            digest = hashlib.sha256(json.dumps(hashed, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            (home / 'hooks.json').write_text(json.dumps({'hooks': {'Stop': [{'hooks': [handler]}]}}))
+            (home / 'config.toml').write_text(
+                'model = "gpt-6.2-sol"\nmodel_provider = "capture"\nmodel_context_window = 100000\n'
+                'approval_policy = "never"\n[analytics]\nenabled = false\n[model_providers.capture]\n'
+                'name = "Local test capture"\nwire_api = "responses"\nrequires_openai_auth = false\n'
+                'base_url = "http://127.0.0.1:{}/v1"\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+                '[projects.{}]\ntrust_level = "trusted"\n'
+                '[hooks.state.{}]\ntrusted_hash = "sha256:{}"\n'.format(
+                    provider.server_port, json.dumps(str(work)),
+                    json.dumps(str(home / 'hooks.json') + ':stop:0:0'), digest))
+            env = {'CODEX_HOME': str(home), 'HOME': str(user_home), 'PATH': os.environ['PATH'],
+                   'LANG': 'en_US.UTF-8', 'TMPDIR': str(root)}
+            result = subprocess.run([os.environ['CS_CODEX_REAL_BIN'], 'exec', '--json', '--skip-git-repo-check',
+                                     '--cd', str(work), 'offline queue test'], env=env, cwd=str(work),
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        records = [json.loads(line) for line in stops.read_text().splitlines()] if stops.exists() else []
+        self.assertGreaterEqual(len(records), 2, 'the Stop hook did not continue the turn: ' + result.stderr[-2000:])
+        first, second = records[0], records[1]
+        self.assertTrue(second['stop_hook_active'])
+        self.assertEqual(second['turn_id'], first['turn_id'], 'the continuation runs in the same turn')
+        snapshot = subprocess.run([sys.executable, str(HELPER), '--queue-snapshot', second['transcript_path'],
+                                   '--thread-id', first['session_id'], '--queue-turn', first['turn_id'],
+                                   '--queue-receipt', self.TOKEN],
+                                  env=dict(os.environ, CODEX_HOME=str(home)), capture_output=True, text=True,
+                                  timeout=20)
+        self.assertEqual(snapshot.returncode, 0, snapshot.stderr)
+        reading = json.loads(snapshot.stdout)
+        self.assertTrue(reading['delivered'], 'no hook prompt with harness provenance carries the receipt')
+        self.assertTrue(reading['final_assistant'], 'no final answer after the receipt')
+
+
+class QueueFileTests(unittest.TestCase):
+    """The Codex queue's writes into .cs/local, and its read of a task, by descriptor."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="cs-codex-queue-file-test-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.session = self.root / 'session'
+        self.local = self.session / '.cs' / 'local'
+        (self.local / 'queue').mkdir(parents=True)
+        self.outside = self.root / 'outside'
+        self.outside.mkdir()
+        self.target = self.outside / 'target'
+        self.target.write_bytes(b'outside\n')
+
+    def queue_file(self, op, name, data=b''):
+        return subprocess.run([sys.executable, str(HELPER), '--queue-file', op, name,
+                               '--session-dir', str(self.session)],
+                              input=data, capture_output=True, timeout=10)
+
+    def assert_refused(self, result):
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(b'cs-codex-thread: ', result.stderr)
+
+    def test_append_creates_then_appends(self):
+        self.assertEqual(self.queue_file('append', 'queue.done', b'first\n').returncode, 0)
+        result = self.queue_file('append', 'queue.done', b'second\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.local / 'queue.done').read_bytes(), b'first\nsecond\n')
+
+    def test_replace_writes_a_new_file_and_leaves_no_temp(self):
+        (self.local / 'queue.state').write_bytes(b'armed\n')
+        result = self.queue_file('replace', 'queue.state', b'draining\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.local / 'queue.state').read_bytes(), b'draining\n')
+        self.assertEqual(sorted(os.listdir(self.local)), ['queue', 'queue.state'])
+
+    def test_replace_takes_the_place_of_a_link_without_following_it(self):
+        (self.local / 'queue.current').symlink_to(self.target)
+        result = self.queue_file('replace', 'queue.current', b'001\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.local / 'queue.current').is_symlink())
+        self.assertEqual((self.local / 'queue.current').read_bytes(), b'001\n')
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_replace_onto_a_directory_is_refused(self):
+        (self.local / 'queue.state').mkdir()
+        self.assert_refused(self.queue_file('replace', 'queue.state', b'idle\n'))
+        self.assertTrue((self.local / 'queue.state').is_dir())
+        self.assertEqual(sorted(os.listdir(self.local)), ['queue', 'queue.state'], 'no temp file is left')
+
+    def test_unlink_removes_and_a_missing_file_is_success(self):
+        (self.local / 'queue' / '001').write_bytes(b'task\n')
+        self.assertEqual(self.queue_file('unlink', 'queue/001').returncode, 0)
+        self.assertFalse((self.local / 'queue' / '001').exists())
+        self.assertEqual(self.queue_file('unlink', 'queue/001').returncode, 0)
+        self.assertEqual(self.queue_file('unlink', 'spawned-by').returncode, 0)
+
+    def test_unlink_of_a_directory_is_an_error(self):
+        (self.local / 'queue.mode').mkdir()
+        self.assert_refused(self.queue_file('unlink', 'queue.mode'))
+        self.assertTrue((self.local / 'queue.mode').is_dir())
+
+    def test_unlink_of_a_link_removes_only_the_link(self):
+        (self.local / 'spawned-by').symlink_to(self.target)
+        self.assertEqual(self.queue_file('unlink', 'spawned-by').returncode, 0)
+        self.assertFalse((self.local / 'spawned-by').is_symlink())
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_first_line_prints_the_line_without_its_newline(self):
+        (self.local / 'queue' / '001').write_bytes(b'first task\nmore\n')
+        (self.local / 'queue' / '002').write_bytes(b'no newline')
+        result = self.queue_file('first-line', 'queue/001')
+        self.assertEqual((result.returncode, result.stdout), (0, b'first task'), result.stderr)
+        result = self.queue_file('first-line', 'queue/002')
+        self.assertEqual((result.returncode, result.stdout), (0, b'no newline'), result.stderr)
+
+    def test_first_line_of_an_empty_or_missing_file_fails(self):
+        (self.local / 'queue' / '001').write_bytes(b'')
+        empty = self.queue_file('first-line', 'queue/001')
+        self.assert_refused(empty)
+        missing = self.queue_file('first-line', 'queue/002')
+        self.assertEqual(missing.returncode, 3, 'a missing file has its own status')
+        self.assertNotEqual(empty.returncode, 3)
+        self.assertEqual(empty.stdout + missing.stdout, b'')
+
+    def test_first_line_does_not_follow_a_link(self):
+        (self.local / 'queue' / '001').symlink_to(self.target)
+        result = self.queue_file('first-line', 'queue/001')
+        self.assert_refused(result)
+        self.assertNotEqual(result.returncode, 3)
+        self.assertEqual(result.stdout, b'')
+
+    def test_append_does_not_follow_a_link(self):
+        (self.local / 'queue.done').symlink_to(self.target)
+        self.assert_refused(self.queue_file('append', 'queue.done', b'task\n'))
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_append_refuses_a_hard_linked_file(self):
+        os.link(self.target, self.local / 'notifications.jsonl')
+        self.assert_refused(self.queue_file('append', 'notifications.jsonl', b'{}\n'))
+        self.assertEqual(self.target.read_bytes(), b'outside\n')
+
+    def test_append_refuses_a_file_that_is_not_regular(self):
+        os.mkfifo(self.local / 'queue.done')
+        self.assert_refused(self.queue_file('append', 'queue.done', b'task\n'))
+
+    def test_a_linked_level_of_the_path_is_refused(self):
+        """A link at .cs, local or queue/ is refused for every op, and nothing is written through it."""
+        levels = (('.cs', self.session / '.cs', 'local/queue'), ('local', self.local, 'queue'),
+                  ('queue', self.local / 'queue', ''))
+        for level, real, below in levels:
+            with self.subTest(level=level):
+                elsewhere = self.root / ('elsewhere-' + level.lstrip('.'))
+                planted = elsewhere / below / '001'
+                planted.parent.mkdir(parents=True)
+                planted.write_bytes(b'planted\n')
+                aside = real.with_name(real.name + '.real')
+                real.rename(aside)
+                real.symlink_to(elsewhere)
+                try:
+                    names = ['queue/001'] + (['queue.done', 'queue.state'] if level != 'queue' else [])
+                    for op in ('append', 'replace', 'unlink', 'first-line'):
+                        for name in names:
+                            result = self.queue_file(op, name, b'written\n')
+                            self.assert_refused(result)
+                            self.assertNotEqual(result.returncode, 3)
+                    self.assertEqual(planted.read_bytes(), b'planted\n')
+                    self.assertEqual([p.name for p in elsewhere.rglob('*') if p.is_file()], ['001'],
+                                     'nothing is written through the link')
+                finally:
+                    real.unlink()
+                    aside.rename(real)
+
+    def test_names_outside_local_and_its_queue_are_refused(self):
+        for name in ('', '.', '..', '/', 'queue', 'queue/', 'queue/.', 'queue/..', 'a/b', '../x',
+                     '/etc/passwd', 'queue/a/b', 'other/001', '//x'):
+            with self.subTest(name=name):
+                result = self.queue_file('append', name, b'x\n')
+                self.assert_refused(result)
+        self.assertEqual(sorted(p.name for p in self.root.rglob('*')),
+                         ['.cs', 'local', 'outside', 'queue', 'session', 'target'])
+
+    def test_an_unknown_op_or_a_missing_session_dir_is_refused(self):
+        result = subprocess.run([sys.executable, str(HELPER), '--queue-file', 'chmod', 'queue.done',
+                                 '--session-dir', str(self.session)], capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        result = subprocess.run([sys.executable, str(HELPER), '--queue-file', 'append', 'queue.done'],
+                                input=b'x\n', capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.local / 'queue.done').exists())
 
 
 if __name__ == '__main__':

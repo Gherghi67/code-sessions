@@ -359,6 +359,7 @@ export CS_NARRATIVE_KEEP_BYTES="65536"
 export CS_QUEUE_MAX_FAILURES="5"
 export CS_QUEUE_MAX_CTX="85"
 export CS_QUEUE_MAX_5H="85"
+export CS_CODEX_QUEUE_MAX_TASKS="10"  # fallback when a Codex usage reading is missing
 
 # Mail wakes: how many a turn boundary may fire between user prompts,
 # and the switch that silences them entirely (see hooks.md)
@@ -570,6 +571,7 @@ stays with its session.
 | `CS_QUEUE_MAX_FAILURES` | a whole number of 1 to 3 digits | 5 | when the next turn ends |
 | `CS_QUEUE_MAX_CTX` | a whole number of 1 to 3 digits | 85 | when the next turn ends |
 | `CS_QUEUE_MAX_5H` | a whole number of 1 to 3 digits | 85 | when the next turn ends |
+| `CS_CODEX_QUEUE_MAX_TASKS` | a whole number of 1 to 3 digits | 10 | when the next turn ends |
 | `CS_MAIL_WAKE_MAX` | a whole number of 1 to 3 digits | 5 | when the next turn ends |
 | `CS_NO_MAIL_WAKE` | `1` (on) or `0` (off) | off | when the next turn ends |
 | `CS_NARRATIVE_MAX_BYTES` | a byte count above 0, at most 15 digits | 131072 | when the next turn ends |

@@ -310,7 +310,7 @@ run_spawn() {
     # target preference/default. Do not rely on tmux's ambient environment.
     engine=$(_session_engine "$SESSIONS_ROOT/$name" "${engine:-${CS_RUN_ENGINE:-}}") || return 1
     if [ "${#tasks[@]}" -gt 0 ]; then
-        _spawn_refuse_queue "$engine" ""
+        _spawn_refuse_queue "$engine" "" "$SESSIONS_ROOT/$name"
     fi
     # A seed waits for a launch that consumes it, and an adapter without
     # spawn_brief never does: refused here, before anything is staged.
@@ -490,7 +490,7 @@ _spawn_prepare_launch() {  # session_name, session_dir
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
             if [ "$_n" -gt 0 ]; then
-                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)"
+                _spawn_refuse_queue "${CS_RUN_ENGINE:-claude}" " (seed kept)" "$session_dir"
             fi
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -e "$session_dir/.cs/local/spawn-kick.json" ]; then
                 error "An earlier spawn kickoff is pending; deliver it before taking another seed (seed kept)"
@@ -539,15 +539,13 @@ _spawn_prepare_launch() {  # session_name, session_dir
             # before it, so the seed put back is the only copy of its tasks. A
             # take-back that fails names every file left, for the person to
             # remove before a retry queues them again.
-            local _queued=() _left=() _f
+            local _queued=() _left=()
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
                 if _queue_write_task "$_qdir" "$_line"; then
                     _queued+=("$_QUEUE_ADDED")
                     continue
                 fi
-                for _f in ${_queued[@]+"${_queued[@]}"}; do
-                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
-                done
+                _spawn_take_back_tasks ${_queued[@]+"${_queued[@]}"}
                 if [ "${#_left[@]}" -gt 0 ]; then
                     error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
                 fi
@@ -570,7 +568,13 @@ _spawn_prepare_launch() {  # session_name, session_dir
             if [ "${CS_RUN_ENGINE:-claude}" = codex ] && [ -n "$spawn_kick" ]; then
                 cs_write_atomic "$session_dir/.cs/local/spawn-kick.json" jq -n \
                     --arg prompt "$spawn_kick" '{prompt: $prompt, attempted: false}' \
-                    || error "Cannot save spawn kickoff (seed kept; reopen to retry)"
+                    || {
+                        _spawn_take_back_tasks ${_queued[@]+"${_queued[@]}"}
+                        if [ "${#_left[@]}" -gt 0 ]; then
+                            error "Cannot save spawn kickoff (seed kept). Remove the staged task files before retry: ${_left[*]}"
+                        fi
+                        error "Cannot save spawn kickoff (seed kept; reopen to retry)"
+                    }
             fi
             # Once its tasks are queued the seed is spent: only the claimed
             # seed is deleted (one published since stays staged for its own
@@ -587,13 +591,30 @@ _spawn_prepare_launch() {  # session_name, session_dir
     fi
 }
 
-# The walk-away queue is drained by Claude's hooks; every other engine, an
-# adapter added later included, takes a brief only, and a seed with tasks is
-# refused before anything is staged or written.
-_spawn_refuse_queue() {  # engine, suffix
+_spawn_take_back_tasks() {  # staged paths; _left belongs to the seed consumer
+    local file
+    for file in "$@"; do
+        rm -f "$file" 2>/dev/null && [ ! -e "$file" ] || _left+=("$file")
+    done
+}
+
+# An adapter must own a drain before a seed is written or spent, and a Codex
+# drain needs a session that is not encrypted.
+_spawn_refuse_queue() {  # engine, suffix, session_dir (when it exists)
+    local status=0
+    if cs_engine_supports "$1" task_queue; then
+        if [ "$1" = codex ] && [ -n "${3:-}" ] && is_session_dir "$3" && _switch_session_encrypted "$3"; then
+            error "An encrypted session cannot host a Codex walk-away queue: on macOS the agent can move its Codex home out from under cs's read-only rule and rewrite the history cs confirms tasks by. Use --brief without --task$2"
+        fi
+        [ "$1" != codex ] || _codex_queue_version_ok || status=$?
+        case "$status" in
+            0) ;;
+            2) error "cs could not read the version of ${CODEX_BIN:-codex} (its --version failed or printed no version), and the walk-away task queue needs Codex $CS_CODEX_QUEUE_MIN_VERSION or later. Check that Codex is installed, or use --brief without --task$2" ;;
+            *) error "Codex older than $CS_CODEX_QUEUE_MIN_VERSION does not host the walk-away task queue: cs confirms each task by hook provenance that build does not record. Upgrade Codex, or use --brief without --task$2" ;;
+        esac
+        return 0
+    fi
     case "$1" in
-        claude) ;;
-        codex) error "Codex does not host the walk-away task queue; use --brief without --task$2" ;;
         antigravity) error "Antigravity does not host the walk-away task queue; use --brief without --task$2" ;;
         *) error "$1 does not host the walk-away task queue; use --brief without --task$2" ;;
     esac

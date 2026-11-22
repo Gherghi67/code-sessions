@@ -11,6 +11,7 @@ source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
 source "$SCRIPT_DIR/../lib/76-codex-vault.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
+source "$SCRIPT_DIR/../lib/77-codex-queue.sh"
 source "$SCRIPT_DIR/../lib/78-switch.sh"
 
 HANDOFF=2026-10-15-continue.md
