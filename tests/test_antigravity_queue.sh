@@ -42,6 +42,7 @@ setup() {
     # Test files all live in the sandbox's temporary folder.
     _codex_run_dir_in_sandbox_root() { _codex_dir_under "$1" "$2"; }
     _antigravity_queue_version_ok() { return 0; }
+    _antigravity_queue_sandbox_verified() { return 0; }
     _antigravity_queue_arm "$CS_SESSION_DIR" "$QDIR"
     printf 'first task\n' > "$QDIR/queue/001"
     printf 'second task\n' > "$QDIR/queue/002"
@@ -150,6 +151,16 @@ test_ignores_busy_and_unrelated_stops() {
     assert_eq '{}' "$(stop 0 false)" || return 1
     assert_eq '{}' "$(stop 0 true "$RUN")" || return 1
     assert_eq armed "$(cat "$QDIR/queue.state")"
+}
+
+test_an_old_run_marker_does_not_verify_sandbox_protection() {
+    (
+        source "$SCRIPT_DIR/../lib/79-antigravity-queue.sh"
+        assert_file_exists "$RUN_DIR/queue-home" || return 1
+        assert_eq '{}' "$(stop 0)" "a launch marker cannot verify agy's effective policy" || return 1
+        assert_file_exists "$QDIR/queue/001" || return 1
+        assert_not_exists "$QDIR/queue.current"
+    )
 }
 
 test_terminal_stop_parks_and_allows_rearm_with_a_live_lease() {
@@ -292,6 +303,7 @@ run_test test_protected_receipt_keeps_a_digest_of_the_task_body
 run_test test_finishes_a_receipt_written_by_the_previous_build
 run_test test_leaves_an_interrupted_delivery_queued
 run_test test_ignores_busy_and_unrelated_stops
+run_test test_an_old_run_marker_does_not_verify_sandbox_protection
 run_test test_terminal_stop_parks_and_allows_rearm_with_a_live_lease
 run_test test_rearm_keeps_the_protected_record_if_the_workspace_write_fails
 run_test test_rearm_keeps_the_queue_idle_if_the_protected_write_fails

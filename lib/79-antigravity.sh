@@ -48,7 +48,8 @@ _cs_antigravity_adapter_capabilities() {
     # rotation: exit and reopen with --from-handoff (or answer r). The launch
     # supplies an interactive prompt; PreInvocation binds and consumes it.
     # spawn_brief: the launch writes a seed's brief in and sends its kickoff
-    # as the first prompt, once. A sandboxed agy can run queued tasks.
+    # as the first prompt, once. task_queue permits staging task seeds until
+    # the launch can verify agy's sandbox policy.
     # feature_finish: -finish sends a first prompt naming the finish skill's
     # SKILL.md, since agy hands a typed /cs:finish no folder.
     # mail_delivery: PreInvocation shows unread mail at each prompt, and Stop
@@ -698,7 +699,7 @@ $prompt"
     fi
     if [ -n "${SESSIONS_ROOT:-}" ] && [ -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ]; then
         if [ -n "$seed_tasks" ] && [ -z "$queue_home" ]; then
-            spawn_wait="its tasks need an unencrypted Antigravity run with supported agy, the current cs hooks, and a protected cache (take it under Claude with: cs $session_name --engine claude)"
+            spawn_wait="its tasks need an unencrypted Antigravity run with supported agy, the current cs hooks, and verified protection for its native history and queue cache (take it under Claude with: cs $session_name --engine claude)"
         elif [ -n "$rotation_handoff" ]; then
             spawn_wait="this open carries the rotation handoff"
         elif [ -n "$merge_kick" ]; then
@@ -713,7 +714,7 @@ $prompt"
             || warn "A spawn seed is staged for $session_name; it stays staged for a later open, since $spawn_wait."
     fi
     if [ -n "$queue_record" ] && [ -z "$queue_home" ] && printf '%s\n' "$queue_record" | jq -e '.park == null' >/dev/null; then
-        warn "The Antigravity queue stays armed. This run lacks the current cs hooks, supported agy, or protected storage it needs to drain."
+        warn "The Antigravity tasks stay queued. This run needs the current cs hooks, supported agy, and verified protection for its native history and queue cache."
     fi
     # The automatic /clear after a rotation: a watcher beside agy types
     # /clear and go once a turn ends with a handoff armed

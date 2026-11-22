@@ -10,6 +10,13 @@ _antigravity_queue_version_ok() {  # agy binary
         _version_at_least "$version" "$CS_ANTIGRAVITY_QUEUE_MIN_VERSION"
 }
 
+_antigravity_queue_sandbox_verified() {
+    # Agy accepts --sandbox even on hosts where it has no effect. It
+    # exposes no check of the active write policy for the transcript and
+    # queue cache. Keep tasks staged until cs can verify both locations.
+    return 1
+}
+
 _antigravity_queue_cache() {  # session, [create]
     local dir parent
     dir=$(cs_retire_cache_dir antigravity-queues "$1") || return 1
@@ -68,6 +75,8 @@ _antigravity_queue_start() {  # queue dir, mode
         error "Encrypted Antigravity sessions cannot host a walk-away queue. The queued tasks stay available."
     _antigravity_queue_version_ok "${AGY_BIN:-agy}" ||
         error "Antigravity walk-away queues need agy $CS_ANTIGRAVITY_QUEUE_MIN_VERSION or later."
+    _antigravity_queue_sandbox_verified ||
+        error "cs cannot verify that agy's sandbox protects its native history and the queue cache. The tasks stay queued."
     _queue_check_start "$1" antigravity
     _antigravity_queue_arm "$CS_SESSION_DIR" "$1" ||
         error "Could not arm the Antigravity queue. Check queue.state and CS_CACHE_DIR, then retry."
@@ -86,6 +95,7 @@ _antigravity_queue_start() {  # queue dir, mode
 # the launch home. Ordinary launches need no queue configuration.
 _antigravity_queue_prepare() {  # run dir, session, agy binary
     local home helper
+    _antigravity_queue_sandbox_verified || return 1
     [ -n "$1" ] && _launch_handoff_receipt_dir_ok "$1" "$2" || return 1
     _antigravity_queue_version_ok "$3" && _antigravity_flags_listed "$3" --sandbox || return 1
     _antigravity_autoclear_hooks_ready "$CS_BIN" || return 1
@@ -288,6 +298,7 @@ _antigravity_queue_owned() {  # event payload, run dir, execution
 
 _antigravity_queue_run() {  # verified native hook
     local dir
+    _antigravity_queue_sandbox_verified || return 1
     [ "$AGY_HOOK_TYPED" = 1 ] || return 1
     [ -z "${CS_ANTIGRAVITY_VAULT_RUN:-}" ] || return 1
     dir=$(_antigravity_run_dir) && _antigravity_hook_from_native "$dir" || return 1

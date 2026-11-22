@@ -347,6 +347,8 @@ run that claims `clear_rotation`, otherwise `/exit` then a fresh managed launch 
 `--from-handoff`. `cs -switch` refuses to leave an engine without
 `rotation` and `engine_switch`, as it refuses to enter one. Before staging a
 seed, `cs -spawn` requires `spawn_brief`. A seed with tasks also requires `task_queue`.
+Antigravity stages those seeds until cs can verify that the native history
+and queue cache are protected by agy's sandbox.
 Antigravity takes a brief through the shared reader and sends the
 kickoff once with `--prompt-interactive`. Its
 `files_changed` reads the payload of `agy`'s PostToolUse hook and keeps

@@ -810,17 +810,17 @@ any other session, with its own rule and the shared exclude entry.
 
 ## Walk-away task queue
 
-Run `cs -spawn worker --engine antigravity --task "first" --task "second"`
-to launch a worker and start its queue. To run tasks in an existing session,
-add them with `cs <session> -queue add "task"`, then run
-`cs <session> -queue start` from your shell. If the running session was opened
-without a queue, reopen it to pick up the queue's sandbox. Send a prompt
-when the session is waiting at its input field.
+Use `cs -spawn worker --engine antigravity --task "first" --task "second"`
+to stage a task seed, or `cs <session> -queue add "task"` to stage tasks in
+an existing session. cs leaves the tasks staged until it can verify that
+the active Antigravity sandbox protects the native history and the queue
+cache. Current agy releases expose no way to verify that policy, so
+`cs <session> -queue start` refuses and the tasks stay queued. You can open
+a staged spawn seed under Claude with `cs worker --engine claude`.
 
-The queue requires agy 1.5.13 or later, the current cs hooks, and unencrypted
-storage. cs passes `agy --sandbox` for a run that can drain the queue. The
-main conversation works on one task at a time and agy's approvals still
-apply. Use plain `cs -queue start` for Antigravity.
+A queue-enabled launch also requires agy 1.5.13 or later, the current cs
+hooks, and unencrypted storage. In a verified run, the main conversation
+works on one task at a time and agy's approvals still apply.
 
 cs checks the native transcript for the task and its final reply before
 marking it done. The protected queue record keeps a receipt and a SHA-256
