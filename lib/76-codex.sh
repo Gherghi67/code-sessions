@@ -815,7 +815,7 @@ _launch_codex_bound() {
         _cs_run_helper_dir=$autoclear_dir
         # The session the run serves, by its physical path: cs -queue clear
         # and start forget only their own session's drain record.
-        ( set -C; physical=$(cd -P "$session_dir" && pwd -P) \
+        ( set -C; physical=$(cd -P -- "$session_dir" && pwd -P) \
             && printf '%s\n' "$physical" > "$autoclear_dir/session" ) 2>/dev/null || true
         # And that it runs on the vault home: the queue's Stop refuses an
         # encrypted session by this, which the agent cannot remove as it can

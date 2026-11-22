@@ -107,7 +107,7 @@ _codex_queue_forget_session_run() {  # meta_dir
     dir="${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs/$id"
     cs_cache_dir_private "$dir" && _codex_run_dir_ok "$dir" "${1%/.cs}" || return 0
     [ -f "$dir/session" ] && [ ! -L "$dir/session" ] || return 0
-    session=$(cd -P "${1%/.cs}" 2>/dev/null && pwd -P) || return 0
+    session=$(cd -P -- "${1%/.cs}" 2>/dev/null && pwd -P) || return 0
     [ "$(cat "$dir/session" 2>/dev/null)" = "$session" ] || return 0
     _codex_queue_forget_run "$dir"
     return 0
